@@ -1235,13 +1235,15 @@ fn extend_to(val: &LogicVec, width: usize) -> LogicVec {
     if val.width >= width {
         val.clone()
     } else {
+        // IEEE 1800-2017 §11.8.2: operand UNSIGNED di-extend ZERO-fill —
+        // implementasi lama mengisi bit ekstensi dgn X bila msb X/Z sehingga
+        // `1'bx | 2'b00` → `xx` (salah; harus `0x`) dan jalur non-packed
+        // beda dari packed (`PackedLogicVec::resize` zero-fill) → differential
+        // O5 (temuan fuzzer bug_0793, prim_intr_hw). Untuk msb 0/1 pun
+        // fungsi ini memang zero-extend (lihat komentar eval_sshr_signed).
+        // Sign-extend tetap lewat `sign_extend_to` (jalur aritmetika signed).
         let mut bits = val.bits.clone();
-        let msb = val.bits.last().copied().unwrap_or(LogicVal::Zero);
-        let fill = match msb {
-            LogicVal::Zero | LogicVal::One => LogicVal::Zero,
-            LogicVal::X | LogicVal::Z => LogicVal::X,
-        };
-        bits.resize(width, fill);
+        bits.resize(width, LogicVal::Zero);
         LogicVec { bits, width }
     }
 }
@@ -1498,6 +1500,26 @@ mod tests {
         let r = eval_binary(BinaryIrOp::Eq, &LogicVec::from_u64(5, 8), &x_vec());
         set_xprop_mode(prev);
         assert_eq!(r.bits[0], LogicVal::X, "pessimistic: 5 == X harus X");
+    }
+
+    #[test]
+    fn test_extend_x_operand_is_zero_filled() {
+        // REGRESI (fuzzer O5 differential, bug_0793 prim_intr_hw): operand
+        // 1-bit X di-extend ke lebar max. IEEE 1800-2017 §11.8.2 unsigned =
+        // ZERO-fill → `1'bx | 2'b00` = `2'b0x`. Implementasi lama mengisi
+        // bit ekstensi dgn X (msb X) → `2'bxx` dan beda dari jalur packed
+        // (`PackedLogicVec::resize` zero-fill) → differential antar engine.
+        let prev = get_xprop_mode();
+        set_xprop_mode(XPropagationMode::Pessimistic);
+        let r = eval_binary(BinaryIrOp::BitOr, &x_vec(), &LogicVec::from_u64(0, 2));
+        set_xprop_mode(prev);
+        assert_eq!(r.width, 2, "lebar hasil = max(operand)");
+        assert_eq!(
+            r.bits[1],
+            LogicVal::Zero,
+            "bit ekstensi harus zero-fill (§11.8.2), bukan X"
+        );
+        assert_eq!(r.bits[0], LogicVal::X, "bit asli tetap X");
     }
 
     // ─── Defensif: LogicVec korup (width>0, bits kosong) — PANIC-13 ───
