@@ -14,14 +14,14 @@ use mivon_api::{
 /// via runner subprocess untuk target yang butuh izin eksekusi penuh.
 pub fn evaluate(target: Target, source: &str, timeout_ms: u64) -> CaseResult {
     match target {
-        Target::Lexer => evaluate_lexer(source),
+        Target::Lexer => evaluate_lexer(source, timeout_ms),
         Target::Vcd => evaluate_vcd(source, timeout_ms),
         Target::Parser | Target::Elaborator => evaluate_compile(target, source, timeout_ms),
         Target::Simulator => evaluate_sim(source, timeout_ms),
-        Target::Fmt => evaluate_fmt(source),
+        Target::Fmt => evaluate_fmt(source, timeout_ms),
         Target::Cli => evaluate_cli(source, timeout_ms),
-        Target::Preproc => evaluate_preproc(source),
-        Target::Mv => evaluate_mv(source),
+        Target::Preproc => evaluate_preproc(source, timeout_ms),
+        Target::Mv => evaluate_mv(source, timeout_ms),
         Target::Sdf => evaluate_sdf(source, timeout_ms),
         Target::Micd => evaluate_micd(source, timeout_ms),
         Target::Synth => evaluate_synth(source, timeout_ms),
@@ -80,6 +80,67 @@ fn is_global_error(msg: &str) -> bool {
         "Recovery mode enabled",
     ];
     pats.iter().any(|p| msg.contains(p))
+}
+
+/// Watchdog seragam untuk jalur evaluasi IN-PROCESS (lexer/preproc/mv/fmt/
+/// sim): kerja dijalankan di thread stack besar 256MB (parser/evaluator
+/// rekursif bisa overflow stack 8MB pada hasil mutasi — temuan fuzzer),
+/// dibatasi `timeout_ms` lewat `recv_timeout`.
+///
+/// Lewat batas → `Category::Hang` dan kampanye LANJUT; worker dibiarkan
+/// selesai di background (thread Rust tidak bisa di-kill). Tanpa watchdog,
+/// satu loop tak-berujung di lexer/preproc/transpile menghentikan kampanye
+/// selamanya tanpa baris progres — progres kampanye sempat hilang total dan
+/// hanya ketahuan dari CPU 100% satu thread.
+fn run_with_watchdog<F>(
+    target: Target,
+    source: &str,
+    timeout_ms: u64,
+    name: &'static str,
+    f: F,
+) -> CaseResult
+where
+    F: FnOnce(&str) -> CaseResult + Send + 'static,
+{
+    use std::time::Duration;
+    let source_owned = source.to_string();
+    let (tx, rx) = std::sync::mpsc::channel::<CaseResult>();
+    let spawned = std::thread::Builder::new()
+        .stack_size(256 * 1024 * 1024)
+        .name(name.into())
+        .spawn(move || {
+            let r = f(&source_owned);
+            let _ = tx.send(r);
+        });
+    if spawned.is_err() {
+        return mk(
+            target,
+            Oracle::O1NoCrash,
+            Category::Panic,
+            "thread watchdog gagal spawn",
+            source,
+        );
+    }
+    match rx.recv_timeout(Duration::from_millis(timeout_ms)) {
+        Ok(r) => r,
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => mk(
+            target,
+            Oracle::O1NoCrash,
+            Category::Hang,
+            &format!(
+                "hang/slow > {} ms (worker dilanjutkan di background)",
+                timeout_ms
+            ),
+            source,
+        ),
+        Err(_) => mk(
+            target,
+            Oracle::O1NoCrash,
+            Category::Panic,
+            "thread watchdog disconnected",
+            source,
+        ),
+    }
 }
 
 /// O1 + O2 untuk compile pipeline (lexer/parser/elaborator) + deteksi HANG.
@@ -232,7 +293,13 @@ fn compile_in_thread(target: Target, source: &str) -> CaseResult {
 /// - lex dua kali segar → stream token (kind+line+col) harus identik
 ///   (non-determinisme token = bug)
 /// - panic saat lex input gila = bug
-fn evaluate_lexer(source: &str) -> CaseResult {
+fn evaluate_lexer(source: &str, timeout_ms: u64) -> CaseResult {
+    // Watchdog: lexer infinite loop pada input mutasi = kampanye macet
+    // total (tanpa baris progres, CPU 100%) — lex tetap di thread besar.
+    run_with_watchdog(Target::Lexer, source, timeout_ms, "mivon-fuzz-lexer", lex_eval)
+}
+
+fn lex_eval(source: &str) -> CaseResult {
     use mivon_parser::lexer::Lexer;
     let lex_once = || -> Vec<(String, usize, usize)> {
         let mut lx = Lexer::new(source);
@@ -368,24 +435,31 @@ fn evaluate_sim(source: &str, timeout_ms: u64) -> CaseResult {
     //         rekursif pada chain BinaryOp panjang (`x0|x1|...|x63` di
     //         OpenC910 ct_rtu_encode_64) overflow stack default 8MB
     //         ("thread 'main' has overflowed its stack", ditemukan fuzzer).
-    let source_owned = source.to_string();
     let t_ms = timeout_ms;
-    let result: Option<CaseResult> = std::thread::Builder::new()
-        .stack_size(256 * 1024 * 1024)
-        .name("mivon-fuzz-sim".into())
-        .spawn(move || simulate_in_thread(&source_owned, t_ms))
-        .ok()
-        .and_then(|h| h.join().ok())
-        .flatten();
-    if let Some(r) = result {
-        return r;
-    }
-    mk(
+    // Watchdog: `join()` tanpa batas dulu — satu sim loop tak-berujung di
+    // jalur in-process menghentikan kampanye selamanya.
+    // Budget in-process 6× subprocess: `simulate_in_thread` bukan SATU sim
+    // tapi rantai (compile + 2× sim O4 + 4-6 jalur differential + trace +
+    // evidence). Satu `timeout_ms` (5s) untuk seluruh rantai membuat kasus
+    // berat kena Hang PALSU dan Hang dihitung `is_bug()` → file bug + count
+    // kampanye menyimpang (review sesi ini).
+    let budget_ms = timeout_ms.saturating_mul(6);
+    run_with_watchdog(
         Target::Simulator,
-        Oracle::O1NoCrash,
-        Category::Panic,
-        "thread sim gagal (join err)",
         source,
+        budget_ms,
+        "mivon-fuzz-sim",
+        move |src| {
+            simulate_in_thread(src, t_ms).unwrap_or_else(|| {
+                mk(
+                    Target::Simulator,
+                    Oracle::O1NoCrash,
+                    Category::Panic,
+                    "thread sim gagal (join err)",
+                    src,
+                )
+            })
+        },
     )
 }
 
@@ -762,27 +836,14 @@ fn detect_violation(output: &str) -> Option<String> {
 }
 
 /// O3: fmt round-trip (jika tool fmt tersedia via mivon_api::tools).
-fn evaluate_fmt(source: &str) -> CaseResult {
+fn evaluate_fmt(source: &str, timeout_ms: u64) -> CaseResult {
     // Fmt target dijalankan in-process — round-trip check. Thread stack besar
     // (lexer/parser rekursif bisa overflow pada input mutasi — ditemukan fuzzer
-    // seed 7 stack overflow di fmt ~kasus 500, sama dgn compile/sim).
-    let source_owned = source.to_string();
-    let result: Option<CaseResult> = std::thread::Builder::new()
-        .stack_size(256 * 1024 * 1024)
-        .name("mivon-fuzz-fmt".into())
-        .spawn(move || fmt_in_thread(&source_owned))
-        .ok()
-        .and_then(|h| h.join().ok());
-    match result {
-        Some(r) => r,
-        None => mk(
-            Target::Fmt,
-            Oracle::O1NoCrash,
-            Category::Panic,
-            "thread fmt gagal (join err)",
-            source,
-        ),
-    }
+    // seed 7 stack overflow di fmt ~kasus 500, sama dgn compile/sim) +
+    // watchdog agar fmt lambat/loop tak macetkan kampanye.
+    run_with_watchdog(Target::Fmt, source, timeout_ms, "mivon-fuzz-fmt", |src| {
+        fmt_in_thread(src)
+    })
 }
 
 fn fmt_in_thread(source: &str) -> CaseResult {
@@ -2082,7 +2143,19 @@ fn gen_cli_args(rng: &mut crate::Rng, path: &std::path::Path, source: &str) -> V
 /// - output preprocess BERUBAH antar dua run identik = non-deterministik (bug)
 /// - panic saat directive imbalance (`ifdef` ganda dsb) = bug
 /// - error tanpa lokasi file:line:col = diag_missing
-fn evaluate_preproc(source: &str) -> CaseResult {
+fn evaluate_preproc(source: &str, timeout_ms: u64) -> CaseResult {
+    // Watchdog: `ifdef` imbalance/balik bisa membuat preprocess loop tak
+    // berujung — tanpa batas kampanye macet.
+    run_with_watchdog(
+        Target::Preproc,
+        source,
+        timeout_ms,
+        "mivon-fuzz-preproc",
+        preproc_eval,
+    )
+}
+
+fn preproc_eval(source: &str) -> CaseResult {
     // Jalankan preprocess 2x — determinisme.
     let r1 = std::panic::catch_unwind(|| mivon_preproc(source));
     let r2 = std::panic::catch_unwind(|| mivon_preproc(source));
@@ -2169,7 +2242,13 @@ fn mivon_preproc(source: &str) -> Result<String, String> {
 /// - transpile 2x identik = determinisme (macro/state leak)
 /// - output SV harus parseable (transpile merusak source = bug)
 /// - panic saat MV aneh = bug
-fn evaluate_mv(source: &str) -> CaseResult {
+fn evaluate_mv(source: &str, timeout_ms: u64) -> CaseResult {
+    // Watchdog: transpile + compile check in-process (tanpa batas, loop
+    // transpiler menghentikan kampanye).
+    run_with_watchdog(Target::Mv, source, timeout_ms, "mivon-fuzz-mv", mv_eval)
+}
+
+fn mv_eval(source: &str) -> CaseResult {
     // Source kosong/whitespace-only hasil mutasi (file habis terhapus) —
     // transpile input kosong → output tak parseable wajar, BUKAN bug
     // transpiler (temuan kampanye: klass roundtrip_mismatch palsu).
@@ -2195,27 +2274,53 @@ fn evaluate_mv(source: &str) -> CaseResult {
                     source,
                 );
             }
-            // Output SV harus parseable.
+            // Output SV harus parseable — sertakan pesan error di detail
+            // (tanpa ini "tidak parseable" tak bisa dibedakan: EL3001 no-top
+            // = noise vs kerusakan codegen = bug nyata).
             let combined = format!("{}\n{}", t1.svh, t1.sv);
-            let parses =
-                std::panic::catch_unwind(|| mivon_api::compile_str_quiet(&combined).is_ok())
-                    .unwrap_or(false);
-            if !parses {
-                return mk(
+            match std::panic::catch_unwind(|| mivon_api::compile_str_quiet(&combined)) {
+                Ok(Ok(_)) => mk(
+                    Target::Mv,
+                    Oracle::O1NoCrash,
+                    Category::Ok,
+                    "mv transpile deterministik + output parseable",
+                    source,
+                ),
+                Ok(Err(e)) => {
+                    let msg = e.to_string();
+                    if is_global_error(&msg) {
+                        // Output VALID tapi tanpa top module (design
+                        // class/package/interface saja) — E3005 by design,
+                        // sama dgn guard evaluate_compile. BUKAN kerusakan
+                        // codegen (false positive: class_model.mv utuh
+                        // dilaporkan roundtrip_mismatch).
+                        mk(
+                            Target::Mv,
+                            Oracle::O1NoCrash,
+                            Category::Ok,
+                            &format!("mv transpile ok — tanpa top module: {msg}"),
+                            source,
+                        )
+                    } else {
+                        mk(
+                            Target::Mv,
+                            Oracle::O3Roundtrip,
+                            Category::RoundtripMismatch,
+                            &format!(
+                                "transpile output tidak parseable (transpiler merusak source): {msg}"
+                            ),
+                            source,
+                        )
+                    }
+                }
+                Err(_) => mk(
                     Target::Mv,
                     Oracle::O3Roundtrip,
                     Category::RoundtripMismatch,
-                    "transpile output tidak parseable (transpiler merusak source)",
+                    "panic saat compile output transpile",
                     source,
-                );
+                ),
             }
-            mk(
-                Target::Mv,
-                Oracle::O1NoCrash,
-                Category::Ok,
-                "mv transpile deterministik + output parseable",
-                source,
-            )
         }
         (Ok(Err(_e1)), Ok(Err(_e2))) => {
             // Error deterministik — MV tak valid, bukan bug.

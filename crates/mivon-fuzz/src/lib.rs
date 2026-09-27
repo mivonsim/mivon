@@ -530,19 +530,17 @@ fn run_single(cfg: FuzzConfig) -> FuzzReport {
         // Target MV HANYA pakai seed `.mv` (SV di-feed ke transpile = noise).
         let base_seed = if corpus.is_empty() {
             break;
+        } else if cfg.target == Target::Mv {
+            // Target MV HANYA pakai seed `.mv` — sample langsung dari subset
+            // `.mv` (resample acak dari corpus penuh: 21/4664 seed → hampir
+            // selalu break di case pertama, kampanye MV 0-2 case/2000).
+            match corpus.random_mv_seed(&mut rng) {
+                Some(s) => s,
+                None => break,
+            }
         } else {
             match corpus.random_seed(&mut rng) {
-                Some(src) => {
-                    if cfg.target == Target::Mv && !src.is_mv {
-                        // Skip seed non-MV untuk target MV — coba lagi.
-                        match corpus.random_seed(&mut rng) {
-                            Some(mv_src) if mv_src.is_mv => mv_src,
-                            _ => break,
-                        }
-                    } else {
-                        src
-                    }
-                }
+                Some(src) => src,
                 None => break,
             }
         };
@@ -583,8 +581,12 @@ fn run_single(cfg: FuzzConfig) -> FuzzReport {
             base_source = dir.mutate(&base_source);
         }
 
-        // MV → transpile mutated MV ke SV sebelum evaluasi
-        let source = if is_mv {
+        // MV → transpile mutated MV ke SV sebelum evaluasi — KECUALI target
+        // Mv: `evaluate_mv` mengharap source MV mentah (dia yang mentranspile
+        // di dalam untuk cek determinisme + output parseable). Transpile di
+        // sini membuat SV di-feed balik ke transpiler MV → 100% case jadi
+        // "transpile error" (clean_error=2000/2000, kampanye MV tak berguna).
+        let source = if is_mv && cfg.target != Target::Mv {
             let base_name = base_seed
                 .path
                 .file_stem()

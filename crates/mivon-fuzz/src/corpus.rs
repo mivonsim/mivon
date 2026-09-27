@@ -147,7 +147,33 @@ impl Corpus {
         if self.seeds.is_empty() {
             return None;
         }
-        let p = &self.seeds[rng.below(self.seeds.len())];
+        let idx = rng.below(self.seeds.len());
+        self.seed_at_idx(idx)
+    }
+
+    /// Ambil seed random KHUSUS `.mv` (subset filter ekstensi).
+    ///
+    /// Dipakai target MV: sampling acak dari corpus penuh (21/4664 seed
+    /// `.mv`) membuat loop kampanye sering `break` di case pertama —
+    /// kampanye MV dievaluasi cuma 0-2 dari 2000 case.
+    pub fn random_mv_seed(&self, rng: &mut crate::Rng) -> Option<SeedSource> {
+        let mv_idxs: Vec<usize> = self
+            .seeds
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.extension().and_then(|e| e.to_str()) == Some("mv"))
+            .map(|(i, _)| i)
+            .collect();
+        if mv_idxs.is_empty() {
+            return None;
+        }
+        let pick = mv_idxs[rng.below(mv_idxs.len())];
+        self.seed_at_idx(pick)
+    }
+
+    /// Load + resolve seed by index (baca file, inline include, resolve deps).
+    fn seed_at_idx(&self, idx: usize) -> Option<SeedSource> {
+        let p = self.seeds.get(idx)?;
         let is_mv = p
             .extension()
             .and_then(|e| e.to_str())
