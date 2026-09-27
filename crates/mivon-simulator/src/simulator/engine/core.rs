@@ -243,6 +243,7 @@ impl SimulationEngine {
             signal_delays: std::collections::HashMap::new(),
             power_intent: None,
             process_body_cache: HashMap::new(),
+            notimpl_warned: Default::default(),
         }
     }
 

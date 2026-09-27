@@ -1788,15 +1788,31 @@ impl SimulationEngine {
                         }
                     }
                     _ => {
+                        // Dukungan bit↔real bit-pattern 64-bit: `$bitstoreal(x)`
+                        // = interpret x sbg f64-bits, `$realtobits(x)` = f64-bits
+                        // → nilai 64-bit sama (passthrough). Menghilangkan
+                        // warning RT9003 spam utk float-ALU (aex_alu).
+                        let fn_name = name.as_str();
+                        if fn_name == "$bitstoreal" || fn_name == "$realtobits" {
+                            if let Some(a) = args.first() {
+                                return self.evaluate_expr(a);
+                            }
+                            return Ok(LogicVec::from_u64(0, 64));
+                        }
                         // Try VPI registered system functions first
-                        if crate::vpi::systf::call_registered_systf(name.as_str(), true) {
+                        if crate::vpi::systf::call_registered_systf(fn_name, true) {
                             return Ok(LogicVec::from_u64(0, 32));
                         }
                         // F20: via DiagSink agar warning punya file:line:col.
-                        self.emit_warning(
-                            mivon_core::diagnostics::DiagCode::NotImplemented,
-                            format!("unsupported system function '{}'", name),
-                        );
+                        // Dedup: emit SEKALI per nama fungsi (bukan per
+                        // penggunaan — utk `$realtobits` di 4 assign harusnya
+                        // 1 warning, bukan 4-20).
+                        if self.notimpl_warned.insert(*name) {
+                            self.emit_warning(
+                                mivon_core::diagnostics::DiagCode::NotImplemented,
+                                format!("unsupported system function '{}'", fn_name),
+                            );
+                        }
                         Ok(LogicVec::from_u64(0, 32))
                     }
                 }

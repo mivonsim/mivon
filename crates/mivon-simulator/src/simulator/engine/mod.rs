@@ -550,6 +550,10 @@ pub struct SimulationEngine {
     /// Dibangun sekali di run() untuk menghindari clone bodies setiap cycle.
     pub process_body_cache: HashMap<usize, Vec<IrStmt>>,
 
+    /// Fungsi system yang sudah diberi warning RT9003 sekali (dedup) — hindari
+    /// spam 20 warning per penggunaan utk `$realtobits`/`$bitstoreal` dll.
+    pub notimpl_warned: std::collections::HashSet<Symbol>,
+
     /// Hierarchical timing wheel for O(1) event scheduling (replaces Vec<Vec<RegionEvent>>).
     /// When enabled, events are stored in the timing wheel instead of `events: Vec<Vec<RegionEvent>>`.
     pub timing_wheel:
