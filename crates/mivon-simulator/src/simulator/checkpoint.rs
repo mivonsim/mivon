@@ -675,6 +675,9 @@ impl crate::simulator::engine::SimulationEngine {
         // Reset runtime state that should be fresh after restore
         self.events.clear();
         self.events_base = 0;
+        // Event ticker foreign per time-step (VPI/VHPI dispatch) tak ikut
+        // checkpoint — antrean ulang otomatis pada time step berikutnya.
+        self.foreign_events.clear();
         self.nba_pending.clear();
         self.running = true;
         self.paused = false;
@@ -699,30 +702,70 @@ impl crate::simulator::engine::SimulationEngine {
         self.restore_checkpoint(checkpoint)
     }
 
-    /// `true` bila ada pekerjaan TERTUNDA di engine: event queue terjadwal,
-    /// NBA pending, wait/event control, strobe/fork — bukan kondisi idle
-    /// antar langkah. Checkpoint TIDAK memuat antrean tsb, jadi snapshot/
-    /// restore engine hanya aman saat fungsi ini `false` (pemakaian:
-    /// `mivon-emu::cpu::rtl` menolak snapshot di tengah transaksi).
-    pub fn has_pending_runtime_events(&self) -> bool {
-        !self.events.iter().all(Vec::is_empty)
-            || !self.foreign_events.is_empty()
-            || !self.nba_pending.is_empty()
-            || !self.reactive_events.is_empty()
-            || !self.strobe_events.is_empty()
-            || !self.fstrobe_events.is_empty()
-            || !self.pending_waits.is_empty()
-            || !self.pending_events.is_empty()
-            || !self.pending_ast_events.is_empty()
-            || !self.pending_wait_orders.is_empty()
-            || !self.pending_wait_forks.is_empty()
-            || !self.fork_groups.is_empty()
-            || self.loop_continuation.is_some()
-            || self.ast_loop_continuation.is_some()
-            || !self.post_loop_tail.is_empty()
-            || self.task_suspended
-            || self.disable_pending.is_some()
-            || self.pending_await_target.is_some()
+    /// Nama antrean pekerjaan TERTUNDA di engine (`Some(...)`) bila checkpoint
+    /// tidak lengkap untuk snapshot/restore: event queue terjadwal, NBA
+    /// pending, wait/event control, strobe/fork — bukan kondisi idle antar
+    /// langkah. Pemakaian: `mivon-emu::cpu::rtl` menolak snapshot di tengah
+    /// transaksi (pesan menyebut antrean mana yang terisi).
+    pub fn pending_runtime_events(&self) -> Option<&'static str> {
+        if !self.events.iter().all(Vec::is_empty) {
+            return Some("events (event queue terjadwal)");
+        }
+        // foreign_events TIDAK membatasi: isinya ticker per time-step
+        // (NextTimeStep/ReadWrite/ReadOnly — antrian ulang otomatis tiap step),
+        // penanda ValueChange (no-op di process — callback di-fire inline dari
+        // signal update path), dan EndOfSimulation (di-queue saat start).
+        // Semuanya host-side (VPI/VHPI) tanpa state desain — aman di-reset
+        // saat restore (lihat `restore_checkpoint`), dan antrian ulang otomatis.
+        if !self.nba_pending.is_empty() {
+            return Some("nba_pending");
+        }
+        if !self.reactive_events.is_empty() {
+            return Some("reactive_events");
+        }
+        if !self.strobe_events.is_empty() {
+            return Some("strobe_events");
+        }
+        if !self.fstrobe_events.is_empty() {
+            return Some("fstrobe_events");
+        }
+        if !self.pending_waits.is_empty() {
+            return Some("pending_waits (@ event control)");
+        }
+        if !self.pending_events.is_empty() {
+            return Some("pending_events (@ edge control)");
+        }
+        if !self.pending_ast_events.is_empty() {
+            return Some("pending_ast_events (task/method suspend)");
+        }
+        if !self.pending_wait_orders.is_empty() {
+            return Some("pending_wait_orders (wait fork order)");
+        }
+        if !self.pending_wait_forks.is_empty() {
+            return Some("pending_wait_forks");
+        }
+        if !self.fork_groups.is_empty() {
+            return Some("fork_groups");
+        }
+        if self.loop_continuation.is_some() {
+            return Some("loop_continuation");
+        }
+        if self.ast_loop_continuation.is_some() {
+            return Some("ast_loop_continuation");
+        }
+        if !self.post_loop_tail.is_empty() {
+            return Some("post_loop_tail");
+        }
+        if self.task_suspended {
+            return Some("task_suspended");
+        }
+        if self.disable_pending.is_some() {
+            return Some("disable_pending");
+        }
+        if self.pending_await_target.is_some() {
+            return Some("pending_await_target");
+        }
+        None
     }
 }
 

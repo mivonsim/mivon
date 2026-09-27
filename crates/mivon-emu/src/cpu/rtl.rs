@@ -635,12 +635,12 @@ impl CpuCore for RtlLinkedCpu {
     // yang me-reset antrean tsb bersih.
 
     fn snapshot(&self) -> Result<Vec<u8>, String> {
-        if self.dbg.engine.has_pending_runtime_events() {
-            return Err(
-                "rtl-cpu snapshot: engine memiliki event tertunda (hanya aman saat idle \
-                 antar langkah)"
-                    .into(),
-            );
+        if let Some(queue) = self.dbg.engine.pending_runtime_events() {
+            return Err(format!(
+                "rtl-cpu snapshot: engine belum idle — antrean '{}' terisi \
+                 (hanya aman antar langkah)",
+                queue
+            ));
         }
         let mut w = crate::snapshot::Writer::new();
         w.u8(RTL_SNAPSHOT_VER);
@@ -885,6 +885,68 @@ mod tests {
             assert_eq!(out, 84, "CPU RTL harus menyimpan hasil 42+42=84");
             let stored = machine.mem.read(0x8000_0000, 4).expect("read");
             assert_eq!(stored, 42);
+        });
+    }
+
+    #[test]
+    fn test_rtl_cpu_snapshot_restore_resume_deterministic() {
+        with_big_stack(|| {
+            // Program sama dgn test ELF di atas: store 42 + hasil 84 ke RAM.
+            let code = [
+                i(42, 0, 0, 5, ADDI),                    // t0 = 42
+                (0x80000u32 << 12) | (10u32 << 7) | LUI, // a0 = 0x80000000
+                s(0, 5, 10, 2, SW),                      // mem[a0+0] = t0
+                i(0, 10, 2, 11, LW),                     // a1 = mem[a0]
+                r(0, 5, 11, 0, 12, OP),                  // a2 = a1 + t0 = 84
+                s(4, 12, 10, 2, SW),                     // mem[a0+4] = a2
+                0x0010_0073,                             // ebreak
+            ];
+            let bytes = code_bytes(&code);
+            let fresh_mem = || {
+                let mut m = map();
+                let elf = make_elf(&bytes);
+                crate::elf::load_elf(&elf, &mut m).expect("load elf");
+                m
+            };
+
+            // ── Mesin A: 3 instruksi → snapshot → lanjut sampai ebreak ──
+            let mut cpu_a =
+                RtlLinkedCpu::from_files(&cpu_files(), "rv32_bus_wrapper").expect("compile");
+            cpu_a.reset();
+            let mut a = crate::machine::Machine::new(Box::new(cpu_a), fresh_mem(), 3);
+            let r1 = a.run().expect("run awal");
+            assert!(!r1.halted, "3 instr belum sampai ebreak");
+            let snap = a.snapshot().expect("snapshot Direct RTL CPU");
+            assert_eq!(snap.steps, 3, "counter kumulatif ikut snapshot");
+            assert!(!snap.cpu.is_empty());
+
+            a.max_steps = 5000;
+            let r2 = a.run().expect("lanjut A");
+            assert!(r2.halted, "lanjut → ebreak: {:?}", r2);
+            let mem_a = a.mem.regions[0].bytes().to_vec();
+            assert_eq!(a.mem.read(0x8000_0000, 4).unwrap(), 42);
+            assert_eq!(a.mem.read(0x8000_0004, 4).unwrap(), 84);
+
+            // ── Mesin B: CPU RTL baru + RAM kosong → restore → run sama ──
+            let mut cpu_b =
+                RtlLinkedCpu::from_files(&cpu_files(), "rv32_bus_wrapper").expect("compile");
+            cpu_b.reset();
+            let mut b = crate::machine::Machine::new(Box::new(cpu_b), fresh_mem(), 5000);
+            b.restore(&snap).expect("restore");
+            let r3 = b.run().expect("run B");
+            assert_eq!(r3.halted, r2.halted, "hasil halt sama");
+            assert_eq!(r3.steps, r2.steps, "steps kumulatif identik");
+            assert_eq!(r3.pc, r2.pc, "pc akhir identik");
+            assert_eq!(
+                b.mem.regions[0].bytes(),
+                mem_a.as_slice(),
+                "memori hasil eksekusi identik (deterministik)"
+            );
+            assert_eq!(
+                b.cpu.console_output(),
+                a.cpu.console_output(),
+                "console RTL identik"
+            );
         });
     }
 

@@ -681,8 +681,14 @@ mivon snapshot restore
   **sparse per halaman 4 KB** (halaman nol tidak ditulis → RAM 2 GB berisi
   sedikit data = file kecil), atomik (temp+rename), magic+versi → error
   jelas untuk file rusak/versi beda.
-- CPU yang didukung: **interpreter RV32** (`Rv32Cpu`) dan **x86** (`X86Cpu`,
-  boot ISO). Direct RTL CPU → ditolak *sebelum* run (preflight).
+- CPU yang didukung: **interpreter RV32** (`Rv32Cpu`), **x86** (`X86Cpu`,
+  boot ISO), dan **Direct RTL CPU** (`RtlLinkedCpu`) — state engine RTL
+  lewat `SimCheckpoint` (SIM-17/18: sinyal/waktu/RNG/process map/UVM/
+  coverage/signal history) + state bus/host. Checkpoint tidak memuat
+  antrean event engine → snapshot hanya boleh saat idle antar langkah
+  (`SimulationEngine::pending_runtime_events` menolak dan menyebut
+  antrean mana); restore me-reset antrean tsb bersih. Target restore harus
+  dari design/RAM yang sama (signals count + nama/base/size dicek).
 - CLI: `mivon emu ... --snapshot-save <file>` (setelah run) /
   `--snapshot-load <file>` (sebelum run → lanjut dari state tersimpan).
 - Deterministik: resume = eksekusi identik dengan run penuh (test
@@ -695,8 +701,8 @@ mivon emu --config ram.meu --load-elf prog.elf --snapshot-load mid.snap \
   --run --max-steps 1000
 ```
 
-Belum (lanjutan R5): snapshot Direct RTL CPU (state engine RTL),
-machine-level `mivon snapshot --tag`, snapshot/devise state.
+Belum (lanjutan R5): machine-level `mivon snapshot --tag`, snapshot device
+state terpisah dari engine.
 
 Snapshot juga alat debugging RTL:
 
@@ -966,11 +972,12 @@ mivon emu wrapper.sv picorv32.v --config emu_ram.meu \
   `test_rtl_cpu_irq_timer`) | ✅ interrupt device (UART + timer) |
 | **Snapshot mesin (R5 slice, §14)** — `Machine::snapshot/restore`; format `MIVSNAP1` sparse halaman 4 KB (RAM 2 GB → file kecil), atomik, magic+versi; blob CPU per-ISA via `CpuCore::snapshot/restore` (RV32 + x86; Direct RTL ditolak *sebelum* run); restore tolak memory map tak cocok; counter kumulatif lintas run; CLI `--snapshot-save`/`--snapshot-load` | ✅ |
 | **Interpreter `--run` ELF (R1/R2)** — `mivon emu --run --load-elf prog.elf` tanpa `--rtl-cpu` menjalankan ELF32 di `Rv32Cpu` sampai `ebreak`; `ebreak` tak pernah jadi `CpuStep::Trap` (trap internal = lompat `mtvec`, desain sengaja) → `Machine` berhenti via `CpuCore::halt_status()` (setara sinyal `trap` Direct RTL CPU); ELF64 ditolak (RV64 menyusul); `mivon emu` tanpa target `.sv` kini valid untuk jalur ini | ✅ |
+| **Snapshot Direct RTL CPU (R5, §14)** — `RtlLinkedCpu::snapshot/restore`: `SimCheckpoint` engine (SIM-17/18) lewat `SimulationEngine::checkpoint()/restore_checkpoint()` (refactor dari `save/load_checkpoint` — IO vs state terpisah) + state bus (`cycle`/`last_pc`/`served*`/console/`pending_rx`); guard `pending_runtime_events()` menolak snapshot bila engine tak idle (antrean event/NBA/wait/fork terisi — pesan menyebut antreannya); foreign ticker (VPI/VHPI per step) di-reset restore; e2e deterministik `test_rtl_cpu_snapshot_restore_resume_deterministic` (3 instr → snapshot → resume → hasil identik dgn run penuh) | ✅ |
 | Co-sim bus cycle-accurate + mode `hybrid` | ⏳ |
 
-Verifikasi (2026-09-26): `cargo test --workspace` **2678 pass, 0 fail**;
+Verifikasi (2026-09-27): `cargo test --workspace` **2688 pass, 0 fail**;
 `cargo clippy --workspace --all-targets --all-features` **0 warning**
-(full rebuild, `--all-features`).
+(full rebuild, `--all-features`); `cargo fmt --check` bersih.
 
 **Bug fix mivon utama (global)**:
 1. `flatten_instances` mengonsumsi `top.sub_instances` tanpa mengembalikan →
