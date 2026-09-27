@@ -723,7 +723,29 @@ fn token_text(tok: &Token) -> String {
             // Nilai tersimpan TANPA kutip — render ulang dengan `"..."`.
             // Tanpa ini mfmt merusak string literal (`"mivon"` → `mivon`)
             // dan hasilnya tidak parseable (bug ditemukan fuzzer O3).
-            format!("\"{}\"", s.as_str())
+            // Lexer (read_string) meng-UNESCAPE saat scan: `\n` → newline,
+            // `\t` → tab, `\\` → `\`, `\"` → `"`. Tanpa re-escape di sini,
+            // `$display("\n--- X ---\n")` dirender jadi literal newline
+            // dalam string → fmt(fmt(s)) != fmt(s) (roundtrip mismatch,
+            // bug fuzzer fmt_0000) dan indentasi runtuh di pass kedua.
+            // Kebalikan `\` dulu supaya escape hasil decode (mis. `\x41`
+            // yang lexer biarkan sebagai backslash+x) tetap utuh.
+            // `\r` TIDAK di-escape: lexer `read_string` tidak meng-decode
+            // `\r` (unknown escape → `\`+`r`) — escape CR justru membuat
+            // fmt(fmt(s)) != fmt(s) (false roundtrip mismatch).
+            let mut out = String::with_capacity(s.as_str().len() + 2);
+            out.push('"');
+            for c in s.as_str().chars() {
+                match c {
+                    '\\' => out.push_str("\\\\"),
+                    '"' => out.push_str("\\\""),
+                    '\n' => out.push_str("\\n"),
+                    '\t' => out.push_str("\\t"),
+                    other => out.push(other),
+                }
+            }
+            out.push('"');
+            out
         }
         Token::FillLit(v) => format!(
             "'{}",
@@ -828,5 +850,31 @@ mod tests {
         // Round-trip: fmt(fmt(s)) == fmt(s).
         let twice = format_source(&once, 4);
         assert_eq!(once, twice, "round-trip harus idempoten");
+    }
+
+    /// Regresi temuan fuzzer (O3 round-trip): lexer `read_string` meng-UNESCAPE
+    /// `\n`/`\t`/`\\`/`\"` saat scan, jadi saat render fmt wajib RE-escape —
+    /// tanpa itu `$display("\n--- X ---\n")` keluar sbg literal newline →
+    /// `fmt(fmt(s)) != fmt(s)` + indentasi runtuh di pass kedua.
+    #[test]
+    fn string_escape_roundtrip() {
+        let src = "module t;\n  initial begin\n    $display(\"\\n--- X ---\\t\\\\ \\\"\");\n  end\nendmodule\n";
+        let once = format_source(src, 4);
+        assert!(
+            once.contains("\\n--- X ---"),
+            "escape \\n harus bertahan di output: {once}"
+        );
+        assert!(
+            once.contains("\\\\"),
+            "escape backslash harus bertahan di output: {once}"
+        );
+        // Tidak boleh ada newline literal di dalam string (tanda kutip
+        // kemudian baris baru) — itu tanda re-escape hilang.
+        assert!(
+            !once.contains("\"\n"),
+            "string literal tidak boleh pecah baris: {once}"
+        );
+        let twice = format_source(&once, 4);
+        assert_eq!(once, twice, "round-trip string escape harus idempoten");
     }
 }
