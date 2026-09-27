@@ -600,8 +600,38 @@ impl SimulationEngine {
                         } else {
                             val.parse::<u64>().unwrap_or(0)
                         };
-                        if let IrExpr::Signal(id, _) = var_arg {
-                            self.state.write_signal(*id, LogicVec::from_u64(num, 32));
+                        if std::env::var("DBG_PA").is_ok() {
+                            eprintln!(
+                                "[PA] pattern='{}' name='{}' val='{}' has_sig={}",
+                                pattern,
+                                plusarg_name,
+                                val,
+                                matches!(ir_args.get(1), Some(IrExpr::Signal(..)))
+                            );
+                        }
+                        // Utk `%s`: tulis STRING ke string-signal (bukan nol).
+                        let sig_id = if let IrExpr::Signal(id, _) = var_arg {
+                            *id
+                        } else {
+                            break;
+                        };
+                        let is_str = self
+                            .design
+                            .top
+                            .signals
+                            .get(sig_id)
+                            .map(|si| si.is_string)
+                            .unwrap_or(false);
+                        if std::env::var("DBG_PA").is_ok() {
+                            eprintln!("[PA] sig={} is_str={}", sig_id, is_str);
+                        }
+                        if is_str {
+                            self.state.write_signal(
+                                sig_id,
+                                crate::simulator::util::string_to_logicvec(val),
+                            );
+                        } else {
+                            self.state.write_signal(sig_id, LogicVec::from_u64(num, 32));
                         }
                     }
                     break;
@@ -1475,8 +1505,38 @@ impl SimulationEngine {
                         } else {
                             val.parse::<u64>().unwrap_or(0)
                         };
-                        if let IrExpr::Signal(id, _) = var_arg {
-                            self.state.write_signal(*id, LogicVec::from_u64(num, 32));
+                        if std::env::var("DBG_PA").is_ok() {
+                            eprintln!(
+                                "[PA] pattern='{}' name='{}' val='{}' has_sig={}",
+                                pattern,
+                                plusarg_name,
+                                val,
+                                matches!(ir_args.get(1), Some(IrExpr::Signal(..)))
+                            );
+                        }
+                        // Utk `%s`: tulis STRING ke string-signal (bukan nol).
+                        let sig_id = if let IrExpr::Signal(id, _) = var_arg {
+                            *id
+                        } else {
+                            break;
+                        };
+                        let is_str = self
+                            .design
+                            .top
+                            .signals
+                            .get(sig_id)
+                            .map(|si| si.is_string)
+                            .unwrap_or(false);
+                        if std::env::var("DBG_PA").is_ok() {
+                            eprintln!("[PA] sig={} is_str={}", sig_id, is_str);
+                        }
+                        if is_str {
+                            self.state.write_signal(
+                                sig_id,
+                                crate::simulator::util::string_to_logicvec(val),
+                            );
+                        } else {
+                            self.state.write_signal(sig_id, LogicVec::from_u64(num, 32));
                         }
                     }
                     break;

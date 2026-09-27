@@ -1672,9 +1672,29 @@ impl SimulationEngine {
                                             } else {
                                                 val.parse::<u64>().unwrap_or(0)
                                             };
-                                            let bits = LogicVec::from_u64(num, 32);
                                             if let IrExpr::Signal(id, _) = var_arg {
-                                                self.state.write_signal(*id, bits);
+                                                // `%s` ke string-signal → string,
+                                                // selain itu → numerik 32.
+                                                let is_str = self
+                                                    .design
+                                                    .top
+                                                    .signals
+                                                    .get(*id)
+                                                    .map(|si| si.is_string)
+                                                    .unwrap_or(false);
+                                                if is_str {
+                                                    self.state.write_signal(
+                                                        *id,
+                                                        crate::simulator::util::string_to_logicvec(
+                                                            val,
+                                                        ),
+                                                    );
+                                                } else {
+                                                    self.state.write_signal(
+                                                        *id,
+                                                        LogicVec::from_u64(num, 32),
+                                                    );
+                                                }
                                             }
                                         }
                                         return Ok(LogicVec::from_u64(1, 32));
