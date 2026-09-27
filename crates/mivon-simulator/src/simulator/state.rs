@@ -361,7 +361,12 @@ impl SimulationState {
         };
         let mut bits = Vec::with_capacity(width);
         for i in 0..width {
-            bits.push(lv.bits.get(start + i).copied().unwrap_or(mivon_core::LogicVal::X));
+            bits.push(
+                lv.bits
+                    .get(start + i)
+                    .copied()
+                    .unwrap_or(mivon_core::LogicVal::X),
+            );
         }
         LogicVec { width, bits }
     }
@@ -487,7 +492,10 @@ mod tests {
         assert_eq!(st.read_signal_bit(0, 100), mivon_core::LogicVal::One);
         assert_eq!(st.read_signal_bit(0, 101), mivon_core::LogicVal::Zero);
         assert_eq!(st.read_signal_bit(0, 99), mivon_core::LogicVal::X); // di luar blok
-        // Chunk yg belum ditulis = X.
-        assert_eq!(st.read_signal_bit(0, WIDE_CHUNK_BITS), mivon_core::LogicVal::X);
+                                                                        // Chunk yg belum ditulis = X.
+        assert_eq!(
+            st.read_signal_bit(0, WIDE_CHUNK_BITS),
+            mivon_core::LogicVal::X
+        );
     }
 }
