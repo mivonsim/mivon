@@ -332,7 +332,10 @@ impl LspBackend {
                     continue;
                 }
                 Token::StringLit(s) => {
-                    parts.push(format!("\"{}\"", s));
+                    // Re-escape: nilai tersimpan hasil decode lexer — render
+                    // apa adanya membuat literal newline di tengah baris LSP
+                    // (kelas bug sama dgn fmt roundtrip, fuzzer O3).
+                    parts.push(Lexer::escape_string_literal(s.as_str()));
                     continue;
                 }
                 Token::Semi => ";".into(),

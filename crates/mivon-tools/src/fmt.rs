@@ -723,29 +723,10 @@ fn token_text(tok: &Token) -> String {
             // Nilai tersimpan TANPA kutip — render ulang dengan `"..."`.
             // Tanpa ini mfmt merusak string literal (`"mivon"` → `mivon`)
             // dan hasilnya tidak parseable (bug ditemukan fuzzer O3).
-            // Lexer (read_string) meng-UNESCAPE saat scan: `\n` → newline,
-            // `\t` → tab, `\\` → `\`, `\"` → `"`. Tanpa re-escape di sini,
-            // `$display("\n--- X ---\n")` dirender jadi literal newline
-            // dalam string → fmt(fmt(s)) != fmt(s) (roundtrip mismatch,
-            // bug fuzzer fmt_0000) dan indentasi runtuh di pass kedua.
-            // Kebalikan `\` dulu supaya escape hasil decode (mis. `\x41`
-            // yang lexer biarkan sebagai backslash+x) tetap utuh.
-            // `\r` TIDAK di-escape: lexer `read_string` tidak meng-decode
-            // `\r` (unknown escape → `\`+`r`) — escape CR justru membuat
-            // fmt(fmt(s)) != fmt(s) (false roundtrip mismatch).
-            let mut out = String::with_capacity(s.as_str().len() + 2);
-            out.push('"');
-            for c in s.as_str().chars() {
-                match c {
-                    '\\' => out.push_str("\\\\"),
-                    '"' => out.push_str("\\\""),
-                    '\n' => out.push_str("\\n"),
-                    '\t' => out.push_str("\\t"),
-                    other => out.push(other),
-                }
-            }
-            out.push('"');
-            out
+            // Re-escape lewat helper bersama (lexer read_string meng-unescape
+            // saat scan); `\r` tak di-escape karena lexer tak decode — lihat
+            // doc di `escape_string_literal`.
+            mivon_parser::lexer::Lexer::escape_string_literal(s.as_str())
         }
         Token::FillLit(v) => format!(
             "'{}",
