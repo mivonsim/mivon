@@ -3448,11 +3448,8 @@ fn run_fast(
         println!();
 
         // Kesiapan keseluruhan
-        let any_ready = has_parse_errors
-            || sem_errs > 0
-            || hier_errs > 0
-            || has_elab_errors
-            || dpi_errs > 0;
+        let any_ready =
+            has_parse_errors || sem_errs > 0 || hier_errs > 0 || has_elab_errors || dpi_errs > 0;
         if any_ready && !cli.force_sim {
             println!("Simulasi: TIDAK SIAP");
             println!("Simulasi dibatalkan.");

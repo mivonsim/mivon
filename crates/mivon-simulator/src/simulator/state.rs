@@ -48,6 +48,42 @@ impl WideMem {
         c[cell] = (c[cell] & !(0b11u64 << off)) | (cellv << off);
     }
 
+    /// Baca blok `start..(start+width)` teroptimasi: slot sejajar 32-bit
+    /// (umum: elem 512/64) = per-chunk copy; lainnya fallback per-bit `get`.
+    /// 512-bit slot = 16 chunk-shift vs 512 `get` sebelumnya.
+    pub fn read_block(&self, start: usize, width: usize) -> Vec<mivon_core::LogicVal> {
+        let mut out = Vec::with_capacity(width);
+        if width == 0 {
+            return out;
+        }
+        let last = start + width - 1;
+        let aligned = start.is_multiple_of(32)
+            && width.is_multiple_of(32)
+            && start / WIDE_CHUNK_BITS == last / WIDE_CHUNK_BITS;
+        if aligned {
+            let ci = start / WIDE_CHUNK_BITS;
+            let cell0 = (start % WIDE_CHUNK_BITS) / 32;
+            let ncell = width / 32;
+            let src = self.chunks.get(&ci).copied().unwrap_or([0u64; 32]);
+            for k in 0..ncell {
+                let w = src[cell0 + k];
+                for jj in 0..32 {
+                    out.push(match (w >> (jj * 2)) & 0b11 {
+                        0 => mivon_core::LogicVal::X,
+                        1 => mivon_core::LogicVal::Zero,
+                        2 => mivon_core::LogicVal::One,
+                        _ => mivon_core::LogicVal::Z,
+                    });
+                }
+            }
+        } else {
+            for i in 0..width {
+                out.push(self.get(start + i));
+            }
+        }
+        out
+    }
+
     /// Tulis blok: `val` mengisi `start..start+len` (sebanyak len tersedia).
     pub fn write_block(&mut self, start: usize, val: &mivon_core::LogicVec) {
         for (i, b) in val.bits.iter().enumerate() {
@@ -348,10 +384,9 @@ impl SimulationState {
     pub fn read_signal_slice(&self, id: SignalId, start: usize, width: usize) -> LogicVec {
         let id = self.alias_redirect.get(id).copied().unwrap_or(id);
         if let Some(wm) = self.wide_mem.get(&id) {
-            let mut bits = Vec::with_capacity(width);
-            for i in 0..width {
-                bits.push(wm.get(start + i));
-            }
+            // Array raksasa: baca blok (per-chunk — jauh lebih cepat utk
+            // slot 512-bit seperti cache data line).
+            let bits = wm.read_block(start, width);
             return LogicVec { width, bits };
         }
         let lv = if self.changed[id] {

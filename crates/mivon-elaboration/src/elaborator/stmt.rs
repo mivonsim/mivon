@@ -846,7 +846,15 @@ impl Elaborator {
                 let lhs_sid = lvalue_signal_id(&ir_lhs);
                 // Propagasi lebar konteks LHS → operand context-determined
                 // RHS (LRM §11.8.1) sebelum evaluasi runtime.
+                let _at = std::time::Instant::now();
+                let _at = std::time::Instant::now();
                 self.apply_lhs_context_width(&ir_lhs, rhs, &mut ir_rhs, signal_map, signals);
+                self.dbg_apply_us
+                    .set(self.dbg_apply_us.get() + _at.elapsed().as_micros() as u64);
+                self.dbg_apply_n.set(self.dbg_apply_n.get() + 1);
+                self.dbg_apply_us
+                    .set(self.dbg_apply_us.get() + _at.elapsed().as_micros() as u64);
+                self.dbg_apply_n.set(self.dbg_apply_n.get() + 1);
                 let (lhs_line, lhs_col) = expr_location(lhs);
                 self.check_width_mismatch(&ir_lhs, &ir_rhs, signals, lhs_line, lhs_col);
                 check_signed_mismatch(lhs_sid, &ir_rhs, signals);
@@ -927,7 +935,11 @@ impl Elaborator {
                 }
                 let lhs_sid = lvalue_signal_id(&ir_lhs);
                 // Propagasi lebar konteks LHS (lihat arm BlockingAssign).
+                let _at = std::time::Instant::now();
                 self.apply_lhs_context_width(&ir_lhs, rhs, &mut ir_rhs, signal_map, signals);
+                self.dbg_apply_us
+                    .set(self.dbg_apply_us.get() + _at.elapsed().as_micros() as u64);
+                self.dbg_apply_n.set(self.dbg_apply_n.get() + 1);
                 let (lhs_line, lhs_col) = expr_location(lhs);
                 self.check_width_mismatch(&ir_lhs, &ir_rhs, signals, lhs_line, lhs_col);
                 check_signed_mismatch(lhs_sid, &ir_rhs, signals);
@@ -1133,7 +1145,11 @@ impl Elaborator {
             Stmt::StmtAssign { lhs, rhs } => {
                 let ir_lhs = self.elaborate_lvalue(lhs, signal_map, signals)?;
                 let mut ir_rhs = self.elaborate_expr(rhs, signal_map, signals)?;
+                let _at = std::time::Instant::now();
                 self.apply_lhs_context_width(&ir_lhs, rhs, &mut ir_rhs, signal_map, signals);
+                self.dbg_apply_us
+                    .set(self.dbg_apply_us.get() + _at.elapsed().as_micros() as u64);
+                self.dbg_apply_n.set(self.dbg_apply_n.get() + 1);
                 Ok(IrStmt::BlockingAssign {
                     lhs: ir_lhs,
                     rhs: ir_rhs,

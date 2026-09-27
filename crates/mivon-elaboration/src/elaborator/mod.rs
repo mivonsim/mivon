@@ -581,6 +581,10 @@ pub struct Elaborator {
     /// Statistik optimasi untuk cache pipeline (db.md "6. optimize/",
     /// "10. expression/") — const fold, loop unroll, evaluasi ekspresi.
     pub opt_stats: super::util::OptStats,
+    // Debug per-module (DBG_ELAB_STEP): kumulatif assign-context-width utk
+    // mengidentifikasi bottleneck 221ms/assign rv_core_ibex (10 assign ~2s).
+    pub(crate) dbg_apply_us: std::cell::Cell<u64>,
+    pub(crate) dbg_apply_n: std::cell::Cell<u64>,
     /// Cache nama DPI import dari design (dihitung SEKALI di constructor).
     /// Dipakai oleh is_dpi check di expr.rs/stmt.rs untuk menentukan apakah
     /// function tak dikenal harus di-degrade ke DPI stub. Tanpa cache ini,
@@ -900,6 +904,8 @@ impl Elaborator {
             cache_misses: 0,
             param_ir_cache: HashMap::new(),
             opt_stats: super::util::OptStats::default(),
+            dbg_apply_us: std::cell::Cell::new(0),
+            dbg_apply_n: std::cell::Cell::new(0),
             dpi_import_names,
             module_idx: HashMap::new(),
         }
@@ -3381,7 +3387,20 @@ impl Elaborator {
     ) -> Result<IrModule, SimError> {
         self.current_module = Some(module.name);
         let param_vals = self.resolve_param_values(module, &HashMap::new())?;
-        self.elaborate_module_with_params(module, known_modules, &param_vals)
+        let ir = self.elaborate_module_with_params(module, known_modules, &param_vals)?;
+        // Ringkasan assign-context-width per module (DBG_ELAB_STEP).
+        if std::env::var("DBG_ELAB_STEP").is_ok() && self.dbg_apply_n.get() > 0 {
+            eprintln!(
+                "[DBG-ASSIGN] {} assign_calls={} apply_us_total={} apply_ms={}",
+                module.name.as_str(),
+                self.dbg_apply_n.get(),
+                self.dbg_apply_us.get(),
+                self.dbg_apply_us.get().saturating_div(1000)
+            );
+            self.dbg_apply_us.set(0);
+            self.dbg_apply_n.set(0);
+        }
+        Ok(ir)
     }
 
     fn elaborate_module_with_params(

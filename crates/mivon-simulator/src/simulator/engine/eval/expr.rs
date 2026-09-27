@@ -338,14 +338,7 @@ impl SimulationEngine {
                 // array (1e9 bit/GB) utk mengambil elem_width bit (OOM).
                 let idx = key_val.to_u64() as usize;
                 let start = idx * elem_width;
-                let mut bits = Vec::with_capacity(*elem_width);
-                for i in 0..*elem_width {
-                    bits.push(self.state.read_signal_bit(*sig_id, start + i));
-                }
-                Ok(LogicVec {
-                    width: *elem_width,
-                    bits,
-                })
+                Ok(self.state.read_signal_slice(*sig_id, start, *elem_width))
             }
             IrExpr::Concat(exprs) => {
                 // String concat (`{s1, s2}` / `{"a", s}`) mempertahankan urutan
