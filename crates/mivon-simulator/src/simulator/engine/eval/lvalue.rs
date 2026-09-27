@@ -382,6 +382,17 @@ impl SimulationEngine {
                     return Ok(());
                 }
                 let mut existing = self.state.read_signal(*sig_id).clone();
+                // DEBUG Bug-1 (array 1-bit unpacked miscalc elem_width) —
+                // DBG_ARRIDX=1: tampilkan dimensi & elem_width runtime.
+                if std::env::var("DBG_ARRIDX").is_ok() {
+                    if let Some(si) = self.design.top.signals.get(*sig_id) {
+                        eprintln!(
+                            "[ARRIDX] {} idx={} ew_lval={} sig.width={} sig.elem_width={} array_depth={} dims={:?}",
+                            si.name.as_str(), idx, elem_width, si.width, si.elem_width,
+                            si.array_depth, si.array_dims
+                        );
+                    }
+                }
                 if needed > existing.width && !is_dynamic {
                     let sig_name = self
                         .design

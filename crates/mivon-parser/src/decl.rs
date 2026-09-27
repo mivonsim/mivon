@@ -656,25 +656,58 @@ impl Parser {
                                     _ => (None, None, Some(sz)),
                                 }
                             } else {
-                                let ver = self.parse_range()?;
-                                let ar = if self.peek() == &Token::LBrack {
-                                    let er = self.parse_range()?;
-                                    er.as_ref().and_then(|er| {
-                                        if let (Ok(m), Ok(l)) =
-                                            (const_eval_simple(&er.msb), const_eval_simple(&er.lsb))
-                                        {
-                                            Some(Range {
-                                                msb: m as usize,
-                                                lsb: l as usize,
-                                            })
+                                // `[msb:lsb]` SETELAH nama TANPA packed-range =
+                                // UNPACKED ARRAY (SV: packed hanya sebelum nama).
+                                // Fix Bug-1: `logic f5 [0:N-1]` kini array 0..N-1
+                                // (bukan packed 128-bit) → elemen 1-bit index ok.
+                                let er = self.parse_range()?;
+                                match er {
+                                    Some(er) => {
+                                        if let (Ok(m), Ok(l)) = (
+                                            const_eval_simple(&er.msb),
+                                            const_eval_simple(&er.lsb),
+                                        ) {
+                                            (
+                                                None,
+                                                Some(Range {
+                                                    msb: m as usize,
+                                                    lsb: l as usize,
+                                                }),
+                                                None,
+                                            )
                                         } else {
-                                            None
+                                            // Range dgn bound param — size-expr
+                                            // |msb-lsb|+1 (ternary utk arah).
+                                            let span = |a: &Expr, b: &Expr| Expr::BinaryOp {
+                                                op: BinaryOp::Sub,
+                                                lhs: Box::new(a.clone()),
+                                                rhs: Box::new(b.clone()),
+                                            };
+                                            let plus_one = |e: Expr| Expr::BinaryOp {
+                                                op: BinaryOp::Add,
+                                                lhs: Box::new(e),
+                                                rhs: Box::new(Expr::Value(Value::Decimal(1))),
+                                            };
+                                            let sz_expr = Some(Expr::TernaryOp {
+                                                cond: Box::new(Expr::BinaryOp {
+                                                    op: BinaryOp::Ge,
+                                                    lhs: Box::new(er.msb.clone()),
+                                                    rhs: Box::new(er.lsb.clone()),
+                                                }),
+                                                true_expr: Box::new(plus_one(span(
+                                                    &er.msb,
+                                                    &er.lsb,
+                                                ))),
+                                                false_expr: Box::new(plus_one(span(
+                                                    &er.lsb,
+                                                    &er.msb,
+                                                ))),
+                                            });
+                                            (None, None, sz_expr)
                                         }
-                                    })
-                                } else {
-                                    None
-                                };
-                                (ver, ar, None)
+                                    }
+                                    None => (None, None, None),
+                                }
                             }
                         } else {
                             (None, None, None)
