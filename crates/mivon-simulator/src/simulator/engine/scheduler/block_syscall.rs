@@ -94,13 +94,33 @@ impl SimulationEngine {
                     "$readmemh requires at least a filename argument",
                 )
             })?;
-            let file_str = if let IrExpr::String(s) = file {
-                s.clone()
-            } else {
-                return Err(self.diag_error(
-                    DiagCode::DpiError,
-                    "$readmemh first argument must be a string (filename)",
-                ));
+            let file_str = match file {
+                IrExpr::String(s) => s.clone(),
+                // Bug-2: filename via VARIABEL string (`string f; $readmemh(f,m)`).
+                IrExpr::Signal(sid, _) => {
+                    let ok = self
+                        .design
+                        .top
+                        .signals
+                        .get(*sid)
+                        .map(|si| si.is_string)
+                        .unwrap_or(false);
+                    if ok {
+                        let lv = self.state.read_signal(*sid);
+                        crate::simulator::util::logicvec_to_string(lv)
+                    } else {
+                        return Err(self.diag_error(
+                            DiagCode::DpiError,
+                            "$readmemh first argument must be a string (filename)",
+                        ));
+                    }
+                }
+                _ => {
+                    return Err(self.diag_error(
+                        DiagCode::DpiError,
+                        "$readmemh first argument must be a string (filename)",
+                    ));
+                }
             };
             let sig_id = ir_args
                 .get(1)
@@ -139,13 +159,32 @@ impl SimulationEngine {
                     "$readmemb requires at least a filename argument",
                 )
             })?;
-            let file_str = if let IrExpr::String(s) = file {
-                s.clone()
-            } else {
-                return Err(self.diag_error(
-                    DiagCode::DpiError,
-                    "$readmemb first argument must be a string (filename)",
-                ));
+            let file_str = match file {
+                IrExpr::String(s) => s.clone(),
+                IrExpr::Signal(sid, _) => {
+                    let ok = self
+                        .design
+                        .top
+                        .signals
+                        .get(*sid)
+                        .map(|si| si.is_string)
+                        .unwrap_or(false);
+                    if ok {
+                        let lv = self.state.read_signal(*sid);
+                        crate::simulator::util::logicvec_to_string(lv)
+                    } else {
+                        return Err(self.diag_error(
+                            DiagCode::DpiError,
+                            "$readmemb first argument must be a string (filename)",
+                        ));
+                    }
+                }
+                _ => {
+                    return Err(self.diag_error(
+                        DiagCode::DpiError,
+                        "$readmemb first argument must be a string (filename)",
+                    ));
+                }
             };
             let sig_id = ir_args
                 .get(1)
