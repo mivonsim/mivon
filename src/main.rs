@@ -2673,10 +2673,9 @@ fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), SimError> {
         debugger.run()?;
     }
 
-    // ── Post-simulation output ──
-    // Flush runtime diagnostics (warnings) SEBELUM "Simulation completed" —
-    // warning runtime (waktu t0..) harus tampil dulu, bukan muncul setelah
-    // hasil (urutan menyesatkan + user menganggap ada log stanol).
+    // Flush runtime diagnostics (warnings) SEGERA setelah sim selesai —
+    // SEBELUM semua output hasil (coverage/completed/VCD) sehingga baris
+    // akhir log murni hasil sim, tanpa warning menyusul.
     emit_diags(&debugger.engine.flush_diagnostics());
 
     if !cli.quiet {
@@ -4020,8 +4019,8 @@ fn run_fast(
         debugger.run()?;
     }
 
-    // Flush runtime diagnostics (warnings, etc.) SEBELUM "Simulation completed"
-    // — warning runtime tampil sebelum hasil sim (urutan benar).
+    // Flush runtime diagnostics (warnings) SEGERA setelah sim — SEBELUM
+    // output hasil (coverage/completed/VCD): baris akhir murni hasil sim.
     emit_diags(&debugger.engine.flush_diagnostics());
 
     if !cli.quiet {

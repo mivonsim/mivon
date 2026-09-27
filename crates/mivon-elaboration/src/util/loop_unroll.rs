@@ -142,7 +142,12 @@ where
     let mut guard = 0usize;
     loop {
         guard += 1;
-        if guard > 4096 {
+        // Batas unroll TURUN (4096 → 256): loop lebih besar dijalankan
+        // RUNTIME di engine (LoopFor) — unroll 2000+ stmt memperbesar
+        // IR (OpenTitan 3GB) & memperlambat elab/sim (bench: elab demo
+        // 3 modul 789ms utk ITER=2000; runtime loop jauh lebih murah).
+        // 256 iterasi sudah menutupi pola real (generate/unroll kecil).
+        if guard > 256 {
             return Ok(None);
         }
         let keep = match cmp_op {
