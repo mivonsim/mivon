@@ -1036,7 +1036,7 @@ impl SimulationEngine {
             // Anti-RSS-akumulasi arena glibc pada mesin kecil: trim free pages
             // periodik (overhead <ms, hanya saat arena punya sisa besar).
             #[cfg(all(target_os = "linux", not(target_env = "musl")))]
-            if self.current_delta.is_multiple_of(200_000) {
+            if self.current_delta.is_multiple_of(60_000) {
                 unsafe { libc::malloc_trim(0) };
             }
 

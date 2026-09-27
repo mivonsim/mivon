@@ -576,6 +576,18 @@ fn trim_heap() {
     }
 }
 
+/// Tune glibc allocator: alokasi ≥ 64KB langsung via mmap (bukan heap arena)
+/// sehingga saat di-free pages KEMBALI ke OS — mengurangi high-water RSS &
+/// swap pada sim design besar (OpenTitan arena +1.6GB dr kurva monitoring).
+/// M_MMAP_THRESHOLD default 128KB terlalu besar utk transient array besar.
+pub fn tune_heap_allocator() {
+    #[cfg(all(target_os = "linux", not(target_env = "musl")))]
+    unsafe {
+        libc::mallopt(libc::M_MMAP_THRESHOLD, 64 * 1024);
+        libc::mallopt(libc::M_TRIM_THRESHOLD, 1024 * 1024);
+    }
+}
+
 /// Statistik memori IR hasil elaborasi — dipakai diagnosis OOM (MIVON_MEM_STATS=1):
 /// jumlah module/signal/bit flatten + hier_signal_map + RSS saat ini. Ringan
 /// (iterasi signal refs), aman dipanggil sebelum simulasi.
@@ -655,6 +667,9 @@ fn ir_stmt_count(body: &[mivon_ir::IrStmt]) -> usize {
 
 /// Body utama program (dijalankan di thread dengan stack besar oleh `main`).
 fn real_main() {
+    // Tune glibc allocator SEJAK AWAL — mmap utk alok besar (RSS balik ke OS
+    // saat free) & trim threshold 1MB (anti-high-water arena design besar).
+    tune_heap_allocator();
     let mut cli = Cli::parse();
 
     // ── Config file TOML (configs/*.toml) ──
