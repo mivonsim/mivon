@@ -2048,7 +2048,7 @@ fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), SimError> {
         bl_print_cat("Penghubung DPI", dpi_errs, &dpi_diags, 10);
         println!();
 
-        let any_errors = has_elab_errors || recovered;
+        let any_errors = has_elab_errors;
         if any_errors {
             println!("Simulasi: TIDAK SIAP");
             println!("Simulasi dibatalkan.");
@@ -2062,7 +2062,7 @@ fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), SimError> {
             )));
         } else if recovered {
             println!("Simulasi: TIDAK SIAP (mode analisis)");
-            println!("Top-level design tidak bisa ditentukan secara unik — simulasi & VCD dinonaktifkan.");
+            println!("Top-level design tidak bisa ditentukan secara unik — beri `--top <module>` untuk simulasi (VCD & simulasi dinonaktifkan bila tanpa --top).");
         } else {
             println!("Simulasi: SIAP");
         }
@@ -3452,7 +3452,6 @@ fn run_fast(
             || sem_errs > 0
             || hier_errs > 0
             || has_elab_errors
-            || recovered
             || dpi_errs > 0;
         if any_ready && !cli.force_sim {
             println!("Simulasi: TIDAK SIAP");
