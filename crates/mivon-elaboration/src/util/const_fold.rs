@@ -43,6 +43,14 @@ pub fn try_fold_const_at_width(
     if ctx == 0 {
         return None;
     }
+    // Konstanta selebar LHS RAKSASA (array memori flatten / ctx 45M-1e9 bit):
+    // `LogicVec::from_u64(val, ctx)` materialisasi penuh → puncak heap elab
+    // (heaptrack AetherX: 134M/3 calls via apply_lhs_context_width). Fold
+    // hanya optimisasi — di-skip: ekspresi tetap, engine menangani lebar saat
+    // runtime (lazy part).
+    if ctx >= mivon_core::LogicVec::LAZY_ZERO_THRESHOLD {
+        return None;
+    }
     let val = const_eval_with_params(expr, params).ok()?;
     // Literal >64-bit: const_eval i64 memotong bit tinggi — jangan fold
     // (wide_fuzz seed=11).

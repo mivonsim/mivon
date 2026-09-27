@@ -1033,6 +1033,13 @@ impl SimulationEngine {
             // ── Zero-deallocation: reset cycle arena (O(1) — bump pointer reset) ──
             self.sim_arena.reset_cycle();
 
+            // Anti-RSS-akumulasi arena glibc pada mesin kecil: trim free pages
+            // periodik (overhead <ms, hanya saat arena punya sisa besar).
+            #[cfg(all(target_os = "linux", not(target_env = "musl")))]
+            if self.current_delta.is_multiple_of(200_000) {
+                unsafe { libc::malloc_trim(0) };
+            }
+
             // ── Preponed region: initial snapshot for edge detection ──
             // Updated every delta cycle for correct edge detection (Sched-04 fix).
             // Sinyal ultra-lebar di-snapshot LAZY (tanpa materialisasi) —

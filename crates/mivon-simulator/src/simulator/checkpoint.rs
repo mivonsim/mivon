@@ -558,9 +558,14 @@ impl SimCheckpoint {
 // ─── SimulationEngine save/restore methods ───
 
 impl crate::simulator::engine::SimulationEngine {
-    /// Save simulation state to a checkpoint file.
-    /// Captures: signal states, RNG, process map, UVM data, coverage, signal history.
-    pub fn save_checkpoint(&self, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    /// Kumpulkan state runtime → `SimCheckpoint` (TANPA IO). Dasar
+    /// `save_checkpoint` dan snapshot Direct RTL CPU (`mivon-emu::cpu::rtl`).
+    /// Menangkap: sinyal, waktu, RNG, process map, UVM data, coverage,
+    /// signal history.
+    /// Snapshot seluruh state engine ke `SimCheckpoint` (blok field besar —
+    /// dibiarkan via let-and-return demi keterbacaan field list).
+    #[allow(clippy::let_and_return)]
+    pub fn checkpoint(&self) -> SimCheckpoint {
         // Collect state from SimulationState
         let signals = self.state.signals.clone();
         let next_signals = self.state.next_signals.clone();
@@ -613,15 +618,23 @@ impl crate::simulator::engine::SimulationEngine {
             signal_history_max,
         };
 
-        checkpoint.save_to_file(path)?;
+        checkpoint
+    }
+
+    /// Save simulation state to a checkpoint file (wrapper [`Self::checkpoint`]).
+    pub fn save_checkpoint(&self, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+        self.checkpoint().save_to_file(path)?;
         Ok(())
     }
 
-    /// Restore simulation state from a checkpoint file.
-    /// Design (IrDesign) must match — no cross-checking is performed.
-    pub fn load_checkpoint(&mut self, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
-        let checkpoint = SimCheckpoint::load_from_file(path)?;
-
+    /// Restore dari `SimCheckpoint` (TANPA IO) — dasar `load_checkpoint` dan
+    /// restore snapshot Direct RTL CPU (`mivon-emu`). Design (IrDesign) harus
+    /// sama — tanpa cross-check. Antrean runtime yang TIDAK ikut checkpoint
+    /// (event queue, NBA pending, wait/event control, fork) di-reset bersih.
+    pub fn restore_checkpoint(
+        &mut self,
+        checkpoint: SimCheckpoint,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         // Restore signal state
         if checkpoint.signals.len() == self.state.signals.len() {
             self.state.signals = checkpoint.signals;
@@ -677,6 +690,39 @@ impl crate::simulator::engine::SimulationEngine {
         self.pending_ast_events.clear();
         self.pending_wait_orders.clear();
         Ok(())
+    }
+
+    /// Restore simulation state from a checkpoint file.
+    /// Design (IrDesign) must match — no cross-checking is performed.
+    pub fn load_checkpoint(&mut self, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+        let checkpoint = SimCheckpoint::load_from_file(path)?;
+        self.restore_checkpoint(checkpoint)
+    }
+
+    /// `true` bila ada pekerjaan TERTUNDA di engine: event queue terjadwal,
+    /// NBA pending, wait/event control, strobe/fork — bukan kondisi idle
+    /// antar langkah. Checkpoint TIDAK memuat antrean tsb, jadi snapshot/
+    /// restore engine hanya aman saat fungsi ini `false` (pemakaian:
+    /// `mivon-emu::cpu::rtl` menolak snapshot di tengah transaksi).
+    pub fn has_pending_runtime_events(&self) -> bool {
+        !self.events.iter().all(Vec::is_empty)
+            || !self.foreign_events.is_empty()
+            || !self.nba_pending.is_empty()
+            || !self.reactive_events.is_empty()
+            || !self.strobe_events.is_empty()
+            || !self.fstrobe_events.is_empty()
+            || !self.pending_waits.is_empty()
+            || !self.pending_events.is_empty()
+            || !self.pending_ast_events.is_empty()
+            || !self.pending_wait_orders.is_empty()
+            || !self.pending_wait_forks.is_empty()
+            || !self.fork_groups.is_empty()
+            || self.loop_continuation.is_some()
+            || self.ast_loop_continuation.is_some()
+            || !self.post_loop_tail.is_empty()
+            || self.task_suspended
+            || self.disable_pending.is_some()
+            || self.pending_await_target.is_some()
     }
 }
 

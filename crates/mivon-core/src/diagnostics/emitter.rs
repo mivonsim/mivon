@@ -30,6 +30,7 @@ use std::io::{self, Write};
 use super::diagnostic::{DiagLevel, DiagSink, Diagnostic};
 
 /// Box drawing characters
+#[allow(dead_code)] // BOX_V dipakai SourceSnippet::format (diagnostic.rs); tidak lagi di emitter
 const BOX_V: &str = "│";
 const BOX_TR: &str = "┌─";
 #[allow(dead_code)]
@@ -126,38 +127,11 @@ impl TerminalEmitter {
         writeln!(self.writer, "{}", RESET)?;
         writeln!(self.writer)?;
 
-        // Source snippet
+        // Source snippet — render kanonik (SourceSnippet::format), box cyan +
+        // caret merah. Logika caret/label terpusat di satu tempat (Satu-satunya
+        // sumber col:line); jangan render ulang di sini.
         if let Some(snippet) = &diag.source_snippet {
-            // Header: ┌─ file:line:col
-            writeln!(
-                self.writer,
-                "   {}{}{} {}:{}:{}",
-                CYAN, BOX_TR, RESET, snippet.file, snippet.line, snippet.col
-            )?;
-            writeln!(self.writer, "   {}{} {}", CYAN, BOX_V, RESET)?;
-
-            // Baris source
-            writeln!(
-                self.writer,
-                "{:>4} {} {}",
-                snippet.line, BOX_V, snippet.source_line
-            )?;
-
-            // Pointer — caret harus mendarat di kolom `snippet.col` yang sama
-            // dengan baris source (prefix `{:>4} | ` = 7 char): (col-1) spasi.
-            write!(self.writer, "     {} ", BOX_V)?;
-            for _ in 1..snippet.col {
-                write!(self.writer, " ")?;
-            }
-            write!(self.writer, "{}", RED)?;
-            write!(self.writer, "^")?;
-
-            if let Some(label) = &snippet.pointer_label {
-                write!(self.writer, " ─── {0}{1}", label, RESET)?;
-            } else {
-                write!(self.writer, "{}", RESET)?;
-            }
-            writeln!(self.writer)?;
+            write!(self.writer, "{}", snippet.format(true))?;
             writeln!(self.writer)?;
         }
 
@@ -264,24 +238,9 @@ impl TerminalEmitter {
         )?;
         writeln!(self.writer)?;
 
-        // Source snippet
+        // Source snippet — render kanonik (SourceSnippet::format) tanpa warna.
         if let Some(snippet) = &diag.source_snippet {
-            writeln!(
-                self.writer,
-                "   {} {}:{}:{}",
-                BOX_TR, snippet.file, snippet.line, snippet.col
-            )?;
-            writeln!(self.writer, "   {}", BOX_V)?;
-            writeln!(self.writer, "{:>4} | {}", snippet.line, snippet.source_line)?;
-            write!(self.writer, "     | ")?;
-            for _ in 1..snippet.col {
-                write!(self.writer, " ")?;
-            }
-            write!(self.writer, "^")?;
-            if let Some(label) = &snippet.pointer_label {
-                write!(self.writer, " ── {}", label)?;
-            }
-            writeln!(self.writer)?;
+            write!(self.writer, "{}", snippet.format(false))?;
             writeln!(self.writer)?;
         }
 
@@ -584,24 +543,10 @@ pub fn format_diagnostic(diag: &Diagnostic) -> String {
         diag.level, diag.code, diag.message
     ));
 
-    // Source snippet
+    // Source snippet — render kanonik (SourceSnippet::format) tanpa warna.
+    // Logika caret terpusat di satu tempat; jangan render ulang di sini.
     if let Some(snippet) = &diag.source_snippet {
-        output.push_str(&format!(
-            "   {} {}:{}:{}\n",
-            BOX_TR, snippet.file, snippet.line, snippet.col
-        ));
-        output.push_str(&format!("   {}\n", BOX_V));
-        output.push_str(&format!("{:>4} | {}\n", snippet.line, snippet.source_line));
-        output.push_str("     | ");
-        for _ in 1..snippet.col {
-            output.push(' ');
-        }
-        output.push('^');
-        if let Some(label) = &snippet.pointer_label {
-            output.push_str(&format!(" {} {}", "──", label));
-        }
-        output.push('\n');
-        output.push('\n');
+        output.push_str(&snippet.format(false));
     }
 
     // Spans — fallback bila tidak ada source snippet (span membawa file_id;
@@ -776,11 +721,11 @@ mod tests {
         assert!(output.contains("Initialize signal"));
     }
 
-    /// Col 1-based: caret harus mendarat tepat di kolom yang dilaporkan
-    /// (regresi: `saturating_sub(1)` lama geser caret 1 kolom ke kiri).
-    /// Baris caret prefix `"     | "` = 7 char, sama dengan baris source
-    /// `{:>4} | ` → col caret = pos '^' - 7 + 1.
-    fn caret_col_of(source_line: &str, snippet: &SourceSnippet) -> usize {
+    /// Col 1-based: caret harus mendarat tepat di kolom yang dilaporkan.
+    /// `format_diagnostic` mendelegasikan ke `SourceSnippet::format` yang
+    /// memakai prefix `"     │ "` = 7 CHARACTER (│ multi-byte UTF-8), jadi
+    /// ukur berbasis karakter, bukan byte (regresi: byte `-7` akan salah).
+    fn caret_col_of(snippet: &SourceSnippet) -> usize {
         let d = Diagnostic::error(DiagCode::UnexpectedToken, "test")
             .with_source_snippet(snippet.clone());
         let out = format_diagnostic(&d);
@@ -788,25 +733,24 @@ mod tests {
             .lines()
             .find(|l| l.contains('^'))
             .expect("harus ada baris caret");
-        let _ = source_line;
-        caret_line.find('^').unwrap() - 7 + 1
+        caret_line.chars().take_while(|&c| c != '^').count() - 7 + 1
     }
 
     #[test]
     fn caret_aligns_col_on_multidigit_line() {
         let snippet = SourceSnippet::new("t.sv", 3, 20, "  assign y = bad + ;");
-        assert_eq!(caret_col_of("  assign y = bad + ;", &snippet), 20);
+        assert_eq!(caret_col_of(&snippet), 20);
     }
 
     #[test]
     fn caret_aligns_col_one() {
         let snippet = SourceSnippet::new("t.sv", 3, 1, "module x;");
-        assert_eq!(caret_col_of("module x;", &snippet), 1);
+        assert_eq!(caret_col_of(&snippet), 1);
     }
 
     #[test]
     fn caret_aligns_col_two_digit_source() {
         let snippet = SourceSnippet::new("t.sv", 12, 6, "      y = a;");
-        assert_eq!(caret_col_of("      y = a;", &snippet), 6);
+        assert_eq!(caret_col_of(&snippet), 6);
     }
 }

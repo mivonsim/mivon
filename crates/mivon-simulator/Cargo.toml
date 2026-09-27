@@ -10,6 +10,9 @@ mivon-ast = { path = "../mivon-ast" }
 mivon-ir = { path = "../mivon-ir" }
 mivon-parser = { path = "../mivon-parser" }
 mivon-elaboration = { path = "../mivon-elaboration" }
+# malloc_trim(0) periodik di loop sim — lepas arena free pages ke OS
+# (anti-RSS-accumulasi mesin kecil).
+libc = "0.2"
 mivon-compiler = { path = "../mivon-compiler" }
 
 # Parallel eval (rayon), FST waveform (wavefst), RNG ($urandom dkk)

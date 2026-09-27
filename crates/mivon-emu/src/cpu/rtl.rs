@@ -24,12 +24,17 @@ use std::collections::VecDeque;
 
 use mivon_ir::{IrDesign, LogicVec, SignalId};
 use mivon_simulator::debugger::Debugger;
+use mivon_simulator::simulator::checkpoint::SimCheckpoint;
 use mivon_simulator::simulator::{
     DebugMode, EventKind, EventRegion, RegionEvent, SimulationEngine, SimulationLimit, StepMode,
 };
 
 use super::{CpuCore, CpuFault, CpuStep, Isa};
 use crate::mem::MemoryPort;
+
+/// Versi blob snapshot Direct RTL CPU (`CpuCore::snapshot`) — bump bila
+/// layout field berubah.
+const RTL_SNAPSHOT_VER: u8 = 1;
 
 /// Batas cycle RTL per `step()` (guard: CPU macet / reset tidak selesai).
 const MAX_CYCLES_PER_STEP: u64 = 10_000;
@@ -620,6 +625,95 @@ impl CpuCore for RtlLinkedCpu {
     /// Byte yang ditulis CPU RTL ke Direct RTL Device (UART console).
     fn console_output(&self) -> &[u8] {
         &self.console_out
+    }
+
+    // ── Snapshot (EMULATOR.md §14, R5) ──
+    // State engine RTL (sinyal/waktu/RNG/process map/UVM/coverage/signal
+    // history via `SimCheckpoint` SIM-17/18) + state bus & host-side CPU.
+    // Antrean runtime (event/NBA/wait/fork) TIDAK ikut checkpoint → snapshot
+    // DITOLAK bila engine belum idle; restore memakai `restore_checkpoint`
+    // yang me-reset antrean tsb bersih.
+
+    fn snapshot(&self) -> Result<Vec<u8>, String> {
+        if self.dbg.engine.has_pending_runtime_events() {
+            return Err(
+                "rtl-cpu snapshot: engine memiliki event tertunda (hanya aman saat idle \
+                 antar langkah)"
+                    .into(),
+            );
+        }
+        let mut w = crate::snapshot::Writer::new();
+        w.u8(RTL_SNAPSHOT_VER);
+        w.u64(self.cycle);
+        w.u64(self.last_pc);
+        w.u64(self.served_addr);
+        w.u8(self.served as u8);
+        w.u8(self.served_instr as u8);
+        w.u8(self.served_mmio as u8);
+        w.u8(self.rx_wr_high as u8);
+        w.blob(&self.console_out);
+        w.u32(self.pending_rx.len() as u32);
+        for b in &self.pending_rx {
+            w.u8(*b);
+        }
+        let mut eng = Vec::new();
+        self.dbg
+            .engine
+            .checkpoint()
+            .serialize(&mut eng)
+            .map_err(|e| format!("rtl-cpu snapshot: engine checkpoint: {}", e))?;
+        w.blob(&eng);
+        Ok(w.buf)
+    }
+
+    fn restore(&mut self, blob: &[u8]) -> Result<(), String> {
+        let mut r = crate::snapshot::Reader::new(blob);
+        let ver = r.u8()?;
+        if ver != RTL_SNAPSHOT_VER {
+            return Err(format!(
+                "rtl-cpu snapshot: versi {} (didukung {})",
+                ver, RTL_SNAPSHOT_VER
+            ));
+        }
+        // Baca SEMUA dulu → state hanya berubah bila blob lengkap.
+        let cycle = r.u64()?;
+        let last_pc = r.u64()?;
+        let served_addr = r.u64()?;
+        let served = r.u8()? != 0;
+        let served_instr = r.u8()? != 0;
+        let served_mmio = r.u8()? != 0;
+        let rx_wr_high = r.u8()? != 0;
+        let console_out = r.blob()?.to_vec();
+        let n = r.u32()? as usize;
+        if n > 65_536 {
+            return Err(format!(
+                "rtl-cpu snapshot: pending_rx {} byte tidak wajar",
+                n
+            ));
+        }
+        let mut pending_rx = VecDeque::with_capacity(n);
+        for _ in 0..n {
+            pending_rx.push_back(r.u8()?);
+        }
+        let eng = r.blob()?.to_vec();
+        let cp = SimCheckpoint::deserialize(&mut eng.as_slice())
+            .map_err(|e| format!("rtl-cpu snapshot: engine checkpoint: {}", e))?;
+        // Engine dulu (gagal = state bus/host belum disentuh), lalu state CPU.
+        // Target engine harus dari design YANG SAMA (signals count dicek).
+        self.dbg
+            .engine
+            .restore_checkpoint(cp)
+            .map_err(|e| format!("rtl-cpu snapshot: engine restore: {}", e))?;
+        self.cycle = cycle;
+        self.last_pc = last_pc;
+        self.served_addr = served_addr;
+        self.served = served;
+        self.served_instr = served_instr;
+        self.served_mmio = served_mmio;
+        self.rx_wr_high = rx_wr_high;
+        self.console_out = console_out;
+        self.pending_rx = pending_rx;
+        Ok(())
     }
 }
 

@@ -15,6 +15,7 @@ pub mod udp;
 pub mod util;
 use crate::lexer::*;
 use mivon_ast::*;
+use mivon_core::diagnostics::cumulative_to_file_line;
 use mivon_core::diagnostics::diagnostic::{
     DiagCode, DiagLevel, DiagSpan, Diagnostic, FixItHint, SourceSnippet,
 };
@@ -248,9 +249,10 @@ impl Parser {
             }
         }
         let file_relative = if let Some(bp) = best_pos {
-            // Value-aware: token fisik C di bawah directive (pos=redirect P,
-            // nilai=V=line file utk baris P+1) → rel = V + (C - P) - 1.
-            best_val + (cumulative_line - bp) - 1
+            // Value-aware (formula bersama di mivon_core, jangan duplikasi):
+            // token fisik C di bawah directive (baris fisik bp, nilai V = line
+            // file untuk baris bp+1) → rel = V + (C - bp) - 1.
+            cumulative_to_file_line(bp, best_val, cumulative_line)
         } else if self.line_base > 0 && cumulative_line > self.line_base {
             // Fallback: pakai line_base (FastLexer path)
             cumulative_line - self.line_base

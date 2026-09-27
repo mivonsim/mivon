@@ -1132,6 +1132,7 @@ impl SourceSnippet {
     /// Format source snippet dalam gaya Rust.
     pub fn format(&self, use_color: bool) -> String {
         let cyan = if use_color { "\x1b[36m" } else { "" };
+        let red = if use_color { "\x1b[31m" } else { "" };
         let reset = if use_color { "\x1b[0m" } else { "" };
 
         let mut out = String::new();
@@ -1145,17 +1146,26 @@ impl SourceSnippet {
         // Baris source
         out.push_str(&format!("{:>4} │ {}\n", self.line, self.source_line));
 
-        // Pointer
+        // Pointer — caret harus mendarat di kolom `self.col` (1-based).
+        // Prefix `"     │ "` = 7 char, jadi butuh (col-1) spasi agar baris
+        // caret sejajar dengan baris source `{:>4} │ ` (prefix 7 char).
+        // JANGAN pakai saturating_sub(1): itu = col-2 spasi → caret meleset
+        // 1 kolom ke kiri (renderer lain di emitter.rs sudah pakai col-1).
+        // Ini SATU-SATUNYA renderer snippet; emitter lain (rich/plain/
+        // format_diagnostic/emit_rich_plain) mendelegasikan ke sini supaya
+        // logika caret + label tidak terduplikasi 5× (sumber drift col:line).
         out.push_str("     │ ");
-        for _ in 1..self.col.saturating_sub(1) {
+        for _ in 1..self.col {
             out.push(' ');
         }
+        out.push_str(red);
         out.push('^');
 
         // Label pointer
         if let Some(label) = &self.pointer_label {
-            out.push_str(&format!(" {0}── {1}{2}", "─", label, reset));
+            out.push_str(&format!(" ─── {label}"));
         }
+        out.push_str(reset);
         out.push('\n');
 
         out
@@ -1631,6 +1641,44 @@ mod tests {
         assert!(formatted.contains("axi.read(addr);"));
         // The pointer should be at the right column
         assert!(formatted.contains("^"));
+    }
+
+    /// Caret harus mendarat tepat di kolom `snippet.col` pada baris source.
+    /// Ukur berbasis KARAKTER (prefix `"     │ "` = 7 char; `│` multi-byte di
+    /// UTF-8 sehingga `- 7` berbasis byte akan salah).
+    /// Regresi: `for _ in 1..col.saturating_sub(1)` = col-2 spasi membuat
+    /// caret meleset 1 kolom ke kiri (tetap lolos `contains("^")`).
+    fn caret_col_of(snippet: &SourceSnippet) -> usize {
+        let formatted = snippet.format(false);
+        let caret_line = formatted
+            .lines()
+            .find(|l| l.contains('^'))
+            .expect("harus ada baris caret");
+        caret_line.chars().take_while(|&c| c != '^').count() - 7 + 1
+    }
+
+    #[test]
+    fn test_source_snippet_caret_col_one() {
+        assert_eq!(
+            caret_col_of(&SourceSnippet::new("t.sv", 3, 1, "module x;")),
+            1
+        );
+    }
+
+    #[test]
+    fn test_source_snippet_caret_col_multi_digit() {
+        assert_eq!(
+            caret_col_of(&SourceSnippet::new("t.sv", 3, 20, "  assign y = bad + ;")),
+            20
+        );
+    }
+
+    #[test]
+    fn test_source_snippet_caret_col_deep() {
+        assert_eq!(
+            caret_col_of(&SourceSnippet::new("t.sv", 42, 17, "    axi.read(addr);")),
+            17
+        );
     }
 
     #[test]

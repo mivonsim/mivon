@@ -874,6 +874,11 @@ pub struct Cli {
     #[arg(short = 'f', long = "filelist")]
     pub filelist: Option<String>,
 
+    /// Jangan tulis VCD waveform (hemat I/O & waktu sim desain besar —
+    /// VCD top_earlgrey 57k sinyal × delta tertulis ke disk).
+    #[arg(long = "no-vcd")]
+    pub no_vcd: bool,
+
     /// Load configuration from TOML file (configs/*.toml).
     /// Default: configs/compiler.toml bila ada.
     #[arg(long = "config")]

@@ -620,12 +620,37 @@ fn print_ir_mem_stats(ir: &mivon_ir::IrDesign) {
         ir.hier_signal_map.len(),
         rss / 1024
     );
+    // Komposisi IR: jumlah proses & statement — biang ukuran body IR.
+    let (n_proc, n_stmt) = {
+        let mut p = 0usize;
+        let mut s = 0usize;
+        for m in ir.modules.values() {
+            for proc in &m.processes {
+                p += 1;
+                s += ir_stmt_count(match proc {
+                    mivon_ir::Process::Combinational { body, .. } => body,
+                    mivon_ir::Process::CombReactive { body, .. } => body,
+                    mivon_ir::Process::Sequential { body, .. } => body,
+                    mivon_ir::Process::Initial { body, .. } => body,
+                    mivon_ir::Process::Final { body, .. } => body,
+                    mivon_ir::Process::AlwaysWithDelay { body, .. } => body,
+                });
+            }
+        }
+        (p, s)
+    };
+    eprintln!("[MEM]   processes={} stmts={}", n_proc, n_stmt);
     for (mname, sname, w, ad, dims) in &top {
         eprintln!(
             "[MEM]   top {}.{} width={} array_depth={} array_dims={:?}",
             mname, sname, w, ad, dims
         );
     }
+}
+
+/// Jumlah statement IR pada body proses (top-level) — indikator ukuran body.
+fn ir_stmt_count(body: &[mivon_ir::IrStmt]) -> usize {
+    body.len()
 }
 
 /// Body utama program (dijalankan di thread dengan stack besar oleh `main`).
@@ -2538,6 +2563,10 @@ fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), SimError> {
             format!("VCD creation failed: {}", e),
         )
     })?;
+    // --no-vcd: nonaktifkan dump (write_raw & dump_all di-guard `enabled`).
+    if cli.no_vcd {
+        vcd.enabled = false;
+    }
     if cli.waveform_stream {
         vcd.stream_flush_interval = 1;
         if !cli.quiet {
@@ -3880,6 +3909,10 @@ fn run_fast(
             format!("VCD creation failed: {}", e),
         )
     })?;
+    // --no-vcd: nonaktifkan dump (write_raw & dump_all di-guard `enabled`).
+    if cli.no_vcd {
+        vcd.enabled = false;
+    }
     if cli.waveform_stream {
         vcd.stream_flush_interval = 1;
         if !cli.quiet {

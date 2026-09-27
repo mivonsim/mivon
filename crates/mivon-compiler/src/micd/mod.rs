@@ -1013,6 +1013,28 @@ impl MicdDatabase {
         let Some(layer) = self.cache_layer.as_mut() else {
             return;
         };
+        // IR dengan array memori flatten raksasa (AetherX cache 1e9 bit dll):
+        // bincode::serialize penuh = buffer 1GB+ sementara + 1GB cache —
+        // menyumbang puncak heap (heaptrack: ~1.2GiB x2 utk 41 modul) & OOM
+        // mesin kecil. Warm run mengelaborasi ulang (AetherX elab ~2.4s) —
+        // jauh lebih murah daripada serialize+restore 1GB. Skip cache bila
+        // estimasi total bit sinyal besar. IR normal tetap di-cache.
+        let est_bits: u64 = ir
+            .modules
+            .values()
+            .flat_map(|m| m.signals.iter())
+            .map(|s| s.width as u64)
+            .sum();
+        const IR_CACHE_SKIP_BITS: u64 = 8 * 1024 * 1024; // 8M bit sinyal → skip
+        if est_bits > IR_CACHE_SKIP_BITS {
+            if std::env::var("MIVON_DEBUG_MICD").is_ok() {
+                eprintln!(
+                    "[MICD] skip IR cache: est_bits={} (> {}) — serialize 1GB+ utk desain besar",
+                    est_bits, IR_CACHE_SKIP_BITS
+                );
+            }
+            return;
+        }
         let Ok(bytes) = crate::micd::ast::serialize_ir(ir) else {
             return;
         };

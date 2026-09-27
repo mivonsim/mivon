@@ -9,6 +9,53 @@ pub struct SignalDelay {
     pub fall: u64, // fall delay in ps
 }
 
+/// Cache chunk size: 1024 bit per chunk (`[u64;32]`, 32 cell/u64 × 2-bit).
+const WIDE_CHUNK_BITS: usize = 1024;
+
+/// Penyimpanan packed utk array memori raksasa (miliaran bit). Tiap cell
+/// 2-bit: X=0, Zero=1, One=2, Z=3. Hanya chunk yang pernah ditulis yang
+/// dimuat — jumlah memori proporsional dengan akses nyata, bukan lebar.
+#[derive(Debug, Clone, Default)]
+pub struct WideMem {
+    chunks: HashMap<usize, [u64; 32]>,
+}
+
+impl WideMem {
+    #[inline]
+    pub fn get(&self, bit: usize) -> mivon_core::LogicVal {
+        let (ci, cell) = (bit / WIDE_CHUNK_BITS, (bit % WIDE_CHUNK_BITS) / 32);
+        let off = ((bit % WIDE_CHUNK_BITS) % 32) * 2;
+        let v = ((self.chunks.get(&ci).map(|c| c[cell]).unwrap_or(0)) >> off) & 0b11;
+        match v {
+            0 => mivon_core::LogicVal::X,
+            1 => mivon_core::LogicVal::Zero,
+            2 => mivon_core::LogicVal::One,
+            _ => mivon_core::LogicVal::Z,
+        }
+    }
+
+    #[inline]
+    pub fn set(&mut self, bit: usize, val: mivon_core::LogicVal) {
+        let (ci, cell) = (bit / WIDE_CHUNK_BITS, (bit % WIDE_CHUNK_BITS) / 32);
+        let off = ((bit % WIDE_CHUNK_BITS) % 32) * 2;
+        let cellv = match val {
+            mivon_core::LogicVal::X => 0,
+            mivon_core::LogicVal::Zero => 1,
+            mivon_core::LogicVal::One => 2,
+            mivon_core::LogicVal::Z => 3,
+        };
+        let c = self.chunks.entry(ci).or_insert([0u64; 32]);
+        c[cell] = (c[cell] & !(0b11u64 << off)) | (cellv << off);
+    }
+
+    /// Tulis blok: `val` mengisi `start..start+len` (sebanyak len tersedia).
+    pub fn write_block(&mut self, start: usize, val: &mivon_core::LogicVec) {
+        for (i, b) in val.bits.iter().enumerate() {
+            self.set(start + i, *b);
+        }
+    }
+}
+
 pub struct SimulationState {
     pub signals: Vec<LogicVec>,
     pub next_signals: Vec<LogicVec>,
@@ -19,6 +66,12 @@ pub struct SimulationState {
     /// array memory flat (cache 65536x32x512 = 1.07e9 entry) dibaca tiap
     /// delta tapi TIDAK perlu di-clone penuh → puncak RSS turun drastis.
     pub large_dirty: Vec<bool>,
+    /// Penyimpanan PACKED untuk nilai array memori raksasa yang telah
+    /// ditulis: chunk 1024-bit (`[u64;32]`, 2-bit/cell: X=0 Zero=1 One=2 Z=3).
+    /// 1e9 bit → ~120MB fisik (vs 1GB `Vec<LogicVal>`) — hanya chunk yang
+    /// benar-benar tersentuh oleh tulis. Sinyal ≥ LAZY_ZERO_THRESHOLD memakai
+    /// `wide_mem`; `signals`/`next_signals` tetap lazy (X) sbg base.
+    pub wide_mem: HashMap<SignalId, WideMem>,
     /// LANG-08: net alias redirect — member SignalId → canonical SignalId.
     /// `alias a = b;` → net_aliases {b: a} (canonical = id terkecil); read/
     /// write member di-direct ke canonical sehingga semua anggota satu
@@ -94,6 +147,7 @@ impl SimulationState {
             next_signals,
             changed,
             large_dirty,
+            wide_mem: HashMap::new(),
             alias_redirect,
             time: 0,
             objects,
@@ -236,10 +290,20 @@ impl SimulationState {
     /// utk array memori flat ultra-lebar (RMW penuh = clone 1e9 bit/OOM).
     /// `start..end` (end exclusive) diisi dari `val.bits` (sebanyak len);
     /// out-of-bounds mengikuti LRM (tulis dibatasi panjang, OOB diabaikan).
+    /// Sinyal ultra-lebar dialihkan ke penyimpanan PACKED (`wide_mem`) —
+    /// `next_signals` tetap lazy (X) sbg base.
     #[inline]
     pub fn write_signal_slice(&mut self, id: SignalId, start: usize, end: usize, val: &LogicVec) {
         let id = self.alias_redirect.get(id).copied().unwrap_or(id);
         if id >= self.next_signals.len() {
+            return;
+        }
+        if self.next_signals[id].width >= mivon_core::LogicVec::LAZY_ZERO_THRESHOLD {
+            // Array raksasa: tulis packed — base lazy tak diubah.
+            let wm = self.wide_mem.entry(id).or_default();
+            wm.write_block(start, val);
+            self.large_dirty[id] = true;
+            self.changed[id] = true;
             return;
         }
         if self.large_dirty.len() > id
@@ -260,6 +324,46 @@ impl SimulationState {
             target.bits[start..end].copy_from_slice(&val.bits[..end - start]);
         }
         self.changed[id] = true;
+    }
+
+    /// Baca satu bit sinyal — utk sinyal ultra-lebar dibaca dari penyimpanan
+    /// packed (`wide_mem`) bila telah ditulis; else X default (lazy base).
+    #[inline]
+    pub fn read_signal_bit(&self, id: SignalId, bit: usize) -> mivon_core::LogicVal {
+        let id = self.alias_redirect.get(id).copied().unwrap_or(id);
+        if let Some(wm) = self.wide_mem.get(&id) {
+            return wm.get(bit);
+        }
+        let lv = if self.changed[id] {
+            &self.next_signals[id]
+        } else {
+            &self.signals[id]
+        };
+        lv.bits.get(bit).copied().unwrap_or(mivon_core::LogicVal::X)
+    }
+
+    /// Baca blok sinyal tanpа materialisasi penuh — utk sinyal ultra-lebar
+    /// dibaca слиce dari `wide_mem`; sinyal reguler dibaca via borrow.
+    #[inline]
+    pub fn read_signal_slice(&self, id: SignalId, start: usize, width: usize) -> LogicVec {
+        let id = self.alias_redirect.get(id).copied().unwrap_or(id);
+        if let Some(wm) = self.wide_mem.get(&id) {
+            let mut bits = Vec::with_capacity(width);
+            for i in 0..width {
+                bits.push(wm.get(start + i));
+            }
+            return LogicVec { width, bits };
+        }
+        let lv = if self.changed[id] {
+            &self.next_signals[id]
+        } else {
+            &self.signals[id]
+        };
+        let mut bits = Vec::with_capacity(width);
+        for i in 0..width {
+            bits.push(lv.bits.get(start + i).copied().unwrap_or(mivon_core::LogicVal::X));
+        }
+        LogicVec { width, bits }
     }
 
     pub fn commit_changes(&mut self) -> Vec<(SignalId, LogicVec, LogicVec)> {
@@ -314,5 +418,76 @@ impl SimulationState {
 
     fn find_signal_id(&self, name: &str, module: &IrModule) -> Option<SignalId> {
         module.signals.iter().position(|s| s.name.as_str() == name)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_wide_mem_roundtrip() {
+        let mut wm = WideMem::default();
+        assert_eq!(wm.get(0), mivon_core::LogicVal::X); // belum ditulis = X
+        wm.set(0, mivon_core::LogicVal::One);
+        wm.set(31, mivon_core::LogicVal::One);
+        wm.set(32, mivon_core::LogicVal::Zero);
+        wm.set(63, mivon_core::LogicVal::Z);
+        assert_eq!(wm.get(0), mivon_core::LogicVal::One);
+        assert_eq!(wm.get(30), mivon_core::LogicVal::X); // tetangga tetap X
+        assert_eq!(wm.get(31), mivon_core::LogicVal::One);
+        assert_eq!(wm.get(32), mivon_core::LogicVal::Zero);
+        assert_eq!(wm.get(33), mivon_core::LogicVal::X);
+        assert_eq!(wm.get(63), mivon_core::LogicVal::Z);
+    }
+
+    #[test]
+    fn test_wide_mem_chunk_boundary() {
+        // Boundary chunk 2048 — bit di ujung & awal chunk berikutnya.
+        let mut wm = WideMem::default();
+        wm.set(WIDE_CHUNK_BITS - 1, mivon_core::LogicVal::One);
+        wm.set(WIDE_CHUNK_BITS, mivon_core::LogicVal::One);
+        wm.set(WIDE_CHUNK_BITS + 2047, mivon_core::LogicVal::Zero);
+        assert_eq!(wm.get(WIDE_CHUNK_BITS - 1), mivon_core::LogicVal::One);
+        assert_eq!(wm.get(WIDE_CHUNK_BITS), mivon_core::LogicVal::One);
+        assert_eq!(wm.get(WIDE_CHUNK_BITS + 1), mivon_core::LogicVal::X);
+        assert_eq!(wm.get(WIDE_CHUNK_BITS + 2047), mivon_core::LogicVal::Zero);
+        assert_eq!(wm.get(WIDE_CHUNK_BITS + 2048), mivon_core::LogicVal::X);
+    }
+
+    #[test]
+    fn test_wide_mem_write_block_and_read_signal_slice() {
+        let w = WIDE_CHUNK_BITS * 2 + 1024;
+        let mut st = SimulationState {
+            signals: vec![LogicVec::new(w)],
+            next_signals: vec![LogicVec::new(w)],
+            changed: vec![false],
+            large_dirty: vec![false],
+            wide_mem: HashMap::new(),
+            alias_redirect: vec![0],
+            time: 0,
+            objects: vec![],
+            next_obj_id: 1,
+            dummy_signal: LogicVec::new(1),
+            timeformat: crate::simulator::types::TimeFormat::default(),
+        };
+        // Tulis blok 64 bit di offset 100.
+        let mut v = LogicVec::new(64);
+        for (i, b) in v.bits.iter_mut().enumerate() {
+            *b = if i % 2 == 0 {
+                mivon_core::LogicVal::One
+            } else {
+                mivon_core::LogicVal::Zero
+            };
+        }
+        st.write_signal_slice(0, 100, 100 + 64, &v);
+        // Baca slice dan bit.
+        let got = st.read_signal_slice(0, 100, 64);
+        assert_eq!(got, v);
+        assert_eq!(st.read_signal_bit(0, 100), mivon_core::LogicVal::One);
+        assert_eq!(st.read_signal_bit(0, 101), mivon_core::LogicVal::Zero);
+        assert_eq!(st.read_signal_bit(0, 99), mivon_core::LogicVal::X); // di luar blok
+        // Chunk yg belum ditulis = X.
+        assert_eq!(st.read_signal_bit(0, WIDE_CHUNK_BITS), mivon_core::LogicVal::X);
     }
 }

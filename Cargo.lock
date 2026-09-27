@@ -2288,6 +2288,7 @@ dependencies = [
  "cranelift-jit",
  "cranelift-module",
  "flate2",
+ "libc",
  "libloading",
  "mivon-ast",
  "mivon-compiler",

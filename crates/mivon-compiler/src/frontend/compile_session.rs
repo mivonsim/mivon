@@ -1799,14 +1799,26 @@ impl CompileSession {
         // borrow).
         db.store_elaborate_ir(ir);
         // Update precompiled modules dengan IR bytes (tool downstream bisa
-        // skip elaborasi bila IR tersedia di precompiled).
+        // skip elaborasi bila IR tersedia di precompiled). IR raksasa
+        // (array memori 1e9 bit) TIDAK di-serialize: bytes ~1GB lalu di-clone
+        // PER MODULE → 29GB live arena (heaptrack) & OOM mesin kecil.
         if let Some(pdb) = db.precompiled_db.as_mut() {
-            let ir_bytes = bincode::serialize(ir).unwrap_or_default();
+            let ir_bytes = if ir_est_bits_large(ir) {
+                Vec::new()
+            } else {
+                bincode::serialize(ir).unwrap_or_default()
+            };
             for module in pdb.modules.values_mut() {
                 if !module.ir_bytes.is_empty() || module.error_count == 0 {
-                    module.ir_bytes = ir_bytes.clone();
-                    module.checksum = module.compute_checksum();
-                    pdb.dirty = true;
+                    if ir_bytes.is_empty() {
+                        // IR raksasa: tandai kosong (tool re-elaborate).
+                        module.ir_bytes = Vec::new();
+                        pdb.dirty = true;
+                    } else {
+                        module.ir_bytes = ir_bytes.clone();
+                        module.checksum = module.compute_checksum();
+                        pdb.dirty = true;
+                    }
                 }
             }
         }
@@ -2193,8 +2205,13 @@ impl CompileSession {
         // Store module cache back for next incremental compile
         self.cached_elab_modules = elaborator.take_cache();
 
-        // Cache IR design for access after compile
-        self.cached_ir_design = Some(ir_design.clone());
+        // Cache IR design for access after compile. IR dengan array memori
+        // flatten raksasa (est bit sinyal besar) TIDAK di-cache — clone
+        // penuh = 183MB+ duplikat heap (heaptrack: IrDesign/IrModule clone
+        // peak elab); store_elaborate_ir juga skip utk kasus yang sama.
+        if !ir_est_bits_large(&ir_design) {
+            self.cached_ir_design = Some(ir_design.clone());
+        }
 
         Ok((design, ir_design, index_len))
     }
@@ -2233,8 +2250,13 @@ impl CompileSession {
         // Store module cache back for next incremental compile
         self.cached_elab_modules = elaborator.take_cache();
 
-        // Cache IR design for access after compile
-        self.cached_ir_design = Some(ir_design.clone());
+        // Cache IR design for access after compile. IR dengan array memori
+        // flatten raksasa (est bit sinyal besar) TIDAK di-cache — clone
+        // penuh = 183MB+ duplikat heap (heaptrack: IrDesign/IrModule clone
+        // peak elab); store_elaborate_ir juga skip utk kasus yang sama.
+        if !ir_est_bits_large(&ir_design) {
+            self.cached_ir_design = Some(ir_design.clone());
+        }
 
         Ok((design, ir_design, index_len))
     }
@@ -2368,6 +2390,22 @@ fn discover_names_in_source(
             _ => {}
         }
     }
+}
+
+/// IR dengan estimasi bit sinyal raksasa (array memori flatten — cache
+/// AetherX 1.5e9 bit). Dipakai SKIP cache IR penuh (clone untuk
+/// `cached_ir_design` & serialize `store_elaborate_ir`): clone/serialize
+/// 1GB+ utk desain besar = duplikat heap & OOM di mesin kecil; warm run
+/// mengelaborasi ulang jauh lebih murah. IR normal tetap di-cache.
+fn ir_est_bits_large(ir: &mivon_ir::IrDesign) -> bool {
+    const IR_CACHE_SKIP_BITS: u64 = 8 * 1024 * 1024; // 8M bit sinyal
+    let est_bits: u64 = ir
+        .modules
+        .values()
+        .flat_map(|m| m.signals.iter())
+        .map(|s| s.width as u64)
+        .sum();
+    est_bits > IR_CACHE_SKIP_BITS
 }
 
 #[cfg(test)]

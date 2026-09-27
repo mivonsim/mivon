@@ -334,13 +334,13 @@ impl SimulationEngine {
                     }
                     return Ok(LogicVec::new(*elem_width));
                 }
-                let array_val = self.state.read_signal(*sig_id).clone();
+                // Baca slot LANGSUNG dari state (borrow) — jangan clone seluruh
+                // array (1e9 bit/GB) utk mengambil elem_width bit (OOM).
                 let idx = key_val.to_u64() as usize;
                 let start = idx * elem_width;
-                let end = start + elem_width - 1;
                 let mut bits = Vec::with_capacity(*elem_width);
-                for i in start..=end {
-                    bits.push(array_val.bits.get(i).copied().unwrap_or(LogicVal::X));
+                for i in 0..*elem_width {
+                    bits.push(self.state.read_signal_bit(*sig_id, start + i));
                 }
                 Ok(LogicVec {
                     width: *elem_width,
