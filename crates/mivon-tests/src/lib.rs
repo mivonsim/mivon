@@ -47,5 +47,9 @@ mod parallel_emi_tests;
 /// Regresi implicit sampling covergroup (§19.8) — gap sesi fuzz 2026-09-28.
 mod covergroup_tests;
 
+/// Regresi fallback serial DAG-parallel utk ekspresi tak didukung
+/// (evaluator parallel jatuh ke X senyap — fuzzer sim bug_0508).
+mod dag_serial_fallback_tests;
+
 // Guided structure-aware fuzzer (metode test fuzzing "tidak buta"):
 // grammar-aware generation + coverage feedback + differential oracle.

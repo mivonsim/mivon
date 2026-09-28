@@ -2060,7 +2060,6 @@ impl SimulationEngine {
         };
         // Evaluate each layer sequentially (processes WITHIN a layer are parallel)
         // Pass process_body_cache langsung — zero clone per cycle
-        let body_cache = &self.process_body_cache;
         for layer in &dag_layers {
             let layer_pids: Vec<&usize> = layer.iter().filter(|pid| pids.contains(pid)).collect();
             if layer_pids.is_empty() {
@@ -2082,18 +2081,41 @@ impl SimulationEngine {
                 .collect();
 
             // Evaluate all processes in this layer in parallel via rayon
-            // Each worker gets its own signal clone + body reference
-            let writes = crate::scheduler::sim_dag::evaluate_bodies_parallel(
-                &layer_pids,
-                body_cache,
-                &signal_snapshot,
-                &self.design.top.signals,
-            )?;
+            // Each worker gets its own signal clone + body reference.
+            // Pinjam body_cache DALAM scope sempiti — ekspresi tak didukung
+            // jalur parallel (FuncCall/DpiCall/SysFunc/...) mengembalikan Err
+            // dan harus di-fallback ke serial (&mut self) tanpa konflik borrow.
+            let eval_result = {
+                let body_cache = &self.process_body_cache;
+                crate::scheduler::sim_dag::evaluate_bodies_parallel(
+                    &layer_pids,
+                    body_cache,
+                    &signal_snapshot,
+                    &self.design.top.signals,
+                )
+            };
 
-            // Apply writes back to state (no borrow conflicts, all data cloned)
-            for (sig_id, val) in writes {
-                if sig_id < self.state.signals.len() {
-                    self.state.write_signal(sig_id, val);
+            match eval_result {
+                Ok(writes) => {
+                    // Apply writes back to state (no borrow conflicts, all data cloned)
+                    for (sig_id, val) in writes {
+                        if sig_id < self.state.signals.len() {
+                            self.state.write_signal(sig_id, val);
+                        }
+                    }
+                }
+                Err(_) => {
+                    // Fallback SERIAL per layer: ekspresi body ada yang tak
+                    // didukung jalur parallel (evaluator parallel punya arm
+                    // terbatas — FuncCall/DpiCall/SysFunc dst. dulu jatuh ke
+                    // `X` senyap → differential DAG vs default, fuzzer
+                    // bug_0508). Serial = jalur referensi (benar > cepat).
+                    for &&pid in layer_pids.iter() {
+                        self.process_event(
+                            EventKind::EvalProcess(pid),
+                            self.current_time as usize,
+                        )?;
+                    }
                 }
             }
         }

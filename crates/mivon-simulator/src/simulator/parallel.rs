@@ -445,7 +445,58 @@ pub fn evaluate_expr_simple(
                 bits: result,
             })
         }
-        _ => Ok(LogicVec::new(32)),
+        // Variant TANPA arm di jalur parallel: FuncCall / DpiCall / SysFunc /
+        // NewCall / Dist / UdpLookup / VifBinding / VirtualIfaceAccess /
+        // InsideRange (di luar konteks Inside). Dulu jatuh ke `new(32)` =
+        // 32-bit X SENYAP → differential DAG vs default (fuzzer bug_0508:
+        // `assign mem = {pkg::jalr(...), pkg::lui(...)}` → default 0 (DPI
+        // stub return 0) vs dag X×64). Kini Err → pemanggil core.rs
+        // fallback-kan layer itu ke evaluasi SERIAL (benar > cepat).
+        other => Err(mivon_core::error::SimError::with_diag(
+            mivon_core::diagnostics::DiagCode::InternalError,
+            format!(
+                "ekspresi tak didukung jalur parallel (fallback serial): {}",
+                variant_name(other)
+            ),
+        )),
+    }
+}
+
+/// Nama variant IrExpr utk pesan error fallback (debug singkat).
+fn variant_name(e: &IrExpr) -> &'static str {
+    match e {
+        IrExpr::Const(_) => "Const",
+        IrExpr::FillLit(_) => "FillLit",
+        IrExpr::Signal(..) => "Signal",
+        IrExpr::RangeSelect(..) => "RangeSelect",
+        IrExpr::BitSelect(..) => "BitSelect",
+        IrExpr::ExprRangeSelect(..) => "ExprRangeSelect",
+        IrExpr::ExprBitSelect(..) => "ExprBitSelect",
+        IrExpr::ExprPartSelect(..) => "ExprPartSelect",
+        IrExpr::ArrayIndex { .. } => "ArrayIndex",
+        IrExpr::Concat(_) => "Concat",
+        IrExpr::Replicate(..) => "Replicate",
+        IrExpr::UnaryOp(..) => "UnaryOp",
+        IrExpr::BinaryOp(..) => "BinaryOp",
+        IrExpr::Cond(..) => "Cond",
+        IrExpr::Signed(_) => "Signed",
+        IrExpr::String(_) => "String",
+        IrExpr::SysFunc { .. } => "SysFunc",
+        IrExpr::NewCall { .. } => "NewCall",
+        IrExpr::MethodCall { .. } => "MethodCall",
+        IrExpr::MemberAccess { .. } => "MemberAccess",
+        IrExpr::DpiCall { .. } => "DpiCall",
+        IrExpr::HierRef(_) => "HierRef",
+        IrExpr::Inside { .. } => "Inside",
+        IrExpr::InsideRange { .. } => "InsideRange",
+        IrExpr::Cast { .. } => "Cast",
+        IrExpr::StreamingConcat { .. } => "StreamingConcat",
+        IrExpr::Dist { .. } => "Dist",
+        IrExpr::UdpLookup { .. } => "UdpLookup",
+        IrExpr::FuncCall { .. } => "FuncCall",
+        IrExpr::VifBinding { .. } => "VifBinding",
+        IrExpr::VirtualIfaceAccess { .. } => "VirtualIfaceAccess",
+        IrExpr::This => "This",
     }
 }
 
