@@ -87,6 +87,16 @@ pub fn run(args: &CovArgs) -> Result<(), SimError> {
         "fsm",
         format!("{} signals, {} states", fsm_signals, fsm_states),
     );
+    // Covergroup (VERIF-28) — dulu tak pernah tampil padahal datanya ada
+    // di engine/CoverageDatabase (bug: report tampak lengkap, covergroup
+    // kosong senyap).
+    let cg_points = stats.get("covergroup_points").copied().unwrap_or(0.0) as u64;
+    let cg_covered = stats.get("covergroup_covered").copied().unwrap_or(0.0) as u64;
+    let cg_pct = stats.get("covergroup_percent").copied().unwrap_or(0.0);
+    kv(
+        "covergroup",
+        format!("{}/{} ({:.1}%)", cg_covered, cg_points, cg_pct),
+    );
 
     // ── coverage.json ──
     if args.json {
@@ -101,6 +111,7 @@ pub fn run(args: &CovArgs) -> Result<(), SimError> {
                 "branch": { "total": branch_total, "covered": branch_covered, "percent": branch_pct },
                 "toggle": { "signals": toggle_signals, "transitions": toggle_transitions },
                 "fsm": { "signals": fsm_signals, "states": fsm_states },
+                "covergroup": { "points": cg_points, "covered": cg_covered, "percent": cg_pct },
             }
         });
         let json = serde_json::to_string_pretty(&obj).map_err(|e| {

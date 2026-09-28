@@ -718,6 +718,47 @@ impl SimulationEngine {
         stats.insert("fsm_signals".to_string(), fsm_signals);
         stats.insert("fsm_states".to_string(), fsm_states);
 
+        // Covergroup coverage (VERIF-28) — dulu HILANG dari ringkasan meski
+        // datanya terkumpul (cover_total/cover_hits) dan tersimpan di
+        // CoverageDatabase — `mcov` tak pernah menampilkan covergroup
+        // (bug menyamar: coverage report tampak lengkap padahal kosong utk
+        // covergroup). Key mengikuti pola merge_from_engine: `cg.cp` ATAU
+        // per-instance `cg.i<id>.cp`.
+        let mut cg_points = 0u64;
+        let mut cg_covered = 0u64;
+        for cg in &self.design.covergroups {
+            for item in cg
+                .coverpoints
+                .iter()
+                .map(|c| c.name)
+                .chain(cg.crosses.iter().map(|c| c.name))
+            {
+                cg_points += 1;
+                let full = format!("{}.{}", cg.name, item);
+                let prefix = format!("{}.", cg.name);
+                let suffix = format!(".{}", item);
+                let hit = self.cover_hits.iter().any(|(k, v)| {
+                    let s = k.as_str();
+                    *v > 0
+                        && (s == full.as_str()
+                            || (s.starts_with(prefix.as_str()) && s.ends_with(suffix.as_str())))
+                });
+                if hit {
+                    cg_covered += 1;
+                }
+            }
+        }
+        stats.insert("covergroup_points".to_string(), cg_points as f64);
+        stats.insert("covergroup_covered".to_string(), cg_covered as f64);
+        stats.insert(
+            "covergroup_percent".to_string(),
+            if cg_points > 0 {
+                (cg_covered as f64 / cg_points as f64) * 100.0
+            } else {
+                0.0
+            },
+        );
+
         // VERIF-32: sequence coverage (concurrent assertion sequences).
         let seq_attempts: u64 = self.sequence_coverage.values().map(|s| s.attempts).sum();
         let seq_matched: u64 = self.sequence_coverage.values().map(|s| s.matched).sum();
