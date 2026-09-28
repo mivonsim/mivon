@@ -345,12 +345,31 @@ impl<'r> Mutator<'r> {
         let words = KEYWORD_LIST;
         let from = self.rng.pick(words);
         let to = self.rng.pick(words);
+        // Word-boundary utk token diawali char "wordish": dulu `find` polos →
+        // substring di tengah kata ikut terganti (`for` di `forever` jadi
+        // `$left`+`ever` = `$leftever`) → sampah tokenisasi yang tak
+        // merepresentasikan cacat sintaks nyata (noise roundtrip MV: output
+        // SV `$leftever;` E1002). Token non-word (mis. `#`) tetap bebas.
+        let wordish = |c: char| c.is_alphanumeric() || c == '_' || c == '$';
+        let needs_boundary = from.chars().next().map(wordish).unwrap_or(false);
         let mut out = String::with_capacity(source.len());
         let mut rest = source;
         while let Some(pos) = rest.find(from) {
-            out.push_str(&rest[..pos]);
-            out.push_str(to);
-            rest = &rest[pos + from.len()..];
+            let end = pos + from.len();
+            let boundary_ok = !needs_boundary || {
+                let before_ok = pos == 0 || !wordish(rest[..pos].chars().next_back().unwrap());
+                let after_ok = end >= rest.len() || !wordish(rest[end..].chars().next().unwrap());
+                before_ok && after_ok
+            };
+            if boundary_ok {
+                out.push_str(&rest[..pos]);
+                out.push_str(to);
+                rest = &rest[end..];
+            } else {
+                // Bukan kata utuh — pertahankan teks asli, lanjut setelahnya.
+                out.push_str(&rest[..end]);
+                rest = &rest[end..];
+            }
         }
         out.push_str(rest);
         out
@@ -598,6 +617,30 @@ impl<'r> Mutator<'r> {
             out
         } else {
             source.to_string()
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regresi: `replace_keyword` dulu pakai `find` polos — substring di
+    /// tengah kata ikut terganti (`for` di `forever` → `$left`+`ever` =
+    /// `$leftever`) → sampah tokenisasi (noise roundtrip MV: output SV
+    /// `$leftever;` E1002) yang tak merepresentasikan cacat sintaks nyata.
+    #[test]
+    fn replace_keyword_respects_word_boundary() {
+        for seed in 0..300u64 {
+            let mut rng = crate::Rng::new(seed);
+            let mut m = Mutator::new(&mut rng);
+            let out = m.replace_keyword("forever begin end");
+            // `forever` hanya bisa pecah bila substring `for`/`or`/`re`/`ver`
+            // diganti tanpa boundary — dengan boundary, kata utuh dipertahankan.
+            assert!(
+                out.contains("forever") || !out.contains("ver"),
+                "seed {seed}: kata pecah di tengah: {out}"
+            );
         }
     }
 }
