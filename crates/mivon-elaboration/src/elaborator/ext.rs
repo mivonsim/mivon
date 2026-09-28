@@ -19,7 +19,16 @@ use mivon_core::intern::Symbol;
 use mivon_ir::*;
 
 impl Elaborator {
-    /// Elaborate covergroup definitions from the top module.
+    /// Elaborate covergroup definitions — top module di-elaborate penuh;
+    /// covergroup di module LAIN dilewati dgn WARNING (transparan).
+    ///
+    /// Dulu tanpa catatan apa pun: covergroup DUT (ketika testbench jadi
+    /// top) tak pernah masuk `design.covergroups` → mcov senyap `0/0`
+    /// (bug menyamar: report tampak jalan, covergroup hilang diam-diam).
+    /// Resolve penuh utk module non-top tak bisa memakai `signal_map` top
+    /// (ident DUT tak ada di scope top → E2001 palsu, atau salah resolve ke
+    /// signal top bernama sama → nilai coverage salah senyap) — maka
+    /// dilewati dgn warning, bukan di-resolve paksa.
     pub(crate) fn elaborate_covergroups(
         &self,
         top_name: &str,
@@ -27,13 +36,35 @@ impl Elaborator {
         signals: &[SignalInfo],
     ) -> Result<Vec<IrCovergroup>, SimError> {
         let mut covergroups = Vec::new();
-        let top_module = if let Some(m) = self.design.modules.iter().find(|m| m.name == top_name) {
-            m
-        } else {
-            return Ok(covergroups);
-        };
-        for item in &top_module.items {
-            if let ModuleItem::Covergroup(cg) = item {
+        // Top module dulu (urutan laporan tetap stabil), lalu module lain
+        // (utk warning transparansi — lihat doc di atas).
+        let mut modules: Vec<&mivon_ast::Module> = Vec::new();
+        if let Some(m) = self.design.modules.iter().find(|m| m.name == top_name) {
+            modules.push(m);
+        }
+        modules.extend(
+            self.design
+                .modules
+                .iter()
+                .filter(|m| m.name != top_name),
+        );
+        for top_module in modules {
+            for item in &top_module.items {
+                if let ModuleItem::Covergroup(cg) = item {
+                    if top_module.name != top_name {
+                        self.elab_warn_at(
+                            mivon_core::diagnostics::DiagCode::NotImplemented,
+                            format!(
+                                "covergroup '{}' di module '{}' tidak dielaborate — saat ini \
+                                 coverage covergroup hanya utk top '{}' (tidak dihitung, BUKAN \
+                                 hilang senyap)",
+                                cg.name, top_module.name, top_name
+                            ),
+                            0,
+                            0,
+                        );
+                        continue;
+                    }
                 let mut ir_cps = Vec::new();
                 for cp in &cg.coverpoints {
                     let ir_expr = self.elaborate_expr(&cp.expr, signal_map, signals)?;
@@ -89,6 +120,7 @@ impl Elaborator {
                     weight: cg.weight.unwrap_or(1),
                     per_instance: cg.per_instance,
                 });
+            }
             }
         }
         Ok(covergroups)
