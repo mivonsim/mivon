@@ -44,6 +44,17 @@ pub fn run(args: &CovArgs) -> Result<(), SimError> {
         format!("{} ms", sim_start.elapsed().as_millis()),
     );
 
+    // Diagnostics runtime engine (illegal_bins hit, implicit sample gagal,
+    // unsupported system fn, ...) — dulu TIDAK pernah dirender di mcov
+    // (beda dgn msim) → warning coverage hilang senyap dari laporan.
+    let diags = engine.flush_diagnostics();
+    if !diags.is_empty() {
+        let mut emitter = mivon_core::diagnostics::TerminalEmitter::new();
+        for d in &diags {
+            let _ = emitter.emit(d);
+        }
+    }
+
     let stats = engine.coverage_stats();
 
     // Simpan ringkasan ke cache pipeline (db.md "19. coverage/") agar
