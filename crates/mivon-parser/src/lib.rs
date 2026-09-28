@@ -1445,7 +1445,23 @@ impl Parser {
             || !interfaces.is_empty()
             || !classes.is_empty()
             || !packages.is_empty();
-        if !has_real_constructs && !self.errors.is_empty() {
+        // Downgrade FRAGMENT hanya utk source yang memang TIDAK MENULIS konstruk
+        // top-level. File dgn `module`/`interface`/`class`/`package` tapi GAGAL
+        // parse (tak satupun masuk `modules` → terbungkus `__unit__`) adalah
+        // error NYATA: tanpa guard ini semua error-nya jadi
+        // `warning[Exxxx]: fragment: ...` — menyesatkan (file jelas punya
+        // module dilabeli "fragment", severity salah utk kode E*) dan gate
+        // kesiapan sim menghitung is_error saja → design gagal parse dianggap
+        // siap sim.
+        let source_writes_construct = self.source_lines.iter().any(|l| {
+            let t = l.trim_start();
+            ["module", "interface", "class", "package"].iter().any(|kw| {
+                t.strip_prefix(kw).map_or(false, |r| {
+                    r.starts_with(char::is_whitespace) || r.starts_with('#') || r.starts_with('(')
+                })
+            })
+        });
+        if !has_real_constructs && !source_writes_construct && !self.errors.is_empty() {
             for diag in self.errors.iter_mut() {
                 if diag.level == DiagLevel::Error {
                     diag.level = DiagLevel::Warning;
