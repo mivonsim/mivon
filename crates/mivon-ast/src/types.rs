@@ -562,10 +562,24 @@ pub struct GatePrimitive {
     pub delay: Option<Delay>,
 }
 
+/// Clocking event covergroup `@(posedge clk)` — edge disimpan penuh
+/// (dulu dibuang parser → implicit sampling tak mungkin).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct CovergroupClocking {
+    /// true = `posedge`, false = `negedge` / tanpa edge (default posedge).
+    pub posedge: bool,
+    /// Signal event — `Expr` (biasanya `Expr::Ident`).
+    pub expr: Expr,
+}
+
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct CovergroupDecl {
     pub name: Symbol,
-    pub clocking_event: Option<Expr>,
+    /// Clocking event `@(posedge clk)` — utk IMPLICIT SAMPLING: sampel
+    /// otomatis tiap edge (IEEE 1800 §19.8). Dulu `Option<Expr>` dan edge
+    /// dibuang parser → tak pernah turun ke IR → covergroup `@event` tanpa
+    /// `sample()` eksplisit = 0 samples senyap (gap sesi 2026-09-28).
+    pub clocking_event: Option<CovergroupClocking>,
     pub coverpoints: Vec<CoverpointDef>,
     pub crosses: Vec<CrossDef>,
     /// VERIF-28: `type_option.weight = N` / `option.weight = N` — bobot

@@ -65,6 +65,13 @@ pub struct IrCovergroup {
     /// VERIF-28: `type_option.per_instance = 1` — coverage per-instance
     /// (default false = merge semua instance ke satu akumulator).
     pub per_instance: bool,
+    /// IMPLICIT SAMPLING (IEEE 1800 §19.8): signal clocking event
+    /// `@(posedge clk)` — engine sample otomatis tiap edge (None = hanya
+    /// `sample()` eksplisit). Dulu event tak turun ke IR → covergroup
+    /// `@event` tanpa sample() = 0 samples senyap.
+    pub event_signal: Option<SignalId>,
+    /// true = posedge, false = negedge.
+    pub event_posedge: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]

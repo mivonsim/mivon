@@ -13,7 +13,7 @@
 use std::collections::{HashMap, HashSet};
 
 use super::Elaborator;
-use mivon_ast::ModuleItem;
+use mivon_ast::{Expr, ModuleItem};
 use mivon_core::error::SimError;
 use mivon_core::intern::Symbol;
 use mivon_ir::*;
@@ -112,6 +112,37 @@ impl Elaborator {
                         coverpoints: c.coverpoints.clone(),
                     })
                     .collect();
+                // IMPLICIT SAMPLING (§19.8): turunkan clocking event ke
+                // SignalId — engine sample otomatis tiap edge.
+                let (event_signal, event_posedge) = match &cg.clocking_event {
+                    Some(ce) => {
+                        let sid = match &ce.expr {
+                            Expr::Ident { name, .. } => signal_map.get(name).copied(),
+                            other => {
+                                // Event non-Ident (mis. `@(posedge a[0])`) —
+                                // belum didukung; tanpa resolve, covergroup
+                                // jatuh ke sample() eksplisit saja (bukan
+                                // senyap-total: ada warning).
+                                let _ = other;
+                                None
+                            }
+                        };
+                        if sid.is_none() {
+                            self.elab_warn_at(
+                                mivon_core::diagnostics::DiagCode::NotImplemented,
+                                format!(
+                                    "covergroup '{}': clocking event tidak bisa di-resolve — \
+             implicit sampling (@edge) nonaktif; pakai sample() eksplisit",
+                                    cg.name
+                                ),
+                                0,
+                                0,
+                            );
+                        }
+                        (sid, ce.posedge)
+                    }
+                    None => (None, true),
+                };
                 covergroups.push(IrCovergroup {
                     name: cg.name,
                     coverpoints: ir_cps,
@@ -119,6 +150,8 @@ impl Elaborator {
                     // VERIF-28: type_option.weight default 1; per_instance default false.
                     weight: cg.weight.unwrap_or(1),
                     per_instance: cg.per_instance,
+                    event_signal,
+                    event_posedge,
                 });
             }
             }

@@ -800,6 +800,48 @@ impl SimulationEngine {
                 self.record_fsm_value(sig_id, &new_val);
             }
         }
+        // ── IMPLICIT SAMPLING (IEEE 1800 §19.8): covergroup `@(edge sig)`
+        // sample OTOMATIS tiap edge — tanpa ini covergroup tanpa `sample()`
+        // eksplisit = 0 samples senyap (gap sesi 2026-09-28). Snapshot =
+        // nilai awal time step → edge klasik (0→1) terdeteksi di sini.
+        // Lebar>1 tidak dianggap clock (edge 1-bit saja).
+        let mut fire: Vec<std::borrow::Cow<'_, str>> = Vec::new();
+        if let Some(old_vals) = self.coverage_snapshot.as_ref() {
+            for cg in &self.design.covergroups {
+                let Some(sig) = cg.event_signal else { continue };
+                if sig >= old_vals.len() {
+                    continue;
+                }
+                let old = &old_vals[sig];
+                let new = self.state.read_signal(sig);
+                if old.width != 1 || new.width != 1 {
+                    continue;
+                }
+                let is_one =
+                    |v: &mivon_ir::LogicVec| v.bits.first() == Some(&mivon_ir::LogicVal::One);
+                let is_zero =
+                    |v: &mivon_ir::LogicVec| v.bits.first() == Some(&mivon_ir::LogicVal::Zero);
+                let edge = if cg.event_posedge {
+                    !is_one(old) && is_one(new)
+                } else {
+                    !is_zero(old) && is_zero(new)
+                };
+                if edge {
+                    fire.push(std::borrow::Cow::Borrowed(cg.name.as_str()));
+                }
+            }
+        }
+        for name in fire {
+            // Gagal sample tak boleh menghentikan delta cycle — laporkan
+            // sebagai warning, bukan error (record_coverage dipanggil run()).
+            if let Err(e) = self.sample_covergroup(name.as_ref(), None) {
+                self.emit_warning(
+                    mivon_core::diagnostics::DiagCode::AssertionFailed,
+                    format!("implicit covergroup sample '{}': {}", name, e),
+                );
+            }
+        }
+
         // ── Trace sampling MID-SIMULATION (opt-in): snapshot sinyal top tiap
         // interval waktu — mivon-fuzz fingerprint mid-sim (bug transient yang
         // pulih sebelum akhir run terlihat; fingerprint nilai-final buta).

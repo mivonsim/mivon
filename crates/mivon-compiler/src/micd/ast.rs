@@ -8,7 +8,10 @@
 use mivon_ast::Design;
 
 /// Versi format serialisasi AST (increment bila skema AST berubah).
-pub const AST_FORMAT_VERSION: u64 = 3;
+/// Versi format serialisasi AST (increment bila skema AST berubah).
+/// Update 4: `CovergroupDecl.clocking_event` → `Option<CovergroupClocking>`
+/// (edge disimpan penuh utk implicit sampling §19.8).
+pub const AST_FORMAT_VERSION: u64 = 4;
 
 /// Serialisasi `Design` → bytes biner (bincode).
 pub fn serialize_design(design: &Design) -> Result<Vec<u8>, String> {
@@ -24,7 +27,9 @@ pub fn deserialize_design(bytes: &[u8]) -> Option<Design> {
 /// Versi format serialisasi IR hasil elaborasi (increment bila skema IR
 /// berubah — memisahkan skema AST dan IR agar perubahan satu tidak
 /// meng-invalidasi yang lain).
-pub const IR_FORMAT_VERSION: u64 = 2;
+/// Update 3: `IrCovergroup` + `event_signal`/`event_posedge` (implicit
+/// sampling covergroup §19.8).
+pub const IR_FORMAT_VERSION: u64 = 3;
 
 /// Serialisasi `IrDesign` → bytes biner (bincode). Dipakai menyimpan hasil
 /// elaborasi penuh ke cache `elaborate/` agar warm run dapat meng-restore IR

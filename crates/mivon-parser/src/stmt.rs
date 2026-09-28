@@ -515,15 +515,22 @@ impl Parser {
         }
     }
 
-    pub(crate) fn parse_clocking_event(&mut self) -> Result<Expr, SimError> {
+    pub(crate) fn parse_clocking_event(&mut self) -> Result<CovergroupClocking, SimError> {
         self.expect(Token::At)?;
         self.expect(Token::LParen)?;
-        if self.peek() == &Token::PosEdge || self.peek() == &Token::NegEdge {
+        // Edge disimpan penuh (dulu di-skip → implicit sampling `@event`
+        // tak mungkin). Tanpa edge → posedge (default praktis; `@(clk)`
+        // level-ambigu, di-sample sbg posedge).
+        let mut posedge = true;
+        if self.peek() == &Token::PosEdge {
             self.advance();
+        } else if self.peek() == &Token::NegEdge {
+            self.advance();
+            posedge = false;
         }
         let signal = self.parse_expr(0)?;
         self.expect(Token::RParen)?;
-        Ok(signal)
+        Ok(CovergroupClocking { posedge, expr: signal })
     }
 
     pub(crate) fn parse_wait_order(&mut self) -> Result<Stmt, SimError> {

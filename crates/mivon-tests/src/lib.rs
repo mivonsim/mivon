@@ -44,5 +44,8 @@ mod synth_phase5;
 #[cfg(test)]
 mod parallel_emi_tests;
 
+/// Regresi implicit sampling covergroup (§19.8) — gap sesi fuzz 2026-09-28.
+mod covergroup_tests;
+
 // Guided structure-aware fuzzer (metode test fuzzing "tidak buta"):
 // grammar-aware generation + coverage feedback + differential oracle.
