@@ -287,7 +287,13 @@ fn compile_in_thread(target: Target, source: &str) -> CaseResult {
 fn evaluate_lexer(source: &str, timeout_ms: u64) -> CaseResult {
     // Watchdog: lexer infinite loop pada input mutasi = kampanye macet
     // total (tanpa baris progres, CPU 100%) — lex tetap di thread besar.
-    run_with_watchdog(Target::Lexer, source, timeout_ms, "mivon-fuzz-lexer", lex_eval)
+    run_with_watchdog(
+        Target::Lexer,
+        source,
+        timeout_ms,
+        "mivon-fuzz-lexer",
+        lex_eval,
+    )
 }
 
 fn lex_eval(source: &str) -> CaseResult {
@@ -986,7 +992,13 @@ fn evaluate_cli(source: &str, timeout_ms: u64) -> CaseResult {
     // punya timing output — tidak di-double-run. Oracle O4 atas tool CLI.
     let is_static_tool = matches!(
         args.first().map(String::as_str),
-        Some("mfmt") | Some("mcheck") | Some("mlint") | Some("minspect")
+        Some("mfmt")
+            | Some("mcheck")
+            | Some("mlint")
+            | Some("minspect")
+            | Some("tbgen")
+            | Some("waiver")
+            | Some("cov")
     );
     if is_static_tool && outcome.kind == crate::runner::Kind::Ok && rng.chance(40) {
         let second = with_micd_isolated(|| crate::runner::run_args(&args, timeout_ms));
@@ -1998,20 +2010,79 @@ fn normalize_diff_line(line: &str) -> String {
 
 /// Argumen CLI untuk satu kasus fuzz: tool subcommand ATAU pipeline flags,
 /// atas satu file temp. RNG per-case (bukan global) → deterministik.
+/// Nama module/interface pertama di source — untuk arg `-m` tool yang tak
+/// menerima file positional (`mivon tbgen [OPTIONS]` membaca dari workspace,
+/// bukan FILES).
+fn first_module_name(source: &str) -> Option<String> {
+    for line in source.lines() {
+        let t = line.trim_start();
+        for kw in ["module", "interface"] {
+            let Some(rest) = t.strip_prefix(kw) else {
+                continue;
+            };
+            let rest = rest.trim_start();
+            let mut chars = rest.chars();
+            match chars.next() {
+                Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+                _ => continue,
+            }
+            let name: String = rest
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect();
+            if !name.is_empty() {
+                return Some(name);
+            }
+        }
+    }
+    None
+}
+
 fn gen_cli_args(rng: &mut crate::Rng, path: &std::path::Path, source: &str) -> Vec<String> {
     let file = path.to_string_lossy().to_string();
     let mut args = Vec::new();
 
     // 50%: tool subcommand `mivon <tool> <file> [flags]` — area mivon-tools
     // (mcheck/melab/msim/mfmt/mlint/minspect/mprof/synth) di-fuzz atas
-    // source mutasi. mbench/mcov/mwave sengaja dilewatkan (berat/butuh VCD —
-    // timeout palsu); synth pakai --check-only (cepat, 0.03s).
+    // source mutasi. mbench/mcov-closure sengaja dilewatkan (mbench: run
+    // benchmark penuh berkali-kali = timeout; cov-closure: butuh 2 tahap
+    // file coverage.json terpisah). synth pakai --check-only (cepat, 0.03s).
+    //
+    // Perluasan 2026-09-28 (tak pernah terjamah sebelumnya):
+    // - `cov` (mcov): pipeline coverage → coverage.json + coverage.html —
+    //   sim + CoverageDatabase + report writer.
+    // - `tbgen` (mtbgen): generator testbench dari port module — area
+    //   codegen TB yang belum pernah di-fuzz.
+    // - `waiver` (mwaiver): manajemen waiver lint/formal — file waiver.
+    // - `bench` (mbench, `-n 1`): jalur benchmark compile 1 run — O1 utk
+    //   pengukuran (dulu dilewatkan krn default 3 run).
+    // - `emu` (R0 MHIR extraction + memory map): emulator extraction path.
     if rng.chance(50) {
         let tools = [
-            "mcheck", "melab", "msim", "mfmt", "mlint", "minspect", "mprof", "synth",
+            "mcheck", "melab", "msim", "mfmt", "mlint", "minspect", "mprof", "synth", "cov",
+            "tbgen", "waiver", "bench", "emu",
         ];
         let t = tools[rng.below(tools.len())];
         args.push(t.to_string());
+        // Tool dengan bentuk argumen BUKAN `<tool> <file>` (clap strict →
+        // arg aneh = clap error, noise clean_error bukan fuzz):
+        // - `waiver <COMMAND>`: subcommand saja. `list` = read-only.
+        // - `tbgen [OPTIONS]`: TANPA positional file — beri `-m <module>`
+        //   hasil ekstraksi dari source (default stdout, deterministik).
+        match t {
+            "waiver" => {
+                args.push("list".to_string());
+                return args;
+            }
+            "tbgen" => {
+                if let Some(m) = first_module_name(source) {
+                    args.push("-m".to_string());
+                    args.push(m);
+                }
+                return args;
+            }
+            _ => {}
+        }
         args.push(file.clone());
         match t {
             "msim" => {
@@ -2042,6 +2113,35 @@ fn gen_cli_args(rng: &mut crate::Rng, path: &std::path::Path, source: &str) -> V
             "synth" => {
                 args.push("--check-only".to_string());
             }
+            "cov" => {
+                // mcov: sim + CoverageDatabase → coverage.json/html. -T
+                // pendek (kasus fuzz berbobot kecil); json/html masing-masing
+                // chance terpisah agar jalur writer per-format terjamah.
+                args.push("-T".to_string());
+                args.push("100".to_string());
+                if rng.chance(60) {
+                    args.push("--json".to_string());
+                }
+                if rng.chance(60) {
+                    args.push("--html".to_string());
+                }
+            }
+            "bench" => {
+                // Default 3 run = kelipatan waktu; 1 run cukup utuk O1
+                // (bench TIDAK masuk static-tool double-run: output berisi
+                // angka timing yang bisa beda antar run).
+                args.push("-n".to_string());
+                args.push("1".to_string());
+            }
+            "emu" => {
+                // R0 MHIR extraction — jalur emulator tak pernah di-fuzz.
+                if rng.chance(50) {
+                    args.push("--dump-mhir".to_string());
+                }
+                if rng.chance(40) {
+                    args.push("--dump-memory-map".to_string());
+                }
+            }
             _ => {}
         }
         return args;
@@ -2062,6 +2162,14 @@ fn gen_cli_args(rng: &mut crate::Rng, path: &std::path::Path, source: &str) -> V
     // clean error noise; sekarang flag `--fast` yang benar).
     if rng.chance(20) {
         args.push("--fast".to_string());
+    }
+
+    // Formal BMC (Z3) — `--formal` mengaktifkan mivon-formal (bounded model
+    // checking) yang BELUM PERNAH di-fuzz sama sekali. Chance kecil (8%) —
+    // BMC berat; grace 3× runner menampung kasus lambat tanpa jadi hang
+    // palsu.
+    if rng.chance(8) {
+        args.push("--formal".to_string());
     }
 
     let flags = [
