@@ -5,6 +5,72 @@ use super::{err_at, resolve_typedef, Ctx, Params, Scope};
 use crate::ast::*;
 use crate::MvError;
 
+/// Keyword SV yang TIDAK MUNGKIN jadi nama sistem task/function setelah `$`.
+///
+/// Blacklist tertutup (bukan whitelist) — sengaja: sistem task custom VPI
+/// (`$my_vpi_task`) tak terdaftar di mana pun dan tak boleh ditolak.
+/// Kasus: mutasi fuzz `$begin enddisplay(...)` lolos check → codegen
+/// menghasilkan `$begin;` → E1002 di parser SV, jauh dari titik salahnya.
+pub(crate) const MV_NON_SYSTASK: &[&str] = &[
+    "begin",
+    "end",
+    "module",
+    "endmodule",
+    "interface",
+    "endinterface",
+    "class",
+    "endclass",
+    "function",
+    "endfunction",
+    "task",
+    "endtask",
+    "package",
+    "endpackage",
+    "if",
+    "else",
+    "case",
+    "casex",
+    "casez",
+    "endcase",
+    "default",
+    "for",
+    "foreach",
+    "while",
+    "do",
+    "forever",
+    "repeat",
+    "generate",
+    "endgenerate",
+    "always",
+    "always_ff",
+    "always_comb",
+    "always_latch",
+    "initial",
+    "final",
+    "assign",
+    "wire",
+    "reg",
+    "logic",
+    "input",
+    "output",
+    "inout",
+    "typedef",
+    "struct",
+    "union",
+    "enum",
+    "import",
+    "export",
+    "posedge",
+    "negedge",
+    "fork",
+    "join",
+    "join_any",
+    "join_none",
+    "return",
+    "break",
+    "continue",
+];
+
 pub(crate) fn check_expr<'a>(
     e: &'a Expr,
     ctx: &'a Ctx<'a>,
@@ -36,6 +102,26 @@ pub(crate) fn check_expr<'a>(
         Expr::Ident(s, l, c) => {
             // `$finish`/`$display`/`$past`/`$clog2` — system task/function.
             if s.starts_with('$') {
+                // BLACKLIST keyword SV setelah `$`: tak mungkin sistem task
+                // (tak ada `$begin`/`$end` di IEEE 1800) — menutup kasus
+                // mutasi sampah merembes jadi output SV `$begin;` (E1002 di
+                // parser SV, jauh dari sumbernya). Sengaja BLACKLIST, bukan
+                // whitelist: repo mendukung VPI custom task (`$my_vpi_task`,
+                // `$unregistered_task`) yang tak terdaftar di mana pun —
+                // whitelist statis akan merusaknya.
+                let name = &s[1..];
+                if MV_NON_SYSTASK.contains(&name) {
+                    return Err(err_at(
+                        *l,
+                        *c,
+                        "E2001",
+                        format!(
+                            "'{s}' bukan sistem task/function — keyword SV setelah `$` \
+                             (mungkin sisa mutasi/typo); di '{}'",
+                            scope.env.mname
+                        ),
+                    ));
+                }
                 return Ok(());
             }
             // `this`/`super` — kata kunci konteks di method class (F7)
