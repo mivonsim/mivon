@@ -561,6 +561,20 @@ impl Parser {
     pub(crate) fn parse_covergroup(&mut self) -> Result<CovergroupDecl, SimError> {
         self.advance();
         let name = self.expect_ident()?;
+        // Formal arguments `covergroup cg (input logic v, ...) @(...) BELUM
+        // didukung. Dulu daftar arg DIABISKAN diam-diam: `v` tak pernah
+        // terdefinisi → tiap coverpoint gagal jauh di elab dgn E2001
+        // membingungkan (`signal 'v' not found` di baris coverpoint), dan
+        // `@(...)` ikut tak terbaca (event hilang → implicit sampling mati).
+        // Fail-fast di titik deklarasi dgn saran. Dukungan penuh butuh
+        // IrExpr::CovergroupArg + binding `sample(a,b,c)` — desain terpisah.
+        if self.peek() == &Token::LParen {
+            return Err(self.err(
+                "covergroup formal arguments belum didukung — pakai signal module \
+                 langsung sebagai coverpoint expression \
+                 (mis. `cp: coverpoint req_valid`, tanpa argumen formal)",
+            ));
+        }
         let clocking_event = if self.peek() == &Token::At {
             Some(self.parse_clocking_event()?)
         } else {
