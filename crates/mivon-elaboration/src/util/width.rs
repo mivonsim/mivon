@@ -238,18 +238,16 @@ pub fn compute_expr_width(
             Ok(const_eval_with_params(width, param_vals).unwrap_or(1) as usize)
         }
         Expr::MemberAccess { obj, field } => {
-            if let Expr::Ident { name, .. } = obj.as_ref() {
-                if let Some(&sig_id) = signal_map.get(name) {
-                    if !signals[sig_id].struct_fields.is_empty() {
-                        if let Some(f) = signals[sig_id]
-                            .struct_fields
-                            .iter()
-                            .find(|f| f.name == *field)
-                        {
-                            return Ok(f.width);
-                        }
-                    }
-                }
+            // Bug menyamar sbg warning (WR0102): dulu fallback
+            // `compute_expr_width(obj)` mengembalikan lebar OBJEK INDUK —
+            // untuk `hw2reg.intr_state.done_ch0.d` hasilnya lebar
+            // `hw2reg.intr_state`, bukan field `d` → synth wire port melebar,
+            // flatten cuma warning → simulasi jalan dgn lebar salah
+            // (diferensial antar engine, kasus fuzzer bug_0793).
+            // Kini ikuti rantai sampai field LEAF; bila chain tak resolve,
+            // perilaku lama tetap sbg fallback.
+            if let Some(f) = resolve_member_chain(obj, field, signal_map, signals) {
+                return Ok(f.width.max(1));
             }
             compute_expr_width(obj, signal_map, signals, param_vals, package_symbols)
         }
@@ -796,6 +794,38 @@ fn clog2_value(v: i64) -> i64 {
 /// Cari parameter package dengan nama polos (hasil `import pkg::*`) dan
 /// evaluasi default-nya. Dipakai untuk cast `MuBi4Width'(...)` di mana
 /// `MuBi4Width` adalah `parameter` di package, bukan typedef.
+/// Ikuti rantai member access dari akar `obj` sampai `field` terakhir dan
+/// kembalikan `StructFieldInfo` field leaf bila resolve penuh berhasil.
+///
+/// `sub_fields` tiap field (termasuk field bertipe typedef) diisi oleh
+/// `Elaborator::struct_field_from_member_depth` (elaborator/types.rs) —
+/// free-fn ini tidak punya akses `typedef_field_map`, jadi rantai nested
+/// `a.b.c.d` hanya bisa dituruni lewat `sub_fields` yang sudah terisi.
+fn resolve_member_chain<'a>(
+    obj: &Expr,
+    field: &Symbol,
+    signal_map: &HashMap<Symbol, SignalId>,
+    signals: &'a [SignalInfo],
+) -> Option<&'a StructFieldInfo> {
+    match obj {
+        Expr::Ident { name, .. } => {
+            let sig_id = *signal_map.get(name)?;
+            signals[sig_id]
+                .struct_fields
+                .iter()
+                .find(|f| f.name == *field)
+        }
+        Expr::MemberAccess {
+            obj: inner,
+            field: parent_field,
+        } => {
+            let parent = resolve_member_chain(inner, parent_field, signal_map, signals)?;
+            parent.sub_fields.iter().find(|f| f.name == *field)
+        }
+        _ => None,
+    }
+}
+
 fn resolve_pkg_param_width(
     name: &Symbol,
     package_symbols: &HashMap<Symbol, HashMap<Symbol, PackageItem>>,

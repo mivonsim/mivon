@@ -23,11 +23,28 @@ impl Elaborator {
         }
     }
 
+    /// Batas kedalaman resolusi struct nested (typedef saling merujuk) —
+    /// jaring pengaman dari rekursi `sub_fields` berjenjang.
+    const MAX_STRUCT_DEPTH: usize = 16;
+
     /// Cari struct fields untuk nama tipe — polos (`reg2hw_t`) atau scoped
     /// (`pkg::reg2hw_t`). Prioritas: typedef_field_map (typedef yang sudah
     /// di-store via import/typedef module), lalu package_symbols langsung
     /// (scoped type tanpa import eksplisit).
     pub(crate) fn lookup_struct_fields(&self, type_name: &str) -> Option<Vec<StructFieldInfo>> {
+        self.lookup_struct_fields_depth(type_name, 0)
+    }
+
+    /// Varian ber-depth untuk dipakai dari `struct_field_from_member_depth`
+    /// (mengisi `sub_fields` berjenjang tanpa risiko loop tak berujung).
+    pub(crate) fn lookup_struct_fields_depth(
+        &self,
+        type_name: &str,
+        depth: usize,
+    ) -> Option<Vec<StructFieldInfo>> {
+        if depth >= Self::MAX_STRUCT_DEPTH {
+            return None;
+        }
         let type_sym = Symbol::intern(type_name);
         // 1. Cek map yang sudah di-store (nama polos & scoped).
         if let Some(f) = self.typedef_field_map.get(&type_sym) {
@@ -43,7 +60,7 @@ impl Elaborator {
                         &td.dtype,
                         DataType::StructType { .. } | DataType::UnionType { .. }
                     ) {
-                        let fields = self.compute_struct_fields(&td.dtype);
+                        let fields = self.compute_struct_fields_depth(&td.dtype, depth);
                         if !fields.is_empty() {
                             return Some(fields);
                         }
@@ -66,7 +83,7 @@ impl Elaborator {
                     &td.dtype,
                     DataType::StructType { .. } | DataType::UnionType { .. }
                 ) {
-                    let fields = self.compute_struct_fields(&td.dtype);
+                    let fields = self.compute_struct_fields_depth(&td.dtype, depth);
                     if !fields.is_empty() {
                         return Some(fields);
                     }
@@ -388,17 +405,26 @@ impl Elaborator {
     }
 
     pub(crate) fn compute_struct_fields(&self, dtype: &DataType) -> Vec<StructFieldInfo> {
+        self.compute_struct_fields_depth(dtype, 0)
+    }
+
+    /// Varian ber-depth — membatasi rekursi nested typedef (pengaman loop).
+    pub(crate) fn compute_struct_fields_depth(
+        &self,
+        dtype: &DataType,
+        depth: usize,
+    ) -> Vec<StructFieldInfo> {
         match dtype {
             DataType::UnionType { members } => members
                 .iter()
-                .map(|m| self.struct_field_from_member(m, 0))
+                .map(|m| self.struct_field_from_member_depth(m, 0, depth))
                 .collect(),
             DataType::StructType { members } => {
                 let mut fields = Vec::new();
                 let mut offset = 0usize;
                 let members_rev: Vec<_> = members.iter().rev().collect();
                 for m in &members_rev {
-                    let f = self.struct_field_from_member(m, offset);
+                    let f = self.struct_field_from_member_depth(m, offset, depth);
                     offset += f.width.max(1);
                     fields.push(f);
                 }
@@ -419,6 +445,21 @@ impl Elaborator {
         m: &StructMember,
         offset: usize,
     ) -> StructFieldInfo {
+        self.struct_field_from_member_depth(m, offset, 0)
+    }
+
+    /// Varian ber-depth: `sub_fields` field typedef ikut diisi agar rantai
+    /// member access `a.b.c.d` bisa turun ke field LEAF di free-fn
+    /// `compute_expr_width` (util/width.rs) yang TIDAK punya akses
+    /// `typedef_field_map`. Tanpa ini fallback-nya = lebar objek induk →
+    /// lebar port salah, cuma muncul sbg warning WR0102 (bug menyamar
+    /// sebagai warning — kasus bug_0793).
+    pub(crate) fn struct_field_from_member_depth(
+        &self,
+        m: &StructMember,
+        offset: usize,
+        depth: usize,
+    ) -> StructFieldInfo {
         // Lebar member: range eksplisit menang; tanpanya resolve lebar typedef
         // (enum 2-bit, mubi4_t 4-bit, struct nested) — bukan 1-bit default.
         // Tanpa ini `phase_e phase` (enum) jadi 1-bit dan offset struct salah.
@@ -435,7 +476,12 @@ impl Elaborator {
                 offset,
                 width: w,
                 type_name: Some(*t),
-                sub_fields: vec![],
+                sub_fields: if depth < Self::MAX_STRUCT_DEPTH {
+                    self.lookup_struct_fields_depth(t.as_str(), depth + 1)
+                        .unwrap_or_default()
+                } else {
+                    vec![]
+                },
             },
             DataType::StructType { .. } | DataType::UnionType { .. } => StructFieldInfo {
                 name: m.name,
@@ -444,7 +490,7 @@ impl Elaborator {
                 // Anonymous struct/union inline — tidak ada nama tipe untuk
                 // lookup typedef_field_map; simpan fields langsung.
                 type_name: None,
-                sub_fields: self.compute_struct_fields(m.dtype.as_ref()),
+                sub_fields: self.compute_struct_fields_depth(m.dtype.as_ref(), depth + 1),
             },
             _ => StructFieldInfo {
                 name: m.name,
