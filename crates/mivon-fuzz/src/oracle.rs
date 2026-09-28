@@ -50,21 +50,21 @@ fn mk(
 /// (sim/sdf/cli/vcd/micd) TIDAK menyentuh `.mivon/database` project →
 /// bebas lock contention + stale-lock cascade dari subprocess yang di-kill
 /// (terukur: 39 lock basi + hang palsu beruntun di kampanye SDF).
+///
+/// Lewat thread-local + `Command::env` (runner::set_micd_override), BUKAN
+/// `std::env::set_var` process-global — worker watchdog yang dibiarkan hidup
+/// setelah timeout masih menjalankan subprocess dgn env case lamanya saat
+/// case berikut ganti env = data race antar thread (review sesi ini).
 fn with_micd_isolated<T>(f: impl FnOnce() -> T) -> T {
-    use std::ffi::OsString;
     let dir = std::env::temp_dir().join(format!(
         "mivonfz_iso_{}_{}",
         std::process::id(),
         crate::next_crash_seq()
     ));
     let _ = std::fs::create_dir_all(&dir);
-    let prev: Option<OsString> = std::env::var_os("MIVON_MICD_DIR");
-    std::env::set_var("MIVON_MICD_DIR", &dir);
+    crate::runner::set_micd_override(Some(&dir));
     let r = f();
-    match prev {
-        Some(p) => std::env::set_var("MIVON_MICD_DIR", p),
-        None => std::env::remove_var("MIVON_MICD_DIR"),
-    }
+    crate::runner::set_micd_override(None);
     let _ = std::fs::remove_dir_all(&dir);
     r
 }
@@ -123,16 +123,35 @@ where
     }
     match rx.recv_timeout(Duration::from_millis(timeout_ms)) {
         Ok(r) => r,
-        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => mk(
-            target,
-            Oracle::O1NoCrash,
-            Category::Hang,
-            &format!(
-                "hang/slow > {} ms (worker dilanjutkan di background)",
-                timeout_ms
-            ),
-            source,
-        ),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            // Grace 2×: kasus LAMBAT (seed besar + beban mesin) dulu langsung
+            // → Hang → dihitung is_bug() → noise (terbukti: semua kasus
+            // "hang" replay-ok saat mesin sepi). Worker yang selesai dalam
+            // grace = Slow (bukan bug); tetap tak selesai = hang sungguhan.
+            match rx.recv_timeout(Duration::from_millis(timeout_ms)) {
+                Ok(r) if r.category == Category::Ok => mk(
+                    target,
+                    Oracle::O1NoCrash,
+                    Category::Slow,
+                    &format!(
+                        "lewat budget {} ms tapi selesai saat grace 2× — lambat, bukan hang",
+                        timeout_ms
+                    ),
+                    source,
+                ),
+                Ok(r) => r,
+                Err(_) => mk(
+                    target,
+                    Oracle::O1NoCrash,
+                    Category::Hang,
+                    &format!(
+                        "hang > {} ms (grace 2× habis; worker dilanjutkan di background)",
+                        timeout_ms.saturating_mul(2)
+                    ),
+                    source,
+                ),
+            }
+        }
         Err(_) => mk(
             target,
             Oracle::O1NoCrash,
@@ -156,45 +175,17 @@ where
 /// watchdog `recv_timeout` → Hang terdeteksi, worker thread dibiarkan
 /// selesai di background (tidak bisa di-kill di Rust) — kampanye lanjut.
 fn evaluate_compile(target: Target, source: &str, timeout_ms: u64) -> CaseResult {
-    use std::time::Duration;
-    let source_owned = source.to_string();
-    let (tx, rx) = std::sync::mpsc::channel::<CaseResult>();
-    let spawned = std::thread::Builder::new()
-        .stack_size(256 * 1024 * 1024)
-        .name("mivon-fuzz-compile".into())
-        .spawn(move || {
-            let r = compile_in_thread(target, &source_owned);
-            let _ = tx.send(r);
-        });
-    if spawned.is_err() {
-        return mk(
-            target,
-            Oracle::O1NoCrash,
-            Category::Panic,
-            "thread compile gagal spawn",
-            source,
-        );
-    }
-    match rx.recv_timeout(Duration::from_millis(timeout_ms)) {
-        Ok(r) => r,
-        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => mk(
-            target,
-            Oracle::O1NoCrash,
-            Category::Hang,
-            &format!(
-                "compile hang/slow > {} ms (worker dilanjutkan di background)",
-                timeout_ms
-            ),
-            source,
-        ),
-        Err(_) => mk(
-            target,
-            Oracle::O1NoCrash,
-            Category::Panic,
-            "thread compile disconnected",
-            source,
-        ),
-    }
+    // Kini lewat run_with_watchdog (dulu salinan sendiri tanpa grace):
+    // kasus compile lambat (seed 360KB = 4.4s terukur, >5s saat beban mesin)
+    // dulu → Hang = noise (parser hang=7 / elab=6 per 3000 case, semua
+    // replay-ok). Grace 2× → Slow; hang sungguhan tetap tertangkap.
+    run_with_watchdog(
+        target,
+        source,
+        timeout_ms,
+        "mivon-fuzz-compile",
+        move |src| compile_in_thread(target, src),
+    )
 }
 
 fn compile_in_thread(target: Target, source: &str) -> CaseResult {

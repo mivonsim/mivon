@@ -29,6 +29,33 @@ pub struct Outcome {
     pub ms: u128,
 }
 
+// Isolasi MICD per-case TANPA menyentuh env process-global.
+//
+// Dulu `with_micd_isolated` memakai `std::env::set_var` — RACE: worker
+// watchdog yang dibiarkan hidup setelah timeout masih membaca
+// `MIVON_MICD_DIR` saat case berikut mengganti env (dan `setenv`
+// concurrent = hazard data race). Thread-local hanya terbaca thread case
+// yang sedang berjalan; worker bocor punya thread-local sendiri (None)
+// sehingga tak terpengaruh. Dipasang ke subprocess via `Command::env`.
+thread_local! {
+    static MICD_OVERRIDE: std::cell::RefCell<Option<std::ffi::OsString>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Set/isolasi MICD dir untuk case berikut di thread INI. Return fungsi
+/// restore (panggil setelah selesai).
+pub fn set_micd_override(dir: Option<&std::path::Path>) {
+    MICD_OVERRIDE.with(|c| {
+        *c.borrow_mut() = dir.map(|d| d.as_os_str().to_os_string());
+    });
+}
+
+fn apply_micd_env(cmd: &mut Command) {
+    if let Some(v) = MICD_OVERRIDE.with(|c| c.borrow().clone()) {
+        cmd.env("MIVON_MICD_DIR", v);
+    }
+}
+
 /// Jalankan `mivon <file>` dengan timeout.
 pub fn run_file(source: &str, timeout_ms: u64) -> Outcome {
     let mut path = std::env::temp_dir();
@@ -55,6 +82,7 @@ pub fn run_file(source: &str, timeout_ms: u64) -> Outcome {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .stdin(Stdio::null());
+    apply_micd_env(&mut cmd);
 
     let outcome = spawn(&mut cmd, timeout_ms);
     let _ = std::fs::remove_file(&path);
@@ -69,6 +97,7 @@ pub fn run_args(args: &[String], timeout_ms: u64) -> Outcome {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .stdin(Stdio::null());
+    apply_micd_env(&mut cmd);
 
     spawn(&mut cmd, timeout_ms)
 }
@@ -141,17 +170,23 @@ fn spawn(cmd: &mut Command, timeout_ms: u64) -> Outcome {
     let out_handle = std::thread::spawn(move || read_pipe(stdout));
     let err_handle = std::thread::spawn(move || read_pipe(stderr));
 
-    let timeout = Duration::from_millis(timeout_ms);
+    // Grace 3×: kasus SLOW (source besar 1.5MB/220 module = 13s terukur,
+    // load mesin tinggi) dulu di-kill tepat di timeout → dilaporkan `Hang`
+    // → dihitung `is_bug()` → noise kampanye (cli hang=49/1500, sim 159/1500
+    // semuanya replay-ok saat mesin sepi). Kill hanya melewati 3× timeout =
+    // loop tak-berujung ASLI; yang selesai di antara → Kind::Ok + `ms` besar
+    // (pemanggil bisa menandai Slow lewat `ms > timeout`).
+    let kill_limit = Duration::from_millis(timeout_ms.saturating_mul(3));
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break Some(status),
             Ok(None) => {}
             Err(_) => break None,
         }
-        if start.elapsed() > timeout {
+        if start.elapsed() > kill_limit {
             let _ = child.kill();
             let _ = child.wait();
-            break None; // hang
+            break None; // hang asli (melebihi grace 3×)
         }
         std::thread::sleep(Duration::from_millis(5));
     };

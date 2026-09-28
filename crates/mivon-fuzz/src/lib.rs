@@ -152,13 +152,21 @@ pub enum Category {
     /// manusia: stimulus ada namun banyak signal tetap X/Z di akhir sim —
     /// bisa wajar (undriven) atau bukti state-propagation bug. BUKAN hard bug.
     Suspicious,
+    /// Lewat timeout TAPI selesai dalam grace (3× subprocess / 2× watchdog
+    /// in-process). Replay saat mesin sepi membuktikan selesai normal →
+    /// SLOW, bukan hang. BUKAN bug (dulu semua terhitung Hang → noise
+    /// kampanye proporsional beban CPU & ukuran seed).
+    Slow,
 }
 
 impl Category {
     pub fn is_bug(self) -> bool {
         !matches!(
             self,
-            Category::Ok | Category::CleanError | Category::Suspicious
+            Category::Ok
+                | Category::CleanError
+                | Category::Suspicious
+                | Category::Slow
         )
     }
 
@@ -175,6 +183,7 @@ impl Category {
             Category::GuardBypass => "guard_bypass",
             Category::Differential => "differential",
             Category::Suspicious => "suspicious",
+            Category::Slow => "slow",
         }
     }
 
@@ -191,6 +200,7 @@ impl Category {
             "guard_bypass" => Some(Category::GuardBypass),
             "differential" => Some(Category::Differential),
             "suspicious" => Some(Category::Suspicious),
+            "slow" => Some(Category::Slow),
             _ => None,
         }
     }
