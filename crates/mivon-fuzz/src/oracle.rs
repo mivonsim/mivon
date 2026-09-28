@@ -1199,6 +1199,15 @@ fn evaluate_vcd(source: &str, timeout_ms: u64) -> CaseResult {
             "sim pendahulu gagal — VCD tidak dihasilkan",
         );
     }
+    // O6: bug menyamar sbg warning/error (lihat scan_hidden_diags) — output
+    // sim pendahulu (stderr) dgn degradasi internal tak boleh tergolong Ok.
+    {
+        let combined = format!("{}\n{}", outcome.stdout, outcome.stderr);
+        if let Some((cat, detail)) = scan_hidden_diags(&combined) {
+            let _ = std::fs::remove_file(&vcd_base);
+            return mk_v(cat, Oracle::O1NoCrash, &detail);
+        }
+    }
     let vcd_src = match std::fs::read_to_string(&vcd_base) {
         Ok(s) if s.trim().len() >= 32 => s,
         _ => {
@@ -1472,11 +1481,18 @@ fn evaluate_sdf(source: &str, timeout_ms: u64) -> CaseResult {
     let _ = std::fs::remove_file(&sdf);
 
     match outcome.kind {
-        crate::runner::Kind::Ok => mk_s(
-            Category::Ok,
-            Oracle::O1NoCrash,
-            &format!("sdf pipeline ok: parse+annotate+sim ({:?})", stem),
-        ),
+        crate::runner::Kind::Ok => {
+            // O6: bug menyamar sbg warning/error (lihat scan_hidden_diags).
+            let combined = format!("{}\n{}", outcome.stdout, outcome.stderr);
+            match scan_hidden_diags(&combined) {
+                Some((cat, detail)) => mk_s(cat, Oracle::O1NoCrash, &detail),
+                None => mk_s(
+                    Category::Ok,
+                    Oracle::O1NoCrash,
+                    &format!("sdf pipeline ok: parse+annotate+sim ({:?})", stem),
+                ),
+            }
+        }
         crate::runner::Kind::CleanError => mk_s(
             Category::CleanError,
             Oracle::O1NoCrash,
@@ -1577,7 +1593,13 @@ fn evaluate_micd(source: &str, timeout_ms: u64) -> CaseResult {
     // O1: crash/hang pada jalur incremental/fresh.
     for (label, r) in [("incremental", &r2), ("recompile", &r3)] {
         match r.kind {
-            crate::runner::Kind::Ok => {}
+            crate::runner::Kind::Ok => {
+                // O6: bug menyamar sbg warning/error (lihat scan_hidden_diags).
+                let combined = format!("{}\n{}", r.stdout, r.stderr);
+                if let Some((cat, detail)) = scan_hidden_diags(&combined) {
+                    return mk_m(cat, Oracle::O1NoCrash, &format!("{label}: {detail}"));
+                }
+            }
             crate::runner::Kind::CleanError => {
                 return mk_m(
                     Category::Differential,
@@ -1719,11 +1741,18 @@ fn evaluate_synth(source: &str, timeout_ms: u64) -> CaseResult {
 
     let args_desc = args.join(" ");
     match outcome.kind {
-        crate::runner::Kind::Ok => mk_y(
-            Category::Ok,
-            Oracle::O1NoCrash,
-            &format!("synth check-only ok: {args_desc}"),
-        ),
+        crate::runner::Kind::Ok => {
+            // O6: bug menyamar sbg warning/error (lihat scan_hidden_diags).
+            let combined = format!("{}\n{}", outcome.stdout, outcome.stderr);
+            match scan_hidden_diags(&combined) {
+                Some((cat, detail)) => mk_y(cat, Oracle::O1NoCrash, &detail),
+                None => mk_y(
+                    Category::Ok,
+                    Oracle::O1NoCrash,
+                    &format!("synth check-only ok: {args_desc}"),
+                ),
+            }
+        }
         crate::runner::Kind::CleanError => mk_y(
             Category::CleanError,
             Oracle::O1NoCrash,
@@ -1937,6 +1966,18 @@ fn evaluate_astdiff(source: &str, timeout_ms: u64) -> CaseResult {
                 only_rev.len()
             ),
         );
+    }
+
+    // O6: bug menyamar sbg warning/error (lihat scan_hidden_diags) —
+    // degradasi internal pada output kedua arah tak boleh tergolong Ok.
+    {
+        let combined = format!(
+            "{}\n{}\n{}\n{}",
+            fwd.stdout, fwd.stderr, rev.stdout, rev.stderr
+        );
+        if let Some((cat, detail)) = scan_hidden_diags(&combined) {
+            return mk_a(cat, Oracle::O1NoCrash, &detail);
+        }
     }
 
     if fwd_diffs.is_empty() {
