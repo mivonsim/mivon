@@ -113,6 +113,9 @@ pub struct CompileSession {
     lexer_payloads: std::sync::Mutex<Vec<(PathBuf, crate::micd::cache::pipeline::LexerPayload)>>,
     /// Parse errors collected during compilation
     pub parse_errors: Vec<mivon_core::diagnostics::Diagnostic>,
+    /// Callback progres per-file (path, cached) — dipanggil dari rayon par_iter
+    /// saat tiap file selesai di-lex/parse. Dipakai animasi status line CLI.
+    file_progress: Option<std::sync::Arc<dyn Fn(&PathBuf, bool) + Send + Sync>>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -199,7 +202,17 @@ impl CompileSession {
             micd_include_deps: HashMap::new(),
             lexer_payloads: std::sync::Mutex::new(Vec::new()),
             parse_errors: Vec::new(),
+            file_progress: None,
         }
+    }
+
+    /// Pasang callback progres per-file `(path, cached)` — dipanggil dari
+    /// worker rayon setiap file selesai di-lex/parse. Dipakai animasi CLI.
+    pub fn set_file_progress<F>(&mut self, f: F)
+    where
+        F: Fn(&PathBuf, bool) + Send + Sync + 'static,
+    {
+        self.file_progress = Some(std::sync::Arc::new(f));
     }
 
     /// Run the full compilation pipeline (with caching).
@@ -390,6 +403,9 @@ impl CompileSession {
         // ── Phase 5: Parallel lexing + parsing dengan posisi global ──
         let lex_start = Instant::now();
         let lexer_payloads = &self.lexer_payloads;
+        // Clone callback progres per-file sebelum closure par_iter (tanpa
+        // mem-borrow self di dalam rayon).
+        let file_progress = self.file_progress.clone();
         let results: Vec<
             Result<
                 (
@@ -407,6 +423,9 @@ impl CompileSession {
                 let (path, cached, cksum, combined_opt) = r?;
                 // Reuse cached design as-is (sudah diparse dengan posisi global)
                 if let Some(design) = cached {
+                    if let Some(cb) = file_progress.as_ref() {
+                        cb(&path, true);
+                    }
                     return Ok((path, design, cksum, Vec::new()));
                 }
                 let combined = combined_opt.unwrap_or_default();
@@ -506,6 +525,9 @@ impl CompileSession {
                     );
                 }
 
+                if let Some(cb) = file_progress.as_ref() {
+                    cb(&path, false);
+                }
                 Ok((path, design, cksum, parse_errors))
             })
             .collect();

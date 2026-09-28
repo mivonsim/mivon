@@ -1,15 +1,20 @@
-//! PipelineAnimator — animasi compile Mivon sebagai waveform digital.
+//! StatusLine — progres compile Mivon bergaya Cargo.
 //!
-//! Menampilkan fase pipeline (LEX/PAR/ELA/OPT/VER) sebagai sinyal digital ala
-//! logic analyzer: setiap fase adalah satu baris yang terisi blok `█` saat
-//! aktif, lalu menjadi `✓` ketika selesai. Baris CLK selalu berjalan meniru
-//! clock yang menggerakkan pipeline.
+//! Menampilkan SATU baris status yang digambar ulang di tempat (`\r` +
+//! clear-line), bukan area 12 baris dengan waveform. Isinya: strip 5 fase
+//! pipeline (LEX/PAR/ELA/OPT/VER), subjek fase (file `.sv/.svh/.v/.vh`
+//! terakhir, top module, dsb.), counter, dan elapsed.
 //!
-//! Render berjalan di background thread (±10 FPS) sehingga animasi tetap hidup
-//! meski kompilasi berjalan sinkron di thread utama. Output digambar ulang di
-//! area tetap tanpa menggulir terminal, lalu diakhiri panel ringkasan EDA.
+//! Karakteristik gaya Cargo:
+//! - Satu baris, tanpa menyembunyikan kursor, tanpa scroll management.
+//! - Baris log fase dicetak thread utama di ATAS baris status — baris status
+//!   selalu menempel di posisi kursor terakhir, jadi output baru menggesernya
+//!   ke bawah. Panggil `clear_line()` dulu bila output menyambung baris status.
+//! - Redraw hanya bila konten berubah (anti-flicker), minimum `REDRAW_MS`.
+//! - Non-TTY / `--quiet` / `MIVON_NO_ANIM` → tidak ada animasi sama sekali.
 
 use std::io::{self, Write};
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -25,18 +30,14 @@ const CYAN: &str = "\x1b[36m";
 const BOLD: &str = "\x1b[1m";
 const DIM: &str = "\x1b[2m";
 const RESET: &str = "\x1b[0m";
-const SAVE_CURSOR: &str = "\x1b7";
-const RESTORE_CURSOR: &str = "\x1b8";
-const HIDE_CURSOR: &str = "\x1b[?25l";
-const SHOW_CURSOR: &str = "\x1b[?25h";
 const CLEAR_LINE: &str = "\x1b[2K";
 
-const BAR_WIDTH: usize = 20;
-const CLK_WIDTH: usize = 24;
-/// Tinggi area animasi (baris) — harus tetap agar output di bawah tidak rusak.
-const AREA_LINES: usize = 12;
+/// Interval redraw minimum (ms) — mencegah flicker dan I/O berlebih.
+const REDRAW_MS: u64 = 80;
+/// Maksimum lebar subjek fase (nama file/top) sebelum dipotong.
+const MAX_SUBJECT: usize = 24;
 
-/// Fase pipeline yang ditampilkan.
+/// Fase pipeline yang ditampilkan (tetap 5, sesuai pipeline legacy).
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Phase {
     Lex,
@@ -71,7 +72,6 @@ enum PhaseStatus {
 
 struct PhaseInfo {
     status: PhaseStatus,
-    progress: u8,
     warn_count: usize,
 }
 
@@ -79,7 +79,6 @@ impl Default for PhaseInfo {
     fn default() -> Self {
         PhaseInfo {
             status: PhaseStatus::Idle,
-            progress: 0,
             warn_count: 0,
         }
     }
@@ -89,15 +88,22 @@ struct AnimState {
     phases: [PhaseInfo; 5],
     files_total: u64,
     files_done: u64,
+    files_cached: u64,
+    /// File terakhir yang selesai diproses (basename).
+    current_file: String,
+    /// Jumlah file per ekstensi: sv, svh, v, vh (dihitung caller).
+    exts: [u64; 4],
     modules: u64,
     tokens: u64,
-    memory: u64,
-    workers: u64,
+    top: String,
     start: Instant,
     finished: bool,
     ok: bool,
     errors: usize,
     warnings: usize,
+    /// Saat true thread render TIDAK menulis — dipakai `suspend_print`
+    /// agar output multi-baris (diagnostik/timing) tidak balapan dengannya.
+    paused: bool,
 }
 
 impl Default for AnimState {
@@ -106,22 +112,55 @@ impl Default for AnimState {
             phases: std::array::from_fn(|_| PhaseInfo::default()),
             files_total: 0,
             files_done: 0,
+            files_cached: 0,
+            current_file: String::new(),
+            exts: [0; 4],
             modules: 0,
             tokens: 0,
-            memory: 0,
-            workers: num_cpus::get() as u64,
+            top: String::new(),
             start: Instant::now(),
             finished: false,
             ok: true,
             errors: 0,
             warnings: 0,
+            paused: false,
         }
     }
 }
 
-/// Animator pipeline compile. `start()` mengembalikan `None` bila terminal
-/// tidak mendukung (bukan TTY) atau animasi dinonaktifkan — caller tidak perlu
-/// perubahan apa pun untuk jalur non-interaktif.
+/// Handle ringan (clone-able, thread-safe) ke state animasi — dipakai dari
+/// rayon par_iter / callback CompileSession untuk melaporkan progres per-file
+/// tanpa membawa `PipelineAnimator` utuh.
+#[derive(Clone)]
+pub struct AnimHandle {
+    state: Arc<Mutex<AnimState>>,
+}
+
+impl AnimHandle {
+    /// Laporkan satu file selesai disiapkan (lex/parse per-file).
+    /// Alloc basename di LUAR lock — panggilan dari beberapa worker rayon
+    /// serentak, hold time lock harus sesingkat mungkin.
+    pub fn file_done(&self, path: &Path, cached: bool) {
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.to_string_lossy().into_owned());
+        let mut st = self.state.lock().unwrap();
+        st.files_done += 1;
+        if cached {
+            st.files_cached += 1;
+        }
+        // File auto-include bisa membuat done > total yang di-set awal.
+        if st.files_done > st.files_total {
+            st.files_total = st.files_done;
+        }
+        st.current_file = name;
+    }
+}
+
+/// Status line animator pipeline compile. `start()` mengembalikan `None` bila
+/// terminal tidak mendukung (bukan TTY) atau animasi dinonaktifkan — caller
+/// tidak perlu perubahan apa pun untuk jalur non-interaktif.
 pub struct PipelineAnimator {
     state: Arc<Mutex<AnimState>>,
     stop: Arc<AtomicBool>,
@@ -150,6 +189,9 @@ impl PipelineAnimator {
     /// Mulai animasi. `enabled` mengontrol apakah animasi diizinkan (mis.
     /// false saat `--quiet` / mode debug). Mengembalikan `None` bila tidak
     /// ada animasi (bukan TTY atau disabled).
+    ///
+    /// PANGGIL SAAT KERJA NYATA MULAI (tepat sebelum compile/preprocess),
+    /// bukan saat setup — sebelum itu terminal harus bersih.
     pub fn start(enabled: bool) -> Option<PipelineAnimator> {
         if std::env::var("MIVON_NO_ANIM").is_ok() {
             return None;
@@ -160,37 +202,52 @@ impl PipelineAnimator {
         let state = Arc::new(Mutex::new(AnimState::default()));
         let stop = Arc::new(AtomicBool::new(false));
 
-        // Area pertama: simpan posisi kursor + sembunyikan kursor.
-        let mut out = io::stdout();
-        let _ = write!(out, "{}{}", SAVE_CURSOR, HIDE_CURSOR);
-        let _ = out.flush();
-
         let render_state = Arc::clone(&state);
         let render_stop = Arc::clone(&stop);
         let handle = std::thread::spawn(move || {
-            let mut frame: u64 = 0;
+            let mut last_line = String::new();
+            let mut last_draw = Instant::now();
             loop {
                 if render_stop.load(Ordering::Relaxed) {
                     break;
                 }
-                // Naikkan progress fase Running secara perlahan (indeterminate
-                // hingga 95%) — lompat ke 100 saat fase ditandai selesai.
-                {
-                    let mut st = render_state.lock().unwrap();
-                    if !st.finished {
-                        for p in st.phases.iter_mut() {
-                            if p.status == PhaseStatus::Running && p.progress < 95 {
-                                p.progress = p.progress.saturating_add(3).min(95);
-                            }
-                        }
-                        st.memory = read_mem_mb();
+                let line = {
+                    let st = render_state.lock().unwrap();
+                    // Render dijeda selama output lain dicetak (suspend_print).
+                    if st.paused {
+                        String::new()
+                    } else {
+                        build_line(&st, false)
                     }
+                };
+                if line.is_empty() {
+                    // Tidak digambar; reset cache agar baris langsung muncul
+                    // kembali setelah resume.
+                    last_line.clear();
+                } else if line != last_line
+                    && last_draw.elapsed() >= Duration::from_millis(REDRAW_MS)
+                {
+                    // Satu write tunggal per frame — atomic di stdout LineWriter.
+                    let mut out = io::stdout();
+                    let _ = write!(out, "\r{}{}", CLEAR_LINE, line);
+                    let _ = out.flush();
+                    last_line = line;
+                    last_draw = Instant::now();
                 }
-                render_frame(&render_state, frame);
-                frame = frame.wrapping_add(1);
-                std::thread::sleep(Duration::from_millis(100));
+                std::thread::sleep(Duration::from_millis(REDRAW_MS));
             }
         });
+
+        // Gambar baris pertama segera (idle: "Compiling N file ...").
+        {
+            let line = {
+                let st = state.lock().unwrap();
+                build_line(&st, false)
+            };
+            let mut out = io::stdout();
+            let _ = write!(out, "\r{}{}", CLEAR_LINE, line);
+            let _ = out.flush();
+        }
 
         Some(PipelineAnimator {
             state,
@@ -204,25 +261,61 @@ impl PipelineAnimator {
         self.active
     }
 
+    /// Handle clone-able untuk callback per-file (rayon / CompileSession).
+    pub fn handle(&self) -> AnimHandle {
+        AnimHandle {
+            state: Arc::clone(&self.state),
+        }
+    }
+
+    /// Bersihkan baris status sebelum output lain dicetak (log fase, diagnostik)
+    /// agar teks baru tidak menyambung dengan baris status.
+    pub fn clear_line(&self) {
+        let mut out = io::stdout();
+        let _ = write!(out, "\r{}", CLEAR_LINE);
+        let _ = out.flush();
+    }
+
+    /// Cetak output (biasanya multi-baris: diagnostik, timing) dengan aman:
+    /// render dijeda → baris status dibersihkan → `f()` berjalan → baris status
+    /// digambar ulang. Cegah balapan tulis antara thread render dan thread
+    /// utama — satu-satunya kunci sinkronisasi output.
+    pub fn suspend_print<F: FnOnce()>(&self, f: F) {
+        {
+            let mut st = self.state.lock().unwrap();
+            st.paused = true;
+        }
+        self.clear_line();
+        f();
+        {
+            let mut st = self.state.lock().unwrap();
+            st.paused = false;
+            // Gambar ulang segera (tanpa menunggu tick berikutnya).
+            if !st.finished {
+                let line = build_line(&st, false);
+                let mut out = io::stdout();
+                let _ = write!(out, "\r{}{}", CLEAR_LINE, line);
+                let _ = out.flush();
+            }
+        }
+    }
+
     pub fn phase_running(&self, phase: Phase) {
         let mut st = self.state.lock().unwrap();
         let i = phase.idx();
         st.phases[i].status = PhaseStatus::Running;
-        st.phases[i].progress = 0;
     }
 
     pub fn phase_done(&self, phase: Phase) {
         let mut st = self.state.lock().unwrap();
         let i = phase.idx();
         st.phases[i].status = PhaseStatus::Done;
-        st.phases[i].progress = 100;
     }
 
     pub fn phase_warn(&self, phase: Phase, count: usize) {
         let mut st = self.state.lock().unwrap();
         let i = phase.idx();
         st.phases[i].status = PhaseStatus::Warn;
-        st.phases[i].progress = 100;
         st.phases[i].warn_count = count;
     }
 
@@ -230,13 +323,29 @@ impl PipelineAnimator {
         let mut st = self.state.lock().unwrap();
         let i = phase.idx();
         st.phases[i].status = PhaseStatus::Error;
-        st.phases[i].progress = st.phases[i].progress.max(100);
     }
 
     pub fn set_files(&self, total: u64, done: u64) {
         let mut st = self.state.lock().unwrap();
         st.files_total = total;
         st.files_done = done;
+    }
+
+    pub fn set_cached(&self, n: u64) {
+        let mut st = self.state.lock().unwrap();
+        st.files_cached = n;
+    }
+
+    /// Jumlah file per ekstensi `[sv, svh, v, vh]` — tampil di baris idle.
+    pub fn set_ext_counts(&self, exts: [u64; 4]) {
+        let mut st = self.state.lock().unwrap();
+        st.exts = exts;
+    }
+
+    /// Top module aktif (tampil saat fase ELA).
+    pub fn set_top(&self, top: &str) {
+        let mut st = self.state.lock().unwrap();
+        st.top = top.to_string();
     }
 
     pub fn set_modules(&self, n: u64) {
@@ -249,8 +358,8 @@ impl PipelineAnimator {
         st.tokens = n;
     }
 
-    /// Hentikan thread render dan gambar panel ringkasan final (blok animasi
-    /// diganti area statis; output berikutnya dicetak di bawahnya).
+    /// Hentikan thread render dan gambar baris ringkasan final (diakhiri
+    /// newline; output berikutnya dicetak di bawahnya).
     pub fn finish(&mut self, ok: bool, errors: usize, warnings: usize) {
         if !self.active {
             return;
@@ -260,7 +369,6 @@ impl PipelineAnimator {
             for p in st.phases.iter_mut() {
                 if p.status == PhaseStatus::Running {
                     p.status = PhaseStatus::Done;
-                    p.progress = 100;
                 }
             }
             st.finished = true;
@@ -272,14 +380,17 @@ impl PipelineAnimator {
         if let Some(h) = self.handle.take() {
             let _ = h.join();
         }
-        render_summary(&self.state);
+        let line = {
+            let st = self.state.lock().unwrap();
+            build_line(&st, true)
+        };
         let mut out = io::stdout();
-        let _ = writeln!(out, "{}", SHOW_CURSOR);
+        let _ = write!(out, "\r{}{}\n", CLEAR_LINE, line);
         let _ = out.flush();
         self.active = false;
     }
 
-    /// Abort karena error — panel menunjukkan fase Error dan batal.
+    /// Abort karena error — baris menunjukkan kegagalan.
     pub fn abort(&mut self, errors: usize, warnings: usize) {
         self.finish(false, errors, warnings);
     }
@@ -288,15 +399,14 @@ impl PipelineAnimator {
 impl Drop for PipelineAnimator {
     fn drop(&mut self) {
         if self.active {
-            // Jalur keluar tanpa finish() (error dini): bersihkan area animasi
-            // agar tidak ada sisa baris waveform di terminal.
+            // Jalur keluar tanpa finish() (error dini): hentikan render dan
+            // bersihkan baris status agar tidak ada sisa teks di terminal.
             self.stop.store(true, Ordering::Relaxed);
             if let Some(h) = self.handle.take() {
                 let _ = h.join();
             }
-            clear_area();
             let mut out = io::stdout();
-            let _ = write!(out, "{}", SHOW_CURSOR);
+            let _ = write!(out, "\r{}", CLEAR_LINE);
             let _ = out.flush();
         }
     }
@@ -304,135 +414,209 @@ impl Drop for PipelineAnimator {
 
 // ── Rendering ──
 
-/// Render satu frame ke area tetap. Setiap frame: restore posisi awal lalu
-/// tulis ulang AREA_LINES baris (dengan clear per baris). Output lain yang
-/// ditulis thread utama muncul di bawah area dan tidak terganggu.
-fn render_frame(state: &Arc<Mutex<AnimState>>, frame: u64) {
-    let lines = build_lines(&state.lock().unwrap(), frame, false);
-    let mut out = io::stdout();
-    // Kembali ke posisi awal area.
-    let _ = write!(out, "{}", RESTORE_CURSOR);
-    for (i, line) in lines.iter().enumerate() {
-        let suffix = if i + 1 < lines.len() { "\n" } else { "" };
-        let _ = write!(out, "\r{}{}{}", CLEAR_LINE, line, suffix);
+/// Bentuk tanda per fase.
+fn phase_marker(status: PhaseStatus) -> &'static str {
+    match status {
+        PhaseStatus::Idle => "·",
+        PhaseStatus::Running => "▸",
+        PhaseStatus::Done => "✓",
+        PhaseStatus::Warn => "▲",
+        PhaseStatus::Error => "✖",
     }
-    let _ = out.flush();
 }
 
-fn render_summary(state: &Arc<Mutex<AnimState>>) {
-    let st = state.lock().unwrap();
-    let lines = build_lines(&st, 0, true);
-    let mut out = io::stdout();
-    let _ = write!(out, "{}", RESTORE_CURSOR);
-    for (i, line) in lines.iter().enumerate() {
-        let suffix = if i + 1 < lines.len() { "\n" } else { "" };
-        let _ = write!(out, "\r{}{}{}", CLEAR_LINE, line, suffix);
+fn phase_color(status: PhaseStatus) -> &'static str {
+    match status {
+        PhaseStatus::Idle => GRAY,
+        PhaseStatus::Running => BRIGHT_GREEN,
+        PhaseStatus::Done => GREEN,
+        PhaseStatus::Warn => YELLOW,
+        PhaseStatus::Error => RED,
     }
-    let _ = out.flush();
 }
 
-/// Bersihkan area animasi (hapus semua baris waveform) tanpa menggambar panel.
-fn clear_area() {
-    let mut out = io::stdout();
-    let _ = write!(out, "{}", RESTORE_CURSOR);
-    for _ in 0..AREA_LINES {
-        let _ = write!(out, "\r{}\n", CLEAR_LINE);
-    }
-    let _ = out.flush();
-}
-
-fn build_lines(st: &AnimState, frame: u64, final_frame: bool) -> Vec<String> {
-    let mut lines = Vec::with_capacity(AREA_LINES);
-    lines.push(format!(
-        "{}{}  Mivon Hardware Activity Monitor  {}{}",
-        CYAN, BOLD, RESET, DIM
-    ));
-    lines.push(format!("  ─────────────────────────────{}", RESET));
-    lines.push(clock_line(frame));
-
-    for (i, name) in PHASE_NAMES.iter().enumerate() {
-        lines.push(phase_line(name, &st.phases[i]));
-    }
-
-    let files_s = format!(
-        "{}{}{}/{}{}",
-        BOLD, st.files_done, RESET, GRAY, st.files_total
-    );
-    let mods_s = format!("{}{}{}", BOLD, st.modules, RESET);
-    let toks_s = format!("{}{}{}", BOLD, fmt_count(st.tokens), RESET);
-    let mem_s = format!("{}{}MB{}", BOLD, st.memory, RESET);
-    let wrk_s = format!("{}{}{}", BOLD, st.workers, RESET);
-    lines.push(format!(
-        "  {}Files {}  {}Modules {}  {}Tokens {}  {}Mem {}  {}Workers {}{}",
-        GRAY, files_s, GRAY, mods_s, GRAY, toks_s, GRAY, mem_s, GRAY, wrk_s, RESET,
-    ));
-
-    let elapsed = st.start.elapsed().as_secs_f64();
-    let status = if final_frame {
-        if st.ok {
-            format!("{}{}✓ Compile Completed{}", GREEN, BOLD, RESET)
-        } else {
-            format!("{}{}✖ Compile Failed{}", RED, BOLD, RESET)
+/// Strip 5 fase, mis. `LEX✓ PAR▸ ELA· OPT· VER·` (berwarna per status).
+fn phase_strip(st: &AnimState) -> String {
+    let mut s = String::with_capacity(32);
+    for (i, info) in st.phases.iter().enumerate() {
+        if i > 0 {
+            s.push(' ');
         }
-    } else {
-        format!("{}Elapsed {:.1}s{}", CYAN, elapsed, RESET)
-    };
-    lines.push(format!("  {}", status));
-
-    if final_frame {
-        let err_color = if st.errors > 0 { RED } else { GREEN };
-        let warn_color = if st.warnings > 0 { YELLOW } else { GREEN };
-        lines.push(format!(
-            "  {}Errors {}{}{}  {}Warnings {}{}{}  {}Time {:.2}s{}",
-            GRAY,
-            err_color,
-            st.errors,
-            RESET,
-            GRAY,
-            warn_color,
-            st.warnings,
-            RESET,
-            BOLD,
-            elapsed,
-            RESET,
-        ));
+        let color = phase_color(info.status);
+        let bold = if info.status == PhaseStatus::Running {
+            BOLD
+        } else {
+            ""
+        };
+        s.push_str(color);
+        s.push_str(bold);
+        s.push_str(PHASE_NAMES[i]);
+        s.push_str(phase_marker(info.status));
+        s.push_str(RESET);
     }
-    lines
-}
-
-fn clock_line(frame: u64) -> String {
-    const P: [&str; 4] = ["─", "▁", "─", "▔"];
-    let mut s = format!("{}CLK {} ", DIM, RESET);
-    let shift = (frame as usize) % 4;
-    for i in 0..CLK_WIDTH {
-        s.push_str(P[(i + shift) % 4]);
-    }
-    s.push(' ');
     s
 }
 
-fn phase_line(name: &str, info: &PhaseInfo) -> String {
-    let filled = (info.progress as usize * BAR_WIDTH / 100).min(BAR_WIDTH);
-    let mut bar = String::with_capacity(BAR_WIDTH);
-    for i in 0..BAR_WIDTH {
-        bar.push(if i < filled { '█' } else { '░' });
+/// Potong subjek dari kiri bila terlalu panjang: `…core/alu.sv`.
+fn clamp_subject(s: &str) -> String {
+    if s.chars().count() <= MAX_SUBJECT {
+        return s.to_string();
     }
-
-    let (color, status_text) = match info.status {
-        PhaseStatus::Idle => (GRAY, String::new()),
-        PhaseStatus::Running => (BRIGHT_GREEN, format!("{}", info.progress)),
-        PhaseStatus::Done => (GREEN, "✓".to_string()),
-        PhaseStatus::Warn => (YELLOW, format!("▲ {} warn", info.warn_count)),
-        PhaseStatus::Error => (RED, "✖ error".to_string()),
-    };
-
-    let label = format!("{} ", name);
-    format!(
-        "{}{}{}{} {}{}{}",
-        label, color, bar, RESET, color, BOLD, status_text,
-    ) + RESET
+    let chars: Vec<char> = s.chars().collect();
+    let tail: String = chars[chars.len() - MAX_SUBJECT + 1..].iter().collect();
+    format!("…{}", tail)
 }
 
+/// Subjek fase: LEX/PAR → file terakhir; ELA → top; OPT → token; VER → diag.
+fn subject_line(st: &AnimState, idx: usize) -> String {
+    let raw = match idx {
+        0 | 1 => st.current_file.clone(),
+        2 => {
+            if !st.top.is_empty() {
+                format!("top: {}", st.top)
+            } else if st.modules > 0 {
+                format!("{} module", st.modules)
+            } else {
+                String::new()
+            }
+        }
+        3 => {
+            if st.tokens > 0 {
+                format!("{} token", fmt_count(st.tokens))
+            } else {
+                String::new()
+            }
+        }
+        _ => {
+            if st.errors > 0 || st.warnings > 0 {
+                format!("{} err · {} warn", st.errors, st.warnings)
+            } else {
+                String::new()
+            }
+        }
+    };
+    clamp_subject(&raw)
+}
+
+/// Counter kanan: `47/128 · 12 cached · 0.6s`.
+fn stats_line(st: &AnimState) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if st.files_total > 0 {
+        parts.push(format!(
+            "{}{}/{}{}",
+            BOLD, st.files_done, st.files_total, RESET
+        ));
+    }
+    if st.files_cached > 0 {
+        parts.push(format!("{}{} cached{}", GRAY, st.files_cached, RESET));
+    }
+    let elapsed = st.start.elapsed().as_secs_f64();
+    parts.push(format!("{}{:.1}s{}", CYAN, elapsed, RESET));
+    parts.join(&format!("{} · {}", DIM, RESET))
+}
+
+/// Baris idle sebelum ada fase berjalan:
+/// `  Compiling 128 file · sv 112 · svh 14 · v 2`.
+fn idle_line(st: &AnimState) -> String {
+    let mut s = format!("  {}Compiling{} ", DIM, RESET);
+    s.push_str(&format!("{}{} file{}", BOLD, st.files_total, RESET));
+    let labels = ["sv", "svh", "v", "vh"];
+    for (i, n) in st.exts.iter().enumerate() {
+        if *n > 0 {
+            s.push_str(&format!("{} · {} {}{}", DIM, labels[i], n, RESET));
+        }
+    }
+    let elapsed = st.start.elapsed().as_secs_f64();
+    s.push_str(&format!("{} · {}{:.1}s{}", DIM, CYAN, elapsed, RESET));
+    s
+}
+
+/// Baris ringkasan final. Urutan: ANGKA dulu baru label
+/// (`128 file`, bukan `file128`).
+fn summary_line(st: &AnimState) -> String {
+    let elapsed = st.start.elapsed().as_secs_f64();
+    if st.ok {
+        let mut s = format!("  {}{}✓ Compile Completed{}", GREEN, BOLD, RESET);
+        s.push_str(&format!(
+            "{} · {}{} file{}",
+            DIM, BOLD, st.files_total, RESET
+        ));
+        if st.modules > 0 {
+            s.push_str(&format!("{} · {}{} module{}", DIM, BOLD, st.modules, RESET));
+        }
+        if st.warnings > 0 {
+            s.push_str(&format!(
+                "{} · {}{} warning{}{}",
+                DIM,
+                YELLOW,
+                st.warnings,
+                if st.warnings > 1 { "s" } else { "" },
+                RESET
+            ));
+        }
+        s.push_str(&format!("{} · {:.2}s{}", DIM, elapsed, RESET));
+        s
+    } else {
+        let mut s = format!("  {}{}✖ Compile Failed{}", RED, BOLD, RESET);
+        let err_color = if st.errors > 0 { RED } else { GRAY };
+        let warn_color = if st.warnings > 0 { YELLOW } else { GRAY };
+        s.push_str(&format!(
+            "{} · {}{} error{}{}",
+            DIM,
+            err_color,
+            st.errors,
+            if st.errors == 1 { "" } else { "s" },
+            RESET
+        ));
+        s.push_str(&format!(
+            "{} · {}{} warning{}{}",
+            DIM,
+            warn_color,
+            st.warnings,
+            if st.warnings == 1 { "" } else { "s" },
+            RESET
+        ));
+        s.push_str(&format!("{} · {:.2}s{}", DIM, elapsed, RESET));
+        s
+    }
+}
+
+fn build_line(st: &AnimState, final_frame: bool) -> String {
+    if final_frame {
+        return summary_line(st);
+    }
+    // Fase aktif = pertama yang Running; kalau tidak ada, fase terakhir
+    // yang tidak Idle (semua selesai tapi finish belum dipanggil).
+    let active = st
+        .phases
+        .iter()
+        .position(|p| p.status == PhaseStatus::Running)
+        .or_else(|| {
+            st.phases
+                .iter()
+                .rposition(|p| p.status != PhaseStatus::Idle)
+        });
+    let Some(idx) = active else {
+        return idle_line(st);
+    };
+
+    let subject = subject_line(st, idx);
+    let stats = stats_line(st);
+    if subject.is_empty() {
+        format!("  {}  {}", phase_strip(st), stats)
+    } else {
+        format!(
+            "  {}  {}{}{}  {}",
+            phase_strip(st),
+            CYAN,
+            subject,
+            RESET,
+            stats
+        )
+    }
+}
+
+/// Format angka besar: `1.5K` / `6.7M`.
 fn fmt_count(n: u64) -> String {
     if n >= 1_000_000 {
         format!("{:.1}M", n as f64 / 1_000_000.0)
@@ -443,23 +627,15 @@ fn fmt_count(n: u64) -> String {
     }
 }
 
-/// Baca RSS process (MB) dari /proc/self/statm. Fallback 0.
-fn read_mem_mb() -> u64 {
-    if let Ok(s) = std::fs::read_to_string("/proc/self/statm") {
-        if let Some(resident) = s.split_whitespace().nth(1) {
-            if let Ok(pages) = resident.parse::<u64>() {
-                return pages * 4096 / (1024 * 1024);
-            }
-        }
-    }
-    0
-}
-
 // ─── Tests ───
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn state_with() -> AnimState {
+        AnimState::default()
+    }
 
     #[test]
     fn test_phase_idx() {
@@ -471,44 +647,96 @@ mod tests {
     }
 
     #[test]
-    fn test_phase_line_running() {
-        let info = PhaseInfo {
-            status: PhaseStatus::Running,
-            progress: 50,
-            ..Default::default()
-        };
-        let line = phase_line("LEX", &info);
-        assert!(line.starts_with("LEX "));
-        assert!(line.contains('█'));
-        assert!(line.contains('░'));
+    fn test_idle_line_exts() {
+        let mut st = state_with();
+        st.files_total = 128;
+        st.exts = [112, 14, 2, 0];
+        let line = idle_line(&st);
+        assert!(line.contains("128 file"), "line: {}", line);
+        assert!(line.contains("sv 112"), "line: {}", line);
+        assert!(line.contains("svh 14"), "line: {}", line);
+        assert!(line.contains("v 2"), "line: {}", line);
+        assert!(!line.contains("vh 0"), "vh seharusnya hilang: {}", line);
     }
 
     #[test]
-    fn test_phase_line_done() {
-        let info = PhaseInfo {
-            status: PhaseStatus::Done,
-            progress: 100,
-            ..Default::default()
-        };
-        let line = phase_line("PAR", &info);
-        assert!(line.contains('✓'));
-        assert!(!line.contains('░'));
+    fn test_status_line_running() {
+        let mut st = state_with();
+        st.phases[0].status = PhaseStatus::Running;
+        st.current_file = "alu_core.sv".into();
+        st.files_total = 10;
+        st.files_done = 4;
+        let line = build_line(&st, false);
+        assert!(line.contains("LEX▸"), "line: {}", line);
+        assert!(line.contains("PAR·"), "line: {}", line);
+        assert!(line.contains("alu_core.sv"), "line: {}", line);
+        assert!(line.contains("4/10"), "line: {}", line);
     }
 
     #[test]
-    fn test_clock_line() {
-        let l1 = clock_line(0);
-        let l2 = clock_line(1);
+    fn test_status_line_done_phase() {
+        let mut st = state_with();
+        st.phases[0].status = PhaseStatus::Done;
+        st.phases[1].status = PhaseStatus::Done;
+        st.phases[2].status = PhaseStatus::Running;
+        st.top = "tb_counter".into();
+        let line = build_line(&st, false);
+        assert!(line.contains("LEX✓"), "line: {}", line);
+        assert!(line.contains("PAR✓"), "line: {}", line);
+        assert!(line.contains("ELA▸"), "line: {}", line);
+        assert!(line.contains("top: tb_counter"), "line: {}", line);
+        assert!(line.contains("VER·"), "line: {}", line);
+    }
+
+    #[test]
+    fn test_summary_ok_and_failed() {
+        let mut st = state_with();
+        st.files_total = 128;
+        st.modules = 14;
+        st.finished = true;
+        st.ok = true;
+        st.warnings = 1;
+        let ok = summary_line(&st);
+        assert!(ok.contains("Compile Completed"), "line: {}", ok);
+        assert!(ok.contains("128"), "line: {}", ok);
+        assert!(ok.contains("14 module"), "line: {}", ok);
+        assert!(ok.contains("1 warning"), "line: {}", ok);
+
+        st.ok = false;
+        st.errors = 2;
+        let bad = summary_line(&st);
+        assert!(bad.contains("Compile Failed"), "line: {}", bad);
+        assert!(bad.contains("2 errors"), "line: {}", bad);
+    }
+
+    #[test]
+    fn test_clamp_subject() {
+        let long = "some/very/long/path/to/rtl/core/alu_core.sv";
+        let clamped = clamp_subject(long);
         assert!(
-            l1.contains("CLK"),
-            "clock line harus memuat label CLK: {:?}",
-            l1
+            clamped.chars().count() <= MAX_SUBJECT,
+            "clamped: {}",
+            clamped
         );
-        assert!(
-            l1.contains('▁') || l1.contains('▔'),
-            "clock harus memuat bentuk gelombang"
-        );
-        assert_ne!(l1, l2, "clock harus bergeser tiap frame");
+        assert!(clamped.ends_with("alu_core.sv"), "clamped: {}", clamped);
+        assert_eq!(clamp_subject("alu.sv"), "alu.sv");
+    }
+
+    #[test]
+    fn test_handle_file_done_counters() {
+        let state = Arc::new(Mutex::new(AnimState::default()));
+        let h = AnimHandle {
+            state: Arc::clone(&state),
+        };
+        h.file_done(Path::new("rtl/alu.sv"), false);
+        h.file_done(Path::new("rtl/alu.svh"), true);
+        h.file_done(Path::new("rtl/top.v"), true);
+        let st = state.lock().unwrap();
+        assert_eq!(st.files_done, 3);
+        assert_eq!(st.files_cached, 2);
+        // total awal 0 → ikut naik ke done (auto-include safety).
+        assert_eq!(st.files_total, 3);
+        assert_eq!(st.current_file, "top.v");
     }
 
     #[test]
@@ -520,14 +748,9 @@ mod tests {
     }
 
     #[test]
-    fn test_read_mem_mb_ok() {
-        // read_mem_mb tidak boleh panic (fallback 0).
-        let _ = read_mem_mb();
-    }
-
-    #[test]
-    fn test_animator_not_tty() {
-        // Dalam test, stdout bukan TTY → start(false) harus None.
+    fn test_animator_not_tty_or_disabled() {
+        // Dalam test stdout bukan TTY → start harus None, termasuk enabled=true.
         assert!(PipelineAnimator::start(false).is_none());
+        assert!(PipelineAnimator::start(true).is_none());
     }
 }

@@ -404,6 +404,65 @@ fn anim_abort(anim: &mut Option<PipelineAnimator>, errors: usize, warnings: usiz
     }
 }
 
+/// Log fase bergaya Cargo: baris status dibersihkan dulu (bila aktif), pesan
+/// dicetak sebagai baris tersendiri DI ATAS status, lalu status digambar ulang
+/// di baris berikutnya. Non-aktif → eprintln biasa.
+fn anim_log(anim: &Option<PipelineAnimator>, msg: &str) {
+    match anim.as_ref() {
+        Some(a) if a.is_active() => a.suspend_print(|| eprintln!("{}", msg)),
+        _ => eprintln!("{}", msg),
+    }
+}
+
+/// Wrapper `emit_diags` yang aman terhadap animasi aktif — diagnostik multi-baris
+/// dicetak saat render dijeda, lalu baris status digambar ulang.
+fn emit_diags_anim(
+    anim: &Option<PipelineAnimator>,
+    diags: &[mivon_core::diagnostics::diagnostic::Diagnostic],
+) {
+    match anim.as_ref() {
+        Some(a) if a.is_active() => a.suspend_print(|| emit_diags(diags)),
+        _ => emit_diags(diags),
+    }
+}
+
+/// Hitung jumlah file per ekstensi `[sv, svh, v, vh]` lalu pasang ke animasi
+/// (tampil di baris idle: `Compiling 128 file · sv 112 · svh 14`).
+fn anim_set_exts<P: AsRef<std::path::Path>>(anim: &Option<PipelineAnimator>, files: &[P]) {
+    if let Some(a) = anim.as_ref() {
+        let mut exts = [0u64; 4];
+        for f in files {
+            match f
+                .as_ref()
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.to_ascii_lowercase())
+            {
+                Some(ref e) if e == "sv" => exts[0] += 1,
+                Some(ref e) if e == "svh" => exts[1] += 1,
+                Some(ref e) if e == "v" => exts[2] += 1,
+                Some(ref e) if e == "vh" => exts[3] += 1,
+                _ => {}
+            }
+        }
+        a.set_ext_counts(exts);
+    }
+}
+
+/// Pasang top module ke baris status (subjek fase ELA).
+fn anim_set_top(anim: &Option<PipelineAnimator>, top: &str) {
+    if let Some(a) = anim.as_ref() {
+        a.set_top(top);
+    }
+}
+
+/// Pasang jumlah file cache-hit (MICD) — tampil sebagai `N cached`.
+fn anim_set_cached(anim: &Option<PipelineAnimator>, n: u64) {
+    if let Some(a) = anim.as_ref() {
+        a.set_cached(n);
+    }
+}
+
 /// Run formal verification (BMC) and print results.
 /// Returns Err if any assertion fails (counterexample found — for CI/CD integration).
 #[cfg(feature = "formal")]
@@ -1036,8 +1095,14 @@ fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), SimError> {
         return run_fast(cli, None, env);
     }
 
-    // ── Animasi pipeline (terminal EDA) ──
+    // ── Animasi pipeline (baris status gaya Cargo) ──
+    // Start di sini = tepat setelah mode jalur ditentukan dan sebelum kerja
+    // nyata (include scan + preprocess) — tidak ada output animasi sebelumnya.
     let mut anim = PipelineAnimator::start(anim_enabled(&cli));
+    if anim_active(&anim) {
+        anim_set_exts(&anim, &sources);
+        anim_set_files(&anim, sources.len() as u64, 0);
+    }
 
     // Auto-detect include paths: consolidated single-pass scan
     // Walk up from each source dir's ancestors, recursively scan for SV files (depth ≤ 4)
@@ -1194,10 +1259,14 @@ fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), SimError> {
     }
     if anim_active(&anim) {
         anim_phase_running(&anim, Phase::Lex);
-        anim_set_files(&anim, sources.len() as u64, 0);
+        // File yang reuse MICD cache sudah "selesai" di loop deteksi di atas.
+        anim_set_files(&anim, sources.len() as u64, micd_reused as u64);
+        anim_set_cached(&anim, micd_reused as u64);
     }
     let pp_start = std::time::Instant::now();
     let pp_for_parallel = &base_pp;
+    // Progres per-file dari worker rayon (clone handle sekali, bukan per-file).
+    let anim_h = anim.as_ref().map(|a| a.handle());
     let fresh_results: Vec<
         Result<(usize, String, Option<(String, String)>, Vec<PathBuf>), String>,
     > = need_preprocess
@@ -1210,6 +1279,9 @@ fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), SimError> {
                 let text = String::from_utf8_lossy(bytes).to_string();
                 return match pp.preprocess(&text, None) {
                     Ok(processed) => {
+                        if let Some(h) = &anim_h {
+                            h.file_done(Path::new(path), false);
+                        }
                         let combined_str = format!("`line 1 \"{}\"\n{}\n", path, processed);
                         Ok((*idx, combined_str, pp.timescale.clone(), Vec::new()))
                     }
@@ -1218,6 +1290,9 @@ fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), SimError> {
             }
             match pp.preprocess_file(path) {
                 Ok(processed) => {
+                    if let Some(h) = &anim_h {
+                        h.file_done(Path::new(path), false);
+                    }
                     let combined_str = format!("`line 1 \"{}\"\n{}\n", path, processed);
                     let includes: Vec<PathBuf> = pp.resolved_includes.iter().cloned().collect();
                     Ok((*idx, combined_str, pp.timescale.clone(), includes))
@@ -1226,9 +1301,10 @@ fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), SimError> {
             }
         })
         .collect();
-    if !anim_active(&anim) {
-        eprintln!("[TIMING] Preprocessing done in {:?}", pp_start.elapsed());
-    }
+    anim_log(
+        &anim,
+        &format!("[TIMING] Preprocessing done in {:?}", pp_start.elapsed()),
+    );
 
     for r in &fresh_results {
         match r {
@@ -1372,13 +1448,14 @@ fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), SimError> {
             }
         }
     }
-    if !anim_active(&anim) {
-        eprintln!(
+    anim_log(
+        &anim,
+        &format!(
             "[TIMING] Lexer done: {} tokens in {:?}",
             tokens.len(),
             lex_start.elapsed()
-        );
-    }
+        ),
+    );
     if anim_active(&anim) {
         anim_phase_done(&anim, Phase::Lex);
         anim_phase_running(&anim, Phase::Par);
@@ -1409,20 +1486,29 @@ fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), SimError> {
                 anim_set_modules(&anim, d.modules.len() as u64);
                 anim_set_files(&anim, sources.len() as u64, sources.len() as u64);
             }
-            if !anim_active(&anim) {
-                eprintln!("[TIMING] Parser done in {:?}", parse_start.elapsed());
-            }
+            anim_log(
+                &anim,
+                &format!("[TIMING] Parser done in {:?}", parse_start.elapsed()),
+            );
             d
         }
         Err(e) => {
             // Emit hanya WARNING di sini; error dicetak SATU kali oleh
             // top-level handler (hindari duplikasi diagnostic line:col).
+            // Tanpa clone: closure meminjam `parser.errors` langsung — `anim`
+            // dan `parser` objek terpisah, tidak ada konflik borrow.
             if parser.errors.iter().any(|d| !d.is_error()) {
-                let mut emitter = mivon_core::diagnostics::TerminalEmitter::new();
-                for diag in &parser.errors {
-                    if !diag.is_error() {
-                        let _ = emitter.emit(diag);
+                let emit_warnings = || {
+                    let mut emitter = mivon_core::diagnostics::TerminalEmitter::new();
+                    for diag in &parser.errors {
+                        if !diag.is_error() {
+                            let _ = emitter.emit(diag);
+                        }
                     }
+                };
+                match anim.as_ref() {
+                    Some(a) if a.is_active() => a.suspend_print(emit_warnings),
+                    _ => emit_warnings(),
                 }
             }
             return Err(e);
@@ -1431,11 +1517,17 @@ fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), SimError> {
     // Emit parser diagnostics (warnings) — errors ditangani top-level sekali.
     // In compile-only mode, individual construct errors are non-fatal.
     if parser.errors.iter().any(|d| !d.is_error()) {
-        let mut emitter = mivon_core::diagnostics::TerminalEmitter::new();
-        for diag in &parser.errors {
-            if !diag.is_error() {
-                let _ = emitter.emit(diag);
+        let emit_warnings = || {
+            let mut emitter = mivon_core::diagnostics::TerminalEmitter::new();
+            for diag in &parser.errors {
+                if !diag.is_error() {
+                    let _ = emitter.emit(diag);
+                }
             }
+        };
+        match anim.as_ref() {
+            Some(a) if a.is_active() => a.suspend_print(emit_warnings),
+            _ => emit_warnings(),
         }
     }
     if parser.errors.iter().any(|d| d.is_error()) && !cli.compile_only {
@@ -1804,6 +1896,10 @@ fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), SimError> {
         println!("Compiling design ({} file sources)...", sources.len());
     }
     if anim_active(&anim) {
+        // Subjek fase ELA: HANYA top eksplisit (`--top`). Tanpa fallback diam-diam
+        // ke module pertama — itu bisa menampilkan module yang bukan top.
+        // Top kosong → subject_line menampilkan jumlah module.
+        anim_set_top(&anim, top_name.unwrap_or(""));
         anim_phase_running(&anim, Phase::Ela);
     }
     if !anim_active(&anim) {
@@ -1871,9 +1967,10 @@ fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), SimError> {
                 let e = elab_diags.iter().filter(|d| d.is_error()).count();
                 anim_finish(&mut anim, e == 0, e, w);
             }
-            if !anim_active(&anim) {
-                eprintln!("[TIMING] Elaboration done in {:?}", elab_start.elapsed());
-            }
+            anim_log(
+                &anim,
+                &format!("[TIMING] Elaboration done in {:?}", elab_start.elapsed()),
+            );
             // Flush elaboration-time diagnostics (warnings like WR0102)
             emit_diags(&elab_diags);
             // Mode analisis (recovery): top-level tidak dapat ditentukan secara
@@ -2950,8 +3047,10 @@ fn run_fast(
 
     let mut session = CompileSession::new(config);
 
-    // ── Animasi pipeline (terminal EDA) ──
-    let mut anim = PipelineAnimator::start(anim_enabled(&cli));
+    // ── Animasi pipeline (baris status gaya Cargo) ──
+    // Dideklarasikan dulu, di-START nanti tepat sebelum compile() — setup MICD
+    // dan mode khusus (compile-only/lazy) tidak menggambar animasi apa pun.
+    let mut anim: Option<PipelineAnimator> = None;
 
     // ── MICD: persistent incremental compilation database ──
     // Otomatis (bukan flag tambahan): restore AST/combined-source file yang
@@ -3048,10 +3147,20 @@ fn run_fast(
     }
 
     // ── Full pipeline: compile + elaborate ──
+    // START animasi di sini: tepat sebelum compile() dikerjakan — setelah semua
+    // setup (MICD, mode) selesai. Baris pertama muncul bersama mulai kerja.
+    anim = PipelineAnimator::start(anim_enabled(&cli));
     if anim_active(&anim) {
+        anim_set_exts(&anim, &session.config.sources);
         anim_phase_running(&anim, Phase::Lex);
         anim_phase_running(&anim, Phase::Par);
         anim_set_files(&anim, session.config.sources.len() as u64, 0);
+        // Progres per-file dari rayon: nama file .sv/.svh/.v/.vh terakhir +
+        // hitungan done/cached, di-update dari worker tanpa clone per-file.
+        if let Some(a) = anim.as_ref() {
+            let h = a.handle();
+            session.set_file_progress(move |path, cached| h.file_done(path, cached));
+        }
     }
     let (design, index_len) = if cli.recompile {
         if !cli.quiet && !anim_active(&anim) {
@@ -3074,8 +3183,10 @@ fn run_fast(
     };
 
     // Emit parse errors collected during compilation
+    // (animasi masih aktif → pakai wrapper suspend agar teks tidak menyambung
+    // dengan baris status)
     if !session.parse_errors.is_empty() {
-        emit_diags(&session.parse_errors);
+        emit_diags_anim(&anim, &session.parse_errors);
     }
 
     let mut pmark = std::time::Instant::now();
@@ -3141,6 +3252,9 @@ fn run_fast(
 
     // Elaborate (source info dari merged source — sudah tersimpan di MICD).
     if anim_active(&anim) {
+        // Subjek fase ELA: HANYA top eksplisit (`--top`) — tanpa fallback
+        // diam-diam ke module pertama (bukan top sebenarnya).
+        anim_set_top(&anim, top_name.unwrap_or(""));
         anim_phase_running(&anim, Phase::Ela);
     }
     // ── Reuse IR cache (db.md "5. elaborate/"): bila SELURUH file di-restore
