@@ -423,6 +423,14 @@ fn evaluate_sim(source: &str, timeout_ms: u64) -> CaseResult {
                     source,
                 );
             }
+            // O6: bug menyamar sbg warning/error (HiddenBug = pola mustahil
+            // by-design → dianggap bug; Degraded = mivon menyerah diam →
+            // dihitung & tampil summary). Tanpa scan ini, degradasi senyap
+            // tergolong Ok (kasus WR0102 menyembunyikan bug lebar dsb).
+            let combined = format!("{}\n{}", outcome.stdout, outcome.stderr);
+            if let Some((cat, detail)) = scan_hidden_diags(&combined) {
+                return mk(Target::Simulator, Oracle::O1NoCrash, cat, &detail, source);
+            }
         }
     }
 
@@ -951,6 +959,63 @@ fn fmt_roundtrip(source: &str) -> Result<(), FmtError> {
     Ok(())
 }
 
+/// Scan output subprocess utk BUG MENYAMAR sbg warning/error (oracle O6).
+///
+/// Dua tingkat:
+/// - `HiddenBug` — pola yang MUSTAHIL keputusan by-design ("internal error",
+///   "corrupt", "must not happen", severity terbalik `error[WR...`) →
+///   dianggap BUG (is_bug, tersave). Menangkap kelas bug yang dulu lolos
+///   karena cuma jadi warning (kasus WR0102 menyembunyikan bug lebar).
+/// - `Degraded` — mivon MENYERAH diam ("fallback", "treated as", "taking
+///   true branch", "using null default", "returning 0", stub, unknown
+///   function/class, ...) → sebagian besar by-design TAPI wajib terhitung
+///   (dulu kategori Ok → degradasi senyap; lonjakan = sinyal review).
+pub(crate) fn scan_hidden_diags(output: &str) -> Option<(Category, String)> {
+    const STRONG: &[&str] = &[
+        "internal error",
+        "corrupt",
+        "must not happen",
+        // Input di-lowercase dulu → pola ikut huruf kecil.
+        "error[wr",
+    ];
+    const WEAK: &[&str] = &[
+        "fallback",
+        "treated as",
+        "taking true branch",
+        "taking first case",
+        "using null default",
+        "cannot be resolved",
+        "returning 0",
+        " expansion skipped",
+        "belum didukung",
+        "unknown function",
+        "unknown class",
+        "cannot resolve identifier",
+        "cannot call method",
+    ];
+    let mut degraded: Option<String> = None;
+    for line in output.lines() {
+        let lower = line.to_lowercase();
+        for p in STRONG {
+            if lower.contains(p) {
+                return Some((
+                    Category::HiddenBug,
+                    format!("bug menyamar sbg warning/error — pola '{p}': {}", line.trim()),
+                ));
+            }
+        }
+        if degraded.is_none() {
+            for p in WEAK {
+                if lower.contains(p) {
+                    degraded = Some(format!("degradasi diam — pola '{p}': {}", line.trim()));
+                    break;
+                }
+            }
+        }
+    }
+    degraded.map(|d| (Category::Degraded, d))
+}
+
 /// Target CLI: jalankan mivon binary dengan arg random di cwd temp.
 fn evaluate_cli(source: &str, timeout_ms: u64) -> CaseResult {
     // CLI/tool dijalankan ATAS source mutasi nyata — sebelum ini argumen acak
@@ -1022,13 +1087,23 @@ fn evaluate_cli(source: &str, timeout_ms: u64) -> CaseResult {
     }
 
     match outcome.kind {
-        crate::runner::Kind::Ok => mk(
-            Target::Cli,
-            Oracle::O1NoCrash,
-            Category::Ok,
-            &format!("cli ok: {args_desc}"),
-            source,
-        ),
+        crate::runner::Kind::Ok => {
+            // O6: bug menyamar sbg warning/error — scan stdout+stderr
+            // (HiddenBug = pola mustahil by-design → bug; Degraded = mivon
+            // menyerah diam → dihitung, tampil summary — dulu semua Ok/senyap).
+            let combined = format!("{}\n{}", outcome.stdout, outcome.stderr);
+            if let Some((cat, detail)) = scan_hidden_diags(&combined) {
+                mk(Target::Cli, Oracle::O1NoCrash, cat, &detail, source)
+            } else {
+                mk(
+                    Target::Cli,
+                    Oracle::O1NoCrash,
+                    Category::Ok,
+                    &format!("cli ok: {args_desc}"),
+                    source,
+                )
+            }
+        }
         crate::runner::Kind::CleanError => mk(
             Target::Cli,
             Oracle::O1NoCrash,
@@ -2458,4 +2533,52 @@ fn has_num_colon(msg: &str) -> bool {
         i += 1;
     }
     false
+}
+
+#[cfg(test)]
+mod scan_tests {
+    use super::*;
+
+    /// O6 HiddenBug: pola mustahil by-design harus terdeteksi sbg bug.
+    #[test]
+    fn scan_detects_hidden_bug_strong_patterns() {
+        for out in [
+            "internal error: registry corrupt",
+            "state corrupt after commit",
+            "assert: must not happen here",
+            "error[WR0102]: width mismatch", // severity terbalik
+        ] {
+            let r = scan_hidden_diags(out).expect(out);
+            assert_eq!(r.0, Category::HiddenBug, "pola: {out}");
+        }
+    }
+
+    /// O6 Degraded: mivon menyerah diam → dihitung (bukan Ok senyap),
+    /// tapi BUKAN bug hard.
+    #[test]
+    fn scan_detects_degraded_fallback() {
+        let r = scan_hidden_diags(
+            "warning[E9001]: width of port 'x' cannot be resolved — fallback lebar 1",
+        )
+        .expect("harus terdeteksi");
+        assert_eq!(r.0, Category::Degraded);
+        assert!(!r.0.is_bug(), "Degraded bukan bug hard");
+        let r2 = scan_hidden_diags("warning[RT8001]: DPI function 'f' not found in imports, returning 0")
+            .expect("harus terdeteksi");
+        assert_eq!(r2.0, Category::Degraded);
+    }
+
+    /// Output bersih → None (tidak menandai Ok sbg Degraded).
+    #[test]
+    fn scan_clean_output_returns_none() {
+        assert!(scan_hidden_diags("Simulation completed at time 16\nok").is_none());
+        assert!(scan_hidden_diags("").is_none());
+    }
+
+    /// HiddenBug menang atas Degraded pada output campuran.
+    #[test]
+    fn scan_strong_wins_over_weak() {
+        let r = scan_hidden_diags("fallback line\ninternal error: boom").expect("ada");
+        assert_eq!(r.0, Category::HiddenBug);
+    }
 }

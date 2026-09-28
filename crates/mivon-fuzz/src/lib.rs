@@ -157,13 +157,34 @@ pub enum Category {
     /// SLOW, bukan hang. BUKAN bug (dulu semua terhitung Hang → noise
     /// kampanye proporsional beban CPU & ukuran seed).
     Slow,
+    /// BUG MENYAMAR sbg warning/error — output mengandung pola KUAT
+    /// inkonsistensi internal: level warning dgn kode error (`warning[E...]`),
+    /// "internal error", "corrupt", "inconsistent", "must not happen",
+    /// severity terbalik (`error[WR...`). Tak mungkin keputusan by-design →
+    /// dianggap BUG (is_bug true, tersave utk review).
+    HiddenBug,
+    /// Mivon MENYERAH DIAM pada kasus ini (degradasi terekspresikan):
+    /// "fallback", "treated as", "taking true branch", "using null default",
+    /// "cannot be resolved", "returning 0", "stub", "skipped",
+    /// "belum didukung". BUKAN bug hard (banyak keputusan degrade by-design)
+    /// TAPI dihitung & tampil di summary kampanye supaya lonjakan degradasi
+    /// cepat ketahuan (dulu semua kategori Ok → senyap).
+    Degraded,
 }
 
 impl Category {
     pub fn is_bug(self) -> bool {
-        !matches!(
+        matches!(
             self,
-            Category::Ok | Category::CleanError | Category::Suspicious | Category::Slow
+            Category::Panic
+                | Category::Abort
+                | Category::Hang
+                | Category::DiagMissing
+                | Category::RoundtripMismatch
+                | Category::NonDeterministic
+                | Category::GuardBypass
+                | Category::Differential
+                | Category::HiddenBug
         )
     }
 
@@ -181,6 +202,8 @@ impl Category {
             Category::Differential => "differential",
             Category::Suspicious => "suspicious",
             Category::Slow => "slow",
+            Category::HiddenBug => "hidden_bug",
+            Category::Degraded => "degraded",
         }
     }
 
@@ -198,6 +221,8 @@ impl Category {
             "differential" => Some(Category::Differential),
             "suspicious" => Some(Category::Suspicious),
             "slow" => Some(Category::Slow),
+            "hidden_bug" => Some(Category::HiddenBug),
+            "degraded" => Some(Category::Degraded),
             _ => None,
         }
     }
