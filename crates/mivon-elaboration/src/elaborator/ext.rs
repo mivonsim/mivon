@@ -42,12 +42,7 @@ impl Elaborator {
         if let Some(m) = self.design.modules.iter().find(|m| m.name == top_name) {
             modules.push(m);
         }
-        modules.extend(
-            self.design
-                .modules
-                .iter()
-                .filter(|m| m.name != top_name),
-        );
+        modules.extend(self.design.modules.iter().filter(|m| m.name != top_name));
         for top_module in modules {
             for item in &top_module.items {
                 if let ModuleItem::Covergroup(cg) = item {
@@ -65,95 +60,95 @@ impl Elaborator {
                         );
                         continue;
                     }
-                let mut ir_cps = Vec::new();
-                for cp in &cg.coverpoints {
-                    let ir_expr = self.elaborate_expr(&cp.expr, signal_map, signals)?;
-                    // VERIF-30: turunkan bin eksplisit (bins/illegal_bins/
-                    // ignore_bins) — sebelumnya di-parse parser tapi di-drop
-                    // di sini sehingga sampler hanya memakai auto-binning.
-                    let mut ir_bins = Vec::new();
-                    for b in &cp.bins {
-                        let mut ranges = Vec::new();
-                        for r in &b.range_list {
-                            let low = self.elaborate_expr(&r.low, signal_map, signals)?;
-                            let high = match &r.high {
-                                Some(h) => Some(self.elaborate_expr(h, signal_map, signals)?),
-                                None => None,
-                            };
-                            ranges.push(IrBinRange { low, high });
-                        }
-                        // VERIF-31: transition bins — turunkan tiap sekuens nilai.
-                        let mut ir_transitions = Vec::new();
-                        for seq in &b.transitions {
-                            let mut ir_seq = Vec::new();
-                            for v in seq {
-                                ir_seq.push(self.elaborate_expr(v, signal_map, signals)?);
+                    let mut ir_cps = Vec::new();
+                    for cp in &cg.coverpoints {
+                        let ir_expr = self.elaborate_expr(&cp.expr, signal_map, signals)?;
+                        // VERIF-30: turunkan bin eksplisit (bins/illegal_bins/
+                        // ignore_bins) — sebelumnya di-parse parser tapi di-drop
+                        // di sini sehingga sampler hanya memakai auto-binning.
+                        let mut ir_bins = Vec::new();
+                        for b in &cp.bins {
+                            let mut ranges = Vec::new();
+                            for r in &b.range_list {
+                                let low = self.elaborate_expr(&r.low, signal_map, signals)?;
+                                let high = match &r.high {
+                                    Some(h) => Some(self.elaborate_expr(h, signal_map, signals)?),
+                                    None => None,
+                                };
+                                ranges.push(IrBinRange { low, high });
                             }
-                            ir_transitions.push(ir_seq);
+                            // VERIF-31: transition bins — turunkan tiap sekuens nilai.
+                            let mut ir_transitions = Vec::new();
+                            for seq in &b.transitions {
+                                let mut ir_seq = Vec::new();
+                                for v in seq {
+                                    ir_seq.push(self.elaborate_expr(v, signal_map, signals)?);
+                                }
+                                ir_transitions.push(ir_seq);
+                            }
+                            ir_bins.push(IrBin {
+                                name: b.name,
+                                ranges,
+                                transitions: ir_transitions,
+                                bin_type: b.bin_type.clone(),
+                            });
                         }
-                        ir_bins.push(IrBin {
-                            name: b.name,
-                            ranges,
-                            transitions: ir_transitions,
-                            bin_type: b.bin_type.clone(),
+                        ir_cps.push(IrCoverpoint {
+                            name: cp.name,
+                            expr: ir_expr,
+                            bins: ir_bins,
                         });
                     }
-                    ir_cps.push(IrCoverpoint {
-                        name: cp.name,
-                        expr: ir_expr,
-                        bins: ir_bins,
+                    let ir_crosses = cg
+                        .crosses
+                        .iter()
+                        .map(|c| IrCross {
+                            name: c.name,
+                            coverpoints: c.coverpoints.clone(),
+                        })
+                        .collect();
+                    // IMPLICIT SAMPLING (§19.8): turunkan clocking event ke
+                    // SignalId — engine sample otomatis tiap edge.
+                    let (event_signal, event_posedge) = match &cg.clocking_event {
+                        Some(ce) => {
+                            let sid = match &ce.expr {
+                                Expr::Ident { name, .. } => signal_map.get(name).copied(),
+                                other => {
+                                    // Event non-Ident (mis. `@(posedge a[0])`) —
+                                    // belum didukung; tanpa resolve, covergroup
+                                    // jatuh ke sample() eksplisit saja (bukan
+                                    // senyap-total: ada warning).
+                                    let _ = other;
+                                    None
+                                }
+                            };
+                            if sid.is_none() {
+                                self.elab_warn_at(
+                                    mivon_core::diagnostics::DiagCode::NotImplemented,
+                                    format!(
+                                        "covergroup '{}': clocking event tidak bisa di-resolve — \
+             implicit sampling (@edge) nonaktif; pakai sample() eksplisit",
+                                        cg.name
+                                    ),
+                                    0,
+                                    0,
+                                );
+                            }
+                            (sid, ce.posedge)
+                        }
+                        None => (None, true),
+                    };
+                    covergroups.push(IrCovergroup {
+                        name: cg.name,
+                        coverpoints: ir_cps,
+                        crosses: ir_crosses,
+                        // VERIF-28: type_option.weight default 1; per_instance default false.
+                        weight: cg.weight.unwrap_or(1),
+                        per_instance: cg.per_instance,
+                        event_signal,
+                        event_posedge,
                     });
                 }
-                let ir_crosses = cg
-                    .crosses
-                    .iter()
-                    .map(|c| IrCross {
-                        name: c.name,
-                        coverpoints: c.coverpoints.clone(),
-                    })
-                    .collect();
-                // IMPLICIT SAMPLING (§19.8): turunkan clocking event ke
-                // SignalId — engine sample otomatis tiap edge.
-                let (event_signal, event_posedge) = match &cg.clocking_event {
-                    Some(ce) => {
-                        let sid = match &ce.expr {
-                            Expr::Ident { name, .. } => signal_map.get(name).copied(),
-                            other => {
-                                // Event non-Ident (mis. `@(posedge a[0])`) —
-                                // belum didukung; tanpa resolve, covergroup
-                                // jatuh ke sample() eksplisit saja (bukan
-                                // senyap-total: ada warning).
-                                let _ = other;
-                                None
-                            }
-                        };
-                        if sid.is_none() {
-                            self.elab_warn_at(
-                                mivon_core::diagnostics::DiagCode::NotImplemented,
-                                format!(
-                                    "covergroup '{}': clocking event tidak bisa di-resolve — \
-             implicit sampling (@edge) nonaktif; pakai sample() eksplisit",
-                                    cg.name
-                                ),
-                                0,
-                                0,
-                            );
-                        }
-                        (sid, ce.posedge)
-                    }
-                    None => (None, true),
-                };
-                covergroups.push(IrCovergroup {
-                    name: cg.name,
-                    coverpoints: ir_cps,
-                    crosses: ir_crosses,
-                    // VERIF-28: type_option.weight default 1; per_instance default false.
-                    weight: cg.weight.unwrap_or(1),
-                    per_instance: cg.per_instance,
-                    event_signal,
-                    event_posedge,
-                });
-            }
             }
         }
         Ok(covergroups)

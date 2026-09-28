@@ -663,10 +663,9 @@ impl Parser {
                                 let er = self.parse_range()?;
                                 match er {
                                     Some(er) => {
-                                        if let (Ok(m), Ok(l)) = (
-                                            const_eval_simple(&er.msb),
-                                            const_eval_simple(&er.lsb),
-                                        ) {
+                                        if let (Ok(m), Ok(l)) =
+                                            (const_eval_simple(&er.msb), const_eval_simple(&er.lsb))
+                                        {
                                             (
                                                 None,
                                                 Some(Range {
@@ -695,12 +694,10 @@ impl Parser {
                                                     rhs: Box::new(er.lsb.clone()),
                                                 }),
                                                 true_expr: Box::new(plus_one(span(
-                                                    &er.msb,
-                                                    &er.lsb,
+                                                    &er.msb, &er.lsb,
                                                 ))),
                                                 false_expr: Box::new(plus_one(span(
-                                                    &er.lsb,
-                                                    &er.msb,
+                                                    &er.lsb, &er.msb,
                                                 ))),
                                             });
                                             (None, None, sz_expr)

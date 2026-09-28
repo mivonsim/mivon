@@ -1124,28 +1124,28 @@ impl Lexer {
 
     /// Re-escape nilai string (hasil decode `read_string`) menjadi teks
     /// literal SV yang siap diberi kutip ganda.
-///
-/// `read_string` meng-UNESCAPE `\n`/`\t`/`\\`/`\"` saat scan, jadi setiap
-/// render ulang (formatter `mfmt`, LSP token render) WAJIB mengembalikan
-/// escape-nya — tanpa itu `$display("\n--- X")` pecah baris dan
-/// `fmt(fmt(s)) != fmt(s)` (bug fuzzer O3). `\r` sengaja tidak di-escape:
-/// lexer tidak meng-decode `\r` (unknown escape → `\`+`r`), jadi escape CR
-/// justru mengubah nilai.
-pub fn escape_string_literal(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2);
-    out.push('"');
-    for c in s.chars() {
-        match c {
-            '\\' => out.push_str("\\\\"),
-            '"' => out.push_str("\\\""),
-            '\n' => out.push_str("\\n"),
-            '\t' => out.push_str("\\t"),
-            other => out.push(other),
+    ///
+    /// `read_string` meng-UNESCAPE `\n`/`\t`/`\\`/`\"` saat scan, jadi setiap
+    /// render ulang (formatter `mfmt`, LSP token render) WAJIB mengembalikan
+    /// escape-nya — tanpa itu `$display("\n--- X")` pecah baris dan
+    /// `fmt(fmt(s)) != fmt(s)` (bug fuzzer O3). `\r` sengaja tidak di-escape:
+    /// lexer tidak meng-decode `\r` (unknown escape → `\`+`r`), jadi escape CR
+    /// justru mengubah nilai.
+    pub fn escape_string_literal(s: &str) -> String {
+        let mut out = String::with_capacity(s.len() + 2);
+        out.push('"');
+        for c in s.chars() {
+            match c {
+                '\\' => out.push_str("\\\\"),
+                '"' => out.push_str("\\\""),
+                '\n' => out.push_str("\\n"),
+                '\t' => out.push_str("\\t"),
+                other => out.push(other),
+            }
         }
+        out.push('"');
+        out
     }
-    out.push('"');
-    out
-}
 
     fn read_operator_or_punct(&mut self) -> Token {
         let c = self.advance();

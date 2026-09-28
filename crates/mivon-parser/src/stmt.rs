@@ -530,7 +530,10 @@ impl Parser {
         }
         let signal = self.parse_expr(0)?;
         self.expect(Token::RParen)?;
-        Ok(CovergroupClocking { posedge, expr: signal })
+        Ok(CovergroupClocking {
+            posedge,
+            expr: signal,
+        })
     }
 
     pub(crate) fn parse_wait_order(&mut self) -> Result<Stmt, SimError> {

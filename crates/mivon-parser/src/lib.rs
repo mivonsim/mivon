@@ -1455,11 +1455,15 @@ impl Parser {
         // siap sim.
         let source_writes_construct = self.source_lines.iter().any(|l| {
             let t = l.trim_start();
-            ["module", "interface", "class", "package"].iter().any(|kw| {
-                t.strip_prefix(kw).map_or(false, |r| {
-                    r.starts_with(char::is_whitespace) || r.starts_with('#') || r.starts_with('(')
+            ["module", "interface", "class", "package"]
+                .iter()
+                .any(|kw| {
+                    t.strip_prefix(kw).map_or(false, |r| {
+                        r.starts_with(char::is_whitespace)
+                            || r.starts_with('#')
+                            || r.starts_with('(')
+                    })
                 })
-            })
         });
         if !has_real_constructs && !source_writes_construct && !self.errors.is_empty() {
             for diag in self.errors.iter_mut() {

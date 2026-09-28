@@ -163,10 +163,7 @@ impl Category {
     pub fn is_bug(self) -> bool {
         !matches!(
             self,
-            Category::Ok
-                | Category::CleanError
-                | Category::Suspicious
-                | Category::Slow
+            Category::Ok | Category::CleanError | Category::Suspicious | Category::Slow
         )
     }
 
