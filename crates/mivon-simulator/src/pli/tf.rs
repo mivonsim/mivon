@@ -179,6 +179,11 @@ pub fn plio_error(msg: &str) {
 }
 
 /// Bersihkan semua instance (end of simulation).
+///
+/// TEST-SYNC: jangan ambil `pli::TEST_LOCK` di sini (bukan fungsi pub test) —
+/// ada test yang memanggil ini DALAM kunci yang sama → deadlock. Koordinasi
+/// dilakukan di `pli_cleanup` (satu-satunya pemanggil runtime), lihat
+/// pli::TEST_LOCK di mod.rs.
 pub fn tf_clear_all() {
     tf_registry().lock().unwrap().clear();
 }
@@ -187,11 +192,9 @@ pub fn tf_clear_all() {
 mod tests {
     use super::*;
 
-    static TEST_LOCK: Mutex<()> = Mutex::new(());
-
     #[test]
     fn test_tf_get_put_roundtrip() {
-        let _g = TEST_LOCK.lock().unwrap();
+        let _g = crate::pli::test_lock_guard();
         let inst = tf_create_instance(vec![PliArg::Int(42), PliArg::Str("hello".into())]);
         assert_eq!(tf_getp(inst, 1), 42);
         assert_eq!(tf_getlongp(inst, 1), 42);
@@ -211,7 +214,7 @@ mod tests {
 
     #[test]
     fn test_tf_bitvec_getp() {
-        let _g = TEST_LOCK.lock().unwrap();
+        let _g = crate::pli::test_lock_guard();
         // bits LSB-first: [1,1,0,1] = 0b1011 = 11
         let inst = tf_create_instance(vec![PliArg::BitVec(vec![1, 1, 0, 1])]);
         assert_eq!(tf_getp(inst, 1), 11);
@@ -222,7 +225,7 @@ mod tests {
 
     #[test]
     fn test_tf_getinstance_and_time() {
-        let _g = TEST_LOCK.lock().unwrap();
+        let _g = crate::pli::test_lock_guard();
         tf_set_current_instance(7);
         assert_eq!(tf_getinstance(), 7);
         tf_set_current_time(1234);

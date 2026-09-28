@@ -84,6 +84,15 @@ pub fn call_pli_startup(_pli: &LoadedPli) -> Result<(), String> {
 
 /// Bersihkan state PLI (end of simulation).
 pub fn pli_cleanup() {
+    // Satu-satunya titik ambil `pli::TEST_LOCK` (test build): pli_cleanup
+    // dipanggil dari end-of-sim test sim mana pun — tanpa kunci ini,
+    // `tf_clear_all()` mengosongkan registry di tengah test `pli::tf` yang
+    // memegang instance + assert → panic saat pegang kunci → kunci poisoned
+    // → 3 test tf gagal serentak (flaky `cargo test --workspace`).
+    // Test yang memanggil clear LANGSUNG (tf_clear_all/acc_close) sudah
+    // memegang kunci sendiri — jangan kunci ulang di dalam (deadlock).
+    #[cfg(test)]
+    let _g = crate::pli::test_lock_guard();
     super::tf::tf_clear_all();
     super::acc::acc_close();
 }

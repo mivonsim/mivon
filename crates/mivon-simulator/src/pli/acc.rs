@@ -271,9 +271,6 @@ pub fn acc_next(vpi_type: u8, ref_handle: AccHandle) -> AccHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-
-    static TEST_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn test_acc_format_value() {
@@ -294,7 +291,7 @@ mod tests {
         // Murni: NULL handle → kosong/0 tanpa tergantung global engine.
         // (acc_handle_signal/acc_initialize bergantung VPI_ENGINE global yang
         // di-set engine test paralel lain — diuji e2e via simulate_signals.)
-        let _g = TEST_LOCK.lock().unwrap();
+        let _g = crate::pli::test_lock_guard();
         acc_close();
         assert_eq!(acc_fetch_name(AccHandle::NULL), "");
         assert_eq!(acc_fetch_fullname(AccHandle::NULL), "");
