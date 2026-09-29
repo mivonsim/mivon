@@ -5,7 +5,7 @@
 //! pernah turun ke IR → covergroup `@event` tanpa `sample()` = 0 samples
 //! SENYAP (temuan seed 44, sesi fuzz 2026-09-28).
 
-use mivon_api::compile_str;
+
 
 const CG_IMPLICIT_SRC: &str = r#"
 module cg_implicit;
@@ -32,7 +32,7 @@ endmodule
 /// tiap edge (coverage > 0), bukan 0/1 senyap.
 #[test]
 fn covergroup_implicit_sampling_on_event() {
-    let design = compile_str(CG_IMPLICIT_SRC).expect("covergroup source harus compile");
+    let design = mivon_api::compile_str(CG_IMPLICIT_SRC).expect("covergroup source harus compile");
     let mut engine = mivon_simulator::simulator::SimulationEngine::new(design, 100);
     engine.run().expect("sim harus jalan");
     let stats = engine.coverage_stats();

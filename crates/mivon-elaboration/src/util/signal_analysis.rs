@@ -488,6 +488,50 @@ pub fn collect_sensitivity(expr: &Expr, signal_map: &HashMap<Symbol, SignalId>) 
         // sensitif. Sebelumnya jatuh ke `_ => vec![]` → assign/always_comb
         // tidak re-trigger saat sinyal di dalam tanda kurung berubah.
         Expr::Paren(inner) => collect_sensitivity(inner, signal_map),
+        // Variant berisi sub-ekspresi yang bisa membawa signal — dulu jatuh ke
+        // `_ => vec![]` → SENSITIVITY KOSONG senyap → assign tak re-evaluate
+        // saat signal di dalamnya berubah (fuzzer: `logic'(mx[C1] > mx[C0])`
+        // pada sel tree prim_max_tree — sel stale pasca update mx →
+        // max_idx salah utk perubahan kedua, W2 `2/1` vs LRM `0/5`).
+        Expr::Cast { expr: inner, .. } => collect_sensitivity(inner, signal_map),
+        Expr::CastWidth { width, expr: inner } => {
+            let mut v = collect_sensitivity(inner, signal_map);
+            v.extend(collect_sensitivity(width, signal_map));
+            v
+        }
+        Expr::FuncCall { args, .. } => args
+            .iter()
+            .flat_map(|a| collect_sensitivity(a, signal_map))
+            .collect(),
+        Expr::Replicate { count, expr: inner } => {
+            let mut v = collect_sensitivity(inner, signal_map);
+            v.extend(collect_sensitivity(count, signal_map));
+            v
+        }
+        Expr::Inside {
+            expr: inner,
+            range_list,
+        } => {
+            let mut v = collect_sensitivity(inner, signal_map);
+            for r in range_list {
+                v.extend(collect_sensitivity(r, signal_map));
+            }
+            v
+        }
+        Expr::StreamingConcat {
+            op: _,
+            slice_size,
+            slices,
+        } => {
+            let mut v = Vec::new();
+            for s in slices {
+                v.extend(collect_sensitivity(s, signal_map));
+            }
+            if let Some(ss) = slice_size {
+                v.extend(collect_sensitivity(ss, signal_map));
+            }
+            v
+        }
         _ => vec![],
     }
 }
