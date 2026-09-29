@@ -317,6 +317,9 @@ pub struct TargetSummary {
     /// Kasus di-skip karena source membengkak > SIZE_CAP pasca-mutasi
     /// (input raksasa 100MB+ = lambat di tool mana pun, bukan bug mivon).
     pub skipped_big: usize,
+    /// Hang yg TERNYATA selesai saat replay tenang (6× budget) → dibuang
+    /// dari hitungan bug (slow ≠ hang; review kampanye 2026-09-29).
+    pub dismissed_hangs: usize,
     pub categories: std::collections::BTreeMap<Category, usize>,
 }
 
@@ -552,6 +555,7 @@ fn run_single(cfg: FuzzConfig) -> FuzzReport {
     let mut rng = Rng::new(cfg.seed);
 
     let mut results: Vec<CaseResult> = Vec::new();
+    let mut dismissed_hangs: usize = 0;
     let mut categories: BTreeMap<Category, usize> = BTreeMap::new();
     let mut seen_sigs: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut skipped_big: usize = 0;
@@ -646,13 +650,49 @@ fn run_single(cfg: FuzzConfig) -> FuzzReport {
             continue;
         }
 
-        let result = oracle::evaluate(cfg.target, &source, cfg.timeout_ms);
+        let mut result = oracle::evaluate(cfg.target, &source, cfg.timeout_ms);
+        // O6 utk jalur IN-PROCESS (lexer/parser/elab/fmt/preproc/mv): tak ada
+        // subprocess stdout utk di-scan — scan `detail` (pesan error/ok)
+        // utk pola KUAT HiddenBug (mis. pesan ber-"internal error") — dulu
+        // jalur ini lolos tanpa O6 sama sekali. Degradasi lemah tak discan
+        // di sini (pesan CleanError korpus fragment → noise).
+        if !result.category.is_bug() {
+            if let Some((cat, detail)) = oracle::scan_hidden_diags(&result.detail) {
+                if cat == Category::HiddenBug {
+                    result.category = cat;
+                    result.detail = detail;
+                }
+            }
+        }
         *categories.entry(result.category).or_insert(0) += 1;
 
         if result.category.is_bug() {
             let sig = result.signature();
             if !seen_sigs.contains(&sig) {
                 seen_sigs.insert(sig);
+                // AUTO-DISMISS hang via replay tenang (review kampanye):
+                // grace runner 3× (15s) belum cukup utk kasus besar + beban
+                // mesin → "hang" berulang padahal replay saat sepi SELESAI
+                // (semua hang kampanye = slow, replay-ok). Replay dgn budget
+                // 6×: tak selesai → hang asli (simpan sbg bug); selesai dgn
+                // kategori non-bug → BUKAN bug (jangan simpan, jangan hitung).
+                if result.category == Category::Hang {
+                    let calmer = oracle::evaluate(
+                        result.target,
+                        &result.source,
+                        cfg.timeout_ms.saturating_mul(6),
+                    );
+                    if !calmer.category.is_bug() {
+                        // Pindahkan hitungan ke kategori hasil replay
+                        // (slow/ok/suspicious) — summary tetap konsisten.
+                        if let Some(c) = categories.get_mut(&result.category) {
+                            *c = c.saturating_sub(1);
+                        }
+                        *categories.entry(calmer.category).or_insert(0) += 1;
+                        dismissed_hangs += 1;
+                        continue;
+                    }
+                }
                 if cfg.save_bugs {
                     save_crash(&result, i);
                 }
@@ -679,6 +719,7 @@ fn run_single(cfg: FuzzConfig) -> FuzzReport {
         total: cfg.cases,
         bugs: results.len(),
         skipped_big,
+        dismissed_hangs,
         categories,
     };
 
@@ -699,15 +740,142 @@ fn save_crash(result: &CaseResult, iter: usize) {
     let path = dir.join(&filename);
     let _ = std::fs::write(&path, &result.source);
 
-    // Metadata .txt
+    // Metadata .txt — `target:` ditambahkan utk replay/auto-verify lanjutan
+    // (dulu tak ada → reclassify hang butuh tebak target dari signature).
     let meta_path = dir.join(format!("bug_{:04}_{}.txt", seq, kind));
     let meta = format!(
-        "oracle: {}\ncategory: {}\nsignature: {}\ndetail: {}\niter: {}\n",
+        "oracle: {}\ncategory: {}\ntarget: {}\nsignature: {}\ndetail: {}\niter: {}\n",
         result.oracle,
         result.category.label(),
+        result.target.as_str(),
         result.signature(),
         result.detail.lines().next().unwrap_or(""),
         iter,
     );
     let _ = std::fs::write(&meta_path, meta);
+
+    // Bug DB otomatis (.mivon-fuzz-bugdb.json) — dulu `bugdb_path()` tak
+    // pernah ditulis siapa pun (DB fiktif). Append entry format lama
+    // {"entries":[{kind,source,detail,seed,iter,t}]} tanpa dependency JSON.
+    append_bugdb(
+        kind,
+        &result.source,
+        result.detail.lines().next().unwrap_or(""),
+        iter,
+    );
+}
+
+/// Escape string → aman utk string JSON (quote/backslash/control char).
+fn json_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 8);
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => {
+                out.push_str(&format!("\\u{:04x}", c as u32));
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// Sisip satu entry ke konten bugdb (LOGIKA MURNI — diuji unit test).
+/// Format lama `{"entries":[...]}`: sisip SEBELUM `]` penutup; `rfind("}]")`
+/// aman karena field terakhir entry (`t`) selalu mendahului penutup.
+fn bugdb_insert_entry(content: &str, entry: &str) -> String {
+    let mut content = content.to_string();
+    // Penutup format lama = `]}`; index `]` = len-2 (trim trailing ws).
+    // Guard AWAL: konten korup yg kebetulan diakhiri `]}` ("not json ]}")
+    // tidak boleh dianggap format valid.
+    let insert_at = if content.starts_with("{\"entries\":[")
+        && content.trim_end().strip_suffix("]}").is_some()
+    {
+        content.trim_end().len() - 2 // index `]` → sisip sebelum `]`
+    } else {
+        // File rusak/bukan format lama → struktur valid baru (entry lama
+        // di file korup dibiarkan hilang, bukan menulis JSON pecah).
+        content = "{\"entries\":[]}".to_string();
+        content.len() - 2 // index `]` (14-2=12)
+    };
+    // Entries lama = ada `{` di antara `[{` dan `]`.
+    let has_entries = content[11..insert_at].contains('{');
+    let glue = if has_entries { "," } else { "" };
+    content.insert_str(insert_at, &format!("{glue}{entry}"));
+    content
+}
+
+/// Append satu entry ke bug database (format lama dihormati; tulis atomik
+/// via temp+rename ala MICD). Gagal = diam (bug utama tetap ke-save ke .sv).
+fn append_bugdb(kind: &str, source: &str, detail: &str, iter: usize) {
+    use std::io::Write as _;
+    let path = crate::bugdb_path();
+    let t = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let entry = format!(
+        "{{\"kind\":\"{}\",\"source\":\"{}\",\"detail\":\"{}\",\"seed\":0,\"iter\":{},\"t\":{}}}",
+        json_escape(kind),
+        json_escape(source),
+        json_escape(detail),
+        iter,
+        t
+    );
+    let content =
+        std::fs::read_to_string(&path).unwrap_or_else(|_| "{\"entries\":[]}".to_string());
+    let content = bugdb_insert_entry(&content, &entry);
+    if let Some(tmp) = path.parent() {
+        let _ = std::fs::create_dir_all(tmp);
+    }
+    let tmp_path = path.with_extension("json.tmp");
+    let mut f = match std::fs::File::create(&tmp_path) {
+        Ok(f) => f,
+        Err(_) => return,
+    };
+    if f.write_all(content.as_bytes()).is_err() {
+        return;
+    }
+    drop(f);
+    let _ = std::fs::rename(&tmp_path, &path);
+}
+
+#[cfg(test)]
+mod bugdb_tests {
+    use super::*;
+
+    /// json_escape wajib menutup quote/backslash/newline (source berisi
+    /// kode SV dgn string literal → kalau lolos, JSON bugdb pecah).
+    #[test]
+    fn json_escape_escapes_dangerous_chars() {
+        let s = json_escape("say \"hi\" \\ \n\ttab");
+        assert_eq!(s, "say \\\"hi\\\" \\\\ \\n\\ttab");
+        assert!(!s.contains('\n'), "newline harus jadi \\n literal");
+    }
+
+    /// Sisip ke konten kosong & berisi — format lama utuh.
+    #[test]
+    fn bugdb_insert_into_empty_and_existing() {
+        let empty = "{\"entries\":[]}";
+        let e1 = bugdb_insert_entry(empty, "{\"kind\":\"Hang\"}");
+        assert_eq!(e1, r#"{"entries":[{"kind":"Hang"}]}"#);
+        let e2 = bugdb_insert_entry(&e1, "{\"kind\":\"Panic\"}");
+        assert_eq!(
+            e2,
+            r#"{"entries":[{"kind":"Hang"},{"kind":"Panic"}]}"#,
+            "entry kedua menempel sebelum ] penutup"
+        );
+    }
+
+    /// Konten korup (bukan format lama) → struktur valid baru, bukan pecah.
+    #[test]
+    fn bugdb_insert_repairs_corrupt_content() {
+        let broken = "not json at all ]}";
+        let out = bugdb_insert_entry(broken, "{\"kind\":\"Ok\"}");
+        assert_eq!(out, r#"{"entries":[{"kind":"Ok"}]}"#);
+    }
 }

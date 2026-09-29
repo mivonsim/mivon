@@ -206,6 +206,30 @@ impl Corpus {
     pub fn seed_at(&self, idx: usize) -> Option<&Path> {
         self.seeds.get(idx).map(|v| &**v)
     }
+
+    /// Gabung source dgn pasangan `tb_<stem>.sv` bila ada (arah design→tb).
+    /// Dipakai verify iverilog: design tanpa stimulus → marker kosong →
+    /// compare VAKUM (tidak bermakna). File tb (`tb_*`) diteruskan apa
+    /// adanya; tanpa pasangan → source apa adanya.
+    pub fn pair_with_tb(&self, path: &std::path::Path, src: &str) -> String {
+        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+            return src.to_string();
+        };
+        if stem.starts_with("tb_") {
+            return src.to_string();
+        }
+        let tb_name = format!("tb_{stem}.sv");
+        for i in 0..self.len() {
+            if let Some(p) = self.seed_at(i) {
+                if p.file_name().and_then(|s| s.to_str()) == Some(tb_name.as_str()) {
+                    if let Ok(tb) = std::fs::read_to_string(p) {
+                        return format!("{src}\n{tb}");
+                    }
+                }
+            }
+        }
+        src.to_string()
+    }
 }
 
 /// Detect project real (bukan corpus mandiri).
@@ -233,7 +257,10 @@ pub fn is_real_seed_path(p: &Path) -> bool {
 }
 
 /// Workspace root mivon: naik dari cwd sampai Cargo.toml dengan `[workspace]`.
-fn workspace_root() -> PathBuf {
+/// Publik: dipakai main.rs (verify_mutated) agar corpus path tak
+/// cwd-dependent (verify dari cwd luar workspace → corpus kosong →
+/// 45/50 kasus skip karena corpus penuh tanpa marker).
+pub fn workspace_root() -> PathBuf {
     let mut dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     loop {
         let cargo = dir.join("Cargo.toml");

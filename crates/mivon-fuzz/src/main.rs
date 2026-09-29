@@ -93,6 +93,9 @@ fn cmd_run(args: &[String]) -> i32 {
     let (timeout_s, rest) = take_flag(&rest, "--timeout");
     let (corpus_s, rest) = take_flag(&rest, "--corpus");
     let no_save = rest.iter().any(|a| a == "--no-save");
+    // Auto-verify vs iverilog (differential eksternal) bisa dimatikan:
+    // `--no-verify`.
+    let no_verify = rest.iter().any(|a| a == "--no-verify");
 
     let target = target_s
         .as_deref()
@@ -137,12 +140,20 @@ fn cmd_run(args: &[String]) -> i32 {
             .map(|(c, n)| format!("{}={}", c.label(), n))
             .collect();
         parts.sort();
+        // dismissed_hangs: hang yg ternyata selesai saat replay tenang (6×)
+        // → dibuang dari bug (slow ≠ hang); tampil bila ada.
+        let dismissed = if s.dismissed_hangs > 0 {
+            format!(" dismissed={}", s.dismissed_hangs)
+        } else {
+            String::new()
+        };
         println!(
-            "[{}] total={} bugs={} skip_big={} :: {}",
+            "[{}] total={} bugs={} skip_big={}{} :: {}",
             s.target.as_str(),
             s.total,
             s.bugs,
             s.skipped_big,
+            dismissed,
             parts.join(" ")
         );
     }
@@ -153,7 +164,24 @@ fn cmd_run(args: &[String]) -> i32 {
         }
     }
 
-    if report.bugs.is_empty() {
+    // ── AUTO-VERIFY vs iverilog (differential EKSTERNAL) ──
+    // Bagian DEFAULT tiap kampanye (dulu subcommand terpisah yang jarang
+    // dijalankan → bug semantik "salah tapi konsisten antar jalur" tak
+    // ketahuan — kasus prim_max_tree harus golden manual). 50 kasus mutasi
+    // murah; dilewati bila iverilog tak terpasang atau `--no-verify`.
+    let mut verify_failed = false;
+    if no_verify {
+        eprintln!("verify: dilewati (--no-verify)");
+    } else if !mivon_fuzz::oracle_icarus::iverilog_available() {
+        eprintln!("verify: iverilog tak terpasang — differential eksternal dilewati");
+    } else {
+        eprintln!("verify otomatis vs iverilog (50 kasus mutasi)...");
+        // Budget 20s: compile kasus mutasi besar terukur 4-5s (+sim+icarus)
+        // → 8s menghasilkan MIVON-BUG hang PALSU (3-4 per kampanye).
+        verify_failed = verify_mutated(50, 0x1CA_2026, 20000) != 0;
+    }
+
+    if report.bugs.is_empty() && !verify_failed {
         0
     } else {
         1
@@ -427,7 +455,9 @@ fn verify_mutated(cases: usize, seed: u64, timeout_ms: u64) -> i32 {
     // + punya marker `ASRT_`/`$display`). Project real (cva6/openc910/
     // opentitan) kebanyakan RTL tanpa tb/marker + interdependen → compare
     // iverilog vakum/noise.
-    let base_dir = std::path::PathBuf::from("crates/mivon-fuzz/fuzz/corpus/seeds");
+    // Path absolut via workspace_root — dulu relatif cwd (verify dari luar
+    // workspace → corpus penuh 4698 tanpa marker → 45/50 skip vakum).
+    let base_dir = corpus::workspace_root().join("crates/mivon-fuzz/fuzz/corpus/seeds");
     let corpus = if base_dir.exists() {
         corpus::Corpus::load(Some(&base_dir))
     } else {
@@ -458,6 +488,11 @@ fn verify_mutated(cases: usize, seed: u64, timeout_ms: u64) -> i32 {
         };
         let mut base_source = base_seed.text;
         let is_mv = base_seed.is_mv;
+        // Pasangkan tb (`tb_NN_name.sv`) — design tanpa stimulus → marker
+        // kosong → compare iverilog vakum (49/50 skip sebelum fix ini).
+        if !is_mv {
+            base_source = corpus.pair_with_tb(&base_seed.path, &base_source);
+        }
 
         // Mutasi 0-2x
         let n_mut = rng.below(3);
@@ -500,11 +535,11 @@ fn verify_mutated(cases: usize, seed: u64, timeout_ms: u64) -> i32 {
             }
             mivon_fuzz::oracle_icarus::Verdict::Mismatch => {
                 n_mismatch += 1;
-                eprintln!(
-                    "  [MISMATCH] #{}: {}",
-                    i,
-                    r.detail.lines().next().unwrap_or("")
-                );
+                // Tampilkan 5 baris pertama detail — baris pertama saja
+                // ("SEMANTIC MISMATCH vs iverilog:") tak berisi signal apa
+                // yang beda (info beda ada di baris berikut).
+                let preview: Vec<&str> = r.detail.lines().take(5).collect();
+                eprintln!("  [MISMATCH] #{}: {}", i, preview.join("\n    "));
                 let _ = std::fs::create_dir_all(mivon_fuzz::bugs_dir());
                 let path = mivon_fuzz::bugs_dir().join(format!("verify_bad_{:04}.sv", i));
                 let _ = std::fs::write(&path, &source);

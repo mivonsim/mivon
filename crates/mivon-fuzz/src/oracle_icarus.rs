@@ -168,8 +168,8 @@ fn read_pipe<R: std::io::Read + Send + 'static>(pipe: Option<R>) -> String {
     buf
 }
 
-/// Cek availability iverilog binary.
-fn iverilog_available() -> bool {
+/// Cek availability iverilog binary — pub utk auto-verify default kampanye (main.rs).
+pub fn iverilog_available() -> bool {
     let (_c, _o, err) = run_capture(&["iverilog".to_string(), "-V".to_string()], 3000);
     !err.contains("not found") && !err.contains("No such file")
 }
