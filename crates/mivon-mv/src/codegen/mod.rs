@@ -175,6 +175,11 @@ pub(crate) fn for_inc(var: &str, step: Option<&Expr>) -> String {
 /// (sebelumnya `logic [7:0] a [0:3], logic [7:0] b [0:3]` — SV INVALID,
 /// tipe berulang per nama). Dipakai deklarasi `sig`/`reg`/`var` multi-nama.
 pub(crate) fn emit_signal_decl_multi(ty: &MvType, names: &[String]) -> String {
+    // F40: queue membungkus tipe luar — pecah dulu, `[$]` dirender per nama.
+    let (ty, is_queue) = match ty {
+        MvType::Queue(inner) => (inner.as_ref(), true),
+        other => (other, false),
+    };
     let mut dims: Vec<&Expr> = Vec::new();
     let mut elem = ty;
     while let MvType::Array(inner, ds) = elem {
@@ -193,6 +198,9 @@ pub(crate) fn emit_signal_decl_multi(ty: &MvType, names: &[String]) -> String {
                 };
                 s.push_str(&format!(" [0:{nn}]"));
             }
+            if is_queue {
+                s.push_str("[$]");
+            }
             s
         })
         .collect();
@@ -203,6 +211,11 @@ pub(crate) fn emit_signal_decl_multi(ty: &MvType, names: &[String]) -> String {
 /// `logic[8][4]` → `logic [7:0] name [0:3]` (dims `[0:N-1]` SETELAH nama,
 /// bukan `logic [7:0] [4] name` yang di-parse SV sbg packed multi-dim).
 pub(crate) fn emit_signal_decl(ty: &MvType, name: &str) -> String {
+    // F40: queue — `[$]` SETELAH nama (bukan setelah tipe).
+    let (ty, is_queue) = match ty {
+        MvType::Queue(inner) => (inner.as_ref(), true),
+        other => (other, false),
+    };
     let mut dims: Vec<&Expr> = Vec::new();
     let mut elem = ty;
     while let MvType::Array(inner, ds) = elem {
@@ -216,6 +229,9 @@ pub(crate) fn emit_signal_decl(ty: &MvType, name: &str) -> String {
             other => format!("{} - 1", expr::emit_expr(other)),
         };
         s.push_str(&format!(" [0:{n}]"));
+    }
+    if is_queue {
+        s.push_str("[$]");
     }
     s
 }

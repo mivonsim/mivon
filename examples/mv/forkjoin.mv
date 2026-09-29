@@ -1,0 +1,55 @@
+// F40 — fork/join (konkurrensi branch) di Mivon HDL.
+// `fork { ... } { ... } join / join_any / join_none`
+// Jalankan:
+//   mivon run  examples/mv/forkjoin.mv
+//   mivon sim  examples/mv/forkjoin.sv --top tb_fj -T 100
+//
+// Semantik: join menunggu SEMUA branch; join_any lanjut saat branch pertama
+// selesai; join_none lanjut segera (branch jalan di background).
+
+module tb_fj {
+    in clk : bit
+    // join — tunggu semua branch selesai (deterministik)
+    sig ja, jb : logic[7:0]
+    initial {
+        fork {
+            #10
+            ja = 1
+        } {
+            #5
+            jb = 2
+        } join
+        #1
+        $display("FJ_JOIN ja=%0d jb=%0d", ja, jb)
+    }
+
+    // join_any — lanjut saat branch PERTAMA selesai
+    sig aa, ab : logic[7:0]
+    initial {
+        fork {
+            #10
+            aa = 11
+        } {
+            #5
+            ab = 12
+        } join_any
+        #1
+        $display("FJ_ANY0 aa=%0d ab=%0d", aa, ab)
+        #10
+        $display("FJ_ANY1 aa=%0d ab=%0d", aa, ab)
+    }
+
+    // join_none — lanjut segera; branch jalan di background
+    sig nb : logic[7:0]
+    initial {
+        fork {
+            #10
+            nb = 22
+        } join_none
+        $display("FJ_NONE0 nb=%0d", nb)
+        #15
+        $display("FJ_NONE1 nb=%0d", nb)
+        #1
+        $finish
+    }
+}

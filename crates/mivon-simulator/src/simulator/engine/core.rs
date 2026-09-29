@@ -1949,8 +1949,12 @@ impl SimulationEngine {
             }
 
             // ── WR0014: Uninitialized Register ──
-            // Signal is all-X at init and was never written to
+            // Signal is all-X at init and was never written to.
+            // Queue SDN dikecualikan: `logic[7:0] q[$]` kosong by-design dan
+            // diisi via push_back/pop_front (bukan assign langsung) →
+            // "never assigned" = false positive (F40 queue, fuzzer mv).
             if never_changed
+                && !sig.is_queue
                 && (sig.kind == SignalKind::Reg || sig.kind == SignalKind::Logic)
                 && sig.init_val.all_x()
             {

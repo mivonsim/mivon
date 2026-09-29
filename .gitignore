@@ -62,3 +62,9 @@
 !examples/synth/*.sv
 !crates/mivon-fuzz/fuzz/corpus/seeds/*.sv
 !crates/mivon-fuzz/fuzz/corpus/mv/*.mv
+# Contoh Mivon HDL + hasil generate-nya (Keputusan Desain MIVON-HDL.md #3:
+# hasil generate di-commit) — pola sama dgn examples/rtl.
+!examples/mv/*.mv
+!examples/mv/*.sv
+!examples/mv/*.svh
+!crates/mivon-fuzz/fuzz/corpus/mv/*.sv

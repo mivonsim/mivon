@@ -1,0 +1,77 @@
+// always_latch.mv — always block + latch block
+// Fitur: §6.5 (always/latch)
+
+module always_latch_example {
+    in  clk, rst_n : bit
+    in  en : bit
+    in  d : logic[7:0]
+    out q_reg : logic[7:0]
+    out q_latch : logic[7:0]
+    out q_always : logic[7:0]
+
+    reg q_reg : logic[7:0] = '0
+
+    // always_ff via seq (normal sequential)
+    seq(clk, rst_n) {
+        if (!rst_n) {
+            q_reg <= '0
+        } else if (en) {
+            q_reg <= d
+        }
+    }
+
+    // always block — explicit sensitivity
+    always {
+        @(posedge clk)
+        q_always = d
+    }
+
+    // latch — level-sensitive
+    latch {
+        if (en) q_latch = d
+    }
+}
+
+module tb_al {
+    sig clk, rst_n : bit
+    sig en : bit
+    sig d : logic[7:0]
+    sig q_reg : logic[7:0]
+    sig q_latch : logic[7:0]
+    sig q_always : logic[7:0]
+
+    inst always_latch_example u_dut (.clk, .rst_n, .en, .d, .q_reg, .q_latch, .q_always)
+
+    initial {
+        clk = 0
+        forever #5 clk = ~clk
+    }
+
+    initial {
+        rst_n = 0
+        en = 0
+        d = 8'hAA
+        #20
+        rst_n = 1
+        en = 1
+        d = 8'h55
+        @(posedge clk)
+        #1
+        if (q_reg != 8'h55) $error("seq reg failed: %0h", q_reg)
+        if (q_always != 8'h55) $error("always failed: %0h", q_always)
+
+        // latch test
+        en = 1
+        d = 8'hBB
+        #1
+        if (q_latch != 8'hBB) $error("latch failed: %0h", q_latch)
+
+        en = 0
+        d = 8'hCC
+        #1
+        if (q_latch != 8'hBB) $error("latch should hold: %0h", q_latch)
+
+        $display("AL_OK reg=%0h latch=%0h always=%0h", q_reg, q_latch, q_always)
+        $finish
+    }
+}

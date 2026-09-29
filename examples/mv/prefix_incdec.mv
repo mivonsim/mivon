@@ -1,0 +1,22 @@
+// F37 — prefix `++`/`--` (dan postfix) di Mivon HDL.
+// Jalankan:
+//   mivon mgen examples/mv/prefix_incdec.mv
+//   mivon sim  examples/mv/prefix_incdec.sv --top tb_pp -T 50
+
+module tb_pp {
+    sig i : logic[7:0]
+    sig j : logic[7:0]
+
+    initial {
+        i = 0
+        ++i                       // prefix increment statement
+        $display("PP_A i=%0d", i) // 1
+        j = ++i                   // RHS prefix: nilai i+1 (i tetap, batasan engine)
+        $display("PP_B i=%0d j=%0d", i, j) // 1 2
+        --i                       // prefix decrement statement
+        $display("PP_C i=%0d", i) // 0
+        i--                       // postfix decrement statement
+        $display("PP_D i=%0d", i) // 255 (wrap 8-bit)
+        $finish
+    }
+}

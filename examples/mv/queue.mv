@@ -1,0 +1,40 @@
+// F40: queue (dynamic array) `Type[$]` — SV queue; operasi via method-call
+// (`push_back`/`push_front`/`pop_front`/`size`/`delete` + indeks `q[i]`).
+// Queue kosong by-design (bukan "uninitialized"), diisi via method.
+//
+// Contoh: size=2 first=3 last=4 → push_front → size=3 sum=8 → pop → 1 → 0
+//
+// Jalankan:
+//   mivon mgen examples/mv/queue.mv
+//   mivon sim  examples/mv/queue.sv --top tb_queue -T 100
+
+module tb_queue {
+    sig q : logic[7:0][$]
+    sig sum : logic[7:0] = 0
+
+    initial {
+        q.push_back(8'd3)
+        q.push_back(8'd4)
+        $display("Q size=%0d first=%0d last=%0d", q.size(), q[0], q[1])
+
+        q.push_front(8'd1)
+        $display("FRONT size=%0d first=%0d", q.size(), q[0])
+
+        // scan indeks (3 elemen: 1, 3, 4)
+        sum = 0
+        for i in 0..3 {
+            sum += q[i]
+        }
+        $display("SCAN n=%0d sum=%0d", q.size(), sum)
+
+        // pop depan sampai habis
+        sum = q.pop_front()
+        sum = q.pop_front()
+        sum = q.pop_front()
+        $display("POP size=%0d", q.size())
+
+        q.delete()
+        $display("CLEARED size=%0d", q.size())
+        $finish
+    }
+}

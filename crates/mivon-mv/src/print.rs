@@ -102,6 +102,8 @@ pub fn print_type(t: &MvType) -> String {
             }
             s
         }
+        // F40: queue round-trip `Type[$]`.
+        MvType::Queue(inner) => format!("{}[$]", print_type(inner)),
     }
 }
 

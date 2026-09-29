@@ -1,0 +1,25 @@
+// F36: compound assignment (`+=` `-=` `*=` `/=` `%=` `<<=` `>>=` `&=` `|=` `^=`)
+// dan increment/decrement (`++` `--`) di .mv — di-transpile ke SV compound
+// assignment / postfix incdec (blocking; hanya di comb/always/latch/tb — di
+// `seq` operator blocking ilegal → E2004, sama seperti `=`).
+//
+// Contoh: a = 10+5 = 15, b = 2<<3 = 16, c = 0xFF & 0x0F = 15, i = 0+1 = 1
+
+module tb_ca {
+    sig a : logic[7:0]
+    sig b : logic[7:0]
+    sig c : logic[7:0]
+    sig i : logic[7:0]
+
+    initial {
+        a = 10
+        a += 5
+        b = 2
+        b <<= 3
+        c = 8'hFF
+        c &= 8'h0F
+        i = 0
+        i++
+        $display("TB_CA a=%0d b=%0d c=%0d i=%0d", a, b, c, i)
+    }
+}

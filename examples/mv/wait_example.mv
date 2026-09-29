@@ -1,0 +1,49 @@
+// wait_example.mv — wait(cond) statement
+// Fitur: §6.6 (wait)
+
+module wait_example {
+    in  clk, rst_n : bit
+    out done : bit
+    out data : logic[7:0]
+
+    reg done : bit = 0
+    reg data : logic[7:0] = '0
+
+    seq(clk, rst_n) {
+        if (!rst_n) {
+            done <= 0
+            data <= '0
+        } else {
+            done <= 1
+            data <= 8'h42
+        }
+    }
+}
+
+module tb_wait {
+    sig clk, rst_n : bit
+    sig done : bit
+    sig data : logic[7:0]
+    sig got : logic[7:0]
+
+    inst wait_example u_dut (.clk, .rst_n, .done, .data)
+
+    initial {
+        clk = 0
+        forever #5 clk = ~clk
+    }
+
+    initial {
+        rst_n = 0
+        #20
+        rst_n = 1
+
+        // wait for done signal
+        wait (done == 1)
+        got = data
+
+        if (got != 8'h42) $error("wait failed: got=%0h", got)
+        $display("WAIT_OK got=%0h", got)
+        $finish
+    }
+}

@@ -196,6 +196,41 @@ typedef enum logic [2:0] { RED = 3'd0, GREEN = 3'd2, BLUE = 3'd4 } Color;
 Lebar implisit = `clog2(jumlah anggota)` (minimal 1). Nilai boleh eksplisit
 (`= expr`), nilai berikutnya auto-increment.
 
+### 4.6 Queue (dynamic array) — F40
+
+```mv
+sig q : logic[7:0][$]
+sig names : string[$]
+```
+
+`Type[$]` = **queue SV** (dynamic array, panjang berubah saat runtime).
+Emisi (queue dirender **setelah nama**):
+
+```systemverilog
+logic [7:0] q[$];
+string names[$];
+```
+
+Operasi memakai method-call SV apa adanya (di-check sebagai `MethodCall`,
+argument dievaluasi):
+
+```mv
+q.push_back(8'd3)     // tambah di belakang
+q.push_front(8'd1)     // tambah di depan
+x = q.pop_front()      // ambil + buang depan
+n = q.size()           // panjang
+q.delete()             // kosongkan
+v = q[0]               // indeks (0..size-1)
+```
+
+Aturan:
+- `[$]` hanya sbg **dim terakhir** (`logic[7:0][$]`, bukan `[$][4]`).
+- Lebar elemen = tipe dalamnya (`logic[7:0][$]` → 8-bit) — index `q[i]`
+  menghasilkan elemen 8-bit.
+- Queue kosong by-design: tak dianggap "uninitialized register" (WR0014
+  dikecualikan); diisi via method, bukan assignment langsung.
+- Cast ke queue (`q'(x)`) ditolak — pakai tipe sederhana.
+
 ---
 
 ## 5. Package

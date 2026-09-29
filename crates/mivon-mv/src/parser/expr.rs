@@ -9,8 +9,16 @@ impl Parser {
     // ── Types ──
     pub(crate) fn parse_type(&mut self) -> Result<MvType, MvError> {
         let mut t = self.parse_base_type()?;
-        // unpacked dims: `Type[N][M]`
+        // unpacked dims: `Type[N][M]` / queue `Type[$]`
         while self.eat(&Tok::LBrack) {
+            // F40: `[$]` = queue (dynamic array) — SV hanya mengizinkan
+            // queue sbg dim terakhir → break setelah terbaca.
+            if self.peek() == &Tok::Dollar {
+                self.advance();
+                self.expect(&Tok::RBrack)?;
+                t = MvType::Queue(Box::new(t));
+                break;
+            }
             let d = self.parse_expr()?;
             self.expect(&Tok::RBrack)?;
             t = MvType::Array(Box::new(t), vec![d]);

@@ -1,0 +1,33 @@
+// F38 — do...while (loop post-test) + event trigger `->ev` di Mivon HDL.
+// Jalankan:
+//   mivon mgen examples/mv/dowhile.mv
+//   mivon sim  examples/mv/dowhile.sv --top tb_dw -T 100
+
+module tb_dw {
+    sig i : logic[7:0]
+    sig ev : bit
+    sig got : logic[7:0]
+
+    initial {
+        i = 0
+        do {
+            i = i + 1
+        } while (i < 3)
+        $display("DW i=%0d", i) // 3
+        #10
+        $finish
+    }
+
+    // event trigger: initial menunggu `->ev`, initial lain memicu
+    initial {
+        @(posedge ev)
+        got = 99
+    }
+    initial {
+        #5
+        ->ev
+        #5
+        $display("EV got=%0d", got) // 99
+        $finish
+    }
+}

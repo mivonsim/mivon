@@ -874,6 +874,63 @@ module tb_dz {
 }
 
 #[test]
+fn test_mv_queue_decl_and_ops() {
+    // F40: queue `Type[$]` — decl emit `[$]` SETELAH nama (`logic [7:0] q[$]`),
+    // operasi method (push_back/pop_front/size) + indeks `q[i]` berjalan
+    // penuh di sim. Queue kosong by-design — WR0014 dikecualikan utk is_queue.
+    let src = r#"
+module tb_q {
+    sig q : logic[7:0][$]
+    sig n : int = 0
+    initial {
+        q.push_back(8'd3)
+        q.push_back(8'd4)
+        n = q.size()
+        $display("Q %0d %0d %0d", n, q[0], q[1])
+        n = q.pop_front()
+        $display("P %0d %0d", q.size(), q[0])
+    }
+}
+"#;
+    let r = mivon_mv::transpile(src, "queue").expect("transpile .mv OK");
+    assert!(
+        r.sv.contains("logic [7:0] q[$];"),
+        "codegen harus emit queue decl setelah nama: {}",
+        r.sv
+    );
+    assert!(
+        r.sv.contains("q.push_back(8'd3);"),
+        "method call emit apa adanya: {}",
+        r.sv
+    );
+    let sigs = simulate_signals(&r.sv, 5).unwrap();
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    // n = size()=2 → lalu n = pop_front() (return elemen pertama = 3).
+    assert_eq!(get("n"), 3, "pop_front mengembalikan elemen pertama (3)");
+}
+
+#[test]
+fn test_mv_queue_width_from_elem_type() {
+    // Lebar elemen queue = tipe dalamnya (check type_width) — index q[i]
+    // 8-bit; cast ke queue ditolak (E2005).
+    let src = r#"
+module tb_qw {
+    sig q : logic[7:0][$]
+    sig v : logic[7:0]
+    initial {
+        q.push_back(8'd9)
+        v = q[0]
+        $display("QW %0d", v)
+    }
+}
+"#;
+    let r = mivon_mv::transpile(src, "queuew").expect("transpile .mv OK");
+    let sigs = simulate_signals(&r.sv, 5).unwrap();
+    let v = sigs.iter().find(|(s, _)| s == "v").unwrap().1.to_u64();
+    assert_eq!(v, 9, "q[0] elemen 8-bit terbaca utuh");
+}
+
+#[test]
 fn test_mv_fork_join_modes() {
     // F39: `fork { ... } { ... } join / join_any / join_none` di-transpile
     // ke SV `fork begin ... end begin ... end join[_any|_none]` lalu

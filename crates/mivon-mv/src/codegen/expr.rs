@@ -34,6 +34,10 @@ pub(crate) fn emit_type(t: &MvType) -> String {
             let dims_s: Vec<String> = dims.iter().map(|d| format!("[{}]", emit_expr(d))).collect();
             format!("{} {}", emit_type(inner), dims_s.join(" "))
         }
+        // F40: queue — `logic[7:0][$]` → `logic [7:0] [$]` (konteks type
+        // in-isolation; utk deklarasi signal pakai emit_signal_decl* yang
+        // menaruh `[$]` SETELAH nama: `logic [7:0] q[$]`).
+        MvType::Queue(inner) => format!("{} [$]", emit_type(inner)),
     }
 }
 

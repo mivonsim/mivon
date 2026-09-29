@@ -35,6 +35,9 @@ pub enum MvType {
     Named(String, usize, usize),
     /// Array unpacked `Type[N][M]`
     Array(Box<MvType>, Vec<Expr>),
+    /// Queue SV `Type[$]` — dynamic array (push_back/pop_front/size/delete).
+    /// F40: `sig q : logic[7:0][$]` → SV `logic [7:0] q[$];`.
+    Queue(Box<MvType>),
 }
 
 /// Ekspresi Mivon HDL.

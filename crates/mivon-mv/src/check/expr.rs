@@ -166,7 +166,10 @@ pub(crate) fn check_expr<'a>(
             col,
         } => {
             // F33 fix review: cast target tidak boleh punya range/array.
-            if matches!(ty.as_ref(), MvType::Logic(Some(_)) | MvType::Array(_, _)) {
+            if matches!(
+                ty.as_ref(),
+                MvType::Logic(Some(_)) | MvType::Array(_, _) | MvType::Queue(_)
+            ) {
                 return Err(err_at(
                     *line,
                     *col,
@@ -356,6 +359,8 @@ pub(crate) fn check_type_scope(
         }
         MvType::Signed(inner) => check_type_scope(inner, ctx, scope, depth + 1)?,
         MvType::Array(inner, _) => check_type_scope(inner, ctx, scope, depth + 1)?,
+        // F40: queue — validasi tipe dalamnya.
+        MvType::Queue(inner) => check_type_scope(inner, ctx, scope, depth + 1)?,
         _ => {}
     }
     Ok(())
@@ -430,6 +435,8 @@ pub(crate) fn type_width(ty: &MvType, ctx: &Ctx, scope: &Scope, depth: usize) ->
             }
         }
         MvType::Array(inner, _) => type_width(inner, ctx, scope, depth + 1),
+        // F40: lebar elemen queue = lebar tipe dalamnya.
+        MvType::Queue(inner) => type_width(inner, ctx, scope, depth + 1),
     }
 }
 
