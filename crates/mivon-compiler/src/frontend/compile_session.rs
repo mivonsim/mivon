@@ -113,6 +113,12 @@ pub struct CompileSession {
     lexer_payloads: std::sync::Mutex<Vec<(PathBuf, crate::micd::cache::pipeline::LexerPayload)>>,
     /// Parse errors collected during compilation
     pub parse_errors: Vec<mivon_core::diagnostics::Diagnostic>,
+    /// Diagnostics dari ELABORASI terakhir (compile_and_elaborate[_with_mode]).
+    /// Dulu elaborator lokal → flush_diagnostics tak pernah dipanggil →
+    /// warning elab (mis. covergroup non-top 'tidak dielaborate', WR0102
+    /// port width) TERBUANG di jalur tool (mcov dsb) padahal `mivon <file>`
+    /// menampilkannya — warning hilang senyap dari laporan tool.
+    pub elab_diagnostics: Vec<mivon_core::diagnostics::Diagnostic>,
     /// Callback progres per-file (path, cached) — dipanggil dari rayon par_iter
     /// saat tiap file selesai di-lex/parse. Dipakai animasi status line CLI.
     file_progress: Option<std::sync::Arc<dyn Fn(&PathBuf, bool) + Send + Sync>>,
@@ -202,6 +208,7 @@ impl CompileSession {
             micd_include_deps: HashMap::new(),
             lexer_payloads: std::sync::Mutex::new(Vec::new()),
             parse_errors: Vec::new(),
+            elab_diagnostics: Vec::new(),
             file_progress: None,
         }
     }
@@ -2225,6 +2232,9 @@ impl CompileSession {
         self.timing.elab_us = elab_start.elapsed().as_micros() as u64;
 
         // Store module cache back for next incremental compile
+        // Simpan diagnostik elaborasi (dulu terbuang — warning elab hilang
+        // di jalur tool; lihat field elab_diagnostics).
+        self.elab_diagnostics = elaborator.flush_diagnostics();
         self.cached_elab_modules = elaborator.take_cache();
 
         // Cache IR design for access after compile. IR dengan array memori
@@ -2270,6 +2280,9 @@ impl CompileSession {
         self.timing.elab_us = elab_start.elapsed().as_micros() as u64;
 
         // Store module cache back for next incremental compile
+        // Simpan diagnostik elaborasi (dulu terbuang — warning elab hilang
+        // di jalur tool; lihat field elab_diagnostics).
+        self.elab_diagnostics = elaborator.flush_diagnostics();
         self.cached_elab_modules = elaborator.take_cache();
 
         // Cache IR design for access after compile. IR dengan array memori
@@ -2308,6 +2321,13 @@ impl CompileSession {
     /// Get cached IR design (if previously elaborated).
     pub fn get_cached_ir(&self) -> Option<&mivon_ir::IrDesign> {
         self.cached_ir_design.as_ref()
+    }
+
+    /// Ambil diagnostics elaborasi terakhir (sekali baca — diambil lalu
+    /// dikosongkan). Render dgn `TerminalEmitter` di tool yang butuh
+    /// (mcov dsb) — warning elab dulu terbuang senyap di jalur tool.
+    pub fn take_elab_diagnostics(&mut self) -> Vec<mivon_core::diagnostics::Diagnostic> {
+        std::mem::take(&mut self.elab_diagnostics)
     }
 
     /// Get merged source info: (source_lines, first_source_file)

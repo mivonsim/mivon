@@ -25,13 +25,18 @@ pub struct CovArgs<'a> {
 /// Jalankan mcov.
 pub fn run(args: &CovArgs) -> Result<(), SimError> {
     // Use StrictSimulation mode for coverage (requires simulation)
-    let (_session, _design, ir) = open_elaborated(
+    let (mut session, _design, ir) = open_elaborated(
         args.files,
         args.incdirs,
         args.defines,
         args.top,
         ElaborateMode::StrictSimulation,
     )?;
+    // Diagnostik ELABORASI (WR0102 port width, covergroup non-top tidak
+    // dielaborate, ...) — dulu terbuang di jalur tool (elaborator lokal
+    // tanpa flush) → warning hilang senyap dari laporan mcov padahal
+    // `mivon <file>` menampilkannya.
+    let elab_diags = session.take_elab_diagnostics();
     let top_name = ir.top.name.as_str();
 
     let mut engine = SimulationEngine::new(ir, args.max_time);
@@ -44,13 +49,14 @@ pub fn run(args: &CovArgs) -> Result<(), SimError> {
         format!("{} ms", sim_start.elapsed().as_millis()),
     );
 
-    // Diagnostics runtime engine (illegal_bins hit, implicit sample gagal,
-    // unsupported system fn, ...) — dulu TIDAK pernah dirender di mcov
-    // (beda dgn msim) → warning coverage hilang senyap dari laporan.
+    // Diagnostics: elab (WR0102, covergroup non-top, ...) + runtime engine
+    // (illegal_bins hit, implicit sample gagal, unsupported system fn, ...) —
+    // keduanya dulu TIDAK pernah dirender di mcov (beda dgn msim) → warning
+    // coverage hilang senyap dari laporan.
     let diags = engine.flush_diagnostics();
-    if !diags.is_empty() {
+    if !elab_diags.is_empty() || !diags.is_empty() {
         let mut emitter = mivon_core::diagnostics::TerminalEmitter::new();
-        for d in &diags {
+        for d in elab_diags.iter().chain(diags.iter()) {
             let _ = emitter.emit(d);
         }
     }
