@@ -1449,7 +1449,11 @@ mod tests {
         let r1 = eval_binary(BinaryIrOp::BitAnd, &LogicVec::from_u64(1, 1), &x_vec());
         set_xprop_mode(prev);
         assert_eq!(r.bits[0], LogicVal::Zero, "LRM: 0 & x harus 0");
-        assert_eq!(r1.bits[0], LogicVal::X, "pessimistic: 1 & X tetap X (non-identitas)");
+        assert_eq!(
+            r1.bits[0],
+            LogicVal::X,
+            "pessimistic: 1 & X tetap X (non-identitas)"
+        );
     }
 
     #[test]

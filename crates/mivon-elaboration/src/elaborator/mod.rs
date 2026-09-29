@@ -5888,9 +5888,7 @@ impl Elaborator {
                                                 line: 0,
                                                 col: 0,
                                             };
-                                            if !is_output_like
-                                                && !signal_map.contains_key(&pname)
-                                            {
+                                            if !is_output_like && !signal_map.contains_key(&pname) {
                                                 continue; // input tanpa pasangan → unconnected
                                             }
                                             if is_output_like {

@@ -710,6 +710,31 @@ mod tests {
     }
 
     #[test]
+    fn test_summary_failed_reports_actual_counts() {
+        // Regresi: jalur "elaborasi di-skip karena parse error" pernah memanggil
+        // finish(false, 0, 0) → header "Compile Failed · 0 errors" padahal blok
+        // "Kesiapan Simulasi" menampilkan N error. Ringkasan harus menampilkan
+        // angka yang diberikan pemanggil apa adanya.
+        let mut st = state_with();
+        st.ok = false;
+        st.errors = 37;
+        st.warnings = 0;
+        let bad = summary_line(&st);
+        assert!(bad.contains("Compile Failed"), "line: {}", bad);
+        assert!(bad.contains("37 errors"), "line: {}", bad);
+        assert!(bad.contains("0 warnings"), "line: {}", bad);
+
+        // Bentuk tunggal — jangan sampai menulis "1 errors" / "1 warnings".
+        st.errors = 1;
+        st.warnings = 1;
+        let one = summary_line(&st);
+        assert!(one.contains("1 error"), "line: {}", one);
+        assert!(!one.contains("1 errors"), "line: {}", one);
+        assert!(one.contains("1 warning"), "line: {}", one);
+        assert!(!one.contains("1 warnings"), "line: {}", one);
+    }
+
+    #[test]
     fn test_clamp_subject() {
         let long = "some/very/long/path/to/rtl/core/alu_core.sv";
         let clamped = clamp_subject(long);

@@ -826,8 +826,7 @@ fn append_bugdb(kind: &str, source: &str, detail: &str, iter: usize) {
         iter,
         t
     );
-    let content =
-        std::fs::read_to_string(&path).unwrap_or_else(|_| "{\"entries\":[]}".to_string());
+    let content = std::fs::read_to_string(&path).unwrap_or_else(|_| "{\"entries\":[]}".to_string());
     let content = bugdb_insert_entry(&content, &entry);
     if let Some(tmp) = path.parent() {
         let _ = std::fs::create_dir_all(tmp);
@@ -865,8 +864,7 @@ mod bugdb_tests {
         assert_eq!(e1, r#"{"entries":[{"kind":"Hang"}]}"#);
         let e2 = bugdb_insert_entry(&e1, "{\"kind\":\"Panic\"}");
         assert_eq!(
-            e2,
-            r#"{"entries":[{"kind":"Hang"},{"kind":"Panic"}]}"#,
+            e2, r#"{"entries":[{"kind":"Hang"},{"kind":"Panic"}]}"#,
             "entry kedua menempel sebelum ] penutup"
         );
     }

@@ -898,7 +898,13 @@ impl Parser {
                     }
                 }
             } else if self.peek() == &Token::Covergroup {
-                // Skip covergroup in first pass — collect name
+                // Skip covergroup in first pass — collect name.
+                // CATATAN: first pass juga bisa push diagnostik di sini, dan
+                // karena pos di-reset ke `saved_pos` sebelum second pass,
+                // konstruk yang sama diparse ULANG oleh second pass yang juga
+                // push → satu error dilaporkan 2× (mis. "covergroup formal
+                // arguments belum didukung" pada covergroup file-scope pola
+                // DV). Dedup di akhir parse_design membuang kembaran itu.
                 let cg = match self.parse_covergroup() {
                     Ok(cg) => cg,
                     Err(e) => {

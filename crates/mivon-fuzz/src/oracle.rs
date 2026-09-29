@@ -1000,7 +1000,10 @@ pub(crate) fn scan_hidden_diags(output: &str) -> Option<(Category, String)> {
             if lower.contains(p) {
                 return Some((
                     Category::HiddenBug,
-                    format!("bug menyamar sbg warning/error — pola '{p}': {}", line.trim()),
+                    format!(
+                        "bug menyamar sbg warning/error — pola '{p}': {}",
+                        line.trim()
+                    ),
                 ));
             }
         }
@@ -2604,8 +2607,10 @@ mod scan_tests {
         .expect("harus terdeteksi");
         assert_eq!(r.0, Category::Degraded);
         assert!(!r.0.is_bug(), "Degraded bukan bug hard");
-        let r2 = scan_hidden_diags("warning[RT8001]: DPI function 'f' not found in imports, returning 0")
-            .expect("harus terdeteksi");
+        let r2 = scan_hidden_diags(
+            "warning[RT8001]: DPI function 'f' not found in imports, returning 0",
+        )
+        .expect("harus terdeteksi");
         assert_eq!(r2.0, Category::Degraded);
     }
 

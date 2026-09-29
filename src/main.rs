@@ -1531,6 +1531,19 @@ fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), SimError> {
         }
     }
     if parser.errors.iter().any(|d| d.is_error()) && !cli.compile_only {
+        // Tutup ringkasan animasi dengan jumlah error nyata. Sebelumnya jalur
+        // ini `return` langsung sehingga baris "Compile Failed" hilang sama
+        // sekali (animator di-Drop tanpa finish) — padahal run_fast
+        // menampilkannya. Samakan kedua jalur (hanya level Error yg dihitung).
+        if anim_active(&anim) {
+            let e = parser.errors.iter().filter(|d| d.is_error()).count();
+            let w = parser
+                .errors
+                .iter()
+                .filter(|d| d.level == DiagLevel::Warning)
+                .count();
+            anim_abort(&mut anim, e, w);
+        }
         return Err(mivon_core::error::SimError::from_parse_diagnostic(
             parser.errors[0].clone(),
         ));
@@ -1945,11 +1958,16 @@ fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), SimError> {
                 Err(e) => {
                     let diags = elaborator.flush_diagnostics();
                     if anim_active(&anim) {
+                        // Elaborasi gagal → ringkasan pakai jumlah error nyata,
+                        // bukan konstanta 1. `max(1)` menjaga jaminan lama:
+                        // jalur Err selalu ≥ 1 error walau diagnostiknya tidak
+                        // membawa level Error.
                         let w = diags
                             .iter()
                             .filter(|d| d.level == DiagLevel::Warning)
                             .count();
-                        anim_abort(&mut anim, 1, w);
+                        let e = diags.iter().filter(|d| d.is_error()).count().max(1);
+                        anim_abort(&mut anim, e, w);
                     }
                     emit_diags(&diags);
                     return Err(e);
@@ -3312,7 +3330,19 @@ fn run_fast(
                 anim_phase_done(&anim, Phase::Ela);
                 anim_phase_done(&anim, Phase::Opt);
                 anim_phase_done(&anim, Phase::Ver);
-                anim_finish(&mut anim, false, 0, 0);
+                // Elaborasi di-skip karena parse error. Ringkasan animasi harus
+                // mencerminkan penyebabnya — kalau di-hardcode 0, header
+                // "Compile Failed · 0 errors" bertentangan dengan blok
+                // "Kesiapan Simulasi" (✗ Parse (N error)). Hitung dari
+                // parse_errors yang sama, dengan aturan yang sama (hanya
+                // level ERROR yang dihitung, warning dihitung terpisah).
+                let e = session.parse_errors.iter().filter(|d| d.is_error()).count();
+                let w = session
+                    .parse_errors
+                    .iter()
+                    .filter(|d| d.level == DiagLevel::Warning)
+                    .count();
+                anim_finish(&mut anim, false, e, w);
             }
         } else {
             let (source_lines, source_file) = session.source_info().unwrap_or_default();
@@ -3332,11 +3362,14 @@ fn run_fast(
                 Err(e) => {
                     let diags = elab.flush_diagnostics();
                     if anim_active(&anim) {
+                        // Elaborasi gagal → jumlah error nyata, bukan konstanta 1
+                        // (alasan sama dengan jalur legacy di atas).
                         let w = diags
                             .iter()
                             .filter(|d| d.level == DiagLevel::Warning)
                             .count();
-                        anim_abort(&mut anim, 1, w);
+                        let e = diags.iter().filter(|d| d.is_error()).count().max(1);
+                        anim_abort(&mut anim, e, w);
                     }
                     emit_diags(&diags);
                     return Err(e);

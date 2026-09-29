@@ -5,8 +5,6 @@
 //! pernah turun ke IR → covergroup `@event` tanpa `sample()` = 0 samples
 //! SENYAP (temuan seed 44, sesi fuzz 2026-09-28).
 
-
-
 const CG_IMPLICIT_SRC: &str = r#"
 module cg_implicit;
   logic clk = 0;
