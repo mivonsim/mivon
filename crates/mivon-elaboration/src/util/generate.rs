@@ -938,14 +938,55 @@ pub fn substitute_genvar_in_generate_item(item: &mut GenerateItem, var_name: &st
 
 /// Kumpulkan nama sinyal LOKAL yang dideklarasikan dalam item generate.
 fn collect_scope_locals(items: &[ModuleItem]) -> HashSet<Symbol> {
-    let mut locals = HashSet::new();
-    for item in items {
-        if let ModuleItem::Decl(decl) = item {
-            for var in &decl.names {
-                locals.insert(var.name);
+    fn walk(items: &[ModuleItem], locals: &mut HashSet<Symbol>) {
+        for item in items {
+            if let ModuleItem::Decl(decl) = item {
+                for var in &decl.names {
+                    locals.insert(var.name);
+                }
+            }
+            // localparam/parameter lokal body generate-loop JUGA lokal scope —
+            // tanpa ini rename dilewati, SEMUA iterasi share nama `Pa` sama →
+            // tabrakan key param_vals (nilai iterasi pertama menang) →
+            // assign dgn index localparam salah utk iterasi kedua dst.
+            // (fuzzer t7/t9/t3b; RTL real prim_max_tree: `localparam Pa`
+            // dlm for-genvar).
+            if let ModuleItem::Param(p) = item {
+                locals.insert(p.name);
+            }
+            // Rekursif KE DALAM cabang generate non-loop (If/Case/Items):
+            // localparam dlm `if (level == ...) begin ... end` tetap milik
+            // iterasi loop yg membungkusnya. For/While TIDAK di-follow —
+            // scope loop terpisah (direname sendiri saat loop-nya expand;
+            // mengikutsertakan locals-nya di sini justru double-rename).
+            if let ModuleItem::Generate(gen) = item {
+                for gi in &gen.items {
+                    match gi {
+                        GenerateItem::If {
+                            true_items,
+                            false_items,
+                            ..
+                        } => {
+                            walk(true_items, locals);
+                            walk(false_items, locals);
+                        }
+                        GenerateItem::Case { items, default, .. } => {
+                            for ci in items {
+                                walk(&ci.body, locals);
+                            }
+                            if let Some(d) = default {
+                                walk(d, locals);
+                            }
+                        }
+                        GenerateItem::Items(list) => walk(list, locals),
+                        GenerateItem::For { .. } => {}
+                    }
+                }
             }
         }
     }
+    let mut locals = HashSet::new();
+    walk(items, &mut locals);
     locals
 }
 
@@ -1419,6 +1460,25 @@ fn scope_rename_module_item(item: &mut ModuleItem, map: &HashMap<Symbol, Symbol>
             for stmt in &mut func.stmts {
                 let old = std::mem::replace(stmt, Stmt::Null);
                 *stmt = scope_rename_stmt(&old, map);
+            }
+        }
+        ModuleItem::Param(p) => {
+            // localparam lokal body generate-loop: rename deklarasi + isi
+            // default/range (pasangan dari collect_scope_locals — tanpa arm
+            // ini map ada tapi nama tak berubah → tabrakan antar iterasi).
+            if let Some(new) = map.get(&p.name) {
+                p.name = *new;
+            }
+            if let Some(default) = &mut p.default {
+                let old =
+                    std::mem::replace(default, Expr::Value(mivon_ast::expr::Value::Decimal(0)));
+                *default = scope_rename_expr(&old, map);
+            }
+            if let Some((msb, lsb)) = &mut p.range {
+                let new_msb = scope_rename_expr(msb, map);
+                let new_lsb = scope_rename_expr(lsb, map);
+                *msb = new_msb;
+                *lsb = new_lsb;
             }
         }
         ModuleItem::Generate(gen) => {
