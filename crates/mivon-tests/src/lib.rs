@@ -55,5 +55,9 @@ mod dag_serial_fallback_tests;
 /// fuzzer 2026-09-29, golden iverilog.
 mod generate_localparam_tests;
 
+/// Regresi implicit port connection `.*` — dulu di-skip total (port tak
+/// terhubung, output X tanpa error) — fuzzer 2026-09-29.
+mod dotstar_tests;
+
 // Guided structure-aware fuzzer (metode test fuzzing "tidak buta"):
 // grammar-aware generation + coverage feedback + differential oracle.

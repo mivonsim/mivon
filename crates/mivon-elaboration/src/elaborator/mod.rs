@@ -5855,6 +5855,65 @@ impl Elaborator {
                                         }
                                     }
                                 }
+                                PortConnection::Named { port, .. }
+                                    if *port == Symbol::intern("*") =>
+                                {
+                                    // `.*` sentinel (IEEE 1800 §23.2.2.3): sambung
+                                    // tiap port target_module ke ident bernama sama
+                                    // di scope pemanggil. Port yg sudah terhubung
+                                    // eksplisit (campuran `.a(x), .*`) dipertahankan.
+                                    // Input tanpa signal bernama sama → skip
+                                    // (unconnected, tanpa error — konservatif).
+                                    if let Some(tm) = target_module {
+                                        let star_ports: Vec<(Symbol, bool)> = tm
+                                            .ports
+                                            .iter()
+                                            .map(|p| {
+                                                (
+                                                    p.name,
+                                                    matches!(
+                                                        p.direction,
+                                                        PortDirection::Output
+                                                            | PortDirection::Inout
+                                                    ),
+                                                )
+                                            })
+                                            .collect();
+                                        for (pname, is_output_like) in star_ports {
+                                            if port_map.contains_key(&pname) {
+                                                continue;
+                                            }
+                                            let ident = Expr::Ident {
+                                                name: pname,
+                                                line: 0,
+                                                col: 0,
+                                            };
+                                            if !is_output_like
+                                                && !signal_map.contains_key(&pname)
+                                            {
+                                                continue; // input tanpa pasangan → unconnected
+                                            }
+                                            if is_output_like {
+                                                self.implicit_declare_port_idents(
+                                                    &ident,
+                                                    &mut signal_map,
+                                                    &mut signals,
+                                                    &mut next_id,
+                                                );
+                                            }
+                                            let sig_id = self.instance_port_expr_to_signal(
+                                                &ident,
+                                                &signal_map,
+                                                &mut signals,
+                                                &mut next_id,
+                                                &mut processes,
+                                                &format!("{}.{}", inst.instance_name, pname),
+                                                is_output_like,
+                                            )?;
+                                            port_map.insert(pname, sig_id);
+                                        }
+                                    }
+                                }
                                 PortConnection::Named { port, expr } => {
                                     // Implicit net hanya untuk output/inout port
                                     // (aturan Verilog-2001).

@@ -1284,6 +1284,22 @@ impl Parser {
 
                         if self.peek() == &Token::Star {
                             self.advance();
+                            // `.*` (implicit port connection, IEEE 1800 §23.2.2.3)
+                            // Dulu di-skip total → port_conns KOSONG → SEMUA
+                            // port tak terhubung (input mengambang X, output
+                            // tak ter-drive) — fuzzer: `sub dut (.*)` → y=q=X.
+                            // Parser tak tahu daftar port target → kirim
+                            // SENTINEL Named{port:"*"} → elab mengekspansi
+                            // ke tiap port target_module (lihat
+                            // elaborator/mod.rs arm Named port=="*").
+                            port_conns.push(PortConnection::Named {
+                                port: Symbol::intern("*"),
+                                expr: Expr::Ident {
+                                    name: Symbol::intern("*"),
+                                    line: 0,
+                                    col: 0,
+                                },
+                            });
                             continue;
                         }
 
