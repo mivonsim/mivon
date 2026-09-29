@@ -916,12 +916,18 @@ pub fn eval_binary(op: BinaryIrOp, lhs: &LogicVec, rhs: &LogicVec) -> LogicVec {
                     _ => LogicVal::X,
                 })
             } else {
-                // Pessimistic: any X → X. BUG FIX (fuZZ): Z didominasi nilai
-                // pasti — `0 & Z = 0` (bukan X) sesuai tabel LRM 4-state &
-                // jalur packed (simd/scalar). X tetap pessimistis (policy
-                // SIM-11 dipertahankan); hanya Z-dominan dikoreksi.
+                // Pessimistic: X menular TAPI identitas dominasi TETAP LRM
+                // §11.4.1 Tabel 11-20: `0 & x = 0`, `0 & z = 0` (koreksi Z
+                // lama utk fuZZ; koreksi X — sebelumnya `0 & X = X`
+                // melanggar LRM → X menular tak terbatas, mis. sel mux
+                // prim_max_tree tak pernah konvergen thd input tak-ter-init).
+                // X di posisi NON-identitas tetap pessimistis (policy SIM-11:
+                // `1 & X = X`, `x & z = X`).
                 bitwise_op(&lhs_ext, &rhs_ext, |a, b| match (a, b) {
-                    (LogicVal::Zero, LogicVal::Z) | (LogicVal::Z, LogicVal::Zero) => LogicVal::Zero,
+                    (LogicVal::Zero, LogicVal::X)
+                    | (LogicVal::X, LogicVal::Zero)
+                    | (LogicVal::Zero, LogicVal::Z)
+                    | (LogicVal::Z, LogicVal::Zero) => LogicVal::Zero,
                     (LogicVal::X, _) | (_, LogicVal::X) | (LogicVal::Z, _) | (_, LogicVal::Z) => {
                         LogicVal::X
                     }
@@ -940,11 +946,15 @@ pub fn eval_binary(op: BinaryIrOp, lhs: &LogicVec, rhs: &LogicVec) -> LogicVec {
                     _ => LogicVal::X,
                 })
             } else {
-                // Pessimistic: any X → X. BUG FIX (fuZZ): Z didominasi nilai
-                // pasti — `1 | Z = 1` (bukan X) sesuai tabel LRM 4-state &
-                // jalur packed. X tetap pessimistis (policy SIM-11).
+                // Pessimistic: X menular TAPI identitas dominasi TETAP LRM
+                // §11.4.1 Tabel 11-21: `1 | x = 1`, `1 | z = 1`. X non-
+                // identitas tetap pessimistis (SIM-11: `0 | X = X` — juga
+                // LRM: tabel `|` memang `0|x=x`).
                 bitwise_op(&lhs_ext, &rhs_ext, |a, b| match (a, b) {
-                    (LogicVal::One, LogicVal::Z) | (LogicVal::Z, LogicVal::One) => LogicVal::One,
+                    (LogicVal::One, LogicVal::X)
+                    | (LogicVal::X, LogicVal::One)
+                    | (LogicVal::One, LogicVal::Z)
+                    | (LogicVal::Z, LogicVal::One) => LogicVal::One,
                     (LogicVal::X, _) | (_, LogicVal::X) | (LogicVal::Z, _) | (_, LogicVal::Z) => {
                         LogicVal::X
                     }
@@ -1428,12 +1438,18 @@ mod tests {
     }
 
     #[test]
-    fn test_xprop_pessimistic_bitand_propagates_x() {
+    fn test_xprop_pessimistic_bitand_zero_dominates_x() {
+        // LRM §11.4.1 Tabel 11-20: `0 & x = 0` — identitas dominasi WAJIB
+        // (dulu `0 & X = X` melanggar LRM → X menular tak terbatas thd
+        // input tak-ter-init; fuzzer xmode/pmt). X non-identitas tetap
+        // pessimistis: `1 & X = X` (lihat bawah).
         let prev = get_xprop_mode();
         set_xprop_mode(XPropagationMode::Pessimistic);
         let r = eval_binary(BinaryIrOp::BitAnd, &LogicVec::from_u64(0, 1), &x_vec());
+        let r1 = eval_binary(BinaryIrOp::BitAnd, &LogicVec::from_u64(1, 1), &x_vec());
         set_xprop_mode(prev);
-        assert_eq!(r.bits[0], LogicVal::X, "pessimistic: 0 & X harus X");
+        assert_eq!(r.bits[0], LogicVal::Zero, "LRM: 0 & x harus 0");
+        assert_eq!(r1.bits[0], LogicVal::X, "pessimistic: 1 & X tetap X (non-identitas)");
     }
 
     #[test]
@@ -1446,12 +1462,17 @@ mod tests {
     }
 
     #[test]
-    fn test_xprop_pessimistic_bitor_propagates_x() {
+    fn test_xprop_pessimistic_bitor_one_dominates_x() {
+        // LRM §11.4.1 Tabel 11-21: `1 | x = 1` — identitas dominasi WAJIB
+        // (dulu `1 | X = X` melanggar LRM). X non-identitas tetap
+        // pessimistis: `0 | X = X` (juga LRM — tabel `|` `0|x=x`).
         let prev = get_xprop_mode();
         set_xprop_mode(XPropagationMode::Pessimistic);
         let r = eval_binary(BinaryIrOp::BitOr, &LogicVec::from_u64(1, 1), &x_vec());
+        let r0 = eval_binary(BinaryIrOp::BitOr, &LogicVec::from_u64(0, 1), &x_vec());
         set_xprop_mode(prev);
-        assert_eq!(r.bits[0], LogicVal::X, "pessimistic: 1 | X harus X");
+        assert_eq!(r.bits[0], LogicVal::One, "LRM: 1 | x harus 1");
+        assert_eq!(r0.bits[0], LogicVal::X, "pessimistic/LRM: 0 | X = X");
     }
 
     fn z_vec() -> LogicVec {

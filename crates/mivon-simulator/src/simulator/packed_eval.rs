@@ -207,13 +207,19 @@ mod tests {
 
     #[test]
     fn test_bitwise_and_x_0() {
-        // X & 0 = X di mode pessimistic (default SIM-11: X dominan).
-        // (Sebelum fuZZ-fix kedua: packed selalu LRM `0 & X = 0` → hasil sim
-        // bergantung flag --packed; kini packed menghormati mode.)
+        // LRM §11.4.1 Tabel 11-20: `0 & X = 0` — identitas dominasi WAJIB
+        // di SEMUA mode (dulu "pessimistic: X dominan" menghasilkan X →
+        // melanggar LRM → X menular tak terbatas thd input tak-ter-init,
+        // fuzzer xmode/pmt). Sejak koreksi: pessimistic = LRM utk identitas.
         let x_packed = PackedLogicVec::fill(LogicVal::X, 4);
         let zero_packed = PackedLogicVec::fill(LogicVal::Zero, 4);
         let r = x_packed.bitwise_and(&zero_packed);
-        assert!(r.all_x(), "pessimistic: X & 0 should be X, got {}", r);
+        let lv = r.to_logicvec();
+        assert!(
+            lv.bits.iter().all(|b| *b == LogicVal::Zero),
+            "LRM: X & 0 should be 0, got {}",
+            r
+        );
     }
 
     #[test]
@@ -244,11 +250,17 @@ mod tests {
 
     #[test]
     fn test_bitwise_or_x_1() {
-        // X | 1 = X di mode pessimistic (default SIM-11: X dominan).
+        // LRM §11.4.1 Tabel 11-21: `1 | X = 1` — identitas dominasi WAJIB
+        // di SEMUA mode (dulu "pessimistic: X dominan" → X, melanggar LRM).
         let x_packed = PackedLogicVec::fill(LogicVal::X, 4);
         let one_packed = PackedLogicVec::fill(LogicVal::One, 4);
         let r = x_packed.bitwise_or(&one_packed);
-        assert!(r.all_x(), "pessimistic: X | 1 should be X, got {}", r);
+        let lv = r.to_logicvec();
+        assert!(
+            lv.bits.iter().all(|b| *b == LogicVal::One),
+            "LRM: X | 1 should be 1, got {}",
+            r
+        );
     }
 
     #[test]

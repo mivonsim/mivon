@@ -99,15 +99,25 @@ fn simd_dispatch_and(a: &[(u64, u64)], b: &[(u64, u64)], len: usize) -> Vec<(u64
         scalar_and_arrays(&ka, &va, &kb, &vb, &mut ok, &mut ov);
     }
 
-    // SIM-11: mode X-dominan → bit X operand mana pun membatalkan dominasi
-    // 0 hasil AND (`0 & X = X`). Z tetap non-dominan (`0 & Z = 0`, LRM).
-    // Selaras dgn jalur serial value.rs (Pessimistic/XAnywhere). Nilai juga
-    // di-nol-kan (bukan cuma known) agar `x` terkode known=0,value=0, bukan Z.
+    // SIM-11: mode X-dominan → bit X operand membatalkan hasil AND TAPI
+    // identitas dominasi LRM §11.4.1 Tabel 11-20 tetap menang: `0 & x = 0`
+    // (koreksi dgn arah value.rs — dulu `0 & X = X` melanggar LRM → X
+    // menular tak terbatas thd input tak-ter-init). X hanya utk bit tanpa
+    // penentu 0. Z tetap non-dominan (`0 & Z = 0`, LRM).
     if x_dominant_bitwise() {
         let xa: Vec<u64> = ka.iter().zip(&va).map(|(k, v)| !k & !v).collect();
         let xb: Vec<u64> = kb.iter().zip(&vb).map(|(k, v)| !k & !v).collect();
+        // Known-zero mask per bit (known=1 & value=0) — penentu dominasi AND.
+        let za: Vec<u64> = ka.iter().zip(&va).map(|(k, v)| *k & !*v).collect();
+        let zb: Vec<u64> = kb.iter().zip(&vb).map(|(k, v)| *k & !*v).collect();
         for i in 0..len {
-            let xm = xa[i] | xb[i];
+            let zmask = za[i] | zb[i];
+            // Base formula `ka & kb` menghasilkan known=0 (X) utk `0 & X`
+            // → set POSITIF: penentu 0 → hasil pasti 0 (LRM §11.4.1).
+            ok[i] |= zmask;
+            ov[i] &= !zmask;
+            // Sisanya: X hanya utk bit tanpa penentu 0.
+            let xm = (xa[i] | xb[i]) & !zmask;
             ok[i] &= !xm;
             ov[i] &= !xm;
         }
@@ -141,13 +151,19 @@ fn simd_dispatch_or(a: &[(u64, u64)], b: &[(u64, u64)], len: usize) -> Vec<(u64,
         scalar_or_arrays(&ka, &va, &kb, &vb, &mut ok, &mut ov);
     }
 
-    // SIM-11: mode X-dominan → `1 | X = X` (X membatalkan dominasi 1).
-    // Z tetap non-dominan (`1 | Z = 1`, LRM). Selaras dgn value.rs.
+    // SIM-11: mode X-dominan → `0 | X = X` (LRM §11.4.1 Tabel 11-21 memang
+    // `0|x=x`) TAPI identitas dominasi `1 | x = 1` tetap menang (koreksi
+    // dgn arah value.rs — dulu `1 | X = X` melanggar LRM). X hanya utk bit
+    // tanpa penentu 1. Z tetap non-dominan (`1 | Z = 1`, LRM).
     if x_dominant_bitwise() {
         let xa: Vec<u64> = ka.iter().zip(&va).map(|(k, v)| !k & !v).collect();
         let xb: Vec<u64> = kb.iter().zip(&vb).map(|(k, v)| !k & !v).collect();
+        // Known-one mask per bit (known=1 & value=1) — penentu dominasi OR.
+        let oa: Vec<u64> = ka.iter().zip(&va).map(|(k, v)| *k & *v).collect();
+        let ob: Vec<u64> = kb.iter().zip(&vb).map(|(k, v)| *k & *v).collect();
         for i in 0..len {
-            let xm = xa[i] | xb[i];
+            // X hanya utk bit TANPA penentu 1 — `1 | x = 1` tetap LRM.
+            let xm = (xa[i] | xb[i]) & !(oa[i] | ob[i]);
             ok[i] &= !xm;
             ov[i] &= !xm;
         }
@@ -494,12 +510,15 @@ fn scalar_and(a: &[(u64, u64)], b: &[(u64, u64)]) -> Vec<(u64, u64)> {
         let a1 = ak & av;
         let b1 = bk & bv;
         let known = a0 | b0 | (a1 & b1);
-        // SIM-11: mode X-dominan → bit X operand membatalkan dominasi 0
-        // (`0 & X = X`). Z tetap non-dominan (`0 & Z = 0`, LRM) — xa/xb
-        // hanya true utk X (known=0, value=0), bukan Z (known=0, value=1).
-        // Nilai di-mask juga supaya X terkode known=0,value=0 (bukan Z).
+        // SIM-11: mode X-dominan → X membatalkan dominasi TAPI identitas
+        // LRM §11.4.1 Tabel 11-20 tetap menang: `0 & x = 0` (koreksi —
+        // dulu `0 & X = X` melanggar LRM). X hanya utk bit tanpa penentu 0.
+        // Z tetap non-dominan (`0 & Z = 0`, LRM) — xbit hanya true utk X
+        // (known=0, value=0), bukan Z (known=0, value=1).
         let (known, val) = if pessimistic {
-            let xm = (!ak & !av) | (!bk & !bv);
+            let xbit = (!ak & !av) | (!bk & !bv);
+            let zmask = a0 | b0; // penentu 0 → LRM menang
+            let xm = xbit & !zmask;
             (known & !xm, (a1 & b1) & !xm)
         } else {
             (known, a1 & b1)
@@ -521,10 +540,13 @@ fn scalar_or(a: &[(u64, u64)], b: &[(u64, u64)]) -> Vec<(u64, u64)> {
         let a1 = ak & av;
         let b1 = bk & bv;
         let known = a1 | b1 | (a0 & b0);
-        // SIM-11: mode X-dominan → `1 | X = X` (X membatalkan dominasi 1).
-        // Nilai di-mask supaya X terkode known=0,value=0 (bukan Z).
+        // SIM-11: X membatalkan dominasi TAPI identitas LRM §11.4.1 Tabel
+        // 11-21 tetap menang: `1 | x = 1` (koreksi — dulu `1 | X = X`
+        // melanggar LRM). `0 | X = X` tetap (LRM juga `0|x=x`).
         let (known, val) = if pessimistic {
-            let xm = (!ak & !av) | (!bk & !bv);
+            let xbit = (!ak & !av) | (!bk & !bv);
+            let one_mask = a1 | b1; // penentu 1 → LRM menang
+            let xm = xbit & !one_mask;
             (known & !xm, (a1 | b1) & !xm)
         } else {
             (known, a1 | b1)
@@ -673,11 +695,10 @@ mod tests {
         let a = make_chunks(&[(0xFF, 0x00)]); // 00000000
         let b = make_chunks(&[(0, 0)]); // XXXXXXXX
         let r = simd_and(&a, &b);
-        // Mode default pessimistic (SIM-11): X dominan → 0 AND X = X
-        // (known=0, value=0). Sebelum fuZZ-fix kedua: packed selalu LRM
-        // (0,0xFF) → mismatch dgn value.rs pessimistic → hasil sim beda
-        // antara --packed ON/OFF (API vs CLI) → EMI fuzzer false positive.
-        assert_eq!(r[0], (0, 0));
+        // LRM §11.4.1 Tabel 11-20 (koreksi X-prop): 0 mendominasi AND →
+        // `0 & X = 0` (dulu mode pessimistic membatalkan dominasi → X,
+        // melanggar LRM → X menular thd input tak-ter-init).
+        assert_eq!(r[0], (0xFF, 0x00));
     }
 
     #[test]
