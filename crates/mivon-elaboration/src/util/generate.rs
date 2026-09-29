@@ -153,6 +153,7 @@ pub fn expand_all_generates(
                 diag_sink,
                 source_lines,
                 source_file,
+                "",
             ) {
                 Ok(expanded) => {
                     total_items += expanded.len();
@@ -363,6 +364,12 @@ pub fn expand_generate_block(
     diag_sink: &DiagSink,
     source_lines: &[String],
     source_file: &str,
+    // Prefix jalur scope berantai (`gl[1].`) — identitas iterasi loop LUAR.
+    // Tanpa ini, nama hasil rename (`go[0].sel`) kolisi antar iterasi outer
+    // saat generate nested (semua outer iteration berbagi `go[0]`) → signal
+    // lokal Decl antar instance saling tertimpa (fuzzer t26, prim_max_tree
+    // `logic sel` dlm for-genvar). Konvensi mirip LRM `genblk1[0]`.
+    scope_prefix: &str,
 ) -> Result<Vec<ModuleItem>, ElabError> {
     let mut result = Vec::new();
     for item in &gen.items {
@@ -385,6 +392,7 @@ pub fn expand_generate_block(
                             diag_sink,
                             source_lines,
                             source_file,
+                            scope_prefix,
                         )?);
                     }
                     Err(e) => {
@@ -428,6 +436,7 @@ pub fn expand_generate_block(
                             diag_sink,
                             source_lines,
                             source_file,
+                            scope_prefix,
                         )?);
                     }
                 }
@@ -542,7 +551,14 @@ pub fn expand_generate_block(
                         // nama scope antar iterasi loop luar saat nested —
                         // lihat doc fold_localparams).
                         fold_localparams(&mut substituted, param_vals);
-                        scope_rename_generate_iteration(&mut substituted, label.as_ref(), cur);
+                        // Scope name ber-prefix jalur outer (nested): `gl[1].go[0]`
+                        // — tanpa prefix, `go[0]` kolisi antar iterasi outer.
+                        let iter_scope = match label.as_ref() {
+                            Some(l) => format!("{}{}[{}]", scope_prefix, l.as_str(), cur),
+                            None => format!("{}genblk[{}]", scope_prefix, cur),
+                        };
+                        scope_rename_generate_iteration(&mut substituted, &iter_scope);
+                        let child_prefix = format!("{}.", iter_scope);
                         result.extend(expand_item_list(
                             &substituted,
                             param_vals,
@@ -550,6 +566,7 @@ pub fn expand_generate_block(
                             diag_sink,
                             source_lines,
                             source_file,
+                            &child_prefix,
                         )?);
                         cur += step_val;
                     }
@@ -572,7 +589,12 @@ pub fn expand_generate_block(
                         // nama scope antar iterasi loop luar saat nested —
                         // lihat doc fold_localparams).
                         fold_localparams(&mut substituted, param_vals);
-                        scope_rename_generate_iteration(&mut substituted, label.as_ref(), cur);
+                        let iter_scope = match label.as_ref() {
+                            Some(l) => format!("{}{}[{}]", scope_prefix, l.as_str(), cur),
+                            None => format!("{}genblk[{}]", scope_prefix, cur),
+                        };
+                        scope_rename_generate_iteration(&mut substituted, &iter_scope);
+                        let child_prefix = format!("{}.", iter_scope);
                         result.extend(expand_item_list(
                             &substituted,
                             param_vals,
@@ -580,6 +602,7 @@ pub fn expand_generate_block(
                             diag_sink,
                             source_lines,
                             source_file,
+                            &child_prefix,
                         )?);
                         cur += step_val;
                     }
@@ -607,6 +630,7 @@ pub fn expand_generate_block(
                                 diag_sink,
                                 source_lines,
                                 source_file,
+                                scope_prefix,
                             )?);
                         } else if let Some(default_items) = default {
                             result.extend(expand_item_list(
@@ -616,6 +640,7 @@ pub fn expand_generate_block(
                                 diag_sink,
                                 source_lines,
                                 source_file,
+                                scope_prefix,
                             )?);
                         }
                         continue;
@@ -640,6 +665,7 @@ pub fn expand_generate_block(
                                 diag_sink,
                                 source_lines,
                                 source_file,
+                                scope_prefix,
                             )?);
                             matched = true;
                             break;
@@ -658,6 +684,7 @@ pub fn expand_generate_block(
                             diag_sink,
                             source_lines,
                             source_file,
+                            scope_prefix,
                         )?);
                     }
                 }
@@ -670,6 +697,7 @@ pub fn expand_generate_block(
                     diag_sink,
                     source_lines,
                     source_file,
+                    scope_prefix,
                 )?);
             }
         }
@@ -687,6 +715,7 @@ fn expand_item_list(
     diag_sink: &DiagSink,
     source_lines: &[String],
     source_file: &str,
+    scope_prefix: &str,
 ) -> Result<Vec<ModuleItem>, ElabError> {
     let mut extended = param_vals.clone();
     for item in items {
@@ -714,6 +743,7 @@ fn expand_item_list(
                     diag_sink,
                     source_lines,
                     source_file,
+                    scope_prefix,
                 )?);
             }
             other => result.push(other.clone()),
@@ -751,12 +781,21 @@ fn fold_localparams(items: &mut Vec<ModuleItem>, base: &HashMap<Symbol, i64>) {
                 for gi in &gen.items {
                     match gi {
                         GenerateItem::If {
+                            cond,
                             true_items,
                             false_items,
                             ..
                         } => {
-                            scan(true_items, known, out);
-                            scan(false_items, known, out);
+                            // Pilih HANYA cabang hidup — fold kedua cabang
+                            // dalam iterasi sama membuat dua nilai untuk nama
+                            // lokal sama (Pa=1 & Pa=2 → timpa-menimpa, index
+                            // salah — regresi t3e). Cond setelah substitusi
+                            // genvar umumnya literal; gagal eval → skip If
+                            // ini (rename ber-prefix menangan).
+                            if let Ok(v) = const_eval_with_params(cond, known) {
+                                let branch = if v != 0 { true_items } else { false_items };
+                                scan(branch, known, out);
+                            }
                         }
                         GenerateItem::Case { items, default, .. } => {
                             for ci in items {
@@ -1641,15 +1680,11 @@ fn scope_rename_generate_item(item: &mut GenerateItem, map: &HashMap<Symbol, Sym
 /// Terapkan scope-rename untuk SATU iterasi generate for.
 /// Sinyal lokal `sig` dinamai `label[cur].sig` (atau `genblk[cur].sig` tanpa
 /// label) agar tidak collide antar iterasi.
-fn scope_rename_generate_iteration(items: &mut [ModuleItem], label: Option<&Symbol>, cur: i64) {
+fn scope_rename_generate_iteration(items: &mut [ModuleItem], scope_name: &str) {
     let locals = collect_scope_locals(items);
     if locals.is_empty() {
         return;
     }
-    let scope_name = match label {
-        Some(l) => format!("{}[{}]", l.as_str(), cur),
-        None => format!("genblk[{}]", cur),
-    };
     let mut map = HashMap::with_capacity(locals.len());
     for l in &locals {
         map.insert(

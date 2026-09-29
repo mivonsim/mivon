@@ -4401,6 +4401,7 @@ impl Elaborator {
                             &self.diag_sink,
                             &self.source_lines,
                             &self.source_file,
+                            "",
                         ) {
                             Ok(v) => v,
                             Err(e) => {
