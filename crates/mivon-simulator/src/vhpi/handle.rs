@@ -143,6 +143,11 @@ mod tests {
 
     #[test]
     fn test_vhpi_handle_null_semantics() {
+        // FIX flake: register_object menyentuh registry global — tanpa lock,
+        // clear_all test paralel (registry_roundtrip/clear_all) menghapus
+        // entry di tengah → panic menular (poison CACHE) ke test sim lain
+        // (teramati: 6 test gagal serentak saat cargo test --workspace).
+        let _g = TEST_LOCK.lock().unwrap();
         assert!(VhpiHandle::NULL.is_null());
         assert!(!VhpiHandle::NULL.is_valid());
         let h = register_object(VhpiObjectKind::Scope("s".to_string()));
