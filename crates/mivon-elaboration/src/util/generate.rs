@@ -538,6 +538,10 @@ pub fn expand_generate_block(
                         for item in &mut substituted {
                             substitute_genvar_in_module_item(item, var.as_str(), cur);
                         }
+                        // Fold localparam lokal → literal (mencegah kolisi
+                        // nama scope antar iterasi loop luar saat nested —
+                        // lihat doc fold_localparams).
+                        fold_localparams(&mut substituted, param_vals);
                         scope_rename_generate_iteration(&mut substituted, label.as_ref(), cur);
                         result.extend(expand_item_list(
                             &substituted,
@@ -564,6 +568,10 @@ pub fn expand_generate_block(
                         for item in &mut substituted {
                             substitute_genvar_in_module_item(item, var.as_str(), cur);
                         }
+                        // Fold localparam lokal → literal (mencegah kolisi
+                        // nama scope antar iterasi loop luar saat nested —
+                        // lihat doc fold_localparams).
+                        fold_localparams(&mut substituted, param_vals);
                         scope_rename_generate_iteration(&mut substituted, label.as_ref(), cur);
                         result.extend(expand_item_list(
                             &substituted,
@@ -712,6 +720,75 @@ fn expand_item_list(
         }
     }
     Ok(result)
+}
+
+/// Const-fold localparam lokal dalam body generate-for SETELAH substitusi
+/// genvar (semua ekspresi localparam kini literal murni).
+///
+/// Tanpa fold ini, nama hasil `scope_rename_generate_iteration` (`go[0]`)
+/// KOLISI antar iterasi loop LUAR saat nested (lv=0 & lv=1 keduanya punya
+/// `go[0]`) → key param_vals tabrakan (nilai pertama menang) → index
+/// localparam salah utk iterasi kedua+ (fuzzer t3d/t3b; prim_max_tree real).
+/// Setelah fold, referensi jadi literal → rename tak lagi menyentuhnya.
+/// Param items dibiarkan (tak ada referensi tersisa → kolisi berikutnya
+/// tak berdampak).
+fn fold_localparams(items: &mut Vec<ModuleItem>, base: &HashMap<Symbol, i64>) {
+    fn scan(items: &[ModuleItem], known: &HashMap<Symbol, i64>, out: &mut Vec<(Symbol, i64)>) {
+        for item in items {
+            if let ModuleItem::Param(p) = item {
+                if !known.contains_key(&p.name) {
+                    if let Some(e) = &p.default {
+                        if let Ok(v) = const_eval_with_params(e, known) {
+                            out.push((p.name, v));
+                        }
+                    }
+                }
+            }
+            // Rekursif ke cabang generate non-loop (localparam dlm
+            // `if (...) begin ... end` milik iterasi ini juga) — For TIDAK
+            // di-follow (scope loop terpisah, fold saat loop-nya expand).
+            if let ModuleItem::Generate(gen) = item {
+                for gi in &gen.items {
+                    match gi {
+                        GenerateItem::If {
+                            true_items,
+                            false_items,
+                            ..
+                        } => {
+                            scan(true_items, known, out);
+                            scan(false_items, known, out);
+                        }
+                        GenerateItem::Case { items, default, .. } => {
+                            for ci in items {
+                                scan(&ci.body, known, out);
+                            }
+                            if let Some(d) = default {
+                                scan(d, known, out);
+                            }
+                        }
+                        GenerateItem::Items(list) => scan(list, known, out),
+                        GenerateItem::For { .. } => {}
+                    }
+                }
+            }
+        }
+    }
+    let mut known = base.clone();
+    loop {
+        let mut folded: Vec<(Symbol, i64)> = Vec::new();
+        scan(items, &known, &mut folded);
+        if folded.is_empty() {
+            break;
+        }
+        for (name, v) in &folded {
+            known.insert(*name, *v);
+            // Ganti semua referensi Ident(name) → literal, rekursif menembus
+            // generate bersarang (mekanisme substitusi genvar yang sama).
+            for item in items.iter_mut() {
+                substitute_genvar_in_module_item(item, name.as_str(), *v);
+            }
+        }
+    }
 }
 
 /// Substitusi genvar di dalam satu ModuleItem.

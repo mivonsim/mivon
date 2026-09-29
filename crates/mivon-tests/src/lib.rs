@@ -51,5 +51,9 @@ mod covergroup_tests;
 /// (evaluator parallel jatuh ke X senyap — fuzzer sim bug_0508).
 mod dag_serial_fallback_tests;
 
+/// Regresi localparam lokal body generate-for (scope rename + fold) —
+/// fuzzer 2026-09-29, golden iverilog.
+mod generate_localparam_tests;
+
 // Guided structure-aware fuzzer (metode test fuzzing "tidak buta"):
 // grammar-aware generation + coverage feedback + differential oracle.
