@@ -1458,7 +1458,7 @@ impl Parser {
             ["module", "interface", "class", "package"]
                 .iter()
                 .any(|kw| {
-                    t.strip_prefix(kw).map_or(false, |r| {
+                    t.strip_prefix(kw).is_some_and(|r| {
                         r.starts_with(char::is_whitespace)
                             || r.starts_with('#')
                             || r.starts_with('(')

@@ -109,7 +109,7 @@ pub(crate) fn check_expr<'a>(
                 // whitelist: repo mendukung VPI custom task (`$my_vpi_task`,
                 // `$unregistered_task`) yang tak terdaftar di mana pun —
                 // whitelist statis akan merusaknya.
-                let name = &s[1..];
+                let name = s.strip_prefix('$').unwrap_or(s.as_str());
                 if MV_NON_SYSTASK.contains(&name) {
                     return Err(err_at(
                         *l,

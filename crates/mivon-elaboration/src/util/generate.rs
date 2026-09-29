@@ -762,7 +762,7 @@ fn expand_item_list(
 /// Setelah fold, referensi jadi literal → rename tak lagi menyentuhnya.
 /// Param items dibiarkan (tak ada referensi tersisa → kolisi berikutnya
 /// tak berdampak).
-fn fold_localparams(items: &mut Vec<ModuleItem>, base: &HashMap<Symbol, i64>) {
+fn fold_localparams(items: &mut [ModuleItem], base: &HashMap<Symbol, i64>) {
     fn scan(items: &[ModuleItem], known: &HashMap<Symbol, i64>, out: &mut Vec<(Symbol, i64)>) {
         for item in items {
             if let ModuleItem::Param(p) = item {

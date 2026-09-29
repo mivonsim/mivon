@@ -45,18 +45,22 @@ mod synth_phase5;
 mod parallel_emi_tests;
 
 /// Regresi implicit sampling covergroup (§19.8) — gap sesi fuzz 2026-09-28.
+#[cfg(test)]
 mod covergroup_tests;
 
 /// Regresi fallback serial DAG-parallel utk ekspresi tak didukung
 /// (evaluator parallel jatuh ke X senyap — fuzzer sim bug_0508).
+#[cfg(test)]
 mod dag_serial_fallback_tests;
 
 /// Regresi localparam lokal body generate-for (scope rename + fold) —
 /// fuzzer 2026-09-29, golden iverilog.
+#[cfg(test)]
 mod generate_localparam_tests;
 
 /// Regresi implicit port connection `.*` — dulu di-skip total (port tak
 /// terhubung, output X tanpa error) — fuzzer 2026-09-29.
+#[cfg(test)]
 mod dotstar_tests;
 
 // Guided structure-aware fuzzer (metode test fuzzing "tidak buta"):

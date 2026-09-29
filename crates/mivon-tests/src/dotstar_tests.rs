@@ -82,17 +82,6 @@ module cast_sens;
 endmodule
 "#;
 
-fn run_cast() -> Vec<String> {
-    let design = compile_str(CAST_SENS_SRC).expect("harus compile");
-    let mut engine = mivon_simulator::simulator::SimulationEngine::new(design, 10);
-    engine.run().expect("sim harus jalan");
-    engine
-        .trace_snapshots
-        .iter()
-        .cloned()
-        .collect()
-}
-
 /// Cast dlm expr assign harus ikut sensitivity (re-evaluate saat operand
 /// berubah) — dulu sel stale: perubahan `b` tak menggerakkan `sel`.
 #[test]
