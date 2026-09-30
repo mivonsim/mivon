@@ -110,11 +110,30 @@ fn find_marker_tokens(s: &str) -> Vec<String> {
     out
 }
 
-/// Ekstrak marker dari mivon Outcome.
-/// HANYA stdout: stderr berisi source snippets diagnostic (`┌─ line | $display("ASRT_..")`)
-/// yang KONTENNYA mirip marker — menangkapnya = false-positive mismatch.
+/// Ekstrak marker dari mivon Outcome — DUA STREAM:
+/// - stdout: payload `$display`.
+/// - stderr: baris SEVERITY saja (`Error:`/`Fatal:`/`Warning:`/`Info:`/
+///   `error[`/`warning[`): `$error` mivon menulis ke STDERR sedangkan
+///   iverilog vvp ke stdout → tanpa ini marker `_BAD` mivon tak terbaca →
+///   mismatch ARTEFAK (fuzzer verify_bad_0039: simulasi sudah identik
+///   `OUT_RST_BAD=<x>` dua-duanya, hanya stream beda). Snippet diagnostic
+///   (`   34 │`, `┌─`) DIKECUALIKAN — kontennya memuat teks literal
+///   `$display("ASRT_...=<...")` → false-positive (alasan stdout-only lama).
 fn markers_of(out: &Outcome) -> Vec<String> {
-    extract_markers(&out.stdout)
+    let mut ms = extract_markers(&out.stdout);
+    for line in out.stderr.lines() {
+        let t = line.trim_start();
+        if t.starts_with("Error:")
+            || t.starts_with("Fatal:")
+            || t.starts_with("Warning:")
+            || t.starts_with("Info:")
+            || t.starts_with("error[")
+            || t.starts_with("warning[")
+        {
+            ms.extend(extract_markers(t));
+        }
+    }
+    ms
 }
 
 /// Jalankan command (list arg) avec timeout + drain pipe (mirror runner.spawn).
@@ -278,7 +297,16 @@ pub fn evaluate_icarus(source: &str, timeout_ms: u64) -> IcarusResult {
     let ref_markers = extract_markers(&ref_stdout);
     let mine = markers_of(&mivon);
 
-    if mine == ref_markers {
+    // MULTISET (sort): marker `$error` (stderr) & `$display` (stdout)
+    // berasal dari dua stream terpisah — urutan lintas-stream tak teramati;
+    // tanpa sort, kasus campuran selalu mismatch ARTEFAK (urutan beda
+    // walau isi identik). Multiset tetap menangkap selisih NILAI
+    // (kasus berulang `P=<65504>,<65506>,<0>,<0>` tetap dibandingkan utuh).
+    let mut a = ref_markers.clone();
+    a.sort();
+    let mut b = mine.clone();
+    b.sort();
+    if a == b {
         return IcarusResult {
             verdict: Verdict::Match,
             category: crate::Category::Ok,
