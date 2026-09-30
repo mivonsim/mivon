@@ -432,7 +432,35 @@ impl SimulationEngine {
                     }
                     Some('d') => {
                         if let Some((val, is_signed)) = value_args.next() {
-                            if is_signed && val.width <= 64 {
+                            // DESIMAL utk nilai UNKNOWN = huruf, BUKAN angka 0
+                            // (X→0 = silent coercion menyesatkan — fuzzer
+                            // verify_bad_0039: `OUT_RST_BAD=<0>` padahal
+                            // out=X). Golden iverilog: semua-X → `x`,
+                            // semua-Z → `z`, partially-unknown → `X`;
+                            // space-pad utk `%Nd` (bukan zero-pad).
+                            let all_pred = |p: &LogicVal| matches!(p, LogicVal::X);
+                            let all_z = val.bits.iter().all(|b| *b == LogicVal::Z);
+                            let any_unknown = val.bits.iter().any(|b| {
+                                matches!(b, LogicVal::X | LogicVal::Z)
+                            });
+                            let unknown_char = if any_unknown {
+                                if all_z {
+                                    Some('z')
+                                } else if val.bits.iter().all(&all_pred) {
+                                    Some('x')
+                                } else {
+                                    Some('X')
+                                }
+                            } else {
+                                None
+                            };
+                            if let Some(ch) = unknown_char {
+                                // Space-pad: `%4d` utk x → "   x"; `%0d` tanpa pad.
+                                for _ in 1..width {
+                                    result.push(' ');
+                                }
+                                result.push(ch);
+                            } else if is_signed && val.width <= 64 {
                                 // Signed: cetak dua-complement sebagai negatif
                                 // (mis. int -5 = 0xFFFFFFFB → "-5").
                                 let n = val.to_i64();
@@ -923,6 +951,55 @@ mod tests {
         assert_eq!(
             e.format_display_fmt("%h", vec![(z4, false)].into_iter()),
             "0"
+        );
+    }
+
+    #[test]
+    fn test_format_display_decimal_xz_aware() {
+        // DESIMAL utk nilai UNKNOWN = huruf, BUKAN angka 0 — X→0 adalah
+        // silent coercion menyesatkan (fuzzer verify_bad_0039:
+        // `OUT_RST_BAD=<0>` padahal out=X; test f3: mivon P=[1] vs
+        // golden iverilog P=[X]). Golden iverilog: semua-X → "x",
+        // semua-Z → "z", partially-unknown → "X", `%4d` space-pad.
+        let mut e = test_engine();
+        let x = LogicVec::fill(LogicVal::X, 4);
+        assert_eq!(
+            e.format_display_fmt("%0d", vec![(x.clone(), false)].into_iter()),
+            "x",
+            "semua-X → x"
+        );
+        assert_eq!(
+            e.format_display_fmt("%4d", vec![(x, false)].into_iter()),
+            "   x",
+            "%4d space-pad (bukan zero-pad) utk letter"
+        );
+        let z = LogicVec::fill(LogicVal::Z, 4);
+        assert_eq!(
+            e.format_display_fmt("%0d", vec![(z, false)].into_iter()),
+            "z",
+            "semua-Z → z"
+        );
+        // 4'b00x1 (partially unknown) → 'X' (golden iverilog).
+        let p = LogicVec {
+            bits: vec![LogicVal::One, LogicVal::X, LogicVal::Zero, LogicVal::Zero],
+            width: 4,
+        };
+        assert_eq!(
+            e.format_display_fmt("%0d", vec![(p, false)].into_iter()),
+            "X",
+            "partially-unknown → X"
+        );
+        // Known tetap desimal utuh.
+        let n = LogicVec::from_u64(42, 8);
+        assert_eq!(
+            e.format_display_fmt("%0d", vec![(n, false)].into_iter()),
+            "42"
+        );
+        let s = LogicVec::from_u64((-5i64) as u64, 32);
+        assert_eq!(
+            e.format_display_fmt("%0d", vec![(s, true)].into_iter()),
+            "-5",
+            "signed known tetap negatif"
         );
     }
 }
