@@ -191,6 +191,44 @@ fn extend_design_move(target: &mut Design, other: &mut Design) {
     target.unit_decls.append(&mut other.unit_decls);
 }
 
+/// Kunci dedup diagnostik LINTAS file untuk agregat `parse_errors`.
+/// Lokasi display (snippet `file:line:col`, fallback span) menunjuk sumber
+/// ASLI konstruk — file yang sama bisa diparse dua kali dalam satu build
+/// (mandiri di filelist + di-`include` oleh file lain) dan kedua parse
+/// melapor di lokasi identik. Tanpa lokasi, fallback ke path parse-target
+/// agar dua file berbeda tidak saling menelan diagnostiknya.
+fn diag_dedup_key(
+    d: &mivon_core::diagnostics::Diagnostic,
+    parse_target: &std::path::Path,
+) -> (
+    mivon_core::diagnostics::diagnostic::DiagLevel,
+    &'static str,
+    String,
+    String,
+    usize,
+    usize,
+) {
+    let (file, line, col) = if let Some(ss) = &d.source_snippet {
+        (ss.file.clone(), ss.line, ss.col)
+    } else if let Some(sp) = d.spans.first() {
+        (
+            sp.file.as_str().to_string(),
+            sp.start as usize,
+            sp.end as usize,
+        )
+    } else {
+        (parse_target.to_string_lossy().into_owned(), 0usize, 0usize)
+    };
+    (
+        d.level,
+        d.code.as_str(),
+        d.message.to_string(),
+        file,
+        line,
+        col,
+    )
+}
+
 /// Konversi `Diagnostic` → `micd::DiagEntry` untuk penyimpanan MICD
 /// `diag.mdb` (dipakai LSP/IDE dan sebagai penanda "file ini punya
 /// diagnostik" di `attach_micd` — BUG #2). Lokasi diambil dari
@@ -627,13 +665,25 @@ impl CompileSession {
         // dulu supaya file yang kini parse bersih tidak membawa sisa error
         // dari compile sebelumnya (dan file yang berubah tidak ganda).
         self.file_parse_diags.clear();
+        // Dedup LINTAS file (BUG #1b): sumber yang sama bisa diparse dua kali
+        // dalam satu build — file S terdaftar mandiri di filelist DAN
+        // di-`include` oleh file P (pola OpenTitan `*_pkg.sv` `include
+        // "*_cov.sv"`). Kedua parse melapor di lokasi display yang SAMA (line
+        // directive `include`) → pesan + file:line:col identik untuk konstruk
+        // yang sama. `file_parse_diags` TETAP menyimpan salinan per file
+        // (kebenaran per-file untuk LSP/MICD); hanya agregat yang di-dedup.
+        let mut seen_diags = HashSet::new();
         for r in results {
             let (path, design, cksum, parse_errors) = r?;
             if !parse_errors.is_empty() {
                 self.file_parse_diags
                     .insert(path.clone(), parse_errors.clone());
             }
-            all_parse_errors.extend(parse_errors);
+            for d in parse_errors {
+                if seen_diags.insert(diag_dedup_key(&d, &path)) {
+                    all_parse_errors.push(d);
+                }
+            }
             file_designs.push((path.clone(), design));
             file_checksums.insert(path.clone(), cksum);
             // File yang AST-nya di-restore dari MICD (parse di-skip) TIDAK
@@ -3086,6 +3136,71 @@ mod tests {
             );
             s.save_micd().unwrap().expect("database terpasang");
         }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_cross_file_include_diag_dedup() {
+        // BUG #1b (fake bug — pelaporan): file S terdaftar MANDIRI di
+        // filelist DAN di-`include` oleh file P dalam build yang sama (pola
+        // OpenTitan: `*_pkg.sv` `include "*_cov.sv"`). Kedua parse melapor
+        // di lokasi display yang SAMA (line directive `include`) → satu
+        // konstruk terhitung 2×. Dedup lintas file di compile() wajib
+        // menyisakan satu; diagnostik per file tetap utuh untuk LSP/MICD.
+        use crate::micd::MicdDatabase;
+        use std::io::Write;
+
+        let dir = std::env::temp_dir().join(format!("mivon_xfile_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_root = dir.join("db");
+        let cg = dir.join("cg_only.sv");
+        let pkg = dir.join("inc_pkg.sv");
+        {
+            // Class nyata → standalone parse TIDAK di-downgrade jadi
+            // fragment-warning; salinan di dalam package juga Error → level
+            // sama, cocok untuk dedup.
+            let mut f = std::fs::File::create(&cg).unwrap();
+            writeln!(f, "class dummy_cov;").unwrap();
+            writeln!(f, "    int unsigned m;").unwrap();
+            writeln!(f, "endclass").unwrap();
+            writeln!(f, "covergroup handshake_cg (int unsigned complete_status);").unwrap();
+            writeln!(f, "    cp: coverpoint complete_status;").unwrap();
+            writeln!(f, "endgroup").unwrap();
+        }
+        {
+            let mut f = std::fs::File::create(&pkg).unwrap();
+            writeln!(f, "package inc_pkg;").unwrap();
+            writeln!(f, "`include \"cg_only.sv\"").unwrap();
+            writeln!(f, "endpackage").unwrap();
+        }
+        let sources = vec![cg.clone(), pkg.clone()];
+
+        let mut s = CompileSession::new(SessionConfig {
+            sources: sources.clone(),
+            ..Default::default()
+        });
+        s.attach_micd(MicdDatabase::open(&db_root));
+        s.compile().unwrap();
+        let hits: Vec<String> = s
+            .parse_errors
+            .iter()
+            .filter(|d| d.message.contains("covergroup formal arguments"))
+            .map(|d| {
+                d.source_snippet
+                    .as_ref()
+                    .map(|ss| format!("{}:{}:{}", ss.file, ss.line, ss.col))
+                    .unwrap_or_else(|| "<no loc>".into())
+            })
+            .collect();
+        assert_eq!(
+            hits.len(),
+            1,
+            "1 konstruk, 2 jalur parse (mandiri + include) → 1 laporan; dapat {}: {:?}",
+            hits.len(),
+            hits
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
