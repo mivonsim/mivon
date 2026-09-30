@@ -21,14 +21,23 @@ module tb_lfsr_shift;
     rst_n = 0;
     load = 0; din = 16'hA5A5;
     repeat (2) @(posedge clk);
+    // #1: tulis SETELAH edge (bukan di slot edge — race urutan Active
+    // region dgn always_ff pada edge sama; golden iverilog terkadang
+    // menang urutan → divergensi cross-sim).
+    #1;
     rst_n = 1;
     rst_n2 = 1;
     $display("ASRT_SEED=<%0d>", data_out);
     repeat (4) @(posedge clk);
+    #1;
     $display("ASRT_LFSR4=<%0d>", data_out);
-    load = 1; @(posedge clk2); load = 0;
+    // #1 setelah edge sebelum clear: DUT wajib baca load=1 dulu (pulse
+    // di slot edge = race → load bisa hilang: LOADED=0 vs golden 42405).
+    load = 1; @(posedge clk2); #1; load = 0;
+    #1;
     $display("ASRT_LOADED=<%0d>", dout);
     @(posedge clk2);
+    #1;
     $display("ASRT_SHIFT1=<%0d>", dout);
     $finish;
   end

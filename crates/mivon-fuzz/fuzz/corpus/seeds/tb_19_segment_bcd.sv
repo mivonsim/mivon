@@ -24,13 +24,19 @@ module tb_segment_bcd;
     $display("ASRT_SEG_F=<%0d>", seg);
     rst_n = 0;
     repeat (10) @(posedge clk);
+    #1;
     rst_n = 1;
     repeat (2) @(posedge clk);
+    // #1: baca POST-NBA (tanpa ini $display bisa baca nilai pre-edge —
+    // race urutan Active region, tak dispesifikasi LRM).
+    #1;
     $display("ASRT_BCD2=<%0d>", cnt);
     repeat (8) @(posedge clk);
+    #1;
     $display("ASRT_BCD10=<%0d>", cnt);
     $display("ASRT_CARRY=<%0d>", carry);
     @(posedge clk);
+    #1;
     $display("ASRT_BCD11=<%0d>", cnt);
     $finish;
   end

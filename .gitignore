@@ -51,6 +51,11 @@
 *.txt
 /fuzz/reports/*.txt
 # Artifact laporan coverage (mcov/msim) — dihasilkan saat testing
+# Artifact coverage (mcov/msim) di root — dari run test/tool di workspace;
+# namanya = nama top module (ct_*, tb_*, dsb) → pola generik, bukan per-nama.
+/*.coverage.html
+/*.coverage.json
+/*.coverage.ucis.xml
 /covtest.coverage.html
 /covtest.ucis.xml
 

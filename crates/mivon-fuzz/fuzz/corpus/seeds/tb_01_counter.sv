@@ -20,6 +20,9 @@ module tb_counter;
     @(negedge clk);
     rst_n = 1;
     repeat (8) @(posedge clk);
+    // #1: baca POST-NBA (nilai settle) — tanpa ini $display bisa membaca
+    // pre-edge (race urutan Active region, tak dispesifikasi LRM).
+    #1;
     $display("ASRT_COUNT=<%0d>", count);
     $display("ASRT_DONE=<%0d>", done);
     $finish;
