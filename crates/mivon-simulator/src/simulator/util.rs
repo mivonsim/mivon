@@ -440,9 +440,10 @@ impl SimulationEngine {
                             // space-pad utk `%Nd` (bukan zero-pad).
                             let all_pred = |p: &LogicVal| matches!(p, LogicVal::X);
                             let all_z = val.bits.iter().all(|b| *b == LogicVal::Z);
-                            let any_unknown = val.bits.iter().any(|b| {
-                                matches!(b, LogicVal::X | LogicVal::Z)
-                            });
+                            let any_unknown = val
+                                .bits
+                                .iter()
+                                .any(|b| matches!(b, LogicVal::X | LogicVal::Z));
                             let unknown_char = if any_unknown {
                                 if all_z {
                                     Some('z')
