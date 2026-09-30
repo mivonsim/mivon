@@ -60,6 +60,26 @@ impl Elaborator {
                         );
                         continue;
                     }
+                    // Formal arguments kini di-parse parser (CovergroupDecl
+                    // .formals), tapi binding nilai saat sample(a,b,c) belum
+                    // diimplementasi → coverpoint yang merujuk formal tak
+                    // bisa dievaluasi. Skip dengan warning JUJUR (bukan
+                    // error jauh E2001 "signal not found" di baris coverpoint,
+                    // dan bukan coverage palsu).
+                    if !cg.formals.is_empty() {
+                        self.elab_warn_at(
+                            mivon_core::diagnostics::DiagCode::NotImplemented,
+                            format!(
+                                "covergroup '{}' punya formal arguments — binding sample() \
+                                 belum didukung, covergroup tidak dielaborasi (coverage tidak \
+                                 dihitung, BUKAN hilang senyap)",
+                                cg.name
+                            ),
+                            0,
+                            0,
+                        );
+                        continue;
+                    }
                     let mut ir_cps = Vec::new();
                     for cp in &cg.coverpoints {
                         let ir_expr = self.elaborate_expr(&cp.expr, signal_map, signals)?;

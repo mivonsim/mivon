@@ -588,6 +588,10 @@ pub struct CovergroupDecl {
     /// VERIF-28: `type_option.per_instance = 1` / `option.per_instance = 1` —
     /// coverage dilacak per-instance (default false = merge semua instance).
     pub per_instance: bool,
+    /// Formal arguments `covergroup cg (int unsigned v, ...)` (IEEE 1800 §19.5).
+    /// Dievaluasi saat `sample(a, b, ...)`; coverpoint yang merujuk formal
+    /// hanya ter-sample bila binding sample() sudah didukung elaborasi.
+    pub formals: Vec<Symbol>,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]

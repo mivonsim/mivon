@@ -14044,19 +14044,75 @@ fn test_parse_err_top_level_covergroup() {
 }
 
 #[test]
-fn test_covergroup_formal_arg_error_reported_once() {
-    // BUG #1: parse_design menjalankan dua pass (pass-1 kumpulkan nama,
-    // pass-2 parse penuh dengan `pos` di-reset). Covergroup file-scope dengan
-    // argumen formal — pola OpenTitan `*_cov.sv` — menghasilkan error yang
-    // identik di KEDUA pass → 1 masalah nyata terlapor 2×. Dedup di akhir
-    // parse_design wajib menyisakan tepat satu.
+fn test_covergroup_formal_args_supported() {
+    // Formal arguments covergroup (IEEE 1800 §19.5) kini DI-DUKUNG: parser
+    // menyimpan daftar formal ke CovergroupDecl.formals. Dulu fail-fast di
+    // header → body ter-skip → cascade diagnostic SESAT di konstruk
+    // berikutnya ("expected system call name after $" dst, 7 error OpenTitan).
+    let source = r#"
+module top(input logic clk, input logic [3:0] v);
+  covergroup handshake_cg (int unsigned complete_status, logic [3:0] x) @(posedge clk);
+    cp: coverpoint v;
+  endgroup
+endmodule
+"#;
+    let mut lexer = Lexer::new(source);
+    use mivon_parser::lexer::Token;
+    let mut tokens = Vec::new();
+    loop {
+        let (tok, line, col) = lexer.next_token();
+        if tok == Token::Eof {
+            break;
+        }
+        tokens.push((tok, line, col));
+    }
+    let mut parser = mivon_parser::Parser::new(tokens, "t.sv").with_source_lines(source);
+    let design = parser
+        .parse_design()
+        .expect("parse_design Ok (error recoverable)");
+    let errs: Vec<String> = parser
+        .errors
+        .iter()
+        .filter(|d| d.is_error())
+        .map(|d| d.message.to_string())
+        .collect();
+    assert!(errs.is_empty(), "tanpa error parse: {:?}", errs);
+    let m = design
+        .modules
+        .iter()
+        .find(|m| m.name == Symbol::intern("top"))
+        .expect("module top harus ada");
+    let cg = m
+        .items
+        .iter()
+        .find_map(|i| match i {
+            mivon_ast::ModuleItem::Covergroup(cg) => Some(cg),
+            _ => None,
+        })
+        .expect("covergroup harus ada di module top");
+    assert_eq!(
+        cg.formals.len(),
+        2,
+        "2 formal argument harus tersimpan: {:?}",
+        cg.formals
+    );
+    assert_eq!(cg.formals[0], Symbol::intern("complete_status"));
+    assert_eq!(cg.formals[1], Symbol::intern("x"));
+}
+
+#[test]
+fn test_covergroup_two_pass_error_reported_once() {
+    // BUG #1: parse_design dua pass (pass-1 kumpulkan nama, pass-2 parse
+    // penuh dgn pos di-reset) — error identik di kedua pass wajib terdedup
+    // jadi 1 laporan. Sumber error: covergroup body rusak (`coverpoint ;`,
+    // tanpa formal args).
     let source = r#"
 class dummy_cov;
     int unsigned m;
 endclass
 
-covergroup handshake_cg (int unsigned complete_status);
-    cp: coverpoint complete_status;
+covergroup handshake_cg;
+    cp: coverpoint ;
 endgroup
 "#;
     let mut lexer = Lexer::new(source);
@@ -14073,15 +14129,11 @@ endgroup
     let _design = parser
         .parse_design()
         .expect("parse_design selalu Ok — error bersifat recoverable");
-    let hits = parser
-        .errors
-        .iter()
-        .filter(|d| d.message.contains("covergroup formal arguments"))
-        .count();
+    let hits = parser.errors.iter().filter(|d| d.is_error()).count();
     assert_eq!(
         hits,
         1,
-        "error covergroup formal-args harus dilaporkan tepat 1× (dua-pass dedup), dapat {}×:\n{:?}",
+        "error covergroup body rusak harus dilaporkan tepat 1× (dua-pass dedup), dapat {}:\n{:?}",
         hits,
         parser
             .errors

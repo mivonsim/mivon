@@ -3084,21 +3084,23 @@ mod tests {
             writeln!(f, "endmodule").unwrap();
         }
         {
-            // Covergroup file-scope dgn argumen formal (pola OpenTitan *_cov.sv)
-            // + class nyata → error TIDAK di-downgrade jadi fragment-warning.
+            // Class nyata (tolak fragment-downgrade) + covergroup dgn body
+            // RUSAK (`coverpoint ;`) → 1 error nyata yang diemiten pass-1
+            // dan pass-2 parser (terdedup) — sumber error tidak lagi
+            // memakai formal-args (kini didukung).
             let mut f = std::fs::File::create(&bad).unwrap();
             writeln!(f, "class dummy_cov;").unwrap();
             writeln!(f, "    int unsigned m;").unwrap();
             writeln!(f, "endclass").unwrap();
-            writeln!(f, "covergroup handshake_cg (int unsigned complete_status);").unwrap();
-            writeln!(f, "    cp: coverpoint complete_status;").unwrap();
+            writeln!(f, "covergroup handshake_cg;").unwrap();
+            writeln!(f, "    cp: coverpoint ;").unwrap();
             writeln!(f, "endgroup").unwrap();
         }
         let sources = vec![ok.clone(), bad.clone()];
         let count_err = |s: &CompileSession| {
             s.parse_errors
                 .iter()
-                .filter(|d| d.is_error() && d.message.contains("covergroup formal arguments"))
+                .filter(|d| d.is_error())
                 .count()
         };
 
@@ -3160,13 +3162,14 @@ mod tests {
         {
             // Class nyata → standalone parse TIDAK di-downgrade jadi
             // fragment-warning; salinan di dalam package juga Error → level
-            // sama, cocok untuk dedup.
+            // sama, cocok untuk dedup. Body covergroup rusak (`coverpoint ;`)
+            // = sumber error (formal args kini didukung, tak dipakai).
             let mut f = std::fs::File::create(&cg).unwrap();
             writeln!(f, "class dummy_cov;").unwrap();
             writeln!(f, "    int unsigned m;").unwrap();
             writeln!(f, "endclass").unwrap();
-            writeln!(f, "covergroup handshake_cg (int unsigned complete_status);").unwrap();
-            writeln!(f, "    cp: coverpoint complete_status;").unwrap();
+            writeln!(f, "covergroup handshake_cg;").unwrap();
+            writeln!(f, "    cp: coverpoint ;").unwrap();
             writeln!(f, "endgroup").unwrap();
         }
         {
@@ -3186,7 +3189,13 @@ mod tests {
         let hits: Vec<String> = s
             .parse_errors
             .iter()
-            .filter(|d| d.message.contains("covergroup formal arguments"))
+            .filter(|d| d.is_error())
+            .filter(|d| {
+                d.source_snippet
+                    .as_ref()
+                    .map(|ss| ss.file.ends_with("cg_only.sv"))
+                    .unwrap_or(false)
+            })
             .map(|d| {
                 d.source_snippet
                     .as_ref()

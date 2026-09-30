@@ -2330,6 +2330,7 @@ name = "mivon-tests"
 version = "0.3.0"
 dependencies = [
  "mivon-api",
+ "mivon-ast",
  "mivon-compiler",
  "mivon-core",
  "mivon-elaboration",

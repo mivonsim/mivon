@@ -571,12 +571,66 @@ impl Parser {
         // `@(...)` ikut tak terbaca (event hilang → implicit sampling mati).
         // Fail-fast di titik deklarasi dgn saran. Dukungan penuh butuh
         // IrExpr::CovergroupArg + binding `sample(a,b,c)` — desain terpisah.
+        // Formal arguments `covergroup cg (int unsigned v, ...)` — IEEE 1800
+        // §19.5. Fail-fast LAMA dihapus: error di HEADER membuat seluruh body
+        // ikut ter-skip, lalu konstruk sesudahnya (`bins x = {[0:$]}`,
+        // `bins s[] = fn()`) diparse jalur module-item yang salah → cascade
+        // diagnostic SESAT ("expected system call name after $", "expected
+        // instance name" — 7 dari 23 error OpenTitan berasal dari sini).
+        // Daftar formal kini diparse & disimpan ke CovergroupDecl.formals;
+        // binding nilai saat `sample(...)` tanggung jawab elaborasi.
+        let mut formals: Vec<Symbol> = Vec::new();
         if self.peek() == &Token::LParen {
-            return Err(self.err(
-                "covergroup formal arguments belum didukung — pakai signal module \
-                 langsung sebagai coverpoint expression \
-                 (mis. `cp: coverpoint req_valid`, tanpa argumen formal)",
-            ));
+            self.advance(); // '('
+            if self.peek() != &Token::RParen {
+                loop {
+                    // Konsumsi tipe + nama sampai ',' / ')' di depth0.
+                    // Nama formal = token TERAKHIR (bentuk `type name`);
+                    // tipe bisa keyword (`int unsigned`), typedef Ident,
+                    // scoped `pkg::T`, atau packed dim `[3:0]`.
+                    let mut depth = 0i32;
+                    let mut last_ident: Option<Symbol> = None;
+                    loop {
+                        match self.peek() {
+                            Token::Comma | Token::RParen if depth == 0 => break,
+                            Token::LBrack | Token::LParen | Token::LBrace => {
+                                depth += 1;
+                                self.advance();
+                            }
+                            Token::RBrack | Token::RBrace => {
+                                depth = depth.saturating_sub(1);
+                                self.advance();
+                            }
+                            Token::RParen => {
+                                depth -= 1;
+                                self.advance();
+                            }
+                            Token::Ident(s) => {
+                                last_ident = Some(*s);
+                                self.advance();
+                            }
+                            Token::Eof => {
+                                return Err(self.err("unterminated covergroup formal argument list"))
+                            }
+                            _ => self.advance(),
+                        }
+                    }
+                    match last_ident {
+                        Some(n) => formals.push(n),
+                        None => {
+                            return Err(self.err(
+                                "expected formal argument name in covergroup argument list",
+                            ))
+                        }
+                    }
+                    if self.peek() == &Token::Comma {
+                        self.advance();
+                        continue;
+                    }
+                    break;
+                }
+            }
+            self.expect(Token::RParen)?;
         }
         let clocking_event = if self.peek() == &Token::At {
             Some(self.parse_clocking_event()?)
@@ -1005,6 +1059,7 @@ impl Parser {
             crosses,
             weight: cg_weight,
             per_instance: cg_per_instance,
+            formals,
         })
     }
 

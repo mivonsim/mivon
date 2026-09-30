@@ -10,6 +10,7 @@ mivon-ir = { path = "../mivon-ir" }
 mivon-core = { path = "../mivon-core" }
 mivon-compiler = { path = "../mivon-compiler" }
 mivon-parser = { path = "../mivon-parser" }
+mivon-ast = { path = "../mivon-ast" }
 mivon-elaboration = { path = "../mivon-elaboration" }
 # Dep langsung utk feature wiring jit/dpi (test memakai simulator::jit + simulator::dpi)
 mivon-simulator = { path = "../mivon-simulator" }
