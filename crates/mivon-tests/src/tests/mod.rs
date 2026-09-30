@@ -14044,6 +14044,54 @@ fn test_parse_err_top_level_covergroup() {
 }
 
 #[test]
+fn test_covergroup_formal_arg_error_reported_once() {
+    // BUG #1: parse_design menjalankan dua pass (pass-1 kumpulkan nama,
+    // pass-2 parse penuh dengan `pos` di-reset). Covergroup file-scope dengan
+    // argumen formal — pola OpenTitan `*_cov.sv` — menghasilkan error yang
+    // identik di KEDUA pass → 1 masalah nyata terlapor 2×. Dedup di akhir
+    // parse_design wajib menyisakan tepat satu.
+    let source = r#"
+class dummy_cov;
+    int unsigned m;
+endclass
+
+covergroup handshake_cg (int unsigned complete_status);
+    cp: coverpoint complete_status;
+endgroup
+"#;
+    let mut lexer = Lexer::new(source);
+    use mivon_parser::lexer::Token;
+    let mut tokens = Vec::new();
+    loop {
+        let (tok, line, col) = lexer.next_token();
+        if tok == Token::Eof {
+            break;
+        }
+        tokens.push((tok, line, col));
+    }
+    let mut parser = mivon_parser::Parser::new(tokens, "cov.sv").with_source_lines(source);
+    let _design = parser
+        .parse_design()
+        .expect("parse_design selalu Ok — error bersifat recoverable");
+    let hits = parser
+        .errors
+        .iter()
+        .filter(|d| d.message.contains("covergroup formal arguments"))
+        .count();
+    assert_eq!(
+        hits,
+        1,
+        "error covergroup formal-args harus dilaporkan tepat 1× (dua-pass dedup), dapat {}×:\n{:?}",
+        hits,
+        parser
+            .errors
+            .iter()
+            .map(|d| (d.level, d.message.to_string()))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn test_parse_err_top_level_genvar() {
     assert!(compile_str("genvar i;").is_err());
 }

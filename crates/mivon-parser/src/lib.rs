@@ -1439,6 +1439,38 @@ impl Parser {
             }
         }
         // Second pass done in {:?}
+        // ── Dedup diagnostik dua-pass (BUG #1) ──
+        // Pass-1 (pengumpulan nama class/covergroup/module) dan pass-2 (parse
+        // penuh) mem-parse konstruk yang SAMA: pass-1 mendorong error lalu
+        // `pos` di-reset ke `saved_pos` → pass-2 mendorong error yang identik
+        // (covergroup file-scope pola OpenTitan `*_cov.sv`: satu masalah nyata
+        // terlapor 2-3×). Buang kembaran: kunci = level + kode + pesan +
+        // lokasi (source_snippet file:line:col, fallback span). Diagnostik di
+        // lokasi berbeda TETAP dipertahankan walau pesannya identik.
+        if self.errors.len() > 1 {
+            let mut seen = std::collections::HashSet::with_capacity(self.errors.len());
+            self.errors.retain(|d| {
+                let (file, line, col) = if let Some(ss) = &d.source_snippet {
+                    (ss.file.clone(), ss.line, ss.col)
+                } else if let Some(sp) = d.spans.first() {
+                    (
+                        sp.file.as_str().to_string(),
+                        sp.start as usize,
+                        sp.end as usize,
+                    )
+                } else {
+                    (String::new(), 0usize, 0usize)
+                };
+                seen.insert((
+                    d.level,
+                    d.code.as_str(),
+                    d.message.to_string(),
+                    file,
+                    line,
+                    col,
+                ))
+            });
+        }
         // Fragment-mode downgrade: files with NO module/interface/class/package
         // (DV/formal include snippets like compare_helper.sv, rv32zba_instr.sv)
         // produce parse errors inside an implicit module wrapper; these are NOT

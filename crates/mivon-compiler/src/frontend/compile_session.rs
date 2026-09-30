@@ -113,6 +113,14 @@ pub struct CompileSession {
     lexer_payloads: std::sync::Mutex<Vec<(PathBuf, crate::micd::cache::pipeline::LexerPayload)>>,
     /// Parse errors collected during compilation
     pub parse_errors: Vec<mivon_core::diagnostics::Diagnostic>,
+    /// Diagnostik parse PER FILE (path → diagnostics) dari compile terakhir.
+    /// Menyimpan hasil file cache-hit juga — dipakai (a) mengisi ulang
+    /// `parse_errors` saat `compile()` dipanggil ulang dalam sesi sama, dan
+    /// (b) disimpan ke MICD `diag.mdb` saat save, di mana entry ini sekaligus
+    /// menjadi penanda agar file ber-diagnostik tidak di-restore (BUG #2:
+    /// AST cache tidak membawa error-nya → run hangat melaporkan 0 error
+    /// dan desain yang gagal parse lolos ke simulasi).
+    file_parse_diags: HashMap<PathBuf, Vec<mivon_core::diagnostics::Diagnostic>>,
     /// Diagnostics dari ELABORASI terakhir (compile_and_elaborate[_with_mode]).
     /// Dulu elaborator lokal → flush_diagnostics tak pernah dipanggil →
     /// warning elab (mis. covergroup non-top 'tidak dielaborate', WR0102
@@ -183,6 +191,39 @@ fn extend_design_move(target: &mut Design, other: &mut Design) {
     target.unit_decls.append(&mut other.unit_decls);
 }
 
+/// Konversi `Diagnostic` → `micd::DiagEntry` untuk penyimpanan MICD
+/// `diag.mdb` (dipakai LSP/IDE dan sebagai penanda "file ini punya
+/// diagnostik" di `attach_micd` — BUG #2). Lokasi diambil dari
+/// `source_snippet` (file:line:col saat render), fallback `spans[0]`.
+fn diag_to_entry(d: &mivon_core::diagnostics::Diagnostic) -> micd::DiagEntry {
+    use mivon_core::diagnostics::diagnostic::DiagLevel;
+    let severity = match d.level {
+        DiagLevel::Warning => micd::DiagSeverity::Warning,
+        DiagLevel::Note => micd::DiagSeverity::Note,
+        DiagLevel::Help => micd::DiagSeverity::Hint,
+        DiagLevel::Info | DiagLevel::Trace | DiagLevel::Debug => micd::DiagSeverity::Info,
+        DiagLevel::Fatal | DiagLevel::Bug | DiagLevel::Error => micd::DiagSeverity::Error,
+    };
+    let (line, col) = if let Some(ss) = &d.source_snippet {
+        (ss.line, ss.col)
+    } else if let Some(sp) = d.spans.first() {
+        (sp.start as usize, sp.end as usize)
+    } else {
+        (0usize, 0usize)
+    };
+    let mut e = micd::DiagEntry::new(
+        line,
+        col,
+        severity,
+        d.message.to_string(),
+        d.code.as_str().to_string(),
+    );
+    if line != 0 || col != 0 {
+        e.span = Some(micd::diag::Span::point(line, col));
+    }
+    e
+}
+
 impl CompileSession {
     pub fn new(config: SessionConfig) -> Self {
         CompileSession {
@@ -208,6 +249,7 @@ impl CompileSession {
             micd_include_deps: HashMap::new(),
             lexer_payloads: std::sync::Mutex::new(Vec::new()),
             parse_errors: Vec::new(),
+            file_parse_diags: HashMap::new(),
             elab_diagnostics: Vec::new(),
             file_progress: None,
         }
@@ -239,6 +281,14 @@ impl CompileSession {
         // `<pkg>.sv/.svh` ADA di direktori pengimport namun belum masuk daftar
         // → tambahkan otomatis (pola deterministic: nama file == nama paket).
         self.auto_include_missing_packages(&mut files);
+        // File yang terdaftar lebih dari sekali (filelist duplikat) → AST &
+        // diagnostik tercatat ganda — 1 masalah nyata terlipat N× tergantung
+        // jumlah pendaftaran. Buang kembaran, pertahankan urutan pertama
+        // (urutan = semantik override definisi).
+        {
+            let mut seen = HashSet::with_capacity(files.len());
+            files.retain(|f| seen.insert(f.clone()));
+        }
         if files.is_empty() {
             return Err(SimError::with_diag(
                 DiagCode::ModuleNotFound,
@@ -413,6 +463,9 @@ impl CompileSession {
         // Clone callback progres per-file sebelum closure par_iter (tanpa
         // mem-borrow self di dalam rayon).
         let file_progress = self.file_progress.clone();
+        // Diagnostik per file dari compile sebelumnya (sesi sama) — file
+        // cache-hit tetap menyumbang error-nya, jangan dibuang (BUG #2).
+        let file_diags = &self.file_parse_diags;
         let results: Vec<
             Result<
                 (
@@ -433,7 +486,14 @@ impl CompileSession {
                     if let Some(cb) = file_progress.as_ref() {
                         cb(&path, true);
                     }
-                    return Ok((path, design, cksum, Vec::new()));
+                    // BUG #2 (CRITICAL): AST cache-hit TIDAK boleh membuang
+                    // diagnostik parse file ini. Dulu `Vec::new()` → jumlah
+                    // error jadi non-deterministik tergantung cache, dan
+                    // desain yang tidak parse bersih bisa lolos ke simulasi
+                    // pada run hangat. Kembalikan diagnostik sesi sebelumnya
+                    // (konten file tidak berubah → diagnostik identik).
+                    let errs = file_diags.get(&path).cloned().unwrap_or_default();
+                    return Ok((path, design, cksum, errs));
                 }
                 let combined = combined_opt.unwrap_or_default();
                 let base = base_offsets[file_idx];
@@ -563,8 +623,16 @@ impl CompileSession {
         let mut file_designs: Vec<(PathBuf, Design)> = Vec::new();
         let mut file_checksums: HashMap<PathBuf, u64> = HashMap::new();
         let mut all_parse_errors: Vec<mivon_core::diagnostics::Diagnostic> = Vec::new();
+        // Snapshot diagnostik per file dari compile INI. Entri lama dibuang
+        // dulu supaya file yang kini parse bersih tidak membawa sisa error
+        // dari compile sebelumnya (dan file yang berubah tidak ganda).
+        self.file_parse_diags.clear();
         for r in results {
             let (path, design, cksum, parse_errors) = r?;
+            if !parse_errors.is_empty() {
+                self.file_parse_diags
+                    .insert(path.clone(), parse_errors.clone());
+            }
             all_parse_errors.extend(parse_errors);
             file_designs.push((path.clone(), design));
             file_checksums.insert(path.clone(), cksum);
@@ -1257,6 +1325,21 @@ impl CompileSession {
                     if !db_ref.deps_unchanged(path, hash).unwrap_or(false) {
                         return None;
                     }
+                    // BUG #2 (CRITICAL): file dengan diagnostik parse TIDAK
+                    // boleh di-restore — AST cache tidak membawa error-nya,
+                    // sehingga run hangat melaporkan 0 error dan desain yang
+                    // gagal parse lolos ke simulasi (silent miscompilation).
+                    // File ini di-parse ulang tiap run → jumlah & isi error
+                    // deterministik: dingin == hangat. Entry `diag.mdb`
+                    // dikunci ke content hash yang sama; file berubah →
+                    // hash beda → tidak menahan restore (AST miss sudah
+                    // cukup untuk memaksa parse ulang).
+                    if db_ref
+                        .get_diags(path)
+                        .is_some_and(|d| d.content_hash == hash && !d.entries.is_empty())
+                    {
+                        return None;
+                    }
                     let ast = db_ref
                         .get_ast(path, hash)
                         .and_then(|bytes| micd::deserialize_design(&bytes))?;
@@ -1683,6 +1766,35 @@ impl CompileSession {
                         timescale: None,
                     },
                 );
+            }
+            // BUG #2: rekam diagnostik parse per file ke `diag.mdb` —
+            // disamping fungsinya IDE/LSP (file → daftar diagnostic tanpa
+            // compile ulang), entry ini menjadi penanda di attach_micd agar
+            // file ber-diagnostik tidak di-restore (error selalu terlapor di
+            // run hangat). File yang di-restore TIDAK disentuh: tidak diparse
+            // ulang → diagnostiknya tidak berubah. Tulis hanya bila berubah
+            // agar run hangat tidak menandai db dirty tanpa alasan.
+            if !self.micd_restored_paths.contains(&path) {
+                let new_entries: Vec<micd::DiagEntry> = self
+                    .file_parse_diags
+                    .get(&path)
+                    .map(|ds| ds.iter().map(diag_to_entry).collect())
+                    .unwrap_or_default();
+                let unchanged = db.get_diags(&path).is_some_and(|old| {
+                    old.content_hash == content_hash && old.entries == new_entries
+                });
+                if !unchanged {
+                    if new_entries.is_empty() {
+                        db.diags.remove(&path);
+                        db.dirty = true;
+                    } else {
+                        db.set_diags(micd::FileDiags {
+                            path: path.clone(),
+                            entries: new_entries,
+                            content_hash,
+                        });
+                    }
+                }
             }
         }
         if full_write {
@@ -2893,6 +3005,86 @@ mod tests {
             );
             let (design, _) = s.compile().unwrap();
             assert_eq!(design.modules.len(), 1);
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_micd_parse_errors_survive_warm_run() {
+        // BUG #2 (CRITICAL): file yang di-restore dari MICD harus tetap
+        // menyumbang diagnostik parse. Dulu cache-hit mengembalikan
+        // `Vec::new()` → run hangat melaporkan 0 error dan desain yang gagal
+        // parse lolos ke simulasi (silent miscompilation). Fix: file ber-
+        // diagnostik TIDAK di-restore (di-parse ulang tiap run) → jumlah error
+        // deterministik: dingin == hangat. Sesi 1 juga menguji dedup dua-pass
+        // (BUG #1): satu error nyata ≠ 2-3× lipatan.
+        use crate::micd::MicdDatabase;
+        use std::io::Write;
+
+        let dir = std::env::temp_dir().join(format!("mivon_micd_perr_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_root = dir.join("db");
+        let ok = dir.join("ok.sv");
+        let bad = dir.join("bad.sv");
+        {
+            let mut f = std::fs::File::create(&ok).unwrap();
+            writeln!(f, "module ok(input clk);").unwrap();
+            writeln!(f, "endmodule").unwrap();
+        }
+        {
+            // Covergroup file-scope dgn argumen formal (pola OpenTitan *_cov.sv)
+            // + class nyata → error TIDAK di-downgrade jadi fragment-warning.
+            let mut f = std::fs::File::create(&bad).unwrap();
+            writeln!(f, "class dummy_cov;").unwrap();
+            writeln!(f, "    int unsigned m;").unwrap();
+            writeln!(f, "endclass").unwrap();
+            writeln!(f, "covergroup handshake_cg (int unsigned complete_status);").unwrap();
+            writeln!(f, "    cp: coverpoint complete_status;").unwrap();
+            writeln!(f, "endgroup").unwrap();
+        }
+        let sources = vec![ok.clone(), bad.clone()];
+        let count_err = |s: &CompileSession| {
+            s.parse_errors
+                .iter()
+                .filter(|d| d.is_error() && d.message.contains("covergroup formal arguments"))
+                .count()
+        };
+
+        // Sesi 1: cold — error dilaporkan tepat 1× (dedup dua-pass).
+        {
+            let mut s = CompileSession::new(SessionConfig {
+                sources: sources.clone(),
+                ..Default::default()
+            });
+            assert_eq!(s.attach_micd(MicdDatabase::open(&db_root)), 0);
+            s.compile().unwrap();
+            assert_eq!(count_err(&s), 1, "cold: 1 masalah nyata, bukan 2-3×");
+            s.save_micd().unwrap().expect("database terpasang");
+        }
+
+        // Sesi 2: warm — file bersih di-restore, file error di-parse ulang →
+        // error MASIH dilaporkan (bukan 0) dan restore tidak menelan-nya.
+        for round in 1..=2 {
+            let mut s = CompileSession::new(SessionConfig {
+                sources: sources.clone(),
+                ..Default::default()
+            });
+            let restored = s.attach_micd(MicdDatabase::open(&db_root));
+            assert_eq!(
+                restored, 1,
+                "warm {}: hanya file bersih yang di-restore",
+                round
+            );
+            s.compile().unwrap();
+            assert_eq!(
+                count_err(&s),
+                1,
+                "warm {}: error parse HARUS tetap terlapor (BUG #2)",
+                round
+            );
+            s.save_micd().unwrap().expect("database terpasang");
         }
 
         let _ = std::fs::remove_dir_all(&dir);
