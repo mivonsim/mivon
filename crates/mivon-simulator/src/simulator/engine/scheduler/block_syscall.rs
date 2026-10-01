@@ -760,10 +760,46 @@ impl SimulationEngine {
                     .write_signal(*id, LogicVec::from_u64(handle as u64, 32));
             }
         } else if name == "load_coverage_db" {
-            self.emit_warning(
-                mivon_core::diagnostics::DiagCode::NotImplemented,
-                "$load_coverage_db not yet implemented",
-            );
+            // `$load_coverage_db(path)` — muat MCDB lalu merge ke counter
+            // live (line/branch/toggle/FSM/covergroup). Gagal load =
+            // warning IoError (sim LANJUT, pola $fopen yg gagal = handle 0).
+            let path = ir_args.first().and_then(|a| match a {
+                IrExpr::String(s) => Some(s.clone()),
+                IrExpr::Signal(sid, _) => {
+                    let is_str = self
+                        .design
+                        .top
+                        .signals
+                        .get(*sid)
+                        .map(|si| si.is_string)
+                        .unwrap_or(false);
+                    if is_str {
+                        let lv = self.state.read_signal(*sid);
+                        Some(crate::simulator::util::logicvec_to_string(lv))
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            });
+            match path {
+                Some(p) => {
+                    // Sukses = silent merge (seperti VCS — tak ada output).
+                    // Gagal = warning IoError, sim LANJUT.
+                    if let Err(e) = self.load_coverage_db_merge(&p) {
+                        self.emit_warning(
+                            mivon_core::diagnostics::DiagCode::IoError,
+                            format!("$load_coverage_db: {}", e),
+                        );
+                    }
+                }
+                None => {
+                    self.emit_warning(
+                        mivon_core::diagnostics::DiagCode::IoError,
+                        "$load_coverage_db requires a filename argument",
+                    );
+                }
+            }
         } else if name == "swrite" || name == "sformat" {
             if let Some(IrExpr::Signal(out_id, _)) = ir_args.first() {
                 let format_args = &ir_args[1..];
@@ -1665,10 +1701,46 @@ impl SimulationEngine {
                     .write_signal(*id, LogicVec::from_u64(handle as u64, 32));
             }
         } else if name == "load_coverage_db" {
-            self.emit_warning(
-                mivon_core::diagnostics::DiagCode::NotImplemented,
-                "$load_coverage_db not yet implemented",
-            );
+            // `$load_coverage_db(path)` — muat MCDB lalu merge ke counter
+            // live (line/branch/toggle/FSM/covergroup). Gagal load =
+            // warning IoError (sim LANJUT, pola $fopen yg gagal = handle 0).
+            let path = ir_args.first().and_then(|a| match a {
+                IrExpr::String(s) => Some(s.clone()),
+                IrExpr::Signal(sid, _) => {
+                    let is_str = self
+                        .design
+                        .top
+                        .signals
+                        .get(*sid)
+                        .map(|si| si.is_string)
+                        .unwrap_or(false);
+                    if is_str {
+                        let lv = self.state.read_signal(*sid);
+                        Some(crate::simulator::util::logicvec_to_string(lv))
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            });
+            match path {
+                Some(p) => {
+                    // Sukses = silent merge (seperti VCS — tak ada output).
+                    // Gagal = warning IoError, sim LANJUT.
+                    if let Err(e) = self.load_coverage_db_merge(&p) {
+                        self.emit_warning(
+                            mivon_core::diagnostics::DiagCode::IoError,
+                            format!("$load_coverage_db: {}", e),
+                        );
+                    }
+                }
+                None => {
+                    self.emit_warning(
+                        mivon_core::diagnostics::DiagCode::IoError,
+                        "$load_coverage_db requires a filename argument",
+                    );
+                }
+            }
         } else if name == "swrite" || name == "sformat" {
             if let Some(IrExpr::Signal(out_id, _)) = ir_args.first() {
                 let format_args = &ir_args[1..];

@@ -98,6 +98,73 @@ fn wildcard_match(value: u64, pattern: &str) -> bool {
 impl SimulationEngine {
     // ─── Coverage Control ($coverage_control, SIM-30) ───────────────
 
+    /// `$load_coverage_db(path)` — muat database coverage biner (format MCDB,
+    /// ditulis `mcov`/CoverageDatabase::save_to_file) dan MERGE ke counter
+    /// live engine (line/branch/toggle/FSM/covergroup dijumlahkan).
+    /// Return jumlah item coverage yang di-merge. Error I/O / format
+    /// dikembalikan sebagai Err (pemanggil: warning IoError, sim lanjut).
+    pub(crate) fn load_coverage_db_merge(&mut self, path: &str) -> Result<usize, String> {
+        let db = crate::simulator::coverage_db::CoverageDatabase::load_from_path(path)?;
+        let mut merged = 0usize;
+        // Line: jumlahkan hits per key (key SAMA dengan cover_line).
+        for (key, hits) in &db.line_hits {
+            *self.cover_line.entry(*key).or_insert(0) += hits;
+            merged += 1;
+        }
+        // Branch: jumlahkan per (key, label).
+        for (key, branches) in &db.branch_data {
+            let entry = self.cover_branches.entry(*key).or_default();
+            for (label, count) in branches {
+                *entry.entry(*label).or_insert(0) += count;
+                merged += 1;
+            }
+        }
+        // Toggle: union transisi (engine simpan set — count db dibuang,
+        // konsisten dgn record_toggle yg juga hanya mencatat keberadaan).
+        for (sig_id, tentry) in &db.toggle_data {
+            let entry = self.cover_toggle.entry(*sig_id).or_default();
+            for t in tentry.transitions.keys() {
+                entry.insert(*t);
+                merged += 1;
+            }
+        }
+        // FSM: union state (engine simpan set).
+        for (sig_id, states) in &db.fsm_data {
+            let entry = self.cover_fsm.entry(*sig_id).or_default();
+            for s in states.keys() {
+                entry.insert(*s);
+                merged += 1;
+            }
+        }
+        // Covergroup: agregat ke key `cg.cp` (pola merge_from_engine —
+        // sum_key membaca key agregat ATAU per-instance `cg.i<id>.cp`).
+        for (cg_name, cg_entry) in &db.covergroups {
+            for cp in &cg_entry.coverpoints {
+                let key = Symbol::intern(&format!("{}.{}", cg_name, cp.name));
+                *self.cover_total.entry(key).or_insert(0) += cp.total;
+                *self.cover_hits.entry(key).or_insert(0) += cp.hits;
+                let bins = self.cover_bins.entry(key).or_default();
+                for (bk, bv) in &cp.bins {
+                    *bins.entry(*bk).or_insert(0) += bv;
+                    merged += 1;
+                }
+                merged += 1;
+            }
+            for cross in &cg_entry.crosses {
+                let key = Symbol::intern(&format!("{}.{}", cg_name, cross.name));
+                *self.cover_total.entry(key).or_insert(0) += cross.total;
+                *self.cover_hits.entry(key).or_insert(0) += cross.hits;
+                let bins = self.cover_bins.entry(key).or_default();
+                for (bk, bv) in &cross.bins {
+                    *bins.entry(*bk).or_insert(0) += bv;
+                    merged += 1;
+                }
+                merged += 1;
+            }
+        }
+        Ok(merged)
+    }
+
     /// Terapkan bitmask `$coverage_control(control)` (IEEE 1800-2017 §20.13.2).
     /// Bit-0=line, bit-1=toggle, bit-2=branch, bit-3=FSM, bit-4=covergroup.
     /// Nilai 0 → semua nonaktif; nilai ~0 (semua bit set) → semua aktif.

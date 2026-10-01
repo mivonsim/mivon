@@ -13090,6 +13090,95 @@ endmodule
 }
 
 #[test]
+fn test_load_coverage_db_merges() {
+    // `$load_coverage_db(path)` — muat MCDB lalu MERGE ke counter live
+    // (line/branch/toggle/FSM/covergroup dijumlahkan). Sebelumnya stub
+    // "not yet implemented" — panggilan diam-diam tak berpengaruh.
+    let src_a = r#"
+module tb;
+    reg [3:0] cnt;
+    integer i;
+    initial begin
+        cnt = 0;
+        for (i = 0; i < 4; i = i + 1) cnt = cnt + 1;
+        #1 $finish;
+    end
+endmodule
+"#;
+    let design_a = compile_str(src_a).unwrap();
+    let mut engine_a = crate::simulator::SimulationEngine::new(design_a, 10);
+    engine_a.run().unwrap();
+    assert!(!engine_a.cover_line.is_empty(), "run A harus catat line hits");
+    let saved_hits: u64 = engine_a.cover_line.values().sum();
+    let db_path = std::env::temp_dir().join(format!("mivon_covdb_{}.mcdb", std::process::id()));
+    let mut db = crate::simulator::coverage_db::CoverageDatabase::new();
+    db.merge_from_engine(&engine_a);
+    db.save_to_file(db_path.to_str().unwrap())
+        .expect("simpan MCDB");
+
+    // Run B memanggil $load_coverage_db — cover_line B harus memuat SEMUA
+    // key dari A (merge), bukan hanya statement B sendiri.
+    let src_b = format!(
+        r#"
+module tb2;
+    reg [3:0] x;
+    initial begin
+        $load_coverage_db("{}");
+        x = 1;
+        #1 $finish;
+    end
+endmodule
+"#,
+        db_path.to_str().unwrap()
+    );
+    let design_b = compile_str(&src_b).unwrap();
+    let mut engine_b = crate::simulator::SimulationEngine::new(design_b, 10);
+    engine_b.run().unwrap();
+    for key in engine_a.cover_line.keys() {
+        assert!(
+            engine_b.cover_line.contains_key(key),
+            "key line {:?} dari MCDB harus ter-merge ke engine B",
+            key
+        );
+    }
+    let merged_hits: u64 = engine_b.cover_line.values().sum();
+    assert!(
+        merged_hits >= saved_hits,
+        "hits B ({}) >= hits A tersimpan ({})",
+        merged_hits,
+        saved_hits
+    );
+    std::fs::remove_file(&db_path).ok();
+
+    // Negatif: file tak ada → warning IoError, sim TETAP lanjut (x=1).
+    let src_c = r#"
+module tb3;
+    reg [3:0] x;
+    initial begin
+        $load_coverage_db("tidak_ada_dir/tidak_ada.mcdb");
+        x = 1;
+        #1 $finish;
+    end
+endmodule
+"#;
+    let design_c = compile_str(src_c).unwrap();
+    let mut engine_c = crate::simulator::SimulationEngine::new(design_c, 10);
+    engine_c.run().unwrap();
+    let x_id = engine_c
+        .design
+        .top
+        .signals
+        .iter()
+        .position(|s| s.name == "x")
+        .expect("signal x ada");
+    assert_eq!(
+        engine_c.state.read_signal(x_id).to_u64(),
+        1,
+        "sim lanjut walau MCDB gagal dimuat"
+    );
+}
+
+#[test]
 fn test_covergroup_type_option_weight() {
     // VERIF-28: `type_option.weight = N` — bobot covergroup utk functional
     // coverage keseluruhan (weighted average). cg_heavy (weight 2, di-sample
