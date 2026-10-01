@@ -277,6 +277,57 @@ pub(crate) fn check_stmt<'a>(
         // F45: `disable fork;` / `disable <label>;` — konservatif: label
         // blok tidak dilacak checker (seperti assert property), selalu lolos.
         Stmt::Disable { .. } => Ok(()),
+        // F46: `force lhs = rhs;` — blocking seperti `=` (E2004 di seq,
+        // E2003 drive input, E2002 truncation).
+        Stmt::Force { lhs, rhs, line, col } => {
+            if kind == BlockKind::Seq {
+                return Err(err_at(
+                    *line,
+                    *col,
+                    "E2004",
+                    format!(
+                        "force tidak boleh di dalam seq (blocking) — di '{}'",
+                        scope.env.mname
+                    ),
+                ));
+            }
+            if kind != BlockKind::Tb {
+                if let Some(base) = base_ident(lhs) {
+                    if let Some(Dir::In) = scope.env.ports.get(base) {
+                        return Err(err_at(
+                            *line,
+                            *col,
+                            "E2003",
+                            format!(
+                                "cannot drive input port '{base}' — di '{}'",
+                                scope.env.mname
+                            ),
+                        ));
+                    }
+                }
+            }
+            check_expr(lhs, ctx, scope, 0)?;
+            check_expr(rhs, ctx, scope, 0)?;
+            let wl = super::expr::expr_width(lhs, ctx, scope, 0);
+            let wr = super::expr::expr_width(rhs, ctx, scope, 0);
+            if let (Some(l), Some(r)) = (wl, wr) {
+                if r > l {
+                    return Err(err_at(
+                        *line,
+                        *col,
+                        "E2002",
+                        format!(
+                            "lebar {r} bit ke sinyal {l}-bit '{}' — di '{}'",
+                            describe_lhs(lhs),
+                            scope.env.mname
+                        ),
+                    ));
+                }
+            }
+            Ok(())
+        }
+        // F46: `release target;` — target harus ekspresi dikenal.
+        Stmt::Release { target } => check_expr(target, ctx, scope, 0),
         Stmt::Event { expr, body } => {
             check_expr(expr, ctx, scope, 0)?;
             if let Some(b) = body {

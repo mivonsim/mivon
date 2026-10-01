@@ -284,6 +284,23 @@ impl Parser {
                 self.eat(&Tok::Semi);
                 Ok(Stmt::Disable { name })
             }
+            // F46: `force lhs = rhs;` — lhs pola lvalue (ident/member/index).
+            Tok::Force => {
+                self.advance();
+                let (l, c) = self.pos_line();
+                let lhs = self.parse_postfix_expr_stmt()?;
+                self.expect(&Tok::BlockingAssign)?;
+                let rhs = self.parse_expr()?;
+                self.eat(&Tok::Semi);
+                Ok(Stmt::Force { lhs, rhs, line: l, col: c })
+            }
+            // F46: `release target;`
+            Tok::Release => {
+                self.advance();
+                let target = self.parse_postfix_expr_stmt()?;
+                self.eat(&Tok::Semi);
+                Ok(Stmt::Release { target })
+            }
             Tok::At => {
                 self.advance();
                 self.expect(&Tok::LParen)?;

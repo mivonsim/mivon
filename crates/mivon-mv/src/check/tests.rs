@@ -790,3 +790,19 @@ fn f45_wait_disable_fork_ok() {
     let src = "module m {\n sig a : logic[7:0]\n initial {\n fork {\n #10\n a = 1\n } join_none\n wait fork\n disable fork\n }\n}\n";
     check_src(src).expect("wait/disable fork harus lolos");
 }
+
+// ── F46: force / release ──
+
+#[test]
+fn f46_force_release_ok() {
+    let src = "module m {\n sig a : logic[7:0]\n initial {\n force a = 8'd99\n release a\n }\n}\n";
+    check_src(src).expect("force/release harus lolos");
+}
+
+#[test]
+fn f46_force_in_seq_rejected() {
+    // force = blocking → di dalam seq ditolak E2004 seperti `=`.
+    let src = "module m {\n in clk : bit\n sig q : logic[7:0]\n seq(clk) {\n force q = 1\n }\n}\n";
+    let e = check_src(src).unwrap_err();
+    assert!(e.msg.contains("E2004"), "msg: {}", e.msg);
+}

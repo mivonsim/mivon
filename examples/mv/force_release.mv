@@ -1,0 +1,44 @@
+// F46 — force/release di Mivon HDL (fault injection testbench).
+// `force x = v;` override paksa; assign biasa diabaikan selama force;
+// `release x;` melepas force sehingga assign berlaku lagi.
+// (`sig`/`reg` .mv = variabel ala SV `logic`: release melepas blokir,
+//  bukan restore driver — restore hanya untuk net `wire` LRM 10.6.2.)
+// Jalankan:
+//   mivon run examples/mv/force_release.mv --top tb_fr -T 50
+
+module tb_fr {
+    sig w : logic[7:0] = '0
+
+    task poke() {
+        force w = 99
+        #5
+        $display("FR_MID w=%0d", w)
+        release w
+        w = 7
+    }
+
+    initial {
+        w = 42
+        #1
+        force w = 77
+        w = 1
+        #1
+        $display("FR_FORCED w=%0d", w)
+        release w
+        w = 5
+        #1
+        $display("FR_UNBLOCKED w=%0d", w)
+    }
+
+    initial {
+        #10
+        poke()
+        #1
+        if (w == 7) {
+            $display("FR_OK w=%0d", w)
+        } else {
+            $display("FR_FAIL w=%0d", w)
+        }
+        $finish
+    }
+}

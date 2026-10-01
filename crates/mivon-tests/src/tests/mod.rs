@@ -1061,6 +1061,40 @@ module tb_fc {
 }
 
 #[test]
+fn test_mv_force_release() {
+    // F46: `force` override + assign diabaikan + `release` melepas blokir.
+    // Demo: examples/mv/force_release.mv → FR_FORCED=77, FR_UNBLOCKED=5, FR_OK=7.
+    let src = r#"
+module tb_fr {
+    sig w : logic[7:0] = '0
+    task poke() {
+        force w = 99
+        #5
+        release w
+        w = 7
+    }
+    initial {
+        w = 42
+        #1
+        force w = 77
+        w = 1
+        #1
+    }
+    initial {
+        #10
+        poke()
+    }
+}
+"#;
+    let r = mivon_mv::transpile(src, "force_release").expect("transpile .mv OK");
+    assert!(r.sv.contains("force w = 77;"), "emit force: {}", r.sv);
+    assert!(r.sv.contains("release w;"), "emit release: {}", r.sv);
+    let sigs = simulate_signals(&r.sv, 30).unwrap();
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    assert_eq!(get("w"), 7, "force task + release + reassign");
+}
+
+#[test]
 fn test_mv_postfix_rhs_rejected() {
     // F37: postfix di RHS ekspresi (`j = i--`) ditolak di level .mv dengan
     // error jelas (side-effect postfix tak bisa diwakili SV) — bukan SV invalid.

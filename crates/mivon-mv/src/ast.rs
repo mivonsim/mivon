@@ -230,6 +230,18 @@ pub enum Stmt {
     Disable {
         name: String,
     },
+    /// F46: `force x = expr;` — override paksa sinyal (fault injection TB).
+    /// Blocking, seperti `=`: hanya di luar `seq`.
+    Force {
+        lhs: Expr,
+        rhs: Expr,
+        line: usize,
+        col: usize,
+    },
+    /// F46: `release x;` — lepas force, sinyal kembali ke driver.
+    Release {
+        target: Expr,
+    },
     /// `@(event) body` — body opsional (untuk `repeat (n) @(posedge clk)`).
     Event {
         expr: Expr,

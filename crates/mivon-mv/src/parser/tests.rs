@@ -532,3 +532,36 @@ module m {
     });
     assert!(has_dis, "disable harus ter-parse");
 }
+
+#[test]
+fn parse_force_release() {
+    // F46: `force lhs = rhs;` + `release target;`
+    let src = r#"
+module m {
+    sig a : logic[7:0]
+    sig arr : logic[8][4]
+    initial {
+        force a = 8'd99
+        force arr[1] = 8'd7
+        release a
+    }
+}
+"#;
+    let f = parse(src).expect("parse force/release");
+    let m = &f.modules[0];
+    let (mut has_force, mut has_rel) = (false, false);
+    for i in &m.items {
+        if let MItem::Initial(Stmt::Block(s)) = i {
+            for x in s {
+                if matches!(x, Stmt::Force { .. }) {
+                    has_force = true;
+                }
+                if matches!(x, Stmt::Release { .. }) {
+                    has_rel = true;
+                }
+            }
+        }
+    }
+    assert!(has_force, "force harus ter-parse");
+    assert!(has_rel, "release harus ter-parse");
+}

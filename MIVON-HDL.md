@@ -499,6 +499,8 @@ Emisi: `always begin ... end` / `always_latch begin ... end`.
 | `wait fork;` (F45) | `wait fork;` — tunggu semua child fork proses ini selesai |
 | `disable fork;` / `disable <label>;` (F45) | `disable fork;` / `disable label;` — terminasi child fork / blok bernama |
 | `fork { ... } { ... } join / join_any / join_none` | `fork begin ... end begin ... end join[_any\|_none]` — branch konkurren (contoh: `examples/mv/forkjoin.mv`) |
+| `force x = v;` (F46) | `force x = v;` — override paksa sinyal (fault injection, blocking, hanya di luar `seq`) |
+| `release x;` (F46) | `release x;` — lepas force, assign berlaku lagi (`sig`/`reg` = variabel: unblock; restore driver hanya net `wire` LRM 10.6.2) |
 | `foreach (arr[i]) { ... }` | `foreach (arr[i]) begin ... end` — loop elemen array unpacked |
 | `@(posedge clk) stmt` | `@(posedge clk) stmt` |
 | `#10 stmt` | `#10 stmt` |
@@ -967,6 +969,7 @@ Ringkasan mapping konstruk `.mv` → SV:
 | `foreach (arr[i]) { ... }` | `foreach (arr[i]) begin ... end` |
 | `wait fork;` (F45) | `wait fork;` — tunggu semua child fork proses ini |
 | `disable fork;` / `disable <label>;` (F45) | `disable fork;` / `disable label;` — terminasi child fork / blok bernama |
+| `force x = v;` / `release x;` (F46) | `force x = v;` / `release x;` — fault injection testbench 1:1 |
 | `assert` / `assert property` | 1:1 |
 | `@sv { ... }` (F40) | emisi isi SV **verbatim** — escape hatch utk konstruk SV yang belum didukung bahasa; isi diambil mentah dari source (isolasi dari lexer .mv), type-check dilewati |
 
@@ -1269,6 +1272,7 @@ module tb_traffic {
 | **F43** ✅ | **Header Mivon HDL (`.mvh`)** — file header-only (typedef/package/interface) → `.svh` saja, kontrak E2008 validasi isi fungsional | `crates/mivon-mv/src/{lib,check/,codegen/}`, `mgen` + `run` + GUI | `transpile_header()` → `.svh` only; batch `.mvh` + `.mv` (konteks F9); `mivon run defs.mvh dut.mv` |
 | **F44** ✅ | **Empty body `repeat @(event) {}`** — null statement `;` emit agar event control tidak mencuri statement berikutnya | parser `.mv` body opsional Event, codegen emit `;` untuk empty block | `repeat (15) @(posedge clk) {}` → `repeat (15) @(posedge clk) ;`; test `mvh_header/tb.mv` |
 | **F45** ✅ | **`wait fork` + `disable fork` di .mv** — sinkronisasi/terminasi child fork | (1) **lexer** (`crates/mivon-mv/src/lexer.rs`): keyword `disable` → `Tok::Disable`; (2) **AST** (`ast.rs`): `Stmt::WaitFork` + `Stmt::Disable { name }`; (3) **parser** (`parser/stmt.rs`): `wait fork;` (tanpa paren, pola SV) + `disable fork;` / `disable <label>;`; (4) **codegen** (`codegen/stmt.rs`): emit 1:1 `wait fork;` / `disable ...;` (+ compact `single_line_stmt`); (5) **check** (`check/stmt.rs`): selalu lolos konservatif + `$disable`/`$wait` masuk blacklist systask; (6) contoh `examples/mv/fork_ctrl.mv` | `cargo run -- examples/mv/fork_ctrl.mv --top tb_fc -T 50` → **`WAIT_FORK_DONE a=1 b=2` + `DISABLE_FORK c=0`**; 4 test (`parse_wait_fork_and_disable_fork`, `f45_wait_disable_fork_ok`, `f45_wait_fork_disable_fork_codegen`, `test_mv_wait_disable_fork` e2e sim a=1 b=2 c=0); engine utama tanpa bug (WaitFork/Disable sudah benar) |
+| **F46** ✅ | **`force` / `release` di .mv** — fault injection testbench 1:1 ke SV | (1) **lexer** (`crates/mivon-mv/src/lexer.rs`): keyword `force`/`release` → `Tok::Force`/`Tok::Release`; (2) **AST** (`ast.rs`): `Stmt::Force { lhs, rhs, line, col }` + `Stmt::Release { target }`; (3) **parser** (`parser/stmt.rs`): `force lhs = rhs` (lvalue via `parse_postfix_expr_stmt`) + `release target`; (4) **codegen** (`codegen/stmt.rs`): emit `force x = v;` / `release x;` (+ compact); (5) **check** (`check/stmt.rs`): aturan blocking — E2004 di `seq`, E2003 drive input, E2002 truncation; `$force`/`$release` masuk blacklist systask; (6) contoh `examples/mv/force_release.mv` | Audit engine: jalur IR `Force`/`Release`/`Deassign` penuh + teruji (`test_force_overrides_blocking_assign` dkk); `sig`/`reg` .mv = `SignalKind::Reg` → release = unblock LRM 10.6.2 (restore hanya net `wire`) — tanpa bug engine, tanpa ubah engine; `cargo run -- examples/mv/force_release.mv --top tb_fr -T 50` → **`FR_FORCED w=77` + `FR_UNBLOCKED w=5` + `FR_MID w=99` + `FR_OK w=7`**; 5 test (`parse_force_release`, `f46_force_release_ok`, `f46_force_in_seq_rejected`, `f46_force_release_codegen`, `test_mv_force_release` e2e) |
 
 **Kriteria selesai F2:** `cargo run -- mgen examples/counter.mv` menghasilkan
 `counter.sv` yang bisa disimulasikan oleh `cargo run -- counter.sv` tanpa error.

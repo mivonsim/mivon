@@ -159,6 +159,16 @@ pub(crate) fn emit_stmt(out: &mut String, indent: usize, stmt: &Stmt) {
         Stmt::Disable { name } => {
             line(out, indent, &format!("disable {name};"));
         }
+        Stmt::Force { lhs, rhs, .. } => {
+            line(
+                out,
+                indent,
+                &format!("force {} = {};", emit_expr(lhs), emit_expr(rhs)),
+            );
+        }
+        Stmt::Release { target } => {
+            line(out, indent, &format!("release {};", emit_expr(target)));
+        }
         Stmt::Event { expr, body } => {
             match body {
                 Some(b) => {
@@ -267,6 +277,10 @@ pub(crate) fn single_line_stmt(stmt: &Stmt) -> Option<String> {
         Stmt::EventTrigger(ev) => Some(format!("-> {};", emit_expr(ev))),
         Stmt::WaitFork => Some("wait fork;".to_string()),
         Stmt::Disable { name } => Some(format!("disable {name};")),
+        Stmt::Force { lhs, rhs, .. } => {
+            Some(format!("force {} = {};", emit_expr(lhs), emit_expr(rhs)))
+        }
+        Stmt::Release { target } => Some(format!("release {};", emit_expr(target))),
         Stmt::AssertProperty(raw) => Some(format!("assert property {raw};")),
         Stmt::Event { expr, body } => {
             match body {

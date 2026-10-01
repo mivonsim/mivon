@@ -426,6 +426,11 @@ fn print_stmt_b(b: &mut StrB, indent: usize, s: &Stmt) {
         }
         Stmt::WaitFork => b.line(indent, "wait fork"),
         Stmt::Disable { name } => b.line(indent, &format!("disable {name}")),
+        Stmt::Force { lhs, rhs, .. } => b.line(
+            indent,
+            &format!("force {} = {}", print_expr(lhs), print_expr(rhs)),
+        ),
+        Stmt::Release { target } => b.line(indent, &format!("release {}", print_expr(target))),
         Stmt::Assert { cond, pass, fail } => {
             let p = pass
                 .as_ref()

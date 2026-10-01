@@ -67,6 +67,9 @@ pub enum Tok {
     Wait,
     /// F45: `disable fork` / `disable <label>` — terminasi child fork / blok bernama
     Disable,
+    /// F46: `force x = v` / `release x` — fault injection testbench
+    Force,
+    Release,
     Return,
     Break,
     Continue,
@@ -209,6 +212,8 @@ fn keyword(s: &str) -> Option<Tok> {
         "forever" => Tok::Forever,
         "wait" => Tok::Wait,
         "disable" => Tok::Disable,
+        "force" => Tok::Force,
+        "release" => Tok::Release,
         "return" => Tok::Return,
         "break" => Tok::Break,
         "continue" => Tok::Continue,

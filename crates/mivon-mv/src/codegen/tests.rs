@@ -697,3 +697,20 @@ module m {
     assert!(out.sv.contains("wait fork;"), "wait fork: {}", out.sv);
     assert!(out.sv.contains("disable fork;"), "disable fork: {}", out.sv);
 }
+
+#[test]
+fn f46_force_release_codegen() {
+    // F46: `force a = 8'd99;` + `release a;` di-emit 1:1 ke SV.
+    let src = r#"
+module m {
+    sig a : logic[7:0]
+    initial {
+        force a = 8'd99
+        release a
+    }
+}
+"#;
+    let out = generate(&parse(src).unwrap(), "m");
+    assert!(out.sv.contains("force a = 8'd99;"), "force: {}", out.sv);
+    assert!(out.sv.contains("release a;"), "release: {}", out.sv);
+}
