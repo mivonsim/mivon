@@ -1,12 +1,13 @@
-//! `mgen` — Generator SystemVerilog dari Mivon HDL (.mv).
+//! `mgen` — Generator SystemVerilog dari Mivon HDL (.mv / .mvh).
 //!
-//! Membaca file `.mv` (atau direktori berisi `.mv`), me-transpile ke
-//! `.sv` + `.svh` (MIVON-HDL.md). Output deterministik — bisa di-commit
-//! ke repo dan di-`--check` di CI.
+//! Membaca file `.mv` (desain → `.sv` + `.svh`) atau `.mvh` (header →
+//! `.svh` saja, F43), me-transpile (MIVON-HDL.md). Output deterministik —
+//! bisa di-commit ke repo dan di-`--check` di CI.
 //!
 //! Mode:
-//! - default : tulis `<base>.sv` + `<base>.svh` di direktori input (atau `-o`)
-//! - `--stdout` : print `.sv` ke stdout (debug)
+//! - default : tulis `<base>.sv` + `<base>.svh` di direktori input (atau `-o`);
+//!   file `.mvh` hanya menghasilkan `<base>.svh`
+//! - `--stdout` : print `.sv` ke stdout (debug; `.mvh` → print `.svh`)
 //! - `--check`  : verifikasi output up-to-date — exit 1 bila beda (CI)
 //! - `--svh-only` / `--sv-only` : hanya satu file output
 
@@ -14,6 +15,14 @@ use std::path::{Path, PathBuf};
 
 use mivon_core::error::SimError;
 use mivon_mv as mv;
+
+/// Apakah path sumber Mivon HDL (`.mv` desain / `.mvh` header, F43)?
+pub fn is_mv_source(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|e| e.to_str()),
+        Some("mv" | "mvh")
+    )
+}
 
 /// Opsi mgen.
 pub struct GenArgs<'a> {
@@ -34,7 +43,7 @@ fn diag(msg: impl Into<String>) -> SimError {
 /// Jalankan mgen.
 pub fn run(args: &GenArgs) -> Result<(), SimError> {
     if args.stdout && args.targets.len() != 1 {
-        return Err(diag("--stdout hanya untuk satu file .mv"));
+        return Err(diag("--stdout hanya untuk satu file .mv/.mvh"));
     }
     if args.stdout && args.check {
         return Err(diag("--stdout tidak bisa digabung dengan --check"));
@@ -42,7 +51,7 @@ pub fn run(args: &GenArgs) -> Result<(), SimError> {
 
     let files = collect_mv_files(args.targets)?;
     if files.is_empty() {
-        return Err(diag("tidak ada file .mv ditemukan"));
+        return Err(diag("tidak ada file .mv/.mvh ditemukan"));
     }
 
     let out_dir: Option<PathBuf> = args.output.as_ref().map(PathBuf::from);
@@ -60,8 +69,9 @@ pub fn run(args: &GenArgs) -> Result<(), SimError> {
 
     // ── F9: transpile batch (konteks gabungan lintas file) ──
     // Semua file dibaca dulu, lalu di-transpile BERSAMA — tipe/package dari
-    // satu file terlihat oleh file lain (`types.mv` → `counter.mv`).
-    let mut items: Vec<(String, String)> = Vec::with_capacity(files.len());
+    // satu file terlihat oleh file lain (`types.mvh` → `counter.mv`).
+    // Flag `header` (F43) menandai sumber `.mvh` → output `.svh` saja.
+    let mut items: Vec<mv::MvItem> = Vec::with_capacity(files.len());
     for path in &files {
         let base = path
             .file_stem()
@@ -70,17 +80,18 @@ pub fn run(args: &GenArgs) -> Result<(), SimError> {
             .to_string();
         let src = std::fs::read_to_string(path)
             .map_err(|e| diag(format!("{}: {}", path.display(), e)))?;
-        items.push((src, base));
+        let header = path.extension().map(|e| e == "mvh").unwrap_or(false);
+        items.push(mv::MvItem { src, base, header });
     }
     let results = if args.no_check {
-        mv::transpile_many_no_check(&items)
+        mv::transpile_many_items_no_check(&items)
     } else {
-        mv::transpile_many(&items)
+        mv::transpile_many_items(&items)
     }
     .map_err(|(i, e)| {
         diag(mv::format_error(
             &files[i].display().to_string(),
-            &items[i].0,
+            &items[i].src,
             &e,
         ))
     })?;
@@ -97,10 +108,16 @@ pub fn run(args: &GenArgs) -> Result<(), SimError> {
             .file_stem()
             .and_then(|s| s.to_str())
             .ok_or_else(|| diag(format!("nama file tidak valid: '{}'", path.display())))?;
+        // Sumber `.mvh` (F43): header-only — satu-satunya output `.svh`.
+        let is_header = path.extension().map(|e| e == "mvh").unwrap_or(false);
 
-        // ── --stdout: print .sv ──
+        // ── --stdout: print .sv (.mvh → .svh, karena .sv memang kosong) ──
         if args.stdout {
-            print!("{}", result.sv);
+            if is_header {
+                print!("{}", result.svh);
+            } else {
+                print!("{}", result.sv);
+            }
             continue;
         }
 
@@ -115,10 +132,14 @@ pub fn run(args: &GenArgs) -> Result<(), SimError> {
             // F30 fix: .sv kosong (file hanya definisi bersama, tanpa module/
             // program/class/func/task) → tidak ada file yang diharapkan,
             // konsisten dengan skip .svh kosong.
-            let sv_ok = result.sv.is_empty() || file_matches(&sv_path, &result.sv);
+            // F43: sumber `.mvh` tidak pernah menghasilkan `.sv` — abaikan
+            // sisi `.sv` (file `.sv` basi bukan urusan header).
+            let sv_ok = is_header
+                || result.sv.is_empty()
+                || file_matches(&sv_path, &result.sv);
             let ok = if args.svh_only {
                 svh_ok
-            } else if args.sv_only {
+            } else if args.sv_only && !is_header {
                 sv_ok
             } else {
                 svh_ok && sv_ok
@@ -145,6 +166,14 @@ pub fn run(args: &GenArgs) -> Result<(), SimError> {
         } else if args.svh_only && result.svh.is_empty() && !args.stdout && !args.check {
             println!("  (skip .svh — file tidak punya package/typedef)");
         }
+        if is_header {
+            // F43: `.mvh` = header — hanya `.svh`. `.sv` tidak pernah ditulis
+            // (konten fungsional sudah ditolak E2008 di level .mvh).
+            if args.sv_only {
+                println!("  (skip .sv — '{}' sumber .mvh header-only)", base);
+            }
+            continue;
+        }
         if !args.svh_only && !result.sv.is_empty() {
             let changed = write_if_changed(&sv_path, &result.sv)?;
             if changed || args.verbose {
@@ -165,16 +194,16 @@ pub fn run(args: &GenArgs) -> Result<(), SimError> {
 
     if args.check && changed_any {
         return Err(diag(
-            "mgen --check: ada file .mv yang belum di-generate — jalankan `mivon mgen <file.mv>`",
+            "mgen --check: ada file .mv/.mvh yang belum di-generate — jalankan `mivon mgen <file.mv>`",
         ));
     }
     if !args.stdout && !args.check && !args.verbose {
-        println!("mgen: {} file .mv diproses", files.len());
+        println!("mgen: {} file .mv/.mvh diproses", files.len());
     }
     Ok(())
 }
 
-/// Kumpulkan file `.mv` dari target (file atau direktori recursive).
+/// Kumpulkan file `.mv`/`.mvh` dari target (file atau direktori recursive).
 fn collect_mv_files(targets: &[String]) -> Result<Vec<PathBuf>, SimError> {
     let mut out: Vec<PathBuf> = Vec::new();
     for t in targets {
@@ -198,7 +227,7 @@ fn collect_dir(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), SimError> {
         let path = entry.map_err(|e| diag(e.to_string()))?.path();
         if path.is_dir() {
             collect_dir(&path, out)?;
-        } else if path.extension().map(|e| e == "mv").unwrap_or(false) {
+        } else if is_mv_source(&path) {
             out.push(path);
         }
     }

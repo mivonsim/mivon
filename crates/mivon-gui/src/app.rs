@@ -459,11 +459,12 @@ pub fn trigger_generate(state: &mut GuiState) {
     let Some(of) = state.open_files.get(idx) else {
         return;
     };
-    let is_mv = of.path.extension().map(|e| e == "mv").unwrap_or(false);
-    if !is_mv {
-        state.log("⚠ Generate hanya untuk file .mv (Mivon HDL)");
+    let ext = of.path.extension().and_then(|e| e.to_str()).unwrap_or("");
+    if ext != "mv" && ext != "mvh" {
+        state.log("⚠ Generate hanya untuk file .mv/.mvh (Mivon HDL)");
         return;
     }
+    let is_header = ext == "mvh";
     let name = of.name.clone();
     let content = of.content.clone();
     let base = of
@@ -474,12 +475,28 @@ pub fn trigger_generate(state: &mut GuiState) {
         .to_string();
     let sv_path = of.path.with_extension("sv");
     let svh_path = of.path.with_extension("svh");
-    state.log(format!("⚙ Generate {} → .sv/.svh ...", name));
-    match mivon_mv::transpile(&content, &base) {
+    state.log(format!(
+        "⚙ Generate {} → {} ...",
+        name,
+        if is_header { ".svh" } else { ".sv/.svh" }
+    ));
+    let tr = if is_header {
+        mivon_mv::transpile_header(&content, &base)
+    } else {
+        mivon_mv::transpile(&content, &base)
+    };
+    match tr {
         Ok(r) => {
             let sv_lines = r.sv.lines().count();
             let svh_lines = r.svh.lines().count();
-            let wsv = std::fs::write(&sv_path, &r.sv);
+            // F43: header `.mvh` hanya menghasilkan `.svh`. F30: `.sv` kosong
+            // (file definisi-only) tidak ditulis — konsisten dgn `mgen`
+            // (sebelumnya GUI menulis `.sv` kosong → file sampah di repo).
+            let wsv = if is_header || r.sv.is_empty() {
+                Ok(())
+            } else {
+                std::fs::write(&sv_path, &r.sv)
+            };
             let wsvh = if r.svh.is_empty() {
                 Ok(())
             } else {
@@ -501,18 +518,41 @@ pub fn trigger_generate(state: &mut GuiState) {
                 ));
                 return;
             }
-            state.log(format!(
-                "✅ Generate: {} ({} baris)",
-                sv_path.display(),
-                sv_lines
-            ));
+            if is_header {
+                if r.svh.is_empty() {
+                    state.log("⚠ Generate: .mvh tidak punya package/typedef/interface — tidak ada output");
+                } else {
+                    state.log(format!(
+                        "✅ Generate: {} ({} baris)",
+                        svh_path.display(),
+                        svh_lines
+                    ));
+                }
+                // Buka `.svh` hasil generate di editor.
+                if !r.svh.is_empty() {
+                    state.open_file(svh_path);
+                    state.active_file = Some(idx);
+                }
+                return;
+            }
+            if r.sv.is_empty() {
+                state.log("⚠ Generate: tidak ada module/program/class — .sv tidak ditulis");
+            } else {
+                state.log(format!(
+                    "✅ Generate: {} ({} baris)",
+                    sv_path.display(),
+                    sv_lines
+                ));
+            }
             if !r.svh.is_empty() {
                 state.log(format!("   + {} ({} baris)", svh_path.display(), svh_lines));
             }
             // Buka `.sv` hasil generate di editor (tanpa mengalihkan tab aktif
             // dari `.mv` — tombol Generate tetap aktif utk regenerate).
-            state.open_file(sv_path);
-            state.active_file = Some(idx);
+            if !r.sv.is_empty() {
+                state.open_file(sv_path);
+                state.active_file = Some(idx);
+            }
         }
         Err(e) => {
             state.log(format!("❌ Generate: {}", e.format()));
@@ -520,21 +560,22 @@ pub fn trigger_generate(state: &mut GuiState) {
     }
 }
 
-/// F25: Generate SEMUA file `.mv` proyek sekaligus via `transpile_many`
-/// (konteks gabungan F9 — tipe/package antar-file terlihat, mis. `types.mv`
-/// → `counter.mv`). Setiap `.mv` → `.sv` + `.svh` di sampingnya. Sinkron
-/// (parser + check cepat); untuk proyek sangat besar pertimbangkan thread.
+/// F25: Generate SEMUA file `.mv`/`.mvh` proyek sekaligus via
+/// `transpile_many_items` (konteks gabungan F9 — tipe/package antar-file
+/// terlihat, mis. `types.mvh` → `counter.mv`). Setiap `.mv` → `.sv` + `.svh`,
+/// `.mvh` → `.svh` saja (F43), di sampingnya. Sinkron (parser + check cepat);
+/// untuk proyek sangat besar pertimbangkan thread.
 pub fn trigger_generate_all(state: &mut GuiState) {
     let mv_files = state.collect_mv_files();
     if mv_files.is_empty() {
-        state.log("⚠ Generate All: tidak ada file .mv di proyek");
+        state.log("⚠ Generate All: tidak ada file .mv/.mvh di proyek");
         return;
     }
     state.log(format!(
-        "⚙ Generate All: {} file .mv (konteks gabungan)...",
+        "⚙ Generate All: {} file .mv/.mvh (konteks gabungan)...",
         mv_files.len()
     ));
-    let mut items: Vec<(String, String)> = Vec::with_capacity(mv_files.len());
+    let mut items: Vec<mivon_mv::MvItem> = Vec::with_capacity(mv_files.len());
     let mut read_failed = None;
     for p in &mv_files {
         let base = p
@@ -542,8 +583,9 @@ pub fn trigger_generate_all(state: &mut GuiState) {
             .and_then(|s| s.to_str())
             .unwrap_or("design")
             .to_string();
+        let header = p.extension().map(|e| e == "mvh").unwrap_or(false);
         match std::fs::read_to_string(p) {
-            Ok(src) => items.push((src, base)),
+            Ok(src) => items.push(mivon_mv::MvItem { src, base, header }),
             Err(e) => {
                 read_failed = Some(format!("{}: {}", p.display(), e));
                 break;
@@ -554,30 +596,48 @@ pub fn trigger_generate_all(state: &mut GuiState) {
         state.log(format!("❌ Generate All: gagal membaca {}", err));
         return;
     }
-    match mivon_mv::transpile_many(&items) {
+    match mivon_mv::transpile_many_items(&items) {
         Ok(results) => {
             let mut ok_count = 0;
             let mut first_sv: Option<std::path::PathBuf> = None;
             for (i, r) in results.iter().enumerate() {
                 let p = &mv_files[i];
+                let is_header = items[i].header;
                 let sv_path = p.with_extension("sv");
                 let svh_path = p.with_extension("svh");
-                if std::fs::write(&sv_path, &r.sv).is_ok() {
-                    ok_count += 1;
-                    if first_sv.is_none() {
-                        first_sv = Some(sv_path);
+                // F30/F43: `.sv` kosong (definisi-only / sumber `.mvh`) tidak
+                // ditulis — konsisten dgn mgen (sebelumnya file `.sv` kosong
+                // selalu dibuat).
+                if !r.sv.is_empty() && !is_header {
+                    match std::fs::write(&sv_path, &r.sv) {
+                        Ok(()) => {
+                            ok_count += 1;
+                            if first_sv.is_none() {
+                                first_sv = Some(sv_path);
+                            }
+                        }
+                        Err(_) => {
+                            state.log(format!(
+                                "❌ Generate All: gagal menulis {}",
+                                sv_path.display()
+                            ));
+                        }
                     }
-                } else {
-                    state.log(format!(
-                        "❌ Generate All: gagal menulis {}",
-                        sv_path.display()
-                    ));
                 }
                 if !r.svh.is_empty() {
-                    let _ = std::fs::write(&svh_path, &r.svh);
+                    match std::fs::write(&svh_path, &r.svh) {
+                        Ok(()) => ok_count += 1,
+                        Err(_) => state.log(format!(
+                            "❌ Generate All: gagal menulis {}",
+                            svh_path.display()
+                        )),
+                    }
                 }
             }
-            state.log(format!("✅ Generate All: {} file → .sv/.svh", ok_count));
+            state.log(format!(
+                "✅ Generate All: {} file output → .sv/.svh",
+                ok_count
+            ));
             if let Some(sv) = first_sv {
                 state.open_file(sv);
             }

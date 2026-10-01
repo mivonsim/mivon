@@ -371,10 +371,13 @@ fn print_stmt_b(b: &mut StrB, indent: usize, s: &Stmt) {
             );
         }
         Stmt::Event { expr, body } => {
-            b.line(
-                indent,
-                &format!("@({}) {}", print_expr(expr), print_stmt(indent, body)),
-            );
+            match body {
+                Some(stmt) => b.line(
+                    indent,
+                    &format!("@({}) {}", print_expr(expr), print_stmt(indent, stmt.as_ref())),
+                ),
+                None => b.line(indent, &format!("@({});", print_expr(expr))),
+            };
         }
         Stmt::Delay { amt, body } => {
             let body_s = print_stmt(indent, body);

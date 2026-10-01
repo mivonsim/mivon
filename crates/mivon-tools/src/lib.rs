@@ -97,10 +97,12 @@ pub fn collect_targets(paths: &[String]) -> Result<Vec<PathBuf>, SimError> {
             return Err(diag_io(format!("path tidak ditemukan: '{}'", p)));
         }
         if path.is_dir() {
-            // F10: sertakan `.mv` (Mivon HDL) di scan direktori — tool yang
-            // memakai open_project/open_elaborated otomatis men-transpile-nya.
+            // F10: sertakan `.mv` (Mivon HDL) + F43 `.mvh` (header) di scan
+            // direktori — tool yang memakai open_project/open_elaborated
+            // otomatis men-transpile-nya.
             let mut opts = DiscoveryOptions::default();
             opts.extensions.push("mv".into());
+            opts.extensions.push("mvh".into());
             let res = FileDiscovery::scan_dir(path, &opts);
             out.extend(res.files.into_iter().map(|f| f.path));
         } else {
@@ -163,26 +165,28 @@ fn make_session_config_with_mv(
     Ok(cfg)
 }
 
-/// F10: transpile semua file `.mv` dalam daftar ke buffer SV inline (svh+sv
-/// digabung, baris `` `include `` di-strip — definisi bersama sudah ada di
-/// atasnya). File non-`.mv` tidak disentuh. Hasil: peta path → buffer.
+/// F10: transpile semua file `.mv`/`.mvh` dalam daftar ke buffer SV inline
+/// (svh+sv digabung, baris `` `include `` di-strip — definisi bersama sudah
+/// ada di atasnya). File non-Mivon-HDL tidak disentuh. Hasil: peta path →
+/// buffer. Sumber `.mvh` (F43) ikut divalidasi header-only (E2008) —
+/// buffer-nya hanya berisi bagian `.svh`.
 ///
-/// Memakai `transpile_many` (konteks gabungan F9) sehingga package lintas-file
-/// (`types.mv` → `counter.mv`) bekerja di tool manapun.
+/// Memakai `transpile_many_items` (konteks gabungan F9) sehingga package
+/// lintas-file (`types.mvh` → `counter.mv`) bekerja di tool manapun.
 pub fn transpile_mv_to_inline(
     files: &[PathBuf],
 ) -> Result<std::collections::HashMap<PathBuf, Vec<u8>>, SimError> {
     let mv_idx: Vec<usize> = files
         .iter()
         .enumerate()
-        .filter(|(_, p)| p.extension().map(|e| e == "mv").unwrap_or(false))
+        .filter(|(_, p)| gen::is_mv_source(p))
         .map(|(i, _)| i)
         .collect();
     if mv_idx.is_empty() {
         return Ok(std::collections::HashMap::new());
     }
 
-    let mut items: Vec<(String, String)> = Vec::with_capacity(mv_idx.len());
+    let mut items: Vec<mivon_mv::MvItem> = Vec::with_capacity(mv_idx.len());
     for &i in &mv_idx {
         let p = &files[i];
         let base = p
@@ -192,9 +196,10 @@ pub fn transpile_mv_to_inline(
             .to_string();
         let src =
             std::fs::read_to_string(p).map_err(|e| diag_io(format!("{}: {}", p.display(), e)))?;
-        items.push((src, base));
+        let header = p.extension().map(|e| e == "mvh").unwrap_or(false);
+        items.push(mivon_mv::MvItem { src, base, header });
     }
-    let results = mivon_mv::transpile_many(&items)
+    let results = mivon_mv::transpile_many_items(&items)
         .map_err(|(i, e)| diag_io(format!("{}: {}", files[mv_idx[i]].display(), e)))?;
 
     let mut inline = std::collections::HashMap::new();

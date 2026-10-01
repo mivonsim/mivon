@@ -233,6 +233,43 @@ Aturan:
 
 ---
 
+### 4.7 Header Mivon HDL (`.mvh`) — F43
+
+File `.mvh` = **header Mivon HDL** — padanan `.svh` untuk `.sv`. HANYA
+berisi definisi bersama (typedef level file, package, interface). Konten
+fungsional (module, program, class, function, task) **ditolak** di level
+type-check dengan error **E2008** berposisi.
+
+```mv
+// defs.mvh
+type Addr = logic[15:0]
+package hdr_pkg {
+    const MAX_CNT = 15
+    enum State { IDLE, RUN, DONE }
+}
+interface bus_if {
+    in clk : bit
+}
+```
+
+Output: HANYA `defs.svh` (dengan include guard). `defs.sv` **tidak ditulis**.
+
+Penggunaan dari `.mv` lain (konteks gabungan F9):
+```mv
+module counter {
+    use hdr_pkg::*
+    in clk : bit
+    out addr : Addr
+    ...
+}
+```
+
+`mgen` batch otomatis mendeteksi `.mvh` via ekstensi — `types.mvh` +
+`counter.mv` di-transpile bersama, package lintas-file lolos check.
+`mivon run a.mvh b.mv` juga didukung (transpile on-the-fly).
+
+---
+
 ## 5. Package
 
 ```mv
@@ -454,6 +491,9 @@ Emisi: `always begin ... end` / `always_latch begin ... end`.
 | `do { ... } while (c)` (F38) | `do begin ... end while (c);` — loop post-test (body minimal sekali) |
 | `->ev` (F38) | `-> ev;` — event trigger (membangunkan `@(posedge ev)`) |
 | `repeat (n) { ... }` | `repeat (n) begin ... end` |
+| `repeat (n) @(posedge clk) {}` (F44) | `repeat (n) @(posedge clk) ;` — body kosong `{}`
+  di-emit sebagai null statement `;` agar event control tidak
+  "mencuri" statement berikutnya di SV |
 | `forever { ... }` | `forever begin ... end` |
 | `wait (c) { ... }` | `wait (c) begin ... end` |
 | `@(posedge clk) stmt` | `@(posedge clk) stmt` |
@@ -482,6 +522,17 @@ side-effect increment TIDAK diterapkan — batasan engine yang sama berlaku
 untuk SV murni (`j = ++i` di source .sv). Postfix di RHS ekspresi
 (`j = i--`) DITOLAK di level .mv dgn error jelas (side-effect postfix tak
 bisa diwakili SV).
+
+#### F44: Empty body untuk `repeat @(event)` — `repeat (n) @(posedge clk) {}`
+
+Body kosong `{}` pada `repeat (n) @(posedge clk)` di-emit sebagai null statement `;` (SV: `repeat (n) @(posedge clk) ;`). Tanpa ini, event control `@(posedge clk)` tanpa body akan "mencuri" statement berikutnya sebagai body-nya di SV (perilaku parser SV). Contoh:
+
+```mv
+repeat (15) @(posedge clk) {}
+if (state == DONE) { ... }  // statement terpisah, bukan body repeat
+```
+
+Tanpa `{}` → `repeat (15) @(posedge clk) if (...)` (if jadi body event control).
 
 #### Escape hatch `@sv` (F40)
 
@@ -1206,6 +1257,8 @@ module tb_traffic {
 | **F37** ✅ | **Prefix `++`/`--` di .mv** — `++i` / `--i` statement (blocking) + `j = ++i` di RHS ekspresi | (1) **AST** (`ast.rs`): `Stmt::IncDec` + field `pre` (F37 prefix vs F36 postfix) + `Expr::IncDec { inc, pre, expr }` utk RHS; (2) **parser** (`parser.rs`): arm prefix statement di `parse_stmt` (`++i` baris sendiri), arm prefix ekspresi di `parse_unary` (`j = ++i`), varian `parse_postfix_expr_stmt` utk lhs statement — postfix RHS (`j = i--`) DITOLAK di level .mv dgn error jelas (side-effect postfix tak bisa diwakili SV); guard baris: `++`/`--` di baris berikutnya = statement prefix baru, bukan postfix (perbaiki `$display(...)` + `--i` yang menempel jadi `$display(...)--`); (3) **codegen** (`codegen.rs`): emit `++i;`/`i++;` di `emit_stmt` + `single_line_stmt` + arm `Expr::IncDec` di `emit_expr`; (4) **check** (`check.rs`): arm `Expr::IncDec` di `check_expr` (rekursi validasi) + `expr_width` (lebar mengikuti operand); (5) **engine SV** (`mivon-parser/src/stmt.rs`): arm prefix `++lhs`/`--lhs` di `parse_stmt_impl` → `BlockingAssign lhs = lhs ± 1` (sebelumnya `++i` statement jadi ekspresi `i+1` tanpa assign — `i` tidak pernah berubah); (6) contoh `examples/mv/prefix_incdec.mv` + 2 unit test (`test_mv_prefix_incdec` transpile .mv → sim → `i: ++i(1) -> --i(0) -> i--(255)` + assert SV `++i;`/`--i;`/`i--;` + assert postfix TIDAK menempel ke statement lain; `test_mv_postfix_rhs_rejected` — `j = i--` → error postfix di level .mv) | full suite **728 pass** (+3 F37) + 30 suite workspace ok; e2e `mgen prefix_incdec.mv` → `sim --top tb_pp` → **`PP_A i=1` `PP_B i=1 j=2` `PP_C i=0` `PP_D i=255`**; SV generate: `++i;` `--i;` `i--;` `j = ++i;`; regresi F36 (`TB_CA a=15 b=16 c=15 i=1`), F35 (`TB_FIB fib=610 fact=120`), F30 (`TB_MF_OK addr=6 st=1`) hijau; catatan: `j = ++i` di RHS nilai benar (i+1) tapi side-effect increment tidak diterapkan (batasan engine pre-existing, sama utk SV murni) |
 | **F38** ✅ | **`do...while` + event trigger `->` di .mv** — loop post-test & memicu event named | (1) **lexer** (`mivon-mv/src/lexer.rs`): keyword `"do"` → `Tok::Do`; (2) **AST** (`ast.rs`): `Stmt::DoWhile { cond, body }` + `Stmt::EventTrigger(Expr)`; (3) **parser** (`parser.rs parse_stmt`): arm `Tok::Do` — `do { body } while (cond)` (eat `;` opsional; `while` = `Tok::While`, bukan Ident) + arm `Tok::Arrow` — `->ev` (event trigger, target HANYA ident — parser SV `EventTrigger` menerima nama saja, jadi `-> obj.sig` ditolak di level .mv dengan error jelas; eat `;` opsional); (4) **codegen** (`codegen.rs`): emit `do begin ... end while (cond);` + `-> ev;` di `emit_stmt` + arm compact di `single_line_stmt` (body `@(...)`/`#amt` → `do stmt while (c);`); (5) **check** (`check.rs`): `DoWhile` validasi body+cond (E2001 dll via `check_stmt`/`check_expr`), `EventTrigger` validasi target dikenal via `check_expr`; (6) contoh `examples/mv/dowhile.mv` (DW i=3 + EV got=99 via dua `initial` — @(posedge ev) menunggu `->ev` di waktu #5) + 2 unit test (`test_mv_dowhile_event_trigger` transpile .mv → sim → i=3, got=99 + assert SV `do begin`/`end while (i < 3);`/`-> ev;`; `test_mv_dowhile_while_never_runs_twice` — `do { x = 1 } while (0)` → x=1, body jalan minimal sekali) | full suite **730 pass** (+2 F38) + 30 suite workspace ok; e2e `mgen dowhile.mv` → `sim --top tb_dw` → **`DW i=3`** + **`EV got=99`** (event trigger membangunkan `@(posedge ev)`); regresi F37 (`PP_D i=255`), F36 (`TB_CA a=15 b=16 c=15 i=1`), F35 (`TB_FIB fib=610 fact=120`) hijau; GUI build bersih; catatan: (a) `->` memicu signal biasa sbg event (bukan hanya tipe `event`) — non-standar SV, berfungsi di engine mivon; (b) `fork` masih belum didukung di .mv (gunakan dua `initial` untuk konkurrensi) |
 | **F39** ✅ | **Multi-dimensi unpacked array end-to-end (SV + `.mv`)** — `logic [7:0] mat [0:1][0:1]`, 3-dimensi, port array, index statik/dinamis, row select | (1) **AST** (`mivon-ast/src/types.rs`): `DeclVar.extra_unpacked_dims` + `Port.extra_unpacked_dims` (`Vec<(Option<Range>,Option<Expr>)>` — range ter-resolve / size-expr utk param); (2) **parser SV** (`mivon-parser`): 3 site ganti skip-buta dim lanjutan (decl.rs declarator, lib.rs user-type branch, instance.rs port) jadi parse range/size; exotik (`[string]`,`[$]`,`[*]`,key-type) tetap skip via helper baru `skip_extra_unpacked_dims` (proc.rs); catatan: jangan `advance()` `[` sebelum `parse_range()` (mengkonsumsi bracket sendiri); (3) **elaborator** (`mod.rs`): `array_dims=[d0..dn]`, `array_depth=Π`, `total_width=elem_w×Π`, init fill semua elemen, decl-init decompose nested (`flatten_array_init`), port ikut; (4) **index fold** (`expr.rs` baca + `stmt.rs` tulis): `mat[i][j]` → satu `ArrayIndex` index gabungan `inner×dims[c]+current`, `elem_width=inner/dims[c]`; index pertama multi-dim = ROW (sub-array) | repro `mat2d.sv` → **`m00=1 m01=2 m10=3 m11=4 mdyn=4`**; `mat_edge.sv` write dinamis 42, row `0x2A01`, `m3d[1][0][1]`=6, port `out_port[1][0]`=99; `.mv` `sig mat : logic[8][2][2] = '{{1,2},{3,4}}` → sim `m00=1 m11=4`; 4 test baru `test_multidim_unpacked_array_{read_decl_init,write_dynamic,3d_and_row,port}`; full workspace **2597 pass, 0 gagal**; tutup buglog-mv #4 (bug mivon utama); buglog #8 (`>>>`) diverifikasi sudah fixed |
+| **F43** ✅ | **Header Mivon HDL (`.mvh`)** — file header-only (typedef/package/interface) → `.svh` saja, kontrak E2008 validasi isi fungsional | `crates/mivon-mv/src/{lib,check,codegen}.rs`, `mgen` + `run` + GUI | `transpile_header()` → `.svh` only; batch `.mvh` + `.mv` (konteks F9); `mivon run defs.mvh dut.mv` |
+| **F44** ✅ | **Empty body `repeat @(event) {}`** — null statement `;` emit agar event control tidak mencuri statement berikutnya | parser `.mv` body opsional Event, codegen emit `;` untuk empty block | `repeat (15) @(posedge clk) {}` → `repeat (15) @(posedge clk) ;`; test `mvh_header/tb.mv` |
 
 **Kriteria selesai F2:** `cargo run -- mgen examples/counter.mv` menghasilkan
 `counter.sv` yang bisa disimulasikan oleh `cargo run -- counter.sv` tanpa error.

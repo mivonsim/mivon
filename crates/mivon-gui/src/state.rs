@@ -1118,9 +1118,9 @@ impl GuiState {
         out
     }
 
-    /// F25: kumpulkan file `.mv` (Mivon HDL) dari tree — utk tombol Generate
-    /// (SV/SVH). Compile (collect_sv_files) TIDAK menyentuh .mv — file `.mv`
-    /// di-transpile ke `.sv` dulu, baru di-compile.
+    /// F25: kumpulkan file `.mv`/`.mvh` (Mivon HDL, F43) dari tree — utk
+    /// tombol Generate (SV/SVH). Compile (collect_sv_files) TIDAK menyentuh
+    /// .mv — file `.mv` di-transpile ke `.sv` dulu, baru di-compile.
     pub fn collect_mv_files(&self) -> Vec<PathBuf> {
         fn walk(nodes: &[FileNode], out: &mut Vec<PathBuf>) {
             for n in nodes {
@@ -1128,7 +1128,7 @@ impl GuiState {
                     walk(&n.children, out);
                 } else {
                     let ext = n.path.extension().and_then(|e| e.to_str()).unwrap_or("");
-                    if ext == "mv" {
+                    if ext == "mv" || ext == "mvh" {
                         out.push(n.path.clone());
                     }
                 }
@@ -1139,8 +1139,8 @@ impl GuiState {
         out
     }
 
-    /// Kumpulkan file RTL/header/mv (.sv/.svh/.v/.vh/.mv) — dipakai pencarian
-    /// teks tab Search.
+    /// Kumpulkan file RTL/header/mv (.sv/.svh/.v/.vh/.mv/.mvh) — dipakai
+    /// pencarian teks tab Search.
     pub fn collect_all_rtl_files(&self) -> Vec<PathBuf> {
         fn walk(nodes: &[FileNode], out: &mut Vec<PathBuf>) {
             for n in nodes {
@@ -1148,7 +1148,7 @@ impl GuiState {
                     walk(&n.children, out);
                 } else {
                     let ext = n.path.extension().and_then(|e| e.to_str()).unwrap_or("");
-                    if matches!(ext, "sv" | "svh" | "v" | "vh" | "mv") {
+                    if matches!(ext, "sv" | "svh" | "v" | "vh" | "mv" | "mvh") {
                         out.push(n.path.clone());
                     }
                 }

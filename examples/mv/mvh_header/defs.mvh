@@ -1,0 +1,20 @@
+// ─────────────────────────────────────────────────────────────
+// Contoh F43 — header Mivon HDL (`.mvh`)
+//   Sumber `.mvh` = padanan `.svh` untuk `.sv`: HANYA berisi definisi
+//   bersama (typedef/package/interface). Konten fungsional (module/
+//   program/class/func/task) ditolak E2008 di level .mvh, berposisi.
+//   Output: HANYA defs.svh — tidak ada defs.sv.
+// Generate: mivon mgen examples/mv/mvh_header
+// Simulasi: mivon sim defs.svh dut.sv tb.sv --top tb_mvh -T 200
+// Atau langsung: mivon run examples/mv/mvh_header/defs.mvh \
+//                    examples/mv/mvh_header/dut.mv \
+//                    examples/mv/mvh_header/tb.mv --top tb_mvh -T 200
+// ─────────────────────────────────────────────────────────────
+
+// typedef level file → `$unit` di defs.svh
+type Addr = logic[15:0]
+
+package mvh_pkg {
+    const MAX_CNT = 15
+    enum State { IDLE, RUN, DONE }
+}

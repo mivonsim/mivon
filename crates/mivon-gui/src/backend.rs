@@ -1326,7 +1326,7 @@ pub fn search_text_in_files(files: &[PathBuf], needle: &str, max_results: usize)
             break;
         }
         let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
-        if !matches!(ext, "sv" | "svh" | "v" | "vh" | "mv") {
+        if !matches!(ext, "sv" | "svh" | "v" | "vh" | "mv" | "mvh") {
             continue;
         }
         let Ok(text) = std::fs::read_to_string(p) else {

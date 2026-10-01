@@ -224,10 +224,10 @@ pub enum Stmt {
         cond: Expr,
         body: Box<Stmt>,
     },
-    /// `@(event) body`
+    /// `@(event) body` — body opsional (untuk `repeat (n) @(posedge clk)`).
     Event {
         expr: Expr,
-        body: Box<Stmt>,
+        body: Option<Box<Stmt>>,
     },
     /// `#amt body`
     Delay {

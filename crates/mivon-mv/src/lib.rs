@@ -95,13 +95,44 @@ pub fn format_error(path: &str, src: &str, e: &MvError) -> String {
     out
 }
 
-/// Hasil transpile satu file `.mv`.
+/// Hasil transpile satu file `.mv`/`.mvh`.
 #[derive(Debug, Clone)]
 pub struct TranspileResult {
-    /// Konten `.sv` (module/program/class/function/task)
+    /// Konten `.sv` (module/program/class/function/task) — kosong untuk
+    /// sumber `.mvh` (header-only, F43).
     pub sv: String,
     /// Konten `.svh` (package/typedef/interface + include guard)
     pub svh: String,
+}
+
+/// Satu item input batch transpile (F43): sumber + nama base + flag header.
+/// `header = true` untuk sumber `.mvh` — wajib hanya berisi definisi bersama,
+/// output-nya `.svh` saja.
+#[derive(Debug, Clone)]
+pub struct MvItem {
+    pub src: String,
+    pub base: String,
+    pub header: bool,
+}
+
+impl MvItem {
+    /// Item sumber `.mv` biasa (module/testbench → `.sv` + `.svh`).
+    pub fn new(src: impl Into<String>, base: impl Into<String>) -> Self {
+        MvItem {
+            src: src.into(),
+            base: base.into(),
+            header: false,
+        }
+    }
+
+    /// Item sumber `.mvh` (header Mivon HDL → `.svh` saja).
+    pub fn header(src: impl Into<String>, base: impl Into<String>) -> Self {
+        MvItem {
+            src: src.into(),
+            base: base.into(),
+            header: true,
+        }
+    }
 }
 
 /// Transpile source `.mv` → `.sv` + `.svh`.
@@ -111,51 +142,145 @@ pub struct TranspileResult {
 pub fn transpile(src: &str, base: &str) -> Result<TranspileResult, MvError> {
     let file = parser::parse(src)?;
     check::check(&file)?;
-    generate_from(&file, base, &[])
+    generate_from(&file, base, &[], "mv")
+}
+
+/// Transpile source `.mvh` (header Mivon HDL, F43) → `.svh` saja.
+/// Kontrak: sumber `.mvh` HANYA boleh berisi definisi bersama (typedef/
+/// package/interface). Konten fungsional (module/program/class/func/task)
+/// → error **E2008** berposisi di nama pelanggar (MIVON-HDL.md §9).
+pub fn transpile_header(src: &str, base: &str) -> Result<TranspileResult, MvError> {
+    let file = parser::parse(src)?;
+    check::check(&file)?;
+    validate_header_only(&file)?;
+    generate_from(&file, base, &[], "mvh")
 }
 
 /// Transpile TANPA type-check (escape hatch `mgen --no-check` — untuk kode
 /// yang memakai konstruk eksternal yang belum dipahami checker).
+/// Validasi header-only `.mvh` (E2008) TETAP dijalankan — kontrak ekstensi,
+/// bukan type-check.
 pub fn transpile_no_check(src: &str, base: &str) -> Result<TranspileResult, MvError> {
     let file = parser::parse(src)?;
-    generate_from(&file, base, &[])
+    generate_from(&file, base, &[], "mv")
 }
 
-/// Transpile BEBERAPA file `.mv` sekaligus dengan KONTEKS GABUNGAN (F9):
-/// tipe/package/konstanta dari semua file terlihat oleh semua file, sehingga
-/// `use pkg::*` antar-file (`types.mv` → `counter.mv`) lolos type-check.
+/// `transpile_no_check` untuk sumber `.mvh` — validate E2008 tetap jalan.
+pub fn transpile_header_no_check(src: &str, base: &str) -> Result<TranspileResult, MvError> {
+    let file = parser::parse(src)?;
+    validate_header_only(&file)?;
+    generate_from(&file, base, &[], "mvh")
+}
+
+/// Transpile BEBERAPA file `.mv`/`.mvh` sekaligus dengan KONTEKS GABUNGAN
+/// (F9): tipe/package/konstanta dari semua file terlihat oleh semua file,
+/// sehingga `use pkg::*` antar-file (`types.mvh` → `counter.mv`) lolos
+/// type-check.
 ///
-/// `items` = pasangan (sumber, base). Hasil sejajar dengan `items`. Error
-/// pertama di-return bersama indeks item asalnya — pemanggil menyertakan
-/// path-nya dalam pesan error.
-pub fn transpile_many(
-    items: &[(String, String)],
+/// Hasil sejajar dengan `items`. Error pertama di-return bersama indeks item
+/// asalnya — pemanggil menyertakan path-nya dalam pesan error.
+pub fn transpile_many_items(
+    items: &[MvItem],
 ) -> Result<Vec<TranspileResult>, (usize, MvError)> {
     let files = parse_all(items)?;
     let refs: Vec<&ast::MvFile> = files.iter().collect();
     check::check_many(&refs)?;
+    for (i, it) in items.iter().enumerate() {
+        if it.header {
+            validate_header_only(&files[i]).map_err(|e| (i, e))?;
+        }
+    }
     generate_all(items, &files)
+}
+
+/// `transpile_many_items` tanpa type-check (padanan `--no-check` untuk
+/// batch). Validasi header-only `.mvh` (E2008) tetap dijalankan.
+pub fn transpile_many_items_no_check(
+    items: &[MvItem],
+) -> Result<Vec<TranspileResult>, (usize, MvError)> {
+    let files = parse_all(items)?;
+    for (i, it) in items.iter().enumerate() {
+        if it.header {
+            validate_header_only(&files[i]).map_err(|e| (i, e))?;
+        }
+    }
+    generate_all(items, &files)
+}
+
+/// Transpile batch gaya lama — pasangan (sumber, base), semua `.mv`.
+/// Lihat `transpile_many_items` bila campur `.mvh`.
+pub fn transpile_many(
+    items: &[(String, String)],
+) -> Result<Vec<TranspileResult>, (usize, MvError)> {
+    let owned: Vec<MvItem> = items
+        .iter()
+        .map(|(src, base)| MvItem::new(src.clone(), base.clone()))
+        .collect();
+    transpile_many_items(&owned)
 }
 
 /// `transpile_many` tanpa type-check (padanan `--no-check` untuk batch).
 pub fn transpile_many_no_check(
     items: &[(String, String)],
 ) -> Result<Vec<TranspileResult>, (usize, MvError)> {
-    let files = parse_all(items)?;
-    generate_all(items, &files)
+    let owned: Vec<MvItem> = items
+        .iter()
+        .map(|(src, base)| MvItem::new(src.clone(), base.clone()))
+        .collect();
+    transpile_many_items_no_check(&owned)
 }
 
-fn parse_all(items: &[(String, String)]) -> Result<Vec<ast::MvFile>, (usize, MvError)> {
+/// Validasi kontrak header `.mvh` (F43, E2008): sumber header hanya boleh
+/// berisi definisi bersama (typedef/package/interface). Konten fungsional
+/// pertama → error berposisi (line, col) di nama pelanggarnya.
+fn validate_header_only(file: &MvFile) -> Result<(), MvError> {
+    let offender = file
+        .modules
+        .first()
+        .map(|m| ("module", m.name.as_str(), m.line, m.col))
+        .or_else(|| {
+            file.programs
+                .first()
+                .map(|m| ("program", m.name.as_str(), m.line, m.col))
+        })
+        .or_else(|| {
+            file.classes
+                .first()
+                .map(|c| ("class", c.name.as_str(), c.line, c.col))
+        })
+        .or_else(|| {
+            file.funcs
+                .first()
+                .map(|f| ("function", f.name.as_str(), f.line, f.col))
+        })
+        .or_else(|| {
+            file.tasks
+                .first()
+                .map(|t| ("task", t.name.as_str(), t.line, t.col))
+        });
+    if let Some((kind, name, line, col)) = offender {
+        return Err(MvError::new(
+            line,
+            col,
+            format!(
+                "[E2008] file .mvh hanya berisi definisi bersama (typedef/package/interface) — ditemukan {kind} '{name}'"
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn parse_all(items: &[MvItem]) -> Result<Vec<ast::MvFile>, (usize, MvError)> {
     let mut files = Vec::with_capacity(items.len());
-    for (i, (src, _)) in items.iter().enumerate() {
-        let f = parser::parse(src).map_err(|e| (i, e))?;
+    for (i, it) in items.iter().enumerate() {
+        let f = parser::parse(&it.src).map_err(|e| (i, e))?;
         files.push(f);
     }
     Ok(files)
 }
 
 fn generate_all(
-    items: &[(String, String)],
+    items: &[MvItem],
     files: &[ast::MvFile],
 ) -> Result<Vec<TranspileResult>, (usize, MvError)> {
     // F26 fix review: nama interface dari SEMUA file (konteks gabungan) —
@@ -167,8 +292,9 @@ fn generate_all(
         .flat_map(|f| f.interfaces.iter().map(|i| i.name.as_str()))
         .collect();
     let mut out = Vec::with_capacity(items.len());
-    for (i, (_, base)) in items.iter().enumerate() {
-        let r = generate_from(&files[i], base, &all_ifaces).map_err(|e| (i, e))?;
+    for (i, it) in items.iter().enumerate() {
+        let src_ext = if it.header { "mvh" } else { "mv" };
+        let r = generate_from(&files[i], &it.base, &all_ifaces, src_ext).map_err(|e| (i, e))?;
         out.push(r);
     }
     Ok(out)
@@ -178,8 +304,9 @@ fn generate_from(
     file: &MvFile,
     base: &str,
     iface_names: &[&str],
+    src_ext: &str,
 ) -> Result<TranspileResult, MvError> {
-    let out = codegen::generate_with_ifaces(file, base, iface_names);
+    let out = codegen::generate_src_ext(file, base, iface_names, src_ext);
     Ok(TranspileResult {
         sv: out.sv,
         svh: out.svh,
@@ -440,5 +567,114 @@ module top {
         assert!(r.svh.contains("typedef logic [15:0] Addr;"));
         assert!(r.sv.contains("`include \"top.svh\""));
         assert!(r.sv.contains("import pkt::*;"));
+    }
+
+    // ── F43: `.mvh` (header Mivon HDL → `.svh` saja) ──
+
+    #[test]
+    fn mvh_header_transpiles_to_svh_only() {
+        // `.mvh` valid (typedef + package + interface) → `.svh` lengkap
+        // dgn include guard, `.sv` kosong, header komentar menyebut `.mvh`.
+        let src = r#"
+type Addr = logic[15:0]
+package hdr_pkg {
+    enum State { IDLE, RUN }
+}
+interface bus_if {
+    in clk : bit
+}
+"#;
+        let r = transpile_header(src, "defs").expect("transpile .mvh");
+        assert!(r.svh.contains("`ifndef DEFS_SVH"), "guard: {}", r.svh);
+        assert!(r.svh.contains("typedef logic [15:0] Addr;"));
+        assert!(r.svh.contains("package hdr_pkg;"));
+        assert!(r.svh.contains("interface bus_if;"));
+        assert!(r.svh.contains("Sumber    : defs.mvh"), "header: {}", r.svh);
+        assert!(r.svh.contains("mivon mgen defs.mvh"));
+        assert!(r.sv.is_empty(), ".sv harus kosong: {}", r.sv);
+    }
+
+    #[test]
+    fn mvh_rejects_module_with_position() {
+        // E2008: konten fungsional di `.mvh` ditolak, berposisi line:col.
+        let src = "type Addr = logic[7:0]\nmodule bad {\n in clk : bit\n}\n";
+        let e = transpile_header(src, "defs").unwrap_err();
+        assert!(e.msg.contains("E2008"), "msg: {}", e.msg);
+        assert!(e.msg.contains("module 'bad'"), "msg: {}", e.msg);
+        assert_eq!(e.line, 2, "posisi line nama module");
+        assert!(e.col > 0);
+    }
+
+    #[test]
+    fn mvh_rejects_func_class_task() {
+        for (src, want) in [
+            ("func f() -> int {\n    return 1\n}\n", "function 'f'"),
+            ("task t() {\n    #1\n}\n", "task 't'"),
+            ("class c {\n    field x : int\n}\n", "class 'c'"),
+            ("program p {\n    in clk : bit\n}\n", "program 'p'"),
+        ] {
+            let e = transpile_header(src, "h").unwrap_err();
+            assert!(e.msg.contains("E2008"), "src {src:?}: {}", e.msg);
+            assert!(e.msg.contains(want), "src {src:?}: {}", e.msg);
+        }
+    }
+
+    #[test]
+    fn mvh_no_check_still_validates_header() {
+        // `--no-check` melewatkan type-check TAPI kontrak header tetap (E2008).
+        let src = "module m {\n in clk : bit\n}\n";
+        let e = transpile_header_no_check(src, "h").unwrap_err();
+        assert!(e.msg.contains("E2008"), "msg: {}", e.msg);
+        // Type-check memang dilewati: sumber dgn tipe tak dikenal lolos.
+        let r = transpile_header_no_check("type A = Nope[3]\n", "h");
+        assert!(r.is_ok(), "no-check harus lewati E2005: {:?}", r.err());
+    }
+
+    #[test]
+    fn mvh_batch_mixed_with_mv() {
+        // Batch gabungan: `defs.mvh` (header) + `counter.mv` (desain) —
+        // package dari file header terlihat oleh desain (konteks F9),
+        // flag `header` menghasilkan output sejajar per item.
+        let items = vec![
+            MvItem::header(
+                "package hdr_pkg {\n type Addr = logic[15:0]\n}\n",
+                "defs",
+            ),
+            MvItem::new(
+                "module counter {\n use hdr_pkg::*\n in clk : bit\n out a : Addr\n comb { a = 0 }\n}\n",
+                "counter",
+            ),
+        ];
+        let results = transpile_many_items(&items).expect("batch .mvh+.mv");
+        assert!(results[0].svh.contains("package hdr_pkg;"));
+        assert!(results[0].sv.is_empty(), ".mvh tanpa .sv");
+        assert!(results[0].svh.contains("defs.mvh"));
+        assert!(results[1].sv.contains("module counter"));
+        assert!(results[1].sv.contains("import hdr_pkg::*;"));
+        assert!(results[1].sv.contains("Sumber    : counter.mv"));
+    }
+
+    #[test]
+    fn mvh_batch_error_carries_index() {
+        // E2008 di batch → indeks item asal + posisi.
+        let items = vec![
+            MvItem::new("module ok {\n in clk : bit\n}\n", "ok"),
+            MvItem::header("module bad {\n in clk : bit\n}\n", "bad"),
+        ];
+        let (idx, e) = transpile_many_items(&items).unwrap_err();
+        assert_eq!(idx, 1);
+        assert!(e.msg.contains("E2008"), "msg: {}", e.msg);
+    }
+
+    #[test]
+    fn mv_legacy_batch_api_still_works() {
+        // API lama `transpile_many((src, base))` tetap berfungsi (semua .mv).
+        let items = vec![(
+            "module m {\n in clk : bit\n out y : bit\n comb { y = 1 }\n}\n".to_string(),
+            "m".to_string(),
+        )];
+        let results = transpile_many(&items).expect("legacy batch");
+        assert!(results[0].sv.contains("module m"));
+        assert!(results[0].sv.contains("Sumber    : m.mv"));
     }
 }

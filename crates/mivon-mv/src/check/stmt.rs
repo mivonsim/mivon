@@ -274,7 +274,10 @@ pub(crate) fn check_stmt<'a>(
         }
         Stmt::Event { expr, body } => {
             check_expr(expr, ctx, scope, 0)?;
-            check_stmt(body, ctx, scope, kind)
+            if let Some(b) = body {
+                check_stmt(b, ctx, scope, kind)?;
+            }
+            Ok(())
         }
         Stmt::Delay { amt, body } => {
             check_expr(amt, ctx, scope, 0)?;

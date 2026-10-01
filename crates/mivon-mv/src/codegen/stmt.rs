@@ -154,12 +154,19 @@ pub(crate) fn emit_stmt(out: &mut String, indent: usize, stmt: &Stmt) {
             line(out, indent, "end");
         }
         Stmt::Event { expr, body } => {
-            if let Some(s) = single_line_stmt(body) {
-                line(out, indent, &format!("@({}) {s}", emit_expr(expr)));
-            } else {
-                line(out, indent, &format!("@({}) begin", emit_expr(expr)));
-                emit_body(out, indent + 1, body);
-                line(out, indent, "end");
+            match body {
+                Some(b) => {
+                    if let Some(s) = single_line_stmt(b) {
+                        line(out, indent, &format!("@({}) {s}", emit_expr(expr)));
+                    } else {
+                        line(out, indent, &format!("@({}) begin", emit_expr(expr)));
+                        emit_body(out, indent + 1, b);
+                        line(out, indent, "end");
+                    }
+                }
+                None => {
+                    line(out, indent, &format!("@({});", emit_expr(expr)));
+                }
             }
         }
         Stmt::Delay { amt, body } => {
@@ -254,7 +261,29 @@ pub(crate) fn single_line_stmt(stmt: &Stmt) -> Option<String> {
         Stmt::EventTrigger(ev) => Some(format!("-> {};", emit_expr(ev))),
         Stmt::AssertProperty(raw) => Some(format!("assert property {raw};")),
         Stmt::Event { expr, body } => {
-            single_line_stmt(body).map(|s| format!("@({}) {s}", emit_expr(expr)))
+            match body {
+                Some(b) => {
+                    // Event control statement: @(expr) body — selalu single-line
+                    // (SV memperbolehkan @(event) statement dengan statement apa pun).
+                    // Emit body tanpa bungkus begin/end ekstra untuk Event.
+                    let mut buf = String::new();
+                    buf.push_str(&format!("@({}) ", emit_expr(expr)));
+                    // Cek apakah body adalah empty block
+                    if let Stmt::Block(stmts) = &**b {
+                        if stmts.is_empty() {
+                            // Empty block → null statement `;` agar event control
+                            // tidak "mencuri" statement berikutnya di SV.
+                            buf.push(';');
+                            return Some(buf);
+                        }
+                    }
+                    // Gunakan emit_body dengan indent 0 agar block body dicetak
+                    // tanpa indent tambahan (Event sendiri tidak perlu begin/end).
+                    emit_body(&mut buf, 0, b);
+                    Some(buf.trim_end().to_string())
+                }
+                None => Some(format!("@({});", emit_expr(expr))),
+            }
         }
         Stmt::Delay { amt, body } => {
             single_line_stmt(body).map(|s| format!("#{} {s}", emit_expr(amt)))

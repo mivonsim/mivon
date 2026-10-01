@@ -988,21 +988,27 @@ fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), SimError> {
     }
 
     // ── F8: `run x.mv` — transpile on-the-fly ke buffer (tanpa menulis file) ──
-    // File `.mv` di-transpile (lex → parse → check → codegen) menjadi satu
-    // buffer SV (svh + sv, baris `` `include `` di-strip) lalu disuntikkan
-    // sebagai sumber inline; pipeline normal berjalan tanpa menyentuh disk.
+    // File `.mv`/`.mvh` (F43) di-transpile (lex → parse → check → codegen)
+    // menjadi satu buffer SV (svh + sv, baris `` `include `` di-strip) lalu
+    // disuntikkan sebagai sumber inline; pipeline normal berjalan tanpa
+    // menyentuh disk.
     let mut inline_src: std::collections::HashMap<PathBuf, Vec<u8>> =
         std::collections::HashMap::new();
     let mv_files: Vec<String> = sources
         .iter()
-        .filter(|s| Path::new(s).extension().map(|e| e == "mv").unwrap_or(false))
+        .filter(|s| {
+            Path::new(s)
+                .extension()
+                .map(|e| e == "mv" || e == "mvh")
+                .unwrap_or(false)
+        })
         .cloned()
         .collect();
-    // ── F9: transpile SEMUA .mv sekaligus (konteks gabungan lintas file) ──
-    // `types.mv` mendefinisikan package, `counter.mv` memakainya — keduanya
+    // ── F9: transpile SEMUA .mv/.mvh sekaligus (konteks gabungan lintas file) ──
+    // `types.mvh` mendefinisikan package, `counter.mv` memakainya — keduanya
     // di-transpile bersama agar `use pkg::*` antar-file lolos type-check.
     if !mv_files.is_empty() {
-        let mut items: Vec<(String, String)> = Vec::with_capacity(mv_files.len());
+        let mut items: Vec<mivon_api::mv::MvItem> = Vec::with_capacity(mv_files.len());
         for p in &mv_files {
             let base = Path::new(p)
                 .file_stem()
@@ -1011,12 +1017,13 @@ fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), SimError> {
                 .to_string();
             let src = std::fs::read_to_string(p)
                 .map_err(|e| SimError::with_diag(DiagCode::IoError, format!("{}: {}", p, e)))?;
-            items.push((src, base));
+            let header = Path::new(p).extension().map(|e| e == "mvh").unwrap_or(false);
+            items.push(mivon_api::mv::MvItem { src, base, header });
         }
-        let results = mivon_api::mv::transpile_many(&items).map_err(|(i, e)| {
+        let results = mivon_api::mv::transpile_many_items(&items).map_err(|(i, e)| {
             SimError::with_diag(
                 DiagCode::InvalidSyntax,
-                mivon_api::mv::format_error(&mv_files[i], &items[i].0, &e),
+                mivon_api::mv::format_error(&mv_files[i], &items[i].src, &e),
             )
         })?;
         // Defensif: hasil batch harus sejajar dengan input (jangan zip-truncate).
@@ -1046,7 +1053,7 @@ fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), SimError> {
     }
     if !mv_files.is_empty() && !cli.quiet {
         eprintln!(
-            "[MV] transpiled {} .mv file(s) on-the-fly (F9)",
+            "[MV] transpiled {} .mv/.mvh file(s) on-the-fly (F9)",
             mv_files.len()
         );
     }

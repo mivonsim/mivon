@@ -32,7 +32,7 @@ pub enum MivonCmd {
     /// mfmt — formatter Verilog/SystemVerilog
     #[command(alias = "mfmt")]
     Fmt(MfmtArgs),
-    /// mgen — generate SystemVerilog (.sv/.svh) dari Mivon HDL (.mv)
+    /// mgen — generate SystemVerilog (.sv/.svh) dari Mivon HDL (.mv/.mvh)
     #[command(alias = "mgen")]
     Gen(MgenArgs),
     /// mprof — performance profiler pipeline (lexer→parser→elab→sim)
@@ -464,10 +464,10 @@ pub struct MfmtArgs {
     pub check: bool,
 }
 
-/// mgen — Generator SystemVerilog dari Mivon HDL (.mv).
+/// mgen — Generator SystemVerilog dari Mivon HDL (.mv/.mvh).
 #[derive(clap::Args, Clone)]
 pub struct MgenArgs {
-    /// Input: file .mv atau direktori (recursive scan *.mv)
+    /// Input: file .mv/.mvh atau direktori (recursive scan *.mv, *.mvh)
     #[arg(required = true)]
     pub targets: Vec<String>,
 
@@ -475,7 +475,7 @@ pub struct MgenArgs {
     #[arg(short = 'o', long = "output")]
     pub output: Option<String>,
 
-    /// Print .sv ke stdout (debug, satu file saja)
+    /// Print hasil ke stdout (debug, satu file saja; .mv → .sv, .mvh → .svh)
     #[arg(long)]
     pub stdout: bool,
 

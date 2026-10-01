@@ -271,11 +271,17 @@ impl Parser {
                 self.expect(&Tok::LParen)?;
                 let expr = self.parse_expr()?;
                 self.expect(&Tok::RParen)?;
-                let body = self.parse_stmt()?;
-                Ok(Stmt::Event {
-                    expr,
-                    body: Box::new(body),
-                })
+                // Body opsional: `@(event)` tanpa statement berikutnya = event
+                // control statement tunggal (SV: `repeat (n) @(posedge clk);`).
+                let body = if matches!(
+                    self.peek(),
+                    Tok::RBrace | Tok::Semi | Tok::Else
+                ) {
+                    None
+                } else {
+                    Some(Box::new(self.parse_stmt()?))
+                };
+                Ok(Stmt::Event { expr, body })
             }
             Tok::Hash => {
                 self.advance();
