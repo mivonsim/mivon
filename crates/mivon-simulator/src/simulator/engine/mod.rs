@@ -182,6 +182,25 @@ pub struct SimulationEngine {
     pub monitor_args: Option<Vec<IrExpr>>,
     pub monitor_last_values: Option<Vec<LogicVec>>,
     pub disable_pending: Option<Symbol>,
+    /// `disable <label>` target di LUAR stack eksekusi saat ini (branch lain
+    /// yang suspend / belum masuk). TERPISAH dari `disable_pending`: tidak
+    /// boleh menghentikan blok pelaku (LRM §9.6.4 — pelaku LANJUT setelah
+    /// disable), hanya dikonsumsi saat kontinuasi target di-resume
+    /// (`Continuation::named_labels`) atau saat blok target masuk.
+    pub disable_cross: Option<Symbol>,
+    /// Label `begin : <label>` yang SEDANG terbuka pada stack eksekusi
+    /// (di-push/pop oleh `evaluate_named_block_fork`). Disalin ke
+    /// `Continuation::named_labels` saat kontinuasi dijadwalkan agar
+    /// `disable <label>` bisa menembak branch yang sedang suspend
+    /// (BUG FIX disable-label lintas branch fork).
+    pub active_named_labels: Vec<Symbol>,
+    /// SEMUA label `begin : <label>` yang dikenal design (hasil scan
+    /// constructor + insert saat push). `disable <label>` dengan nama di
+    /// set ini tapi TIDAK di stack → `disable_cross` (target di proses/
+    /// branch lain — pelaku LANJUT, LRM §9.6.4). Label di luar set =
+    /// label yang dibuang parser / bukan NamedBlock → fallback perilaku
+    /// lama `disable_pending` (bunuh sisa proses pemanggil).
+    pub known_named_labels: HashSet<Symbol>,
     pub control_flow: Option<FlowControl>,
     pub expr_recursion_depth: usize,
     pub forced_signals: HashSet<SignalId>,

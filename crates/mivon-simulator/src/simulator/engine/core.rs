@@ -26,6 +26,26 @@ impl SimulationEngine {
     /// Konstruktor dengan batas eksplisit (`Unlimited` atau `Finite(n)`).
     pub fn new_with_limit(design: IrDesign, sim_limit: SimulationLimit) -> Self {
         let state = SimulationState::new(&design);
+        // F47: kumpulkan SEMUA label `begin : <label>` yang dikenal design
+        // (IR processes + method class AST) — penanda `disable <label>`
+        // lintas proses/branch (lihat `mark_disable_label`).
+        let mut known_named_labels = HashSet::new();
+        for proc in &design.top.processes {
+            let body: &[IrStmt] = match proc {
+                Process::Combinational { body, .. }
+                | Process::CombReactive { body, .. }
+                | Process::Sequential { body, .. }
+                | Process::Initial { body, .. }
+                | Process::Final { body, .. }
+                | Process::AlwaysWithDelay { body, .. } => body,
+            };
+            collect_named_labels_ir(body, &mut known_named_labels);
+        }
+        for class in design.classes.values() {
+            for method in &class.methods {
+                collect_named_labels_ast(&method.stmts, &mut known_named_labels);
+            }
+        }
         SimulationEngine {
             state,
             coverage_exclusions: design.coverage_exclusions.clone(),
@@ -55,6 +75,9 @@ impl SimulationEngine {
             static_locals: HashMap::new(),
             current_method: None,
             disable_pending: None,
+            disable_cross: None,
+            active_named_labels: Vec::new(),
+            known_named_labels,
             rng: rand::rngs::StdRng::seed_from_u64(42),
             rand_call_count: 0,
             rand_seed: 42,
@@ -2492,5 +2515,161 @@ impl SimulationEngine {
             }
         }
         Ok(())
+    }
+}
+
+// ─── F47: kumpulator label NamedBlock untuk `disable <label>` ────────
+
+/// Kumpulkan semua nama label `begin : <label>` dari IR statement.
+fn collect_named_labels_ir(stmts: &[IrStmt], out: &mut HashSet<Symbol>) {
+    for stmt in stmts {
+        match stmt {
+            IrStmt::NamedBlock { name, stmts: inner, .. } => {
+                out.insert(*name);
+                collect_named_labels_ir(inner, out);
+            }
+            IrStmt::Block { stmts: inner } => collect_named_labels_ir(inner, out),
+            IrStmt::If {
+                true_branch,
+                false_branch,
+                ..
+            } => {
+                collect_named_labels_ir(true_branch, out);
+                collect_named_labels_ir(false_branch, out);
+            }
+            IrStmt::Case { items, default, .. } => {
+                for item in items {
+                    collect_named_labels_ir(&item.body, out);
+                }
+                collect_named_labels_ir(default, out);
+            }
+            IrStmt::LoopFor { body, .. }
+            | IrStmt::LoopWhile { body, .. }
+            | IrStmt::LoopDoWhile { body, .. }
+            | IrStmt::Repeat { body, .. }
+            | IrStmt::Foreach { body, .. }
+            | IrStmt::Delay { body, .. }
+            | IrStmt::Wait { body, .. }
+            | IrStmt::EventControl { body, .. } => collect_named_labels_ir(body, out),
+            IrStmt::Fork { processes, .. } => {
+                for p in processes {
+                    collect_named_labels_ir(p, out);
+                }
+            }
+            IrStmt::Assert {
+                pass_stmt,
+                fail_stmt,
+                ..
+            }
+            | IrStmt::Assume {
+                pass_stmt,
+                fail_stmt,
+                ..
+            }
+            | IrStmt::Expect {
+                pass_stmt,
+                fail_stmt,
+                ..
+            } => {
+                collect_named_labels_ir(pass_stmt, out);
+                collect_named_labels_ir(fail_stmt, out);
+            }
+            IrStmt::Cover { pass_stmt, .. } => collect_named_labels_ir(pass_stmt, out),
+            IrStmt::WaitOrder {
+                failure_stmts, ..
+            } => collect_named_labels_ir(failure_stmts, out),
+            IrStmt::RandCase { items } => {
+                for (_, body) in items {
+                    collect_named_labels_ir(body, out);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Kumpulkan semua nama label `begin : <label>` dari AST statement
+/// (method class — jalur AST evaluator).
+fn collect_named_labels_ast(stmts: &[mivon_ast::Stmt], out: &mut HashSet<Symbol>) {
+    use mivon_ast::Stmt;
+    for stmt in stmts {
+        match stmt {
+            Stmt::NamedBlock { name, stmts: inner, .. } => {
+                out.insert(*name);
+                collect_named_labels_ast(inner, out);
+            }
+            Stmt::Block { stmts: inner } => collect_named_labels_ast(inner, out),
+            Stmt::IfElse {
+                true_branch,
+                false_branch,
+                ..
+            } => {
+                collect_named_labels_ast(std::slice::from_ref(true_branch), out);
+                if let Some(fb) = false_branch {
+                    collect_named_labels_ast(std::slice::from_ref(fb), out);
+                }
+            }
+            Stmt::Case { items, default, .. }
+            | Stmt::CaseX { items, default, .. }
+            | Stmt::CaseZ { items, default, .. }
+            | Stmt::StmtCase { items, default, .. }
+            | Stmt::UniqueCase { items, default, .. }
+            | Stmt::PriorityCase { items, default, .. }
+            | Stmt::Unique0Case { items, default, .. }
+            | Stmt::CaseInside { items, default, .. } => {
+                for item in items {
+                    collect_named_labels_ast(std::slice::from_ref(&item.stmt), out);
+                }
+                if let Some(d) = default {
+                    collect_named_labels_ast(std::slice::from_ref(d), out);
+                }
+            }
+            Stmt::LoopForever { stmts: inner }
+            | Stmt::LoopWhile { stmts: inner, .. }
+            | Stmt::DoWhile { stmts: inner, .. }
+            | Stmt::LoopFor { stmts: inner, .. }
+            | Stmt::Repeat { stmts: inner, .. }
+            | Stmt::ForeachLoop { stmts: inner, .. } => {
+                collect_named_labels_ast(inner, out)
+            }
+            Stmt::Delay { stmt: inner, .. }
+            | Stmt::Wait { stmt: Some(inner), .. }
+            | Stmt::EventControl { stmt: Some(inner), .. } => {
+                collect_named_labels_ast(std::slice::from_ref(inner), out)
+            }
+            Stmt::Fork { processes, .. } => collect_named_labels_ast(processes, out),
+            Stmt::Assert {
+                pass_stmt,
+                fail_stmt,
+                ..
+            }
+            | Stmt::Assume {
+                pass_stmt,
+                fail_stmt,
+                ..
+            }
+            | Stmt::Expect {
+                pass_stmt,
+                fail_stmt,
+                ..
+            } => {
+                if let Some(p) = pass_stmt {
+                    collect_named_labels_ast(std::slice::from_ref(p), out);
+                }
+                if let Some(f) = fail_stmt {
+                    collect_named_labels_ast(std::slice::from_ref(f), out);
+                }
+            }
+            Stmt::WaitOrder {
+                fail_stmt: Some(f),
+                ..
+            } => collect_named_labels_ast(std::slice::from_ref(f), out),
+            Stmt::RandCase { items } => {
+                for item in items {
+                    collect_named_labels_ast(std::slice::from_ref(&item.stmt), out);
+                }
+            }
+            _ => {}
+        }
     }
 }

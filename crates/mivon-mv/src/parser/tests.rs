@@ -565,3 +565,27 @@ module m {
     assert!(has_force, "force harus ter-parse");
     assert!(has_rel, "release harus ter-parse");
 }
+
+#[test]
+fn parse_named_block() {
+    // F47: `label : { stmt* }` — blok bernama (target `disable <label>`).
+    let src = r#"
+module m {
+    sig a : logic[7:0]
+    initial {
+        worker : {
+            #10
+            a = 1
+        }
+        disable worker
+    }
+}
+"#;
+    let f = parse(src).expect("parse named block");
+    let m = &f.modules[0];
+    let has_named = m.items.iter().any(|i| match i {
+        MItem::Initial(Stmt::Block(s)) => s.iter().any(|x| matches!(x, Stmt::NamedBlock { .. })),
+        _ => false,
+    });
+    assert!(has_named, "named block harus ter-parse");
+}

@@ -1095,6 +1095,38 @@ module tb_fr {
 }
 
 #[test]
+fn test_mv_disable_label_cross_branch() {
+    // F47: `label : { ... }` (blok bernama) + `disable <label>` dari branch
+    // fork lain — hanya blok bernama yang mati, pelaku LANJUT (LRM §9.6.4).
+    // Demo: examples/mv/disable_label.mv → a=0 (worker dibunuh), done=1.
+    let src = r#"
+module tb_dl {
+    sig a : logic[7:0] = '0
+    sig done : bit = 0
+    initial {
+        fork {
+            worker : {
+                #10
+                a = 1
+            }
+        } {
+            #5
+            disable worker
+        } join
+        done = 1
+    }
+}
+"#;
+    let r = mivon_mv::transpile(src, "disable_label").expect("transpile .mv OK");
+    assert!(r.sv.contains("begin : worker"), "emit named block: {}", r.sv);
+    assert!(r.sv.contains("disable worker;"), "emit disable label: {}", r.sv);
+    let sigs = simulate_signals(&r.sv, 50).unwrap();
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    assert_eq!(get("a"), 0, "worker dibunuh disable label sebelum #10");
+    assert_eq!(get("done"), 1, "join selesai normal — pelaku tidak ikut mati");
+}
+
+#[test]
 fn test_mv_postfix_rhs_rejected() {
     // F37: postfix di RHS ekspresi (`j = i--`) ditolak di level .mv dengan
     // error jelas (side-effect postfix tak bisa diwakili SV) — bukan SV invalid.
@@ -8384,12 +8416,12 @@ endmodule
 }
 
 #[test]
-fn test_disable_fork_branch_label_not_yet_implemented() {
-    // LANG-30 extension: `disable <label>` untuk named fork branch
-    // BELUM DIIMPLEMENTASIKAN — audit mark: "`disable <label>` per-branch belum"
-    // Current behavior: disable label in parent process does NOT affect
-    // named blocks inside fork branches (they run in separate processes).
-    // This test documents the expected behavior once implemented.
+fn test_disable_fork_branch_label_scoped() {
+    // `disable <label>` untuk named fork branch — SUDAH diimplementasikan:
+    // label `begin : branch_a` kini dipertahankan parser (sebelumnya dibuang →
+    // `Stmt::Block` anonim) dan kontinuasi suspend membawa label-nya
+    // (`Continuation::named_labels`), sehingga `disable branch_a` membunuh
+    // HANYA branch tersebut — branch_b tetap jalan (LRM 1800 §9.6.4).
     let source = r#"
 module tb;
     int a;
@@ -8404,7 +8436,7 @@ module tb;
                 #10 b = 1;
             end
         join_none
-        #2 disable branch_a;  // should kill branch_a only
+        #2 disable branch_a;
         #15 $finish;
     end
 endmodule
@@ -8416,18 +8448,53 @@ endmodule
             .map(|(_, v)| v.to_u64())
             .unwrap_or(99)
     };
-    // Current behavior: disable branch_a in parent process kills ALL fork branches
-    // (a=0, b=0) — disable label not yet properly scoped to fork branches.
-    // Expected when fixed: only branch_a killed (a=0), branch_b runs (b=1).
+    assert_eq!(get("a"), 0, "branch_a dibunuh disable label");
+    assert_eq!(get("b"), 1, "branch_b TIDAK tersentuh disable branch_a");
+}
+
+#[test]
+fn test_disable_label_cross_branch_fork_join_continuation() {
+    // BUG FIX disable-label lintas branch: `disable worker` dari branch kedua
+    // (yang men-suspend) men-sUSPEND-kan branch pertama di dalam
+    // `begin : worker`. SEBELUM fix, `disable_pending` bocor tak bertabrak
+    // consumer → loop-top guard menelan SEMUA statement sesudahnya termasuk
+    // continuation `join` → `$finish` tak pernah jalan (simulasi "quiesced").
+    let source = r#"
+module tb;
+    reg [7:0] a;
+    reg done;
+    initial begin
+        a = 0;
+        done = 0;
+        fork
+            begin : worker
+                #10;
+                a = 1;
+            end
+            begin
+                #5;
+                disable worker;
+            end
+        join
+        #1;
+        done = 1;
+        $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 50).unwrap();
+    let get = |n: &str| {
+        sigs.iter()
+            .find(|(s, _)| s == n)
+            .map(|(_, v)| v.to_u64())
+            .unwrap_or(99)
+    };
+    assert_eq!(get("a"), 0, "worker dibunuh disable label sebelum t=10");
     assert_eq!(
-        get("a"),
-        0,
-        "branch_a killed (current: disable label affects all)"
-    );
-    assert_eq!(
-        get("b"),
-        0,
-        "branch_b also killed (current: disable not fork-scoped)"
+        get("done"),
+        1,
+        "continuation join tetap jalan (tanpa fix: disable_pending bocor \
+         menelan sisa statement -> done=0)"
     );
 }
 

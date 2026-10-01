@@ -261,6 +261,13 @@ fn print_stmt_b(b: &mut StrB, indent: usize, s: &Stmt) {
             }
             b.line(indent, "}");
         }
+        Stmt::NamedBlock { name, stmts } => {
+            b.line(indent, &format!("{name} : {{"));
+            for st in stmts {
+                print_stmt_b(b, indent + 1, st);
+            }
+            b.line(indent, "}");
+        }
         Stmt::Assign { lhs, rhs, nba, .. } => b.line(
             indent,
             &format!(

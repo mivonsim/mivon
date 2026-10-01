@@ -20,6 +20,44 @@ const AST_LOOP_ITER_CAP: u64 = 100_000;
 pub(super) const ZERO_DELAY_EVENT_CAP: u64 = 4096;
 
 impl SimulationEngine {
+    /// F47: `disable <label>` (bukan `disable fork`).
+    /// - Target ADA di stack aktif → set `disable_pending` + hentikan blok
+    ///   saat ini (wrapper `evaluate_named_block_fork` mengonsumsi saat
+    ///   unwind, lalu eksekusi lanjut SETELAH blok).
+    /// - Target DI LUAR stack (branch lain suspend / belum masuk) → set
+    ///   `disable_cross` dan JANGAN hentikan blok pelaku (LRM §9.6.4 —
+    ///   pelaku tetap lanjut). Dikonsumsi saat kontinuasi target di-resume
+    ///   (`Continuation::named_labels`) atau saat blok target dievaluasi.
+    ///
+    /// Return true = blok saat ini harus berhenti.
+    pub(crate) fn mark_disable_label(&mut self, name: Symbol) -> bool {
+        if self.active_named_labels.contains(&name) {
+            self.disable_pending = Some(name);
+            true
+        } else if self.known_named_labels.contains(&name) {
+            // Label dikenal design tapi TIDAK di stack proses ini — target
+            // di branch/proses lain yang sedang suspend (atau belum masuk).
+            self.disable_cross = Some(name);
+            false
+        } else {
+            // Label bukan NamedBlock (dibuang parser / typo) — fallback
+            // perilaku lama: bunuh sisa proses pemanggil.
+            self.disable_pending = Some(name);
+            true
+        }
+    }
+
+    /// F47: konsumsi `disable_cross` bila target cocok dengan label blok
+    /// yang baru dievaluasi (target belum sempat masuk saat disable).
+    pub(crate) fn consume_disable_cross_for(&mut self, name: Symbol) -> bool {
+        if self.disable_cross == Some(name) {
+            self.disable_cross = None;
+            true
+        } else {
+            false
+        }
+    }
+
     /// F26: mulai eksekusi branch fork — aktifkan fork id utk task body
     /// (execute_method_body memakainya supaya continuation resume decrement
     /// fork yang benar) + reset flag suspend task utk branch ini.
@@ -182,6 +220,7 @@ impl SimulationEngine {
                                                 fork_id,
                                                 process_id: pid,
                                                 process_name: self.current_process_name.clone(),
+                                                named_labels: self.active_named_labels.clone(),
                                             }),
                                         },
                                     );
@@ -223,6 +262,7 @@ impl SimulationEngine {
                                                 fork_id,
                                                 process_id: pid,
                                                 process_name: self.current_process_name.clone(),
+                                                named_labels: self.active_named_labels.clone(),
                                             }),
                                         },
                                     );
@@ -314,6 +354,7 @@ impl SimulationEngine {
                                     fork_id,
                                     process_id: pid,
                                     process_name: self.current_process_name.clone(),
+                                    named_labels: self.active_named_labels.clone(),
                                 }),
                             },
                         );
@@ -367,8 +408,7 @@ impl SimulationEngine {
                                 g.disabled = true;
                             }
                         }
-                    } else {
-                        self.disable_pending = Some(*name);
+                    } else if self.mark_disable_label(*name) {
                         return Ok(true);
                     }
                 }
@@ -1065,8 +1105,17 @@ impl SimulationEngine {
                         self.disable_pending = None;
                         return Ok(true);
                     }
+                    // F47: target disable_cross baru sampai sekarang (label
+                    // belum masuk stack saat disable dieksekusi).
+                    if self.consume_disable_cross_for(*name) {
+                        return Ok(true);
+                    }
                     let old = self.disable_pending.take();
-                    let completed = self.evaluate_ast_block_with_delay_fork(inner, fork_id)?;
+                    self.known_named_labels.insert(*name);
+                    self.active_named_labels.push(*name);
+                    let completed = self.evaluate_ast_block_with_delay_fork(inner, fork_id);
+                    self.active_named_labels.pop();
+                    let completed = completed?;
                     if let Some(ref n) = self.disable_pending {
                         if *n == *name {
                             self.disable_pending = None;
@@ -2136,8 +2185,7 @@ impl SimulationEngine {
                                 g.disabled = true;
                             }
                         }
-                    } else {
-                        self.disable_pending = Some(*name);
+                    } else if self.mark_disable_label(*name) {
                         return Ok(true);
                     }
                 }
@@ -2784,6 +2832,7 @@ impl SimulationEngine {
                                     fork_id: None,
                                     process_id: pid,
                                     process_name: self.current_process_name.clone(),
+                                    named_labels: self.active_named_labels.clone(),
                                 }),
                             },
                         );
@@ -2877,8 +2926,7 @@ impl SimulationEngine {
                                 g.disabled = true;
                             }
                         }
-                    } else {
-                        self.disable_pending = Some(*name);
+                    } else if self.mark_disable_label(*name) {
                         return Ok(());
                     }
                 }

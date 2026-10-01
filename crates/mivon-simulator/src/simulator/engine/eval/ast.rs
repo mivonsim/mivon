@@ -1725,7 +1725,9 @@ impl SimulationEngine {
             }
             Stmt::Null => Ok(()),
             Stmt::Disable { name } => {
-                self.disable_pending = Some(*name);
+                // F47: self-disable → disable_pending (loop-top berhenti);
+                // target di luar stack → disable_cross (pelaku lanjut).
+                let _ = self.mark_disable_label(*name);
                 Ok(())
             }
             Stmt::ForeachLoop {

@@ -231,6 +231,12 @@ pub struct Continuation {
     /// `current_process_name` agar `wait fork` (dan fitur berbasis nama proses)
     /// tetap melihat proses yang benar setelah resume. None = tidak diketahui.
     pub process_name: Option<String>,
+    /// Label `begin : <label>` yang terbuka saat kontinuasi dijadwalkan
+    /// (BUG FIX disable-label lintas branch: `disable <label>` dari branch
+    /// lain harus bisa membunuh branch yang sedang SUSPEND di dalam blok itu
+    /// — tanpa label ini `disable_pending` tak punya konsumen sehingga bocor
+    /// dan menelan seluruh statement sesudahnya, termasuk continuation join).
+    pub named_labels: Vec<Symbol>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

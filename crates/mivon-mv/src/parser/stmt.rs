@@ -62,6 +62,18 @@ impl Parser {
                 let body = self.parse_stmt_block()?;
                 Ok(Stmt::Block(body))
             }
+            // F47: `label : { stmt* }` — blok bernama. Pola ident diikuti
+            // `:` lalu `{` hanya valid di sini (case arm di-parse via
+            // parse_case_body, labeled statement tidak didukung `.mv`).
+            Tok::Ident(_)
+                if matches!(self.peek_at(1), Tok::Colon)
+                    && matches!(self.peek_at(2), Tok::LBrace) =>
+            {
+                let name = self.expect_ident()?;
+                self.expect(&Tok::Colon)?;
+                let stmts = self.parse_stmt_block()?;
+                Ok(Stmt::NamedBlock { name, stmts })
+            }
             Tok::If => {
                 self.advance();
                 self.expect(&Tok::LParen)?;

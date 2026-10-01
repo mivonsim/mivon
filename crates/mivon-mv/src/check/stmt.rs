@@ -18,6 +18,13 @@ pub(crate) fn check_stmt<'a>(
             }
             Ok(())
         }
+        // F47: blok bernama — isi di-check seperti Block biasa.
+        Stmt::NamedBlock { stmts, .. } => {
+            for s in stmts {
+                check_stmt(s, ctx, scope, kind)?;
+            }
+            Ok(())
+        }
         Stmt::Assign {
             lhs,
             rhs,

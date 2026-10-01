@@ -1,0 +1,28 @@
+// F47 — `label : { ... }` (blok bernama) + `disable <label>` lintas branch fork.
+// `disable worker` dari branch kedua membunuh HANYA blok bernama `worker`
+// (branch pertama) — branch kedua tetap jalan sampai join (LRM 1800 §9.6.4).
+// Jalankan:
+//   mivon mgen examples/mv/disable_label.mv -o /tmp/opencode/
+//   mivon sim /tmp/opencode/disable_label.sv --top tb_dl -T 50
+//   mivon run examples/mv/disable_label.mv --top tb_dl -T 50
+// Expected: a=0 (worker dibunuh sebelum #10), done=1 (join selesai normal).
+
+module tb_dl {
+    sig a : logic[7:0] = '0
+    sig done : bit = 0
+
+    initial {
+        fork {
+            worker : {
+                #10
+                a = 1
+            }
+        } {
+            #5
+            disable worker
+        } join
+        done = 1
+        $display("F47_DISABLE_LABEL a=%0d done=%0d", a, done)
+        $finish
+    }
+}

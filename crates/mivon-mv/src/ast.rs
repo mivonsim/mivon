@@ -146,6 +146,12 @@ pub struct DistItem {
 pub enum Stmt {
     /// `{ stmt* }`
     Block(Vec<Stmt>),
+    /// F47: `label : { stmt* }` — blok bernama (emit `begin : label ... end`).
+    /// Dipakai target `disable <label>` (F45) — label harus unik per scope.
+    NamedBlock {
+        name: String,
+        stmts: Vec<Stmt>,
+    },
     /// `lhs = rhs` (blocking) / `lhs <= rhs` (non-blocking).
     /// Posisi (line, col) statement untuk E2002/E2003/E2004 (F11).
     Assign {

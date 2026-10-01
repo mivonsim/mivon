@@ -15,6 +15,14 @@ pub(crate) fn emit_stmt(out: &mut String, indent: usize, stmt: &Stmt) {
             }
             line(out, indent, "end");
         }
+        // F47: `label : { ... }` → `begin : label ... end` (target `disable`).
+        Stmt::NamedBlock { name, stmts } => {
+            line(out, indent, &format!("begin : {name}"));
+            for s in stmts {
+                emit_stmt(out, indent + 1, s);
+            }
+            line(out, indent, "end");
+        }
         Stmt::Assign { lhs, rhs, nba, .. } => {
             let op = if *nba { "<=" } else { "=" };
             line(

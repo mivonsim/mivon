@@ -40,8 +40,20 @@ impl SimulationEngine {
             self.disable_pending = None;
             return Ok(true);
         }
+        // F47: target `disable_cross` baru mencapai bloknya (label belum
+        // ada di stack saat `disable` dieksekusi di branch lain).
+        if self.consume_disable_cross_for(name) {
+            return Ok(true);
+        }
         let old = self.disable_pending.take();
-        let completed = self.evaluate_block_with_delay_fork(inner, fork_id)?;
+        // Daftar label aktif agar `disable <label>` dari branch lain bisa
+        // menyAPA kontinuasi yang dijadwalkan saat blok ini suspend (lihat
+        // `Continuation::named_labels`).
+        self.known_named_labels.insert(name);
+        self.active_named_labels.push(name);
+        let completed = self.evaluate_block_with_delay_fork(inner, fork_id);
+        self.active_named_labels.pop();
+        let completed = completed?;
         if let Some(ref n) = self.disable_pending {
             if *n == name {
                 self.disable_pending = None;
@@ -61,8 +73,15 @@ impl SimulationEngine {
             self.disable_pending = None;
             return Ok(());
         }
+        if self.consume_disable_cross_for(name) {
+            return Ok(());
+        }
         let old = self.disable_pending.take();
-        self.evaluate_stmt_block(inner)?;
+        self.known_named_labels.insert(name);
+        self.active_named_labels.push(name);
+        let res = self.evaluate_stmt_block(inner);
+        self.active_named_labels.pop();
+        res?;
         if let Some(ref n) = self.disable_pending {
             if *n == name {
                 self.disable_pending = None;

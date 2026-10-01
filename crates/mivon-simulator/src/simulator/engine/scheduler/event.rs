@@ -135,6 +135,20 @@ impl SimulationEngine {
                         return Ok(());
                     }
                 }
+                // F47: kontinuasi ini adalah titik resume branch yang memuat
+                // label target `disable worker` dari branch lain — branch mati
+                // di sini (sisa statement tidak dieksekusi) dan penanda
+                // dikonsumsi. Tanpa ini `disable_pending` lama bocor dan
+                // loop-top guard menelan continuation `fork...join`.
+                if let Some(target) = self.disable_cross {
+                    if cont.named_labels.contains(&target) {
+                        self.disable_cross = None;
+                        if let Some(fid) = cont.fork_id {
+                            self.fork_decrement(fid)?;
+                        }
+                        return Ok(());
+                    }
+                }
                 // LANG-29: restore nama proses saat suspend — ContinueBlock
                 // diproses di luar EvalProcess sehingga current_process_name
                 // bisa menunjuk proses lain; `wait fork` (dan fitur berbasis
