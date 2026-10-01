@@ -46,12 +46,25 @@ fn is_valid_lvalue(expr: &Expr) -> bool {
 
 impl Parser {
     pub(crate) fn parse_stmt_block(&mut self) -> Result<Vec<Stmt>, SimError> {
+        Ok(self.parse_stmt_block_named()?.0)
+    }
+
+    /// Varian `parse_stmt_block` yang MEMPERTAHANKAN label `begin : label`
+    /// (BUG FIX disable-label: label sebelumnya di-consume lalu dibuang
+    /// sehingga `begin : worker` jadi Block anonim dan `disable worker`
+    /// membunuh sisa proses tanpa ada yang mengonsumsinya).
+    /// Pemanggil lama tetap pakai `parse_stmt_block` (label dibuang —
+    /// perilaku lama, tanpa regresi); arm `Token::Begin` memakai versi ini.
+    pub(crate) fn parse_stmt_block_named(
+        &mut self,
+    ) -> Result<(Vec<Stmt>, Option<Symbol>), SimError> {
+        let mut label: Option<Symbol> = None;
         if self.peek() == &Token::Begin {
             self.advance();
             if self.peek() == &Token::Colon {
                 self.advance();
                 if let Token::Ident(_) = self.peek() {
-                    self.advance();
+                    label = Some(self.expect_ident()?);
                 }
             }
             let mut stmts = Vec::new();
@@ -139,7 +152,7 @@ impl Parser {
                     }
                 }
             }
-            Ok(stmts)
+            Ok((stmts, label))
         } else {
             // Labeled statement: `name: stmt` (legal SV — label opsional di
             // depan statement). Case arm tanpa `begin` yang kehilangan `end`
@@ -157,7 +170,7 @@ impl Parser {
                     vec![]
                 }
             };
-            Ok(stmts)
+            Ok((stmts, None))
         }
     }
 
@@ -1706,8 +1719,18 @@ impl Parser {
                 }
             }
             Token::Begin => {
-                let stmts = self.parse_stmt_block()?;
-                Ok(Stmt::Block { stmts })
+                // BUG FIX disable-label: `begin : foo` dipertahankan sebagai
+                // NamedBlock (label sebelumnya dibuang → `disable foo`
+                // membunuh sisa proses tanpa konsumen).
+                let (stmts, label) = self.parse_stmt_block_named()?;
+                match label {
+                    Some(name) => Ok(Stmt::NamedBlock {
+                        name,
+                        stmts,
+                        decls: vec![],
+                    }),
+                    None => Ok(Stmt::Block { stmts }),
+                }
             }
             Token::Force => {
                 self.advance();
