@@ -676,3 +676,24 @@ task send(data : logic[7:0], tag : logic[3:0] = 4'h0) {
         out.sv
     );
 }
+
+#[test]
+fn f45_wait_fork_disable_fork_codegen() {
+    // F45: `wait fork;` + `disable fork;` di-emit 1:1 ke SV.
+    let src = r#"
+module m {
+    sig a : logic[7:0]
+    initial {
+        fork {
+            #10
+            a = 1
+        } join_none
+        wait fork
+        disable fork
+    }
+}
+"#;
+    let out = generate(&parse(src).unwrap(), "m");
+    assert!(out.sv.contains("wait fork;"), "wait fork: {}", out.sv);
+    assert!(out.sv.contains("disable fork;"), "disable fork: {}", out.sv);
+}

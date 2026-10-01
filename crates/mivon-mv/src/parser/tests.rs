@@ -498,3 +498,37 @@ module shiftreg #(N : int = 8) {
     let m = &f.modules[0];
     assert!(m.items.iter().any(|i| matches!(i, MItem::GenFor { .. })));
 }
+
+#[test]
+fn parse_wait_fork_and_disable_fork() {
+    // F45: `wait fork;` + `disable fork;` / `disable <label>;`
+    let src = r#"
+module m {
+    sig a : logic[7:0]
+    initial {
+        fork {
+            #10
+            a = 1
+        } {
+            #5
+            a = 2
+        } join_none
+        wait fork
+        disable fork
+        disable my_block
+    }
+}
+"#;
+    let f = parse(src).expect("parse wait/disable fork");
+    let m = &f.modules[0];
+    let has_wait = m.items.iter().any(|i| match i {
+        MItem::Initial(Stmt::Block(s)) => s.iter().any(|x| matches!(x, Stmt::WaitFork)),
+        _ => false,
+    });
+    assert!(has_wait, "wait fork harus ter-parse");
+    let has_dis = m.items.iter().any(|i| match i {
+        MItem::Initial(Stmt::Block(s)) => s.iter().any(|x| matches!(x, Stmt::Disable { .. })),
+        _ => false,
+    });
+    assert!(has_dis, "disable harus ter-parse");
+}

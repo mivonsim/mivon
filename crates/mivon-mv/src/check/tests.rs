@@ -782,3 +782,11 @@ fn f33_review_cast_ranged_target_err() {
         e.msg
     );
 }
+
+// ── F45: wait fork / disable fork ──
+
+#[test]
+fn f45_wait_disable_fork_ok() {
+    let src = "module m {\n sig a : logic[7:0]\n initial {\n fork {\n #10\n a = 1\n } join_none\n wait fork\n disable fork\n }\n}\n";
+    check_src(src).expect("wait/disable fork harus lolos");
+}

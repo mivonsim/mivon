@@ -424,6 +424,8 @@ fn print_stmt_b(b: &mut StrB, indent: usize, s: &Stmt) {
                 &format!("foreach ({arr}{idx}) {}", print_stmt(indent, body)),
             );
         }
+        Stmt::WaitFork => b.line(indent, "wait fork"),
+        Stmt::Disable { name } => b.line(indent, &format!("disable {name}")),
         Stmt::Assert { cond, pass, fail } => {
             let p = pass
                 .as_ref()

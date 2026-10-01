@@ -66,6 +66,8 @@ pub(crate) const MV_NON_SYSTASK: &[&str] = &[
     "join",
     "join_any",
     "join_none",
+    "wait",
+    "disable",
     "return",
     "break",
     "continue",

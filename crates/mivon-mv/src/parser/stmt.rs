@@ -257,6 +257,12 @@ impl Parser {
             }
             Tok::Wait => {
                 self.advance();
+                // F45: `wait fork;` — varian khusus tanpa paren (seperti SV).
+                if matches!(self.peek(), Tok::Fork) {
+                    self.advance();
+                    self.eat(&Tok::Semi);
+                    return Ok(Stmt::WaitFork);
+                }
                 self.expect(&Tok::LParen)?;
                 let cond = self.parse_expr()?;
                 self.expect(&Tok::RParen)?;
@@ -265,6 +271,18 @@ impl Parser {
                     cond,
                     body: Box::new(body),
                 })
+            }
+            // F45: `disable fork;` / `disable <label>;`
+            Tok::Disable => {
+                self.advance();
+                let name = if matches!(self.peek(), Tok::Fork) {
+                    self.advance();
+                    "fork".to_string()
+                } else {
+                    self.expect_ident()?
+                };
+                self.eat(&Tok::Semi);
+                Ok(Stmt::Disable { name })
             }
             Tok::At => {
                 self.advance();

@@ -1,0 +1,38 @@
+// F45 — wait fork + disable fork di Mivon HDL.
+// `wait fork;` tunggu semua child fork proses ini.
+// `disable fork;` terminasi semua child fork proses ini.
+// Jalankan:
+//   mivon run examples/mv/fork_ctrl.mv --top tb_fc -T 50
+//   mivon mgen examples/mv/fork_ctrl.mv -o /tmp/opencode/
+
+module tb_fc {
+    sig a : logic[7:0] = '0
+    sig b : logic[7:0] = '0
+    sig c : logic[7:0] = '0
+
+    // wait fork — tunggu 2 branch join_none selesai
+    initial {
+        fork {
+            #10
+            a = 1
+        } {
+            #5
+            b = 2
+        } join_none
+        wait fork
+        $display("WAIT_FORK_DONE a=%0d b=%0d", a, b)
+    }
+
+    // disable fork — bunuh branch #10 sebelum jalan
+    initial {
+        fork {
+            #10
+            c = 99
+        } join_none
+        #2
+        disable fork
+        #15
+        $display("DISABLE_FORK c=%0d", c)
+        $finish
+    }
+}

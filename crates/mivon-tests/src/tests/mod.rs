@@ -1018,6 +1018,49 @@ module tb_bad {
 }
 
 #[test]
+fn test_mv_wait_disable_fork() {
+    // F45: `wait fork;` tunggu branch join_none; `disable fork;` bunuh branch.
+    // Demo: examples/mv/fork_ctrl.mv → WAIT_FORK_DONE a=1 b=2, DISABLE_FORK c=0.
+    let src = r#"
+module tb_fc {
+    sig a : logic[7:0] = '0
+    sig b : logic[7:0] = '0
+    sig c : logic[7:0] = '0
+    initial {
+        fork {
+            #10
+            a = 1
+        } {
+            #5
+            b = 2
+        } join_none
+        wait fork
+    }
+    initial {
+        fork {
+            #10
+            c = 99
+        } join_none
+        #2
+        disable fork
+    }
+}
+"#;
+    let r = mivon_mv::transpile(src, "fork_ctrl").expect("transpile .mv OK");
+    assert!(r.sv.contains("wait fork;"), "emit wait fork: {}", r.sv);
+    assert!(
+        r.sv.contains("disable fork;"),
+        "emit disable fork: {}",
+        r.sv
+    );
+    let sigs = simulate_signals(&r.sv, 30).unwrap();
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    assert_eq!(get("a"), 1, "wait fork tunggu branch #10");
+    assert_eq!(get("b"), 2, "wait fork tunggu branch #5");
+    assert_eq!(get("c"), 0, "disable fork bunuh branch #10");
+}
+
+#[test]
 fn test_mv_postfix_rhs_rejected() {
     // F37: postfix di RHS ekspresi (`j = i--`) ditolak di level .mv dengan
     // error jelas (side-effect postfix tak bisa diwakili SV) — bukan SV invalid.

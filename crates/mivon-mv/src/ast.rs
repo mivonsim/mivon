@@ -224,6 +224,12 @@ pub enum Stmt {
         cond: Expr,
         body: Box<Stmt>,
     },
+    /// F45: `wait fork;` — tunggu semua child fork milik proses ini selesai.
+    WaitFork,
+    /// F45: `disable fork;` / `disable <label>;` — terminasi child fork / blok bernama.
+    Disable {
+        name: String,
+    },
     /// `@(event) body` — body opsional (untuk `repeat (n) @(posedge clk)`).
     Event {
         expr: Expr,

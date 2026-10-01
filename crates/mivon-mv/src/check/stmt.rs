@@ -272,6 +272,11 @@ pub(crate) fn check_stmt<'a>(
             check_expr(cond, ctx, scope, 0)?;
             check_stmt(body, ctx, scope, kind)
         }
+        // F45: `wait fork;` — tanpa operand, selalu valid.
+        Stmt::WaitFork => Ok(()),
+        // F45: `disable fork;` / `disable <label>;` — konservatif: label
+        // blok tidak dilacak checker (seperti assert property), selalu lolos.
+        Stmt::Disable { .. } => Ok(()),
         Stmt::Event { expr, body } => {
             check_expr(expr, ctx, scope, 0)?;
             if let Some(b) = body {

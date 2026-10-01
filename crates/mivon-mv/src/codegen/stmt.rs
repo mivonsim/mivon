@@ -153,6 +153,12 @@ pub(crate) fn emit_stmt(out: &mut String, indent: usize, stmt: &Stmt) {
             emit_body(out, indent + 1, body);
             line(out, indent, "end");
         }
+        Stmt::WaitFork => {
+            line(out, indent, "wait fork;");
+        }
+        Stmt::Disable { name } => {
+            line(out, indent, &format!("disable {name};"));
+        }
         Stmt::Event { expr, body } => {
             match body {
                 Some(b) => {
@@ -259,6 +265,8 @@ pub(crate) fn single_line_stmt(stmt: &Stmt) -> Option<String> {
             single_line_stmt(body).map(|s| format!("do {s} while ({});", emit_expr(cond)))
         }
         Stmt::EventTrigger(ev) => Some(format!("-> {};", emit_expr(ev))),
+        Stmt::WaitFork => Some("wait fork;".to_string()),
+        Stmt::Disable { name } => Some(format!("disable {name};")),
         Stmt::AssertProperty(raw) => Some(format!("assert property {raw};")),
         Stmt::Event { expr, body } => {
             match body {

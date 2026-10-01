@@ -65,6 +65,8 @@ pub enum Tok {
     Repeat,
     Forever,
     Wait,
+    /// F45: `disable fork` / `disable <label>` — terminasi child fork / blok bernama
+    Disable,
     Return,
     Break,
     Continue,
@@ -206,6 +208,7 @@ fn keyword(s: &str) -> Option<Tok> {
         "repeat" => Tok::Repeat,
         "forever" => Tok::Forever,
         "wait" => Tok::Wait,
+        "disable" => Tok::Disable,
         "return" => Tok::Return,
         "break" => Tok::Break,
         "continue" => Tok::Continue,
