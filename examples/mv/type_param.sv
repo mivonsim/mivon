@@ -48,10 +48,7 @@ module tb_tp (
         d8 = 8'h01;
         d16 = 16'h0001;
         #10 begin
-            repeat (3) begin
-                @(posedge clk) begin
-                end
-            end
+            repeat (3) @(posedge clk) ;
         end
         #1 begin
             if (q8 == 8'h04 && q16 == 16'h0008) begin

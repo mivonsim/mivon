@@ -18,7 +18,7 @@ module traffic #(
     output bit yellow
 );
     import traffic_pkg::*;
-    logic [31:0] [8] timer;
+    logic [31:0] timer [0:7];
 
     // ── logika sekuensial ──
     always_ff @(posedge clk or negedge rst_n) begin

@@ -3,7 +3,7 @@
 //! 1 file = 1 tanggung jawab.
 
 use super::expr::{emit_expr, emit_type};
-use super::{emit_signal_decl, for_inc, line};
+use super::{emit_signal_decl, emit_signal_decl_multi, for_inc, line};
 use crate::ast::*;
 
 /// Emit `module` atau `program` (testbench) — struktur badan sama, hanya
@@ -113,15 +113,7 @@ pub(crate) fn emit_module_kw(out: &mut String, m: &Module, kw: &str, iface_names
                         line(
                             out,
                             1,
-                            &format!(
-                                "{}{};",
-                                fresh
-                                    .iter()
-                                    .map(|nm| emit_signal_decl(ty, nm))
-                                    .collect::<Vec<_>>()
-                                    .join(", "),
-                                init_s
-                            ),
+                            &format!("{}{};", emit_signal_decl_multi(ty, &fresh), init_s),
                         );
                     }
                 }
