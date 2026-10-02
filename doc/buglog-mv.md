@@ -113,6 +113,16 @@ bug di mivon utama (parser/elaborator/simulator). Status: ✅ fixed / ⏳ open.
     inti formatter jadi fungsi bebas `format_display_core` (bisa diuji tanpa
     engine). Oracle iverilog: keenam specifier real kini identik.
 
+11. **Plain `%d` tak right-justify; X/Z partial salah kapitalisasi** —
+    `$display("%d", 1)` untuk `integer` tercetak `1` (minimal), sedangkan LRM
+    1800 Tabel 21-3 (dan iverilog/VCS) mensyaratkan field selebar nilai
+    maksimum tipe → `          1`. Selain itu grup hex/octal ber-X parsial
+    tercetak `x` (harus `X`), dan `%d` ber-Z parsial tercetak `X` (harus
+    `Z`). Fix F52: `default_dec_field_width` + kapitalisasi unknown parsial
+    di `%d`/`%h`/`%x`/`%o`. Test lama yang bergantung perilaku non-LRM
+    (`test_sformatf_basic`, `test_sformatf_multiple_args`, `test_fstrobe`,
+    `test_fmonitor`) di-update ke `%0d` + ekspektasi LRM baru.
+
 ## ⏳ Open
 
 (tidak ada item open — semua bug historis sudah tertutup)

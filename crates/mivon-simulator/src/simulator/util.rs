@@ -480,9 +480,23 @@ fn format_display_core(
                                 }
                                 started = true;
                                 if has_x {
-                                    s.push('x');
+                                    // semua-X → 'x'; campuran dengan bit known
+                                    // → 'X' (konvensi iverilog/VCS).
+                                    let partial = (i * 3..i * 3 + 3).any(|bi| {
+                                        val.bits
+                                            .get(bi)
+                                            .map(|b| *b != LogicVal::X && *b != LogicVal::Z)
+                                            .unwrap_or(false)
+                                    });
+                                    s.push(if partial { 'X' } else { 'x' });
                                 } else if has_z {
-                                    s.push('z');
+                                    let partial = (i * 3..i * 3 + 3).any(|bi| {
+                                        val.bits
+                                            .get(bi)
+                                            .map(|b| *b != LogicVal::X && *b != LogicVal::Z)
+                                            .unwrap_or(false)
+                                    });
+                                    s.push(if partial { 'Z' } else { 'z' });
                                 } else {
                                     let tri_u32: u32 = tri as u32;
                                     s.push(char::from_digit(tri_u32, 8).unwrap_or('0'));
@@ -502,6 +516,17 @@ fn format_display_core(
                     }
                     Some('d') => {
                         if let Some((val, is_signed)) = value_args.next() {
+                            // Default field width = lebar representasi maksimum
+                            // tipe (LRM 1800 Tabel 21-3) — plain `%d` di-right-justify
+                            // ke field itu (iverilog: `%d` dari `integer 1` →
+                            // "          1"). Width eksplisit menang; `%0d` = minimal.
+                            let width = if width > 0 {
+                                width
+                            } else if zero_fill {
+                                0
+                            } else {
+                                default_dec_field_width(val.width, is_signed)
+                            };
                             // DESIMAL utk nilai UNKNOWN = huruf, BUKAN angka 0
                             // (X→0 = silent coercion menyesatkan — fuzzer
                             // verify_bad_0039: `OUT_RST_BAD=<0>` padahal
@@ -516,11 +541,21 @@ fn format_display_core(
                                 .any(|b| matches!(b, LogicVal::X | LogicVal::Z));
                             let unknown_char = if any_unknown {
                                 if all_z {
+                                    // semua-Z → 'z'; semua-X → 'x'; campuran →
+                                    // huruf kapital sesuai unknowns yang ada
+                                    // (konvensi iverilog/VCS: `x`/`z` untuk
+                                    // unknown seragam, `X`/`Z` untuk parsial).
                                     Some('z')
                                 } else if val.bits.iter().all(&all_pred) {
                                     Some('x')
-                                } else {
+                                } else if val
+                                    .bits
+                                    .iter()
+                                    .any(|b| matches!(b, LogicVal::X))
+                                {
                                     Some('X')
+                                } else {
+                                    Some('Z')
                                 }
                             } else {
                                 None
@@ -627,9 +662,29 @@ fn format_display_core(
                                 }
                                 started = true;
                                 if has_x {
-                                    s.push(if upper { 'X' } else { 'x' });
+                                    // semua-X → 'x'; campuran X+known → 'X'
+                                    // (konvensi iverilog/VCS, LRM §21.2.1.3).
+                                    let partial = val
+                                        .bits
+                                        .iter()
+                                        .enumerate()
+                                        .any(|(bi, b)| {
+                                            (i * 4..i * 4 + 4).contains(&bi)
+                                                && *b != LogicVal::X
+                                                && *b != LogicVal::Z
+                                        });
+                                    s.push(if partial || upper { 'X' } else { 'x' });
                                 } else if has_z {
-                                    s.push(if upper { 'Z' } else { 'z' });
+                                    let partial = val
+                                        .bits
+                                        .iter()
+                                        .enumerate()
+                                        .any(|(bi, b)| {
+                                            (i * 4..i * 4 + 4).contains(&bi)
+                                                && *b != LogicVal::X
+                                                && *b != LogicVal::Z
+                                        });
+                                    s.push(if partial || upper { 'Z' } else { 'z' });
                                 } else {
                                     let digit = char::from_digit(nib as u32, 16).unwrap_or('0');
                                     s.push(if upper {
@@ -839,6 +894,39 @@ fn i64_digits_str(n: i64) -> String {
 /// String representasi desimal tak bertanda (dipakai arm `%d`).
 fn u64_digits_str(n: u64) -> String {
     n.to_string()
+}
+
+/// Jumlah digit desimal dari `u128` (1 untuk 0).
+fn digits_of_u128(mut n: u128) -> usize {
+    let mut d = 1usize;
+    while n >= 10 {
+        n /= 10;
+        d += 1;
+    }
+    d
+}
+
+/// Default field width arm `%d` tanpa width eksplisit (LRM 1800 Tabel 21-3):
+/// nilai di-right-justify dalam field selebar representasi MAKSIMUM tipe —
+/// unsigned `w` bit → digit(2^w − 1), signed `w` bit → 1 (tanda) + digit(2^(w−1)).
+/// `%0d` (zero-fill) = tanpa padding — jadi lebarnya 0.
+fn default_dec_field_width(width: usize, signed: bool) -> usize {
+    if width == 0 {
+        return 1;
+    }
+    // Batasi 128 bit agar tidak meledakkan (2^128 masih muat u128).
+    let w = width.min(120);
+    let mut pow2: u128 = 1;
+    for _ in 0..w {
+        pow2 = pow2.saturating_mul(2);
+    }
+    if signed {
+        // magnitude maks = 2^(w-1); field = digit + 1 utk tanda '-'
+        let mag = pow2 >> 1;
+        digits_of_u128(mag) + 1
+    } else {
+        digits_of_u128(pow2 - 1)
+    }
 }
 
 /// Jumlah digit hex dari u64 (1 untuk 0) — hindari format! alloc di %h.
@@ -1184,6 +1272,83 @@ mod tests {
         assert_eq!(
             format_display_core("%e", vec![(big, false)].into_iter(), 0, &tf()),
             "1.234568e+03"
+        );
+    }
+
+    #[test]
+    fn test_fmt_decimal_default_field_width() {
+        // LRM 1800 Tabel 21-3: plain `%d` di-right-justify ke field selebar
+        // representasi maksimum tipe. `%0d` = tanpa padding.
+        assert_eq!(
+            format_display_core("[%d]", vec![(LogicVec::from_u64(1, 8), false)].into_iter(), 0, &tf()),
+            "[  1]"
+        );
+        assert_eq!(
+            format_display_core("[%d]", vec![(LogicVec::from_u64(1, 16), false)].into_iter(), 0, &tf()),
+            "[    1]"
+        );
+        assert_eq!(
+            format_display_core("[%d]", vec![(LogicVec::from_u64(1, 32), false)].into_iter(), 0, &tf()),
+            "[         1]"
+        );
+        assert_eq!(
+            format_display_core("[%d]", vec![(LogicVec::from_u64((-1i64) as u64, 32), true)].into_iter(), 0, &tf()),
+            "[         -1]",
+            "signed 32-bit → 10 digit + tanda"
+        );
+        assert_eq!(
+            format_display_core("[%d]", vec![(LogicVec::from_u64(1, 8), false)].into_iter(), 0, &tf()),
+            "[  1]"
+        );
+        assert_eq!(
+            format_display_core("[%0d]", vec![(LogicVec::from_u64(1, 32), false)].into_iter(), 0, &tf()),
+            "[1]",
+            "%0d tanpa padding"
+        );
+        assert_eq!(
+            format_display_core("[%2d]", vec![(LogicVec::from_u64(1, 32), false)].into_iter(), 0, &tf()),
+            "[ 1]",
+            "width eksplisit menang atas default"
+        );
+    }
+
+    #[test]
+    fn test_fmt_unknown_partial_uppercase() {
+        // Konvensi iverilog/VCS: unknown seragam → huruf kecil (`x`/`z`),
+        // campuran dengan bit known → huruf kapital (`X`/`Z`).
+        // bits[0] = LSB → 8'b01x1_0000: b7=0,b6=1,b5=X,b4=1,b3..b0=0.
+        let mixed_x = LogicVec {
+            bits: vec![
+                LogicVal::Zero, LogicVal::Zero, LogicVal::Zero, LogicVal::Zero,
+                LogicVal::One, LogicVal::X, LogicVal::One, LogicVal::Zero,
+            ],
+            width: 8,
+        };
+        assert_eq!(
+            format_display_core("[%h][%o][%d]", vec![(mixed_x.clone(), false)].into_iter().cycle().take(3), 0, &tf()),
+            "[X0][1X0][  X]"
+        );
+        // bits[0] = LSB → 8'b01z1_0000.
+        let mixed_z = LogicVec {
+            bits: vec![
+                LogicVal::Zero, LogicVal::Zero, LogicVal::Zero, LogicVal::Zero,
+                LogicVal::One, LogicVal::Z, LogicVal::One, LogicVal::Zero,
+            ],
+            width: 8,
+        };
+        assert_eq!(
+            format_display_core("[%h][%o][%d]", vec![(mixed_z.clone(), false)].into_iter().cycle().take(3), 0, &tf()),
+            "[Z0][1Z0][  Z]"
+        );
+        let all_x = LogicVec::fill(LogicVal::X, 8);
+        assert_eq!(
+            format_display_core("[%h][%d]", vec![(all_x, false)].into_iter().cycle().take(2), 0, &tf()),
+            "[xx][  x]"
+        );
+        let all_z = LogicVec::fill(LogicVal::Z, 8);
+        assert_eq!(
+            format_display_core("[%h][%d]", vec![(all_z, false)].into_iter().cycle().take(2), 0, &tf()),
+            "[zz][  z]"
         );
     }
 

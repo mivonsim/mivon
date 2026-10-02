@@ -5628,10 +5628,14 @@ fn test_sformatf_basic() {
     let source = r#"
 module tb;
     string s;
+    string t;
     reg [31:0] val;
     initial begin
         val = 42;
-        s = $sformatf("value = %d", val);
+        s = $sformatf("value = %0d", val);
+        // Plain `%d` right-justify ke field selebar nilai maksimum tipe
+        // (LRM 1800 Tabel 21-3; 32-bit → 10 kolom) — oracle iverilog.
+        t = $sformatf("value = %d", val);
         #1 $finish;
     end
 endmodule
@@ -5642,7 +5646,13 @@ endmodule
         .find(|(n, _)| n == "s")
         .map(|(_, v)| logicvec_to_string(v))
         .unwrap_or_default();
-    assert_eq!(s, "value = 42", "sformatf with %d");
+    assert_eq!(s, "value = 42", "sformatf with %0d");
+    let t = sigs
+        .iter()
+        .find(|(n, _)| n == "t")
+        .map(|(_, v)| logicvec_to_string(v))
+        .unwrap_or_default();
+    assert_eq!(t, "value =         42", "%d = field lebar tipe");
 }
 
 #[test]
@@ -5705,7 +5715,7 @@ module tb;
     initial begin
         a = 10;
         b = 20;
-        s = $sformatf("a=%d b=%d", a, b);
+        s = $sformatf("a=%0d b=%0d", a, b);
         #1 $finish;
     end
 endmodule
@@ -5716,7 +5726,7 @@ endmodule
         .find(|(n, _)| n == "s")
         .map(|(_, v)| logicvec_to_string(v))
         .unwrap_or_default();
-    assert_eq!(s, "a=10 b=20", "sformatf with multiple args");
+    assert_eq!(s, "a=10 b=20", "sformatf dengan beberapa argumen");
 }
 
 #[test]
@@ -5764,7 +5774,7 @@ module tb;
     initial begin
         fd = $fopen("{f}", "w");
         cnt = 42;
-        $fstrobe(fd, "cnt=%d", cnt);
+        $fstrobe(fd, "cnt=%0d", cnt);
         #1 cnt = 100;
         #1 $fclose(fd);
         #1 $finish;
@@ -5795,7 +5805,7 @@ module tb;
     reg [7:0] x;
     initial begin
         fd = $fopen("{f}", "w");
-        $fmonitor(fd, "x=%d\n", x);
+        $fmonitor(fd, "x=%0d\n", x);
         x = 10;
         #1 x = 20;
         #1 x = 20;
