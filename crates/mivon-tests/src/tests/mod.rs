@@ -21726,6 +21726,102 @@ endmodule
     assert_eq!(get("a"), 0x2A, "port init berlaku saat tak di-drive");
 }
 
+// ── `$display`/`$sformatf`: `%.Nf`, `%g`, `%x`, `%-Nd`, `%Ns`, `%c`, `%%`
+//    (LRM 1800 §21.2.1.2–§21.2.1.4). PRA-FIX specifier tak dikenal dicetak
+//    apa adanya: `$display("%.2f", 3.14159)` → `%.2f` (literal, bukan 3.14).
+//    Di sini e2e (hasil disimpan ke signal string); unit test formatter ada di
+//    `mivon-simulator` `simulator::util::tests::test_fmt_*` (oracle iverilog).
+
+#[test]
+fn test_display_real_precision_and_g_e2e() {
+    let source = r#"
+module tb;
+    real r = 3.14159;
+    string s1, s2, s3, s4, s5, s6, s7, s8;
+    initial begin
+        s1 = $sformatf("%f", r);
+        s2 = $sformatf("%.2f", r);
+        s3 = $sformatf("%.4f", r);
+        s4 = $sformatf("%.0f", r);
+        s5 = $sformatf("%8.3f", r);
+        s6 = $sformatf("%0.3f", r);
+        s7 = $sformatf("%g", r);
+        s8 = $sformatf("%e", r);
+        #10 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 50).unwrap();
+    let get = |n: &str| {
+        let v = sigs.iter().find(|(s, _)| s == n).unwrap().1.clone();
+        let mut out = String::new();
+        for k in (0..v.width).step_by(8) {
+            let mut byte = 0u8;
+            for b in 0..8 {
+                if v.bits.get(k + b) == Some(&mivon_core::LogicVal::One) {
+                    byte |= 1 << b;
+                }
+            }
+            if byte != 0 {
+                out.push(byte as char);
+            }
+        }
+        out
+    };
+    // Ekspektasi dicocokkan dgn iverilog (`-g2012` + `vvp`) sebagai oracle.
+    assert_eq!(get("s1"), "3.141590");
+    assert_eq!(get("s2"), "3.14", "%.2f tak boleh tercetak literal");
+    assert_eq!(get("s3"), "3.1416");
+    assert_eq!(get("s4"), "3");
+    assert_eq!(get("s5"), "   3.142");
+    assert_eq!(get("s6"), "3.142");
+    assert_eq!(get("s7"), "3.14159", "%g");
+    assert_eq!(get("s8"), "3.141590e+00", "%e eksponen 2 digit bertanda");
+}
+
+#[test]
+fn test_display_hex_and_align_variants_e2e() {
+    let source = r#"
+module tb;
+    reg [7:0] a = 8'hF0;
+    reg [7:0] n = 8'd240;
+    string h1, h2, w1, w2, w3, w4;
+    initial begin
+        h1 = $sformatf("%h %x", a, a);
+        h2 = $sformatf("%H %X", a, a);
+        w1 = $sformatf("[%5d][%-5d][%05d]", n, n, n);
+        w2 = $sformatf("[%s][%10s][%-10s]", "hi", "hi", "hi");
+        w3 = $sformatf("[%c][%c]", 65, 66);
+        w4 = $sformatf("100%%");
+        #10 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 50).unwrap();
+    let get = |n: &str| {
+        let v = sigs.iter().find(|(s, _)| s == n).unwrap().1.clone();
+        let mut out = String::new();
+        for k in (0..v.width).step_by(8) {
+            let mut byte = 0u8;
+            for b in 0..8 {
+                if v.bits.get(k + b) == Some(&mivon_core::LogicVal::One) {
+                    byte |= 1 << b;
+                }
+            }
+            if byte != 0 {
+                out.push(byte as char);
+            }
+        }
+        out
+    };
+    assert_eq!(get("h1"), "f0 f0", "%h/%x lower");
+    assert_eq!(get("h2"), "F0 F0", "%H/%X upper (LRM §21.2.1.3)");
+    assert_eq!(get("w1"), "[  240][240  ][00240]", "flag - rata kiri");
+    assert_eq!(get("w2"), "[hi][        hi][hi        ]", "width utk %s");
+    assert_eq!(get("w3"), "[A][B]", "%c");
+    assert_eq!(get("w4"), "100%", "%%");
+}
+
 // ── Bug mivon utama: struct assignment pattern `'{...}` jadi 0 ──
 //
 // PRA-FIX: `elaborate_expr` arm `Expr::StructLit` tidak tahu layout typedef

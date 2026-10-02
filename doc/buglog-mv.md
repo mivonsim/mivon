@@ -105,6 +105,14 @@ bug di mivon utama (parser/elaborator/simulator). Status: ✅ fixed / ⏳ open.
    dilewati untuk pola struct. Mendukung pola bernama, posisional,
    `default:`, sebagian, dan nested struct (LRM 1800 §7.9).
 
+10. **Specifier `$display` tak lengkap** — `%.2f`/`%.0f`/`%0.3f` dicetak
+    LITERAL (`%.2f`), `%g`/`%x`/`%X` tak dikenal, flag `%-5d` (rata kiri),
+    width `%10s`/`%c`/`%%` tak didukung. Fix F51 di `simulator/util.rs`:
+    parsing presisi + flag, arm `'h'|'H'|'x'|'X'`, `'g'|'G'`, `'c'`, `'%'`,
+    helper `push_padded`, `normalize_exp` (eksponen `e+00` gaya C), dan
+    inti formatter jadi fungsi bebas `format_display_core` (bisa diuji tanpa
+    engine). Oracle iverilog: keenam specifier real kini identik.
+
 ## ⏳ Open
 
 (tidak ada item open — semua bug historis sudah tertutup)

@@ -1,4 +1,5 @@
 use crate::simulator::engine::SimulationEngine;
+use crate::simulator::types::TimeFormat;
 use mivon_ast::*;
 use mivon_core::diagnostics::DiagCode;
 use mivon_core::error::SimError;
@@ -384,6 +385,21 @@ impl SimulationEngine {
         fmt_str: &str,
         value_args: impl Iterator<Item = (LogicVec, bool)>,
     ) -> String {
+        format_display_core(fmt_str, value_args, self.state.time, &self.state.timeformat)
+    }
+}
+
+/// Inti formatter sebagai fungsi bebas (tanpa engine) — memudahkan unit test
+/// format tanpa menjalankan simulasi. Specifier didukung (LRM 1800 §21.2.1):
+/// `%d %b %o %h %H %x %X %c %s %f %e %E %g %G %t %%` + flag `%0` (zero-fill)
+/// dan `-` (rata kiri) + `%.Nf` (presisi real) + width.
+#[allow(clippy::too_many_lines)]
+fn format_display_core(
+    fmt_str: &str,
+    value_args: impl Iterator<Item = (LogicVec, bool)>,
+    sim_time: u64,
+    timeformat: &TimeFormat,
+) -> String {
         let mut value_args = value_args;
         let mut result = String::with_capacity(fmt_str.len() + 8 * 16);
         let mut chars = fmt_str.chars().peekable();
@@ -391,23 +407,50 @@ impl SimulationEngine {
             if c == '%' {
                 let mut zero_fill = false;
                 let mut width = 0usize;
-                let precision = 6usize;
-                // (precision default 6 IEEE 1800 §21.2.1.4; parsing `%.Nf` belum diimplementasi)
-                if let Some(&next) = chars.peek() {
-                    if next == '0' {
-                        zero_fill = true;
+                // `%.Nf` — presisi desimal utk `%f`/`%e`/`%g` (LRM 1800
+                // §21.2.1.4). Default 6. `%0.Nf` = zero-fill + presisi N.
+                let mut precision: Option<usize> = None;
+                // Flag `-` = left-justify (`%-5d`, `%-10s`).
+                let mut left_align = false;
+                while let Some(&next) = chars.peek() {
+                    if next == '-' {
+                        left_align = true;
                         chars.next();
+                    } else {
+                        break;
                     }
+                }
+                if chars.peek() == Some(&'0') {
+                    zero_fill = true;
+                    chars.next();
+                }
+                while let Some(&next) = chars.peek() {
+                    if next.is_ascii_digit() {
+                        width = width * 10 + next.to_digit(10).unwrap() as usize;
+                        chars.next();
+                    } else {
+                        break;
+                    }
+                }
+                if chars.peek() == Some(&'.') {
+                    chars.next();
+                    let mut p = 0usize;
                     while let Some(&next) = chars.peek() {
                         if next.is_ascii_digit() {
-                            width = width * 10 + next.to_digit(10).unwrap() as usize;
+                            p = p * 10 + next.to_digit(10).unwrap() as usize;
                             chars.next();
                         } else {
                             break;
                         }
                     }
+                    precision = Some(p);
                 }
-                match chars.next() {
+                let precision = precision.unwrap_or(6);
+                // Simpan specifier terakhir agar arm gabungan (`'h' | 'x' |
+                // 'X'`) bisa membedakan upper/lower.
+                let spec = chars.next();
+                let last_spec_upper = matches!(spec, Some('H') | Some('X'));
+                match spec {
                     Some('o') => {
                         if let Some((val, _)) = value_args.next() {
                             // `%o` octal — leading '0' HANYA dibuang bila
@@ -492,24 +535,12 @@ impl SimulationEngine {
                                 // Signed: cetak dua-complement sebagai negatif
                                 // (mis. int -5 = 0xFFFFFFFB → "-5").
                                 let n = val.to_i64();
-                                let ndigits = i64_digits(n);
-                                if width > ndigits {
-                                    let pad = if zero_fill { '0' } else { ' ' };
-                                    for _ in 0..(width - ndigits) {
-                                        result.push(pad);
-                                    }
-                                }
-                                let _ = write!(result, "{}", n);
+                                let s = i64_digits_str(n);
+                                push_padded(&mut result, &s, width, zero_fill, left_align);
                             } else {
                                 let n = val.to_u64();
-                                let ndigits = u64_digits(n);
-                                if width > ndigits {
-                                    let pad = if zero_fill { '0' } else { ' ' };
-                                    for _ in 0..(width - ndigits) {
-                                        result.push(pad);
-                                    }
-                                }
-                                let _ = write!(result, "{}", n);
+                                let s = u64_digits_str(n);
+                                push_padded(&mut result, &s, width, zero_fill, left_align);
                             }
                         }
                     }
@@ -557,7 +588,10 @@ impl SimulationEngine {
                             result.extend(chars_out);
                         }
                     }
-                    Some('h') => {
+                    Some('h') | Some('H') | Some('x') | Some('X') => {
+                        // `%h`/`%x` = hex lower, `%H`/`%X` = hex upper
+                        // (LRM 1800 §21.2.1.3).
+                        let upper = last_spec_upper;
                         if let Some((val, _)) = value_args.next() {
                             // Format per-nibble dari pola bit — X/Z-aware.
                             // (Bug render: to_u64() memetakan X/Z → 0 sehingga
@@ -593,23 +627,22 @@ impl SimulationEngine {
                                 }
                                 started = true;
                                 if has_x {
-                                    s.push('x');
+                                    s.push(if upper { 'X' } else { 'x' });
                                 } else if has_z {
-                                    s.push('z');
+                                    s.push(if upper { 'Z' } else { 'z' });
                                 } else {
-                                    s.push(char::from_digit(nib as u32, 16).unwrap_or('0'));
+                                    let digit = char::from_digit(nib as u32, 16).unwrap_or('0');
+                                    s.push(if upper {
+                                        digit.to_ascii_uppercase()
+                                    } else {
+                                        digit
+                                    });
                                 }
                             }
                             if !started {
                                 s.push('0');
                             }
-                            if width > s.len() {
-                                let pad = if zero_fill { '0' } else { ' ' };
-                                for _ in 0..(width - s.len()) {
-                                    result.push(pad);
-                                }
-                            }
-                            result.push_str(&s);
+                            push_padded(&mut result, &s, width, zero_fill, left_align);
                         }
                     }
                     Some('f') => {
@@ -617,23 +650,45 @@ impl SimulationEngine {
                             // `%f` default precision 6 (IEEE 1800 §21.2.1.4);
                             // `%.Nf`/`%0.Nf` → N digit presisi.
                             let prec = precision.min(20);
-                            let _ = write!(
-                                result,
-                                "{:.data$}",
-                                f64::from_bits(val.to_u64()),
-                                data = prec
-                            );
+                            let s = format!("{:.*}", prec, f64::from_bits(val.to_u64()));
+                            push_padded(&mut result, &s, width, zero_fill, left_align);
+                        }
+                    }
+                    Some('g') | Some('G') => {
+                        // `%g` — representasi pendek (C printf): ekspon bila
+                        // eksponen di luar [-4, presisi), else desimal dengan
+                        // trailing nol dibuang (LRM 1800 §21.2.1.4).
+                        if let Some((val, _)) = value_args.next() {
+                            let v = f64::from_bits(val.to_u64());
+                            let prec = precision.min(20);
+                            let exp = if v == 0.0 { 0 } else { v.abs().log10().floor() as i32 };
+                            let s = if exp < -4 || exp >= prec as i32 {
+                                normalize_exp(&format!("{:.*e}", prec.saturating_sub(1), v))
+                            } else {
+                                let decimals = (prec as i32 - 1 - exp).max(0) as usize;
+                                let mut s = format!("{:.*}", decimals, v);
+                                if s.contains('.') {
+                                    while s.ends_with('0') {
+                                        s.pop();
+                                    }
+                                    if s.ends_with('.') {
+                                        s.pop();
+                                    }
+                                }
+                                s
+                            };
+                            push_padded(&mut result, &s, width, zero_fill, left_align);
                         }
                     }
                     Some('e') | Some('E') => {
                         if let Some((val, _)) = value_args.next() {
                             let prec = precision.min(20);
-                            let _ = write!(
-                                result,
-                                "{:.data$e}",
-                                f64::from_bits(val.to_u64()),
-                                data = prec
-                            );
+                            let s = normalize_exp(&format!(
+                                "{:.*e}",
+                                prec,
+                                f64::from_bits(val.to_u64())
+                            ));
+                            push_padded(&mut result, &s, width, zero_fill, left_align);
                         }
                     }
                     Some('t') => {
@@ -643,32 +698,46 @@ impl SimulationEngine {
                         let t = value_args
                             .next()
                             .map(|(v, _)| v.to_u64() as f64)
-                            .unwrap_or(self.state.time as f64);
+                            .unwrap_or(sim_time as f64);
                         // Skala relatif terhadap basis sim-time, bukan hardcode -9.
                         // saturating_sub mencegah underflow i64 (panic di debug)
                         // jika user memanggil $timeformat dengan units ekstrem.
                         let scale = 10f64.powi(
-                            self.state
-                                .timeformat
+                            timeformat
                                 .base_units
-                                .saturating_sub(self.state.timeformat.units)
+                                .saturating_sub(timeformat.units)
                                 as i32,
                         );
                         let scaled = t * scale;
-                        let precision = self.state.timeformat.precision.clamp(0, 20) as usize;
+                        let precision = timeformat.precision.clamp(0, 20) as usize;
                         let mut s = format!("{:.*}", precision, scaled);
                         // Clamp min_field_width utk cegah alokasi " ".repeat(huge).
-                        let min_width = self.state.timeformat.min_field_width.min(128);
+                        let min_width = timeformat.min_field_width.min(128);
                         if s.len() < min_width {
                             s = format!("{}{}", " ".repeat(min_width - s.len()), s);
                         }
-                        s.push_str(&self.state.timeformat.suffix);
-                        result.push_str(&s);
+                        s.push_str(&timeformat.suffix);
+                        push_padded(&mut result, &s, width, zero_fill, left_align);
                     }
                     Some('s') => {
                         if let Some((val, _)) = value_args.next() {
-                            result.push_str(&logicvec_to_string(&val));
+                            let s = logicvec_to_string(&val);
+                            push_padded(&mut result, &s, width, zero_fill, left_align);
                         }
+                    }
+                    Some('c') => {
+                        // `%c` — karakter dari 8 bit pertama nilai (LRM
+                        // 1800 §21.2.1.2). Nilai 0 → NUL (tidak dicetak).
+                        if let Some((val, _)) = value_args.next() {
+                            let code = val.to_u64() as u32;
+                            if let Some(ch) = char::from_u32(code) {
+                                push_padded(&mut result, &ch.to_string(), width, zero_fill, left_align);
+                            }
+                        }
+                    }
+                    Some('%') => {
+                        // `%%` — literal persen (LRM 1800 §21.2.1.2).
+                        result.push('%');
                     }
                     Some(c2) => {
                         result.push('%');
@@ -698,9 +767,10 @@ impl SimulationEngine {
                 result.push(c);
             }
         }
-        result
-    }
+    result
+}
 
+impl SimulationEngine {
     /// Format pesan severity task ($info/$warning/$error/$fatal): argumen
     /// pertama yang berupa konstanta kecil (finish_number 0–2 per LRM §20.2,
     /// mis. `$fatal(1, "msg")`) di-skip — finish number bukan bagian pesan.
@@ -761,22 +831,14 @@ fn ast_expr_is_signed(expr: &Expr) -> bool {
 }
 
 /// Jumlah karakter `%d` signed: digit abs + 1 untuk tanda '-' (0 → 1).
-fn i64_digits(n: i64) -> usize {
-    if n < 0 {
-        u64_digits(n.unsigned_abs()) + 1
-    } else {
-        u64_digits(n as u64)
-    }
+/// String representasi desimal bertanda (dipakai arm `%d`).
+fn i64_digits_str(n: i64) -> String {
+    n.to_string()
 }
 
-/// Jumlah digit desimal dari u64 (1 untuk 0) — hindari format! alloc di %d.
-fn u64_digits(mut n: u64) -> usize {
-    let mut d = 1usize;
-    while n >= 10 {
-        n /= 10;
-        d += 1;
-    }
-    d
+/// String representasi desimal tak bertanda (dipakai arm `%d`).
+fn u64_digits_str(n: u64) -> String {
+    n.to_string()
 }
 
 /// Jumlah digit hex dari u64 (1 untuk 0) — hindari format! alloc di %h.
@@ -799,6 +861,48 @@ pub fn escape_xml(s: &str) -> String {
 }
 
 // ─── Signal utilities ───────────────────────────────────────────────────
+
+/// Dorong string hasil format ke output dengan padding `width` (space default,
+/// `'0'` bila zero-fill `%0`, rata kiri bila flag `-`).
+fn push_padded(out: &mut String, s: &str, width: usize, zero_fill: bool, left_align: bool) {
+    if width > s.len() {
+        let extra = width - s.len();
+        if left_align {
+            out.push_str(s);
+            for _ in 0..extra {
+                out.push(' ');
+            }
+            return;
+        }
+        let pad = if zero_fill { '0' } else { ' ' };
+        for _ in 0..extra {
+            out.push(pad);
+        }
+    }
+    out.push_str(s);
+}
+
+/// Normalisasi notasi eksponen Rust → C printf / IEEE 1800 §21.2.1.4:
+/// `3.14e0` → `3.14e+00` (tanda eksplisit, minimal 2 digit eksponen).
+fn normalize_exp(s: &str) -> String {
+    let Some((mant, exp)) = s.split_once(['e', 'E']) else {
+        return s.to_string();
+    };
+    let (sign, digits) = match exp.strip_prefix('-') {
+        Some(d) => ("-", d),
+        None => ("+", exp.strip_prefix('+').unwrap_or(exp)),
+    };
+    if !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()) {
+        let d = if digits.len() < 2 {
+            format!("0{digits}")
+        } else {
+            digits.to_string()
+        };
+        format!("{mant}e{sign}{d}")
+    } else {
+        s.to_string()
+    }
+}
 
 pub fn signal_is_2state(signals: &[SignalInfo], id: SignalId) -> bool {
     signals.get(id).map(|s| s.is_2state).unwrap_or(false)
@@ -1028,6 +1132,124 @@ mod tests {
             e.format_display_fmt("%0d", vec![(s, true)].into_iter()),
             "-5",
             "signed known tetap negatif"
+        );
+    }
+
+    /// Default `$timeformat` utk unit test (sama dgn inisialisasi engine).
+    fn tf() -> TimeFormat {
+        TimeFormat {
+            units: -9,
+            precision: 0,
+            suffix: "ns".to_string(),
+            min_field_width: 0,
+            base_units: -9,
+        }
+    }
+
+    fn real(v: f64) -> LogicVec {
+        LogicVec::from_u64(f64::to_bits(v), 64)
+    }
+
+    #[test]
+    fn test_fmt_real_precision() {
+        // LRM 1800 §21.2.1.4 — `%.Nf`. PRA-FIX `%.2f` dicetak apa adanya.
+        let r = real(std::f64::consts::PI - 0.00000265358979);
+        let args = || vec![(r.clone(), false)].into_iter();
+        assert_eq!(format_display_core("%f", args(), 0, &tf()), "3.141590");
+        assert_eq!(format_display_core("%.2f", args(), 0, &tf()), "3.14");
+        assert_eq!(format_display_core("%.4f", args(), 0, &tf()), "3.1416");
+        assert_eq!(format_display_core("%.0f", args(), 0, &tf()), "3");
+        assert_eq!(format_display_core("%8.3f", args(), 0, &tf()), "   3.142");
+        assert_eq!(format_display_core("%0.3f", args(), 0, &tf()), "3.142");
+    }
+
+    #[test]
+    fn test_fmt_g_and_e_exponent() {
+        // `%g` representasi pendek; `%e` eksponen minimal 2 digit bertanda
+        // (C printf / iverilog: 3.141590e+00).
+        let r = real(std::f64::consts::PI - 0.00000265358979);
+        assert_eq!(
+            format_display_core("%g", vec![(r.clone(), false)].into_iter(), 0, &tf()),
+            "3.14159"
+        );
+        assert_eq!(
+            format_display_core("%e", vec![(r, false)].into_iter(), 0, &tf()),
+            "3.141590e+00"
+        );
+        let big = real(1234.5678);
+        assert_eq!(
+            format_display_core("%g", vec![(big.clone(), false)].into_iter(), 0, &tf()),
+            "1234.57"
+        );
+        assert_eq!(
+            format_display_core("%e", vec![(big, false)].into_iter(), 0, &tf()),
+            "1.234568e+03"
+        );
+    }
+
+    #[test]
+    fn test_fmt_hex_case_variants() {
+        // `%h`/`%x` lower, `%H`/`%X` upper (LRM §21.2.1.3).
+        let a = LogicVec::from_u64(0xF0, 8);
+        assert_eq!(
+            format_display_core(
+                "%h %x",
+                vec![(a.clone(), false)].into_iter().cycle().take(2),
+                0,
+                &tf()
+            ),
+            "f0 f0"
+        );
+        assert_eq!(
+            format_display_core(
+                "%H %X",
+                vec![(a, false)].into_iter().cycle().take(2),
+                0,
+                &tf()
+            ),
+            "F0 F0"
+        );
+    }
+
+    #[test]
+    fn test_fmt_left_align_width_and_char() {
+        // Flag `-` (rata kiri), width utk `%s`, `%c`, dan `%%`.
+        let a = LogicVec::from_u64(240, 8);
+        assert_eq!(
+            format_display_core(
+                "[%5d][%-5d][%05d]",
+                vec![(a.clone(), false)].into_iter().cycle().take(3),
+                0,
+                &tf()
+            ),
+            "[  240][240  ][00240]"
+        );
+        let s = string_to_logicvec("hi");
+        assert_eq!(
+            format_display_core(
+                "[%10s][%-10s]",
+                vec![(s.clone(), false)].into_iter().cycle().take(2),
+                0,
+                &tf()
+            ),
+            "[        hi][hi        ]"
+        );
+        assert_eq!(
+            format_display_core(
+                "[%c][%c]",
+                vec![
+                    (LogicVec::from_u64(65, 8), false),
+                    (LogicVec::from_u64(66, 8), false)
+                ]
+                .into_iter(),
+                0,
+                &tf()
+            ),
+            "[A][B]"
+        );
+        assert_eq!(
+            format_display_core("100%%", std::iter::empty(), 0, &tf()),
+            "100%"
         );
     }
 }
