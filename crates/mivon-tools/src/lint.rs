@@ -653,6 +653,13 @@ fn scan_expr_reads(e: &Expr, reads: &mut HashSet<Symbol>, writes: &mut HashSet<S
             scan_expr_reads(false_expr, reads, writes);
         }
         Expr::Paren(inner) => scan_expr_reads(inner, reads, writes),
+        Expr::IncDec { expr, .. } => {
+            // RMW: operand dibaca DAN ditulis (lint latch/unused pakai keduanya).
+            if let Expr::Ident { name, .. } = expr.as_ref() {
+                writes.insert(*name);
+            }
+            scan_expr_reads(expr, reads, writes);
+        }
         Expr::MethodCall {
             obj,
             method,

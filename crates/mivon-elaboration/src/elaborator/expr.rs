@@ -694,6 +694,22 @@ impl Elaborator {
                 }
             }
             Expr::Paren(inner) => self.elaborate_expr(inner, signal_map, signals),
+            // `i++`/`++i` dalam ekspresi: baca nilai sekarang, tulis balik
+            // ±1 ke lvalue yang sama saat runtime (LRM 1800 §11.4.1).
+            Expr::IncDec {
+                expr: inner,
+                inc,
+                pre,
+            } => {
+                let read = self.elaborate_expr(inner, signal_map, signals)?;
+                let lv = self.elaborate_lvalue(inner, signal_map, signals)?;
+                Ok(IrExpr::IncDec {
+                    read: Box::new(read),
+                    lv: Box::new(lv),
+                    inc: *inc,
+                    pre: *pre,
+                })
+            }
             Expr::FuncCall {
                 name,
                 args,
@@ -2126,6 +2142,19 @@ impl Elaborator {
                 target,
                 replacement.clone(),
             ))),
+            Expr::IncDec {
+                expr: inner,
+                inc,
+                pre,
+            } => Expr::IncDec {
+                expr: Box::new(Self::substitute_ident_in_expr(
+                    *inner,
+                    target,
+                    replacement.clone(),
+                )),
+                inc,
+                pre,
+            },
             Expr::Concat(exprs) => Expr::Concat(
                 exprs
                     .into_iter()

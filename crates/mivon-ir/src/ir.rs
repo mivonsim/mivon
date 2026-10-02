@@ -719,6 +719,19 @@ pub enum IrExpr {
         field: Symbol,
         field_width: usize,
     },
+    /// Increment/decrement dengan side-effect dalam ekspresi (LRM 1800
+    /// §11.4.1): `i++`, `++i`, `i--`, `--i`.
+    /// `read` = nilai saat ini (rvalue operand), `lv` = target write-back
+    /// nilai ±1. `pre` menentukan hasil (baru untuk prefix, lama untuk
+    /// postfix). Evaluator menulis balik setelah membaca.
+    IncDec {
+        read: Box<IrExpr>,
+        lv: Box<IrLValue>,
+        /// true = `++`, false = `--`
+        inc: bool,
+        /// true = prefix (hasil nilai baru), false = postfix (hasil lama)
+        pre: bool,
+    },
 }
 
 /// Temporal sequence expression for property evaluation

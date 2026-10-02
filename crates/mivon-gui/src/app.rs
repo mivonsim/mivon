@@ -585,7 +585,9 @@ pub fn trigger_generate_all(state: &mut GuiState) {
             .to_string();
         let header = p.extension().map(|e| e == "mvh").unwrap_or(false);
         match std::fs::read_to_string(p) {
-            Ok(src) => items.push(mivon_mv::MvItem { src, base, header }),
+            // GUI Generate (F25) memakai emisi default ($unit) — identik
+            // dengan `mgen <file>` tanpa `--package`.
+            Ok(src) => items.push(mivon_mv::MvItem::new(src, base).with_header(header)),
             Err(e) => {
                 read_failed = Some(format!("{}: {}", p.display(), e));
                 break;

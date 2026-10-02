@@ -388,6 +388,11 @@ fn expr_signal_reads(expr: &IrExpr, access: &mut SignalAccess) {
                 expr_signal_reads(arg, access);
             }
         }
+        // RMW: `i++` membaca operand DAN menulis balik ke lvalue-nya.
+        IrExpr::IncDec { read, lv, .. } => {
+            expr_signal_reads(read, access);
+            lvalue_signal_writes(lv, access);
+        }
         // These don't access signals — tapi beberapa TIDAK bisa di-resolve ke
         // SignalId (HierRef/VirtualIfaceAccess/This/VifBinding) → tandai
         // has_unresolved agar proses tidak dipakai di snapshot sparse.

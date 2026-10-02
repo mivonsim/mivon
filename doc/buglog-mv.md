@@ -66,6 +66,34 @@ bug di mivon utama (parser/elaborator/simulator). Status: ✅ fixed / ⏳ open.
      (`test_multidim_unpacked_array_{read_decl_init,write_dynamic,3d_and_row,port}`)
      — full workspace **2597 pass, 0 gagal**.
 
+5. **`++`/`--` di ekspresi: nilai salah + side-effect hilang** — parser
+   men-desugar `i++`/`++i` di level ekspresi jadi `BinaryOp Add/Sub` murni.
+   Akibat: `k = i--` → k=4 (harusnya 5, nilai **lama**), `i` tak pernah
+   berubah; `j = ++i` → j benar tapi `i` tak naik; `while (++i < 4)` tak
+   pernah berhenti (n=100000). Fix F48: varian `Expr::IncDec` +
+   `IrExpr::IncDec { read, lv, inc, pre }`, evaluator baca → tulis balik ±1
+   → hasil baru (pre) / lama (post). LRM 1800 §11.4.1.
+
+6. **Enum member dari typedef `$unit` tak resolve** —
+   `typedef enum {IDLE,RUN} State;` di luar module (persis output `mgen`
+   untuk typedef level file) → `s = RUN` gagal E2001 "signal not found".
+   Hanya enum PACKAGE yang di-register ke `pkg_param_ctx`. Fix: pre-pass
+   enum member `unit_typedefs` di `build_pkg_param_ctx` (counter di-reset
+   per typedef, sama seperti enum package).
+
+7. **Initializer port ANSI menimpa assignment `initial`** —
+   `output logic [1:0] st = 0; initial st = 1;` berakhir `st=0`. Proses
+   `port_init_*` di-push setelah `initial` user, jadi menimpa di delta yang
+   sama. SV: inisialisasi variabel fase inisialisasi SEBELUM aktivitas
+   prosedural t=0 (LRM 1800 §4.3.2/§6.8). Fix: proses port-init di-prepend
+   ke daftar proses.
+
+8. **`.mv`: nilai awal `reg` hilang bila nama sama dengan port** —
+   `out a : Addr` + `reg a : Addr = 16'h2A` → reg di-skip sebagai deklarasi
+   ganda (benar) tetapi initializer-nya ikut hilang → port `a` = X. Fix
+   codegen: nilai awal dipindah ke deklarasi port (`output Addr a = 16'h2A`,
+   sah LRM 1800 §6.8.2); input port tak boleh diinisialisasi → diabaikan.
+
 ## ⏳ Open
 
 (tidak ada item open — semua bug historis sudah tertutup)

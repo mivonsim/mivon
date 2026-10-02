@@ -484,7 +484,7 @@ pub struct MgenArgs {
     pub check: bool,
 
     /// Hanya generate .svh
-    #[arg(long = "svh-only")]
+    #[arg(long = "svh-only", alias = "emit-svh-only")]
     pub svh_only: bool,
 
     /// Lewati type-check (E2001–E2007) — untuk konstruk eksternal yang
@@ -493,8 +493,13 @@ pub struct MgenArgs {
     pub no_check: bool,
 
     /// Hanya generate .sv
-    #[arg(long = "sv-only")]
+    #[arg(long = "sv-only", alias = "emit-sv-only")]
     pub sv_only: bool,
+
+    /// Bungkus typedef level file dalam package bernama ini (di `.svh`),
+    /// lalu module dapat otomatis `import <nama>::*;`
+    #[arg(long, value_name = "NAME")]
+    pub package: Option<String>,
 
     /// Report per-file yang diproses
     #[arg(long)]

@@ -113,6 +113,9 @@ pub struct MvItem {
     pub src: String,
     pub base: String,
     pub header: bool,
+    /// `mgen --package <nama>`: bungkus typedef level file dalam package
+    /// bernama tsb (MIVON-HDL.md §11). `None` = emisi apa adanya ($unit).
+    pub package: Option<String>,
 }
 
 impl MvItem {
@@ -122,6 +125,7 @@ impl MvItem {
             src: src.into(),
             base: base.into(),
             header: false,
+            package: None,
         }
     }
 
@@ -131,7 +135,14 @@ impl MvItem {
             src: src.into(),
             base: base.into(),
             header: true,
+            package: None,
         }
+    }
+
+    /// Set flag header (F43) pada item yang sudah dibangun.
+    pub fn with_header(mut self, header: bool) -> Self {
+        self.header = header;
+        self
     }
 }
 
@@ -142,7 +153,7 @@ impl MvItem {
 pub fn transpile(src: &str, base: &str) -> Result<TranspileResult, MvError> {
     let file = parser::parse(src)?;
     check::check(&file)?;
-    generate_from(&file, base, &[], "mv")
+    generate_from(&file, base, &[], "mv", None)
 }
 
 /// Transpile source `.mvh` (header Mivon HDL, F43) → `.svh` saja.
@@ -153,7 +164,7 @@ pub fn transpile_header(src: &str, base: &str) -> Result<TranspileResult, MvErro
     let file = parser::parse(src)?;
     check::check(&file)?;
     validate_header_only(&file)?;
-    generate_from(&file, base, &[], "mvh")
+    generate_from(&file, base, &[], "mvh", None)
 }
 
 /// Transpile TANPA type-check (escape hatch `mgen --no-check` — untuk kode
@@ -162,14 +173,14 @@ pub fn transpile_header(src: &str, base: &str) -> Result<TranspileResult, MvErro
 /// bukan type-check.
 pub fn transpile_no_check(src: &str, base: &str) -> Result<TranspileResult, MvError> {
     let file = parser::parse(src)?;
-    generate_from(&file, base, &[], "mv")
+    generate_from(&file, base, &[], "mv", None)
 }
 
 /// `transpile_no_check` untuk sumber `.mvh` — validate E2008 tetap jalan.
 pub fn transpile_header_no_check(src: &str, base: &str) -> Result<TranspileResult, MvError> {
     let file = parser::parse(src)?;
     validate_header_only(&file)?;
-    generate_from(&file, base, &[], "mvh")
+    generate_from(&file, base, &[], "mvh", None)
 }
 
 /// Transpile BEBERAPA file `.mv`/`.mvh` sekaligus dengan KONTEKS GABUNGAN
@@ -294,7 +305,8 @@ fn generate_all(
     let mut out = Vec::with_capacity(items.len());
     for (i, it) in items.iter().enumerate() {
         let src_ext = if it.header { "mvh" } else { "mv" };
-        let r = generate_from(&files[i], &it.base, &all_ifaces, src_ext).map_err(|e| (i, e))?;
+        let r = generate_from(&files[i], &it.base, &all_ifaces, src_ext, it.package.as_deref())
+            .map_err(|e| (i, e))?;
         out.push(r);
     }
     Ok(out)
@@ -305,8 +317,10 @@ fn generate_from(
     base: &str,
     iface_names: &[&str],
     src_ext: &str,
+    package: Option<&str>,
 ) -> Result<TranspileResult, MvError> {
-    let out = codegen::generate_src_ext(file, base, iface_names, src_ext);
+    let opts = codegen::GenOpts { package };
+    let out = codegen::generate_src_ext_opts(file, base, iface_names, src_ext, &opts);
     Ok(TranspileResult {
         sv: out.sv,
         svh: out.svh,

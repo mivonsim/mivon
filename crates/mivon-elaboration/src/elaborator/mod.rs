@@ -2701,6 +2701,35 @@ impl Elaborator {
     /// dan di-clone oleh tiap module (lihat `collect_package_param_ctx`).
     fn build_pkg_param_ctx(&mut self) {
         let mut ctx: HashMap<Symbol, i64> = HashMap::new();
+        // Enum member dari typedef $unit (top-level `typedef enum { A, B } E;`
+        // di luar package/module) — GENARASI dari `mgen` menaruh typedef level
+        // file di `.svh`, jadi pola `st = RUN` setelahnya HARUS resolve.
+        // Sebelumnya hanya enum PACKAGE yang di-register → E2001 "signal
+        // 'RUN' not found" untuk desain `.mv` hasil generate (dan SV murni).
+        // Counter `last` di-reset per typedef (sama seperti enum package).
+        let unit_enums: Vec<Vec<(Symbol, Option<Expr>)>> = self
+            .design
+            .unit_typedefs
+            .iter()
+            .filter_map(|td| {
+                if let DataType::EnumType { members, .. } = &td.dtype {
+                    Some(members.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        for members in &unit_enums {
+            let mut last = 0i64;
+            for (member_name, member_expr) in members {
+                let val = match member_expr {
+                    Some(expr) => const_eval_with_params(expr, &ctx).unwrap_or(last),
+                    None => last,
+                };
+                ctx.entry(*member_name).or_insert(val);
+                last = val + 1;
+            }
+        }
         // Enum member constants dari package (plain + qualified, sequential).
         // Struktur per-typedef (Vec<Vec<…>>) — member enum tanpa nilai eksplisit
         // melanjutkan counter HANYA dalam typedef yang sama (standar SV).
@@ -6207,6 +6236,12 @@ impl Elaborator {
 
         // F40: initializer port ANSI (`output reg [7:0] b = 8'h2A;`) →
         // Process::Initial, setara deklarasi `reg b = 8'h2A;`.
+        // Urutan WAJIB didahulukan: inisialisasi variabel SV terjadi pada
+        // fase inisialisasi SEBELUM aktivitas prosedural t=0 (LRM 1800
+        // §4.3.2 + §6.8). Sebelumnya proses ini di-push setelah `initial`
+        // user → `output st = 0; initial st = 1;` berakhir `st=0` (init
+        // menimpa assignment user di delta yang sama).
+        let mut port_init_procs: Vec<Process> = Vec::with_capacity(port_inits.len());
         for (name, init_expr) in &port_inits {
             let lhs = self.elaborate_lvalue(
                 &Expr::Ident {
@@ -6218,7 +6253,7 @@ impl Elaborator {
                 &signals,
             )?;
             let rhs = self.elaborate_expr(init_expr, &signal_map, &signals)?;
-            processes.push(Process::Initial {
+            port_init_procs.push(Process::Initial {
                 name: format_sym(b"port_init_", proc_counter),
                 body: vec![IrStmt::BlockingAssign {
                     lhs,
@@ -6227,6 +6262,10 @@ impl Elaborator {
                 }],
             });
             proc_counter += 1;
+        }
+        if !port_init_procs.is_empty() {
+            port_init_procs.append(&mut processes);
+            processes = port_init_procs;
         }
 
         // Process declaration initializers (wire a = 1; reg b = 0; etc.)

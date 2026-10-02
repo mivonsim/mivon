@@ -325,20 +325,16 @@ impl Parser {
                         // (arm F36) yang mengubahnya jadi Stmt::IncDec.
                         break;
                     }
-                    // RHS ekspresi: postfix TIDAK didukung di .mv (side-effect
-                    // dalam ekspresi tidak bisa diwakili SV) — error jelas di
-                    // level .mv, bukan menghasilkan SV invalid.
-                    let (l, c) = self.pos_line();
-                    let op = if matches!(self.peek(), Tok::PlusPlus) {
-                        "++"
-                    } else {
-                        "--"
+                    // RHS ekspresi: `k = i++` — kini didukung penuh (side-effect
+                    // write-back ±1 dieksekusi engine, LRM 1800 §11.4.1).
+                    let inc = matches!(self.peek(), Tok::PlusPlus);
+                    self.advance();
+                    e = Expr::IncDec {
+                        inc,
+                        pre: false,
+                        expr: Box::new(e),
                     };
-                    return Err(MvError::new(
-                        l,
-                        c,
-                        format!("postfix {op} hanya didukung sebagai statement (baris sendiri), bukan di dalam ekspresi"),
-                    ));
+                    break;
                 }
                 _ => break,
             }

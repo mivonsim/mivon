@@ -801,6 +801,15 @@ pub fn substitute_loop_var_in_expr(expr: &Expr, var_name: &str, value: i64) -> E
         Expr::Paren(inner) => Expr::Paren(Box::new(substitute_loop_var_in_expr(
             inner, var_name, value,
         ))),
+        Expr::IncDec {
+            expr: inner,
+            inc,
+            pre,
+        } => Expr::IncDec {
+            expr: Box::new(substitute_loop_var_in_expr(inner, var_name, value)),
+            inc: *inc,
+            pre: *pre,
+        },
         Expr::MethodCall {
             obj,
             method,

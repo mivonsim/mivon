@@ -580,17 +580,16 @@ impl Parser {
                     continue;
                 }
                 // Post-increment / post-decrement: `expr++` / `expr--`
-                // (LRM 1800 §11.4.1) — representasikan sebagai
-                // BinaryOp Add/Sub dengan clone lhs, mirip prefix handler
-                // di parse_stmt_impl (Statement arm). Ini menangkap pola
-                // umum DV: `next_lsb++`, `address++`, `page_buffer_size++`.
+                // (LRM 1800 §11.4.1) — varian IncDec khusus agar side-effect
+                // (write-back nilai ±1) dieksekusi evaluator, bukan sekadar
+                // nilai `expr ± 1` (bug: `k = i--` → k salah, i tak berubah).
                 Token::Increment | Token::Decrement => {
                     let is_inc = matches!(self.peek(), Token::Increment);
                     self.advance();
-                    lhs = Expr::BinaryOp {
-                        op: if is_inc { BinaryOp::Add } else { BinaryOp::Sub },
-                        lhs: Box::new(lhs.clone()),
-                        rhs: Box::new(Expr::Value(Value::Decimal(1))),
+                    lhs = Expr::IncDec {
+                        expr: Box::new(lhs),
+                        inc: is_inc,
+                        pre: false,
                     };
                     continue;
                 }
@@ -1294,19 +1293,19 @@ impl Parser {
             Token::Increment => {
                 self.advance();
                 let expr = self.parse_expr(12)?;
-                Ok(Expr::BinaryOp {
-                    op: BinaryOp::Add,
-                    lhs: Box::new(expr),
-                    rhs: Box::new(Expr::Value(Value::Decimal(1))),
+                Ok(Expr::IncDec {
+                    expr: Box::new(expr),
+                    inc: true,
+                    pre: true,
                 })
             }
             Token::Decrement => {
                 self.advance();
                 let expr = self.parse_expr(12)?;
-                Ok(Expr::BinaryOp {
-                    op: BinaryOp::Sub,
-                    lhs: Box::new(expr),
-                    rhs: Box::new(Expr::Value(Value::Decimal(1))),
+                Ok(Expr::IncDec {
+                    expr: Box::new(expr),
+                    inc: false,
+                    pre: true,
                 })
             }
             Token::Void

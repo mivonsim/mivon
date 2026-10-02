@@ -714,3 +714,126 @@ module m {
     assert!(out.sv.contains("force a = 8'd99;"), "force: {}", out.sv);
     assert!(out.sv.contains("release a;"), "release: {}", out.sv);
 }
+
+#[test]
+fn f49_mgen_package_wraps_file_typedefs() {
+    // `mgen --package <nama>`: typedef level file dibungkus dalam package
+    // di `.svh`, dan `.sv` dapat `import <nama>::*;` (MIVON-HDL.md §11).
+    let src = r#"
+type Addr = logic[15:0]
+enum State { IDLE, RUN, DONE }
+module tb {
+    out a : Addr
+    out s : State
+    comb { a = 0 s = IDLE }
+}
+"#;
+    let file = parse(src).unwrap();
+    let opts = GenOpts {
+        package: Some("chip_types"),
+    };
+    let out = generate_src_ext_opts(&file, "tb", &[], "mv", &opts);
+    assert!(
+        out.svh.contains("package chip_types;"),
+        "package harus dibungkus: {}",
+        out.svh
+    );
+    assert!(
+        out.svh.contains("    typedef logic [15:0] Addr;"),
+        "typedef di-indent di dalam package: {}",
+        out.svh
+    );
+    assert!(
+        out.svh.contains("endpackage"),
+        "endpackage: {}",
+        out.svh
+    );
+    assert!(
+        out.sv.contains("import chip_types::*;"),
+        "sv harus import: {}",
+        out.sv
+    );
+    // Default (tanpa --package) tetap $unit — kompatibilitas output lama.
+    let plain = generate(&file, "tb");
+    assert!(
+        !plain.svh.contains("package chip_types"),
+        "default tak boleh membuat package: {}",
+        plain.svh
+    );
+    assert!(!plain.sv.contains("import chip_types"), "default no import");
+}
+
+#[test]
+fn f49_mgen_package_no_op_without_typedefs() {
+    // Tanpa typedef level file, `--package` tak menambah apa pun (tak ada
+    // import sia-sia di `.sv`).
+    let src = r#"
+package p { enum E { A, B } }
+module m {
+    in clk : bit
+    out y : bit
+    comb { y = 1 }
+}
+"#;
+    let file = parse(src).unwrap();
+    let opts = GenOpts {
+        package: Some("chip_types"),
+    };
+    let out = generate_src_ext_opts(&file, "m", &[], "mv", &opts);
+    assert!(out.svh.contains("package p;"), "package sumber tetap: {}", out.svh);
+    assert!(!out.svh.contains("package chip_types"), "tak ada typedef → tak dibungkus");
+    assert!(!out.sv.contains("import chip_types"), "tak ada import");
+}
+
+#[test]
+fn f49_port_init_from_reg_same_name() {
+    // `out a : Addr` + `reg a : Addr = 16'h2A`: reg di-skip (deklarasi ganda
+    // tak sah) TAPI nilai inisialisasi dibawa ke deklarasi port — SV sah
+    // (LRM 1800 §6.8.2) dan nilai tidak boleh hilang.
+    let src = r#"
+type Addr = logic[15:0]
+module tb {
+    out a : Addr
+    reg a : Addr = 16'h2A
+    in  clk : bit
+    seq(clk) { a <= a + 1 }
+}
+"#;
+    let out = generate(&parse(src).unwrap(), "tb");
+    assert!(
+        out.sv.contains("output Addr a = 16'h2A"),
+        "port harus membawa init: {}",
+        out.sv
+    );
+    // Deklarasi reg ganda TIDAK boleh muncul.
+    assert_eq!(
+        out.sv.matches("Addr a").count(),
+        1,
+        "tanpa deklarasi ganda: {}",
+        out.sv
+    );
+}
+
+#[test]
+fn f49_input_port_has_no_init() {
+    // Input port tak boleh diinisialisasi (SV LRM) — reg init diabaikan.
+    let src = r#"
+module tb {
+    in  d : logic[7:0]
+    reg d : logic[7:0] = 8'h5
+    out q : logic[7:0]
+    comb { q = d }
+}
+"#;
+    let out = generate(&parse(src).unwrap(), "tb");
+    assert!(
+        out.sv.contains("input  logic [7:0] d"),
+        "input port polos: {}",
+        out.sv
+    );
+    assert!(
+        !out.sv.contains("d = 8'h5"),
+        "input port tak boleh punya init: {}",
+        out.sv
+    );
+}

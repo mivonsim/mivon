@@ -296,6 +296,10 @@ pub fn compute_expr_width(
         Expr::MethodCall { .. } | Expr::StreamingConcat { .. } | Expr::Dist { .. } => {
             Err("width not computable for this expression type".to_string())
         }
+        // `i++` — lebar hasil = lebar operand (RMW, LRM 1800 §11.4.1).
+        Expr::IncDec { expr: inner, .. } => {
+            compute_expr_width(inner, signal_map, signals, param_vals, package_symbols)
+        }
         Expr::ScopedIdent { package, item, .. } => {
             // Enum member / konstanta package yang di-flatten ke param_vals
             // sebagai qualified `pkg::item` (build_pkg_param_ctx). Contoh nyata

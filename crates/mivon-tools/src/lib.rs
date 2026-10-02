@@ -197,7 +197,10 @@ pub fn transpile_mv_to_inline(
         let src =
             std::fs::read_to_string(p).map_err(|e| diag_io(format!("{}: {}", p.display(), e)))?;
         let header = p.extension().map(|e| e == "mvh").unwrap_or(false);
-        items.push(mivon_mv::MvItem { src, base, header });
+        // Pipeline inline (run/sim/...) tidak punya opsi `mgen --package`;
+        // emisi default ($unit) dipakai agar `mivon run x.mv` tetap identik
+        // dengan output `mgen x.mv` tanpa flag.
+        items.push(mivon_mv::MvItem::new(src, base).with_header(header));
     }
     let results = mivon_mv::transpile_many_items(&items)
         .map_err(|(i, e)| diag_io(format!("{}: {}", files[mv_idx[i]].display(), e)))?;
@@ -387,6 +390,14 @@ pub fn expr_to_string(e: &mivon_ast::expr::Expr) -> String {
             expr_to_string(false_expr)
         ),
         Expr::Paren(inner) => format!("({})", expr_to_string(inner)),
+        Expr::IncDec { expr, inc, pre } => {
+            let op = if *inc { "++" } else { "--" };
+            if *pre {
+                format!("{}{}", op, expr_to_string(expr))
+            } else {
+                format!("{}{}", expr_to_string(expr), op)
+            }
+        }
         Expr::String(s) => format!("\"{}\"", s),
         Expr::MemberAccess { obj, field } => {
             format!("{}.{}", expr_to_string(obj), field.as_str())

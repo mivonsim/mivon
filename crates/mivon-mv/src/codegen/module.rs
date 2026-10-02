@@ -48,6 +48,24 @@ pub(crate) fn emit_module_kw(out: &mut String, m: &Module, kw: &str, iface_names
         head.push_str("\n) ");
     }
     head.push_str("(\n");
+    // Nilai awal untuk `sig`/`reg` yang namanya sama dengan port output.
+    // Deklarasi ganda di SV invalid, jadi reg di-skip — TAPI nilai
+    // inisialisasinya tidak boleh hilang (`reg a : Addr = 16'h2A` +
+    // `out a : Addr` →_port `output Addr a = 16'h2A`, sah LRM 1800 §6.8.2).
+    // Hanya untuk arah out/inout — input port tak boleh diinisialisasi.
+    let mut port_init: std::collections::HashMap<&str, &Expr> = std::collections::HashMap::new();
+    for item in &m.items {
+        let (names, init) = match item {
+            MItem::Sig { names, init, .. } | MItem::Reg { names, init, .. } => (names, init),
+            _ => continue,
+        };
+        if let Some(init) = init {
+            for n in names {
+                port_init.insert(n.as_str(), init);
+            }
+        }
+    }
+
     // ports
     let mut port_lines: Vec<String> = Vec::new();
     for item in &m.items {
@@ -65,7 +83,18 @@ pub(crate) fn emit_module_kw(out: &mut String, m: &Module, kw: &str, iface_names
                         Dir::Out => "output",
                         Dir::Inout => "inout",
                     };
-                    port_lines.push(format!("    {dir:<7}{}", emit_signal_decl(&p.ty, n)));
+                    let init_s = if p.dir == Dir::In {
+                        String::new()
+                    } else {
+                        port_init
+                            .get(n.as_str())
+                            .map(|e| format!(" = {}", emit_expr(e)))
+                            .unwrap_or_default()
+                    };
+                    port_lines.push(format!(
+                        "    {dir:<7}{}{init_s}",
+                        emit_signal_decl(&p.ty, n)
+                    ));
                 }
             }
         }

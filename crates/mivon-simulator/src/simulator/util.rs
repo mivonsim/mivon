@@ -57,6 +57,24 @@ pub fn extract_signal_deps(expr: &IrExpr) -> Vec<SignalId> {
     deps
 }
 
+/// SignalId dasar dari sebuah lvalue (untuk arm `IrExpr::IncDec` — target
+/// write-back juga merupakan dependency). `None` untuk lvalue hierarkis
+/// yang belum ter-resolve (nama saja, tanpa SignalId).
+fn lvalue_dep_id(lv: &IrLValue) -> Option<SignalId> {
+    match lv {
+        IrLValue::Signal(id, _)
+        | IrLValue::RangeSelect(id, ..)
+        | IrLValue::BitSelect(id, _)
+        | IrLValue::ArrayIndex { sig_id: id, .. }
+        | IrLValue::ArrayRangeSelect { sig_id: id, .. }
+        | IrLValue::ArrayBitSelect { sig_id: id, .. }
+        | IrLValue::ExprPartSelect { sig_id: id, .. }
+        | IrLValue::ObjectField { sig_id: id, .. } => Some(*id),
+        IrLValue::Concat(items) => items.first().and_then(lvalue_dep_id),
+        IrLValue::HierRef(_) | IrLValue::HierRefIndex { .. } => None,
+    }
+}
+
 pub fn extract_signal_deps_inner(expr: &IrExpr, deps: &mut Vec<SignalId>) {
     match expr {
         IrExpr::Signal(id, _) => {
@@ -159,6 +177,15 @@ pub fn extract_signal_deps_inner(expr: &IrExpr, deps: &mut Vec<SignalId>) {
         IrExpr::FuncCall { args, .. } => {
             for a in args {
                 extract_signal_deps_inner(a, deps);
+            }
+        }
+        // RMW `i++`: operand terbaca + target lvalue dibaca/ditulis.
+        IrExpr::IncDec { read, lv, .. } => {
+            extract_signal_deps_inner(read, deps);
+            if let Some(id) = lvalue_dep_id(lv) {
+                if !deps.contains(&id) {
+                    deps.push(id);
+                }
             }
         }
         IrExpr::Const(_) | IrExpr::FillLit(_) | IrExpr::String(_) | IrExpr::This => {}

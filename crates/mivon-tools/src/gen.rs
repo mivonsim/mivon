@@ -33,6 +33,8 @@ pub struct GenArgs<'a> {
     pub svh_only: bool,
     pub sv_only: bool,
     pub no_check: bool,
+    /// Bungkus typedef level file dalam package ini (MIVON-HDL.md §11).
+    pub package: Option<String>,
     pub verbose: bool,
 }
 
@@ -81,7 +83,12 @@ pub fn run(args: &GenArgs) -> Result<(), SimError> {
         let src = std::fs::read_to_string(path)
             .map_err(|e| diag(format!("{}: {}", path.display(), e)))?;
         let header = path.extension().map(|e| e == "mvh").unwrap_or(false);
-        items.push(mv::MvItem { src, base, header });
+        items.push(mv::MvItem {
+            src,
+            base,
+            header,
+            package: args.package.clone(),
+        });
     }
     let results = if args.no_check {
         mv::transpile_many_items_no_check(&items)

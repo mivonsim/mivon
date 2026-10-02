@@ -2617,6 +2617,23 @@ fn replace_func_calls_in_expr_inner(
                 recursive_funcs,
             )),
         },
+        Expr::IncDec {
+            expr: inner,
+            inc,
+            pre,
+        } => Expr::IncDec {
+            expr: Box::new(replace_func_calls_in_expr(
+                *inner,
+                funcs,
+                prefix,
+                counter,
+                preamble,
+                temp_signals,
+                recursive_funcs,
+            )),
+            inc,
+            pre,
+        },
         other => other,
     }
 }

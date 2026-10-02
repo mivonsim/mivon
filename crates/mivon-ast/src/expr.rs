@@ -102,6 +102,20 @@ pub enum Expr {
         expr: Box<Expr>,
         items: Vec<DistItem>,
     },
+    /// Increment/decrement dalam ekspresi (LRM 1800 §11.4.1):
+    /// `i++`, `i--`, `++i`, `--i`. Operand adalah lvalue yang DITULIS ULANG
+    /// saat ekspresi dievaluasi (side-effect) — `pre` menentukan nilai hasil
+    /// (baru untuk prefix, lama untuk postfix). Parser menghasilkan varian ini
+    /// untuk kejadian di level ekspresi; kejadian statement-level (`i++;`
+    /// baris sendiri) sudah di-desugar parser jadi `BlockingAssign` biasa.
+    IncDec {
+        expr: Box<Expr>,
+        /// true = `++` (tambah 1), false = `--` (kurang 1)
+        inc: bool,
+        /// true = prefix (`++i` → hasil nilai BARU), false = postfix (`i++`
+        /// → hasil nilai LAMA)
+        pre: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]

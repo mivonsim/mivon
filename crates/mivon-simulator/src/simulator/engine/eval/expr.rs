@@ -2471,6 +2471,24 @@ impl SimulationEngine {
                 }
                 Ok(result)
             }
+            // `i++` / `++i` (LRM 1800 §11.4.1): baca nilai operand, tulis
+            // balik ±1 ke lvalue yang sama (side-effect), hasil = nilai baru
+            // (prefix) atau nilai lama (postfix).
+            IrExpr::IncDec { read, lv, inc, pre } => {
+                let old = self.evaluate_expr(read)?;
+                let one = LogicVec::from_u64(1, old.width);
+                let new = eval_binary(
+                    if *inc { BinaryIrOp::Add } else { BinaryIrOp::Sub },
+                    &old,
+                    &one,
+                );
+                self.write_lvalue(lv, new.clone(), true)?;
+                if *pre {
+                    Ok(new)
+                } else {
+                    Ok(old)
+                }
+            }
         }
     }
 

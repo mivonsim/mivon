@@ -748,10 +748,9 @@ module tb_ca {
 
 #[test]
 fn test_mv_prefix_incdec() {
-    // F37: prefix `++i`/`--i` dan postfix `i--` di level statement — engine
-    // mendukung statement prefix penuh (assign ±1). `j = ++i` di RHS: nilai
-    // benar (i+1) — side-effect increment di RHS adalah batasan engine
-    // pre-existing (sama di SV murni), bukan regresi F37.
+    // F37+F48: prefix `++i`/`--i` dan postfix `i--` — di level statement
+    // maupun di RHS ekspresi kini dieksekusi penuh dengan side-effect
+    // write-back (LRM 1800 §11.4.1).
     let src = r#"
 module tb_pp {
     sig i : logic[7:0]
@@ -793,10 +792,10 @@ module tb_pp {
     );
     let sigs = simulate_signals(&r.sv, 5).unwrap();
     let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
-    // statement prefix bekerja penuh: ++i(1), lalu j=++i tidak mengubah i
-    // (batasan engine), lalu --i(0), lalu i--(255 wrap).
-    assert_eq!(get("i"), 255, "i: ++i(1) -> --i(0) -> i--(255)");
-    assert_eq!(get("j"), 6, "j = ++k (nilai k+1 = 6)");
+    // F48: side-effect RHS kini diterapkan penuh (LRM 1800 §11.4.1):
+    // ++i(1) → j=++i (i=2, j=2) → --i(1) → i--(0); k=5 → j=++k (k=6, j=6).
+    assert_eq!(get("i"), 0, "i: ++i(1) -> j=++i(2) -> --i(1) -> i--(0)");
+    assert_eq!(get("j"), 6, "j = ++k (nilai baru k+1 = 6)");
 }
 
 #[test]
@@ -1127,23 +1126,29 @@ module tb_dl {
 }
 
 #[test]
-fn test_mv_postfix_rhs_rejected() {
-    // F37: postfix di RHS ekspresi (`j = i--`) ditolak di level .mv dengan
-    // error jelas (side-effect postfix tak bisa diwakili SV) — bukan SV invalid.
+fn test_mv_postfix_rhs_supported() {
+    // F48: postfix di RHS ekspresi (`k = i--`) kini DIDUKUNG penuh —
+    // side-effect write-back ±1 dieksekusi engine (LRM 1800 §11.4.1).
+    // Hasil = nilai LAMA (postfix), operand berkurang 1.
     let src = r#"
-module tb_bad {
+module tb_post {
     sig i : logic[7:0]
     sig j : logic[7:0]
+    sig k : logic[7:0]
     initial {
-        j = i--
+        i = 5
+        k = i--
+        j = i
     }
 }
 "#;
-    let e = mivon_mv::transpile(src, "bad").unwrap_err();
-    assert!(
-        e.to_string().contains("postfix"),
-        "pesan harus sebut postfix: {e}"
-    );
+    let r = mivon_mv::transpile(src, "post").expect("postfix RHS harus lolos");
+    assert!(r.sv.contains("k = i--;"), "emit postfix: {}", r.sv);
+    let sigs = simulate_signals(&r.sv, 20).unwrap();
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    assert_eq!(get("k"), 5, "postfix hasil = nilai LAMA");
+    assert_eq!(get("i"), 4, "side-effect: i berkurang 1");
+    assert_eq!(get("j"), 4, "baca setelah postfix melihat nilai baru");
 }
 
 #[test]
@@ -21504,6 +21509,221 @@ endmodule
         "uvm_config_db#(virtual iface) gagal: {:?}",
         design.err()
     );
+}
+
+// ── F48: `++`/`--` side-effect penuh dalam ekspresi (LRM 1800 §11.4.1) ──
+//
+// PRA-FIX: parser SV men-desugar `i++`/`++i` di level ekspresi jadi
+// `BinaryOp Add/Sub` murni → nilai postfix SALAH dan side-effect hilang
+// (`k = i--` → k=4 harusnya 5; `while (++i < 4)` → infinite loop).
+
+#[test]
+fn test_incdec_prefix_side_effect_in_rhs() {
+    let source = r#"
+module tb;
+    integer i, j;
+    initial begin
+        i = 5;
+        j = ++i;
+        $display("P j=%0d i=%0d", j, i);
+        $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 20).unwrap();
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    assert_eq!(get("j"), 6, "prefix: hasil = nilai BARU");
+    assert_eq!(get("i"), 6, "side-effect: i bertambah 1");
+}
+
+#[test]
+fn test_incdec_postfix_old_value_in_rhs() {
+    // Postfix: hasil = nilai LAMA, operand berkurang 1.
+    let source = r#"
+module tb;
+    integer i, k;
+    initial begin
+        i = 5;
+        k = i--;
+        $display("B k=%0d i=%0d", k, i);
+        $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 20).unwrap();
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    assert_eq!(get("k"), 5, "postfix: hasil = nilai LAMA");
+    assert_eq!(get("i"), 4, "side-effect: i berkurang 1");
+}
+
+#[test]
+fn test_incdec_in_loop_condition_not_infinite() {
+    // `while (++i < 4)` — PRA-FIX: loop tak pernah berakhir (n=100000).
+    let source = r#"
+module tb;
+    integer i, n;
+    initial begin
+        n = 0;
+        i = 0;
+        while (++i < 4) n = n + 1;
+        $display("C i=%0d n=%0d", i, n);
+        $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 100).unwrap();
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    assert_eq!(get("n"), 3, "loop 3 iterasi");
+    assert_eq!(get("i"), 4, "i incremented tiap kondisi");
+}
+
+#[test]
+fn test_incdec_postfix_loop_condition() {
+    let source = r#"
+module tb;
+    integer i, n;
+    initial begin
+        n = 0;
+        i = 3;
+        while (i-- > 0) n = n + 1;
+        $display("D i=%0d n=%0d", i, n);
+        $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 100).unwrap();
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    assert_eq!(get("n"), 3, "loop 3 iterasi");
+    // Postfix decrement terjadi SETIAP evaluasi kondisi, termasuk yang
+    // bernilai 0 (hasil perbandingan tetap 0 → loop berhenti) → i = -1.
+    assert_eq!(get("i"), 0xFFFF_FFFF, "i terpuntuk -1 (4 decrement)");
+}
+
+#[test]
+fn test_incdec_mixed_arithmetic() {
+    // `k = i++ + j` — postfix bernilai lama lalu i maju.
+    let source = r#"
+module tb;
+    integer i, j, k;
+    initial begin
+        i = 0; j = 7;
+        k = i++ + j;
+        $display("E k=%0d i=%0d", k, i);
+        $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 20).unwrap();
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    assert_eq!(get("k"), 7, "nilai lama i (0) + j (7)");
+    assert_eq!(get("i"), 1, "i maju setelah evaluasi");
+}
+
+#[test]
+fn test_incdec_mv_postfix_rhs_e2e() {
+    // Sisi `.mv`: postfix di RHS ekspresi kini didukung penuh (F48) —
+    // sebelumnya ditolak parser `.mv`.
+    let src = r#"
+module tb_mvpost {
+    sig i : logic[7:0]
+    sig j : logic[7:0]
+    sig k : logic[7:0]
+    initial {
+        i = 5
+        k = i--
+        j = i
+    }
+}
+"#;
+    let r = mivon_mv::transpile(src, "mvpost").expect("postfix RHS .mv");
+    assert!(r.sv.contains("k = i--;"), "emit postfix: {}", r.sv);
+    let sigs = simulate_signals(&r.sv, 20).unwrap();
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    assert_eq!(get("k"), 5, "postfix = nilai lama");
+    assert_eq!(get("i"), 4, "side-effect i--");
+}
+
+// ── Bug mivon utama: enum member typedef $unit (top-level) tak resolve ──
+
+#[test]
+fn test_unit_typedef_enum_member_resolves() {
+    // `typedef enum ... E;` di luar module (= output `mgen`) — member
+    // `RUN` harus resolve sebagai konstanta, bukan E2001 "signal not found".
+    let source = r#"
+typedef enum logic [1:0] { IDLE, RUN, DONE } State;
+module tb;
+    State s = IDLE;
+    initial begin
+        s = RUN;
+        #10 $display("E s=%0d", s);
+        $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 50).unwrap();
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    assert_eq!(get("s"), 1, "RUN = 1");
+}
+
+#[test]
+fn test_unit_typedef_enum_explicit_values() {
+    // Nilai eksplisit + counter sequential per typedef.
+    let source = r#"
+typedef enum logic [2:0] { RED = 0, GREEN = 2, BLUE = 4 } Color;
+typedef enum logic [1:0] { L0, L1, L2 } Level;
+module tb;
+    Color c = RED;
+    Level l = L0;
+    initial begin
+        c = BLUE; l = L2;
+        #10 $display("EV c=%0d l=%0d", c, l);
+        $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 50).unwrap();
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    assert_eq!(get("c"), 4, "BLUE = 4 (eksplisit)");
+    assert_eq!(get("l"), 2, "L0..L2 sequential per typedef (tak bocor lintas enum)");
+}
+
+// ── Bug mivon utama: initializer port ANSI menimpa assignment `initial` ──
+
+#[test]
+fn test_port_init_does_not_clobber_initial_assign() {
+    // SV: inisialisasi variabel terjadi SEBELUM aktivitas prosedural t=0
+    // (LRM 1800 §4.3.2). PRA-FIX proses `port_init_*` dijalankan setelah
+    // `initial` user → hasil `st=0` (port init menimpa assignment user).
+    let src = r#"
+module tb (output logic [1:0] st = 2'd0, output logic [1:0] st2);
+    initial begin
+        st = 2'd1;
+        st2 = 2'd1;
+        #10 $display("PI st=%0d st2=%0d", st, st2);
+        $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(src, 50).unwrap();
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    assert_eq!(get("st"), 1, "assignment di initial menang atas port init");
+    assert_eq!(get("st2"), 1, "port tanpa init tetap bisa di-drive");
+}
+
+#[test]
+fn test_port_init_applies_when_not_driven() {
+    // Port init tetap berlaku bila tak ada assignment (nilai default honored).
+    let source = r#"
+module tb (output logic [7:0] a = 8'h2A);
+    initial begin
+        #10 $display("PJ a=%0d", a);
+        $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 50).unwrap();
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    assert_eq!(get("a"), 0x2A, "port init berlaku saat tak di-drive");
 }
 
 #[test]

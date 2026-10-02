@@ -1108,6 +1108,27 @@ impl SimulationEngine {
             // struct / class field). Nilai utuh tidak bisa di-pack tanpa layout
             // typedef; evaluasi 0 (perilaku lama: pola bernama → FillLit 0).
             Expr::StructLit { .. } => Ok(LogicVec::from_u64(0, 32)),
+            // `i++` / `++i` di jalur AST — side-effect: baca operand, tulis
+            // balik ±1 (LRM 1800 §11.4.1).
+            Expr::IncDec {
+                expr: inner,
+                inc,
+                pre,
+            } => {
+                let old = self.evaluate_ast_expr(inner)?;
+                let one = LogicVec::from_u64(1, old.width);
+                let new = eval_binary(
+                    if *inc { BinaryIrOp::Add } else { BinaryIrOp::Sub },
+                    &old,
+                    &one,
+                );
+                self.write_ast_lvalue(inner, new.clone())?;
+                if *pre {
+                    Ok(new)
+                } else {
+                    Ok(old)
+                }
+            }
         }
     }
 

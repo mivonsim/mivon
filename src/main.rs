@@ -1018,7 +1018,9 @@ fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), SimError> {
             let src = std::fs::read_to_string(p)
                 .map_err(|e| SimError::with_diag(DiagCode::IoError, format!("{}: {}", p, e)))?;
             let header = Path::new(p).extension().map(|e| e == "mvh").unwrap_or(false);
-            items.push(mivon_api::mv::MvItem { src, base, header });
+            // `mivon run x.mv` (F8) memakai emisi default ($unit) — sama
+            // dengan `mgen x.mv` tanpa `--package`.
+            items.push(mivon_api::mv::MvItem::new(src, base).with_header(header));
         }
         let results = mivon_api::mv::transpile_many_items(&items).map_err(|(i, e)| {
             SimError::with_diag(
@@ -4519,6 +4521,7 @@ fn dispatch_gen(a: &crate::cli::MgenArgs) -> ! {
         svh_only: a.svh_only,
         sv_only: a.sv_only,
         no_check: a.no_check,
+        package: a.package.clone(),
         verbose: a.verbose,
     };
     exit_tool(mivon_api::tools::gen::run(&args));

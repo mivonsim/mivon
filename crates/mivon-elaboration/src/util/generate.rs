@@ -80,7 +80,8 @@ pub(crate) fn expr_location(expr: &Expr) -> (usize, usize) {
         | Expr::BitSelect { expr: inner, .. }
         | Expr::Cast { expr: inner, .. }
         | Expr::CastWidth { expr: inner, .. }
-        | Expr::Dist { expr: inner, .. } => expr_location(inner),
+        | Expr::Dist { expr: inner, .. }
+        | Expr::IncDec { expr: inner, .. } => expr_location(inner),
         Expr::BinaryOp { lhs, rhs, .. } => {
             let (ll, lc) = expr_location(lhs);
             if ll > 0 || lc > 0 {
@@ -1177,6 +1178,15 @@ fn scope_rename_expr(expr: &Expr, map: &HashMap<Symbol, Symbol>) -> Expr {
             false_expr: Box::new(scope_rename_expr(false_expr, map)),
         },
         Expr::Paren(inner) => Expr::Paren(Box::new(scope_rename_expr(inner, map))),
+        Expr::IncDec {
+            expr: inner,
+            inc,
+            pre,
+        } => Expr::IncDec {
+            expr: Box::new(scope_rename_expr(inner, map)),
+            inc: *inc,
+            pre: *pre,
+        },
         Expr::MethodCall {
             obj,
             method,

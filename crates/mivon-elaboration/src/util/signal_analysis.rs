@@ -132,6 +132,34 @@ pub fn collect_read_signals_stmt(stmt: &IrStmt, out: &mut Vec<SignalId>) {
     }
 }
 
+/// Kumpulkan signal baca dari index-ekspresi di dalam lvalue (untuk arm
+/// `IrExpr::IncDec` — read-modify-write: index array/bit yang dinamis ikut
+/// dibaca saat operand lvalue di-resolve).
+fn collect_lvalue_read_index_exprs(lv: &IrLValue, out: &mut Vec<SignalId>) {
+    match lv {
+        IrLValue::ArrayIndex { index, .. }
+        | IrLValue::ArrayRangeSelect { index, .. }
+        | IrLValue::ExprPartSelect { base: index, .. }
+        | IrLValue::HierRefIndex { index, .. } => {
+            collect_read_signals_expr(index, out);
+        }
+        IrLValue::ArrayBitSelect { index, bit, .. } => {
+            collect_read_signals_expr(index, out);
+            collect_read_signals_expr(bit, out);
+        }
+        IrLValue::Concat(parts) => {
+            for p in parts {
+                collect_lvalue_read_index_exprs(p, out);
+            }
+        }
+        IrLValue::Signal(..)
+        | IrLValue::RangeSelect(..)
+        | IrLValue::BitSelect(..)
+        | IrLValue::ObjectField { .. }
+        | IrLValue::HierRef(_) => {}
+    }
+}
+
 /// Kumpulkan semua signal yang dibaca dari satu IR expression.
 pub fn collect_read_signals_expr(expr: &IrExpr, out: &mut Vec<SignalId>) {
     match expr {
@@ -237,6 +265,13 @@ pub fn collect_read_signals_expr(expr: &IrExpr, out: &mut Vec<SignalId>) {
             for arg in args {
                 collect_read_signals_expr(arg, out);
             }
+        }
+        // `i++` dalam ekspresi = read-modify-write: operand terbaca DAN
+        // ditulis — kumpulkan keduanya (read + index lvalue) agar sensitivity
+        // / analysis tidak kehilangan sinyal.
+        IrExpr::IncDec { read, lv, .. } => {
+            collect_read_signals_expr(read, out);
+            collect_lvalue_read_index_exprs(lv, out);
         }
     }
 }
@@ -357,6 +392,9 @@ pub fn collect_implicit_net_idents(
             collect_implicit_net_idents(false_expr, signal_map, param_vals, pkg_ctx, out);
         }
         Expr::Paren(inner) => {
+            collect_implicit_net_idents(inner, signal_map, param_vals, pkg_ctx, out)
+        }
+        Expr::IncDec { expr: inner, .. } => {
             collect_implicit_net_idents(inner, signal_map, param_vals, pkg_ctx, out)
         }
         Expr::Cast { expr: inner, .. } => {

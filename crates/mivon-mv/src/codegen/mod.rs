@@ -26,6 +26,16 @@ pub struct GenOutput {
     pub svh: String,
 }
 
+/// Opsi emisi codegen (`mgen --package <nama>`, MIVON-HDL.md §11).
+#[derive(Debug, Clone, Default)]
+pub struct GenOpts<'a> {
+    /// Bungkus typedef level file di dalam `package <nama>; ... endpackage`
+    /// di `.svh`; `.sv` yang meng-`include` otomatis dapat
+    /// `import <nama>::*;`. Paket yang SUDAH ada di sumber tetap di-emit
+    /// apa adanya (nama dari sumber menang).
+    pub package: Option<&'a str>,
+}
+
 /// Generate `.sv` + `.svh` dari `MvFile` (konteks satu file).
 pub fn generate(file: &MvFile, base: &str) -> GenOutput {
     let ifaces: Vec<&str> = file.interfaces.iter().map(|i| i.name.as_str()).collect();
@@ -52,9 +62,20 @@ pub fn generate_src_ext(
     iface_names: &[&str],
     src_ext: &str,
 ) -> GenOutput {
+    generate_src_ext_opts(file, base, iface_names, src_ext, &GenOpts::default())
+}
+
+/// `generate_src_ext` dengan opsi emisi (`mgen --package`).
+pub fn generate_src_ext_opts(
+    file: &MvFile,
+    base: &str,
+    iface_names: &[&str],
+    src_ext: &str,
+    opts: &GenOpts,
+) -> GenOutput {
     let header = header(base, src_ext);
-    let svh = generate_svh(file, base, &header);
-    let sv = generate_sv(file, base, &header, iface_names);
+    let svh = generate_svh_opts(file, base, &header, opts);
+    let sv = generate_sv_opts(file, base, &header, iface_names, opts);
     GenOutput { sv, svh }
 }
 
@@ -69,9 +90,10 @@ fn header(base: &str, src_ext: &str) -> String {
 
 // ── .svh ──
 
-/// Emit `.svh` HANYA jika file punya definisi bersama (package atau typedef
-/// level file) yang perlu di-include oleh `.sv`.
-fn generate_svh(file: &MvFile, base: &str, header: &str) -> String {
+/// `generate_svh` dengan opsi emisi. `--package <nama>` membungkus typedef
+/// level file dalam `package <nama>; ... endpackage` (MIVON-HDL.md §11) —
+/// interface/package dari sumber tetap di luar, nama dari sumber menang.
+fn generate_svh_opts(file: &MvFile, base: &str, header: &str, opts: &GenOpts) -> String {
     // Definisi bersama = typedef level file + package + interface (F26).
     let has_shared =
         !file.typedefs.is_empty() || !file.packages.is_empty() || !file.interfaces.is_empty();
@@ -84,9 +106,24 @@ fn generate_svh(file: &MvFile, base: &str, header: &str) -> String {
     out.push('\n');
     out.push_str(&format!("`ifndef {guard}\n`define {guard}\n"));
 
-    for td in &file.typedefs {
-        out.push('\n');
-        defs::emit_typedef(&mut out, 0, td);
+    // `--package`: typedef level file → di dalam satu package (deterministik,
+    // SV valid). Package/interface dari sumber tetap di luar — nama dari
+    // sumber menang.
+    match opts.package.filter(|_| !file.typedefs.is_empty()) {
+        Some(pkg_name) => {
+            out.push('\n');
+            line(&mut out, 0, &format!("package {pkg_name};"));
+            for td in &file.typedefs {
+                defs::emit_typedef(&mut out, 1, td);
+            }
+            line(&mut out, 0, "endpackage");
+        }
+        None => {
+            for td in &file.typedefs {
+                out.push('\n');
+                defs::emit_typedef(&mut out, 0, td);
+            }
+        }
     }
     for pkg in &file.packages {
         out.push('\n');
@@ -104,7 +141,16 @@ fn generate_svh(file: &MvFile, base: &str, header: &str) -> String {
 
 // ── .sv ──
 
-fn generate_sv(file: &MvFile, base: &str, header: &str, iface_names: &[&str]) -> String {
+/// `generate_sv` dengan opsi emisi. `--package <nama>` menambahkan
+/// `import <nama>::*;` setelah `` `include `` agar typedef yang kini
+/// berada di dalam package tetap terlihat di module ini.
+fn generate_sv_opts(
+    file: &MvFile,
+    base: &str,
+    header: &str,
+    iface_names: &[&str],
+    opts: &GenOpts,
+) -> String {
     // F30 fix: file yang hanya berisi definisi bersama (package/typedef/
     // interface) tanpa module/program/class/func/task tidak menghasilkan
     // konten fungsional — kembalikan kosong agar `mgen` tidak menulis .sv.
@@ -125,6 +171,10 @@ fn generate_sv(file: &MvFile, base: &str, header: &str, iface_names: &[&str]) ->
         !file.typedefs.is_empty() || !file.packages.is_empty() || !file.interfaces.is_empty();
     if has_shared {
         out.push_str(&format!("`include \"{base}.svh\"\n"));
+        // `--package`: typedef wrapped → module ini butuh import eksplisit.
+        if let Some(pkg) = opts.package.filter(|_| !file.typedefs.is_empty()) {
+            out.push_str(&format!("import {pkg}::*;\n"));
+        }
     }
 
     for m in &file.modules {

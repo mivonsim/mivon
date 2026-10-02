@@ -211,6 +211,7 @@ fn collect_called_expr(expr: &Expr, known: &HashSet<Symbol>, out: &mut HashSet<S
         }
         Expr::Replicate { expr: inner, .. } => collect_called_expr(inner, known, out),
         Expr::Paren(inner) => collect_called_expr(inner, known, out),
+        Expr::IncDec { expr: inner, .. } => collect_called_expr(inner, known, out),
         Expr::RangeSelect {
             expr: inner,
             msb,
@@ -950,6 +951,15 @@ pub(crate) fn rename_in_expr(expr: Expr, rename_map: &HashMap<Symbol, Symbol>) -
             col: 0,
         },
         Expr::Value(_) | Expr::FillLit(_) | Expr::String(_) | Expr::Null => expr,
+        Expr::IncDec {
+            expr: inner,
+            inc,
+            pre,
+        } => Expr::IncDec {
+            expr: Box::new(rename_in_expr(*inner, rename_map)),
+            inc,
+            pre,
+        },
         other => other,
     }
 }
@@ -1055,6 +1065,15 @@ pub fn substitute_let_args(expr: Expr, map: &HashMap<Symbol, &Expr>) -> Expr {
         Expr::Cast { expr, dtype } => Expr::Cast {
             expr: Box::new(substitute_let_args(*expr, map)),
             dtype,
+        },
+        Expr::IncDec {
+            expr: inner,
+            inc,
+            pre,
+        } => Expr::IncDec {
+            expr: Box::new(substitute_let_args(*inner, map)),
+            inc,
+            pre,
         },
         other => other,
     }
