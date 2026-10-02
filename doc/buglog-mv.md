@@ -94,6 +94,17 @@ bug di mivon utama (parser/elaborator/simulator). Status: ✅ fixed / ⏳ open.
    codegen: nilai awal dipindah ke deklarasi port (`output Addr a = 16'h2A`,
    sah LRM 1800 §6.8.2); input port tak boleh diinisialisasi → diabaikan.
 
+9. **Struct assignment pattern `'{...}` menghasilkan 0** — `p = '{hi: 4'hA,
+   lo: 4'h5}` pada struct packed berakhir `p = 00` (siluman), padahal member
+   access `p.hi`/`p.lo` berfungsi penuh. Dua sebab: (a) arm `Expr::StructLit`
+   di `elaborate_expr` tak tahu layout typedef → `FillLit(0)`; (b) even
+   setelahnya, `apply_lhs_context_width` const-fold `Expr::StructLit` → 0
+   menimpa lagi. Fix: elaborator baru `struct_lit.rs`
+   (`elaborate_struct_pattern` + packing MSB-first dari `SignalInfo
+   .struct_fields`), dipanggil di arm Blocking/NonBlockingAssign; const-fold
+   dilewati untuk pola struct. Mendukung pola bernama, posisional,
+   `default:`, sebagian, dan nested struct (LRM 1800 §7.9).
+
 ## ⏳ Open
 
 (tidak ada item open — semua bug historis sudah tertutup)

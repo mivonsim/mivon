@@ -218,6 +218,7 @@ pub mod always;
 pub mod classes;
 pub mod expr;
 pub mod stmt;
+pub mod struct_lit;
 
 use stmt::{lvalue_signal_id, propagate_context_width};
 pub mod types;

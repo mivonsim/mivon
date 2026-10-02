@@ -828,6 +828,19 @@ impl Elaborator {
                 } else {
                     self.elaborate_expr(rhs, signal_map, signals)?
                 };
+                // Struct assignment pattern `p = '{hi: 4'hA, lo: 4'h5}` —
+                // layout struct hanya diketahui di level statement (LHS),
+                // sedangkan arm `Expr::StructLit` di `elaborate_expr` tak bisa
+                // me-resolve tipe (jadi FillLit 0 = silent wrong).
+                if let Some(ir_pattern) =
+                    self.elaborate_struct_pattern(&ir_lhs, rhs, signal_map, signals)?
+                {
+                    ir_rhs = ir_pattern;
+                }
+                let struct_pattern = matches!(rhs, Expr::StructLit { .. });
+                // `apply_lhs_context_width` (lihat arm NonBlockingAssign):
+                // pola struct tak boleh dilewatkan const-fold `Expr::StructLit`
+                // (tak tahu layout → 0), lebar pola sudah pas.
                 // Fill in class name for new() calls from LHS signal info
                 if let IrExpr::NewCall {
                     ref mut class_name, ..
@@ -848,7 +861,9 @@ impl Elaborator {
                 // RHS (LRM §11.8.1) sebelum evaluasi runtime.
                 let _at = std::time::Instant::now();
                 let _at = std::time::Instant::now();
-                self.apply_lhs_context_width(&ir_lhs, rhs, &mut ir_rhs, signal_map, signals);
+                if !struct_pattern {
+                    self.apply_lhs_context_width(&ir_lhs, rhs, &mut ir_rhs, signal_map, signals);
+                }
                 self.dbg_apply_us
                     .set(self.dbg_apply_us.get() + _at.elapsed().as_micros() as u64);
                 self.dbg_apply_n.set(self.dbg_apply_n.get() + 1);
@@ -919,6 +934,15 @@ impl Elaborator {
                 } else {
                     self.elaborate_expr(rhs, signal_map, signals)?
                 };
+                // Struct assignment pattern — lihat arm BlockingAssign.
+                if let Some(ir_pattern) =
+                    self.elaborate_struct_pattern(&ir_lhs, rhs, signal_map, signals)?
+                {
+                    ir_rhs = ir_pattern;
+                }
+                // Pola struct tak boleh dilewatkan const-fold `Expr::StructLit`
+                // (tak tahu layout → 0), lihat arm BlockingAssign.
+                let struct_pattern = matches!(rhs, Expr::StructLit { .. });
                 if let IrExpr::NewCall {
                     ref mut class_name, ..
                 } = ir_rhs
@@ -936,7 +960,9 @@ impl Elaborator {
                 let lhs_sid = lvalue_signal_id(&ir_lhs);
                 // Propagasi lebar konteks LHS (lihat arm BlockingAssign).
                 let _at = std::time::Instant::now();
-                self.apply_lhs_context_width(&ir_lhs, rhs, &mut ir_rhs, signal_map, signals);
+                if !struct_pattern {
+                    self.apply_lhs_context_width(&ir_lhs, rhs, &mut ir_rhs, signal_map, signals);
+                }
                 self.dbg_apply_us
                     .set(self.dbg_apply_us.get() + _at.elapsed().as_micros() as u64);
                 self.dbg_apply_n.set(self.dbg_apply_n.get() + 1);

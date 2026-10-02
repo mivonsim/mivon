@@ -21726,6 +21726,96 @@ endmodule
     assert_eq!(get("a"), 0x2A, "port init berlaku saat tak di-drive");
 }
 
+// ── Bug mivon utama: struct assignment pattern `'{...}` jadi 0 ──
+//
+// PRA-FIX: `elaborate_expr` arm `Expr::StructLit` tidak tahu layout typedef
+// → FillLit 0, dan `apply_lhs_context_width` const-fold menimpanya lagi dengan
+// 0. Akibatnya `p = '{hi:4'hA, lo:4'h5}` menghasilkan `p = 0` (silent wrong),
+// padahal member access `p.hi` berfungsi.
+
+#[test]
+fn test_struct_assignment_pattern_named() {
+    let source = r#"
+typedef struct packed { logic [3:0] hi; logic [3:0] lo; } P;
+module tb;
+    P p;
+    initial begin
+        p = '{hi: 4'hA, lo: 4'h5};
+        $display("SL p=%h hi=%h lo=%h", p, p.hi, p.lo);
+        $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 50).unwrap();
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    // `p.hi`/`p.lo` bukan signal top-level — nilainya dicek via $display, yang
+    // sudah tercetak `SL p=a5 hi=a lo=5` (lihat stdout test).
+    assert_eq!(get("p"), 0xA5, "pola bernama harus ter-pack sesuai offset field");
+}
+
+#[test]
+fn test_struct_assignment_pattern_positional_default_partial() {
+    let source = r#"
+typedef struct packed { logic [3:0] hi; logic [3:0] lo; } P;
+module tb;
+    P p_pos, p_def, p_part;
+    initial begin
+        p_pos  = '{4'h3, 4'h4};
+        p_def  = '{default: 4'hF};
+        p_part = '{lo: 4'h9};
+        $display("SP pos=%h def=%h part=%h", p_pos, p_def, p_part);
+        $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 50).unwrap();
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    assert_eq!(get("p_pos"), 0x34, "pola posisional (hi=3, lo=4)");
+    assert_eq!(get("p_def"), 0xFF, "`default:` untuk semua member");
+    assert_eq!(get("p_part"), 0x09, "member tak disebut = 0");
+}
+
+#[test]
+fn test_struct_assignment_pattern_nested() {
+    let source = r#"
+typedef struct packed { logic [3:0] hi; logic [3:0] lo; } P;
+typedef struct packed { logic [1:0] tag; P inner; } Outer;
+module tb;
+    Outer o;
+    initial begin
+        o = '{tag: 2'h2, inner: '{hi: 4'h5, lo: 4'h6}};
+        $display("SN o=%h tag=%h inner=%h", o, o.tag, o.inner);
+        $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 50).unwrap();
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    // `o.tag`/`o.inner` dicek lewat $display (`SN o=256 tag=2 inner=56`).
+    assert_eq!(get("o"), 0x256, "tag(2)<<6 | inner(0x56)");
+}
+
+#[test]
+fn test_struct_assignment_pattern_nonblocking() {
+    // Pola yang sama di `<=` (non-blocking) dalam blok always.
+    let source = r#"
+typedef struct packed { logic [3:0] hi; logic [3:0] lo; } P;
+module tb;
+    reg clk = 0;
+    P p;
+    always @(posedge clk) p <= '{hi: 4'h7, lo: 4'h8};
+    initial begin
+        #5 clk = 1;
+        #10 $display("SNB p=%h", p);
+        $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 50).unwrap();
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    assert_eq!(get("p"), 0x78, "pola di non-blocking assign");
+}
+
 #[test]
 fn test_virtual_class_pkg_param() {
     // dmi_test.sv: `virtual class rand_dmi #(parameter int AW = 32);`
