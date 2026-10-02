@@ -1204,14 +1204,29 @@ impl Elaborator {
                 eprintln!("[DBG-ELAB] inline module '{}'", module.name.as_str());
             }
             let temps = mivon_ast::inline::inline_func_calls_in_module(module)?;
-            for (name, width, typedef_name, carried_range, arr_range, arr_size) in temps {
+            for (
+                name,
+                width,
+                typedef_name,
+                carried_range,
+                arr_range,
+                arr_size,
+                temp_dtype,
+                static_init,
+            ) in temps
+            {
                 module.decls.push(Decl {
                     // Temp signal dari variabel lokal / return function bertipe
                     // typedef (struct) dipakai untuk member access — set dtype
                     // UserDefined agar elaborator mengisi struct_fields.
-                    dtype: match typedef_name {
-                        Some(tn) => DataType::UserDefined(tn),
-                        None => DataType::Logic,
+                    // Tipe dari inliner (mis. `Int` utk return `-> int`)
+                    // diprioritaskan agar signedness temp benar — tanpa itu
+                    // `$display("%0d", f())` utk nilai negatif tercetak
+                    // unsigned.
+                    dtype: match (typedef_name, temp_dtype) {
+                        (Some(tn), _) => DataType::UserDefined(tn),
+                        (None, Some(dt)) => dt,
+                        (None, None) => DataType::Logic,
                     },
                     kind: DeclKind::Reg,
                     names: vec![DeclVar {
@@ -1243,8 +1258,11 @@ impl Elaborator {
                         assoc_key_type: None,
                         is_rand: false,
                         is_const: false,
-                        is_static: false,
-                        expr: None,
+                        // Variabel STATIC (fungsi `static` / lokal `static`):
+                        // nilai awal dipasang di DEKLARASI (LRM 1800 §8.21)
+                        // → di-init sekali saat time 0, bertahan antar-call.
+                        is_static: static_init.is_some(),
+                        expr: static_init,
                     }],
                 });
             }

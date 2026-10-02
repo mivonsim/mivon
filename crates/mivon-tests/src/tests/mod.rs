@@ -21736,6 +21736,61 @@ endmodule
     assert_eq!(get("a"), 0x2A, "port init berlaku saat tak di-drive");
 }
 
+// ── F55: signedness hasil function inlining + variabel STATIC (LRM §8.21) ──
+
+#[test]
+fn test_function_result_signed_in_display() {
+    // PRA-FIX: temp hasil inlining bertipe `Logic` (UNSIGNED) sehingga
+    // `$display("%0d", max2(-3, -9))` tercetak 4294967293 (padahal assignment
+    // ke variabel integer sudah benar karena resize terjadi di sana).
+    let source = r#"
+module tb_fs;
+    function automatic int max2(int a, int b); return (a > b) ? a : b; endfunction
+    function automatic int neg(int a); return a; endfunction
+    integer x;
+    initial begin
+        $display("X1 %0d", max2(-3, -9));
+        $display("X2 %0d", neg(-3));
+        $display("X3 %0d", max2(3, 9));
+        x = max2(-3, -9);
+        $display("X4 %0d", x);
+        $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 50).unwrap();
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    // integer 32-bit dua-complement: -3 = 0xFFFFFFFD.
+    assert_eq!(get("x"), 0xFFFF_FFFD, "assignment tetap benar");
+}
+
+#[test]
+fn test_static_function_variable_persists() {
+    // LRM 1800 §8.21: variabel `static` (dan semua lokal fungsi `static`)
+    // punya lifetime modul — nilainya bertahan antar-call. PRA-FIX inliner
+    // membuat temp per-call → `counter()` selalu mengembalikan 1.
+    let source = r#"
+module tb_st;
+    function static int counter();
+        static int c = 0;
+        c++;
+        return c;
+    endfunction
+    integer x;
+    initial begin
+        $display("Y1 %0d", counter());
+        $display("Y2 %0d", counter());
+        x = counter();
+        $display("Y3 %0d", x);
+        $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 50).unwrap();
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    assert_eq!(get("x"), 3, "call ketiga = 3 (state bertahan antar-call)");
+}
+
 // ── Real↔integer: `$rtoi`/`$itor`, cast, format (LRM 1800 §6.24/§20.8) ──
 //
 // PRA-FIX: `$rtoi`/`$itor` tak dikenal (0 + warning RT9003); `$display("%d",

@@ -17,12 +17,20 @@ use mivon_core::intern::Symbol;
 /// lebar function return/local var bertipe `[Width-1:0]` jatuh ke 1. Demikian
 /// juga `array_range`/`array_size_expr` untuk array unpacked lokal
 /// (`automatic logic [W-1:0] C [5]`) yang harus tetap jadi array saat didaftarkan.
+/// Tuple temp signal dari inliner: `(nama, lebar, typedef, range, array_range,
+/// array_size, dtype, init)`. Elemen `dtype` dipakai agar temp hasil fungsi
+/// bertipe signed (mis. `-> int`) tidak diperlakukan unsigned — tanpa itu
+/// `$display("%0d", f())` untuk nilai negatif tercetak 4294967293. Elemen
+/// `init` hanya diisi untuk variabel STATIC (di-init sekali saat deklarasi
+/// modul, bukan tiap pemanggilan — LRM 1800 §8.21).
 pub type TempSignal = (
     Symbol,
     usize,
     Option<Symbol>,
     Option<ExprRange>,
     Option<Range>,
+    Option<Expr>,
+    Option<super::types::DataType>,
     Option<Expr>,
 );
 pub fn inline_func_calls_in_module(module: &mut Module) -> Result<Vec<TempSignal>, String> {
@@ -1030,6 +1038,8 @@ fn inline_funcs_in_stmt_inner(
                                 port_range,
                                 port_arr,
                                 None,
+                                None,
+                                None,
                             ));
                             rename_map.insert(port.name, temp_arg_name);
                             preamble.push(Stmt::BlockingAssign {
@@ -1051,10 +1061,30 @@ fn inline_funcs_in_stmt_inner(
                             if rename_map.contains_key(&var.name) {
                                 continue;
                             }
-                            let new_name_sym = Symbol::intern(&format!(
-                                "__func_{}_{}_{}_{}",
-                                prefix, name, c, var.name
-                            ));
+                            // Variabel STATIC (fungsi `static` atau lokal
+                            // `static`) punya lifetime modul (LRM 1800 §8.21):
+                            // nilainya harus BERTAHAN antar-call. Inliner
+                            // membuat temp per-call (nama memuat counter `c`)
+                            // → setiap call reset ke nilai awal. Fix: nama
+                            // deterministik TANPA counter, dideklarasikan sekali,
+                            // dan initializer-nya tidak di-emit ulang per call.
+                            let is_static_var = func.is_static || var.is_static;
+                            let new_name_sym = if is_static_var {
+                                Symbol::intern(&format!("__func_static_{}_{}", prefix, var.name))
+                            } else {
+                                Symbol::intern(&format!(
+                                    "__func_{}_{}_{}_{}",
+                                    prefix, name, c, var.name
+                                ))
+                            };
+                            if is_static_var
+                                && temp_signals.iter().any(|(n, ..)| *n == new_name_sym)
+                            {
+                                // Sudah didaftarkan oleh call sebelumnya —
+                                // pakai signal yang sama (state bertahan).
+                                rename_map.insert(var.name, new_name_sym);
+                                continue;
+                            }
                             let dtype_width = match &decl.dtype {
                                 super::types::DataType::Bit | super::types::DataType::Logic => 1,
                                 super::types::DataType::Byte => 8,
@@ -1116,6 +1146,14 @@ fn inline_funcs_in_stmt_inner(
                             let var_range = var.expr_range.clone();
                             let var_arr = var.array_range.clone();
                             let var_arr_size = var.array_size_expr.clone();
+                            // Initializer variabel STATIC dibawa ke deklarasi
+                            // (di-init SEKALI saat deklarasi modul — LRM 1800
+                            // §8.21). Non-static tetap lewat init job per-call.
+                            let static_init = if is_static_var {
+                                var.expr.clone()
+                            } else {
+                                None
+                            };
                             temp_signals.push((
                                 new_name_sym,
                                 width,
@@ -1123,12 +1161,21 @@ fn inline_funcs_in_stmt_inner(
                                 var_range,
                                 var_arr,
                                 var_arr_size,
+                                Some(decl.dtype.clone()),
+                                static_init,
                             ));
                             rename_map.insert(var.name, new_name_sym);
                             // F34: simpan initializer variabel lokal — di-emit
-                            // setelah semua rename selesai.
+                            // setelah semua rename selesai. Variabel STATIC
+                            // di-init SEKALI (saat deklarasi modul), bukan
+                            // tiap call — kalau tidak, nilainya reset ke awal
+                            // setiap pemanggilan (bug: `counter()` selalu 1).
+                            // Initializer static sudah dibawa ke deklarasi
+                            // (lihat `static_init` di atas).
                             if let Some(init) = &var.expr {
-                                task_init_jobs.push((new_name_sym, init.clone()));
+                                if !is_static_var {
+                                    task_init_jobs.push((new_name_sym, init.clone()));
+                                }
                             }
                         }
                     }
@@ -2119,7 +2166,21 @@ fn replace_func_calls_in_expr_inner(
                     // Range asli `[Width-1:0]` diteruskan agar elaborator bisa
                     // resolve lebar dengan effective_params (ret_width gagal
                     // saat bound memakai parameter modul).
-                    temp_signals.push((rn, ret_width, ret_typedef, func.range.clone(), None, None));
+                    // Tipe return diteruskan agar temp hasil fungsi ikut
+                    // signed/struct seperti aslinya (LRM 1800 §6.24.1).
+                    let ret_dtype = ret_typedef
+                        .map(super::types::DataType::UserDefined)
+                        .or_else(|| func.return_type.as_deref().cloned());
+                    temp_signals.push((
+                        rn,
+                        ret_width,
+                        ret_typedef,
+                        func.range.clone(),
+                        None,
+                        None,
+                        ret_dtype,
+                        None,
+                    ));
                     Some(rn)
                 } else {
                     None
@@ -2183,6 +2244,8 @@ fn replace_func_calls_in_expr_inner(
                             port_range,
                             port_arr,
                             None,
+                            None,
+                            None,
                         ));
                         rename_map.insert(port.name, temp_arg_name);
                         preamble.push(Stmt::BlockingAssign {
@@ -2216,6 +2279,8 @@ fn replace_func_calls_in_expr_inner(
                         port_range,
                         port_arr,
                         None,
+                        None,
+                        None,
                     ));
                     rename_map.insert(port.name, temp_arg_name);
                     if let Some(default_expr) = &port.default {
@@ -2238,10 +2303,26 @@ fn replace_func_calls_in_expr_inner(
                         if rename_map.contains_key(&var.name) {
                             continue;
                         }
-                        let new_name_sym = Symbol::intern(&format!(
-                            "__func_{}_{}_{}_{}",
-                            prefix, name, c, var.name
-                        ));
+                        // Variabel STATIC (fungsi `static` / lokal `static`):
+                        // nama deterministik TANPA counter call sehingga semua
+                        // ekspansi memakai signal yang sama (state bertahan,
+                        // LRM 1800 §8.21) dan initializer-nya hanya di-deklarasi
+                        // sekali (lihat `static_init` di bawah).
+                        let is_static_var = func.is_static || var.is_static;
+                        let new_name_sym = if is_static_var {
+                            Symbol::intern(&format!("__func_static_{}_{}", prefix, var.name))
+                        } else {
+                            Symbol::intern(&format!(
+                                "__func_{}_{}_{}_{}",
+                                prefix, name, c, var.name
+                            ))
+                        };
+                        if is_static_var
+                            && temp_signals.iter().any(|(n, ..)| *n == new_name_sym)
+                        {
+                            rename_map.insert(var.name, new_name_sym);
+                            continue;
+                        }
                         let dtype_width = match &decl.dtype {
                             super::types::DataType::Bit | super::types::DataType::Logic => 1,
                             super::types::DataType::Byte => 8,
@@ -2300,6 +2381,12 @@ fn replace_func_calls_in_expr_inner(
                         let var_range = var.expr_range.clone();
                         let var_arr = var.array_range.clone();
                         let var_arr_size = var.array_size_expr.clone();
+                        // Static: initializer dibawa ke deklarasi (sekali).
+                        let static_init = if is_static_var {
+                            var.expr.clone()
+                        } else {
+                            None
+                        };
                         temp_signals.push((
                             new_name_sym,
                             width,
@@ -2307,6 +2394,8 @@ fn replace_func_calls_in_expr_inner(
                             var_range,
                             var_arr,
                             var_arr_size,
+                            Some(decl.dtype.clone()),
+                            static_init,
                         ));
                         rename_map.insert(var.name, new_name_sym);
                         // F34: simpan initializer variabel lokal
@@ -2314,7 +2403,9 @@ fn replace_func_calls_in_expr_inner(
                         // rename selesai (guard contains_key di atas sudah
                         // true utk var ini).
                         if let Some(init) = &var.expr {
-                            local_init_jobs.push((new_name_sym, init.clone()));
+                            if !is_static_var {
+                                local_init_jobs.push((new_name_sym, init.clone()));
+                            }
                         }
                     }
                 }

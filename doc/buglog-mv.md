@@ -165,6 +165,20 @@ bug di mivon utama (parser/elaborator/simulator). Status: ✅ fixed / ⏳ open.
     untuk dynamic/associative (storage-nya HashMap, `init_val` tak pernah
     berubah).
 
+17. **Hasil function inlining kehilangan signedness** — temp hasil inlining
+    selalu bertipe `Logic` (UNSIGNED), sehingga
+    `$display("%0d", max2(-3, -9))` tercetak 4294967293 (assignment ke
+    variabel integer tetap benar karena resize terjadi di sana). Fix F55:
+    `TempSignal` bertambah elemen `dtype`; return slot memakai
+    `func.return_type`, temp arg/lokal memakai dtype aslinya.
+
+18. **Variabel `static` reset tiap pemanggilan** —
+    `function static int counter(); static int c = 0; c++; return c;`
+    selalu mengembalikan 1 (inliner membuat temp per-call + mengulang
+    initializer). LRM 1800 §8.21: variabel static punya lifetime modul.
+    Fix F55: nama deterministik tanpa counter call (semua ekspansi berbagi
+    signal), dedup deklarasi, dan initializer dipindah ke deklarasi.
+
 ## ⏳ Open
 
 (tidak ada item open — semua bug historis sudah tertutup)
