@@ -509,6 +509,7 @@ pub fn substitute_loop_var_in_stmt(stmt: &Stmt, var_name: &str, value: i64) -> S
             expr,
             items,
             default,
+            kind,
         } => Stmt::UniqueCase {
             expr: substitute_loop_var_in_expr(expr, var_name, value),
             items: items
@@ -525,11 +526,13 @@ pub fn substitute_loop_var_in_stmt(stmt: &Stmt, var_name: &str, value: i64) -> S
             default: default
                 .as_ref()
                 .map(|d| Box::new(substitute_loop_var_in_stmt(d, var_name, value))),
+            kind: *kind,
         },
         Stmt::PriorityCase {
             expr,
             items,
             default,
+            kind,
         } => Stmt::PriorityCase {
             expr: substitute_loop_var_in_expr(expr, var_name, value),
             items: items
@@ -546,11 +549,13 @@ pub fn substitute_loop_var_in_stmt(stmt: &Stmt, var_name: &str, value: i64) -> S
             default: default
                 .as_ref()
                 .map(|d| Box::new(substitute_loop_var_in_stmt(d, var_name, value))),
+            kind: *kind,
         },
         Stmt::Unique0Case {
             expr,
             items,
             default,
+            kind,
         } => Stmt::Unique0Case {
             expr: substitute_loop_var_in_expr(expr, var_name, value),
             items: items
@@ -567,6 +572,7 @@ pub fn substitute_loop_var_in_stmt(stmt: &Stmt, var_name: &str, value: i64) -> S
             default: default
                 .as_ref()
                 .map(|d| Box::new(substitute_loop_var_in_stmt(d, var_name, value))),
+            kind: *kind,
         },
         Stmt::StmtCase {
             expr,

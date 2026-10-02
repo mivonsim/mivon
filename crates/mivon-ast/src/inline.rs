@@ -1606,16 +1606,19 @@ fn inline_funcs_in_stmt_inner(
             ref expr,
             ref items,
             ref default,
+            ref kind,
         }
         | Stmt::PriorityCase {
             ref expr,
             ref items,
             ref default,
+            ref kind,
         }
         | Stmt::Unique0Case {
             ref expr,
             ref items,
             ref default,
+            ref kind,
         } => {
             let mut preamble = Vec::new();
             let is_unique0 = matches!(&stmt, Stmt::Unique0Case { .. });
@@ -1677,18 +1680,21 @@ fn inline_funcs_in_stmt_inner(
                     expr: new_expr,
                     items: new_items,
                     default: new_default,
+                    kind: *kind,
                 }
             } else if matches!(stmt, Stmt::UniqueCase { .. }) {
                 Stmt::UniqueCase {
                     expr: new_expr,
                     items: new_items,
                     default: new_default,
+                    kind: *kind,
                 }
             } else {
                 Stmt::PriorityCase {
                     expr: new_expr,
                     items: new_items,
                     default: new_default,
+                    kind: *kind,
                 }
             };
             if preamble.is_empty() {
@@ -2317,9 +2323,7 @@ fn replace_func_calls_in_expr_inner(
                                 prefix, name, c, var.name
                             ))
                         };
-                        if is_static_var
-                            && temp_signals.iter().any(|(n, ..)| *n == new_name_sym)
-                        {
+                        if is_static_var && temp_signals.iter().any(|(n, ..)| *n == new_name_sym) {
                             rename_map.insert(var.name, new_name_sym);
                             continue;
                         }

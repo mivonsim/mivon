@@ -163,16 +163,22 @@ pub enum Stmt {
         index_vars: Vec<Symbol>,
         stmts: Vec<Stmt>,
     },
-    // Unique/Priority case qualifiers
+    // Unique/Priority case qualifiers. `kind` = jenis case yang
+    // di-qualify (`case`/`casex`/`casez`) — qualifier & kind ortogonal
+    // (LRM 1800 §12.5): qualifier mengatur overlap-check, kind mengatur
+    // pencocokan wildcard. Tanpa `kind`, `priority casez` kehilangan
+    // semantik wildcard-nya (bug: hanya exact-match).
     UniqueCase {
         expr: Expr,
         items: Vec<CaseItem>,
         default: Option<Box<Stmt>>,
+        kind: CaseKind,
     },
     PriorityCase {
         expr: Expr,
         items: Vec<CaseItem>,
         default: Option<Box<Stmt>>,
+        kind: CaseKind,
     },
     /// LANG-16/17: `unique0 case` — warning hanya bila ada 2+ item cocok
     /// (tanpa warning no-match, beda dengan `unique case`).
@@ -180,6 +186,7 @@ pub enum Stmt {
         expr: Expr,
         items: Vec<CaseItem>,
         default: Option<Box<Stmt>>,
+        kind: CaseKind,
     },
     CaseInside {
         expr: Expr,
@@ -280,4 +287,16 @@ pub enum JoinType {
 pub struct CaseItem {
     pub labels: Vec<Expr>,
     pub stmt: Box<Stmt>,
+}
+
+/// Jenis case yang di-qualify `unique`/`unique0`/`priority`
+/// (LRM 1800 §12.5) — qualifier & kind ortogonal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum CaseKind {
+    /// `unique case` / `priority case` — exact match
+    Plain,
+    /// `unique casex` / `priority casex` — X/Z/? wildcard
+    X,
+    /// `unique casez` / `priority casez` — Z/? wildcard
+    Z,
 }

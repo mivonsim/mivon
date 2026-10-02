@@ -631,9 +631,8 @@ impl Parser {
                     match last_ident {
                         Some(n) => formals.push(n),
                         None => {
-                            return Err(self.err(
-                                "expected formal argument name in covergroup argument list",
-                            ))
+                            return Err(self
+                                .err("expected formal argument name in covergroup argument list"))
                         }
                     }
                     if self.peek() == &Token::Comma {
@@ -1547,83 +1546,48 @@ impl Parser {
                 match self.peek() {
                     Token::Case | Token::CaseX | Token::CaseZ => {
                         let stmt = self.parse_case_stmt()?;
-                        match stmt {
+                        // Kind dipertahankan (qualifier & kind ortogonal,
+                        // LRM 1800 §12.5) — sebelumnya kind dibuang sehingga
+                        // `priority casez` hanya exact-match (bug).
+                        let (expr, items, default, kind) = match stmt {
                             Stmt::Case {
                                 expr,
                                 items,
                                 default,
-                            } => {
-                                if qualifier == Token::Unique0 {
-                                    Ok(Stmt::Unique0Case {
-                                        expr,
-                                        items,
-                                        default,
-                                    })
-                                } else if qualifier == Token::Unique {
-                                    Ok(Stmt::UniqueCase {
-                                        expr,
-                                        items,
-                                        default,
-                                    })
-                                } else {
-                                    Ok(Stmt::PriorityCase {
-                                        expr,
-                                        items,
-                                        default,
-                                    })
-                                }
-                            }
+                            } => (expr, items, default, CaseKind::Plain),
                             Stmt::CaseX {
                                 expr,
                                 items,
                                 default,
-                            } => {
-                                if qualifier == Token::Unique0 {
-                                    Ok(Stmt::Unique0Case {
-                                        expr,
-                                        items,
-                                        default,
-                                    })
-                                } else if qualifier == Token::Unique {
-                                    Ok(Stmt::UniqueCase {
-                                        expr,
-                                        items,
-                                        default,
-                                    })
-                                } else {
-                                    Ok(Stmt::PriorityCase {
-                                        expr,
-                                        items,
-                                        default,
-                                    })
-                                }
-                            }
+                            } => (expr, items, default, CaseKind::X),
                             Stmt::CaseZ {
                                 expr,
                                 items,
                                 default,
-                            } => {
-                                if qualifier == Token::Unique0 {
-                                    Ok(Stmt::Unique0Case {
-                                        expr,
-                                        items,
-                                        default,
-                                    })
-                                } else if qualifier == Token::Unique {
-                                    Ok(Stmt::UniqueCase {
-                                        expr,
-                                        items,
-                                        default,
-                                    })
-                                } else {
-                                    Ok(Stmt::PriorityCase {
-                                        expr,
-                                        items,
-                                        default,
-                                    })
-                                }
-                            }
-                            _ => Ok(stmt),
+                            } => (expr, items, default, CaseKind::Z),
+                            _ => return Ok(stmt),
+                        };
+                        if qualifier == Token::Unique0 {
+                            Ok(Stmt::Unique0Case {
+                                expr,
+                                items,
+                                default,
+                                kind,
+                            })
+                        } else if qualifier == Token::Unique {
+                            Ok(Stmt::UniqueCase {
+                                expr,
+                                items,
+                                default,
+                                kind,
+                            })
+                        } else {
+                            Ok(Stmt::PriorityCase {
+                                expr,
+                                items,
+                                default,
+                                kind,
+                            })
                         }
                     }
                     Token::If => {

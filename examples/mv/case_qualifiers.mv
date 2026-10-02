@@ -9,12 +9,13 @@ module case_qualifiers {
 
     reg result : logic[7:0] = '0
 
-    // priority case — prioritas tertinggi di atas
+    // priority casez — prioritas tertinggi di atas; `?` wildcard
+    // hanya bermakna di casez/casex (LRM 1800 §12.5), bukan plain `case`.
     seq(clk, rst_n) {
         if (!rst_n) {
             result <= '0
         } else {
-            priority case (sel) {
+            priority casez (sel) {
                 3'b1?? : result <= data_in
                 3'b01? : result <= data_in + 1
                 3'b001 : result <= data_in + 2

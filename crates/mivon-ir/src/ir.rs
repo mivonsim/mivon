@@ -394,6 +394,15 @@ pub enum CaseType {
     /// LANG-17: `priority case` — warning bila 2+ item cocok (hanya item
     /// pertama yang dieksekusi, tanpa warning no-match).
     Priority,
+    /// Kombinasi qualifier + kind (LRM 1800 §12.5, qualifier & kind
+    /// ortogonal): pencocokan memakai semantik X/Z, qualifier untuk warning.
+    /// Tanpa ini `priority casez` jatuh ke exact-match (bug vs iverilog).
+    UniqueX,
+    UniqueZ,
+    Unique0X,
+    Unique0Z,
+    PriorityX,
+    PriorityZ,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]

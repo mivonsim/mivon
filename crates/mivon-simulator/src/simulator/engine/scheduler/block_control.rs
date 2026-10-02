@@ -226,6 +226,14 @@ impl SimulationEngine {
                     CaseType::Unique | CaseType::Unique0 | CaseType::Priority => {
                         case_val.case_val_eq(&pat_val)
                     }
+                    // Qualifier + kind ortogonal (LRM 1800 §12.5): combo
+                    // memakai pencocokan wildcard X/Z.
+                    CaseType::UniqueX | CaseType::Unique0X | CaseType::PriorityX => {
+                        case_val.casex_eq(&pat_val)
+                    }
+                    CaseType::UniqueZ | CaseType::Unique0Z | CaseType::PriorityZ => {
+                        case_val.casez_eq(&pat_val)
+                    }
                 };
                 Ok(eq)
             }

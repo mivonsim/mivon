@@ -113,16 +113,19 @@ fn collect_called_funcs(stmts: &[Stmt], known: &HashSet<Symbol>, out: &mut HashS
                 expr,
                 items,
                 default,
+                ..
             }
             | Stmt::PriorityCase {
                 expr,
                 items,
                 default,
+                ..
             }
             | Stmt::Unique0Case {
                 expr,
                 items,
                 default,
+                ..
             }
             | Stmt::CaseInside {
                 expr,
@@ -562,6 +565,7 @@ pub(crate) fn rename_in_stmt(stmt: &Stmt, rename_map: &HashMap<Symbol, Symbol>) 
             expr,
             items,
             default,
+            kind,
         } => Stmt::UniqueCase {
             expr: rename_in_expr(expr, rename_map),
             items: items
@@ -576,11 +580,13 @@ pub(crate) fn rename_in_stmt(stmt: &Stmt, rename_map: &HashMap<Symbol, Symbol>) 
                 })
                 .collect(),
             default: default.map(|d| Box::new(rename_in_stmt(&d, rename_map))),
+            kind,
         },
         Stmt::PriorityCase {
             expr,
             items,
             default,
+            kind,
         } => Stmt::PriorityCase {
             expr: rename_in_expr(expr, rename_map),
             items: items
@@ -595,11 +601,13 @@ pub(crate) fn rename_in_stmt(stmt: &Stmt, rename_map: &HashMap<Symbol, Symbol>) 
                 })
                 .collect(),
             default: default.map(|d| Box::new(rename_in_stmt(&d, rename_map))),
+            kind,
         },
         Stmt::Unique0Case {
             expr,
             items,
             default,
+            kind,
         } => Stmt::Unique0Case {
             expr: rename_in_expr(expr, rename_map),
             items: items
@@ -614,6 +622,7 @@ pub(crate) fn rename_in_stmt(stmt: &Stmt, rename_map: &HashMap<Symbol, Symbol>) 
                 })
                 .collect(),
             default: default.map(|d| Box::new(rename_in_stmt(&d, rename_map))),
+            kind,
         },
         Stmt::CaseInside {
             expr,

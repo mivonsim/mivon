@@ -772,16 +772,19 @@ fn scan_stmt_reads(stmts: &[Stmt], reads: &mut HashSet<Symbol>, writes: &mut Has
                 expr,
                 items,
                 default,
+                ..
             }
             | Stmt::PriorityCase {
                 expr,
                 items,
                 default,
+                ..
             }
             | Stmt::Unique0Case {
                 expr,
                 items,
                 default,
+                ..
             }
             | Stmt::CaseInside {
                 expr,

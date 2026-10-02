@@ -18,9 +18,9 @@ pub(crate) fn literal_has_unknown_bits(expr: &Expr) -> bool {
     match expr {
         Expr::Value(Value::Binary { bits, .. })
         | Expr::Value(Value::Hex { bits, .. })
-        | Expr::Value(Value::Octal { bits, .. }) => {
-            bits.chars().any(|c| matches!(c, 'x' | 'X' | 'z' | 'Z' | '?'))
-        }
+        | Expr::Value(Value::Octal { bits, .. }) => bits
+            .chars()
+            .any(|c| matches!(c, 'x' | 'X' | 'z' | 'Z' | '?')),
         Expr::Paren(inner) => literal_has_unknown_bits(inner),
         _ => false,
     }
@@ -1993,24 +1993,35 @@ impl Elaborator {
                 expr,
                 items,
                 default,
+                kind,
             }
             | Stmt::PriorityCase {
                 expr,
                 items,
                 default,
+                kind,
             }
             | Stmt::Unique0Case {
                 expr,
                 items,
                 default,
+                kind,
             } => {
+                use mivon_ast::CaseKind;
                 let is_unique0 = matches!(stmt, Stmt::Unique0Case { .. });
-                let ct = if is_unique0 {
-                    CaseType::Unique0
-                } else if matches!(stmt, Stmt::UniqueCase { .. }) {
-                    CaseType::Unique
-                } else {
-                    CaseType::Priority
+                let is_unique = matches!(stmt, Stmt::UniqueCase { .. });
+                // Qualifier & kind ortogonal (LRM 1800 §12.5): kind X/Z
+                // memakai pencocokan wildcard, qualifier untuk warning.
+                let ct = match (is_unique, is_unique0, kind) {
+                    (true, _, CaseKind::X) => CaseType::UniqueX,
+                    (true, _, CaseKind::Z) => CaseType::UniqueZ,
+                    (true, _, _) => CaseType::Unique,
+                    (_, true, CaseKind::X) => CaseType::Unique0X,
+                    (_, true, CaseKind::Z) => CaseType::Unique0Z,
+                    (_, true, _) => CaseType::Unique0,
+                    (_, _, CaseKind::X) => CaseType::PriorityX,
+                    (_, _, CaseKind::Z) => CaseType::PriorityZ,
+                    _ => CaseType::Priority,
                 };
                 self.elaborate_case_raw(
                     expr,
@@ -3291,12 +3302,11 @@ impl Elaborator {
         signals: &[SignalInfo],
     ) -> bool {
         let base_info = &signals[base_sid];
-        let mut cur_fields: Option<Vec<StructFieldInfo>> =
-            if base_info.struct_fields.is_empty() {
-                None
-            } else {
-                Some(base_info.struct_fields.clone())
-            };
+        let mut cur_fields: Option<Vec<StructFieldInfo>> = if base_info.struct_fields.is_empty() {
+            None
+        } else {
+            Some(base_info.struct_fields.clone())
+        };
         let mut signed = false;
         for (i, step) in chain.iter().enumerate() {
             match step {

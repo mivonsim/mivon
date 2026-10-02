@@ -18,7 +18,7 @@ module case_qualifiers (
         if (!rst_n) begin
             result <= '0;
         end else begin
-            priority case (sel)
+            priority casez (sel)
                 3'b1??: begin
                     result <= data_in;
                 end

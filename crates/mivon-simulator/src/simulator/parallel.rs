@@ -611,6 +611,12 @@ pub fn evaluate_stmt_block_parallel(
                                     CaseType::Unique | CaseType::Unique0 | CaseType::Priority => {
                                         case_val.case_val_eq(&pat_val)
                                     }
+                                    CaseType::UniqueX
+                                    | CaseType::Unique0X
+                                    | CaseType::PriorityX => case_val.casex_eq(&pat_val),
+                                    CaseType::UniqueZ
+                                    | CaseType::Unique0Z
+                                    | CaseType::PriorityZ => case_val.casez_eq(&pat_val),
                                 }
                             }
                         };

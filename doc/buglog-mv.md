@@ -188,6 +188,30 @@ bug di mivon utama (parser/elaborator/simulator). Status: ✅ fixed / ⏳ open.
     flatten saat re-elaborasi per signature param, lalu generate di-expand
     ulang dengan nilai param instance tersebut.
 
+20. **Default `parameter type T = logic [7:0]` selalu lebar 1** —
+    `parse_type_expr` membuang packed range (`DataType` tak punya variant
+    range), dan cabang `is_type_param` di `parse_param_list` mencari `[`
+    SETELAH parse (tak pernah ada — sudah dikonsumsi) → `ParamDecl.range`
+    selalu None → elaborator fallback `type_default.width()` = 1. Akibat:
+    `T d;`/`T q;` 1-bit → `WR0102 port width mismatch` + output 0
+    (`TB_TP_BROKEN q8=0 q16=0`, padahal F32 mengklaim OK — contoh
+    `examples/mv/type_param.mv` gagal). Ditemukan saat sweep contoh `.mv`.
+    Fix: `parse_type_expr_with_range` (range pertama dikembalikan, bukan
+    dibuang) dipakai cabang type-param → `ParamDecl.range` terisi →
+    `type_param_widths` = 8. Oracle: `TB_TP_OK q8=4 q16=8`.
+
+21. **`priority/unique casez/casex` hanya exact-match** — parser membuang
+    kind saat ada qualifier (`priority casez` → `Stmt::PriorityCase` tanpa
+    kind → `CaseType::Priority` → engine `case_val_eq` exact). Akibat:
+    `3'b101` vs label `3'b1??` tak cocok (iverilog: cocok) —
+    `examples/mv/case_qualifiers.mv` gagal 2 error + verilator CASEWITHX
+    (contoh juga salah pakai plain `case` untuk wildcard — diperbaiki jadi
+    `casez`). Ditemukan saat sweep contoh `.mv`, diferensial vs iverilog.
+    Fix: `CaseKind {Plain,X,Z}` di `Stmt::UniqueCase/PriorityCase/Unique0Case`
+    + `CaseType::{Unique,Unique0,Priority}{X,Z}` + match `casex_eq`/`casez_eq`
+    di engine (`block_control.rs`, `parallel.rs`). Contoh kini
+    `CASEQ_OK`, verilator bersih.
+
 ## ⏳ Open
 
 (tidak ada item open — semua bug historis sudah tertutup)
