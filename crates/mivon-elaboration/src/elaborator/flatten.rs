@@ -148,35 +148,65 @@ impl Elaborator {
                 match cached {
                     Some(ir) => ir,
                     None => {
-                        let ast_module: Module = match inst_module {
-                            Some(m) => m.clone(),
-                            None => match self
-                                .design
-                                .interfaces
-                                .iter()
-                                .find(|i| i.name == inst.module_name)
-                            {
-                                Some(iface) => Module {
-                                    name: iface.name,
-                                    ports: vec![],
-                                    params: vec![],
-                                    decls: iface.decls.clone(),
-                                    items: vec![],
+                        // PRISTINE AST (belum ter-expand generate) bila ada —
+                        // `design.modules` sudah di-expand dengan param DEFAULT,
+                        // sehingga instance ber-override akan me-clone generate
+                        // yang ter-expand salah (bug: `gen_sub #(.W(8))` dengan
+                        // `for (gi=0; gi<W; ...)` hanya ter-expand 4 iterasi).
+                        let pristine = self
+                            .pristine_param_modules
+                            .get(&inst.module_name)
+                            .cloned();
+                        let ast_module: Module = match pristine {
+                            Some(m) => m,
+                            None => match inst_module {
+                                Some(m) => m.clone(),
+                                None => match self
+                                    .design
+                                    .interfaces
+                                    .iter()
+                                    .find(|i| i.name == inst.module_name)
+                                {
+                                    Some(iface) => Module {
+                                        name: iface.name,
+                                        ports: vec![],
+                                        params: vec![],
+                                        decls: iface.decls.clone(),
+                                        items: vec![],
+                                    },
+                                    None => {
+                                        return Err(self.elab_diag_at(
+                                            DiagCode::ModuleNotFound,
+                                            format!(
+                                                "module or interface '{}' not found for instance '{}'",
+                                                inst.module_name, inst.instance_name
+                                            ),
+                                            inst.line,
+                                            inst.col,
+                                        ))
+                                    }
                                 },
-                                None => {
-                                    return Err(self.elab_diag_at(
-                                        DiagCode::ModuleNotFound,
-                                        format!(
-                                            "module or interface '{}' not found for instance '{}'",
-                                            inst.module_name, inst.instance_name
-                                        ),
-                                        inst.line,
-                                        inst.col,
-                                    ))
-                                }
                             },
                         };
                         let param_vals = self.resolve_param_values(&ast_module, &inst.param_map)?;
+                        // Expand generate dengan nilai param INSTANCE ini.
+                        let mut ast_module = ast_module;
+                        if !ast_module.params.is_empty()
+                            && ast_module
+                                .items
+                                .iter()
+                                .any(|it| matches!(it, ModuleItem::Generate(_)))
+                        {
+                            let signed_for_gen = self.module_param_signed_set(&ast_module);
+                            super::super::util::expand_all_generates(
+                                &mut ast_module,
+                                &param_vals,
+                                &signed_for_gen,
+                                &self.diag_sink,
+                                &self.source_lines,
+                                &self.source_file,
+                            )?;
+                        }
                         let ir = self.elaborate_module_with_params_and_type(
                             &ast_module,
                             known_mods,

@@ -21736,6 +21736,49 @@ endmodule
     assert_eq!(get("a"), 0x2A, "port init berlaku saat tak di-drive");
 }
 
+// ── F56: parameter override tak memengaruhi generate loop di modul anak ──
+//
+// PRA-FIX: `expand_all_generates` memutasi `design.modules` in-place dengan
+// nilai param DEFAULT; instance yang meng-override parameter me-clone AST yang
+// generate-nya sudah ter-expand → `gen_sub #(.W(8))` dengan
+// `for (gi=0; gi<W; gi++)` hanya menghasilkan 4 iterasi (bit atas X).
+
+#[test]
+fn test_param_override_expands_generate_per_instance() {
+    let source = r#"
+module gen #(parameter int N=2, parameter int OFF=0) (input clk, output reg [N-1:0] q);
+    genvar i;
+    generate
+        for (i=0;i<N;i=i+1) begin : g
+            always @(posedge clk) q[i] <= i[0] + OFF;
+        end
+    endgenerate
+endmodule
+module tb_go;
+    reg clk=0; reg [1:0] q2; reg [7:0] q8; reg [1:0] qo;
+    gen #(.N(2)) u2 (.clk(clk), .q(q2));
+    gen #(.N(8), .OFF(1)) u8 (.clk(clk), .q(q8));
+    gen #(.N(2), .OFF(1)) uo (.clk(clk), .q(qo));
+    always #5 clk=~clk;
+    initial begin
+        repeat (2) @(posedge clk);
+        #1 $display("M1 %b %b %b", q2, q8, qo);
+        $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 200).unwrap();
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    // Oracle iverilog: q2=10 (N=2, OFF=0), q8=01010101 (N=8, OFF=1 → semua bit
+    // ter-generate; sebelum fix bit atas X), qo=01 (OFF=1).
+    let q2 = get("q2");
+    let q8 = get("q8");
+    let qo = get("qo");
+    assert_eq!(q2, 0b10, "N=2 default");
+    assert_eq!(q8, 0b0101_0101, "N=8 override → 8 iterasi generate");
+    assert_eq!(qo, 0b01, "OFF=1");
+}
+
 // ── F55: signedness hasil function inlining + variabel STATIC (LRM §8.21) ──
 
 #[test]

@@ -579,6 +579,14 @@ pub struct Elaborator {
     /// dilakukan SEKALI per signature unik. Dibatasi (bounded) agar memori
     /// tidak membengkak pada desain dengan ribuan signature berbeda.
     pub param_ir_cache: HashMap<(Symbol, u64), IrModule>,
+    /// AST modul SEBELUM expand generate (hanya untuk modul yang punya param
+    /// DAN generate block). `expand_all_generates` memutasi
+    /// `design.modules` in-place memakai nilai param DEFAULT — sehingga
+    /// instance dengan override (`.W(8)`) meng-clone AST yang generate-nya
+    /// sudah ter--expand dengan nilai default (bug: `gen_sub #(.W(8))` dgn
+    /// `for (gi=0; gi<W...)` hanya ter-expand 4 iterasi). Snapshot ini
+    /// dipakai flatten saat re-elaborasi per signature param.
+    pub pristine_param_modules: HashMap<Symbol, Module>,
     /// Statistik optimasi untuk cache pipeline (db.md "6. optimize/",
     /// "10. expression/") — const fold, loop unroll, evaluasi ekspresi.
     pub opt_stats: super::util::OptStats,
@@ -904,6 +912,7 @@ impl Elaborator {
             cache_hits: 0,
             cache_misses: 0,
             param_ir_cache: HashMap::new(),
+            pristine_param_modules: HashMap::new(),
             opt_stats: super::util::OptStats::default(),
             dbg_apply_us: std::cell::Cell::new(0),
             dbg_apply_n: std::cell::Cell::new(0),
@@ -1287,6 +1296,19 @@ impl Elaborator {
                 continue;
             }
             expanded_set.insert(self.design.modules[i].name);
+            // Snapshot AST SEBELUM expand untuk modul ber-param + generate
+            // (dipakai flatten saat re-elaborasi per override param).
+            {
+                let m = &self.design.modules[i];
+                let has_gen = m
+                    .items
+                    .iter()
+                    .any(|it| matches!(it, ModuleItem::Generate(_)));
+                if has_gen && !m.params.is_empty() {
+                    self.pristine_param_modules
+                        .insert(m.name, m.clone());
+                }
+            }
             let mod_t0 = std::time::Instant::now();
             let ctx = self.collect_package_param_ctx(&self.design.modules[i]);
             let _ctx_us = mod_t0.elapsed().as_micros();

@@ -179,6 +179,15 @@ bug di mivon utama (parser/elaborator/simulator). Status: ✅ fixed / ⏳ open.
     Fix F55: nama deterministik tanpa counter call (semua ekspansi berbagi
     signal), dedup deklarasi, dan initializer dipindah ke deklarasi.
 
+19. **Parameter override tak memengaruhi generate loop** — `expand_all_generates`
+    memutasi `design.modules` in-place memakai nilai param DEFAULT; instance
+    yang meng-override me-clone AST yang generate-nya sudah ter-expand, jadi
+    `gen_sub #(.W(8))` dengan `for (gi=0; gi<W; gi++)` hanya menghasilkan 4
+    iterasi (bit atas output tetap X). Fix F56: snapshot `pristine_param_modules`
+    (AST sebelum expand, hanya untuk modul ber-param + generate) dipakai
+    flatten saat re-elaborasi per signature param, lalu generate di-expand
+    ulang dengan nilai param instance tersebut.
+
 ## ⏳ Open
 
 (tidak ada item open — semua bug historis sudah tertutup)
