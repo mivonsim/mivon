@@ -4596,6 +4596,25 @@ impl Elaborator {
         }
         self.param_vals = effective_params.clone();
 
+        if std::env::var("DBG_DECL2").is_ok() {
+            eprintln!("DBG-DECL2 enter module={} decls={} items={}", module.name.as_str(), module.decls.len(), module.items.len());
+            for it in &module.items {
+                if let mivon_ast::ModuleItem::Decl(d) = it {
+                    for v in &d.names {
+                        eprintln!("DBG-DECL2 item-decl {} ar={:?}", v.name.as_str(), v.array_range);
+                    }
+                } else {
+                    eprintln!("DBG-DECL2 item other");
+                }
+            }
+        }
+        if std::env::var("DBG_DECL").is_ok() {
+            for d in &module.decls {
+                for v in &d.names {
+                    eprintln!("DBG-DECL module-decl {} dtype={:?} ar={:?}", v.name.as_str(), d.dtype, v.array_range);
+                }
+            }
+        }
         // Gabungkan deklarasi module-level dengan deklarasi hasil generate.
         // Parser menaruh deklarasi normal di module.decls DAN module.items,
         // jadi dedup by nama (get_or_create_signal juga idempoten).
@@ -4872,6 +4891,12 @@ impl Elaborator {
                     }
                     let total_depth: usize = all_dims.iter().product();
                     let total_width = elem_width * total_depth;
+                    if std::env::var("DBG_DECL").is_ok() {
+                        eprintln!(
+                            "DBG-DECL array name={} elem_w={} dims={:?} depth={} width={}",
+                            var.name.as_str(), elem_width, all_dims, total_depth, total_width
+                        );
+                    }
                     let sid = get_or_create_signal(
                         var.name,
                         total_width,
@@ -4977,6 +5002,9 @@ impl Elaborator {
                         }
                     }
                 } else {
+                    if std::env::var("DBG_DECL").is_ok() {
+                        eprintln!("DBG-DECL scalar name={} elem_w={} array_range={:?}", var.name.as_str(), elem_width, var.array_range.is_some());
+                    }
                     let sid = get_or_create_signal(
                         var.name,
                         elem_width,

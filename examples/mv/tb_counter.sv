@@ -24,9 +24,7 @@ module counter_dut #(
     end
 endmodule
 
-module tb_counter (
-
-);
+module tb_counter;
     bit clk, rst_n;
     bit enable;
     logic [7:0] count;
@@ -56,7 +54,7 @@ module tb_counter (
 
     // ── initial ──
     initial begin
-        #40 assert (count > 0) $info("counter ok") else $fatal("counter stuck");
-        assert property (@(posedge clk) count === count);
+        #40 assert (count > 0) $info("counter ok"); else $fatal("counter stuck");
     end
+    assert property (@(posedge clk) count === count);
 endmodule

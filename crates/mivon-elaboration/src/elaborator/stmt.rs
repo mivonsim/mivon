@@ -3282,6 +3282,56 @@ impl Elaborator {
         }
     }
 
+    /// Apakah field TERAKHIR dari chain struct bertipe signed (`int a;`)?
+    /// Dipakai pembaca member agar hasilnya signed (LRM 1800 §6.24.1).
+    pub(crate) fn struct_chain_leaf_signed(
+        &self,
+        base_sid: SignalId,
+        chain: &[ChainStep],
+        signals: &[SignalInfo],
+    ) -> bool {
+        let base_info = &signals[base_sid];
+        let mut cur_fields: Option<Vec<StructFieldInfo>> =
+            if base_info.struct_fields.is_empty() {
+                None
+            } else {
+                Some(base_info.struct_fields.clone())
+            };
+        let mut signed = false;
+        for (i, step) in chain.iter().enumerate() {
+            match step {
+                ChainStep::Field(fname) => {
+                    let Some(fields) = cur_fields.as_ref() else {
+                        return false;
+                    };
+                    let Some(f) = fields.iter().find(|f| f.name == *fname) else {
+                        return false;
+                    };
+                    if i + 1 == chain.len() {
+                        return f.is_signed;
+                    }
+                    let mut nxt = f
+                        .type_name
+                        .as_ref()
+                        .and_then(|tn| self.lookup_struct_fields(tn.as_str()));
+                    if nxt.is_none() {
+                        nxt = Some(f.sub_fields.clone());
+                    }
+                    cur_fields = nxt;
+                }
+                // Elemen array struct: signedness mengikuti field induk.
+                ChainStep::Index(_) => {
+                    let Some(fields) = cur_fields.as_ref() else {
+                        return false;
+                    };
+                    signed = fields.iter().any(|f| f.is_signed);
+                    cur_fields = None;
+                }
+            }
+        }
+        signed
+    }
+
     /// LANG-06: terjemahkan AST `Sequence` (SVA temporal) → `IrSequence`
     /// untuk evaluasi ber-clock oleh engine. Struktur 1:1 — Expr dievaluasi
     /// tiap cycle, Delay/DelayRange tunggu N cycle, Concat/Or/And/Repeat

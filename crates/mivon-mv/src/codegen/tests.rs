@@ -171,13 +171,14 @@ task send(data : logic[7:0], out ok : bit) {
 
 #[test]
 fn codegen_assert_property() {
+    // Concurrent assertion harus di level MODULE (LRM 1800 §14) — kalau
+    // ditulis di dalam `initial`, tool EDA menolaknya
+    // ("Procedural concurrent assertion … inside always", §16.14.6).
     let src = r#"
 module m {
     in clk, enable : bit
     in count       : logic[7:0]
-    initial {
-        assert property (@(posedge clk) enable |-> count == $past(count) + 1)
-    }
+    assert property (@(posedge clk) enable |-> count == $past(count) + 1)
 }
 "#;
     let file = parse(src).unwrap();
@@ -233,9 +234,12 @@ module tb_counter {
     assert!(out.sv.contains("$display(\"tb_counter: mulai\");"));
     assert!(out.sv.contains("$finish;"));
     assert!(out.sv.contains("forever #5 clk = ~clk;"));
+    // LRM 1800 §20.11: branch pass adalah statement → WAJIB diakhiri `;`
+    // sebelum `else`. Tanpa `;` verilator menolak
+    // ("unexpected else, expecting ';'").
     assert!(out
         .sv
-        .contains("assert (count > 0) $info(\"counter ok\") else $fatal(\"counter stuck\");"));
+        .contains("assert (count > 0) $info(\"counter ok\"); else $fatal(\"counter stuck\");"));
 }
 
 #[test]
@@ -605,21 +609,34 @@ module m {
 fn codegen_inst_positional_param() {
     // Instance param POSITIONAL `inst fifo #(8) u (...)` — nama kosong dari
     // parser → emit `#(8)` (bukan `.8()`); campur `#(8, .DEPTH(4))` valid SV.
+    //
+    // Override SELALU di-emit SEBELUM nama instance (`fifo #(8) u1 (...)`):
+    // bentuk `fifo u1 #(8) (...)` ditolak verilator DAN iverilog
+    // ("syntax error, unexpected '#'"), padahal bentuk `.mv`-nya
+    // (`inst fifo u1 #(8)`) tetap diterima parser.
     let src = r#"
 module top {
     in clk : bit
     out w   : logic[7:0]
     inst fifo u1 #(8) (.clk(clk), .dout(w))
     inst fifo u2 #(8, .DEPTH(4)) (.clk(clk), .dout(w))
+    inst fifo u3 #(.DEPTH(4)) (.clk(clk), .dout(w))
 }
 "#;
     let out = generate(&parse(src).unwrap(), "top");
-    assert!(out.sv.contains("fifo u1 #(8) ("), "positional: {}", out.sv);
+    assert!(out.sv.contains("fifo #(8) u1 ("), "positional: {}", out.sv);
     assert!(
-        out.sv.contains("fifo u2 #(8, .DEPTH(4)) ("),
+        out.sv.contains("fifo #(8, .DEPTH(4)) u2 ("),
         "campur positional+named: {}",
         out.sv
     );
+    // Override SEBELUM nama (gaya MIVON-HDL.md §6.7) juga diterima.
+    assert!(
+        out.sv.contains("fifo #(.DEPTH(4)) u3 ("),
+        "params sebelum nama: {}",
+        out.sv
+    );
+    assert!(!out.sv.contains("u1 #("), "params tak boleh setelah nama");
 }
 
 #[test]
@@ -835,5 +852,187 @@ module tb {
         !out.sv.contains("d = 8'h5"),
         "input port tak boleh punya init: {}",
         out.sv
+    );
+}
+
+// ── LRM 1800 compliance (regression test output `.sv` yang ditolak EDA tool) ──
+
+#[test]
+fn lrm_use_package_type_visible_in_ansi_port_list() {
+    // LRM 1800 §23.2.1.2 + §26.3: nama di ANSI port list di-resolve di
+    // ENCLOSING scope. `import` di dalam body module TIDAK menutupi port
+    // list → iverilog "syntax error", verilator "Cannot find file containing
+    // interface: 'State'". `use pkg::*` harus jadi import di SCOPE FILE.
+    let src = r#"
+package p { enum State { RED, GREEN, YELLOW } }
+module m {
+    use p::*
+    in  clk : bit
+    out st  : State
+    comb { st = RED }
+}
+"#;
+    let out = generate(&parse(src).unwrap(), "m");
+    let import_at = out.sv.find("import p::*;").expect("harus ada import");
+    let module_at = out.sv.find("module m (").expect("harus ada module");
+    assert!(
+        import_at < module_at,
+        "import harus SEBELUM module (scope file): {}",
+        out.sv
+    );
+    assert!(
+        !out.sv.contains("    import p::*;"),
+        "import tak boleh di dalam body module: {}",
+        out.sv
+    );
+    assert!(out.sv.contains("output State st"), "sv: {}", out.sv);
+}
+
+#[test]
+fn lrm_module_local_typedef_hoisted_before_module() {
+    // Typedef yang ditulis di body module tapi dipakai di port list module
+    // yang sama harus naik ke scope file — kalau tidak, `output Word8 v`
+    // tak ter-resolve (verilator: "Cannot find file containing interface:
+    // 'Word8'").
+    let src = r#"
+module fn_dut {
+    type Word8 = logic[7:0]
+    enum Mode { OFF, ON }
+    out val : Word8
+    out m   : Mode
+    comb { val = 8'h1  m = OFF }
+}
+"#;
+    let out = generate(&parse(src).unwrap(), "fn_dut");
+    let td_at = out.sv.find("typedef logic [7:0] Word8;").expect("typedef");
+    let mod_at = out.sv.find("module fn_dut").expect("module");
+    assert!(td_at < mod_at, "typedef harus sebelum module: {}", out.sv);
+    assert!(out.sv.contains("output Word8 val"), "sv: {}", out.sv);
+    assert!(
+        out.sv.contains("output Mode m"),
+        "enum lokal juga: {}",
+        out.sv
+    );
+    // hanya satu deklarasi tiap typedef (tidak diduplikasi di body)
+    assert_eq!(out.sv.matches("typedef logic [7:0] Word8;").count(), 1);
+}
+
+#[test]
+fn lrm_unpacked_dims_after_name_in_class_field_and_interface_sig() {
+    // LRM 1800 §7.3: dimension unpacked SETELAH nama. `emit_type` menaruh
+    // dimensi sebelum nama → `logic [7:0] [4] fa;` = syntax error
+    // (verilator: "syntax error, unexpected ']'").
+    let src = r#"
+class C { field fa : logic[8][4] }
+interface ifc { sig m : logic[8][4] }
+module top { in clk : bit }
+"#;
+    let out = generate(&parse(src).unwrap(), "top");
+    assert!(
+        out.sv.contains("logic [7:0] fa [0:3];"),
+        "class field: {}",
+        out.sv
+    );
+    // typedef/package/interface went to `.svh`
+    assert!(
+        out.svh.contains("logic [7:0] m [0:3];"),
+        "interface sig: {}",
+        out.svh
+    );
+    assert!(
+        !out.svh.contains("[0:3] m;"),
+        "dimensi tak boleh sebelum nama"
+    );
+}
+
+#[test]
+fn lrm_generate_label_uniquified() {
+    // LRM 1800 §27.6: dua blok generate dengan label sama di module yang
+    // sama = duplicate declaration (iverilog: "'gen_i' has already been
+    // declared in this scope").
+    let src = r#"
+module g #(N : int = 4) {
+    in  clk : bit
+    out q   : logic[N-1:0]
+    for i in 0..N { seq(clk) { q[i] <= 1'b0 } }
+    for i in 0..N { seq(clk) { q[i] <= 1'b1 } }
+    for j in 0..N { seq(clk) { q[j] <= 1'b0 } }
+    if (N > 2) { comb { q[0] = 1'b0 } } else { comb { q[0] = 1'b1 } }
+}
+"#;
+    let out = generate(&parse(src).unwrap(), "g");
+    let lbls = ["gen_i", "gen_i_1", "gen_j", "gen_cond", "gen_cond_else"];
+    for l in lbls {
+        assert!(
+            out.sv.contains(&format!("begin : {l}")),
+            "label '{l}' harus ada: {}",
+            out.sv
+        );
+    }
+    // deterministik: dua kali generate → identik
+    let out2 = generate(&parse(src).unwrap(), "g");
+    assert_eq!(out.sv, out2.sv, "output harus deterministik");
+}
+
+#[test]
+fn lrm_package_const_before_typedef() {
+    // Deklarasi SV harus tampil SEBELUM dipakai: lebar enum yang merujuk
+    // `localparam` package harus ditulis setelah konstantanya, kalau tidak
+    // forward reference (iverilog/verilator error).
+    let src = r#"
+package q {
+    enum(N) Dyn { X, Y }
+    const N = 4
+}
+module top { in clk : bit }
+"#;
+    let out = generate(&parse(src).unwrap(), "top");
+    let c_at = out.svh.find("localparam N = 4;").expect("const");
+    let t_at = out.svh.find("typedef enum").expect("typedef");
+    assert!(c_at < t_at, "const harus sebelum typedef: {}", out.svh);
+    assert!(
+        out.svh.contains("typedef enum logic [N - 1:0]"),
+        "lebar dari const: {}",
+        out.svh
+    );
+}
+
+#[test]
+fn lrm_module_without_ports_has_no_empty_parens() {
+    let out = generate(&parse("module tb { initial { } }").unwrap(), "tb");
+    assert!(
+        out.sv.contains("module tb;"),
+        "module tanpa port: {}",
+        out.sv
+    );
+    assert!(!out.sv.contains("module tb ("), "tak ada `(` kosong");
+}
+
+#[test]
+fn lrm_uint_bracket_is_width_not_array() {
+    // `uint[8]` = vektor unsigned 8-bit (angka menentukan LEBAR, gaya DSL).
+    // Bentuk sebelumnya menjadikan `[8]` dimensi unpacked sehingga hasilnya
+    // array 8 x 32-bit, yang membuat `x <= 0` tak berguna di SV.
+    let out = generate(
+        &parse("module m { in clk : bit\n sig a : uint[8]\n sig b : int[12]\n sig c : uint\n }")
+            .unwrap(),
+        "m",
+    );
+    assert!(out.sv.contains("logic [7:0] a;"), "uint[8]: {}", out.sv);
+    assert!(
+        out.sv.contains("logic signed [11:0] b;"),
+        "int[12]: {}",
+        out.sv
+    );
+    assert!(out.sv.contains("logic [31:0] c;"), "uint polos: {}", out.sv);
+    // dimensi unpacked setelahnya tetap jalan: uint[8][4] = 8-bit x 4
+    let out2 = generate(
+        &parse("module m2 { in clk : bit\n sig d : uint[8][4] }").unwrap(),
+        "m2",
+    );
+    assert!(
+        out2.sv.contains("logic [7:0] d [0:3];"),
+        "uint[8][4]: {}",
+        out2.sv
     );
 }

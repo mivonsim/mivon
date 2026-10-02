@@ -1,17 +1,21 @@
 // ─────────────────────────────────────────────────────────────
 // Contoh F32 — type parameter di Mivon HDL (MIVON-HDL.md §6)
-//   * `type Word16 = logic[15:0]` — typedef alias (F4).
+//   * `type Wide16 = logic[15:0]` — typedef alias (F4). Namanya TIDAK boleh
+//     bentrok dengan typedef file lain di direktori yang sama: typedef level
+//     file di-emit ke scope SV global, jadi dua file yang di-emit dalam satu
+//     desain akan menabrakkan nama (E2007 di level `.mv`).
 //   * `module shifter #(T : type = logic[7:0], N = 2)` — param TIPE
 //     dengan default; `T` sah sbg tipe port/signal di dalam module
 //     (`in d : T`, `sig r : T`) — validasi check.rs (F32) + lebar
 //     ter-resolve dari default.
-//   * `inst shifter u16 #(.T(Word16), .N(3)) (...)` — override type
-//     param (nilai = nama tipe) + override nilai param biasa.
+//   * `inst shifter u16 #(.T(Wide16), .N(3)) (...)` — override type
+//     param (nilai = nama tipe) + override nilai param biasa. Override boleh
+//     ditulis sebelum ATAU setelah nama instance.
 // Generate: mivon mgen type_param.mv
-// Simulasi: mivon type_param.sv --top tb_tp -T 200
+// Simulasi: mivon type_param.mv --top tb_tp -T 200
 // ─────────────────────────────────────────────────────────────
 
-type Word16 = logic[15:0]
+type Wide16 = logic[15:0]
 
 module shifter #(T : type = logic[7:0], N = 2) {
     in  clk : bit
@@ -33,7 +37,7 @@ module tb_tp {
     // default: T = logic[7:0], N = 2
     inst shifter u8 (.clk, .d(d8), .q(q8))
     // override: T = Word16 (logic[15:0]), N = 3
-    inst shifter u16 #(.T(Word16), .N(3)) (.clk, .d(d16), .q(q16))
+    inst shifter u16 #(.T(Wide16), .N(3)) (.clk, .d(d16), .q(q16))
 
     initial {
         clk = 0

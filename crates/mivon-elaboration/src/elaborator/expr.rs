@@ -1211,7 +1211,17 @@ impl Elaborator {
                         if let Some((msb, lsb)) =
                             self.resolve_struct_chain(base_sid, &chain, signals)
                         {
-                            return Ok(IrExpr::RangeSelect(base_sid, msb, lsb));
+                            let sel = IrExpr::RangeSelect(base_sid, msb, lsb);
+                            // Field bertipe signed (`int a;`) dibaca signed
+                            // (LRM 1800 §6.24.1) — tanpa ini `%0d` dari
+                            // `s.a = -5` tercetak 4294967291.
+                            return Ok(
+                                if self.struct_chain_leaf_signed(base_sid, &chain, signals) {
+                                    IrExpr::Signed(Box::new(sel))
+                                } else {
+                                    sel
+                                },
+                            );
                         }
                     }
                 }
@@ -1264,7 +1274,16 @@ impl Elaborator {
                             {
                                 let lsb = f.offset;
                                 let msb = f.offset + f.width - 1;
-                                return Ok(IrExpr::RangeSelect(sig_id, lsb, msb));
+                                let sel = IrExpr::RangeSelect(sig_id, lsb, msb);
+                                // Field bertipe signed (`int y;`, `byte b;`)
+                                // harus dibaca signed (LRM 1800 §6.24.1) —
+                                // tanpa ini `$display("%0d", s.y)` utk
+                                // `s.y = -5` tercetak 4294967291.
+                                return Ok(if f.is_signed {
+                                    IrExpr::Signed(Box::new(sel))
+                                } else {
+                                    sel
+                                });
                             }
                             // Field tidak ditemukan di struct — mungkin struct dari package
                             // yang belum fully resolved. Emit warning dan fallback ke

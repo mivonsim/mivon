@@ -19,9 +19,7 @@ module step_dut (
     end
 endmodule
 
-module tb_step (
-
-);
+module tb_step;
     bit clk;
     logic [7:0] y;
 

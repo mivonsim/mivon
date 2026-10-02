@@ -99,9 +99,21 @@ pub(crate) fn emit_module_kw(out: &mut String, m: &Module, kw: &str, iface_names
             }
         }
     }
-    head.push_str(&port_lines.join(",\n"));
-    head.push_str("\n);");
-    line(out, 0, &head);
+    // Tanpa port: `module tb;` — bukan `module tb (\n\n);` yang sah SV
+    // tapi tidak terbaca manusia (prinsip desain #4/#5).
+    if port_lines.is_empty() {
+        let mut h = head;
+        // buang sisa `(\n` yang ditambahkan sebelum daftar port
+        if h.ends_with("(\n") {
+            h.truncate(h.len() - 2);
+        }
+        let h = h.trim_end().to_string();
+        line(out, 0, &format!("{h};"));
+    } else {
+        head.push_str(&port_lines.join(",\n"));
+        head.push_str("\n);");
+        line(out, 0, &head);
+    }
 
     // Kumpulkan nama port (agar sig/reg dengan nama port tidak dideklarasi ulang)
     let port_names: Vec<String> = m
@@ -115,6 +127,7 @@ pub(crate) fn emit_module_kw(out: &mut String, m: &Module, kw: &str, iface_names
         .collect();
 
     // deklarasi + blok + instansiasi — pertahankan urutan penulisan
+    let mut labels = super::GenLabels::new();
     for item in &m.items {
         match item {
             MItem::Port(_) => {}
@@ -185,12 +198,16 @@ pub(crate) fn emit_module_kw(out: &mut String, m: &Module, kw: &str, iface_names
                     &format!("localparam {ty_s}{name} = {};", emit_expr(value)),
                 );
             }
-            MItem::Use { pkg, item } => {
-                line(out, 1, &format!("import {pkg}::{item};"));
-            }
-            // typedef lokal module (scope-lokal SV) — emisi di indent badan
-            MItem::Typedef(td) => {
-                super::defs::emit_typedef(out, 1, td);
+            // `use` di-backend SV di-emit di SCOPE FILE (lihat
+            // `codegen::mod::file_scope_imports`) — port list module
+            // di-resolve di enclosing scope, bukan body (LRM 1800 §23.2.1.2).
+            MItem::Use { .. } => {}
+            // typedef lokal module juga di-hoist ke SCOPE FILE (lihat
+            // `codegen::mod::file_scope_typedefs`) karena bisa dipakai di
+            // port list module yang sama.
+            MItem::Typedef(_) => {}
+            MItem::AssertProperty(raw) => {
+                line(out, 1, &format!("assert property {raw};"));
             }
             MItem::Seq(spec, body) => {
                 line(out, 0, "");
@@ -250,40 +267,39 @@ pub(crate) fn emit_module_kw(out: &mut String, m: &Module, kw: &str, iface_names
                 step,
                 body,
             } => {
+                let lbl = labels.uniq(&format!("gen_{var}"));
                 line(out, 0, "");
                 line(out, 0, "generate");
                 line(
                     out,
                     1,
                     &format!(
-                        "for (genvar {var} = {}; {var} < {}; {var} = {}) begin : gen_{var}",
+                        "for (genvar {var} = {}; {var} < {}; {var} = {}) begin : {lbl}",
                         emit_expr(from),
                         emit_expr(to),
                         for_inc(var, step.as_ref())
                     ),
                 );
                 for item in body {
-                    emit_module_item_at(out, 2, item, iface_names);
+                    emit_module_item_at(out, 2, item, iface_names, &mut labels);
                 }
                 line(out, 1, "end");
                 line(out, 0, "endgenerate");
             }
             MItem::GenIf { cond, then, els } => {
+                let lbl = labels.uniq("gen_cond");
+                let lbl_else = labels.uniq("gen_cond_else");
                 line(out, 0, "");
                 line(out, 0, "generate");
-                line(
-                    out,
-                    1,
-                    &format!("if ({}) begin : gen_cond", emit_expr(cond)),
-                );
+                line(out, 1, &format!("if ({}) begin : {lbl}", emit_expr(cond)));
                 for item in then {
-                    emit_module_item_at(out, 2, item, iface_names);
+                    emit_module_item_at(out, 2, item, iface_names, &mut labels);
                 }
                 line(out, 1, "end");
                 if !els.is_empty() {
-                    line(out, 1, "else begin : gen_cond_else");
+                    line(out, 1, &format!("else begin : {lbl_else}"));
                     for item in els {
-                        emit_module_item_at(out, 2, item, iface_names);
+                        emit_module_item_at(out, 2, item, iface_names, &mut labels);
                     }
                     line(out, 1, "end");
                 }
@@ -297,12 +313,14 @@ pub(crate) fn emit_module_kw(out: &mut String, m: &Module, kw: &str, iface_names
 }
 
 /// Emit satu item module di indentasi tertentu — dipakai di level module
-/// maupun di dalam blok generate.
+/// maupun di dalam blok generate. `labels` = uniquifier label generate
+/// milik module ini (shared, biar dua blok tak menabrakkan label SV).
 pub(crate) fn emit_module_item_at(
     out: &mut String,
     indent: usize,
     item: &MItem,
     iface_names: &[&str],
+    labels: &mut super::GenLabels,
 ) {
     match item {
         MItem::Port(_) => {}
@@ -349,11 +367,16 @@ pub(crate) fn emit_module_item_at(
                 &format!("localparam {ty_s}{name} = {};", emit_expr(value)),
             );
         }
-        MItem::Use { pkg, item } => {
-            line(out, indent, &format!("import {pkg}::{item};"));
-        }
-        MItem::Typedef(td) => {
-            super::defs::emit_typedef(out, indent, td);
+        // `use` di-backend SV di-emit di SCOPE FILE (lihat
+        // `codegen::mod::file_scope_imports`).
+        MItem::Use { .. } => {}
+        // typedef lokal module di-hoist ke scope file (lihat
+        // `codegen::mod::file_scope_typedefs`).
+        MItem::Typedef(_) => {}
+        MItem::AssertProperty(raw) => {
+            // Concurrent assertion = module item (LRM 1800 §14), bukan
+            // statement prosedural — di-emit di body module apa adanya.
+            line(out, indent, &format!("assert property {raw};"));
         }
         MItem::Seq(spec, body) => emit_seq(out, indent, spec, body),
         MItem::Comb(body) => {
@@ -403,33 +426,36 @@ pub(crate) fn emit_module_item_at(
                 out,
                 indent + 1,
                 &format!(
-                    "for (genvar {var} = {}; {var} < {}; {var} = {}) begin : gen_{var}",
+                    "for (genvar {var} = {}; {var} < {}; {var} = {}) begin : {}",
                     emit_expr(from),
                     emit_expr(to),
-                    for_inc(var, step.as_ref())
+                    for_inc(var, step.as_ref()),
+                    labels.uniq(&format!("gen_{var}")),
                 ),
             );
             for i in body {
-                emit_module_item_at(out, indent + 2, i, iface_names);
+                emit_module_item_at(out, indent + 2, i, iface_names, labels);
             }
             line(out, indent + 1, "end");
             line(out, indent, "endgenerate");
         }
         MItem::GenIf { cond, then, els } => {
+            let lbl = labels.uniq("gen_cond");
+            let lbl_else = labels.uniq("gen_cond_else");
             line(out, indent, "generate");
             line(
                 out,
                 indent + 1,
-                &format!("if ({}) begin : gen_cond", emit_expr(cond)),
+                &format!("if ({}) begin : {lbl}", emit_expr(cond)),
             );
             for i in then {
-                emit_module_item_at(out, indent + 2, i, iface_names);
+                emit_module_item_at(out, indent + 2, i, iface_names, labels);
             }
             line(out, indent + 1, "end");
             if !els.is_empty() {
-                line(out, indent + 1, "else begin : gen_cond_else");
+                line(out, indent + 1, &format!("else begin : {lbl_else}"));
                 for i in els {
-                    emit_module_item_at(out, indent + 2, i, iface_names);
+                    emit_module_item_at(out, indent + 2, i, iface_names, labels);
                 }
                 line(out, indent + 1, "end");
             }
@@ -468,7 +494,7 @@ pub(crate) fn emit_inst(
         .as_ref()
         .map(|d| format!("[{}]", emit_expr(d)))
         .unwrap_or_default();
-    let mut head = format!("{module} {name}{dims_s}");
+    let mut head = module.to_string();
     if !params.is_empty() {
         // positional `#(8)` (nama kosong) & named `#(.DEPTH(4))` — bisa campur
         // (SV mengizinkan positional dulu, lalu named).
@@ -484,6 +510,7 @@ pub(crate) fn emit_inst(
             .collect();
         head.push_str(&format!(" #({})", ps.join(", ")));
     }
+    head.push_str(&format!(" {name}{dims_s}"));
     if conns.is_empty() {
         line(out, indent, &format!("{head};"));
         return;

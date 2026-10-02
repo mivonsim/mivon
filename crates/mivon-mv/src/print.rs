@@ -616,6 +616,9 @@ fn print_param(p: &Param) -> String {
 
 fn print_m_item(b: &mut StrB, indent: usize, item: &MItem) {
     match item {
+        MItem::AssertProperty(raw) => {
+            b.line(indent, &format!("assert property {raw}"));
+        }
         MItem::Port(p) => {
             let dir = match p.dir {
                 Dir::In => "in",
@@ -1034,8 +1037,8 @@ module top {
             $monitor("t=%0t", $time);
             y = 4'hF;
         }
-        assert property (@(posedge clk) y == $past(y))
     }
+    assert property (@(posedge clk) y == $past(y))
 }
 "#;
         let f = parse(src).unwrap();

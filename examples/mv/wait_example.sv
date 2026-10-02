@@ -8,8 +8,8 @@
 module wait_example (
     input  bit clk,
     input  bit rst_n,
-    output bit done,
-    output logic [7:0] data
+    output bit done = 0,
+    output logic [7:0] data = '0
 );
 
     // ── logika sekuensial ──
@@ -24,9 +24,7 @@ module wait_example (
     end
 endmodule
 
-module tb_wait (
-
-);
+module tb_wait;
     bit clk, rst_n;
     bit done;
     logic [7:0] data;

@@ -48,11 +48,11 @@ module tb_counter {
     initial {
         #40
         assert (count > 0) $info("counter ok") else $fatal("counter stuck")
-        assert property (@(posedge clk) count === count)
-
-        // Catatan: `assert property` body di-emit 1:1 (raw). Bentuk SVA `|->`
-        // (mis. `enable |-> count == $past(count) + 1`) juga didukung — lihat
-        // MIVON-HDL.md §7.2 — tapi butuh tool EDA yang mendukung operator
-        // implication (Verilator/VCS); parser SV Mivon belum lex `|->`.
     }
+
+    // Concurrent assertion = MODULE ITEM (LRM 1800 §14), bukan statement di
+    // dalam `initial`. Body di-emit 1:1 (raw) — bentuk SVA `|->`
+    // (mis. `enable |-> count == $past(count) + 1`) juga didukung, lihat
+    // MIVON-HDL.md §7.2.
+    assert property (@(posedge clk) count === count)
 }

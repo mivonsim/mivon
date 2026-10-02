@@ -5,6 +5,7 @@
 // ─────────────────────────────────────────────────────────────
 
 `include "counter.svh"
+import counter_pkg::*;
 
 module counter #(
     parameter WIDTH = 8,
@@ -16,7 +17,6 @@ module counter #(
     output logic [WIDTH - 1:0] count,
     output Packet packet
 );
-    import counter_pkg::*;
 
     // ── logika sekuensial ──
     always_ff @(posedge clk or negedge rst_n) begin

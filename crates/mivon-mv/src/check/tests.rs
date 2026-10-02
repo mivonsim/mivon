@@ -133,13 +133,15 @@ fn ok_testbench_drives_input() {
 
 #[test]
 fn ok_system_task_in_initial() {
-    let src = "module tb {\n in clk : bit\n in count : logic[7:0]\n initial {\n $display(\"mulai\")\n $finish\n assert property (@(posedge clk) count == $past(count) + 1)\n } }\n";
+    // `assert property` = CONCURRENT assertion → module item (LRM 1800 §14),
+    // bukan statement di dalam `initial`.
+    let src = "module tb {\n in clk : bit\n in count : logic[7:0]\n initial {\n $display(\"mulai\")\n $finish\n }\n assert property (@(posedge clk) count == $past(count) + 1)\n }\n";
     check_src(src).expect("system task bukan sinyal");
 }
 
 #[test]
 fn ok_assert_property_skipped() {
-    let src = "module m {\n in clk : bit\n initial {\n assert property (@(posedge clk) some_signal_apa_saja == 1)\n } }\n";
+    let src = "module m {\n in clk : bit\n assert property (@(posedge clk) some_signal_apa_saja == 1)\n }\n";
     check_src(src).expect("assert property body dilewati");
 }
 

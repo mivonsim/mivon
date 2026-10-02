@@ -10,7 +10,7 @@ module always_latch_example (
     input  bit rst_n,
     input  bit en,
     input  logic [7:0] d,
-    output logic [7:0] q_reg,
+    output logic [7:0] q_reg = '0,
     output logic [7:0] q_latch,
     output logic [7:0] q_always
 );
@@ -37,9 +37,7 @@ module always_latch_example (
     end
 endmodule
 
-module tb_al (
-
-);
+module tb_al;
     bit clk, rst_n;
     bit en;
     logic [7:0] d;

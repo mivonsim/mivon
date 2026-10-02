@@ -70,6 +70,14 @@ pub enum Tok {
     /// F46: `force x = v` / `release x` — fault injection testbench
     Force,
     Release,
+    /// Kata kerja DSL — alias bentuk SV (`emit`/`override`/`restore`/
+    /// `await`/`stop`). Dilempar ke AST yang sama, jadi codegen & check
+    /// tidak perlu tahu asal tulisannya.
+    Emit,
+    Override,
+    Restore,
+    Await,
+    Stop,
     Return,
     Break,
     Continue,
@@ -214,6 +222,19 @@ fn keyword(s: &str) -> Option<Tok> {
         "disable" => Tok::Disable,
         "force" => Tok::Force,
         "release" => Tok::Release,
+        // Kata kerja DSL (bukan sintaks SystemVerilog) — alias dari bentuk
+        // SV agar penulisan `.mv` tidak meniru SV mentah. Bentuk SV tetap
+        // diterima (lihat `parser/stmt.rs`), jadi kode lama tidak rusak.
+        //   emit ev        ≡ -> ev            (picu event)
+        //   override x = v ≡ force x = v      (override paksa sinyal)
+        //   restore x      ≡ release x        (lepas override)
+        //   await all      ≡ wait fork        (tunggu semua child fork)
+        //   stop fork      ≡ disable fork     (hentikan child fork)
+        "emit" => Tok::Emit,
+        "override" => Tok::Override,
+        "restore" => Tok::Restore,
+        "await" => Tok::Await,
+        "stop" => Tok::Stop,
         "return" => Tok::Return,
         "break" => Tok::Break,
         "continue" => Tok::Continue,

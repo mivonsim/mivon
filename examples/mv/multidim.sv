@@ -22,6 +22,6 @@ module tb_md (
 
     // ── initial ──
     initial begin
-        #1 assert (m00 == 1 && m11 == 4 && mi == 3) $info("MD_OK m00=%0d m11=%0d", m00, m11) else $error("MD multi-dim gagal");
+        #1 assert (m00 == 1 && m11 == 4 && mi == 3) $info("MD_OK m00=%0d m11=%0d", m00, m11); else $error("MD multi-dim gagal");
     end
 endmodule

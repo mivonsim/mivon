@@ -116,7 +116,8 @@ karena deterministik.
 | `signed logic[N]` | vektor signed | `logic signed [N-1:0]` |
 | `int` | 32-bit signed | `int` |
 | `uint` | 32-bit unsigned | `logic [31:0]` |
-| `int[N]` / `uint[N]` | vektor 32-bit × N | `int [N]` / `logic [31:0] [N]` |
+| `int[N]` | vektor **signed N-bit** | `logic signed [N-1:0]` |
+| `uint[N]` | vektor **unsigned N-bit** | `logic [N-1:0]` |
 | `longint` / `ulongint` | 64-bit | `longint` / `longint unsigned` |
 | `shortint` | 16-bit | `shortint` |
 | `byte` | 8-bit signed | `byte` |
@@ -127,6 +128,10 @@ karena deterministik.
 Aturan:
 - `logic[N]` adalah **unsigned**; gunakan `signed logic[N]` bila perlu.
 - `N` bisa konstanta/parameter/ekspresi const-foldable: `logic[WIDTH-1:0]`.
+- `int[N]` / `uint[N]`: angka di dalam kurung menentukan **LEBAR** (gaya DSL,
+  seperti `u8`/`u16` di Go atau `u8`/`u16` di Rust) — BUKAN jumlah elemen.
+  `uint[8]` = vektor unsigned 8-bit, sama seperti `logic[8]`. Dimensi
+  unpacked ditulis SETELAH kurung lebar: `uint[8][4]` = 8-bit × 4 elemen.
 
 ### 4.2 Array (unpacked)
 
@@ -151,13 +156,30 @@ type Data = logic[31:0]
 type ByteArray = logic[8][256]
 ```
 
-Emisi (di package atau `$unit` bila dalam module):
+Emisi (di package bila di dalam `package`, atau di **scope file** — lihat catatan
+LRM di bawah):
 
 ```systemverilog
 typedef logic [15:0] Addr;
 typedef logic [31:0] Data;
 typedef logic [7:0]  ByteArray [0:255];
 ```
+
+**Catatan LRM 1800 §23.2.1.2 + §26.3 (penting).** Nama yang dipakai di ANSI
+port list / parameter port list di-resolve di scope **enclosing**, bukan di body
+module. Jadi typedef yang ditulis di dalam badan module pun di-emit di **scope
+file**, tepat sebelum deklarasi module — kalau tetap di body, `output Word8 v`
+tidak ter-resolve dan tool EDA menolaknya:
+
+```
+%Error: Cannot find file containing interface: 'Word8'
+```
+
+Hal yang sama berlaku untuk `use pkg::*` → `import pkg::*;` (lihat §5).
+Konsekuensi yang harus diketahui: nama typedef level file bersifat **global**
+dalam desain, jadi dua file `.mv` di direktori yang sama tidak boleh
+mendeklarasikan nama yang sama (ditolak E2007). Pakai `package` bila butuh
+nama yang sama di dua unit berbeda.
 
 ### 4.4 Struct
 
@@ -281,14 +303,18 @@ package counter_pkg {
 }
 ```
 
-Emisi:
+Emisi — **konstanta package ditulis lebih dulu, baru typedef**, karena dalam SV
+deklarasi harus tampil sebelum dipakai (LRM 1800 §5.6/§8.2). Lebar enum
+sering merujuk konstanta package (`const W = 4` + `enum(W) Dyn`); urutan tulis
+`.mv` tidak menjamin const lebih dulu, jadi emitter yang menaruhnya setelah
+typedef akan menghasilkan forward reference yang ditolak tool EDA:
 
 ```systemverilog
 package counter_pkg;
+    localparam logic [31:0] VERSION = 32'h20260808;
     typedef logic [15:0] Addr;
     typedef struct packed { ... } Packet;
     typedef enum logic [1:0] { ... } State;
-    localparam logic [31:0] VERSION = 32'h20260808;
 endpackage
 ```
 
@@ -301,7 +327,28 @@ module counter {
 }
 ```
 
-Emisi: `import counter_pkg::*;` di dalam module.
+Emisi: `import counter_pkg::*;` di **scope file** — tepat setelah
+`` `include "...svh" `` dan **sebelum** deklarasi module.
+
+```systemverilog
+`include "counter.svh"
+import counter_pkg::*;
+
+module counter (
+    output counter_pkg::Packet packet,   // atau `Packet` — keduanya resolve
+    ...
+);
+```
+
+Alasan: nama di ANSI port list di-resolve di enclosing scope, sehingga
+`import` yang diletakkan di body module **tidak** membuat tipe package
+terlihat di sana. LRM 1800 §23.2.1.2 + §26.3. Bentuk `import` di body module
+menghasilkan SV yang ditolak iverilog (`syntax error`) maupun verilator
+(`Cannot find file containing interface: 'Packet'`).
+
+Sifat import file-scope sedikit lebih luas daripada `use` per-module, tapi
+aman: checker sudah menolak (E2005) kode yang merujuk tipe/package tanpa
+`use`, jadi tidak ada kode valid yang bisa "bocor" lewat pelebaran ini.
 
 ---
 
@@ -494,18 +541,19 @@ Emisi: `always begin ... end` / `always_latch begin ... end`.
 | `for i in 0..N step 2 { ... }` (F41) | `for (int i = 0; i < N; i = i + 2) begin ... end` — step opsional pada loop behavioral |
 | `while (c) { ... }` | `while (c) begin ... end` |
 | `do { ... } while (c)` (F38) | `do begin ... end while (c);` — loop post-test (body minimal sekali) |
-| `->ev` (F38) | `-> ev;` — event trigger (membangunkan `@(posedge ev)`) |
+| `emit ev` / `-> ev` (F38) | `-> ev;` — event trigger (membangunkan `@(posedge ev)`) |
 | `repeat (n) { ... }` | `repeat (n) begin ... end` |
 | `repeat (n) @(posedge clk) {}` (F44) | `repeat (n) @(posedge clk) ;` — body kosong `{}`
   di-emit sebagai null statement `;` agar event control tidak
   "mencuri" statement berikutnya di SV |
 | `forever { ... }` | `forever begin ... end` |
-| `wait (c) { ... }` | `wait (c) begin ... end` |
-| `wait fork;` (F45) | `wait fork;` — tunggu semua child fork proses ini selesai |
-| `disable fork;` / `disable <label>;` (F45) | `disable fork;` / `disable label;` — terminasi child fork / blok bernama |
+| `await (c) { ... }` / `wait (c) { ... }` | `wait (c) begin ... end` |
+| `await all` / `wait fork` (F45) | `wait fork;` — tunggu semua child fork proses ini selesai |
+| `stop fork` / `disable fork` (F45) | `disable fork;` — terminasi semua child fork proses ini |
+| `stop <label>` / `disable <label>` (F45) | `disable label;` — terminasi blok bernama (lihat catatan ekstensi di bawah) |
 | `fork { ... } { ... } join / join_any / join_none` | `fork begin ... end begin ... end join[_any\|_none]` — branch konkurren (contoh: `examples/mv/forkjoin.mv`) |
-| `force x = v;` (F46) | `force x = v;` — override paksa sinyal (fault injection, blocking, hanya di luar `seq`) |
-| `release x;` (F46) | `release x;` — lepas force, assign berlaku lagi (`sig`/`reg` = variabel: unblock; restore driver hanya net `wire` LRM 10.6.2) |
+| `override x = v` / `force x = v` (F46) | `force x = v;` — override paksa sinyal (fault injection, blocking, hanya di luar `seq`) |
+| `restore x` / `release x` (F46) | `release x;` — lepas force, assign prosedural berlaku lagi (`sig`/`reg` = variabel: unblock; restore driver hanya net `wire` LRM 10.6.2) |
 | `foreach (arr[i]) { ... }` | `foreach (arr[i]) begin ... end` — loop elemen array unpacked |
 | `@(posedge clk) stmt` | `@(posedge clk) stmt` |
 | `#10 stmt` | `#10 stmt` |
@@ -519,6 +567,34 @@ Emisi: `always begin ... end` / `always_latch begin ... end`.
 | `break` / `continue` | `break;` / `continue;` |
 
 Operand/operator: sama semantiknya dengan SV (`+ - * / % ** << >> & | ^ ~ ! && || == != === !== < <= > >= ? :`, concat `{a,b}`, replication `{n{a}}`, literal `'0 '1 'x 'z`, `8'hFF`, `32'd10`, `1.5`).
+
+#### Kata kerja DSL (bukan sintaks SystemVerilog)
+
+`.mv` sengaja tidak meniru sintaks SV mentah. Lima kata kerja berikut punya
+padanan DSL; bentuk SV tetap diterima sebagai alias, jadi kode lama tidak
+rusak. Keduanya menghasilkan AST yang sama persis, sehingga codegen dan
+type-check tidak perlu tahu asal tulisannya.
+
+| `.mv` (DSL) | alias SV | emisi |
+|------|------|----------|
+| `emit ev` | `-> ev` | `-> ev;` |
+| `override x = v` | `force x = v` | `force x = v;` |
+| `restore x` | `release x` | `release x;` |
+| `await all` | `wait fork` | `wait fork;` |
+| `await (c) { }` | `wait (c) { }` | `wait (c) begin ... end` |
+| `stop fork` | `disable fork` | `disable fork;` |
+| `stop <label>` | `disable <label>` | `disable <label>;` |
+
+Kata `emit`, `override`, `restore`, `await`, `stop` menjadi **reserved** di
+`.mv` — sama seperti `force`/`release` yang sudah reserved sebelumnya.
+
+**Catatan ekstensi `stop <label>`.** Di LRM 1800 §9.6.4, `disable <label>`
+hanya berlaku untuk blok bernama yang **mengelilingi** statement itu, sehingga
+menembak blok di branch fork lain tidak sah di SV standar (verilator:
+`disable isn't underneath a begin with name: 'worker'`). Mivon mengimplementasikan
+bentuk yang lebih berguna: hanya blok target yang mati, pelaku `disable`
+lanjut sampai `join`. Untuk kode yang harus jalan di tool EDA lain, pakai
+pola LRM-legal `stop fork`. Contoh: `examples/mv/disable_label.mv`.
 
 Catatan F36: compound assignment (`a += 5`) dan increment (`i++`) bersifat
 blocking — hanya sah di `comb`/`always`/`latch`/`initial`/`final`/function/
@@ -615,7 +691,17 @@ flipflop u_ff[8] (
 );
 ```
 
-Parameter instance: `inst fifo #(.DEPTH(32)) u_fifo (...)`.
+Parameter instance — boleh ditulis **sebelum** maupun **setelah** nama
+instance di `.mv` (`inst fifo #(.DEPTH(32)) u_fifo (...)` /
+`inst fifo u_fifo #(.DEPTH(32)) (...)`), tetapi **selalu di-emit sebelum** nama
+instance di SV, karena bentuk `mod inst #(...)` ditolak iverilog maupun
+verilator (`syntax error, unexpected '#'`):
+
+```systemverilog
+fifo #(.DEPTH(32)) u_fifo ( ... );
+```
+
+Menulisnya dua kali pada satu instansiasi ditolak error posisi.
 
 ### 6.8 Generate (`for` / `if` di level module)
 
@@ -651,6 +737,19 @@ generate
         end
     end
 endgenerate
+```
+
+**Label generate selalu unik per module (LRM 1800 §27.6).** Dua blok generate
+dengan label sama di module yang sama adalah *duplicate declaration* (iverilog:
+`'gen_i' has already been declared in this scope`). Karena itu label yang sudah
+terpakai diberi sufiks `_1`, `_2`, … secara deterministik:
+
+```mv
+for i in 0..N { comb { q[i] = 1'b0 } }   // → begin : gen_i
+for i in 0..N { comb { q[i] = 1'b1 } }   // → begin : gen_i_1
+for j in 0..N { comb { q[j] = 1'b0 } }   // → begin : gen_j
+if (N > 2) { comb { q[0] = 1'b0 } } else { comb { q[0] = 1'b1 } }
+// → begin : gen_cond  /  begin : gen_cond_else
 ```
 
 ### 6.9 Function & Task
@@ -736,23 +835,46 @@ module tb_counter {
 ### 7.2 Assertion
 
 ```mv
-// immediate
+// immediate — di dalam blok prosedural (initial/always/seq/comb/...)
 assert (count <= 99) $info("count ok") else $error("count overflow")
 
-// concurrent
+// concurrent — di LEVEL MODULE (bukan di dalam initial/always)
 assert property (@(posedge clk) enable |-> count == $past(count) + 1)
 ```
 
-Emisi 1:1 ke SV (`assert`, `assert property`). `$info`/`$error`/`$warning`
-dipertahankan.
+Emisi ke SV:
+
+```systemverilog
+// immediate — branch pass adalah STATEMENT (LRM 1800 §20.11) jadi WAJIB
+// diakhiri `;` sebelum `else`:
+assert (count <= 99) $info("count ok"); else $error("count overflow");
+
+// concurrent — module item, di-emit apa adanya di body module:
+assert property (@(posedge clk) enable |-> count == $past(count) + 1);
+```
+
+Dua aturan LRM yang ditegakkan:
+
+- **LRM 1800 §20.11** — `assert (c) A else B` mensyaratkan `A` berupa
+  *statement*, jadi harus diakhiri `;`. Tanpa itu output
+  `assert (c) $info("x") else $error("y");` ditolak verilator
+  (`syntax error, unexpected else, expecting ';'`). Action berbentuk blok
+  (`begin … end`) sudah membawa `;` sendiri lewat statement di dalamnya.
+- **LRM 1800 §14** — `assert property` adalah *concurrent assertion*, yaitu
+  **module item**, bukan statement prosedural. Menuliskannya di dalam
+  `initial`/`always` menghasilkan SV yang ditolak tool
+  (`Procedural concurrent assertion … inside always`, IEEE 1800-2017
+  §16.14.6). Parser `.mv` menolak `assert` immediate di level module dengan
+  pesan yang mengarahkan ke dua bentuk yang benar di atas.
 
 **Implementasi (F6):**
 - `assert (cond) pass else fail` di-emit satu baris bila pass/fail statement
-  sederhana (`assert (c) $info(...) else $fatal(...);`); blok multi-baris
+  sederhana (`assert (c) $info(...); else $fatal(...);`); blok multi-baris
   tetap di-emit `begin...end`.
 - `assert property (...)` — body dipertahankan **raw** (teks persis di antara
   `(` dan `)`, termasuk parens) karena berisi operator SVA (`|->`, `##`, `[*]`)
-  yang bukan token `.mv`. Emisi: `assert property {raw};`.
+  yang bukan token `.mv`. Emisi: `assert property {raw};` sebagai **module
+  item** (LRM 1800 §14).
 - `$finish`/`$display`/`$info`/`$error`/`$fatal`/`$past` di-lex sebagai
   identifier `$nama` → statement/ekspresi biasa (`$finish;`, `$display(...);`).
 - **Severity tasks (F14 ✅)**: `$info`/`$warning`/`$error`/`$fatal`
@@ -947,12 +1069,27 @@ Aturan:
   `run` via `mv::format_error()` (snippet + caret).
 - Escape hatch: `mgen --no-check` untuk konstruk eksternal yang belum dipahami
   checker.
-- **Mode batch (F9)**: `mgen a.mv b.mv` / `mivon run a.mv b.mv` memakai
+- **Mode batch (F9)**: `mgen a.mv b.mv` / `mivon a.mv b.mv` memakai
   `check_many` — konteks GABUNGAN (tipe/package/konstanta dari semua file),
   sehingga `use pkg::*` antar-file lolos. Duplikat package/tipe-level-file/
   class LINTAS-file → E2007 (error di level `.mv`, bukan SV hasil generate).
+  Untuk scan **direktori**, konteks gabungan dibatasi **per direktori**: dua
+  subdirektori yang sama-sama mendefinisikan `Word16` tetap independen
+  (keduanya sah), sedangkan file satu direktori tetap saling melihat.
 
-Diagnostics memakai infra `crates/mivon-core/src/diagnostics/` Mivon (kode error, span, warna).
+### Bentuk diagnostics
+
+`mivon-mv` sengaja **nol dependensi** (`Cargo.toml`: std only) supaya crate
+bahasa bisa dipakai tanpa menarik seluruh toolchain. Karena itu diagnostics
+`.mv` berupa `MvError { line, col, msg }` sendiri dengan teks
+`[E20xx] pesan` + baris sumber & caret lewat `mv::format_error()` — **bukan**
+`Diagnostic` dari `crates/mivon-core/src/diagnostics/`. Konsekuensinya: belum ada
+kode warna di dalam pesan `.mv` (CLI membungkus dan mewarnai sendiri), dan
+baris pertama pesan tetap polos.
+
+Teks `E2001`–`E2009` adalah kode **stabil** yang dipakai pesan, selalu dengan
+awalan `[E20xx]`; hanya E2008 dan E2009 yang belum membawa posisi `line:col`
+(lihat `check/stmt.rs`).
 
 ---
 
@@ -962,13 +1099,13 @@ Ringkasan mapping konstruk `.mv` → SV:
 
 | `.mv` | SV |
 |-------|----|
-| `type X = T` | `typedef T X;` (di `.svh`/package atau `$unit`) |
+| `type X = T` | `typedef T X;` — di `.svh`/package, atau **scope file** bila ditulis di body module (LRM 1800 §23.2.1.2) |
 | `packed struct S { ... }` | `typedef struct packed { ... } S;` |
 | `enum E { ... }` | `typedef enum logic [..] { ... } E;` |
-| `package p { ... }` | `package p; ... endpackage` (`.svh`) |
-| `module m #(p) { ports }` | `module m #(...) (ports);` (`.sv`) |
+| `package p { ... }` | `package p; ... endpackage` (`.svh`) — `localparam` ditulis sebelum `typedef` (LRM 1800 §5.6) |
+| `module m #(p) { ports }` | `module m #(...) (ports);` (`.sv`); tanpa port → `module m;` |
 | `in/out/inout` | `input/output/inout` + tipe |
-| `sig : T` | `T sig;` |
+| `sig : T` | `T sig;` — dimensi unpacked **setelah nama** (`logic [7:0] m [0:3]`, LRM 1800 §7.3) |
 | `reg r : T = v` | `T r;` + reset branch di `always_ff` |
 | `const C = e` | `localparam C = e;` |
 | `seq(clk[,rst][,sync])` | `always_ff @(posedge clk [or negedge rst_n])` |
@@ -976,19 +1113,20 @@ Ringkasan mapping konstruk `.mv` → SV:
 | `latch { }` | `always_latch begin ... end` |
 | `always { }` | `always begin ... end` |
 | `initial { }` / `final { }` | `initial begin ... end` / `final begin ... end` |
-| `inst m u (...)` | `m u (...);` |
+| `inst m u (...)` | `m (...);` — parameter `#(...)` selalu **sebelum** nama instance |
 | `for i in A..B` (module body) | `generate for (genvar i = A; i < B; i = i + 1) begin : gen_i` |
 | `for i in A..B step 2` (module body, F41) | `generate for (genvar i = A; i < B; i = i + 2) begin : gen_i` |
-| `use pkg::*` | `import pkg::*;` |
+| `use pkg::*` | `import pkg::*;` di **scope file**, sebelum deklarasi module (LRM 1800 §26.3) |
 | `interface i { }` | `interface i; ... endinterface` (`.svh`) |
 | `class c ...` | `class c ... endclass` (`.sv`) |
 | `fork { ... } { ... } join / join_any / join_none` | `fork begin ... end begin ... end join[_any\|_none]` |
 | `foreach (arr[i]) { ... }` | `foreach (arr[i]) begin ... end` |
-| `wait fork;` (F45) | `wait fork;` — tunggu semua child fork proses ini |
-| `disable fork;` / `disable <label>;` (F45) | `disable fork;` / `disable label;` — terminasi child fork / blok bernama |
-| `label : { ... }` (F47) | `begin : label ... end` — blok bernama, target `disable <label>` |
-| `force x = v;` / `release x;` (F46) | `force x = v;` / `release x;` — fault injection testbench 1:1 |
-| `assert` / `assert property` | 1:1 |
+| `await all` / `wait fork` (F45) | `wait fork;` — tunggu semua child fork proses ini |
+| `stop fork` / `disable fork` (F45) | `disable fork;` — terminasi semua child fork proses ini |
+| `label : { ... }` (F47) | `begin : label ... end` — blok bernama, target `stop <label>` |
+| `override x = v` / `restore x` (F46) | `force x = v;` / `release x;` — fault injection testbench 1:1 |
+| `assert (c) A else B` | `assert (c) A; else B;` — branch pass diakhiri `;` (LRM 1800 §20.11) |
+| `assert property (...)` (module item) | `assert property (...);` apa adanya (LRM 1800 §14) |
 | `@sv { ... }` (F40) | emisi isi SV **verbatim** — escape hatch utk konstruk SV yang belum didukung bahasa; isi diambil mentah dari source (isolasi dari lexer .mv), type-check dilewati |
 
 ### 10.1 Isi `.svh` vs `.sv`
@@ -1012,15 +1150,25 @@ Ringkasan mapping konstruk `.mv` → SV:
 ## 11. CLI: `mivon mgen` (tool ke-11)
 
 ```shell
-mivon mgen counter.mv                     # generate counter.sv + counter.svh
-mivon mgen src/ -o build/gen              # semua .mv di src/ → build/gen
-mivon mgen types.mv counter.mv tb.mv      # banyak file sekaligus
-mivon mgen counter.mv --stdout            # print .sv ke stdout (debug)
-mivon mgen --check counter.mv             # exit 1 bila output tidak up-to-date (CI)
-mivon mgen --package mypkg                # bungkus typedef level file dalam package
-mivon mgen --svh-only / --sv-only         # (alias: --emit-svh-only / --emit-sv-only)
-mivon mgen --verbose                      # report file yang dihasilkan
+mivon mgen counter.mv                       # generate counter.sv + counter.svh
+mivon mgen src/ -o build/gen                # semua .mv di src/ → build/gen
+mivon mgen types.mv counter.mv tb.mv        # banyak file sekaligus
+mivon mgen counter.mv --stdout              # print .sv ke stdout (debug)
+mivon mgen counter.mv --check               # exit 1 bila output tidak up-to-date (CI)
+mivon mgen counter.mv --package mypkg       # bungkus typedef level file dalam package
+mivon mgen counter.mv --svh-only / --sv-only  # (alias: --emit-svh-only / --emit-sv-only)
+mivon mgen counter.mv --verbose             # report file yang dihasilkan
+mivon mgen counter.mv --no-check            # lewati type-check (konstruk eksternal)
 ```
+
+Catatan: `<TARGETS>` bersifat wajib pada semua invokasi — `mgen --package mypkg`
+tanpa target akan ditolak CLI.
+
+Scan direktori rekursif **melewati** direktori tersembunyi dan direktori
+`negative/` (fixture yang sengaja tidak valid), serta file yang namanya diawali
+`_`. Konteks gabungan `check_many` dibatasi **per direktori** supaya dua
+subdirektori yang sama-sama mendefinisikan nama tipe yang sama tidak saling
+menabrak.
 
 `--package <nama>` (F49): typedef level file di `.svh` dibungkus dalam
 `package <nama>; ... endpackage`, dan `.sv` yang meng-`include` otomatis dapat
@@ -1028,22 +1176,26 @@ mivon mgen --verbose                      # report file yang dihasilkan
 berubah. Package/interface dari sumber tetap di luar (nama sumber menang).
 
 Integrasi pipeline:
-- `mivon run counter.mv` (F8 ✅): file `.mv` di-transpile **on-the-fly** ke
+- `mivon counter.mv` (F8 ✅): file `.mv` di-transpile **on-the-fly** ke
   buffer (svh + sv digabung, baris `` `include `` di-strip) lalu disuntikkan
   sebagai sumber inline ke pipeline normal — **tanpa menulis file apa pun**.
   Semua flag run (`.mv --top X -T 2000`, `--compile-only`, dst.) berfungsi
-  seperti biasa; sumber `.mv` juga ikut MICD cache (hash konten buffer).
+  seperti biasa.
   Implementasi: `main.rs` — `read_source_bytes()` (buffer inline vs disk)
   + cabang preprocess khusus `.mv` di `run()`.
+  Catatan: bila ada `.mv` di input, jalur **legacy** yang dipakai — `--fast` /
+  `--filelist` / auto-fast (>256 KB) di-bypass, karena `run_fast` tidak
+        melakukan transpile.
 - **Multi-file (F9 ✅)**: `mgen` dan `run` men-transpile SEMUA file `.mv`
   sekaligus dengan **konteks gabungan** — tipe/package/konstanta dari satu
   file terlihat oleh file lain. `types.mv` mendefinisikan `Addr`, `counter.mv`
   memakainya via `use types_pkg::*`: keduanya lolos type-check & bisa
-  disimulasikan bersama (`mivon run types.mv counter.mv --top counter`).
+  disimulasikan bersama (`mivon types.mv counter.mv --top counter`).
   Implementasi: `crates/mivon-mv/src/check/` `check_many()` (combined `Ctx`),
-  `crates/mivon-mv/src/lib.rs` `transpile_many()`, `crates/mivon-tools/src/gen.rs` + `src/main.rs` batch.
+  `crates/mivon-mv/src/lib.rs` `transpile_many_items()`,
+  `crates/mivon-tools/src/gen.rs` (grouping per direktori).
 - **`.mv` di SEMUA tool (F10 ✅)**: `sim`/`cov`/`elab`/`prof`/`bench`/`lint`/
-  `check`/`inspect` menerima file `.mv` langsung — di-transpile ke buffer
+  `inspect` menerima file `.mv` langsung — di-transpile ke buffer
   inline (svh+sv, tanpa menulis file) via `SessionConfig.inline_sources`,
   lalu pipeline CompileSession normal berjalan. Contoh:
   `mivon sim tb.mv --top tb -T 2000`, `mivon cov tb.mv`, `mivon bench tb.mv`.
@@ -1054,8 +1206,6 @@ Integrasi pipeline:
   (hash basis buffer vs isi `.mv` di disk berbeda; setiap run di-transpile
   ulang), jalur mmap disk tetap zero-copy (tanpa `to_vec`), dan metrik
   `bench` (baris) dihitung dari buffer hasil transpile agar bermakna.
-- Hasil generate di-cache MICD (`project/.mivon/database/`) — `.mv` tidak
-  berubah → tidak di-parse ulang.
 
 ### 11.1 Struktur implementasi (1 file = 1 tanggung jawab)
 
@@ -1138,9 +1288,9 @@ module traffic #(GREEN_T = 30, YELLOW_T = 5) {
 
 ```systemverilog
 // ─────────────────────────────────────────────────────────────
-// Generated by mivon mgen v0.4.0 — DO NOT EDIT
-// Sumber: traffic.mv
-// Regenerate: mivon mgen traffic.mv
+// Generated by mivon mgen — DO NOT EDIT
+// Sumber    : traffic.mv
+// Perintah  : mivon mgen traffic.mv
 // ─────────────────────────────────────────────────────────────
 `ifndef TRAFFIC_SVH
 `define TRAFFIC_SVH
@@ -1152,74 +1302,90 @@ endpackage
 `endif
 ```
 
+`include "traffic.svh"` pada `.sv` diikuti `import traffic_pkg::*;` di scope
+file — lihat §5 (LRM 1800 §26.3).
+
 **`traffic.sv`**
 
 ```systemverilog
 // ─────────────────────────────────────────────────────────────
-// Generated by mivon mgen v0.4.0 — DO NOT EDIT
-// Sumber: traffic.mv
-// Regenerate: mivon mgen traffic.mv
+// Generated by mivon mgen — DO NOT EDIT
+// Sumber    : traffic.mv
+// Perintah  : mivon mgen traffic.mv
 // ─────────────────────────────────────────────────────────────
 `include "traffic.svh"
+import traffic_pkg::*;
 
 module traffic #(
-    parameter int GREEN_T  = 30,
-    parameter int YELLOW_T = 5
+    parameter GREEN_T = 30,
+    parameter YELLOW_T = 5
 ) (
-    input  bit             clk,
-    input  bit             rst_n,
-    output traffic_pkg::State state,
-    output bit             red,
-    output bit             green,
-    output bit             yellow
+    input  bit clk,
+    input  bit rst_n,
+    output State state = RED,
+    output bit red,
+    output bit green,
+    output bit yellow
 );
-    traffic_pkg::State state_reg;
-    logic [7:0] timer;
+    logic [7:0] timer = 8'd0;
 
+    // logika sekuensial
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            state_reg <= traffic_pkg::RED;
-            timer     <= '0;
+            state <= RED;
+            timer <= 0;
         end else begin
-            case (state_reg)
-                traffic_pkg::RED: begin
+            case (state)
+                RED: begin
                     if (timer == GREEN_T) begin
-                        state_reg <= traffic_pkg::GREEN;
-                        timer     <= '0;
+                        state <= GREEN;
+                        timer <= 0;
                     end else begin
-                        timer <= timer + 1'b1;
+                        timer <= timer + 1;
                     end
                 end
-                traffic_pkg::GREEN: begin
+                GREEN: begin
                     if (timer == YELLOW_T) begin
-                        state_reg <= traffic_pkg::YELLOW;
-                        timer     <= '0;
+                        state <= YELLOW;
+                        timer <= 0;
                     end else begin
-                        timer <= timer + 1'b1;
+                        timer <= timer + 1;
                     end
                 end
-                traffic_pkg::YELLOW: begin
-                    state_reg <= traffic_pkg::RED;
-                    timer     <= '0;
+                YELLOW: begin
+                    state <= RED;
+                    timer <= 0;
                 end
-                default: ;
             endcase
         end
     end
 
-    assign state = state_reg;
-
+    // logika kombinasional
     always_comb begin
-        red    = (state_reg == traffic_pkg::RED);
-        green  = (state_reg == traffic_pkg::GREEN);
-        yellow = (state_reg == traffic_pkg::YELLOW);
+        red = (state == RED);
+        green = (state == GREEN);
+        yellow = (state == YELLOW);
     end
 endmodule
 ```
 
-> Catatan: `state` output di-drive via `assign` karena tipe enum — port enum
-> tidak boleh di-assign dari always block langsung; codegen mendeteksi ini
-> dan menurunkan `state_reg` + `assign` otomatis.
+> Catatan: golden di atas adalah output **nyata** dari
+> `mivon mgen examples/mv/traffic.mv` — bisa diperiksa ulang dengan
+> `mivon mgen examples/mv/traffic.mv --check`. Jangan menuliskan hasil emisi
+> secara manual di dokumen ini, karena output itulah yang harus dibuktikan
+> benar. Tiga detail penting yang terlihat di sini:
+>
+> - `import traffic_pkg::*;` di **scope file**, sebelum `module traffic` —
+>   supaya `output State state` di ANSI port list ter-resolve (§5).
+> - Nilai reset `reg state : State = RED` berpindah ke deklarasi port
+>   (`output State state = RED`, sah LRM 1800 §6.8.2) — deklarasi ganda
+>   `reg`/`out` dengan nama sama tidak sah di SV (§6.3).
+> - `reg timer : uint[8] = 0` → `logic [7:0] timer = 8'd0` — angka di dalam
+>   kurung `uint[N]` adalah **lebar bit**, bukan jumlah elemen (§4.1).
+>
+> Port enum **boleh** di-assign langsung dari `always_ff` (port bertipe enum
+> adalah variabel), jadi tidak ada lowering `state_reg` + `assign` seperti
+> pernah diklaim di versi dokumen ini.
 
 ### 12.2 Testbench
 
@@ -1227,9 +1393,10 @@ endmodule
 
 ```mv
 module tb_traffic {
-    in clk, rst_n : bit
-    in state      : traffic_pkg::State
-    in red, green, yellow : bit
+    sig clk, rst_n : bit
+    sig state      : traffic_pkg::State
+    sig red, green, yellow : bit
+    inst traffic u (.clk, .rst_n, .state, .red, .green, .yellow)
 
     initial {
         clk = 0
@@ -1246,6 +1413,12 @@ module tb_traffic {
     }
 }
 ```
+
+> Sinyal testbench memakai `sig`, bukan `in`. Port `in` di `.mv` meantinya
+> "di-drive dari luar", dan checker mengizinkan testbench me-drive-nya (§9,
+> E2003), tetapi SV hasil generate jadi `input` yang ditulis dari `initial` —
+> ditolak verilator (`Assigning to input/const variable`). `sig` aman di kedua
+> dunia.
 
 ---
 
@@ -1307,8 +1480,78 @@ module tb_traffic {
 | **F49** ✅ | **`mgen --package <nama>`** — flag §11 yang terdokumentasi tapi belum ada di CLI: bungkus typedef level file dalam `package <nama>; ... endpackage` di `.svh`; `.sv` yang meng-`include` otomatis dapat `import <nama>::*;`. Alias flag `--emit-svh-only`/`--emit-sv-only` untuk `--svh-only`/`--sv-only` (§11) | (1) `GenOpts { package }` (`codegen/mod.rs`) + `generate_src_ext_opts`; `generate_svh_opts`/`generate_sv_opts` menerima opsi (versi lama delegasi ke default → output tak berubah tanpa flag); (2) `MvItem.package` + `with_header()` builder (`lib.rs`) — `GenArgs.package` diteruskan `gen.rs`, `main.rs`, `cli.rs` | demo e2e: `mgen addr_tb.mv --package chip_types` → `.svh` berisi `package chip_types;` + typedef, `.sv` berisi `` `include `` + `import chip_types::*;` → `sim` jalan `PKG_TYPE_OK a=42 st=1`; 4 unit test (`f49_mgen_package_wraps_file_typedefs`, `f49_mgen_package_no_op_without_typedefs` (tanpa typedef → tak ada import sia-sia), `f49_port_init_from_reg_same_name`, `f49_input_port_has_no_init`) |
 | **F48** ✅ | **`++`/`--` side-effect penuh dalam ekspresi (SV + `.mv`)** — fix bug mivon utama: `k = i--` menghasilkan nilai salah (4, bukan 5) DAN `i` tak pernah berubah; `while (++i < 4)` infinite-loop | (1) **AST** (`mivon-ast/src/expr.rs`): varian baru `Expr::IncDec { expr, inc, pre }` — sebelumnya parser men-desugar `++i`/`i--` di level ekspresi jadi `BinaryOp Add/Sub` murni (side-effect HILANG, nilai postfix salah); (2) **parser SV** (`mivon-parser/src/expr.rs`): arm prefix (`parse_primary`) + postfix (loop postfix di `parse_expr`) → `Expr::IncDec` (statement-level tetap `BlockingAssign` — tidak berubah); (3) **IR** (`mivon-ir/src/ir.rs`): varian `IrExpr::IncDec { read, lv, inc, pre }` (baca nilai → tulis balik ±1 ke lvalue → hasil baru/lama); (4) **elaborator** (`elaborator/expr.rs`): arm `Expr::IncDec` → `elaborate_expr` (read) + `elaborate_lvalue` (write-back); walker wajib (`substitute_ident_in_expr`, `expr_location`, `scope_rename_expr`, `substitute_loop_var_in_expr`, `collect_implicit_net_idents`, `translate_expr`, `compute_expr_width`, `collect_read_signals_expr`, `inline.rs`/`inline_util.rs` walkers, `lint.rs` scan, `tools/lib.rs` `expr_to_string`, `synth/subset.rs` `walk_expr`); (5) **evaluator** (`simulator/engine/eval/expr.rs` IR + `eval/ast.rs` AST): baca `old`, `eval_binary(Add/Sub, old, 1)` (wrap width), `write_lvalue`/`write_ast_lvalue`, hasil = `new` (pre) / `old` (post); (6) **analisis dependensi** (`sim_dag.rs` RMW read+write, `util.rs` `extract_signal_deps` + `lvalue_dep_id`, `parallel.rs` `variant_name`); (7) **`.mv`** (`mivon-mv/src/parser/expr.rs`): postfix di RHS ekspresi `k = i--` kini DIDUKUNG (sebelumnya ditolak E-error) → emit `i--;` | **Demo e2e SEBELUM fix** (`/tmp/mvprobe/e2e_incdec.sv`): A `j=6 i=5` ✗, B `k=4 i=5` ✗ (harus k=5 i=4), C `i=0 n=100000` ✗ infinite-loop, D `i=3 n=100000` ✗, E `k=8 i=0` ✗ — **SESUDAH fix: A–E semua 5/5 cocok** (`j=6 i=6`, `k=5 i=4`, `i=4 n=3`, `i=-1 n=3`, `k=7 i=1`); e2e `.mv` (`j = ++i` → `i=6 j=6`); test di-update: `test_mv_postfix_rhs_rejected` → `test_mv_postfix_rhs_supported` (transpile + sim `k=5 i=4 j=4`), `test_mv_prefix_incdec` ekspektasi baru (`i=0 j=6`) |
 
-**Kriteria selesai F2:** `cargo run -- mgen examples/counter.mv` menghasilkan
-`counter.sv` yang bisa disimulasikan oleh `cargo run -- counter.sv` tanpa error.
+**Kriteria selesai F2:** `mivon mgen examples/mv/counter.mv` menghasilkan
+`counter.sv` yang bisa disimulasikan oleh `mivon counter.sv` tanpa error.
+
+### 13.1 F57–F65 — Kepatuhan LRM 1800 pada output `mgen`
+
+Audit output `mgen` terhadap iverilog (`-g2012`) dan verilator (`--lint-only
+--timing`) menemukan 9 kelas SV yang **ditolak tool EDA** (sebelumnya lolos
+karena parser SV Mivon terlalu longgar). Semuanya diperbaiki di sisi backend
+`.mv`; tidak ada perubahan semantik simulasi.
+
+| Fase | Temuan (apa yang ditolak tool) | Perbaikan | Verifikasi |
+|------|-------------------------------|-----------|------------|
+| **F57** ✅ | `use pkg::*` → `import` di body module, padahal ANSI port list di-resolve di enclosing scope → iverilog `syntax error`, verilator `Cannot find file containing interface: 'State'` | import di-emit di **scope file** sebelum deklarasi module (`codegen::mod::file_scope_imports`) | `lrm_use_package_type_visible_in_ansi_port_list`, `test_mv_package_type_in_port_list_end_to_end` |
+| **F58** ✅ | typedef yang ditulis di body module tapi dipakai di port list module yang sama → `output Word8 v` tak ter-resolve | typedef lokal module di-hoist ke scope file (`file_scope_typedefs`), didedup | `lrm_module_local_typedef_hoisted_before_module`, `test_mv_module_local_typedef_in_port_list_end_to_end` |
+| **F59** ✅ | `emit_type` menaruh dimensi unpacked **sebelum** nama → `logic [7:0] [4] fa;` (class field, interface `sig`) = syntax error (LRM 1800 §7.3) | pakai `emit_signal_decl`/`emit_signal_decl_multi` di `codegen/defs.rs` | `lrm_unpacked_dims_after_name_in_class_field_and_interface_sig` |
+| **F60** ✅ | dua blok generate dengan label sama (`gen_i`) → `'gen_i' has already been declared` (§27.6) | `codegen::GenLabels` uniquifier deterministik (`gen_i`, `gen_i_1`, `gen_j`, `gen_cond`, `gen_cond_else`) | `lrm_generate_label_uniquified`, `test_mv_duplicate_generate_labels_uniquified` |
+| **F61** ✅ | `enum(W)` dengan `W` = konstanta package di-emit **sebelum** `localparam W` → forward reference | `emit_package` menulis konstanta lebih dulu, baru typedef (§5.6) | `lrm_package_const_before_typedef` |
+| **F62** ✅ | `assert (c) $info(..) else $error(..)` tanpa `;` sebelum `else` → `unexpected else, expecting ';'` (§20.11) | branch pass diakhiri `;` pada emit single-line | `test_mv_assert_pass_branch_has_semicolon` |
+| **F63** ✅ | `assert property` di dalam `initial`/`always` → `Procedural concurrent assertion … inside always` (§14/§16.14.6) | `MItem::AssertProperty` — concurrent assertion jadi module item; parser tolak immediate-assert di level module | `parse_assert_property_only_at_module_level`, `parse_immediate_assert_at_module_level_is_rejected` |
+| **F64** ✅ | override parameter di-emit setelah nama instance (`mod inst #(...)`) → `syntax error, unexpected '#'` | selalu di-emit **sebelum** nama (`emit_inst`); `.mv` menerima kedua urutan | `codegen_inst_positional_param`, `test_mv_inst_params_emitted_before_instance_name` |
+| **F65** ✅ | `uint[8]` diartikan array 8×32-bit (`logic [31:0] x [0:7]`) sehingga `x <= 0` tak berguna; `mgen <dir>` gagal E2007 karena seluruh pohon diratakan jadi satu namespace | `uint[N]`/`int[N]` = vektor **lebar N** (§4.1); konteks `check_many` dikelompokkan per direktori; scan direktori melewati `negative/` + tersembunyi + prefiks `_` | `lrm_uint_bracket_is_width_not_array`, `test_mv_uint_bracket_is_bit_width` |
+
+Sisanya (kosmetik): module tanpa port → `module tb;` (bukan `module tb (\n\n);`).
+
+**Bug mivon utama yang ditemukan & diperbaiki di sesi yang sama** — parser
+SV Mivon terlalu longgar dan **diam-diam** membuang deklarasi:
+
+- `logic [7:0] [4] fa;` (dimensi unpacked salah tempat) → `parse_decl_names`
+  mengembalikan NOL nama, deklarasi diterima sebagai no-op, sinyal `fa` tak
+  pernah ada tanpa diagnostic apa pun (silent miscompilation). Sekarang
+  ditolak dengan pesan yang menyebut LRM 1800 §7.3
+  (`mivon-parser/src/decl.rs`).
+- Jalur class menelan error deklarasi (`Err(_) => skip_until_semi_or_end()`),
+  membuat field hilang dari design. Sekarang dipropagasi
+  (`mivon-parser/src/class.rs`).
+- `parse_extra_packed_dims` "konsumsi dan buang" bentuk non-range di posisi
+  packed_dimension. Sekarang ditolak eksplisit (`mivon-parser/src/decl.rs`).
+
+Test: `test_lrm_unpacked_dim_before_name_is_rejected`,
+`test_lrm_unpacked_dim_before_name_in_class_field_is_rejected`,
+`test_lrm_unpacked_dim_after_name_is_accepted`.
+
+**Demo e2e:** `examples/mv/dsl_demo.mv` (`.mv` → `mgen` → SV → simulasi Mivon)
+menggabungkan F57–F62 dalam satu program, plus kata kerja DSL. Dijalankan
+`test_mv_dsl_demo_example_end_to_end`; hasil:
+
+```
+Info: dsl: override aktif
+Info: dsl: restore aktif
+Info: dsl: mat[1][0] benar
+Info: dsl: mat[1][1] benar
+DSL_DEMO flag terpicu
+Info: dsl: tick benar
+DSL_DEMO_OK tick=12 lo=3 hi=4 w=7
+```
+
+### 13.2 Kata kerja DSL (kurangi gaya SystemVerilog di sumber `.mv`)
+
+`.mv` tidak boleh meniru sintaks SV mentah. Kata kerja berikut menambah
+lapisan DSL; bentuk SV tetap jadi alias sehingga kode lama tidak rusak, dan
+keduanya menghasilkan AST identik (lihat §6.6):
+
+| `.mv` (DSL) | alias SV |
+|------|------|
+| `emit ev` | `-> ev` |
+| `override x = v` | `force x = v` |
+| `restore x` | `release x` |
+| `await all` / `await (c) { }` | `wait fork` / `wait (c) { }` |
+| `stop fork` / `stop <label>` | `disable fork` / `disable <label>` |
+
+Test: `parse_dsl_verbs_are_aliases_of_sv_forms`,
+`parse_await_cond_is_alias_of_wait_cond`, `test_mv_dsl_verbs_end_to_end`.
 
 ---
 

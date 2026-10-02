@@ -1,10 +1,20 @@
 // F47 — `label : { ... }` (blok bernama) + `disable <label>` lintas branch fork.
-// `disable worker` dari branch kedua membunuh HANYA blok bernama `worker`
-// (branch pertama) — branch kedua tetap jalan sampai join (LRM 1800 §9.6.4).
-// Jalankan:
-//   mivon mgen examples/mv/disable_label.mv -o /tmp/opencode/
-//   mivon sim /tmp/opencode/disable_label.sv --top tb_dl -T 50
-//   mivon run examples/mv/disable_label.mv --top tb_dl -T 50
+//
+// EKSTENSI MIVON (di luar LRM 1800). `disable <label>` di LRM hanya berlaku
+// untuk blok bernama yang MENGELILINGI statement itu (LRM 1800 §9.6.4) — jadi
+// `disable worker` dari branch fork yang SAUDARA tidak sah di SV standar, dan
+// verilator menolaknya:
+//
+//     %Error: disable isn't underneath a begin with name: 'worker'
+//
+// Mivon mengimplementasikan bentuk yang lebih berguna: `disable <label>`
+// boleh menembak blok bernama yang sedang berjalan di branch lain, dan hanya
+// blok target yang mati — pelaku `disable` LANJUT sampai `join`.
+// Untuk kode yang harus jalan di tool EDA lain, gunakan pola LRM-legal
+// `disable fork` (menghentikan semua child) — lihat `examples/mv/fork_ctrl.mv`.
+//
+// Jalankan (transpile on-the-fly, tanpa menulis file):
+//   mivon examples/mv/disable_label.mv --top tb_dl -T 50
 // Expected: a=0 (worker dibunuh sebelum #10), done=1 (join selesai normal).
 
 module tb_dl {

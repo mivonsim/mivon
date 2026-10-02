@@ -10,8 +10,8 @@
 typedef logic [15:0] Addr;
 
 package mvh_pkg;
-    typedef enum logic [1:0] { IDLE, RUN, DONE } State;
     localparam MAX_CNT = 15;
+    typedef enum logic [1:0] { IDLE, RUN, DONE } State;
 endpackage
 
 `endif

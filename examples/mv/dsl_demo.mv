@@ -1,0 +1,134 @@
+// Demo DSL Mivon HDL — regression showcase untuk perbaikan LRM 1800.
+//
+//   1. tipe dari `use pkg::*` di ANSI port list → `import` di SCOPE FILE
+//      (port list di-resolve di enclosing scope, LRM 1800 §23.2.1.2/§26.3)
+//   2. array unpacked multi-dimensi → dimensi SETELAH nama (LRM 1800 §7.3)
+//   3. dua blok generate dengan nama variabel sama → label SV di-uniquify
+//      (LRM 1800 §27.6, "duplicate declaration")
+//   4. lebar enum dari konstanta package → konstanta ditulis sebelum typedef
+//   5. `assert (c) $info(..) else $error(..)` → branch pass diakhiri `;`
+//      (LRM 1800 §20.11)
+//   6. kata kerja DSL (bukan sintaks SV): `emit` / `override` / `restore`
+//      / `await all` / `stop fork`
+//
+// Jalankan (tanpa menulis file — transpile on-the-fly):
+//   mivon run examples/mv/dsl_demo.mv --top tb_dsl -T 500
+
+package dsl_pkg {
+    const TICK_W = 4
+    enum State { IDLE, WARM, HOT }
+    type Word = logic[15:0]
+}
+
+// ── DUT: showcase 1, 2, 3, 4 ──────────────────────────────────────────
+module dsl_dut {
+    use dsl_pkg::*
+
+    in  clk, rst_n : bit
+    out state      : State
+    out tick       : Word
+    out lo, hi     : logic[7:0]
+
+    // 4) register bertipe enum dari package; nilai reset = IDLE
+    reg state : State = IDLE
+    reg tick  : Word  = 16'h0
+
+    // 2) array unpacked 2-dimensi — dimensi di-emit SETELAH nama
+    sig mat : logic[8][2][2] = '{{8'd1, 8'd2}, {8'd3, 8'd4}}
+
+    // 3) DUA blok generate dengan nama variabel sama (`i`) — tanpa label
+    //    uniquify keduanya jadi `gen_i` (error LRM 1800 §27.6).
+    for i in 0..2 {
+        comb { hi = mat[i][1] }
+    }
+    for i in 0..2 {
+        comb { lo = mat[i][0] }
+    }
+
+    seq(clk, rst_n) {
+        if (!rst_n) {
+            state <= IDLE
+            tick  <= 16'h0
+        } else {
+            case (state) {
+                IDLE: { state <= WARM  tick <= tick + 16'd1 }
+                WARM: { state <= HOT   tick <= tick + 16'd2 }
+                HOT:  { state <= IDLE  tick <= tick + 16'd3 }
+            }
+        }
+    }
+}
+
+// ── Testbench: showcase 5, 6 ─────────────────────────────────────────
+module tb_dsl {
+    sig clk, rst_n : bit
+    sig state      : State
+    sig tick       : Word
+    sig lo, hi     : logic[7:0]
+    sig flag       : bit
+    sig got        : int
+
+    // queue (dynamic array) di sisi TB: panjang berubah saat runtime
+    sig hist : logic[7:0][$]
+
+    inst dsl_dut dut (.clk, .rst_n, .state, .tick, .lo, .hi)
+
+    // sink untuk `override`/`restore`
+    reg w : logic[7:0] = 8'd5
+
+    initial {
+        clk   = 0
+        rst_n = 0
+        forever #5 clk = ~clk
+    }
+
+    initial {
+        #20
+        rst_n = 1
+        // 6 posedge setelah reset lepas: tick = 1+2+3+1+2+3 = 12.
+        // Sampling dilakukan di `@(negedge clk)` (bukan `@(posedge)`)
+        // supaya update non-blocking `tick <= …` di siklus terakhir sudah
+        // settled (LRM 1800 §14.5 — race antara samplel & NBA region).
+        repeat (6) @(posedge clk) {}
+        @(negedge clk)
+        got = tick
+
+        // 6) `override`/`restore` — bentuk DSL dari force/release.
+        // Catatan LRM 1800 §10.6.2: pada VARIABEL, `release` hanya
+        // membuka blokir prosedural; nilai paksa tetap sampai ada
+        // assignment prosedural berikutnya. Makanya ada `w = 7` di bawah.
+        override w = 8'd99
+        #1
+        assert (w == 99) $info("dsl: override aktif") else $error("dsl: override gagal")
+
+        restore w
+        w = 8'd7
+        #1
+        assert (w == 7) $info("dsl: restore aktif") else $error("dsl: restore gagal")
+
+        // queue: isi dari state tiap siklus, lalu periksa panjangnya
+        // `mat = '{{1,2},{3,4}}'` → mat[1][0] = 3, mat[1][1] = 4
+        assert (dut.lo == 8'd3) $info("dsl: mat[1][0] benar") else $error("dsl: mat salah")
+        assert (dut.hi == 8'd4) $info("dsl: mat[1][1] benar") else $error("dsl: mat salah")
+
+        // 6) `emit` memicu event → membangunkan `@(posedge flag)`
+        emit flag
+        #1
+
+        // 6) `await all` ≡ `wait fork`, `stop fork` ≡ `disable fork`
+        await all
+        stop fork
+
+        // 5) assert dengan severity task → SV sah (branch pass diakhiri `;`)
+        assert (got == 12) $info("dsl: tick benar") else $error("dsl: tick salah")
+
+        $display("DSL_DEMO_OK tick=%0d lo=%0d hi=%0d w=%0d", got, lo, hi, w)
+        $finish
+    }
+
+    // konsumen event dari `emit flag`
+    initial {
+        @(posedge flag)
+        $display("DSL_DEMO flag terpicu")
+    }
+}

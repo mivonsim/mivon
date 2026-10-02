@@ -234,6 +234,10 @@ pub struct StructFieldInfo {
     /// access `a.b.c`). Diisi saat store_typedef_fields / deklarasi struct.
     /// Dipakai elaborator untuk resolve lvalue nested (`hw2reg.val.d = x`).
     pub type_name: Option<Symbol>,
+    /// Field bertipe SIGNED (`int y;`, `byte b;`, `signed logic [7:0]`).
+    /// Baca field harus signed (LRM 1800 §6.24.1) — tanpa ini
+    /// `$display("%0d", s.y)` untuk `s.y = -5` tercetak 4294967291.
+    pub is_signed: bool,
     /// Fields dari anonymous struct/union inline (`struct packed {...} data;`
     /// tanpa typedef). type_name tidak ada di typedef_field_map, jadi sub_fields
     /// menyimpan fields langsung agar chain `a.b.c` tetap bisa di-resolve

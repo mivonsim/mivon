@@ -1,0 +1,36 @@
+// ─────────────────────────────────────────────────────────────
+// Contoh F43 — DUT: memakai tipe dari `defs.mvh` (file header, F9+F43).
+//   `Addr` (typedef level file) + `mvh_pkg::*` (package) datang dari
+//   konteks gabungan check_many — file header boleh di-`use` oleh
+//   file desain lain.
+// ─────────────────────────────────────────────────────────────
+
+module upcounter {
+    use mvh_pkg::*
+
+    in  clk, rst_n : bit
+    in  enable     : bit
+    out count      : Addr
+    out state      : State
+
+    reg count : Addr = '0
+    reg state : State = IDLE
+
+    seq(clk, rst_n) {
+        if (!rst_n) {
+            count <= '0
+            state <= IDLE
+        } else if (state == DONE) {
+            state <= IDLE
+            count <= '0
+        } else if (enable) {
+            state <= RUN
+            if (count == MAX_CNT - 1) {
+                count <= '0
+                state <= DONE
+            } else {
+                count <= count + 1
+            }
+        }
+    }
+}

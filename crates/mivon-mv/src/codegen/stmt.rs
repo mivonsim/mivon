@@ -236,6 +236,9 @@ pub(crate) fn emit_stmt(out: &mut String, indent: usize, stmt: &Stmt) {
                 line(out, indent, ";");
             }
         }
+        // Catatan: blok `begin…end` sudah membawa `;` sendiri lewat
+        // `emit_stmt` masing-masing branch, jadi `assert (c) begin … end
+        // else begin … end;` sah (LRM 1800 §20.11).
         Stmt::AssertProperty(raw) => {
             line(out, indent, &format!("assert property {raw};"));
         }
@@ -330,8 +333,13 @@ pub(crate) fn single_line_stmt(stmt: &Stmt) -> Option<String> {
                 None => None,
             };
             let c = emit_expr(cond);
+            // LRM 1800 §20.11: `action_block_or_null` adalah STATEMENT (butuh
+            // `;`), `null_action` juga `;`. Branch pass karena itu WAJIB
+            // diakhiri `;` sebelum `else` — tanpa itu
+            // `assert (c) $info("ok") else $error("bad");` bukan grammar SV
+            // (verilator: "unexpected else, expecting ';'").
             match (p, f) {
-                (Some(p), Some(f)) => Some(format!("assert ({c}) {p} else {f};")),
+                (Some(p), Some(f)) => Some(format!("assert ({c}) {p}; else {f};")),
                 (Some(p), None) => Some(format!("assert ({c}) {p};")),
                 (None, Some(f)) => Some(format!("assert ({c}) else {f};")),
                 (None, None) => Some(format!("assert ({c});")),

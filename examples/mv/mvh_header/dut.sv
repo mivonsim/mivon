@@ -4,28 +4,32 @@
 // Perintah  : mivon mgen dut.mv
 // ─────────────────────────────────────────────────────────────
 
-import chip_types::*;
+import mvh_pkg::*;
 
-module memory_dut (
-    mem_if axi,
+module upcounter (
+    input  bit clk,
     input  bit rst_n,
-    output State st,
-    output Addr addr
+    input  bit enable,
+    output Addr count = '0,
+    output State state = IDLE
 );
 
     // ── logika sekuensial ──
-    always_ff @(posedge axi.clk or negedge rst_n) begin
+    always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            addr <= '0;
-            st <= IDLE;
-        end else begin
-            addr <= addr + 1;
-            st <= WR;
+            count <= '0;
+            state <= IDLE;
+        end else if (state == DONE) begin
+            state <= IDLE;
+            count <= '0;
+        end else if (enable) begin
+            state <= RUN;
+            if (count == MAX_CNT - 1) begin
+                count <= '0;
+                state <= DONE;
+            end else begin
+                count <= count + 1;
+            end
         end
-    end
-
-    // ── logika kombinasional ──
-    always_comb begin
-        axi.dout = axi.din;
     end
 endmodule

@@ -4,13 +4,13 @@
 // Perintah  : mivon mgen features_new.mv
 // ─────────────────────────────────────────────────────────────
 
+typedef logic [7:0] Word8;
+typedef enum logic [1:0] { OFF, ON } Mode;
 
 module fn_dut (
     output Word8 val,
     output Mode m
 );
-    typedef logic [7:0] Word8;
-    typedef enum logic [1:0] { OFF, ON } Mode;
     logic [7:0] rom [0:3];
 
     // ── initial ──
@@ -27,9 +27,7 @@ module fn_dut (
     end
 endmodule
 
-module tb_fn (
-
-);
+module tb_fn;
     logic [7:0] val;
     logic [0:0] m;
 

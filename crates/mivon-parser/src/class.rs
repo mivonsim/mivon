@@ -488,30 +488,25 @@ impl Parser {
                 | Token::TriAnd
                 | Token::TriOr
                 | Token::Supply0
-                | Token::Supply1 => match self.parse_decl() {
-                    Ok(mut decl) => {
-                        for n in &mut decl.names {
-                            n.is_rand = false;
-                        }
-                        members.push(ClassMember::Decl(decl));
+                | Token::Supply1 => {
+                    // Error deklarasi field TIDAK lagi ditelan diam-diam:
+                    // swallowing membuat field yang gagal di-parse hilang
+                    // dari design tanpa diagnostic (silent miscompilation —
+                    // contoh `logic [7:0] [4] fa;` yang dimensi unpacked-nya
+                    // salah tempat, LRM 1800 §7.3).
+                    let mut decl = self.parse_decl()?;
+                    for n in &mut decl.names {
+                        n.is_rand = false;
                     }
-                    Err(_) => {
-                        let _ = self.skip_until_semi_or_end();
-                    }
-                },
+                    members.push(ClassMember::Decl(decl));
+                }
                 Token::Rand | Token::RandC => {
                     self.advance();
-                    match self.parse_decl() {
-                        Ok(mut decl) => {
-                            for n in &mut decl.names {
-                                n.is_rand = true;
-                            }
-                            members.push(ClassMember::Decl(decl));
-                        }
-                        Err(_) => {
-                            let _ = self.skip_until_semi_or_end();
-                        }
+                    let mut decl = self.parse_decl()?;
+                    for n in &mut decl.names {
+                        n.is_rand = true;
                     }
+                    members.push(ClassMember::Decl(decl));
                 }
                 Token::Ident(name) if self.type_param_names.contains(name) => {
                     let tp_name = *name;

@@ -7,6 +7,6 @@
 `ifndef TYPE_PARAM_SVH
 `define TYPE_PARAM_SVH
 
-typedef logic [15:0] Word16;
+typedef logic [15:0] Wide16;
 
 `endif

@@ -1,0 +1,17 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// Fixture NEGATIF (F30) — file ini SENGAJA tidak valid.
+//
+// Dipakai `check/tests.rs::f30_inst_cross_file_port_check` untuk membuktikan
+// validasi koneksi port lintas-file: `.nope(st)` harus ditolak E2001 ketika
+// `types.mv` + `dut.mv` ikut diproses sebagai konteks gabungan.
+//
+// Karenainvalid, file ini TIDAK boleh ikut `mgen examples/mv` (scan direktori
+// akan gagal pada file ini — itu memang perilaku yang benar). Ia diletakkan di
+// subdirektori `negative/` supaya jelas fixture, bukan contoh yang dijalankan.
+// ─────────────────────────────────────────────────────────────────────────────
+module tb_bad {
+    use chip_types::*
+    sig bus : mem_if
+    sig st : State
+    inst memory_dut u (.axi(bus), .st(st), .nope(st))
+}

@@ -468,13 +468,19 @@ impl Elaborator {
         } else if let DataType::UserDefined(t) = m.dtype.as_ref() {
             self.resolve_cast_name_width(t.as_str()).unwrap_or(1)
         } else {
-            1
+            // Member tanpa range eksplisit (`int y;`, `byte x;`, `real r;`)
+            // lebarnya dari TIPE, bukan default 1-bit. PRA-FIX default 1 →
+            // offset field berikutnya salah dan tulis ke `s.x = 8'hAA` hilang
+            // (baca 0) karena targetnya di luar lebar struct.
+            self.resolve_type_width(m.dtype.as_ref()).unwrap_or(1)
         };
+        let signed_field = is_signed_type(m.dtype.as_ref());
         match m.dtype.as_ref() {
             DataType::UserDefined(t) => StructFieldInfo {
                 name: m.name,
                 offset,
                 width: w,
+                is_signed: signed_field,
                 type_name: Some(*t),
                 sub_fields: if depth < Self::MAX_STRUCT_DEPTH {
                     self.lookup_struct_fields_depth(t.as_str(), depth + 1)
@@ -487,6 +493,7 @@ impl Elaborator {
                 name: m.name,
                 offset,
                 width: w,
+                is_signed: false,
                 // Anonymous struct/union inline — tidak ada nama tipe untuk
                 // lookup typedef_field_map; simpan fields langsung.
                 type_name: None,
@@ -496,6 +503,7 @@ impl Elaborator {
                 name: m.name,
                 offset,
                 width: w,
+                is_signed: signed_field,
                 type_name: None,
                 sub_fields: vec![],
             },

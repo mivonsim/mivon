@@ -9,6 +9,47 @@ use crate::lexer::Tok;
 use crate::MvError;
 
 impl Parser {
+    /// Tangkap body `assert property ( … )` sebagai teks RAW.
+    ///
+    /// Prompt SVA (`|->`, `|=>`, `##`, `[*]`, `throughout`, `disable iff`)
+    /// bukan token `.mv`, jadi teksnya diambil langsung dari source antara
+    /// `(` dan `)` penutup terluar (bracket-depth aware) lalu di-emit 1:1.
+    /// Dipakai dua kali: sebagai statement (di dalam `initial`/`always`)
+    /// maupun sebagai MODULE ITEM — yang latter wajib LRM 1800 §14 karena
+    /// `assert property` bersifat CONCURRENT (bukan statement prosedural).
+    pub(crate) fn parse_assert_property_raw(&mut self) -> Result<String, MvError> {
+        let (sl, sc) = self.pos_line(); // posisi `(` (belum di-*advance*)
+        self.expect(&Tok::LParen)?;
+        let mut depth = 1usize;
+        loop {
+            match self.peek() {
+                Tok::Eof => {
+                    let (l, c) = self.pos_line();
+                    return Err(MvError::new(
+                        l,
+                        c,
+                        "assert property tidak ditutup".to_string(),
+                    ));
+                }
+                Tok::LParen => {
+                    depth += 1;
+                    self.advance();
+                }
+                Tok::RParen => {
+                    let (l, c) = self.pos_line();
+                    depth -= 1;
+                    self.advance();
+                    if depth == 0 {
+                        return Ok(self.raw_slice(sl, sc, l, c + 1));
+                    }
+                }
+                _ => {
+                    self.advance();
+                }
+            }
+        }
+    }
+
     /// F26: parse body `case (...)` setelah keyword — items `val: stmt`,
     /// `a, b: stmt`, dan `default: stmt`. `qual` = priority/unique/unique0
     /// (None utk biasa), `kind` = "case"/"casez"/"casex".
@@ -178,7 +219,8 @@ impl Parser {
             // Target HANYA ident: parser SV `Stmt::EventTrigger` menerima nama
             // ident saja (`expect_ident`), jadi `-> obj.sig`/`-> q[0]` ditolak
             // di level .mv dengan error jelas — bukan SV invalid hasil generate.
-            Tok::Arrow => {
+            Tok::Arrow | Tok::Emit => {
+                // `-> ev` (SV) ≡ `emit ev` (DSL)
                 self.advance();
                 let (l, c) = self.pos_line();
                 let name = self.expect_ident()?;
@@ -267,10 +309,18 @@ impl Parser {
                 let body = self.parse_stmt()?;
                 Ok(Stmt::Forever(Box::new(body)))
             }
-            Tok::Wait => {
+            // `wait (c) { }` (SV) ≡ `await (c) { }` (DSL);
+            // `wait fork;` (SV) ≡ `await all;` (DSL)
+            Tok::Wait | Tok::Await => {
                 self.advance();
                 // F45: `wait fork;` — varian khusus tanpa paren (seperti SV).
                 if matches!(self.peek(), Tok::Fork) {
+                    self.advance();
+                    self.eat(&Tok::Semi);
+                    return Ok(Stmt::WaitFork);
+                }
+                // DSL: `await all` — alias `wait fork`.
+                if self.is_ident("all") {
                     self.advance();
                     self.eat(&Tok::Semi);
                     return Ok(Stmt::WaitFork);
@@ -284,8 +334,8 @@ impl Parser {
                     body: Box::new(body),
                 })
             }
-            // F45: `disable fork;` / `disable <label>;`
-            Tok::Disable => {
+            // F45: `disable fork;` / `disable <label>;` — DSL: `stop fork` / `stop <label>`
+            Tok::Disable | Tok::Stop => {
                 self.advance();
                 let name = if matches!(self.peek(), Tok::Fork) {
                     self.advance();
@@ -296,18 +346,24 @@ impl Parser {
                 self.eat(&Tok::Semi);
                 Ok(Stmt::Disable { name })
             }
-            // F46: `force lhs = rhs;` — lhs pola lvalue (ident/member/index).
-            Tok::Force => {
+            // F46: `force lhs = rhs;` — DSL: `override lhs = rhs`
+            // (lhs pola lvalue: ident/member/index)
+            Tok::Force | Tok::Override => {
                 self.advance();
                 let (l, c) = self.pos_line();
                 let lhs = self.parse_postfix_expr_stmt()?;
                 self.expect(&Tok::BlockingAssign)?;
                 let rhs = self.parse_expr()?;
                 self.eat(&Tok::Semi);
-                Ok(Stmt::Force { lhs, rhs, line: l, col: c })
+                Ok(Stmt::Force {
+                    lhs,
+                    rhs,
+                    line: l,
+                    col: c,
+                })
             }
-            // F46: `release target;`
-            Tok::Release => {
+            // F46: `release target;` — DSL: `restore target`
+            Tok::Release | Tok::Restore => {
                 self.advance();
                 let target = self.parse_postfix_expr_stmt()?;
                 self.eat(&Tok::Semi);
@@ -320,10 +376,7 @@ impl Parser {
                 self.expect(&Tok::RParen)?;
                 // Body opsional: `@(event)` tanpa statement berikutnya = event
                 // control statement tunggal (SV: `repeat (n) @(posedge clk);`).
-                let body = if matches!(
-                    self.peek(),
-                    Tok::RBrace | Tok::Semi | Tok::Else
-                ) {
+                let body = if matches!(self.peek(), Tok::RBrace | Tok::Semi | Tok::Else) {
                     None
                 } else {
                     Some(Box::new(self.parse_stmt()?))
@@ -385,38 +438,7 @@ impl Parser {
                 // RAW (teks persis `(...)`) karena berisi operator SVA (`|->`,
                 // `##`, `[*]`) yang bukan token .mv. Emisi 1:1 (MIVON-HDL.md §7.2).
                 if self.is_ident("property") {
-                    self.advance();
-                    let (sl, sc) = self.pos_line(); // posisi `(`
-                    self.expect(&Tok::LParen)?;
-                    let mut depth = 1usize;
-                    loop {
-                        match self.peek() {
-                            Tok::Eof => {
-                                let (l, c) = self.pos_line();
-                                return Err(MvError::new(
-                                    l,
-                                    c,
-                                    "assert property tidak ditutup".to_string(),
-                                ));
-                            }
-                            Tok::LParen => {
-                                depth += 1;
-                                self.advance();
-                            }
-                            Tok::RParen => {
-                                let (l, c) = self.pos_line();
-                                depth -= 1;
-                                self.advance();
-                                if depth == 0 {
-                                    let raw = self.raw_slice(sl, sc, l, c + 1);
-                                    return Ok(Stmt::AssertProperty(raw));
-                                }
-                            }
-                            _ => {
-                                self.advance();
-                            }
-                        }
-                    }
+                    return Ok(Stmt::AssertProperty(self.parse_assert_property_raw()?));
                 }
                 self.expect(&Tok::LParen)?;
                 let cond = self.parse_expr()?;

@@ -18,9 +18,7 @@ module func_dut (
     end
 endmodule
 
-module tb_fl (
-
-);
+module tb_fl;
     logic [15:0] a;
     logic [3:0] o;
     logic [15:0] s;

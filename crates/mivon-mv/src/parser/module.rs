@@ -339,6 +339,25 @@ impl Parser {
                 };
                 Ok(MItem::Use { pkg, item })
             }
+            // `assert property ( … )` di level module — concurrent assertion
+            // (LRM 1800 §14: module item, BUKAN statement prosedural).
+            Tok::Assert => {
+                self.advance();
+                if self.is_ident("property") {
+                    self.advance();
+                    let raw = self.parse_assert_property_raw()?;
+                    return Ok(MItem::AssertProperty(raw));
+                }
+                let (l, c) = self.pos_line();
+                Err(MvError::new(
+                    l,
+                    c,
+                    "di level module hanya 'assert property (…)' yang sah \
+                     (concurrent assertion, LRM 1800 §14) — immediate \
+                     'assert (…)' harus di dalam initial/always/seq/comb"
+                        .to_string(),
+                ))
+            }
             Tok::Seq => Ok(MItem::Seq(self.parse_seq_spec()?, self.parse_stmt()?)),
             Tok::Comb => {
                 self.advance();
@@ -467,11 +486,45 @@ impl Parser {
         })
     }
 
+    /// Daftar override parameter instansiasi: `#(8)` (positional, nama
+    /// kosong) / `#(.DEPTH(4))` (named) / campuran. Konsumsi `Hash` + kurung.
+    fn parse_inst_params(&mut self) -> Result<Vec<(String, Expr)>, MvError> {
+        self.expect(&Tok::Hash)?;
+        self.expect(&Tok::LParen)?;
+        let mut params = Vec::new();
+        while !self.eat(&Tok::RParen) {
+            if self.peek() == &Tok::Dot {
+                // named `.DEPTH(4)`
+                self.advance();
+                let pname = self.expect_ident()?;
+                self.expect(&Tok::LParen)?;
+                let pval = self.parse_expr()?;
+                self.expect(&Tok::RParen)?;
+                params.push((pname, pval));
+            } else {
+                // positional `#(8, 4)` — nama kosong (marker)
+                let pval = self.parse_expr()?;
+                params.push((String::new(), pval));
+            }
+            self.eat(&Tok::Comma);
+        }
+        Ok(params)
+    }
+
     pub(crate) fn parse_inst(&mut self) -> Result<MItem, MvError> {
         self.expect(&Tok::Inst)?;
         // Catat posisi nama module utk error validasi koneksi port (F29).
         let (line, col) = self.pos_line();
         let module = self.expect_ident()?;
+        // Override parameter boleh SEBELUM nama instance (gaya SV, yang juga
+        // bentuk yang dipakai MIVON-HDL.md §6.7 `inst fifo #(.DEPTH(32)) u_fifo`)
+        // maupun SETELAH nama (`inst fifo u_fifo #(.DEPTH(32))`) — keduanya
+        // diterima, dan keduanya di-emit sebagai `#(...) name` di SV.
+        let params_head = if matches!(self.peek(), Tok::Hash) {
+            self.parse_inst_params()?
+        } else {
+            Vec::new()
+        };
         let name = self.expect_ident()?;
         let dims = if self.eat(&Tok::LBrack) {
             let e = self.parse_expr()?;
@@ -480,25 +533,17 @@ impl Parser {
         } else {
             None
         };
-        let mut params = Vec::new();
-        if self.eat(&Tok::Hash) {
-            self.expect(&Tok::LParen)?;
-            while !self.eat(&Tok::RParen) {
-                if self.peek() == &Tok::Dot {
-                    // named `.DEPTH(4)`
-                    self.advance();
-                    let pname = self.expect_ident()?;
-                    self.expect(&Tok::LParen)?;
-                    let pval = self.parse_expr()?;
-                    self.expect(&Tok::RParen)?;
-                    params.push((pname, pval));
-                } else {
-                    // positional `#(8, 4)` — nama kosong (marker)
-                    let pval = self.parse_expr()?;
-                    params.push((String::new(), pval));
-                }
-                self.eat(&Tok::Comma);
+        let mut params = params_head;
+        if matches!(self.peek(), Tok::Hash) {
+            if !params.is_empty() {
+                let (l, c) = self.pos_line();
+                return Err(MvError::new(
+                    l,
+                    c,
+                    "override parameter ditulis dua kali pada satu instansiasi".to_string(),
+                ));
             }
+            params = self.parse_inst_params()?;
         }
         let mut conns = Vec::new();
         if self.eat(&Tok::LParen) {

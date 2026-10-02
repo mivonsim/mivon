@@ -22,10 +22,14 @@ pub(crate) fn emit_interface(out: &mut String, indent: usize, ifc: &Interface) {
         }
     }
     for (names, ty, ..) in &ifc.sigs {
+        // Pakai `emit_signal_decl_multi` (bukan `emit_type`): dimensi
+        // unpacked SV harus SETELAH nama sinyal (`logic [7:0] m [0:3]`),
+        // `emit_type` menaruhnya sebelum nama (`logic [7:0] [3] m`) yang
+        // bukan grammar SV — LRM 1800 §7.3.
         line(
             out,
             indent + 1,
-            &format!("{} {};", emit_type(ty), names.join(", ")),
+            &format!("{};", super::emit_signal_decl_multi(ty, names)),
         );
     }
     for mp in &ifc.modports {
@@ -52,9 +56,12 @@ pub(crate) fn emit_interface(out: &mut String, indent: usize, ifc: &Interface) {
 
 pub(crate) fn emit_package(out: &mut String, indent: usize, pkg: &Package) {
     line(out, indent, &format!("package {};", pkg.name));
-    for td in &pkg.typedefs {
-        emit_typedef(out, indent + 1, td);
-    }
+    // Konstanta package DILETAKKAN lebih dulu, baru typedef. Dalam SV,
+    // deklarasi harus tampil SEBELUM dipakai (LRM 1800 §5.6/§8.2): lebar
+    // enum/typedef sering merujuk konstanta package
+    // (`const W = 4` + `enum(W) Dyn`), dan urutan tulis `.mv` tidak
+    // menjamin const lebih dulu. Emitter lama menulis typedef dulu →
+    // forward reference → iverilog/verilator error.
     for (name, ty, value) in &pkg.consts {
         let ty_s = ty
             .as_ref()
@@ -65,6 +72,9 @@ pub(crate) fn emit_package(out: &mut String, indent: usize, pkg: &Package) {
             indent + 1,
             &format!("localparam {ty_s}{name} = {};", emit_expr(value)),
         );
+    }
+    for td in &pkg.typedefs {
+        emit_typedef(out, indent + 1, td);
     }
     line(out, indent, "endpackage");
 }
@@ -200,7 +210,13 @@ pub(crate) fn emit_class(out: &mut String, c: &MClass) {
 
     for (name, ty, rand) in &c.fields {
         let r = if *rand { "rand " } else { "" };
-        line(out, 1, &format!("{r}{} {name};", emit_type(ty)));
+        // `emit_signal_decl` (bukan `emit_type`): dimensi unpacked SV
+        // harus setelah nama field (`logic [7:0] fa [0:3]`), LRM 1800 §7.3.
+        line(
+            out,
+            1,
+            &format!("{r}{};", super::emit_signal_decl(ty, name)),
+        );
     }
 
     for (cname, items) in &c.constraints {

@@ -8,7 +8,7 @@
 module tb_fj (
     input  bit clk
 );
-    logic [7:0] ja, logic [7:0] jb;
+    logic [7:0] ja, jb;
 
     // ── initial ──
     initial begin
@@ -22,7 +22,7 @@ module tb_fj (
         join
         #1 $display("FJ_JOIN ja=%0d jb=%0d", ja, jb);
     end
-    logic [7:0] aa, logic [7:0] ab;
+    logic [7:0] aa, ab;
 
     // ── initial ──
     initial begin

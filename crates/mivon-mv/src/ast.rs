@@ -557,6 +557,15 @@ pub enum MItem {
     },
     Func(MFunc),
     Task(MTask),
+    /// `assert property ( … )` di LEVEL MODULE — concurrent assertion.
+    ///
+    /// LRM 1800 §14: `assert property` bersifat CONCURRENT, ia module item
+    /// (atau *concurrent assertion item*), BUKAN statement prosedural.
+    /// Menuliskannya di dalam `initial`/`always` menghasilkan SV yang
+    /// ditolak tool ("Procedural concurrent assertion … inside always",
+    /// IEEE 1800-2017 §16.14.6). Body disimpan raw karena berisi operator
+    /// SVA yang bukan token `.mv`.
+    AssertProperty(String),
 }
 
 /// Module `.mv`. Posisi (line, col) nama untuk E2007 duplikat (F11).

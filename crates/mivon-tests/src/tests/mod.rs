@@ -22335,3 +22335,339 @@ endmodule
         design.err()
     );
 }
+
+// ══════════════════════════════════════════════════════════════════════
+// Mivon HDL (`.mv`) — LRM 1800 compliance end-to-end
+//
+// Setiap kasus di bawah menjalankan rantai penuh: `.mv` → lex → parse →
+// type-check → codegen SV → parser/elaborator SV Mivon → engine → nilai
+// sinyal. Tujuannya: output `mgen` yang BETUL-BETUL bisa dipakai, bukan
+// SV yang tampak benar tetapi ditolak tool.
+//
+// ── LRM 1800 §23.2.1.2 + §26.3 — tipe `use pkg::*` di ANSI port list ──
+// Nama di ANSI port list di-resolve di ENCLOSING scope. `import` di dalam
+// body module tidak menutupinya → SV hasil generate ditolak iverilog
+// ("syntax error") & verilator ("Cannot find file containing interface").
+// `use` di-backend SV karena itu di-emit sebagai import di SCOPE FILE.
+// ══════════════════════════════════════════════════════════════════════
+
+/// `package` + `use pkg::*` + tipe package di port list & di body.
+#[test]
+fn test_mv_package_type_in_port_list_end_to_end() {
+    let src = r#"
+package pkg {
+    enum State { IDLE, RUN, DONE }
+    type Word = logic[15:0]
+}
+module dut_p {
+    use pkg::*
+    in  clk, rst_n : bit
+    out st         : State
+    out w          : Word
+    reg st : State = IDLE
+    seq(clk, rst_n) {
+        if (!rst_n) { st <= IDLE  w <= 16'h0 }
+        else { st <= RUN  w <= w + 16'd1 }
+    }
+}
+module tb_p {
+    sig clk, rst_n : bit
+    sig st        : State
+    sig w         : Word
+    inst dut_p u (.clk, .rst_n, .st, .w)
+    initial { clk = 0  rst_n = 0  forever #5 clk = ~clk }
+    initial {
+        #20
+        rst_n = 1
+        repeat (3) @(posedge clk) {}
+        @(negedge clk)
+        assert (st == RUN) $info("pkg st ok") else $error("pkg st salah")
+        assert (w == 16'd3) $info("pkg w ok") else $error("pkg w salah")
+        $display("TB_PKG_OK st=%0d w=%0d", st, w)
+        $finish
+    }
+}
+"#;
+    let r = mivon_mv::transpile(src, "pkgdemo").expect("transpile .mv OK");
+
+    // Import di SCOPE FILE (sebelum deklarasi module), bukan di body.
+    let import_at = r.sv.find("import pkg::*;").expect("harus ada import");
+    let module_at = r.sv.find("module dut_p").expect("harus ada module");
+    assert!(
+        import_at < module_at,
+        "import harus sebelum module: {}",
+        r.sv
+    );
+    assert!(
+        !r.sv.contains("    import pkg::*;"),
+        "import tak boleh di body module: {}",
+        r.sv
+    );
+    assert!(r.sv.contains("output State st"), "port list: {}", r.sv);
+
+    // Rantai penuh: `.svh` mendahului `.sv` (package harus ter-declare dulu).
+    let combined = format!("{}\n{}", r.svh, r.sv);
+    let sigs = simulate_signals(&combined, 200).expect("simulasi harus jalan");
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    assert_eq!(get("w"), 3, "w naik tiap posedge setelah reset (3 siklus)");
+}
+
+/// Typedef lokal module yang dipakai di port list module yang sama harus
+/// naik ke scope file (verilator: "Cannot find file containing interface:
+/// 'Word8'" kalau tetap di body).
+#[test]
+fn test_mv_module_local_typedef_in_port_list_end_to_end() {
+    let src = r#"
+module dut_l {
+    type Word8 = logic[7:0]
+    in  clk : bit
+    out v   : Word8
+    reg acc : Word8 = '0
+    seq(clk) { acc <= acc + 1  v <= acc }
+}
+module tb_l {
+    sig clk : bit
+    sig v   : logic[7:0]
+    inst dut_l u (.clk(clk), .v(v))
+    initial { clk = 0  forever #5 clk = ~clk }
+    initial {
+        repeat (3) @(posedge clk) {}
+        @(negedge clk)
+        $display("TB_LTYPEDEF_OK v=%0d", v)
+        $finish
+    }
+}
+"#;
+    let r = mivon_mv::transpile(src, "ltd").expect("transpile .mv OK");
+    let td_at = r.sv.find("typedef logic [7:0] Word8;").expect("typedef");
+    let mod_at = r.sv.find("module dut_l").expect("module");
+    assert!(td_at < mod_at, "typedef sebelum module: {}", r.sv);
+    assert!(r.sv.contains("output Word8 v"), "port list: {}", r.sv);
+    let sigs = simulate_signals(&r.sv, 100).expect("simulasi harus jalan");
+    let v = sigs.iter().find(|(s, _)| s == "v").unwrap().1.to_u64();
+    assert_eq!(v, 2, "v = 2 siklus (NBA readback dari siklus sebelumnya)");
+}
+
+/// Dua blok generate dengan nama variabel sama → label SV harus unik
+/// (LRM 1800 §27.6; iverilog: "'gen_i' has already been declared").
+#[test]
+fn test_mv_duplicate_generate_labels_uniquified() {
+    let src = r#"
+module dut_g #(N : int = 4) {
+    in  clk : bit
+    out q   : logic[N-1:0]
+    for i in 0..N { seq(clk) { q[i] <= q[i] } }
+    for i in 0..N { comb { q[i] = q[i] } }
+}
+"#;
+    let r = mivon_mv::transpile(src, "gt").expect("transpile .mv OK");
+    let first = r.sv.find("begin : gen_i\n").expect("label gen_i");
+    let second = r.sv.find("begin : gen_i_1").expect("label gen_i_1");
+    assert!(first < second, "dua label unik: {}", r.sv);
+}
+
+/// Kata kerja DSL `.mv` (`emit` / `override` / `restore` / `await all` /
+/// `stop fork`) → bentuk SV, dan tetap jalan di engine.
+#[test]
+fn test_mv_dsl_verbs_end_to_end() {
+    let src = r#"
+module tb_dslverb {
+    sig clk  : bit
+    sig flag : bit
+    sig got  : int
+    reg  w    : logic[7:0] = 8'd5
+    initial { clk = 0  forever #5 clk = ~clk }
+    initial {
+        repeat (2) @(posedge clk) {}
+
+        // override/release: pada VARIABEL, `restore` hanya membuka blokir
+        // prosedural (LRM 1800 §10.6.2) — nilai pansa tetap sampai
+        // assignment berikutnya.
+        override w = 8'd99
+        #1
+        assert (w == 99) $info("override ok") else $error("override gagal")
+
+        restore w
+        w = 8'd7
+        #1
+        assert (w == 7) $info("restore ok") else $error("restore gagal")
+
+        emit flag
+        #1
+        got = 1
+
+        await all
+        stop fork
+
+        $display("TB_DSLVERB_OK w=%0d got=%0d", w, got)
+        $finish
+    }
+    initial {
+        @(posedge flag)
+        $display("TB_DSLVERB flag")
+    }
+}
+"#;
+    let r = mivon_mv::transpile(src, "dslverb").expect("transpile .mv OK");
+    // Bentuk SV yang di-emit (bukan sintaks `.mv`).
+    assert!(r.sv.contains("-> flag;"), "emit → '->': {}", r.sv);
+    assert!(r.sv.contains("force w = 8'd99;"), "override: {}", r.sv);
+    assert!(r.sv.contains("release w;"), "restore: {}", r.sv);
+    assert!(r.sv.contains("wait fork;"), "await all: {}", r.sv);
+    assert!(r.sv.contains("disable fork;"), "stop fork: {}", r.sv);
+
+    let sigs = simulate_signals(&r.sv, 200).expect("simulasi harus jalan");
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    assert_eq!(get("w"), 7, "w = 7 setelah restore + assign");
+    assert_eq!(get("got"), 1, "jalur setelah emit/await/stop jalan");
+}
+
+/// `assert (c) $info(..) else $error(..)` → branch pass WAJIB diakhiri `;`
+/// (LRM 1800 §20.11). Tanpa itu verilator: "unexpected else, expecting ';'".
+#[test]
+fn test_mv_assert_pass_branch_has_semicolon() {
+    let src = r#"
+module tb_as {
+    sig c : bit
+    initial {
+        c = 1
+        assert (c) $info("ok") else $error("bad")
+        $finish
+    }
+}
+"#;
+    let r = mivon_mv::transpile(src, "asrt").expect("transpile .mv OK");
+    assert!(
+        r.sv.contains("assert (c) $info(\"ok\"); else $error(\"bad\");"),
+        "branch pass harus diakhiri ';': {}",
+        r.sv
+    );
+    simulate_signals(&r.sv, 50).expect("simulasi harus jalan tanpa error");
+}
+
+/// `uint[8]` = vektor 8-bit (angka = LEBAR), bukan array 8 x 32-bit.
+#[test]
+fn test_mv_uint_bracket_is_bit_width() {
+    let src = r#"
+module tb_uw {
+    sig a : uint[8]
+    sig b : int[12]
+    initial {
+        a = 8'd200
+        b = -3
+        $display("TB_UINTW_OK a=%0d b=%0d", a, b)
+        $finish
+    }
+}
+"#;
+    let r = mivon_mv::transpile(src, "uw").expect("transpile .mv OK");
+    assert!(r.sv.contains("logic [7:0] a;"), "uint[8]: {}", r.sv);
+    assert!(r.sv.contains("logic signed [11:0] b;"), "int[12]: {}", r.sv);
+    let sigs = simulate_signals(&r.sv, 50).expect("simulasi harus jalan");
+    let a = sigs.iter().find(|(s, _)| s == "a").unwrap().1.to_u64();
+    assert_eq!(a, 200, "a = 200");
+}
+
+/// Override parameter instansiasi SELALU di-emit SEBELUM nama instance —
+/// bentuk `mod inst #(...)` ditolak iverilog DAN verilator.
+#[test]
+fn test_mv_inst_params_emitted_before_instance_name() {
+    let src = r#"
+module sub_p #(W : int = 4) {
+    in  d : logic[W-1:0]
+    out q : logic[W-1:0]
+    comb { q = d }
+}
+module tb_ip {
+    sig clk : bit
+    sig d8, q8 : logic[7:0]
+    inst sub_p u8 #(.W(8)) (.d(d8), .q(q8))
+    sig d4, q4 : logic[3:0]
+    inst sub_p u4 #(.W(4)) (.d(d4), .q(q4))
+    initial {
+        d8 = 8'hA5
+        d4 = 4'h5
+        #1
+        $display("TB_INSTPARAM_OK q8=%h q4=%h", q8, q4)
+        $finish
+    }
+}
+"#;
+    let r = mivon_mv::transpile(src, "ip").expect("transpile .mv OK");
+    assert!(r.sv.contains("sub_p #(.W(8)) u8 ("), "sv: {}", r.sv);
+    assert!(
+        !r.sv.contains("u8 #("),
+        "params tak boleh setelah nama instance: {}",
+        r.sv
+    );
+    let sigs = simulate_signals(&r.sv, 50).expect("simulasi harus jalan");
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    assert_eq!(get("q8"), 0xA5, "lebar 8-bit");
+    assert_eq!(get("q4"), 0x5, "lebar 4-bit");
+}
+
+/// Demo lengkap `examples/mv/dsl_demo.mv` — transpile → SV → simulasi.
+/// Menggabungkan semua perbaikan LRM di satu test.
+#[test]
+fn test_mv_dsl_demo_example_end_to_end() {
+    let src = include_str!("../../../../examples/mv/dsl_demo.mv");
+    let r = mivon_mv::transpile(src, "dsl_demo").expect("transpile .mv OK");
+    let combined = format!("{}\n{}", r.svh, r.sv);
+    let sigs = simulate_signals(&combined, 500).expect("dsl_demo harus simulasi bersih");
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    // tick = 1+2+3+1+2+3 = 12 setelah 6 posedge (reset aktif selama 4 posedge)
+    assert_eq!(get("got"), 12, "tick DUT = 12");
+    assert_eq!(get("lo"), 3, "mat[1][0]");
+    assert_eq!(get("hi"), 4, "mat[1][1]");
+    assert_eq!(get("w"), 7, "override/restore + assign");
+}
+
+// ── LRM 1800 §7.3 — dimensi unpacked harus SETELAH nama variabel ──────
+//
+// `logic [7:0] [4] fa;` placingkan dimension UNPACKED di posisi packed
+// (sebelum identifier). Parser Mivon sebelumnya "konsumsi dan buang" token
+// itu lalu mengembalikan deklarasi dengan NOL nama — hasilanya sinyal `fa`
+// tidak pernah ada, TANPA diagnostic (silent miscompilation). Sekarang
+// ditolak dengan pesan yang menyebut aturan LRM-nya.
+
+#[test]
+fn test_lrm_unpacked_dim_before_name_is_rejected() {
+    // Pesan diagnosiktik harus menyebut aturan LRM + bentuk yang benar.
+    let src = "module top;\n  logic [7:0] [4] fa;\nendmodule\n";
+    let err = compile_str(src).expect_err("dimensi unpacked sebelum nama harus ditolak");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("LRM 1800") || msg.contains("tanpa nama variabel"),
+        "pesan harusunjuk aturan LRM: {msg}"
+    );
+    // Tidak ada diagnostic yang mencurigakan "sinyal tak dikenal" — ini
+    // rejection saat parse, bukan error semantik turunan.
+    let design = compile_str("module top;\n  logic [7:0] fa [0:3];\nendmodule\n");
+    assert!(design.is_ok(), "bentuk yang benar harus valid");
+}
+
+#[test]
+fn test_lrm_unpacked_dim_before_name_in_class_field_is_rejected() {
+    // Jalur class punya recovery yang dulu menelan error diam-diam
+    // (`Err(_) => skip_until_semi_or_end()`) → field hilang dari design.
+    // Sekarang error-nya dipropagasi (bukan ditelan recovery).
+    let src = "class C;\n  logic [7:0] [4] fa;\nendclass\nmodule top;\nendmodule\n";
+    let err = compile_str(src).expect_err("field class invalid harus ditolak");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("LRM 1800") || msg.contains("tanpa nama variabel"),
+        "pesan harus menunjuk aturan LRM: {msg}"
+    );
+}
+
+#[test]
+fn test_lrm_unpacked_dim_after_name_is_accepted() {
+    // Bentuk yang benar tetap valid: packed range, identifier, baru dimensi
+    // unpacked (LRM 1800 §7.3).
+    let ok = compile_str("typedef logic [7:0] T [0:3];\nmodule top;\nendmodule\n");
+    assert!(ok.is_ok(), "typedef dengan unpacked setelah nama harus valid");
+    let ok2 = compile_str(
+        "module top;\n  logic [7:0] fa [0:3];\n  initial fa[0] = 1'b1;\nendmodule\n",
+    );
+    assert!(ok2.is_ok(), "deklarasi dengan dimensi setelah nama harus valid");
+}

@@ -361,6 +361,18 @@ impl Parser {
         }
 
         let names = self.parse_decl_names(decl_expr_range, extra_packed)?;
+        // LRM 1800 §7.3: `list_of_variable_decl_assignments` wajib punya
+        // ≥ 1 elemen. Kalau tidak ada nama yang ter-parse, deklarasi ini
+        // TIDAK valid — biasanya karena dimension unpacked diletakkan
+        // sebelum nama (`logic [7:0] [4] fa`) yang hanya sah setelah nama
+        // (`logic [7:0] fa [0:3]`). Sebelumnya deklarasi kosong diterima
+        // diam-diam → sinyal tak pernah dideklarasikan, tanpa diagnostic.
+        if names.is_empty() {
+            return Err(self.err(
+                "deklarasi tanpa nama variabel (LRM 1800 §7.3) — dimensi \
+                 unpacked harus SETELAH nama: 'logic [7:0] m [0:3]'",
+            ));
+        }
         if self.peek() == &Token::Semi {
             self.advance();
         } else if !matches!(self.peek(), Token::Eof | Token::Endmodule) {
@@ -2072,11 +2084,19 @@ impl Parser {
                     dims.push(r);
                 }
             } else {
-                // Unpacked single dimension `[N]` (struct member / typedef):
-                // `bit [3:0] [31:0] plain_text[4]` — konsumsi dan buang.
-                self.advance(); // '['
-                let _ = self.parse_expr(0)?;
-                self.expect(Token::RBrack)?;
+                // Posisi ini adalah packed_dimension (SEBELUM nama variabel),
+                // dan LRM 1800 §7.2.1 hanya mengizinkan `constant_range`
+                // bertanda `[msb:lsb]`. Bentuk `[N]` / `[$]` / `[int]` di
+                // sini adalah dimension UNPACKED yang salah tempat, bukan
+                // packed. Sebelumnya bentuk itu "konsumsi dan buang" — hasil
+                // diam-diam: lebar salah / tipu yang tak ketahuan (silent
+                // miscompilation). Sekarang ditolak eksplisit; penulisan
+                // yang benar menaruh dimension unpacked SETELAH nama:
+                // `logic [7:0] m [0:3]`, bukan `logic [7:0] [3] m`.
+                return Err(self.err(
+                    "dimensi unpacked harus SETELAH nama variabel (LRM 1800 §7.3). \
+                     contoh: 'logic [7:0] m [0:3]' — bukan 'logic [7:0] [3] m'",
+                ));
             }
         }
         Ok(dims)
@@ -2163,6 +2183,40 @@ impl Parser {
                 _ => {}
             }
             i += 1;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tmp_decl_tests {
+    fn lex_for_test(src: &str) -> Vec<(crate::lexer::Token, usize, usize)> {
+        let mut lx = crate::lexer::Lexer::new(src);
+        let mut out = Vec::new();
+        loop {
+            let (t, l, c) = lx.next_token();
+            let done = matches!(t, crate::lexer::Token::Eof);
+            out.push((t, l, c));
+            if done {
+                break;
+            }
+        }
+        out
+    }
+    #[test]
+    fn tmp_dump_user_defined_array_decl() {
+        let src = "typedef struct packed { logic [3:0] a; } P;\nmodule tb;\n  P p_range [0:1];\n  P p_size [2];\n  P p_single;\n  logic [3:0] l_range [0:1];\nendmodule\n";
+        // dump juga: parser Elaboration? tidak — hanya AST.
+        let toks = lex_for_test(src);
+        let mut p = crate::Parser::new(toks, "t.sv");
+        let d = p.parse_design().expect("parse");
+        let m = d.modules.first().expect("module");
+        for it in &m.decls {
+            for v in &it.names {
+                eprintln!(
+                    "TMPDECL name={} dtype={:?} array_range={:?} array_size={:?} range={:?} expr_range={:?} extra_packed={:?}",
+                    v.name.as_str(), it.dtype, v.array_range, v.array_size_expr, v.range, v.expr_range, v.extra_packed_dims
+                );
+            }
         }
     }
 }

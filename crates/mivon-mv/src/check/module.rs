@@ -215,6 +215,10 @@ fn check_module_item<'a>(
     match item {
         MItem::Port(_) => Ok(()),    // port tidak valid di dalam generate — abaikan
         MItem::Typedef(_) => Ok(()), // sudah divalidasi pass-1 module
+        // Body SVA mentah: dilewati (konservatif, sama seperti
+        // `Stmt::AssertProperty` di check/stmt.rs) — operator SVA bukan
+        // ekspresi `.mv` yang bisa divalidasi.
+        MItem::AssertProperty(_) => Ok(()),
         MItem::Sig {
             names, ty, init, ..
         }

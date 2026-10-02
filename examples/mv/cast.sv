@@ -21,9 +21,7 @@ module cast_dut (
     end
 endmodule
 
-module tb_cast (
-
-);
+module tb_cast;
     logic [15:0] a;
     Word16 w;
     logic [7:0] lo;

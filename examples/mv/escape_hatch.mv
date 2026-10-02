@@ -31,11 +31,14 @@ module tb_escape {
 
     inst escape_dut u_dut (.clk(clk), .rst_n(rst_n), .inc(inc), .count(count))
 
+    // Concurrent assertion = MODULE ITEM (LRM 1800 §14), bukan statement
+    // di dalam `initial` — operator SVA `|->`/`disable iff` bukan token
+    // `.mv` jadi body-nya dipertahankan raw dan di-emit 1:1.
+    assert property (@(posedge clk) disable iff (rst_n == 0) inc |-> $past(count) + 1'b1 == count)
+
     initial {
         // escape hatch: sisipkan SV mentah verbatim
         @sv {
-            // assertion concurrent — operator SVA `|->` bukan token .mv
-            assert property (@(posedge clk) disable iff (rst_n == 0) inc |-> $past(count) + 1'b1 == count);
             // $display prosedural sekali (isi @sv bebas menulis `;`)
             $display("ESCAPE_SVH_DISPLAY t=%0t", $time);
         }

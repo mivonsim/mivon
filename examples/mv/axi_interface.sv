@@ -28,9 +28,7 @@ module axi_slave (
     end
 endmodule
 
-module tb_axi (
-
-);
+module tb_axi;
     axi_lite bus();
     bit done;
 

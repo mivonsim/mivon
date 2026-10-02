@@ -177,6 +177,30 @@ fn generate_sv_opts(
         }
     }
 
+    // LRM 1800 §26.3 + §23.2.1.2: nama yang dipakai di ANSI port list dan
+    // parameter port list di-resolve di scope ENCLOSING (unit kompilasi),
+    // BUKAN di dalam body module. `import` yang diletakkan di body module
+    // (dananya sudah lalu) tidak membuat tipe package terlihat di port list
+    // → `output State state` tak ter-resolve (iverilog/verilator: syntax
+    // error). Karena itu `use pkg::*` di-backend SV materialized sebagai
+    // `import` di scope FILE, SEBELUM deklarasi module. Sifat import file-scope
+    // sedikit lebih luas dari `use` per-module, tapi itu aman: checker
+    // (E2005) sudah menolak tipe/package yang di-refer tanpa `use` — jadi
+    // tidak ada kode valid yang bisa "bocor" lewat pelebaran ini.
+    for imp in file_scope_imports(file) {
+        out.push_str(&imp);
+        out.push('\n');
+    }
+    // Typedef yang DITULIS di dalam badan module tapi dipakai di ANSI port
+    // list module yang sama (`module m { type Word8 = logic[7:0]  out v : Word8 }`)
+    // harus berada di scope yang sama dengan port list — yaitu FILE, bukan
+    // body. Kalau tetap di body, `output Word8 v` tidak ter-resolve
+    // (verilator: "Cannot find file containing interface: 'Word8'").
+    // Urutan: import dulu (bisa jadi tipe merujuk `use pkg::*`), lalu typedef.
+    for td in file_scope_typedefs(file) {
+        defs::emit_typedef(&mut out, 0, td);
+    }
+
     for m in &file.modules {
         out.push('\n');
         module::emit_module_kw(&mut out, m, "module", iface_names);
@@ -202,6 +226,90 @@ fn generate_sv_opts(
 }
 
 // ── Helpers ──
+
+/// Uniquifier label blok `generate` per module/program.
+///
+/// Dua blok generate dengan label sama di module yang sama itu ERROR LRM
+/// 1800 §27.6 (hierarchical scope bentrok) —iverilog & verilator menolak.
+/// Emitter lama memakai `gen_{var}` / `gen_cond` / `gen_cond_else` apa adanya,
+/// jadi dua `for i in 0..N` dengan nama variabel sama (atau dua `if` generate)
+/// menabrakkan label. Di sini nama yang sudah terpakai diberi sufiks `_1`,
+/// `_2`, … secara deterministik (prinsip desain #2: byte-identik tiap run).
+pub(crate) struct GenLabels {
+    used: Vec<String>,
+}
+
+impl GenLabels {
+    pub(crate) fn new() -> Self {
+        Self { used: Vec::new() }
+    }
+
+    /// Kembalikan nama label unik berdasar `base` (sudah pasti unik bila
+    /// `base` belum terpakai — kasus umum, tanpa sufiks).
+    pub(crate) fn uniq(&mut self, base: &str) -> String {
+        let mut cand = base.to_string();
+        let mut n = 1usize;
+        while self.used.contains(&cand) {
+            cand = format!("{base}_{n}");
+            n += 1;
+        }
+        self.used.push(cand.clone());
+        cand
+    }
+}
+
+/// Kumpulkan `import` yang harus di-emit di SCOPE FILE untuk semua
+/// `use pkg::*` / `use pkg::item` yang muncul di module & program file ini.
+///
+/// Dedup per pasangan `(pkg, item)` supaya dua module yang memakai package
+/// sama tidak mengulang import (LRM 1800 §26.3: meng-impor identifier yang
+/// sama ke scope yang sama dua kali adalah error). Preserve urutan kemunculan
+/// agar output deterministik (prinsip desain #2).
+fn file_scope_imports(file: &MvFile) -> Vec<String> {
+    let mut seen: Vec<(String, String)> = Vec::new();
+    let mut out: Vec<String> = Vec::new();
+    let units = file.modules.iter().chain(file.programs.iter());
+    for unit in units {
+        for item in &unit.items {
+            let MItem::Use { pkg, item } = item else {
+                continue;
+            };
+            if seen.iter().any(|(p, i)| p == pkg && i == item) {
+                continue;
+            }
+            seen.push((pkg.clone(), item.clone()));
+            out.push(format!("import {pkg}::{item};"));
+        }
+    }
+    out
+}
+
+/// Kumpulkan typedef yang ditulis di dalam badan module & program, supaya
+/// bisa di-emit di SCOPE FILE sebelum deklarasi module (port list module
+/// di-resolve di enclosing scope — LRM 1800 §23.2.1.2). Dedup per nama:
+/// dua module yang mendeklarasikan typedef sama sudah ditolak E2007 di
+/// level `.mv`, jadi duplikat di sini hanya mungkin dari satu module.
+fn file_scope_typedefs(file: &MvFile) -> Vec<&Typedef> {
+    let mut seen: Vec<&str> = Vec::new();
+    let mut out: Vec<&Typedef> = Vec::new();
+    for unit in file.modules.iter().chain(file.programs.iter()) {
+        for item in &unit.items {
+            let MItem::Typedef(td) = item else { continue };
+            let name = match td {
+                Typedef::Alias { name, .. }
+                | Typedef::Struct { name, .. }
+                | Typedef::Union { name, .. }
+                | Typedef::Enum { name, .. } => name.as_str(),
+            };
+            if seen.contains(&name) {
+                continue;
+            }
+            seen.push(name);
+            out.push(td);
+        }
+    }
+    out
+}
 
 pub(crate) fn line(out: &mut String, indent: usize, s: &str) {
     out.push_str(&"    ".repeat(indent));

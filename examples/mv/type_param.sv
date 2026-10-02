@@ -23,9 +23,7 @@ module shifter #(
     end
 endmodule
 
-module tb_tp (
-
-);
+module tb_tp;
     bit clk;
     logic [7:0] d8, q8;
     logic [15:0] d16, q16;
@@ -36,7 +34,7 @@ module tb_tp (
         .q   (q8)
     );
 
-    shifter u16 #(.T(Word16), .N(3)) (
+    shifter #(.T(Wide16), .N(3)) u16 (
         .clk (clk),
         .d   (d16),
         .q   (q16)

@@ -90,24 +90,7 @@ pub fn run(args: &GenArgs) -> Result<(), SimError> {
             package: args.package.clone(),
         });
     }
-    let results = if args.no_check {
-        mv::transpile_many_items_no_check(&items)
-    } else {
-        mv::transpile_many_items(&items)
-    }
-    .map_err(|(i, e)| {
-        diag(mv::format_error(
-            &files[i].display().to_string(),
-            &items[i].src,
-            &e,
-        ))
-    })?;
-    // Defensif: hasil batch harus sejajar dengan input (jangan zip-truncate).
-    assert_eq!(
-        results.len(),
-        files.len(),
-        "transpile_many harus mengembalikan hasil sejajar dengan input"
-    );
+    let results = transpile_by_directory(&files, &items, args.no_check)?;
 
     let mut changed_any = false;
     for (path, result) in files.iter().zip(results.iter()) {
@@ -210,6 +193,69 @@ pub fn run(args: &GenArgs) -> Result<(), SimError> {
     Ok(())
 }
 
+/// Transpile seluruh input dengan konteks gabungan **per direktori**.
+///
+/// Konteks gabungan (F9) dibutuhkan agar `types.mv` mendefinisikan tipe yang
+/// dipakai `counter.mv` di direktori yang sama. Tapi kalau seluruh pohon
+/// direktori diratakan jadi SATU namespace, dua subdirektori yang sama-sama
+/// mendefinisikan `Word16` (pola umum: `examples/mv/cast.mv` dan
+/// `examples/mv/type_param.mv`) saling menabrak dengan E2007 — padahal
+/// keduanya independen dan keduanya sah. Karena itu pengelompokan per
+/// direktori: satu grup = satu konteks `check_many`.
+///
+/// Hasil tetap sejajar dengan `files` (urutan input dipertahankan).
+fn transpile_by_directory(
+    files: &[PathBuf],
+    items: &[mv::MvItem],
+    no_check: bool,
+) -> Result<Vec<mv::TranspileResult>, SimError> {
+    // Grup indeks input berdasarkan direktori induknya, urutan kemunculan
+    // dipertahankan (deterministik — prinsip desain #2).
+    let mut groups: Vec<(PathBuf, Vec<usize>)> = Vec::new();
+    for (i, path) in files.iter().enumerate() {
+        let dir = path.parent().unwrap_or(Path::new(".")).to_path_buf();
+        match groups.iter_mut().find(|(d, _)| *d == dir) {
+            Some((_, idxs)) => idxs.push(i),
+            None => groups.push((dir, vec![i])),
+        }
+    }
+
+    let mut out: Vec<Option<mv::TranspileResult>> = vec![None; files.len()];
+    for (_, idxs) in &groups {
+        let sub: Vec<mv::MvItem> = idxs.iter().map(|i| items[*i].clone()).collect();
+        let res = if no_check {
+            mv::transpile_many_items_no_check(&sub)
+        } else {
+            mv::transpile_many_items(&sub)
+        }
+        .map_err(|(k, e)| {
+            let i = idxs[k];
+            diag(mv::format_error(
+                &files[i].display().to_string(),
+                &items[i].src,
+                &e,
+            ))
+        })?;
+        for (k, i) in idxs.iter().enumerate() {
+            out[*i] = Some(res[k].clone());
+        }
+    }
+    // Defensif: setiap input harus punya hasil (jangan zip-truncate diam-diam).
+    let mut done: Vec<mv::TranspileResult> = Vec::with_capacity(files.len());
+    for (i, r) in out.into_iter().enumerate() {
+        match r {
+            Some(r) => done.push(r),
+            None => {
+                return Err(diag(format!(
+                    "transpile batch tidak menghasilkan output untuk '{}'",
+                    files[i].display()
+                )));
+            }
+        }
+    }
+    Ok(done)
+}
+
 /// Kumpulkan file `.mv`/`.mvh` dari target (file atau direktori recursive).
 fn collect_mv_files(targets: &[String]) -> Result<Vec<PathBuf>, SimError> {
     let mut out: Vec<PathBuf> = Vec::new();
@@ -233,12 +279,36 @@ fn collect_dir(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), SimError> {
     for entry in std::fs::read_dir(dir).map_err(|e| diag(format!("{}: {}", dir.display(), e)))? {
         let path = entry.map_err(|e| diag(e.to_string()))?.path();
         if path.is_dir() {
+            if is_skipped_dir(&path) {
+                continue;
+            }
             collect_dir(&path, out)?;
-        } else if is_mv_source(&path) {
+        } else if is_mv_source(&path) && !is_skipped_file(&path) {
             out.push(path);
         }
     }
     Ok(())
+}
+
+/// Direktori yang dilewati saat scan `.mv` rekursif.
+///
+/// `negative/` = fixture SENGAJA tidak valid (dipakai test diagnostik) —
+/// mem-buildnya akan selalu gagal, jadi tidak boleh ikut `mgen <dir>`.
+/// Direktori tersembunyi juga dilewati (konvensi umum tooling).
+fn is_skipped_dir(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .map(|n| n.starts_with('.') || n == "negative")
+        .unwrap_or(false)
+}
+
+/// File yang dilewati saat scan: nama diawali `_` (konvensi "jangan dipakai",
+/// tapi tetap ada di repo) — lihat `examples/mv/negative/`.
+fn is_skipped_file(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .map(|n| n.starts_with('_'))
+        .unwrap_or(false)
 }
 
 /// Path output: `-o dir` → dir, selain itu di samping file input.

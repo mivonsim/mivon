@@ -51,10 +51,34 @@ impl Parser {
                     Ok(MvType::Logic(range))
                 } else if s == "bit" {
                     Ok(MvType::Bit)
-                } else if s == "int" {
-                    Ok(MvType::Int)
-                } else if s == "uint" {
-                    Ok(MvType::Uint)
+                } else if s == "int" || s == "uint" {
+                    // `uint[8]` = vektor unsigned 8-bit (gaya DSL: angka
+                    // menentukan LEBAR, bukan jumlah elemen). Tanpa ini
+                    // `[8]` jatuh ke dimensi unpacked di `parse_type`
+                    // → `logic [31:0] x [0:7]` (array 8×32-bit), yang
+                    // membingungkan dan membuat `x <= 0` menghasilkan
+                    // SV tak berguna. `logic[8][4]` tetap berarti
+                    // "8-bit × 4 elemen" — konsisten dengan bentuk `logic`.
+                    let n = if self.peek() == &Tok::LBrack {
+                        self.advance();
+                        let a = self.parse_expr()?;
+                        self.expect(&Tok::RBrack)?;
+                        Some((sub_one(a), Expr::Int(0)))
+                    } else {
+                        None
+                    };
+                    if let Some(range) = n {
+                        let base = MvType::Logic(Some(range));
+                        Ok(if s == "int" {
+                            MvType::Signed(Box::new(base))
+                        } else {
+                            base
+                        })
+                    } else if s == "int" {
+                        Ok(MvType::Int)
+                    } else {
+                        Ok(MvType::Uint)
+                    }
                 } else if s == "longint" {
                     Ok(MvType::LongInt)
                 } else if s == "ulongint" {

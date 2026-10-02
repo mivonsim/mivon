@@ -4,45 +4,42 @@
 // Perintah  : mivon mgen tb.mv
 // ─────────────────────────────────────────────────────────────
 
-import chip_types::*;
+import mvh_pkg::*;
 
-module tb_mem;
-    mem_if bus();
+module tb_mvh;
+    bit clk;
     bit rst_n;
-    State st;
-    Addr addr;
+    bit enable;
+    Addr count;
+    State state;
     bit done;
 
-    memory_dut u_dut (
-        .axi   (bus),
-        .rst_n (rst_n),
-        .st    (st),
-        .addr  (addr)
+    upcounter u_cnt (
+        .clk    (clk),
+        .rst_n  (rst_n),
+        .enable (enable),
+        .count  (count),
+        .state  (state)
     );
 
     // ── initial ──
     initial begin
-        while (1) begin
-            bus.clk = 0;
-            #5 bus.clk = 1;
-            #5;
-        end
+        clk = 0;
+        forever #5 clk = ~clk;
     end
 
     // ── initial ──
     initial begin
         rst_n = 0;
-        #30 rst_n = 1;
-        bus.we = 1;
-        bus.addr = 16'h10;
-        bus.din = 32'hcafe;
-        #60 begin
-            if (addr == 16'h6 && st == WR) begin
-                $display("TB_MF_OK addr=%0d st=%0d", addr, st);
-                done = 1;
-            end else begin
-                $display("TB_MF_BROKEN addr=%0d st=%0d", addr, st);
-            end
+        enable = 0;
+        #20 rst_n = 1;
+        enable = 1;
+        repeat (16) @(posedge clk) ;
+        if (state == DONE && count == 0) begin
+            $display("TB_MVH_OK count=%0d state=%0d", count, state);
+            done = 1;
+        end else begin
+            $display("TB_MVH_BROKEN count=%0d state=%0d", count, state);
         end
         $finish;
     end

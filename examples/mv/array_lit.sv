@@ -17,9 +17,7 @@ module rom_dut (
     end
 endmodule
 
-module tb_rom (
-
-);
+module tb_rom;
     logic [1:0] idx;
     logic [7:0] val;
 

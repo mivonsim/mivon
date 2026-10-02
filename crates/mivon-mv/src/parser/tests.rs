@@ -241,42 +241,29 @@ module m {
 #[test]
 fn parse_assert_property_raw() {
     // Body `assert property (...)` dipertahankan RAW (operator SVA `|->`
-    // dan `##` bukan token .mv) — emisi 1:1.
+    // dan `##` bukan token .mv) — emisi 1:1. Diparse sebagai MODULE ITEM
+    // (concurrent assertion, LRM 1800 §14).
     let src = r#"
 module m {
     in clk, enable : bit
     in count       : logic[7:0]
-    initial {
-        assert property (@(posedge clk) enable |-> count == $past(count) + 1)
-    }
+    assert property (@(posedge clk) enable |-> count == $past(count) + 1)
 }
 "#;
     let f = parse(src).unwrap();
     let m = &f.modules[0];
-    // module punya 2 port + 1 initial = 3 item; cari initial via iter
-    let init = m
+    let raw = m
         .items
         .iter()
         .find_map(|i| match i {
-            MItem::Initial(body) => Some(body),
+            MItem::AssertProperty(raw) => Some(raw.as_str()),
             _ => None,
         })
-        .expect("harus ada initial");
-    let stmts: &[Stmt] = match init {
-        Stmt::Block(s) => s.as_slice(),
-        other => std::slice::from_ref(other),
-    };
-    let mut found = false;
-    for s in stmts {
-        if let Stmt::AssertProperty(raw) = s {
-            assert_eq!(
-                raw, "(@(posedge clk) enable |-> count == $past(count) + 1)",
-                "raw harus persis (termasuk parens): {raw}"
-            );
-            found = true;
-        }
-    }
-    assert!(found, "harus ada Stmt::AssertProperty");
+        .expect("harus ada MItem::AssertProperty");
+    assert_eq!(
+        raw, "(@(posedge clk) enable |-> count == $past(count) + 1)",
+        "raw harus persis (termasuk parens): {raw}"
+    );
 }
 
 #[test]
@@ -588,4 +575,151 @@ module m {
         _ => false,
     });
     assert!(has_named, "named block harus ter-parse");
+}
+
+#[test]
+fn parse_dsl_verbs_are_aliases_of_sv_forms() {
+    // Kata kerja DSL (bukan sintaks SV) → AST yang SAMA dengan bentuk SV,
+    // jadi codegen & check tidak perlu tahu asal tulisannya.
+    //   emit ev ≡ -> ev ; override x = v ≡ force x = v ;
+    //   restore x ≡ release x ; await all ≡ wait fork ; stop fork ≡ disable fork
+    let dsl = parse(
+        r#"
+module tb {
+    sig clk : bit
+    sig flag : bit
+    sig w : logic[7:0]
+    initial {
+        emit flag
+        override w = 8'd99
+        restore w
+        await all
+        stop fork
+    }
+}
+"#,
+    )
+    .unwrap();
+    let sv = parse(
+        r#"
+module tb {
+    sig clk : bit
+    sig flag : bit
+    sig w : logic[7:0]
+    initial {
+        -> flag
+        force w = 8'd99
+        release w
+        wait fork
+        disable fork
+    }
+}
+"#,
+    )
+    .unwrap();
+    assert_eq!(
+        stmt_kinds(&first_initial(&dsl)),
+        stmt_kinds(&first_initial(&sv)),
+        "bentuk DSL harus menghasilkan statement yang sama dengan bentuk SV"
+    );
+}
+
+#[test]
+fn parse_await_cond_is_alias_of_wait_cond() {
+    let dsl = parse("module m { sig c : bit\n initial { await (c) { } } }").unwrap();
+    let sv = parse("module m { sig c : bit\n initial { wait (c) { } } }").unwrap();
+    assert_eq!(
+        stmt_kinds(&first_initial(&dsl)),
+        stmt_kinds(&first_initial(&sv))
+    );
+}
+
+#[test]
+fn parse_inst_params_before_or_after_instance_name() {
+    // Kedua urutan diterima; keduanya di-emit `mod #(...) name (...)`.
+    let a = parse("module t { in clk : bit\n inst f u #(.D(4)) (.clk(clk)) }").unwrap();
+    let b = parse("module t { in clk : bit\n inst f #(.D(4)) u (.clk(clk)) }").unwrap();
+    assert_eq!(a.modules[0].items, b.modules[0].items);
+
+    // Ditolak kalau ditulis dua kali.
+    let err =
+        parse("module t { in clk : bit\n inst f #(.D(4)) u #(.D(8)) (.clk(clk)) }").unwrap_err();
+    assert!(err.msg.contains("dua kali"), "msg: {}", err.msg);
+}
+
+#[test]
+fn parse_assert_property_only_at_module_level() {
+    // LRM 1800 §14: `assert property` = concurrent assertion = module item.
+    let src = "module m {\n in clk : bit\n assert property (@(posedge clk) 1'b1)\n }\n";
+    let f = parse(src).unwrap();
+    assert!(
+        f.modules[0]
+            .items
+            .iter()
+            .any(|i| matches!(i, MItem::AssertProperty(_))),
+        "harus ada MItem::AssertProperty"
+    );
+}
+
+#[test]
+fn parse_immediate_assert_at_module_level_is_rejected() {
+    // Immediate assertion hanya sah di dalam blok prosedural.
+    let err = parse("module m {\n in clk : bit\n assert (1'b1) $info(\"x\")\n }\n").unwrap_err();
+    assert!(err.msg.contains("concurrent assertion"), "msg: {}", err.msg);
+}
+
+/// Statement pertama pada blok `initial` pertama (helper test DSL-verb).
+fn first_initial(f: &MvFile) -> Vec<Stmt> {
+    f.modules[0]
+        .items
+        .iter()
+        .find_map(|i| match i {
+            MItem::Initial(body) => match body {
+                Stmt::Block(s) => Some(s.clone()),
+                other => Some(vec![other.clone()]),
+            },
+            _ => None,
+        })
+        .expect("harus ada blok initial")
+}
+
+/// Nama varian statement (tanpa posisi) — bentuk DSL dan bentuk SV harus
+/// menghasilkan urutan varian yang sama walau `line`/`col` berbeda
+/// (kata `emit` 4 huruf vs `->` 2 huruf).
+fn stmt_kinds(stmts: &[Stmt]) -> Vec<&'static str> {
+    fn kind(s: &Stmt) -> &'static str {
+        match s {
+            Stmt::Block(_) => "Block",
+            Stmt::NamedBlock { .. } => "NamedBlock",
+            Stmt::Assign { .. } => "Assign",
+            Stmt::CompoundAssign { .. } => "CompoundAssign",
+            Stmt::IncDec { .. } => "IncDec",
+            Stmt::If { .. } => "If",
+            Stmt::Case { .. } => "Case",
+            Stmt::For { .. } => "For",
+            Stmt::While { .. } => "While",
+            Stmt::DoWhile { .. } => "DoWhile",
+            Stmt::Repeat { .. } => "Repeat",
+            Stmt::Forever(_) => "Forever",
+            Stmt::Wait { .. } => "Wait",
+            Stmt::WaitFork => "WaitFork",
+            Stmt::Disable { .. } => "Disable",
+            Stmt::Force { .. } => "Force",
+            Stmt::Release { .. } => "Release",
+            Stmt::EventTrigger(_) => "EventTrigger",
+            Stmt::Event { .. } => "Event",
+            Stmt::Delay { .. } => "Delay",
+            Stmt::VarDecl { .. } => "VarDecl",
+            Stmt::Return(_) => "Return",
+            Stmt::Break => "Break",
+            Stmt::Continue => "Continue",
+            Stmt::Fork { .. } => "Fork",
+            Stmt::Foreach { .. } => "Foreach",
+            Stmt::Assert { .. } => "Assert",
+            Stmt::AssertProperty(_) => "AssertProperty",
+            Stmt::ExprStmt(_) => "ExprStmt",
+            Stmt::RawSvh(_) => "RawSvh",
+        }
+    }
+    stmts.iter().map(kind).collect()
 }

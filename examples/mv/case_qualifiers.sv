@@ -10,7 +10,7 @@ module case_qualifiers (
     input  bit rst_n,
     input  logic [2:0] sel,
     input  logic [7:0] data_in,
-    output logic [7:0] result
+    output logic [7:0] result = '0
 );
 
     // ── logika sekuensial ──
@@ -36,9 +36,7 @@ module case_qualifiers (
     end
 endmodule
 
-module tb_caseq (
-
-);
+module tb_caseq;
     bit clk, rst_n;
     logic [2:0] sel;
     logic [7:0] data_in;

@@ -5,6 +5,7 @@
 // ─────────────────────────────────────────────────────────────
 
 `include "traffic.svh"
+import traffic_pkg::*;
 
 module traffic #(
     parameter GREEN_T = 30,
@@ -17,8 +18,7 @@ module traffic #(
     output bit green,
     output bit yellow
 );
-    import traffic_pkg::*;
-    logic [31:0] timer [0:7];
+    logic [7:0] timer;
 
     // ── logika sekuensial ──
     always_ff @(posedge clk or negedge rst_n) begin

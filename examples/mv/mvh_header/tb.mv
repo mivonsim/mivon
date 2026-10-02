@@ -1,0 +1,49 @@
+// ─────────────────────────────────────────────────────────────
+// Contoh F43 — testbench: instansiasi `upcounter` (dut.mv) +
+// verifikasi hitungan sampai DONE. Tipe `Addr`/`State` datang dari
+// `defs.mvh` (konteks gabungan lintas-file, F9+F43).
+// ─────────────────────────────────────────────────────────────
+
+module tb_mvh {
+    use mvh_pkg::*
+
+    sig clk    : bit
+    sig rst_n  : bit
+    sig enable : bit
+    sig count  : Addr
+    sig state  : State
+    sig done   : bit
+
+    inst upcounter u_cnt (
+        .clk(clk),
+        .rst_n(rst_n),
+        .enable(enable),
+        .count(count),
+        .state(state)
+    )
+
+    initial {
+        clk = 0
+        forever #5 clk = ~clk
+    }
+
+    initial {
+        rst_n  = 0
+        enable = 0
+        #20
+        rst_n = 1
+        enable = 1
+
+        // Tunggu 16 siklus clock (15 siklus hitung + 1 siklus untuk NBA propagate)
+        repeat (16) @(posedge clk) {}
+
+        // Cek hasil SETELAH loop selesai
+        if (state == DONE && count == 0) {
+            $display("TB_MVH_OK count=%0d state=%0d", count, state)
+            done = 1
+        } else {
+            $display("TB_MVH_BROKEN count=%0d state=%0d", count, state)
+        }
+        $finish
+    }
+}

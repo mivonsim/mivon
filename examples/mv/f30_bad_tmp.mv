@@ -1,6 +1,0 @@
-module tb_bad {
-    use chip_types::*
-    sig bus : mem_if
-    sig st : State
-    inst memory_dut u (.axi(bus), .st(st), .nope(st))
-}
