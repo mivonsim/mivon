@@ -548,6 +548,31 @@ impl<'a> FastLexer<'a> {
             }
         }
 
+        // Literal real TANPA titik desimal tapi DENGAN eksponen: `1e3`,
+        // `10e2`, `2E3`, `1e-2` (LRM 1800 §6.8.3). PRA-FIX hanya
+        // `<digits>.<digits>[exp]` yang jadi real → `1e3` ter-tokenize
+        // Number("1") + ident("e3") sehingga literal hilang / salah nilai.
+        // Syarat: `e`/`E` langsung setelah digit diikuti digit (atau tanda) —
+        // menjaga identifier seperti `1e` tetap identifier.
+        if (self.peek() == b'e' || self.peek() == b'E') && self.pos > start {
+            let exp_start = self.pos;
+            self.skip_byte();
+            if self.peek() == b'+' || self.peek() == b'-' {
+                self.skip_byte();
+            }
+            let mut exp_digits = 0usize;
+            while self.pos < self.input.len() && self.input[self.pos].is_ascii_digit() {
+                self.skip_byte();
+                exp_digits += 1;
+            }
+            if exp_digits > 0 {
+                let s = std::str::from_utf8(&self.input[start..self.pos]).unwrap_or("");
+                return Token::RealNum(Symbol::intern(&s.replace('_', "")));
+            }
+            // Bukan eksponen (`1e` → identifier `e`) — rollback.
+            self.pos = exp_start;
+        }
+
         // Check for real number (decimal point)
         if self.peek() == b'.' {
             self.skip_byte();

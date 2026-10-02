@@ -136,6 +136,35 @@ bug di mivon utama (parser/elaborator/simulator). Status: ✅ fixed / ⏳ open.
     `1z`. Fix F53: `literal_has_unknown_bits` dipakai sebagai guard —
     case expr/label ber-unknown dipaksa jalur runtime 4-state.
 
+14. **Konversi real↔integer rusak total** — `$rtoi`/`$itor` tak dikenal
+    (hasil 0 + warning RT9003); `$display("%d", real_var)` mencetak
+    bit-pattern f64 mentah (4620580627691444634 untuk 7.9, bukan 8);
+    `int'(3.99)` = 515396076 (bukan 4); assignment `integer k = real_var`
+    sama salahnya; `%f` dari integer salah baca bit-pattern. Fix F54:
+    runtime `$rtoi`/`$itor` (round ties-away-from-zero), flag real pada
+    argumen formatter, varian IR `RealConst` (penanda tipe real), serta
+    cast & konversi implisit lewat sysfunc. `$rtoi` sengaja mengikuti LRM
+    (round), bukan iverilog yang truncation.
+
+15. **Literal real tanpa titik desimal tak di-lex** — `1e3`, `10e2`,
+    `2E3` hilang/ngawur. Penyebab: lexer `mivon-parser` sudah mendukung
+    `<digits>.<digits>[exp]`, TAPI pipeline `run`/`sim` memakai lexer KEDUA
+    di `mivon-compiler/src/frontend/lexer.rs` yang hanya mengenali bentuk
+    bertitik. Fix F54: bentuk eksponen tanpa titik ditambahkan di kedua
+    lexer (dengan rollback agar `1e` tetap identifier).
+
+16. **Associative array tak berfungsi** — `int m[string]; m["k"] = v`
+    menulis hilang, `m["k"]` baca 0, dan `m.num()/exists()/delete()` gagal
+    "cannot call method on unknown class" (iverilog tak mendukung assoc →
+    semantik diambil dari LRM 1800 §7.9). Fix F54: `is_associative`
+    diteruskan di elaborator (tadinya hardcoded `false` → signal
+    diperlakukan array 1-elemen sehingga indeks ke luar rentang),
+    `ArrayIndex` untuk assoc di jalur baca (`elaborator/expr.rs`) dan tulis
+    (`elaborator/stmt.rs`), method assoc masuk dispatch array
+    (`is_dynamic || is_queue || is_associative`), dan WR0014 dikecualikan
+    untuk dynamic/associative (storage-nya HashMap, `init_val` tak pernah
+    berubah).
+
 ## ⏳ Open
 
 (tidak ada item open — semua bug historis sudah tertutup)

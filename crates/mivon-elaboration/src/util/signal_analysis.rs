@@ -175,7 +175,7 @@ pub fn collect_read_signals_expr(expr: &IrExpr, out: &mut Vec<SignalId>) {
             out.push(*id);
             collect_read_signals_expr(index, out);
         }
-        IrExpr::Const(_) | IrExpr::String(_) | IrExpr::FillLit(_) => {}
+        IrExpr::Const(_) | IrExpr::RealConst(_) | IrExpr::String(_) | IrExpr::FillLit(_) => {}
         IrExpr::Concat(exprs) => {
             for e in exprs {
                 collect_read_signals_expr(e, out);

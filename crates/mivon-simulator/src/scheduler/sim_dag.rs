@@ -396,7 +396,7 @@ fn expr_signal_reads(expr: &IrExpr, access: &mut SignalAccess) {
         // These don't access signals — tapi beberapa TIDAK bisa di-resolve ke
         // SignalId (HierRef/VirtualIfaceAccess/This/VifBinding) → tandai
         // has_unresolved agar proses tidak dipakai di snapshot sparse.
-        IrExpr::Const(_) | IrExpr::FillLit(_) | IrExpr::String(_) => {}
+        IrExpr::Const(_) | IrExpr::RealConst(_) | IrExpr::FillLit(_) | IrExpr::String(_) => {}
         IrExpr::This | IrExpr::HierRef(_) | IrExpr::VifBinding { .. } => {
             access.has_unresolved = true;
         }

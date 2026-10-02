@@ -609,6 +609,7 @@ where
             walk_expr(expr, f);
             let _ = items;
         }
+        IrExpr::RealConst(_) => {}
         // Side-effect RMW: kunjungi operand baca (untuk analisis dependency).
         IrExpr::IncDec { read, .. } => walk_expr(read, f),
         IrExpr::UdpLookup { args, .. } => {

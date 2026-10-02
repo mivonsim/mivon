@@ -186,7 +186,7 @@ impl SimulationEngine {
 
     fn evaluate_expr_impl(&mut self, expr: &IrExpr) -> Result<LogicVec, SimError> {
         match expr {
-            IrExpr::Const(val) => Ok(val.clone()),
+            IrExpr::Const(val) | IrExpr::RealConst(val) => Ok(val.clone()),
             IrExpr::FillLit(val) => Ok(LogicVec::fill(*val, 1)),
             IrExpr::Signal(id, _) => {
                 let mut val = self.state.read_signal(*id).clone();
@@ -380,7 +380,13 @@ impl SimulationEngine {
             }
             IrExpr::UnaryOp(op, inner) => {
                 let val = self.evaluate_expr(inner)?;
-                let inner_is_real = matches!(inner.as_ref(), IrExpr::Signal(id, _) if self.design.top.signals.get(*id).map(|s| s.is_real).unwrap_or(false));
+                // Deteksi real rekursif (sinyal real, `$itor(...)`, cast real,
+                // dll) — PRA-FIX hanya `IrExpr::Signal` langsung sehingga
+                // `-($itor(2))` diperlakukan sebagai aritmetika integer.
+                let inner_is_real = crate::simulator::util::ir_expr_is_real(
+                    inner,
+                    &self.design.top.signals,
+                );
                 if inner_is_real {
                     let a = f64::from_bits(val.to_u64());
                     let result = match op {
@@ -430,8 +436,10 @@ impl SimulationEngine {
                         rval.bits.iter().any(|b| matches!(b, LogicVal::X | LogicVal::Z)),
                     );
                 }
-                let lhs_is_real = matches!(lhs.as_ref(), IrExpr::Signal(id, _) if self.design.top.signals.get(*id).map(|s| s.is_real).unwrap_or(false));
-                let rhs_is_real = matches!(rhs.as_ref(), IrExpr::Signal(id, _) if self.design.top.signals.get(*id).map(|s| s.is_real).unwrap_or(false));
+                let lhs_is_real =
+                    crate::simulator::util::ir_expr_is_real(lhs, &self.design.top.signals);
+                let rhs_is_real =
+                    crate::simulator::util::ir_expr_is_real(rhs, &self.design.top.signals);
                 if lhs_is_real || rhs_is_real {
                     let a = f64::from_bits(lval.to_u64());
                     let b = f64::from_bits(rval.to_u64());
@@ -1801,16 +1809,41 @@ impl SimulationEngine {
                         }
                     }
                     _ => {
-                        // Dukungan bit↔real bit-pattern 64-bit: `$bitstoreal(x)`
-                        // = interpret x sbg f64-bits, `$realtobits(x)` = f64-bits
-                        // → nilai 64-bit sama (passthrough). Menghilangkan
-                        // warning RT9003 spam utk float-ALU (aex_alu).
+                        // Konversi real↔integer (LRM 1800 §20.8): real disimpan
+                        // sebagai bit-pattern f64 64-bit; `$rtoi` membulatkan ke
+                        // integer terdekat (ties away from zero — `f64::round`),
+                        // `$itor` mengubah integer (signed) → f64.
+                        // PRA-FIX keduanya tak dikenal → 0 + warning RT9003.
                         let fn_name = name.as_str();
-                        if fn_name == "$bitstoreal" || fn_name == "$realtobits" {
-                            if let Some(a) = args.first() {
-                                return self.evaluate_expr(a);
+                        match fn_name {
+                            "$rtoi" => {
+                                if let Some(a) = args.first() {
+                                    let v = self.evaluate_expr(a)?;
+                                    let f = f64::from_bits(v.to_u64());
+                                    if !f.is_finite() {
+                                        return Ok(LogicVec::from_u64(0, 32));
+                                    }
+                                    return Ok(LogicVec::from_u64(f.round() as i64 as u64, 32));
+                                }
+                                return Ok(LogicVec::from_u64(0, 32));
                             }
-                            return Ok(LogicVec::from_u64(0, 64));
+                            "$itor" => {
+                                if let Some(a) = args.first() {
+                                    let v = self.evaluate_expr(a)?;
+                                    let f = v.to_i64() as f64;
+                                    return Ok(LogicVec::from_u64(f.to_bits(), 64));
+                                }
+                                return Ok(LogicVec::from_u64(0, 64));
+                            }
+                            "$realtobits" | "$bitstoreal" => {
+                                // Bit-pattern bolak-balik: keduanya menyimpan
+                                // f64 sebagai 64-bit → passthrough.
+                                if let Some(a) = args.first() {
+                                    return self.evaluate_expr(a);
+                                }
+                                return Ok(LogicVec::from_u64(0, 64));
+                            }
+                            _ => {}
                         }
                         // Try VPI registered system functions first
                         if crate::vpi::systf::call_registered_systf(fn_name, true) {
@@ -2074,7 +2107,11 @@ impl SimulationEngine {
                         .top
                         .signals
                         .get(*id)
-                        .map(|s| s.is_dynamic || s.is_queue)
+                        // Associative array juga punya method (`num`, `exists`,
+                        // `delete`, `first`, `next`) — PRA-FIX hanya dynamic/
+                        // queue yang masuk, sehingga `m.num()` jatuh ke
+                        // "cannot call method on unknown class".
+                        .map(|s| s.is_dynamic || s.is_queue || s.is_associative)
                         .unwrap_or(false);
                     if is_arr {
                         let sig_info = self

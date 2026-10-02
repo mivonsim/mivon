@@ -26,6 +26,75 @@ pub(crate) fn literal_has_unknown_bits(expr: &Expr) -> bool {
     }
 }
 
+/// Apakah nama tipe (untuk cast `T'(x)`) menyatakan real/realtime?
+pub(crate) fn is_real_type_name(name: &str) -> bool {
+    matches!(name, "real" | "realtime" | "shortreal")
+}
+
+/// Buang lapisan `Paren` — untuk mengenali literal real di balik `(1.5)`.
+pub(crate) fn strip_parens(mut e: &Expr) -> &Expr {
+    while let Expr::Paren(inner) = e {
+        e = inner;
+    }
+    e
+}
+
+/// Apakah ekspresi AST bertipe real? (sinyal real / literal real / `$itor` /
+/// cast real) — dipakai untuk memilih jalur konversi cast real↔integer.
+pub(crate) fn expr_is_real_ty(
+    expr: &Expr,
+    signal_map: &HashMap<Symbol, SignalId>,
+    signals: &[SignalInfo],
+) -> bool {
+    match expr {
+        Expr::Value(Value::Real(_)) => true,
+        Expr::Paren(inner) => expr_is_real_ty(inner, signal_map, signals),
+        Expr::Cast { dtype, .. } => is_real_type_name(dtype.as_str()),
+        Expr::Ident { name, .. } if name.as_str() == "$itor" => true,
+        Expr::FuncCall { name, .. } if name.as_str() == "$itor" => true,
+        Expr::Ident { name, .. } => signal_map
+            .get(name)
+            .and_then(|sid| signals.get(*sid))
+            .map(|s| s.is_real)
+            .unwrap_or(false),
+        _ => false,
+    }
+}
+
+/// Apakah ekspresi IR bertipe real? (sinyal real, `RealConst`, `$itor`,
+/// atau hasil operasi yang salah satu operand real) — dipakai untuk konversi
+/// implisit real→integer saat assignment (LRM 1800 §6.24.3).
+pub(crate) fn ir_expr_is_real_ty(e: &IrExpr, signals: &[SignalInfo]) -> bool {
+    match e {
+        IrExpr::RealConst(_) => true,
+        IrExpr::Signal(id, _) => signals.get(*id).map(|s| s.is_real).unwrap_or(false),
+        IrExpr::SysFunc { name, .. } => matches!(name.as_str(), "$itor" | "$bitstoreal"),
+        IrExpr::Cast { expr, .. } | IrExpr::Signed(expr) => ir_expr_is_real_ty(expr, signals),
+        IrExpr::UnaryOp(_, inner)
+        | IrExpr::ExprBitSelect(inner, _)
+        | IrExpr::ExprRangeSelect(inner, ..) => ir_expr_is_real_ty(inner, signals),
+        IrExpr::BinaryOp(op, a, b) => {
+            // Hanya operator ARITMETIKA yang mempertahankan tipe real.
+            // Perbandingan/logical menghasilkan 1-bit (0/1) — membungkusnya
+            // dengan konversi real→integer membuat `gt = (a > b)` jadi 0.
+            if !matches!(
+                op,
+                BinaryIrOp::Add
+                    | BinaryIrOp::Sub
+                    | BinaryIrOp::Mul
+                    | BinaryIrOp::Div
+                    | BinaryIrOp::Mod
+                    | BinaryIrOp::Power
+            ) {
+                return false;
+            }
+            ir_expr_is_real_ty(a, signals) || ir_expr_is_real_ty(b, signals)
+        }
+        IrExpr::Cond(_, a, b) => ir_expr_is_real_ty(a, signals) || ir_expr_is_real_ty(b, signals),
+        _ => false,
+    }
+}
+
 pub(crate) fn lvalue_signal_id(lv: &IrLValue) -> Option<SignalId> {
     match lv {
         IrLValue::Signal(id, _) => Some(*id),
@@ -854,6 +923,21 @@ impl Elaborator {
                     ir_rhs = ir_pattern;
                 }
                 let struct_pattern = matches!(rhs, Expr::StructLit { .. });
+                // Konversi implisit real→integer saat assignment (LRM 1800
+                // §6.24.3: nilai real dibulatkan ke integer terdekat ketika
+                // disimpan ke variabel integer). PRA-FIX hanya resize bit →
+                // `integer k = 7.9` menjadi bit-pattern f64 (2576980378).
+                if let Some(sid) = lvalue_signal_id(&ir_lhs) {
+                    let lhs_is_real = signals.get(sid).map(|s| s.is_real).unwrap_or(false);
+                    if !lhs_is_real && ir_expr_is_real_ty(&ir_rhs, signals) {
+                        ir_rhs = IrExpr::SysFunc {
+                            name: Symbol::intern("$rtoi"),
+                            args: vec![ir_rhs],
+                            line: 0,
+                            col: 0,
+                        };
+                    }
+                }
                 // `apply_lhs_context_width` (lihat arm NonBlockingAssign):
                 // pola struct tak boleh dilewatkan const-fold `Expr::StructLit`
                 // (tak tahu layout → 0), lebar pola sudah pas.
@@ -2476,7 +2560,11 @@ impl Elaborator {
                                     elem_width: outer_elem_width,
                                 })
                             }
-                        } else if sig.array_depth > 1 || sig.is_dynamic || sig.is_queue {
+                        } else if sig.array_depth > 1
+                            || sig.is_dynamic
+                            || sig.is_queue
+                            || sig.is_associative
+                        {
                             let index_expr = self.elaborate_expr(bs_index, signal_map, signals)?;
                             // F39: multi-dim unpacked — index pertama memilih
                             // ROW: lebar = elem_width × Π dims[1..] (bit offset

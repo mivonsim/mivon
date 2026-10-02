@@ -996,6 +996,40 @@ impl Lexer {
             }
         }
 
+        // Literal real TANPA titik desimal tapi DENGAN eksponen: `1e3`,
+        // `2E3`, `1e-2` (LRM 1800 §6.8.3: real_lit ::= [size] [signed] [base]
+        // digit [. digit] [exponent]). PRA-FIX hanya `<digits>.<digits>` yang
+        // jadi real → `1e3` jadi Number "1" + ident "e3" (literal hilang).
+        // Syarat: `e`/`E` LANGSUNGAN setelah digit dan diikuti digit (atau
+        // tanda + digit) — menjaga `1e` (ident) tetap identifier.
+        if (self.peek() == Some('e') || self.peek() == Some('E'))
+            && !s.is_empty()
+            && s.chars().all(|c| c.is_ascii_digit() || c == '_')
+        {
+            let exp_start = self.pos;
+            let mut exp = String::new();
+            exp.push(self.advance());
+            if self.peek() == Some('+') || self.peek() == Some('-') {
+                exp.push(self.advance());
+            }
+            let mut exp_digits = 0usize;
+            while let Some(c) = self.peek() {
+                if c.is_ascii_digit() {
+                    exp.push(self.advance());
+                    exp_digits += 1;
+                } else {
+                    break;
+                }
+            }
+            if exp_digits > 0 {
+                let mut lit = s.clone();
+                lit.push_str(&exp);
+                return Token::RealNum(Symbol::intern(&lit));
+            }
+            // Bukan eksponen (mis. `1e` → identifier `e`) — rollback.
+            self.pos = exp_start;
+        }
+
         // Check for real number (contains decimal point)
         if self.peek() == Some('.') {
             s.push(self.advance());
@@ -1541,3 +1575,4 @@ impl Lexer {
         }
     }
 }
+

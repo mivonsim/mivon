@@ -4953,6 +4953,20 @@ impl Elaborator {
                         is_signed_type(&decl.dtype),
                     );
                     let sig = &mut signals[sid];
+                    // Associative array (`int m [string];` / `[*]`): tak punya
+                    // dimensi — storage-nya HashMap di engine (`assoc_data`).
+                    // PRA-FIX `is_associative` hardcoded false di cabang ini →
+                    // signal diperlakukan array 1-elemen, sehingga `m["k"] = v`
+                    // menulis di luar rentang ( hilang) dan `m["k"]` baca 0.
+                    if var.is_associative {
+                        sig.is_associative = true;
+                        sig.array_depth = 0;
+                        sig.array_dims = vec![];
+                        sig.width = elem_width;
+                        sig.elem_width = elem_width;
+                        sig.msb = elem_width.saturating_sub(1);
+                        sig.lsb = 0;
+                    }
                     if let Some(class) = &class_name {
                         sig.class_name = Some(Symbol::intern(class));
                         if class == "__mailbox" {

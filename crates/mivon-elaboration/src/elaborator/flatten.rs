@@ -1138,6 +1138,7 @@ impl Elaborator {
                     .map(|a| self.translate_expr(a, map_sig))
                     .collect(),
             },
+            IrExpr::RealConst(v) => IrExpr::RealConst(v.clone()),
             IrExpr::IncDec { read, lv, inc, pre } => IrExpr::IncDec {
                 read: Box::new(self.translate_expr(read, map_sig)),
                 lv: Box::new(self.translate_lvalue(lv, map_sig)),

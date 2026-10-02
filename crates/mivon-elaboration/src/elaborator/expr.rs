@@ -1,4 +1,5 @@
 use super::super::util::*;
+use super::stmt::{expr_is_real_ty, is_real_type_name, strip_parens};
 use super::Elaborator;
 use super::BUILTIN_UVM_CLASSES;
 use mivon_ast::types::{const_eval_simple, const_eval_with_params};
@@ -105,6 +106,12 @@ impl Elaborator {
                             ..
                         }
                     );
+                if matches!(v, Value::Real(_)) {
+                    // Literal real → `RealConst` (penanda tipe real; nilai
+                    // bit identik Const 64-bit). Tanpa penanda, `%f` dari
+                    // `1.5` membaca bit-pattern sebagai integer (4.6e18).
+                    return Ok(IrExpr::RealConst(lv));
+                }
                 if is_signed {
                     Ok(IrExpr::Signed(Box::new(IrExpr::Const(lv))))
                 } else {
@@ -388,7 +395,11 @@ impl Elaborator {
                                 Box::new(IrExpr::Const(LogicVec::from_u64(1, 32))),
                             ))
                         }
-                    } else if sig.array_depth > 1 || sig.is_dynamic || sig.is_queue {
+                    } else if sig.array_depth > 1
+                        || sig.is_dynamic
+                        || sig.is_queue
+                        || sig.is_associative
+                    {
                         let index_expr = self.elaborate_expr(index, signal_map, signals)?;
                         // F39: multi-dim unpacked — index pertama memilih ROW
                         // (sub-array): lebar = elem_width × Π dims[1..].
@@ -1450,6 +1461,37 @@ impl Elaborator {
                     // `MuBi4Width'(x)` dari `import prim_mubi_pkg::*`.
                     None => self.resolve_cast_name_width(dtype.as_str()).unwrap_or(1),
                 };
+                // ── Cast real↔integer (LRM 1800 §6.24) ──
+                // IR `Cast` hanya menyimpan LEBAR (tidak ada info tipe), sehingga
+                // konversi real↔int tak bisa-INFER di runtime: `int'(3.99)`
+                // sebelumnya memotong bit-pattern f64 (515396076, bukan 4).
+                // Rantai lewat sysfunc: real→`$rtoi` (bulat, ties away from
+                // zero), int→`$itor` (f64 64-bit). Constant real di-fold di sini.
+                let target_is_real = is_real_type_name(dtype.as_str());
+                let inner_is_real = expr_is_real_ty(inner, signal_map, signals);
+                if target_is_real && !inner_is_real {
+                    return Ok(IrExpr::SysFunc {
+                        name: Symbol::intern("$itor"),
+                        args: vec![inner_ir],
+                        line: 0,
+                        col: 0,
+                    });
+                }
+                if !target_is_real && inner_is_real {
+                    if let Expr::Value(Value::Real(f)) = strip_parens(inner) {
+                        // Constant real → bulat saat elaborasi ( Deterministik ).
+                        return Ok(IrExpr::Const(LogicVec::from_u64(
+                            if f.is_finite() { f.round() as i64 as u64 } else { 0 },
+                            cast_width.max(32),
+                        )));
+                    }
+                    return Ok(IrExpr::SysFunc {
+                        name: Symbol::intern("$rtoi"),
+                        args: vec![inner_ir],
+                        line: 0,
+                        col: 0,
+                    });
+                }
                 Ok(IrExpr::Cast {
                     width: cast_width,
                     expr: Box::new(inner_ir),

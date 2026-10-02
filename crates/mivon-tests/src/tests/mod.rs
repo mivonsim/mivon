@@ -21736,6 +21736,166 @@ endmodule
     assert_eq!(get("a"), 0x2A, "port init berlaku saat tak di-drive");
 }
 
+// ── Real↔integer: `$rtoi`/`$itor`, cast, format (LRM 1800 §6.24/§20.8) ──
+//
+// PRA-FIX: `$rtoi`/`$itor` tak dikenal (0 + warning RT9003); `$display("%d",
+// real)` mencetak bit-pattern mentah (4620580627691444634 untuk 7.9);
+// `int'(3.99)` memotong bit f64 (515396076, bukan 4); literal real
+// tanpa titik desimal (`1e3`) tak di-lex sama sekali.
+//
+// CATATAN: `$rtoi` di mivon mengikuti LRM (round ke terdekat, ties away from
+// zero → `$rtoi(3.99)`=4, `$rtoi(-2.5)`=-3). iverilog memakai truncation
+// (3 dan -2) — menyimpang dari LRM, jadi mivon tidak mengikuti.
+
+#[test]
+fn test_real_to_int_sysfuncs() {
+    let source = r#"
+module tb_rt;
+    integer a, b, c, d;
+    initial begin
+        a = $rtoi(3.4);
+        b = $rtoi(3.99);
+        c = $rtoi(-2.5);
+        d = $rtoi(1e3);
+        $display("R1 %0d %0d %0d %0d", a, b, c, d);
+        $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 50).unwrap();
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    assert_eq!(get("a"), 3, "$rtoi(3.4)");
+    assert_eq!(get("b"), 4, "$rtoi(3.99) → round (LRM §20.8)");
+    // integer = 32-bit: -3 disimpan dua-complement 0xFFFFFFFD.
+    assert_eq!(get("c"), 0xFFFF_FFFD, "$rtoi(-2.5) → ties away from zero");
+    assert_eq!(get("d"), 1000, "$rtoi(1e3) — literal ekspon tanpa titik");
+}
+
+#[test]
+fn test_int_to_real_sysfunc_and_arith() {
+    let source = r#"
+module tb_it;
+    real r;
+    initial begin
+        r = $itor(7);
+        $display("S1 %f", r);
+        $display("S2 %f", $itor(42) / 2.0);
+        $display("S3 %f", $itor(42) / 2.0 + 1.0);
+        $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 50).unwrap();
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    let r = get("r");
+    assert_eq!(r, 7.0f64.to_bits(), "$itor(7)");
+}
+
+#[test]
+fn test_real_cast_round_trip() {
+    let source = r#"
+module tb_rc;
+    integer i; real r;
+    initial begin
+        i = int'(3.99);
+        r = real'(7);
+        $display("T1 %0d", i);
+        $display("T2 %f", r);
+        r = 2.5e2;
+        $display("T3 %f", r);
+        r = 1e3;
+        $display("T4 %f", r);
+        $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 50).unwrap();
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    assert_eq!(get("i"), 4, "int'(3.99) → round, bukan bit-pattern f64");
+    assert_eq!(get("r"), 1e3f64.to_bits(), "real'(7) lalu 1e3");
+}
+
+#[test]
+fn test_display_real_as_decimal() {
+    // `%d` dari real → bulat (LRM §21.2.1.4), bukan bit-pattern mentah.
+    let source = r#"
+module tb_dd;
+    real r = 7.9;
+    integer k;
+    initial begin
+        $display("U1 %0d", r);
+        k = r;
+        $display("U2 %0d", k);
+        $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 50).unwrap();
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    assert_eq!(get("k"), 8, "real → integer = round(7.9) = 8");
+}
+
+// ── Associative array end-to-end (LRM 1800 §7.9) ──
+//
+// PRA-FIX: `int m [string];` diperlakukan array 1-elemen (is_associative
+// hardcoded false) → tulis hilang, baca 0, dan method (`num`/`exists`/
+// `delete`) gagal "cannot call method on unknown class".
+
+#[test]
+fn test_associative_array_int_key() {
+    let source = r#"
+module tb_ai;
+    int ai [int];
+    initial begin
+        ai[7] = 42;
+        ai[9] = 43;
+        $display("V1 %0d %0d", ai[7], ai[9]);
+        $display("V2 %0d %0d", ai.num(), ai.exists(7));
+        $display("V3 %0d", ai.exists(11));
+        $display("V4 %0d", ai.delete(7));
+        $display("V5 %0d %0d", ai.exists(7), ai.num());
+        ai.delete();
+        $display("V6 %0d", ai.num());
+        $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 50).unwrap();
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    // Snapshot akhir (semua operasi sudah dijalankan).
+    assert_eq!(get("ai"), 0, "num() setelah delete() seluruh");
+}
+
+#[test]
+fn test_associative_array_string_key() {
+    let source = r#"
+module tb_as;
+    logic [7:0] al [string];
+    logic [7:0] a_got, b_got, missing;
+    integer n_ent, has_a, has_z;
+    initial begin
+        al["alpha"] = 8'hAB;
+        al["beta"]  = 8'hCD;
+        a_got = al["alpha"];
+        b_got = al["beta"];
+        missing = al["missing"];
+        n_ent = al.num();
+        has_a = al.exists("alpha");
+        has_z = al.exists("gamma");
+        $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 50).unwrap();
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    assert_eq!(get("a_got"), 0xAB, "baca via string key");
+    assert_eq!(get("b_got"), 0xCD);
+    assert_eq!(get("n_ent"), 2, "num()");
+    assert_eq!(get("has_a"), 1, "exists()");
+    assert_eq!(get("has_z"), 0, "exists() untuk key tak ada");
+    // Key tak ada → X (to_u64() memetakan X ke 0).
+}
+
 // ── Bug mivon utama: const-fold `case` mengabaikan X/Z pada literal ──
 //
 // PRA-FIX: `case (2'b1x)` dengan label `2'b1?` → HIT (salah). Penyebab:

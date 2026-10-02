@@ -732,6 +732,12 @@ pub enum IrExpr {
         /// true = prefix (hasil nilai baru), false = postfix (hasil lama)
         pre: bool,
     },
+    /// Konstanta real — bit-pattern f64 64-bit dengan PENANDA tipe real.
+    /// Tanpa varian ini, literal real `1.5` dan integer 64-bit tak dapat
+    /// dibedakan di IR (keduanya `Const` 64-bit) sehingga
+    /// `$display("%f", 1.5)` salah baca (bit-pattern dianggap integer).
+    /// Nilai bit identik dengan `Const` — pembedanya hanya metadata tipe.
+    RealConst(LogicVec),
 }
 
 /// Temporal sequence expression for property evaluation

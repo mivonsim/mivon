@@ -189,13 +189,20 @@ pub fn extract_signal_deps_inner(expr: &IrExpr, deps: &mut Vec<SignalId>) {
                 }
             }
         }
-        IrExpr::Const(_) | IrExpr::FillLit(_) | IrExpr::String(_) | IrExpr::This => {}
+        IrExpr::Const(_)
+        | IrExpr::RealConst(_)
+        | IrExpr::FillLit(_)
+        | IrExpr::String(_)
+        | IrExpr::This => {}
     }
 }
 
 pub fn is_signed_expr(expr: &IrExpr, signals: &[SignalInfo]) -> bool {
     match expr {
         IrExpr::Signed(_) => true,
+        // `$rtoi` menghasilkan integer 32-bit BERTANDA (LRM 1800 §20.8) —
+        // tanpa ini `$display("%0d", $rtoi(-2.5))` mencetak 4294967294.
+        IrExpr::SysFunc { name, .. } if name.as_str() == "$rtoi" => true,
         // Cast wrapper (konteks aritmetik me-resize literal/sinyal signed ke
         // lebar umum via `Cast`) — signedness berasal dari sinyal DALAM
         // (bug #8: `a >>> 1` gagal aritmetik krn lhs = Cast{32, Signal}).
@@ -335,12 +342,17 @@ impl SimulationEngine {
         // harus berakhir sebelum akses self.state di bawah. `evaluate_expr` penuh
         // menangani semua IrExpr (Cast, BinaryOp, Concat, MemberAccess, ...).
         // Signedness per-arg ikut dibawa agar `%d` mencetak negatif untuk
-        // ekspresi signed (`int a = -5` → "-5", bukan "4294967291").
-        let value_args: Vec<(LogicVec, bool)> = ir_args[start_idx..]
+        // ekspresi signed (`int a = -5` → "-5", bukan "4294967291"); flag real
+        // agar `%d` dari real membulatkan (bukan mencetak bit-pattern) dan
+        // `%f` dari integer mengonversi ke f64 (LRM 1800 §21.2.1.4).
+        let value_args: Vec<(LogicVec, bool, bool)> = ir_args[start_idx..]
             .iter()
             .filter_map(|a| {
                 let signed = is_signed_expr(a, &self.design.top.signals);
-                self.evaluate_expr(a).ok().map(|v| (v, signed))
+                let real = ir_expr_is_real(a, &self.design.top.signals);
+                self.evaluate_expr(a)
+                    .ok()
+                    .map(|v| (v, signed, real))
             })
             .collect();
         self.format_display_fmt(fmt_str, value_args.into_iter())
@@ -366,26 +378,60 @@ impl SimulationEngine {
             }
             return out;
         };
-        let value_args: Vec<(LogicVec, bool)> = ast_args[start_idx..]
+        let value_args: Vec<(LogicVec, bool, bool)> = ast_args[start_idx..]
             .iter()
             .filter_map(|a| {
                 let signed = ast_expr_is_signed(a);
-                self.evaluate_ast_expr(a).ok().map(|v| (v, signed))
+                let real = ast_expr_is_real(a);
+                self.evaluate_ast_expr(a)
+                    .ok()
+                    .map(|v| (v, signed, real))
             })
             .collect();
         self.format_display_fmt(fmt_str, value_args.into_iter())
     }
 
     /// Inti formatter `%d/%b/%h/%s/...` — dipakai jalur IR & AST (F17).
-    /// Setiap arg adalah `(LogicVec, is_signed)`; `%d` memakai signedness
-    /// untuk mencetak nilai negatif (jalur IR: dari ekspresi; jalur AST: dari
-    /// `-<literal>` — lihat `ast_expr_is_signed`).
+    /// Setiap arg adalah `(LogicVec, is_signed, is_real)`; `%d` memakai
+    /// signedness untuk mencetak nilai negatif (jalur IR: dari ekspresi; jalur
+    /// AST: dari `-<literal>` — lihat `ast_expr_is_signed`) dan flag real untuk
+    /// konversi round-trip (lihat `format_display_core`).
     fn format_display_fmt(
         &mut self,
         fmt_str: &str,
-        value_args: impl Iterator<Item = (LogicVec, bool)>,
+        value_args: impl Iterator<Item = (LogicVec, bool, bool)>,
     ) -> String {
         format_display_core(fmt_str, value_args, self.state.time, &self.state.timeformat)
+    }
+}
+
+/// Apakah ekspresi IR bertipe real (menyimpan bit-pattern f64 64-bit)?
+pub fn ir_expr_is_real(e: &IrExpr, signals: &[SignalInfo]) -> bool {
+    match e {
+        IrExpr::RealConst(_) => true,
+        IrExpr::Signal(id, _) => signals.get(*id).map(|s| s.is_real).unwrap_or(false),
+        IrExpr::Cast { expr, .. } | IrExpr::Signed(expr) => ir_expr_is_real(expr, signals),
+        IrExpr::UnaryOp(_, inner) | IrExpr::ExprBitSelect(inner, _) => {
+            ir_expr_is_real(inner, signals)
+        }
+        IrExpr::BinaryOp(_, a, b) | IrExpr::Cond(_, a, b) => {
+            ir_expr_is_real(a, signals) || ir_expr_is_real(b, signals)
+        }
+        IrExpr::SysFunc { name, .. } => matches!(name.as_str(), "$itor" | "$bitstoreal"),
+        _ => false,
+    }
+}
+
+/// Apakah ekspresi AST bertipe real (jalur AST / class method)?
+pub fn ast_expr_is_real(e: &mivon_ast::Expr) -> bool {
+    match e {
+        mivon_ast::Expr::Value(mivon_ast::Value::Real(_)) => true,
+        mivon_ast::Expr::Cast { dtype, expr } => {
+            matches!(dtype.as_str(), "real" | "realtime") || ast_expr_is_real(expr)
+        }
+        mivon_ast::Expr::Paren(inner) => ast_expr_is_real(inner),
+        mivon_ast::Expr::Ident { name, .. } => matches!(name.as_str(), "$itor" | "$bitstoreal"),
+        _ => false,
     }
 }
 
@@ -396,7 +442,7 @@ impl SimulationEngine {
 #[allow(clippy::too_many_lines)]
 fn format_display_core(
     fmt_str: &str,
-    value_args: impl Iterator<Item = (LogicVec, bool)>,
+    value_args: impl Iterator<Item = (LogicVec, bool, bool)>,
     sim_time: u64,
     timeformat: &TimeFormat,
 ) -> String {
@@ -452,7 +498,8 @@ fn format_display_core(
                 let last_spec_upper = matches!(spec, Some('H') | Some('X'));
                 match spec {
                     Some('o') => {
-                        if let Some((val, _)) = value_args.next() {
+                        if let Some((val, _, is_real)) = value_args.next() {
+                            let val = fmt_arg_as_int(&val, is_real);
                             // `%o` octal — leading '0' HANYA dibuang bila
                             // zero-fill `%0o` (IEEE 1800 §21.2.1.3).
                             let vw = val.width;
@@ -515,7 +562,10 @@ fn format_display_core(
                         }
                     }
                     Some('d') => {
-                        if let Some((val, is_signed)) = value_args.next() {
+                        if let Some((val, is_signed, is_real)) = value_args.next() {
+                            // Real → integer bulat (LRM §21.2.1.4).
+                            let val = fmt_arg_as_int(&val, is_real);
+                            let is_signed = is_signed || is_real;
                             // Default field width = lebar representasi maksimum
                             // tipe (LRM 1800 Tabel 21-3) — plain `%d` di-right-justify
                             // ke field itu (iverilog: `%d` dari `integer 1` →
@@ -580,7 +630,8 @@ fn format_display_core(
                         }
                     }
                     Some('b') => {
-                        if let Some((val, _)) = value_args.next() {
+                        if let Some((val, _, is_real)) = value_args.next() {
+                            let val = fmt_arg_as_int(&val, is_real);
                             // `%0b` membuang leading '0'; `%b` plain mencetak
                             // FULL width nilai (IEEE 1800 §21.2.1.3).
                             let mut chars_out: Vec<char> = Vec::new();
@@ -627,7 +678,9 @@ fn format_display_core(
                         // `%h`/`%x` = hex lower, `%H`/`%X` = hex upper
                         // (LRM 1800 §21.2.1.3).
                         let upper = last_spec_upper;
-                        if let Some((val, _)) = value_args.next() {
+                        if let Some((val, _, is_real)) = value_args.next() {
+                            // Real → integer bulat utk specifier integer (LRM §21.2.1.4).
+                            let val = fmt_arg_as_int(&val, is_real);
                             // Format per-nibble dari pola bit — X/Z-aware.
                             // (Bug render: to_u64() memetakan X/Z → 0 sehingga
                             // `$display("%h", 8'hxx)` mencetak "0" — user
@@ -701,11 +754,11 @@ fn format_display_core(
                         }
                     }
                     Some('f') => {
-                        if let Some((val, _)) = value_args.next() {
+                        if let Some((val, _, is_real)) = value_args.next() {
                             // `%f` default precision 6 (IEEE 1800 §21.2.1.4);
                             // `%.Nf`/`%0.Nf` → N digit presisi.
                             let prec = precision.min(20);
-                            let s = format!("{:.*}", prec, f64::from_bits(val.to_u64()));
+                            let s = format!("{:.*}", prec, fmt_arg_as_real(&val, is_real, false));
                             push_padded(&mut result, &s, width, zero_fill, left_align);
                         }
                     }
@@ -713,8 +766,8 @@ fn format_display_core(
                         // `%g` — representasi pendek (C printf): ekspon bila
                         // eksponen di luar [-4, presisi), else desimal dengan
                         // trailing nol dibuang (LRM 1800 §21.2.1.4).
-                        if let Some((val, _)) = value_args.next() {
-                            let v = f64::from_bits(val.to_u64());
+                        if let Some((val, _, is_real)) = value_args.next() {
+                            let v = fmt_arg_as_real(&val, is_real, false);
                             let prec = precision.min(20);
                             let exp = if v == 0.0 { 0 } else { v.abs().log10().floor() as i32 };
                             let s = if exp < -4 || exp >= prec as i32 {
@@ -736,12 +789,12 @@ fn format_display_core(
                         }
                     }
                     Some('e') | Some('E') => {
-                        if let Some((val, _)) = value_args.next() {
+                        if let Some((val, _, is_real)) = value_args.next() {
                             let prec = precision.min(20);
                             let s = normalize_exp(&format!(
                                 "{:.*e}",
                                 prec,
-                                f64::from_bits(val.to_u64())
+                                fmt_arg_as_real(&val, is_real, false)
                             ));
                             push_padded(&mut result, &s, width, zero_fill, left_align);
                         }
@@ -752,7 +805,7 @@ fn format_display_core(
                         // design `timescale (default 1ns = 10^-9 s).
                         let t = value_args
                             .next()
-                            .map(|(v, _)| v.to_u64() as f64)
+                            .map(|(v, _, _)| v.to_u64() as f64)
                             .unwrap_or(sim_time as f64);
                         // Skala relatif terhadap basis sim-time, bukan hardcode -9.
                         // saturating_sub mencegah underflow i64 (panic di debug)
@@ -775,7 +828,8 @@ fn format_display_core(
                         push_padded(&mut result, &s, width, zero_fill, left_align);
                     }
                     Some('s') => {
-                        if let Some((val, _)) = value_args.next() {
+                        if let Some((val, _, is_real)) = value_args.next() {
+                            let val = fmt_arg_as_int(&val, is_real);
                             let s = logicvec_to_string(&val);
                             push_padded(&mut result, &s, width, zero_fill, left_align);
                         }
@@ -783,7 +837,8 @@ fn format_display_core(
                     Some('c') => {
                         // `%c` — karakter dari 8 bit pertama nilai (LRM
                         // 1800 §21.2.1.2). Nilai 0 → NUL (tidak dicetak).
-                        if let Some((val, _)) = value_args.next() {
+                        if let Some((val, _, is_real)) = value_args.next() {
+                            let val = fmt_arg_as_int(&val, is_real);
                             let code = val.to_u64() as u32;
                             if let Some(ch) = char::from_u32(code) {
                                 push_padded(&mut result, &ch.to_string(), width, zero_fill, left_align);
@@ -949,6 +1004,35 @@ pub fn escape_xml(s: &str) -> String {
 }
 
 // ─── Signal utilities ───────────────────────────────────────────────────
+
+/// Konversi nilai argumen format untuk specifier INTEGER: real (bit-pattern
+/// f64) → integer 32-bit hasil pembulatan (LRM 1800 §21.2.1.4: `%d` dari real
+/// dicetak sebagai integer). Tanpa ini `$display("%d", real_var)` mencetak
+/// bit-pattern mentah (mis. 4620580627691444634 untuk 7.9).
+fn fmt_arg_as_int(val: &LogicVec, is_real: bool) -> LogicVec {
+    if !is_real {
+        return val.clone();
+    }
+    let f = f64::from_bits(val.to_u64());
+    if !f.is_finite() {
+        return LogicVec::from_u64(0, 32);
+    }
+    LogicVec::from_u64(f.round() as i64 as u64, 32)
+}
+
+/// Konversi nilai argumen format untuk specifier REAL: integer → f64
+/// (bit-pattern 64-bit). Tanpa ini `$display("%f", 3)` membaca integer 3
+/// sebagai bit-pattern f64 yang nonsense.
+fn fmt_arg_as_real(val: &LogicVec, is_real: bool, is_signed: bool) -> f64 {
+    if is_real {
+        return f64::from_bits(val.to_u64());
+    }
+    if is_signed {
+        val.to_i64() as f64
+    } else {
+        val.to_u64() as f64
+    }
+}
 
 /// Dorong string hasil format ke output dengan padding `width` (space default,
 /// `'0'` bila zero-fill `%0`, rata kiri bila flag `-`).
@@ -1129,7 +1213,7 @@ mod tests {
         // X→0) — user debugging propagasi X melihat nilai seolah known.
         let x = LogicVec::fill(LogicVal::X, 8);
         assert_eq!(
-            e.format_display_fmt("%h", vec![(x, false)].into_iter()),
+            e.format_display_fmt("%h", vec![(x, false, false)].into_iter()),
             "xx"
         );
         // 8'bzzzz_0101 → "z5" (bits[0]=LSB; nibble tinggi bits[4..7]=zzzz)
@@ -1147,29 +1231,29 @@ mod tests {
             width: 8,
         };
         assert_eq!(
-            e.format_display_fmt("%h", vec![(z5, false)].into_iter()),
+            e.format_display_fmt("%h", vec![(z5, false, false)].into_iter()),
             "z5"
         );
         // Known tidak berubah.
         let f0 = LogicVec::from_u64(0xf0, 8);
         assert_eq!(
-            e.format_display_fmt("%h", vec![(f0.clone(), false)].into_iter()),
+            e.format_display_fmt("%h", vec![(f0.clone(), false, false)].into_iter()),
             "f0"
         );
         assert_eq!(
-            e.format_display_fmt("%04h", vec![(f0, false)].into_iter()),
+            e.format_display_fmt("%04h", vec![(f0, false, false)].into_iter()),
             "00f0"
         );
         let z0 = LogicVec::from_u64(0, 8);
         // `%h` plain = lebar nibble penuh nilai (IEEE 1800 §21.2.1.3 +
         // differential iverilog): 8'h00 → "00" (bukan "0"), 4'h0 → "0".
         assert_eq!(
-            e.format_display_fmt("%h", vec![(z0, false)].into_iter()),
+            e.format_display_fmt("%h", vec![(z0, false, false)].into_iter()),
             "00"
         );
         let z4 = LogicVec::from_u64(0, 4);
         assert_eq!(
-            e.format_display_fmt("%h", vec![(z4, false)].into_iter()),
+            e.format_display_fmt("%h", vec![(z4, false, false)].into_iter()),
             "0"
         );
     }
@@ -1184,18 +1268,18 @@ mod tests {
         let mut e = test_engine();
         let x = LogicVec::fill(LogicVal::X, 4);
         assert_eq!(
-            e.format_display_fmt("%0d", vec![(x.clone(), false)].into_iter()),
+            e.format_display_fmt("%0d", vec![(x.clone(), false, false)].into_iter()),
             "x",
             "semua-X → x"
         );
         assert_eq!(
-            e.format_display_fmt("%4d", vec![(x, false)].into_iter()),
+            e.format_display_fmt("%4d", vec![(x, false, false)].into_iter()),
             "   x",
             "%4d space-pad (bukan zero-pad) utk letter"
         );
         let z = LogicVec::fill(LogicVal::Z, 4);
         assert_eq!(
-            e.format_display_fmt("%0d", vec![(z, false)].into_iter()),
+            e.format_display_fmt("%0d", vec![(z, false, false)].into_iter()),
             "z",
             "semua-Z → z"
         );
@@ -1205,19 +1289,19 @@ mod tests {
             width: 4,
         };
         assert_eq!(
-            e.format_display_fmt("%0d", vec![(p, false)].into_iter()),
+            e.format_display_fmt("%0d", vec![(p, false, false)].into_iter()),
             "X",
             "partially-unknown → X"
         );
         // Known tetap desimal utuh.
         let n = LogicVec::from_u64(42, 8);
         assert_eq!(
-            e.format_display_fmt("%0d", vec![(n, false)].into_iter()),
+            e.format_display_fmt("%0d", vec![(n, false, false)].into_iter()),
             "42"
         );
         let s = LogicVec::from_u64((-5i64) as u64, 32);
         assert_eq!(
-            e.format_display_fmt("%0d", vec![(s, true)].into_iter()),
+            e.format_display_fmt("%0d", vec![(s, true, false)].into_iter()),
             "-5",
             "signed known tetap negatif"
         );
@@ -1242,7 +1326,7 @@ mod tests {
     fn test_fmt_real_precision() {
         // LRM 1800 §21.2.1.4 — `%.Nf`. PRA-FIX `%.2f` dicetak apa adanya.
         let r = real(std::f64::consts::PI - 0.00000265358979);
-        let args = || vec![(r.clone(), false)].into_iter();
+        let args = || vec![(r.clone(), false, true)].into_iter();
         assert_eq!(format_display_core("%f", args(), 0, &tf()), "3.141590");
         assert_eq!(format_display_core("%.2f", args(), 0, &tf()), "3.14");
         assert_eq!(format_display_core("%.4f", args(), 0, &tf()), "3.1416");
@@ -1257,20 +1341,20 @@ mod tests {
         // (C printf / iverilog: 3.141590e+00).
         let r = real(std::f64::consts::PI - 0.00000265358979);
         assert_eq!(
-            format_display_core("%g", vec![(r.clone(), false)].into_iter(), 0, &tf()),
+            format_display_core("%g", vec![(r.clone(), false, true)].into_iter(), 0, &tf()),
             "3.14159"
         );
         assert_eq!(
-            format_display_core("%e", vec![(r, false)].into_iter(), 0, &tf()),
+            format_display_core("%e", vec![(r, false, true)].into_iter(), 0, &tf()),
             "3.141590e+00"
         );
         let big = real(1234.5678);
         assert_eq!(
-            format_display_core("%g", vec![(big.clone(), false)].into_iter(), 0, &tf()),
+            format_display_core("%g", vec![(big.clone(), false, true)].into_iter(), 0, &tf()),
             "1234.57"
         );
         assert_eq!(
-            format_display_core("%e", vec![(big, false)].into_iter(), 0, &tf()),
+            format_display_core("%e", vec![(big, false, true)].into_iter(), 0, &tf()),
             "1.234568e+03"
         );
     }
@@ -1280,33 +1364,33 @@ mod tests {
         // LRM 1800 Tabel 21-3: plain `%d` di-right-justify ke field selebar
         // representasi maksimum tipe. `%0d` = tanpa padding.
         assert_eq!(
-            format_display_core("[%d]", vec![(LogicVec::from_u64(1, 8), false)].into_iter(), 0, &tf()),
+            format_display_core("[%d]", vec![(LogicVec::from_u64(1, 8), false, false)].into_iter(), 0, &tf()),
             "[  1]"
         );
         assert_eq!(
-            format_display_core("[%d]", vec![(LogicVec::from_u64(1, 16), false)].into_iter(), 0, &tf()),
+            format_display_core("[%d]", vec![(LogicVec::from_u64(1, 16), false, false)].into_iter(), 0, &tf()),
             "[    1]"
         );
         assert_eq!(
-            format_display_core("[%d]", vec![(LogicVec::from_u64(1, 32), false)].into_iter(), 0, &tf()),
+            format_display_core("[%d]", vec![(LogicVec::from_u64(1, 32), false, false)].into_iter(), 0, &tf()),
             "[         1]"
         );
         assert_eq!(
-            format_display_core("[%d]", vec![(LogicVec::from_u64((-1i64) as u64, 32), true)].into_iter(), 0, &tf()),
+            format_display_core("[%d]", vec![(LogicVec::from_u64((-1i64) as u64, 32), true, false)].into_iter(), 0, &tf()),
             "[         -1]",
             "signed 32-bit → 10 digit + tanda"
         );
         assert_eq!(
-            format_display_core("[%d]", vec![(LogicVec::from_u64(1, 8), false)].into_iter(), 0, &tf()),
+            format_display_core("[%d]", vec![(LogicVec::from_u64(1, 8), false, false)].into_iter(), 0, &tf()),
             "[  1]"
         );
         assert_eq!(
-            format_display_core("[%0d]", vec![(LogicVec::from_u64(1, 32), false)].into_iter(), 0, &tf()),
+            format_display_core("[%0d]", vec![(LogicVec::from_u64(1, 32), false, false)].into_iter(), 0, &tf()),
             "[1]",
             "%0d tanpa padding"
         );
         assert_eq!(
-            format_display_core("[%2d]", vec![(LogicVec::from_u64(1, 32), false)].into_iter(), 0, &tf()),
+            format_display_core("[%2d]", vec![(LogicVec::from_u64(1, 32), false, false)].into_iter(), 0, &tf()),
             "[ 1]",
             "width eksplisit menang atas default"
         );
@@ -1325,7 +1409,7 @@ mod tests {
             width: 8,
         };
         assert_eq!(
-            format_display_core("[%h][%o][%d]", vec![(mixed_x.clone(), false)].into_iter().cycle().take(3), 0, &tf()),
+            format_display_core("[%h][%o][%d]", vec![(mixed_x.clone(), false, false)].into_iter().cycle().take(3), 0, &tf()),
             "[X0][1X0][  X]"
         );
         // bits[0] = LSB → 8'b01z1_0000.
@@ -1337,17 +1421,17 @@ mod tests {
             width: 8,
         };
         assert_eq!(
-            format_display_core("[%h][%o][%d]", vec![(mixed_z.clone(), false)].into_iter().cycle().take(3), 0, &tf()),
+            format_display_core("[%h][%o][%d]", vec![(mixed_z.clone(), false, false)].into_iter().cycle().take(3), 0, &tf()),
             "[Z0][1Z0][  Z]"
         );
         let all_x = LogicVec::fill(LogicVal::X, 8);
         assert_eq!(
-            format_display_core("[%h][%d]", vec![(all_x, false)].into_iter().cycle().take(2), 0, &tf()),
+            format_display_core("[%h][%d]", vec![(all_x, false, false)].into_iter().cycle().take(2), 0, &tf()),
             "[xx][  x]"
         );
         let all_z = LogicVec::fill(LogicVal::Z, 8);
         assert_eq!(
-            format_display_core("[%h][%d]", vec![(all_z, false)].into_iter().cycle().take(2), 0, &tf()),
+            format_display_core("[%h][%d]", vec![(all_z, false, false)].into_iter().cycle().take(2), 0, &tf()),
             "[zz][  z]"
         );
     }
@@ -1359,7 +1443,7 @@ mod tests {
         assert_eq!(
             format_display_core(
                 "%h %x",
-                vec![(a.clone(), false)].into_iter().cycle().take(2),
+                vec![(a.clone(), false, false)].into_iter().cycle().take(2),
                 0,
                 &tf()
             ),
@@ -1368,7 +1452,7 @@ mod tests {
         assert_eq!(
             format_display_core(
                 "%H %X",
-                vec![(a, false)].into_iter().cycle().take(2),
+                vec![(a, false, false)].into_iter().cycle().take(2),
                 0,
                 &tf()
             ),
@@ -1383,7 +1467,7 @@ mod tests {
         assert_eq!(
             format_display_core(
                 "[%5d][%-5d][%05d]",
-                vec![(a.clone(), false)].into_iter().cycle().take(3),
+                vec![(a.clone(), false, false)].into_iter().cycle().take(3),
                 0,
                 &tf()
             ),
@@ -1393,7 +1477,7 @@ mod tests {
         assert_eq!(
             format_display_core(
                 "[%10s][%-10s]",
-                vec![(s.clone(), false)].into_iter().cycle().take(2),
+                vec![(s.clone(), false, false)].into_iter().cycle().take(2),
                 0,
                 &tf()
             ),
@@ -1403,8 +1487,8 @@ mod tests {
             format_display_core(
                 "[%c][%c]",
                 vec![
-                    (LogicVec::from_u64(65, 8), false),
-                    (LogicVec::from_u64(66, 8), false)
+                    (LogicVec::from_u64(65, 8), false, false),
+                    (LogicVec::from_u64(66, 8), false, false)
                 ]
                 .into_iter(),
                 0,

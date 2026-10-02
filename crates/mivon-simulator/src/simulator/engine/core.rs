@@ -1976,8 +1976,13 @@ impl SimulationEngine {
             // Queue SDN dikecualikan: `logic[7:0] q[$]` kosong by-design dan
             // diisi via push_back/pop_front (bukan assign langsung) →
             // "never assigned" = false positive (F40 queue, fuzzer mv).
+            // Dynamic & associative array: storage-nya HashMap/queue di
+            // engine (bukan bit-vector sinyal) sehingga `init_val` tak pernah
+            // berubah walau elemen ditulis → false positive yang sama.
             if never_changed
                 && !sig.is_queue
+                && !sig.is_dynamic
+                && !sig.is_associative
                 && (sig.kind == SignalKind::Reg || sig.kind == SignalKind::Logic)
                 && sig.init_val.all_x()
             {

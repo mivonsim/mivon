@@ -497,6 +497,7 @@ fn variant_name(e: &IrExpr) -> &'static str {
         IrExpr::VifBinding { .. } => "VifBinding",
         IrExpr::VirtualIfaceAccess { .. } => "VirtualIfaceAccess",
         IrExpr::This => "This",
+        IrExpr::RealConst(_) => "RealConst",
         IrExpr::IncDec { .. } => "IncDec",
     }
 }
