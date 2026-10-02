@@ -21736,6 +21736,138 @@ endmodule
     assert_eq!(get("a"), 0x2A, "port init berlaku saat tak di-drive");
 }
 
+// ── Bug mivon utama: const-fold `case` mengabaikan X/Z pada literal ──
+//
+// PRA-FIX: `case (2'b1x)` dengan label `2'b1?` → HIT (salah). Penyebab:
+// jalur const-fold membandingkan label sebagai INTEGER (`parse_literal`)
+// sehingga digit `x`/`z`/`?` jadi 0 dan `1x` == `1z`. LRM 1800 §12.5:
+// hanya `casez`/`casex` yang memperlakukan z (dan x utk casex) sebagai
+// don't-care; pada `case` biasa perbandingan 4-state strict.
+
+#[test]
+fn test_case_plain_with_unknown_bits() {
+    let source = r#"
+module tb_cu;
+    reg [1:0] v;
+    reg [3:0] c1 = 0, c2 = 0, c3 = 0, c4 = 0, c5 = 0, c6 = 0;
+    initial begin
+        case (2'b1x)
+            2'b1?: c1 = 4'h1;
+            default: c1 = 4'h0;
+        endcase
+        casez (2'b1x)
+            2'b1?: c2 = 4'h2;
+            default: c2 = 4'h0;
+        endcase
+        casex (2'b1x)
+            2'b1?: c3 = 4'h3;
+            default: c3 = 4'h0;
+        endcase
+        // case expr berisi unknown + label identik → boleh match
+        case (4'b10x1)
+            4'b10x1: c4 = 4'hE;
+            default: c4 = 4'h0;
+        endcase
+        // unknown vs known → tak match
+        case (4'b10x1)
+            4'b1011: c5 = 4'hF;
+            default: c5 = 4'h0;
+        endcase
+        // expr variabel: `?` tetap bukan don't-care di `case`
+        v = 2'b11;
+        case (v)
+            2'b1?: c6 = 4'h7;
+            default: c6 = 4'h0;
+        endcase
+        $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 50).unwrap();
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    // Oracle iverilog: c1=0 (miss), c2=2, c3=3, c4=e, c5=0, c6=0.
+    assert_eq!(get("c1"), 0, "case biasa: `1?` (=1z) tak match `1x`");
+    assert_eq!(get("c2"), 2, "casez: z di pattern = don't-care");
+    assert_eq!(get("c3"), 3, "casex: x di pattern = don't-care");
+    assert_eq!(get("c4"), 0xE, "unknown identik tetap match");
+    assert_eq!(get("c5"), 0, "unknown vs known tak match");
+    assert_eq!(get("c6"), 0, "case variabel: `?` bukan don't-care");
+}
+
+#[test]
+fn test_case_const_fold_still_works() {
+    // Const-fold case (const expr + const label) harus tetap jalan —
+    // guard unknown tidak boleh mematikan optimasi yang sah.
+    let source = r#"
+module tb_cc;
+    localparam int SEL = 2;
+    reg [7:0] r = 0;
+    initial begin
+        case (2)
+            1: r = 8'h11;
+            2: r = 8'h22;
+            default: r = 8'hFF;
+        endcase
+        $display("C7 r=%h", r);
+        case (SEL)
+            SEL: r = 8'hAB;
+            default: r = 8'h00;
+        endcase
+        $display("C8 r=%h", r);
+        $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 50).unwrap();
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    assert_eq!(get("r"), 0xAB, "const-fold case tetap benar");
+}
+
+// ── Bug mivon utama: rujukan hierarkis `top.<sig>` tak resolve ──
+//
+// PRA-FIX: `$display("%0d", tb_d6.a)` / `force tb_d6.a = 9` gagal E2001
+// "hierarchical signal not found for write" — padahal SV mengizinkan path
+// lengkap ke modul teratas (LRM 1800 §12.4 hierarchical names).
+
+#[test]
+fn test_hierarchical_ref_to_top_module_signal() {
+    let source = r#"
+module tb_h;
+    reg [3:0] a = 4'd3;
+    initial begin
+        $display("H1 %0d", tb_h.a);
+        force tb_h.a = 4'd9;
+        #1 $display("H2 %0d", a);
+        release tb_h.a;
+        a = 4'd5;
+        $display("H3 %0d", tb_h.a);
+        $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 50).unwrap();
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    assert_eq!(get("a"), 5, "path top.a resolve + force/release bekerja");
+}
+
+#[test]
+fn test_hierarchical_ref_through_instance() {
+    // Path `u_sub.q` (sinyal dalam instance) — regresi tak boleh terputus.
+    let source = r#"
+module sub; reg [7:0] q = 8'h3C; endmodule
+module tb_h2;
+    sub u_sub ();
+    initial begin
+        #1 $display("H4 %h", u_sub.q);
+        $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 50).unwrap();
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    assert_eq!(get("u_sub.q"), 0x3C, "hierarkis lewat instance");
+}
+
 // ── `$display`/`$sformatf`: `%.Nf`, `%g`, `%x`, `%-Nd`, `%Ns`, `%c`, `%%`
 //    (LRM 1800 §21.2.1.2–§21.2.1.4). PRA-FIX specifier tak dikenal dicetak
 //    apa adanya: `$display("%.2f", 3.14159)` → `%.2f` (literal, bukan 3.14).

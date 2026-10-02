@@ -67,6 +67,20 @@ impl Elaborator {
         // (instance interface boleh muncul setelah child module di AST).
         // Kembalikan daftar instance asli top (lihat komentar di atas).
         top.sub_instances = saved_instances;
+        // Alias hierarkis sinyal TOP dengan path lengkap `top.<sig>` — SV
+        // mengizinkan rujukan hierarkis ke modul teratas lewat namanya
+        // (mis. TBFTB: `$display("%0d", tb_d6.a)` / `force tb_d6.a = ...`).
+        // Tanpa ini HierRef tak resolve → E2001 "hierarchical signal not
+        // found" padahal path-nya sah.
+        let top_name = top.name;
+        for (sid, sig) in top.signals.iter().enumerate() {
+            let n = sig.name.as_str();
+            if n.contains('.') {
+                continue; // sudah berpath (mis. hasil flatten instance)
+            }
+            map.entry(Symbol::intern(&format!("{}.{}", top_name.as_str(), n)))
+                .or_insert(sid);
+        }
         let jobs = std::mem::take(&mut *self.iface_alias_jobs.borrow_mut());
         for (port_name, iface_name, inst_path) in jobs {
             let Some(iface) = self.design.interfaces.iter().find(|i| i.name == iface_name) else {

@@ -10,6 +10,22 @@ use mivon_ir::*;
 use std::collections::HashMap;
 
 /// Extract SignalId from IrLValue, if it's a simple signal reference.
+/// Apakah ekspresi memuat literal biner/oktal/heksadesimal dengan digit
+/// `x`/`z`/`?` (unknown)? Dipakai untuk MENGAWANGI const-fold `case`: nilai
+/// 4-state tak bisa di-folder ke i64 tanpa kehilangan informasi unknown
+/// (LRM 1800 §12.5).
+pub(crate) fn literal_has_unknown_bits(expr: &Expr) -> bool {
+    match expr {
+        Expr::Value(Value::Binary { bits, .. })
+        | Expr::Value(Value::Hex { bits, .. })
+        | Expr::Value(Value::Octal { bits, .. }) => {
+            bits.chars().any(|c| matches!(c, 'x' | 'X' | 'z' | 'Z' | '?'))
+        }
+        Expr::Paren(inner) => literal_has_unknown_bits(inner),
+        _ => false,
+    }
+}
+
 pub(crate) fn lvalue_signal_id(lv: &IrLValue) -> Option<SignalId> {
     match lv {
         IrLValue::Signal(id, _) => Some(*id),
@@ -1062,12 +1078,16 @@ impl Elaborator {
                 // expr KONSTAN dan SEMUA label KONSTAN.
                 let all_labels_const = items.iter().all(|item| {
                     item.labels.iter().all(|l| {
-                        const_eval_with_params(l, &self.param_vals).is_ok()
-                            || matches!(l, Expr::Value(_))
+                        (const_eval_with_params(l, &self.param_vals).is_ok()
+                            || matches!(l, Expr::Value(_)))
+                            && !literal_has_unknown_bits(l)
                     })
                 });
                 let case_const = const_eval_with_params(expr, &self.param_vals);
-                if case_const.is_err() || !all_labels_const {
+                // Digit X/Z/? tak bisa di-fold ke i64 (jadi 0) → `case (2'b1x)`
+                // vs label `2'b1?` akan SALAH match bila di-fold. Jalankan
+                // runtime (4-state) kalau case expr atau label memuat unknown.
+                if case_const.is_err() || !all_labels_const || literal_has_unknown_bits(expr) {
                     // ── Evaluasi RUNTIME: case expr / label memakai sinyal ──
                     let mut ir_expr = self.elaborate_expr(expr, signal_map, signals)?;
                     let mut ir_items = Vec::new();

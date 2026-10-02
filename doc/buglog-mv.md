@@ -123,6 +123,19 @@ bug di mivon utama (parser/elaborator/simulator). Status: ✅ fixed / ⏳ open.
     (`test_sformatf_basic`, `test_sformatf_multiple_args`, `test_fstrobe`,
     `test_fmonitor`) di-update ke `%0d` + ekspektasi LRM baru.
 
+12. **Rujukan hierarkis ke modul teratas ditolak** — `$display("%0d",
+    tb_d6.a)` / `force tb_d6.a = 9` gagal E2001 "hierarchical signal '…'
+    not found for write". Path `top.<sig>` sah SV (LRM 1800 §12.4) tapi
+    `hier_signal_map` hanya berisi alias `inst.port` dari flatten instance.
+    Fix F53: alias `"<top>.<sig>"` untuk tiap sinyal top tanpa titik.
+
+13. **Const-fold `case` mengabaikan digit X/Z** — `case (2'b1x)` dengan
+    label `2'b1?` HIT (salah; iverilog: miss). Jalur const-fold
+    `Stmt::Case` membandingkan label sebagai INTEGER lewat `parse_literal`,
+    sehingga `x`/`z`/`?` dipetakan ke 0 dan `1x` dianggap sama dengan
+    `1z`. Fix F53: `literal_has_unknown_bits` dipakai sebagai guard —
+    case expr/label ber-unknown dipaksa jalur runtime 4-state.
+
 ## ⏳ Open
 
 (tidak ada item open — semua bug historis sudah tertutup)
