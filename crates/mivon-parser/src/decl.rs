@@ -1678,6 +1678,17 @@ impl Parser {
     }
 
     pub(crate) fn parse_type_expr(&mut self) -> Result<DataType, SimError> {
+        let (dt, _range) = self.parse_type_expr_with_range()?;
+        Ok(dt)
+    }
+
+    /// Sama seperti `parse_type_expr`, tapi range packed PERTAMA (`logic [7:0]`)
+    /// dikembalikan (bukan dibuang) — dipakai default `parameter type T`.
+    /// `DataType` tidak punya variant range, jadi range hidup di `ParamDecl.range`.
+    /// Range lanjutan (`[a:b][c:d]`) tetap dibuang (perilaku lama).
+    pub(crate) fn parse_type_expr_with_range(
+        &mut self,
+    ) -> Result<(DataType, Option<(Expr, Expr)>), SimError> {
         // `virtual <iface_type>` — tipe virtual interface (param class UVM,
         // mis. `uvm_config_db#(virtual alert_esc_if)::get(...)`). Marker
         // `virtual` dibuang; tipe interface diterjemahkan sbg UserDefined.
@@ -1692,7 +1703,7 @@ impl Parser {
                 if self.peek() == &Token::Hash {
                     let _ = self.parse_param_block()?;
                 }
-                return Ok(DataType::UserDefined(name));
+                return Ok((DataType::UserDefined(name), None));
             }
             return Err(self.err("expected interface type after virtual"));
         }
@@ -1783,25 +1794,30 @@ impl Parser {
         };
         // `.T ( logic [7:0] )` — arg type-param dgn packed range
         // (axi_cdc_dst.sv cva6: `logic [$bits(aw_chan_t)-1:0]`). DataType
-        // tidak punya variant range — parse & BUANG (sama spt discard
-        // parametrik `#(...)` di atas). Parse-accept; lebar jadian urusan
-        // elaborator (WR0102 bila salah). Stopgap korpus, bukan semantik penuh.
+        // tidak punya variant range — range PERTAMA dikembalikan ke pemanggil
+        // (lebar default `parameter type`), sisanya dibuang seperti discards
+        // parametrik `#(...)` di atas. Elaborator pakai range utk lebar
+        // (WR0102 bila salah). Stopgap korpus, bukan semantik penuh.
+        let mut first_range: Option<(Expr, Expr)> = None;
         if self.peek() == &Token::LBrack {
-            let _ = self.parse_range()?;
+            if let Some(er) = self.parse_range()? {
+                first_range = Some((er.msb, er.lsb));
+            }
             while self.peek() == &Token::LBrack {
                 let _ = self.parse_range()?;
             }
         }
-        if self.peek() == &Token::Signed {
+        let base = if self.peek() == &Token::Signed {
             self.advance();
-            Ok(DataType::Signed(Box::new(dt)))
+            DataType::Signed(Box::new(dt))
         } else if self.peek() == &Token::Unsigned {
             // `int unsigned` — unsigned = default, no-op.
             self.advance();
-            Ok(dt)
+            dt
         } else {
-            Ok(dt)
-        }
+            dt
+        };
+        Ok((base, first_range))
     }
 
     pub(crate) fn parse_param_list(&mut self, params: &mut Vec<ParamDecl>) -> Result<(), SimError> {
@@ -1955,20 +1971,16 @@ impl Parser {
             let default = if self.peek() == &Token::BlockingAssign {
                 self.advance();
                 if is_type_param {
-                    // Parse default type expression: logic [7:0], bit, int, etc.
-                    type_default = Some(self.parse_type_expr()?);
-                    // F32 fix: SIMPAN range default type param (`T = logic [7:0]`)
-                    // ke `range` (field ParamDecl yang sama utk `parameter [7:0] W`).
-                    // Sebelumnya range di-parse lalu DIBUANG → `T` selalu 1-bit
-                    // (type_default = DataType::Logic tanpa range). Elaborator
-                    // menghitung lebar type param dari `param.range`.
-                    if self.peek() == &Token::LBrack {
-                        self.advance();
-                        let msb = self.parse_expr(0)?;
-                        self.expect(Token::Colon)?;
-                        let lsb = self.parse_expr(0)?;
-                        self.expect(Token::RBrack)?;
-                        range = Some((msb, lsb));
+                    // Default type expression: logic [7:0], bit, int, dsb.
+                    // Range packed (`[7:0]`) disimpan ke `ParamDecl.range`
+                    // (field yang sama utk `parameter [7:0] W`) agar elaborator
+                    // menghitung lebar `T` dari range — bukan fallback 1-bit.
+                    // `parse_type_expr` biasa MEMBUANG range, jadi pakai varian
+                    // yang mengembalikannya.
+                    let (td, td_range) = self.parse_type_expr_with_range()?;
+                    type_default = Some(td);
+                    if range.is_none() {
+                        range = td_range;
                     }
                     // For MVP, store dummy expression; width resolved in elaborator
                     Some(Expr::Value(Value::Decimal(0)))

@@ -1117,12 +1117,24 @@ module tb_dl {
 }
 "#;
     let r = mivon_mv::transpile(src, "disable_label").expect("transpile .mv OK");
-    assert!(r.sv.contains("begin : worker"), "emit named block: {}", r.sv);
-    assert!(r.sv.contains("disable worker;"), "emit disable label: {}", r.sv);
+    assert!(
+        r.sv.contains("begin : worker"),
+        "emit named block: {}",
+        r.sv
+    );
+    assert!(
+        r.sv.contains("disable worker;"),
+        "emit disable label: {}",
+        r.sv
+    );
     let sigs = simulate_signals(&r.sv, 50).unwrap();
     let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
     assert_eq!(get("a"), 0, "worker dibunuh disable label sebelum #10");
-    assert_eq!(get("done"), 1, "join selesai normal — pelaku tidak ikut mati");
+    assert_eq!(
+        get("done"),
+        1,
+        "join selesai normal — pelaku tidak ikut mati"
+    );
 }
 
 #[test]
@@ -6269,6 +6281,116 @@ endmodule
         .map(|(_, v)| v.to_u64())
         .unwrap_or(0);
     assert_eq!(out_val, 0xA0, "casez 4'b1010 should match 4'b1zz0 => 0xA0");
+}
+
+/// Qualifier + kind ortogonal (LRM 1800 §12.5): `priority casez` memakai
+/// pencocokan wildcard (bukan exact-match). Vs iverilog: 101→A0, 011→B0.
+#[test]
+fn test_priority_casez_wildcard() {
+    let source = r#"
+module tb;
+    reg [2:0] sel;
+    reg [7:0] out;
+    always @(*) begin
+        priority casez (sel)
+            3'b1??: out = 8'hA0;
+            3'b01?: out = 8'hB0;
+            3'b001: out = 8'hC0;
+            default: out = 8'hFF;
+        endcase
+    end
+    initial begin
+        sel = 3'b101;
+        #1;
+        if (out !== 8'hA0) $display("MISS101 %0h", out);
+        sel = 3'b011;
+        #1;
+        if (out !== 8'hB0) $display("MISS011 %0h", out);
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 10).unwrap();
+    let out_val = sigs
+        .iter()
+        .find(|(n, _)| n == "out")
+        .map(|(_, v)| v.to_u64())
+        .unwrap_or(0);
+    assert_eq!(out_val, 0xB0, "priority casez 3'b011 should match 3'b01? => 0xB0");
+}
+
+/// `unique casez` juga memakai wildcard (combo UniqueZ).
+#[test]
+fn test_unique_casez_wildcard() {
+    let source = r#"
+module tb;
+    reg [2:0] sel;
+    reg [7:0] out;
+    always @(*) begin
+        unique casez (sel)
+            3'b1??: out = 8'hA0;
+            default: out = 8'hFF;
+        endcase
+    end
+    initial begin
+        sel = 3'b100;
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 10).unwrap();
+    let out_val = sigs
+        .iter()
+        .find(|(n, _)| n == "out")
+        .map(|(_, v)| v.to_u64())
+        .unwrap_or(0);
+    assert_eq!(out_val, 0xA0, "unique casez 3'b100 should match 3'b1?? => 0xA0");
+}
+
+/// Default `parameter type T = logic [7:0]` memberi lebar 8 (bukan 1).
+/// Regresi: parser membuang range (`T` selalu 1-bit → port mismatch).
+#[test]
+fn test_param_type_default_packed_range_width() {
+    let source = r#"
+module shifter #(
+    parameter type T = logic [7:0],
+    parameter N = 2
+) (
+    input bit clk,
+    input T d,
+    output T q
+);
+    T r;
+    always_ff @(posedge clk) begin
+        r <= d << N;
+        q <= r;
+    end
+endmodule
+module tb;
+    bit clk;
+    logic [7:0] d8, q8;
+    shifter u8 (.clk(clk), .d(d8), .q(q8));
+    initial begin
+        clk = 0;
+        d8 = 8'h01;
+        #10;
+        repeat (3) @(posedge clk);
+        #1;
+        $display("TP q8=%0d", q8);
+        $finish;
+    end
+    initial begin
+        forever #5 clk = ~clk;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 200).unwrap();
+    let q8 = sigs
+        .iter()
+        .find(|(n, _)| n == "q8")
+        .map(|(_, v)| v.to_u64())
+        .unwrap_or(0);
+    assert_eq!(q8, 4, "T=logic[7:0] N=2: 01<<2=4 (q8={q8})");
 }
 
 #[test]
@@ -13123,7 +13245,10 @@ endmodule
     let design_a = compile_str(src_a).unwrap();
     let mut engine_a = crate::simulator::SimulationEngine::new(design_a, 10);
     engine_a.run().unwrap();
-    assert!(!engine_a.cover_line.is_empty(), "run A harus catat line hits");
+    assert!(
+        !engine_a.cover_line.is_empty(),
+        "run A harus catat line hits"
+    );
     let saved_hits: u64 = engine_a.cover_line.values().sum();
     let db_path = std::env::temp_dir().join(format!("mivon_covdb_{}.mcdb", std::process::id()));
     let mut db = crate::simulator::coverage_db::CoverageDatabase::new();
@@ -21694,7 +21819,11 @@ endmodule
     let sigs = simulate_signals(source, 50).unwrap();
     let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
     assert_eq!(get("c"), 4, "BLUE = 4 (eksplisit)");
-    assert_eq!(get("l"), 2, "L0..L2 sequential per typedef (tak bocor lintas enum)");
+    assert_eq!(
+        get("l"),
+        2,
+        "L0..L2 sequential per typedef (tak bocor lintas enum)"
+    );
 }
 
 // ── Bug mivon utama: initializer port ANSI menimpa assignment `initial` ──
@@ -22246,7 +22375,11 @@ endmodule
     let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
     // `p.hi`/`p.lo` bukan signal top-level — nilainya dicek via $display, yang
     // sudah tercetak `SL p=a5 hi=a lo=5` (lihat stdout test).
-    assert_eq!(get("p"), 0xA5, "pola bernama harus ter-pack sesuai offset field");
+    assert_eq!(
+        get("p"),
+        0xA5,
+        "pola bernama harus ter-pack sesuai offset field"
+    );
 }
 
 #[test]
@@ -22581,6 +22714,39 @@ module tb_am {
     assert_eq!((a, b), (0, 1), "a=0 b=1");
 }
 
+/// `.mv` `priority casez` → SV `priority casez` + wildcard match di sim
+/// (contoh `examples/mv/case_qualifiers.mv`; regresi: hanya exact-match).
+#[test]
+fn test_mv_priority_casez_wildcard() {
+    let src = r#"
+module tb_pcz {
+    sig sel : logic[2:0]
+    sig y : logic[7:0]
+    comb {
+        priority casez (sel) {
+            3'b1??: { y = 8'hA0 }
+            default: { y = 8'hFF }
+        }
+    }
+    initial {
+        sel = 3'b101
+        #1
+        $display("PCZ y=%0h", y)
+        $finish
+    }
+}
+"#;
+    let r = mivon_mv::transpile(src, "pcz").expect("transpile .mv OK");
+    assert!(
+        r.sv.contains("priority casez (sel)"),
+        "emisi priority casez: {}",
+        r.sv
+    );
+    let sigs = simulate_signals(&r.sv, 50).expect("simulasi harus jalan");
+    let y = sigs.iter().find(|(s, _)| s == "y").unwrap().1.to_u64();
+    assert_eq!(y, 0xA0, "3'b101 vs 3'b1?? => A0 (y={y:02x})");
+}
+
 /// `uint[8]` = vektor 8-bit (angka = LEBAR), bukan array 8 x 32-bit.
 #[test]
 fn test_mv_uint_bracket_is_bit_width() {
@@ -22701,11 +22867,16 @@ fn test_lrm_unpacked_dim_after_name_is_accepted() {
     // Bentuk yang benar tetap valid: packed range, identifier, baru dimensi
     // unpacked (LRM 1800 §7.3).
     let ok = compile_str("typedef logic [7:0] T [0:3];\nmodule top;\nendmodule\n");
-    assert!(ok.is_ok(), "typedef dengan unpacked setelah nama harus valid");
-    let ok2 = compile_str(
-        "module top;\n  logic [7:0] fa [0:3];\n  initial fa[0] = 1'b1;\nendmodule\n",
+    assert!(
+        ok.is_ok(),
+        "typedef dengan unpacked setelah nama harus valid"
     );
-    assert!(ok2.is_ok(), "deklarasi dengan dimensi setelah nama harus valid");
+    let ok2 =
+        compile_str("module top;\n  logic [7:0] fa [0:3];\n  initial fa[0] = 1'b1;\nendmodule\n");
+    assert!(
+        ok2.is_ok(),
+        "deklarasi dengan dimensi setelah nama harus valid"
+    );
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -22736,7 +22907,11 @@ module tb_xnor {
 "#;
     let r = mivon_mv::transpile(src, "xnor").expect("transpile .mv OK");
     assert!(r.sv.contains("y = a ~^ b;"), "sv: {}", r.sv);
-    assert!(r.sv.contains("z = a ~^ b;"), "ejaan ^~ dinormalkan: {}", r.sv);
+    assert!(
+        r.sv.contains("z = a ~^ b;"),
+        "ejaan ^~ dinormalkan: {}",
+        r.sv
+    );
     let sigs = simulate_signals(&r.sv, 20).expect("simulasi harus jalan");
     let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
     // ~0x0F ^ 0x33 == ~0x3C == 0xC3
