@@ -554,6 +554,8 @@ Emisi: `always begin ... end` / `always_latch begin ... end`.
 | `fork { ... } { ... } join / join_any / join_none` | `fork begin ... end begin ... end join[_any\|_none]` — branch konkurren (contoh: `examples/mv/forkjoin.mv`) |
 | `override x = v` / `force x = v` (F46) | `force x = v;` — override paksa sinyal (fault injection, blocking, hanya di luar `seq`) |
 | `restore x` / `release x` (F46) | `release x;` — lepas force, assign prosedural berlaku lagi (`sig`/`reg` = variabel: unblock; restore driver hanya net `wire` LRM 10.6.2) |
+| `assume (c) A else B` (F66) | `assume (c) A; else B;` — mirror `assert`, branch pass `;` (LRM 1800 §20.11) |
+| `assume property (...)` (F66, module item) | `assume property (...);` — mirror `assert property` (LRM 1800 §14) |
 | `foreach (arr[i]) { ... }` | `foreach (arr[i]) begin ... end` — loop elemen array unpacked |
 | `@(posedge clk) stmt` | `@(posedge clk) stmt` |
 | `#10 stmt` | `#10 stmt` |
@@ -865,25 +867,30 @@ module tb_counter {
 }
 ```
 
-### 7.2 Assertion
+### 7.2 Assertion & Assumption (`assert` / `assume`)
 
 ```mv
 // immediate — di dalam blok prosedural (initial/always/seq/comb/...)
+// `assume` mirror `assert` (asumsi formal tentang input/lingkungan)
 assert (count <= 99) $info("count ok") else $error("count overflow")
+assume (req == 0) $info("idle") else $error("req saat reset")
 
 // concurrent — di LEVEL MODULE (bukan di dalam initial/always)
 assert property (@(posedge clk) enable |-> count == $past(count) + 1)
+assume property (@(posedge clk) req |-> ack)
 ```
 
 Emisi ke SV:
 
 ```systemverilog
 // immediate — branch pass adalah STATEMENT (LRM 1800 §20.11) jadi WAJIB
-// diakhiri `;` sebelum `else`:
+// diakhiri `;` sebelum `else` (berlaku untuk `assert` DAN `assume`):
 assert (count <= 99) $info("count ok"); else $error("count overflow");
+assume (req == 0) $info("idle"); else $error("req saat reset");
 
 // concurrent — module item, di-emit apa adanya di body module:
 assert property (@(posedge clk) enable |-> count == $past(count) + 1);
+assume property (@(posedge clk) req |-> ack);
 ```
 
 Dua aturan LRM yang ditegakkan:
@@ -891,13 +898,15 @@ Dua aturan LRM yang ditegakkan:
 - **LRM 1800 §20.11** — `assert (c) A else B` mensyaratkan `A` berupa
   *statement*, jadi harus diakhiri `;`. Tanpa itu output
   `assert (c) $info("x") else $error("y");` ditolak verilator
-  (`syntax error, unexpected else, expecting ';'`). Action berbentuk blok
+  (`syntax error, unexpected else, expecting ';'`). Berlaku identik untuk
+  `assume (c) A else B`. Action berbentuk blok
   (`begin … end`) sudah membawa `;` sendiri lewat statement di dalamnya.
 - **LRM 1800 §14** — `assert property` adalah *concurrent assertion*, yaitu
-  **module item**, bukan statement prosedural. Menuliskannya di dalam
+  **module item**, bukan statement prosedural. Sama untuk `assume property`.
+  Menuliskannya di dalam
   `initial`/`always` menghasilkan SV yang ditolak tool
   (`Procedural concurrent assertion … inside always`, IEEE 1800-2017
-  §16.14.6). Parser `.mv` menolak `assert` immediate di level module dengan
+  §16.14.6). Parser `.mv` menolak `assert`/`assume` immediate di level module dengan
   pesan yang mengarahkan ke dua bentuk yang benar di atas.
 
 **Implementasi (F6):**
@@ -1197,6 +1206,8 @@ Ringkasan mapping konstruk `.mv` → SV:
 | `override x = v` / `restore x` (F46) | `force x = v;` / `release x;` — fault injection testbench 1:1 |
 | `assert (c) A else B` | `assert (c) A; else B;` — branch pass diakhiri `;` (LRM 1800 §20.11) |
 | `assert property (...)` (module item) | `assert property (...);` apa adanya (LRM 1800 §14) |
+| `assume (c) A else B` (F66) | `assume (c) A; else B;` — mirror `assert` (LRM 1800 §20.11) |
+| `assume property (...)` (F66, module item) | `assume property (...);` — mirror `assert property` (LRM 1800 §14) |
 | `@sv { ... }` (F40) | emisi isi SV **verbatim** — escape hatch utk konstruk SV yang belum didukung bahasa; isi diambil mentah dari source (isolasi dari lexer .mv), type-check dilewati |
 
 ### 10.1 Isi `.svh` vs `.sv`
@@ -1549,6 +1560,8 @@ module tb_traffic {
 | **F50** ✅ | **Struct assignment pattern `'{...}` di simulator** — fix bug mivon utama: `p = '{hi: 4'hA, lo: 4'h5}` pada struct packed menghasilkan `p = 0` (silent wrong) padahal member access berfungsi | (1) elaborator baru `crates/mivon-elaboration/src/elaborator/struct_lit.rs` (SRP): `elaborate_struct_pattern` (LHS struct + `SignalInfo.struct_fields` → layout) + `pack_struct_pattern` (concat MSB-first sesuai offset, tiap member di-cast ke lebar field, celah di-isi nol); (2) hook di arm `BlockingAssign` + `NonBlockingAssign` (`elaborator/stmt.rs`); (3) `apply_lhs_context_width` DILEWATI untuk pola struct — `try_fold_const_at_width` atas `Expr::StructLit` tak tahu layout → 0 menimpa pattern benar (sumber bug kedua) | demo e2e: `'{hi:A, lo:5}` → `p=a5`; posisional `'{3,4}` → `0x34`; `'{default: F}` → `0xff`; sebagian `'{lo: 9}` → `0x09`; nested `'{tag:2, inner:'{hi:5, lo:6}}` → `0x256`; non-blocking `p <= '{hi:7, lo:8}` → `0x78`; 4 test (`test_struct_assignment_pattern_{named,positional_default_partial,nested,nonblocking}`) |
 | **F49** ✅ | **`mgen --package <nama>`** — flag §11 yang terdokumentasi tapi belum ada di CLI: bungkus typedef level file dalam `package <nama>; ... endpackage` di `.svh`; `.sv` yang meng-`include` otomatis dapat `import <nama>::*;`. Alias flag `--emit-svh-only`/`--emit-sv-only` untuk `--svh-only`/`--sv-only` (§11) | (1) `GenOpts { package }` (`codegen/mod.rs`) + `generate_src_ext_opts`; `generate_svh_opts`/`generate_sv_opts` menerima opsi (versi lama delegasi ke default → output tak berubah tanpa flag); (2) `MvItem.package` + `with_header()` builder (`lib.rs`) — `GenArgs.package` diteruskan `gen.rs`, `main.rs`, `cli.rs` | demo e2e: `mgen addr_tb.mv --package chip_types` → `.svh` berisi `package chip_types;` + typedef, `.sv` berisi `` `include `` + `import chip_types::*;` → `sim` jalan `PKG_TYPE_OK a=42 st=1`; 4 unit test (`f49_mgen_package_wraps_file_typedefs`, `f49_mgen_package_no_op_without_typedefs` (tanpa typedef → tak ada import sia-sia), `f49_port_init_from_reg_same_name`, `f49_input_port_has_no_init`) |
 | **F48** ✅ | **`++`/`--` side-effect penuh dalam ekspresi (SV + `.mv`)** — fix bug mivon utama: `k = i--` menghasilkan nilai salah (4, bukan 5) DAN `i` tak pernah berubah; `while (++i < 4)` infinite-loop | (1) **AST** (`mivon-ast/src/expr.rs`): varian baru `Expr::IncDec { expr, inc, pre }` — sebelumnya parser men-desugar `++i`/`i--` di level ekspresi jadi `BinaryOp Add/Sub` murni (side-effect HILANG, nilai postfix salah); (2) **parser SV** (`mivon-parser/src/expr.rs`): arm prefix (`parse_primary`) + postfix (loop postfix di `parse_expr`) → `Expr::IncDec` (statement-level tetap `BlockingAssign` — tidak berubah); (3) **IR** (`mivon-ir/src/ir.rs`): varian `IrExpr::IncDec { read, lv, inc, pre }` (baca nilai → tulis balik ±1 ke lvalue → hasil baru/lama); (4) **elaborator** (`elaborator/expr.rs`): arm `Expr::IncDec` → `elaborate_expr` (read) + `elaborate_lvalue` (write-back); walker wajib (`substitute_ident_in_expr`, `expr_location`, `scope_rename_expr`, `substitute_loop_var_in_expr`, `collect_implicit_net_idents`, `translate_expr`, `compute_expr_width`, `collect_read_signals_expr`, `inline.rs`/`inline_util.rs` walkers, `lint.rs` scan, `tools/lib.rs` `expr_to_string`, `synth/subset.rs` `walk_expr`); (5) **evaluator** (`simulator/engine/eval/expr.rs` IR + `eval/ast.rs` AST): baca `old`, `eval_binary(Add/Sub, old, 1)` (wrap width), `write_lvalue`/`write_ast_lvalue`, hasil = `new` (pre) / `old` (post); (6) **analisis dependensi** (`sim_dag.rs` RMW read+write, `util.rs` `extract_signal_deps` + `lvalue_dep_id`, `parallel.rs` `variant_name`); (7) **`.mv`** (`mivon-mv/src/parser/expr.rs`): postfix di RHS ekspresi `k = i--` kini DIDUKUNG (sebelumnya ditolak E-error) → emit `i--;` | **Demo e2e SEBELUM fix** (`/tmp/mvprobe/e2e_incdec.sv`): A `j=6 i=5` ✗, B `k=4 i=5` ✗ (harus k=5 i=4), C `i=0 n=100000` ✗ infinite-loop, D `i=3 n=100000` ✗, E `k=8 i=0` ✗ — **SESUDAH fix: A–E semua 5/5 cocok** (`j=6 i=6`, `k=5 i=4`, `i=4 n=3`, `i=-1 n=3`, `k=7 i=1`); e2e `.mv` (`j = ++i` → `i=6 j=6`); test di-update: `test_mv_postfix_rhs_rejected` → `test_mv_postfix_rhs_supported` (transpile + sim `k=5 i=4 j=4`), `test_mv_prefix_incdec` ekspektasi baru (`i=0 j=6`) |
+
+| **F66** ✅ | **`assume` + `assume property` di `.mv`** — gap frontend: SV utama sudah support `Assume`/`AssumeProperty`, `.mv` hanya punya `assert`; `assume` kini mirror `assert` 1:1 (immediate + concurrent RAW, `;` sebelum `else` LRM §20.11, module-item LRM §14) | (1) **lexer** (`mivon-mv/src/lexer.rs`): `Tok::Assume` + keyword `assume`; (2) **AST** (`ast.rs`): `Stmt::Assume{cond,pass,fail}` + `Stmt::AssumeProperty(String)` + `MItem::AssumeProperty(String)`; (3) **parser** (`parser/stmt.rs` + `parser/module.rs`): arm immediate + property RAW + tolak immediate di level module; (4) **codegen** (`codegen/stmt.rs` + `codegen/module.rs` 2 situs): emit `assume …;` + `assume property …;` + `single_line_stmt` + `assert_branch_stmt` (nested assume); (5) **check** (`check/stmt.rs` + `check/module.rs`): E2001 cond + property skip konservatif; (6) **print** (`print.rs`): pretty-print + `print_m_item` | demo e2e `/tmp/opencode/assume_demo.mv` → `Info: assume hold` + `ASSUME_DEMO_OK ack=1`; immediate iverilog OK + verilator OK, concurrent verilator OK (iverilog tolak concurrent, limit tool sama spt `assert`); 6 test baru (parse ×2, codegen, check ×2, e2e `test_mv_assume_immediate_and_property`); contoh `examples/mv/assume_demo.mv` |
 
 **Kriteria selesai F2:** `mivon mgen examples/mv/counter.mv` menghasilkan
 `counter.sv` yang bisa disimulasikan oleh `mivon counter.sv` tanpa error.

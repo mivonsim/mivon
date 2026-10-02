@@ -664,6 +664,32 @@ fn parse_immediate_assert_at_module_level_is_rejected() {
     assert!(err.msg.contains("concurrent assertion"), "msg: {}", err.msg);
 }
 
+#[test]
+fn parse_assume_immediate_and_property() {
+    // `assume (c)` immediate di blok prosedural + `assume property` RAW.
+    let src = "module m {\n sig a : bit\n initial {\n assume (a == 0) $info(\"ok\") else $error(\"bad\")\n }\n assume property (@(posedge clk) a |-> b)\n }\n";
+    let f = parse(src).expect("parse assume");
+    let stmts = first_initial(&f);
+    assert!(
+        stmts.iter().any(|s| matches!(s, Stmt::Assume { .. })),
+        "harus ada Stmt::Assume: {stmts:?}"
+    );
+    assert!(
+        f.modules[0]
+            .items
+            .iter()
+            .any(|i| matches!(i, MItem::AssumeProperty(_))),
+        "harus ada MItem::AssumeProperty"
+    );
+}
+
+#[test]
+fn parse_immediate_assume_at_module_level_is_rejected() {
+    // Mirror `assert`: immediate `assume` di level module ditolak.
+    let err = parse("module m {\n in clk : bit\n assume (1'b1) $info(\"x\")\n }\n").unwrap_err();
+    assert!(err.msg.contains("assume property"), "msg: {}", err.msg);
+}
+
 /// Statement pertama pada blok `initial` pertama (helper test DSL-verb).
 fn first_initial(f: &MvFile) -> Vec<Stmt> {
     f.modules[0]
@@ -713,6 +739,8 @@ fn stmt_kinds(stmts: &[Stmt]) -> Vec<&'static str> {
             Stmt::Foreach { .. } => "Foreach",
             Stmt::Assert { .. } => "Assert",
             Stmt::AssertProperty(_) => "AssertProperty",
+            Stmt::Assume { .. } => "Assume",
+            Stmt::AssumeProperty(_) => "AssumeProperty",
             Stmt::ExprStmt(_) => "ExprStmt",
             Stmt::RawSvh(_) => "RawSvh",
         }

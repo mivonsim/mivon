@@ -192,6 +192,32 @@ module m {
 }
 
 #[test]
+fn codegen_assume_immediate_has_semicolon() {
+    // Mirror `assert` (LRM 1800 §20.11): branch pass `assume` wajib `;`.
+    let src = r#"
+module m {
+    sig a : bit
+    initial {
+        assume (a == 0) $info("ok") else $error("bad")
+    }
+    assume property (@(posedge clk) a |-> b)
+}
+"#;
+    let file = parse(src).unwrap();
+    let out = generate(&file, "m");
+    assert!(
+        out.sv.contains("assume (a == 0) $info(\"ok\"); else $error(\"bad\");"),
+        "sv: {}",
+        out.sv
+    );
+    assert!(
+        out.sv.contains("assume property (@(posedge clk) a |-> b);"),
+        "sv: {}",
+        out.sv
+    );
+}
+
+#[test]
 fn codegen_testbench() {
     let src = r#"
 module counter #(WIDTH = 8) {

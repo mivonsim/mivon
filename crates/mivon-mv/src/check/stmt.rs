@@ -476,6 +476,18 @@ pub(crate) fn check_stmt<'a>(
         }
         // `assert property (...)` — body RAW, konservatif: isi tidak dianalisis.
         Stmt::AssertProperty(_) => Ok(()),
+        Stmt::Assume { cond, pass, fail } => {
+            check_expr(cond, ctx, scope, 0)?;
+            if let Some(p) = pass {
+                check_stmt(p, ctx, scope, kind)?;
+            }
+            if let Some(f) = fail {
+                check_stmt(f, ctx, scope, kind)?;
+            }
+            Ok(())
+        }
+        // `assume property (...)` — mirror `assert property` (RAW, konservatif).
+        Stmt::AssumeProperty(_) => Ok(()),
         // Escape hatch `@sv { ... }` — teks SV mentah, ditangani lexer/codegen;
         // check tidak menganalisis isi (konservatif, seperti assert property).
         Stmt::RawSvh(_) => Ok(()),

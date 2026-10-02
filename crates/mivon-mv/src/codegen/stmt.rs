@@ -245,6 +245,27 @@ pub(crate) fn emit_stmt(out: &mut String, indent: usize, stmt: &Stmt) {
         Stmt::AssertProperty(raw) => {
             line(out, indent, &format!("assert property {raw};"));
         }
+        Stmt::Assume { cond, pass, fail } => {
+            if let Some(s) = single_line_stmt(stmt) {
+                line(out, indent, &s);
+            } else {
+                line(out, indent, &format!("assume ({})", emit_expr(cond)));
+                if let Some(p) = pass {
+                    emit_stmt(out, indent + 1, p);
+                }
+                if let Some(f) = fail {
+                    line(out, indent, "else");
+                    emit_stmt(out, indent + 1, f);
+                }
+                line(out, indent, ";");
+            }
+        }
+        // Catatan: blok `begin…end` sudah membawa `;` sendiri lewat
+        // `emit_stmt` masing-masing branch, jadi `assume (c) begin … end
+        // else begin … end;` sah (LRM 1800 §20.11).
+        Stmt::AssumeProperty(raw) => {
+            line(out, indent, &format!("assume property {raw};"));
+        }
         // Escape hatch `@sv { ... }` — emit body SV mentah verbatim.
         Stmt::RawSvh(text) => emit_raw(out, indent, text),
     }
@@ -296,6 +317,7 @@ pub(crate) fn single_line_stmt(stmt: &Stmt) -> Option<String> {
         }
         Stmt::Release { target } => Some(format!("release {};", emit_expr(target))),
         Stmt::AssertProperty(raw) => Some(format!("assert property {raw};")),
+        Stmt::AssumeProperty(raw) => Some(format!("assume property {raw};")),
         Stmt::Event { expr, body } => {
             match body {
                 Some(b) => {
@@ -348,17 +370,40 @@ pub(crate) fn single_line_stmt(stmt: &Stmt) -> Option<String> {
                 (None, None) => Some(format!("assert ({c});")),
             }
         }
+        Stmt::Assume { cond, pass, fail } => {
+            let p = match pass.as_ref().map(|s| assert_branch_stmt(s)) {
+                Some(Some(s)) => Some(s),
+                Some(None) => return None,
+                None => None,
+            };
+            let f = match fail.as_ref().map(|s| assert_branch_stmt(s)) {
+                Some(Some(s)) => Some(s),
+                Some(None) => return None,
+                None => None,
+            };
+            let c = emit_expr(cond);
+            // Sama seperti `assert` (LRM 1800 §20.11): branch pass wajib `;`.
+            match (p, f) {
+                (Some(p), Some(f)) => Some(format!("assume ({c}) {p}; else {f};")),
+                (Some(p), None) => Some(format!("assume ({c}) {p};")),
+                (None, Some(f)) => Some(format!("assume ({c}) else {f};")),
+                (None, None) => Some(format!("assume ({c});")),
+            }
+        }
         _ => None,
     }
 }
 
 /// Branch pass/fail assertion yang aman di-compact tanpa semicolon di antara
-/// branch. Call-like saja (`$info(...)`, `assert property`, nested `assert`).
+/// branch. Call-like saja (`$info(...)`, `assert/assume property`, nested `assert`/`assume`).
 fn assert_branch_stmt(stmt: &Stmt) -> Option<String> {
     match stmt {
         Stmt::ExprStmt(e) => Some(emit_expr(e)),
         Stmt::AssertProperty(raw) => Some(format!("assert property {raw}")),
-        Stmt::Assert { .. } => single_line_stmt(stmt).map(|s| s.trim_end_matches(';').to_string()),
+        Stmt::AssumeProperty(raw) => Some(format!("assume property {raw}")),
+        Stmt::Assert { .. } | Stmt::Assume { .. } => {
+            single_line_stmt(stmt).map(|s| s.trim_end_matches(';').to_string())
+        }
         _ => None,
     }
 }

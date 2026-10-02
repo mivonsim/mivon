@@ -1,0 +1,40 @@
+// ─────────────────────────────────────────────────────────────
+// Contoh Mivon HDL (.mv) — assume immediate + assume property (F66).
+// Generate: mivon mgen assume_demo.mv
+// Sim: mivon assume_demo.mv --top tb_assume -T 100
+// ─────────────────────────────────────────────────────────────
+
+module assume_dut {
+    in clk : bit
+    in req : bit
+    out ack : bit
+
+    assume property (@(posedge clk) req |-> ack)
+
+    comb {
+        ack = req
+    }
+}
+
+module tb_assume {
+    sig clk : bit
+    sig req : bit
+    sig ack : bit
+    inst assume_dut u (.clk, .req, .ack(ack))
+
+    initial {
+        clk = 0
+        req = 0
+        #10
+        assume (req == 0) $info("assume hold") else $error("assume violated")
+        req = 1
+        #10
+        assert (ack == 1) $info("ack ok") else $error("ack bad")
+        $display("ASSUME_DEMO_OK ack=%0d", ack)
+        $finish
+    }
+
+    initial {
+        forever #5 clk = ~clk
+    }
+}

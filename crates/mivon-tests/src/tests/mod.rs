@@ -22545,6 +22545,42 @@ module tb_as {
     simulate_signals(&r.sv, 50).expect("simulasi harus jalan tanpa error");
 }
 
+/// `assume (c) $info(..) else $error(..)` → mirror `assert` (LRM 1800 §20.11):
+/// branch pass wajib `;` sebelum `else`; `assume property` = module item (§14).
+#[test]
+fn test_mv_assume_immediate_and_property() {
+    let src = r#"
+module tb_am {
+    sig a : bit
+    sig b : bit
+    assume property (@(posedge a) a |-> b)
+    initial {
+        a = 0
+        b = 1
+        assume (a == 0) $info("assume ok") else $error("assume bad")
+        assert (b == 1) $info("assert ok") else $error("assert bad")
+        $display("TB_ASSUME_OK a=%0d b=%0d", a, b)
+        $finish
+    }
+}
+"#;
+    let r = mivon_mv::transpile(src, "asm").expect("transpile .mv OK");
+    assert!(
+        r.sv.contains("assume (a == 0) $info(\"assume ok\"); else $error(\"assume bad\");"),
+        "assume pass harus ';': {}",
+        r.sv
+    );
+    assert!(
+        r.sv.contains("assume property (@(posedge a) a |-> b);"),
+        "assume property module item: {}",
+        r.sv
+    );
+    let sigs = simulate_signals(&r.sv, 50).expect("simulasi harus jalan");
+    let a = sigs.iter().find(|(s, _)| s == "a").unwrap().1.to_u64();
+    let b = sigs.iter().find(|(s, _)| s == "b").unwrap().1.to_u64();
+    assert_eq!((a, b), (0, 1), "a=0 b=1");
+}
+
 /// `uint[8]` = vektor 8-bit (angka = LEBAR), bukan array 8 x 32-bit.
 #[test]
 fn test_mv_uint_bracket_is_bit_width() {

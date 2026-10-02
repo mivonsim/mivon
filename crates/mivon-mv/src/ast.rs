@@ -311,6 +311,16 @@ pub enum Stmt {
     /// Body dipertahankan RAW (teks persis di antara `(` dan `)`) karena
     /// berisi operator SVA (`|->`, `##`) yang bukan token `.mv` — emisi 1:1.
     AssertProperty(String),
+    /// `assume (cond) pass [else fail]` — asumsi formal (mirror `assert`,
+    /// LRM 1800 §20.11: branch pass diakhiri `;` sebelum `else`).
+    Assume {
+        cond: Expr,
+        pass: Option<Box<Stmt>>,
+        fail: Option<Box<Stmt>>,
+    },
+    /// `assume property (...)` — asumsi concurrent (module item, LRM 1800 §14).
+    /// Body RAW seperti `AssertProperty`.
+    AssumeProperty(String),
     /// Escape hatch: `@sv { ... }` — teks SystemVerilog mentah yang di-emit
     /// verbatim (untuk konstruk SV yang belum didukung bahasa). Body diambil
     /// mentah dari source oleh lexer (bukan token .mv).
@@ -584,6 +594,9 @@ pub enum MItem {
     /// IEEE 1800-2017 §16.14.6). Body disimpan raw karena berisi operator
     /// SVA yang bukan token `.mv`.
     AssertProperty(String),
+    /// `assume property ( … )` di LEVEL MODULE — asumsi concurrent
+    /// (module item, LRM 1800 §14). Mirror `AssertProperty`.
+    AssumeProperty(String),
 }
 
 /// Module `.mv`. Posisi (line, col) nama untuk E2007 duplikat (F11).

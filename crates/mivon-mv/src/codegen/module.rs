@@ -209,6 +209,9 @@ pub(crate) fn emit_module_kw(out: &mut String, m: &Module, kw: &str, iface_names
             MItem::AssertProperty(raw) => {
                 line(out, 1, &format!("assert property {raw};"));
             }
+            MItem::AssumeProperty(raw) => {
+                line(out, 1, &format!("assume property {raw};"));
+            }
             MItem::Seq(spec, body) => {
                 line(out, 0, "");
                 line(out, 1, "// ── logika sekuensial ──");
@@ -377,6 +380,10 @@ pub(crate) fn emit_module_item_at(
             // Concurrent assertion = module item (LRM 1800 §14), bukan
             // statement prosedural — di-emit di body module apa adanya.
             line(out, indent, &format!("assert property {raw};"));
+        }
+        MItem::AssumeProperty(raw) => {
+            // Mirror `assert property`: asumsi concurrent = module item.
+            line(out, indent, &format!("assume property {raw};"));
         }
         MItem::Seq(spec, body) => emit_seq(out, indent, spec, body),
         MItem::Comb(body) => {

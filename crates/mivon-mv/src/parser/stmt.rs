@@ -472,6 +472,28 @@ impl Parser {
                 };
                 Ok(Stmt::Assert { cond, pass, fail })
             }
+            Tok::Assume => {
+                self.advance();
+                // `assume property (...)` — mirror `assert property` (RAW SVA).
+                if self.is_ident("property") {
+                    return Ok(Stmt::AssumeProperty(self.parse_assert_property_raw()?));
+                }
+                self.expect(&Tok::LParen)?;
+                let cond = self.parse_expr()?;
+                self.expect(&Tok::RParen)?;
+                let pass = if matches!(self.peek(), Tok::Else) || matches!(self.peek(), Tok::RBrace)
+                {
+                    None
+                } else {
+                    Some(Box::new(self.parse_stmt()?))
+                };
+                let fail = if self.eat(&Tok::Else) {
+                    Some(Box::new(self.parse_stmt()?))
+                } else {
+                    None
+                };
+                Ok(Stmt::Assume { cond, pass, fail })
+            }
             // F37: prefix `++lhs` / `--lhs` di level statement. Hasil sama
             // dengan postfix (`lhs++`); di-emit sesuai aslinya.
             Tok::PlusPlus | Tok::MinusMinus => {

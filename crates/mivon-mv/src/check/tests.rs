@@ -146,6 +146,21 @@ fn ok_assert_property_skipped() {
 }
 
 #[test]
+fn ok_assume_immediate_and_property() {
+    // `assume` mirror `assert`: sinyal dikenal lolos, property dilewati.
+    let src = "module m {\n sig a : bit\n initial {\n assume (a == 0) $info(\"ok\") else $error(\"bad\")\n }\n assume property (@(posedge clk) a |-> b)\n }\n";
+    check_src(src).expect("assume harus lolos");
+}
+
+#[test]
+fn e2001_in_assume_cond() {
+    // Kondisi `assume` ikut validasi E2001 seperti `assert`.
+    let src = "module m {\n sig a : bit\n initial {\n assume (nope == 0) $info(\"ok\")\n }\n }\n";
+    let e = check_src(src).unwrap_err();
+    assert!(e.msg.contains("E2001"), "msg: {}", e.msg);
+}
+
+#[test]
 fn ok_package_const_in_enum_width() {
     let src = "package p {\n const N = 4\n enum(N) Color { RED, GREEN } }\nmodule m { in clk : bit\n out c : p::Color\n comb { c = RED } }";
     check_src(src).expect("const package boleh dipakai di lebar enum");

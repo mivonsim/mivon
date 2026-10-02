@@ -358,6 +358,24 @@ impl Parser {
                         .to_string(),
                 ))
             }
+            // `assume property ( … )` di level module — mirror `assert property`.
+            Tok::Assume => {
+                self.advance();
+                if self.is_ident("property") {
+                    self.advance();
+                    let raw = self.parse_assert_property_raw()?;
+                    return Ok(MItem::AssumeProperty(raw));
+                }
+                let (l, c) = self.pos_line();
+                Err(MvError::new(
+                    l,
+                    c,
+                    "di level module hanya 'assume property (…)' yang sah \
+                     (concurrent assertion, LRM 1800 §14) — immediate \
+                     'assume (…)' harus di dalam initial/always/seq/comb"
+                        .to_string(),
+                ))
+            }
             Tok::Seq => Ok(MItem::Seq(self.parse_seq_spec()?, self.parse_stmt()?)),
             Tok::Comb => {
                 self.advance();

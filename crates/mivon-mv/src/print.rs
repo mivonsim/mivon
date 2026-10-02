@@ -464,6 +464,18 @@ fn print_stmt_b(b: &mut StrB, indent: usize, s: &Stmt) {
             b.line(indent, &format!("assert ({}){p}{f}", print_expr(cond)));
         }
         Stmt::AssertProperty(raw) => b.line(indent, &format!("assert property {raw}")),
+        Stmt::Assume { cond, pass, fail } => {
+            let p = pass
+                .as_ref()
+                .map(|s| format!(" {}", print_stmt(indent, s)))
+                .unwrap_or_default();
+            let f = fail
+                .as_ref()
+                .map(|s| format!(" else {}", print_stmt(indent, s)))
+                .unwrap_or_default();
+            b.line(indent, &format!("assume ({}){p}{f}", print_expr(cond)));
+        }
+        Stmt::AssumeProperty(raw) => b.line(indent, &format!("assume property {raw}")),
         Stmt::RawSvh(body) => {
             b.line(indent, "@sv {");
             // Body mentah — trim baris & buang baris kosong (boundary newline
@@ -641,6 +653,9 @@ fn print_m_item(b: &mut StrB, indent: usize, item: &MItem) {
     match item {
         MItem::AssertProperty(raw) => {
             b.line(indent, &format!("assert property {raw}"));
+        }
+        MItem::AssumeProperty(raw) => {
+            b.line(indent, &format!("assume property {raw}"));
         }
         MItem::Port(p) => {
             let dir = match p.dir {
