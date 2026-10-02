@@ -808,3 +808,168 @@ fn f46_force_in_seq_rejected() {
     let e = check_src(src).unwrap_err();
     assert!(e.msg.contains("E2004"), "msg: {}", e.msg);
 }
+
+// ── E2002 lewat konstanta module + lebar enum sinkron dgn emisi ──────────
+
+#[test]
+fn check_enum_width_matches_sv_emission() {
+    // Lebar enum yang dilihat checker harus SAMA dengan yang di-emit:
+    // 3 anggota → `logic [1:0]` = 2 bit. Sebelumnya checker menghitung
+    // `enum_bits(n)` (MSB) sebagai lebar TOTAL, sehingga E2002 tak pernah
+    // menyalakan untuk sinyal enum.
+    let src = "package p { enum St { A, B, C } }\nmodule m { use p::*\n sig s : St\n sig w : logic[0:0]\n comb { s = A  w = s } }";
+    let e = check_src(src).unwrap_err();
+    assert!(e.msg.contains("E2002"), "msg: {}", e.msg);
+    // 2 anggota → clog2(2)=1 → `logic [1:0]` = 2 bit juga
+    let src2 = "package p2 { enum St2 { A, B } }\nmodule m2 { use p2::*\n sig s : St2\n sig w : logic[0:0]\n comb { s = A  w = s } }";
+    assert!(check_src(src2).is_err(), "2 anggota juga 2 bit");
+    // lebar eksplisit 4 → muat di 4 bit tanpa error
+    let src3 = "package p3 { enum(4) St3 { A, B } }\nmodule m3 { use p3::*\n sig s : St3\n sig w : logic[3:0]\n comb { s = A  w = s } }";
+    check_src(src3).expect("enum(4) → 4 bit, muat di 4 bit");
+    // …dan tidak muat di 1 bit
+    let src4 = "package p4 { enum(4) St4 { A, B } }\nmodule m4 { use p4::*\n sig s : St4\n sig w : logic[0:0]\n comb { s = A  w = s } }";
+    assert!(check_src(src4).unwrap_err().msg.contains("E2002"));
+}
+
+#[test]
+fn check_enum_width_from_package_const() {
+    // `enum(W)` dengan W = konstanta package harus dipakai sebagai lebar.
+    let src = "package p { const W = 4\n enum(W) St { A, B } }\nmodule m { use p::*\n sig s : St\n sig w : logic[0:0]\n comb { s = A  w = s } }";
+    let e = check_src(src).unwrap_err();
+    assert!(e.msg.contains("E2002"), "msg: {}", e.msg);
+}
+
+#[test]
+fn check_module_const_folded_for_width() {
+    // `const C` module harus bisa dipakai sebagai lebar — sebelumnya hanya
+    // nama yang terdaftar tanpa nilai sehingga cek lebar mati diam-diam.
+    let bad = "module m { in c : bit\n const W = 4\n sig a : logic[W-1:0]\n comb { a = 8'hFF } }";
+    let e = check_src(bad).unwrap_err();
+    assert!(e.msg.contains("E2002"), "lebar lewat const: {}", e.msg);
+    check_src("module m2 { in c : bit\n const W = 4\n sig a : logic[W-1:0]\n comb { a = 4'hF } }")
+        .expect("nilai yang muat harus sah");
+}
+
+// ── E2010: lvalue tak boleh konstanta (LRM 1800 §6.20) ──────────────────
+
+#[test]
+fn check_e2010_cannot_assign_parameter_or_const() {
+    let src = "module m #(W = 8) { in c : bit\n sig s : logic[7:0]\n comb { W = 4 } }";
+    let e = check_src(src).unwrap_err();
+    assert!(e.msg.contains("E2010"), "msg: {}", e.msg);
+    let src2 = "module m2 { in c : bit\n const K = 3\n sig s : logic[7:0]\n comb { K = 4 } }";
+    let e2 = check_src(src2).unwrap_err();
+    assert!(e2.msg.contains("E2010"), "msg: {}", e2.msg);
+    // increment pada konstanta juga ditolak
+    let e3 = check_src("module m3 { in c : bit\n const K = 3\n sig s : logic[7:0]\n comb { K++ } }")
+        .unwrap_err();
+    assert!(e3.msg.contains("E2010"), "msg: {}", e3.msg);
+    // membaca konstanta tetap sah
+    check_src("module m4 #(W = 8) { in c : bit\n sig s : logic[7:0]\n comb { s = W } }")
+        .expect("baca konstanta harus sah");
+}
+
+// ── E2011: jumlah argumen pemanggilan ──────────────────────────────────
+
+#[test]
+fn check_e2011_call_arity() {
+    let ok = "func f(a : int, b : int = 2) -> int { return a + b }\nmodule m { in c : bit\n sig r : int\n comb { r = f(1) } }";
+    check_src(ok).expect("1 argumen + default harus sah");
+    let too_many = "func f(a : int, b : int = 2) -> int { return a + b }\nmodule m { in c : bit\n sig r : int\n comb { r = f(1, 2, 3) } }";
+    assert!(check_src(too_many).unwrap_err().msg.contains("E2011"));
+    let too_few = "func g(a : int, b : int) -> int { return a + b }\nmodule m { in c : bit\n sig r : int\n comb { r = g(1) } }";
+    assert!(check_src(too_few).unwrap_err().msg.contains("E2011"));
+    // method class juga
+    let bad_m = "class C { func mk(a : int, b : int) -> int { return a + b } }\nmodule mm { in c : bit\n sig r : int\n initial { var o : C\n r = o.mk(1) } }";
+    assert!(check_src(bad_m).unwrap_err().msg.contains("E2011"));
+}
+
+// ── E2012: perbandingan unsigned yang hasilnya selalu salah ────────────
+
+#[test]
+fn check_e2012_unsigned_comparison_always_false() {
+    // LRM 1800 §11.8.2: satu operand unsigned → seluruh perbandingan
+    // unsigned. `u < 0` untuk `logic[7:0]` selalu false (buglog-mv #5).
+    for bad in [
+        "u < 0", "u <= -1", "u < 256", "u > 255", "0 > u", "-1 > u", "u >= 256",
+    ] {
+        let src = format!(
+            "module m {{ in c : bit\n sig u : logic[7:0]\n sig y : bit\n comb {{ y = {bad} }} }}"
+        );
+        let e = check_src(&src).unwrap_err();
+        assert!(e.msg.contains("E2012"), "{bad} → E2012, dapat: {}", e.msg);
+    }
+    // Tidak boleh ada false positive.
+    for ok in [
+        "u == 0xFF",
+        "u >= 255",
+        "u <= 255",
+        "u < 255",
+        "u > 0",
+        "u >= 1",
+        "u <= 254",
+    ] {
+        let src = format!(
+            "module m {{ in c : bit\n sig u : logic[7:0]\n sig y : bit\n comb {{ y = {ok} }} }}"
+        );
+        check_src(&src).unwrap_or_else(|e| panic!("{ok} harus sah, dapat: {}", e.msg));
+    }
+    // signed aman
+    check_src("module ms { in c : bit\n sig s : signed logic[7:0]\n sig y : bit\n comb { y = s < 0 } }")
+        .expect("signed < 0 harus sah");
+    // `int` (signed bawaan) aman
+    check_src("module mi { in c : bit\n sig s : int\n sig y : bit\n comb { y = s < 0 } }")
+        .expect("int < 0 harus sah");
+}
+
+// ── E2013: label case duplikat ─────────────────────────────────────────
+
+#[test]
+fn check_e2013_duplicate_case_label() {
+    let bad = "module m { in c : bit\n sig s : logic[1:0]\n sig o : logic[7:0]\n comb { case (s) { 2'd0: { o = 1 }  0: { o = 2 }  default: { o = 0 } } } }";
+    let e = check_src(bad).unwrap_err();
+    assert!(e.msg.contains("E2013"), "msg: {}", e.msg);
+    // `8'h0` vs `0` juga dianggap sama
+    let bad2 = "module m2 { in c : bit\n sig s : logic[7:0]\n sig o : logic[7:0]\n comb { case (s) { 8'h0: { o = 1 }  8'd0: { o = 2 }  default: { o = 0 } } } }";
+    assert!(check_src(bad2).unwrap_err().msg.contains("E2013"));
+    // label unik → sah
+    check_src("module m3 { in c : bit\n sig s : logic[1:0]\n sig o : logic[7:0]\n comb { case (s) { 2'd0: { o = 1 }  2'd1: { o = 2 }  default: { o = 0 } } } }")
+        .expect("label unik harus sah");
+}
+
+// ── Posisi pada E2007/E2008/E2009 ──────────────────────────────────────
+
+#[test]
+fn check_return_break_continue_have_position() {
+    // Sebelumnya MvError::new(0, 0, "E2008: ...") — tanpa posisi dan tanpa
+    // kurung `[E20xx]`, jadi tidak konsisten dengan diagnostic lain.
+    let e = check_src("module m { in c : bit\n task t() { return 5 } }").unwrap_err();
+    assert!(e.msg.contains("[E2008]"), "kurung kode: {}", e.msg);
+    assert!(e.line > 0 && e.col > 0, "harus berposisi: {}:{}", e.line, e.col);
+    let e2 = check_src("module m2 { in c : bit\n initial { break } }").unwrap_err();
+    assert!(e2.msg.contains("[E2009]"), "kurung kode: {}", e2.msg);
+    assert!(e2.line > 0, "harus berposisi: {}", e2.line);
+    let e3 = check_src("module m3 { in c : bit\n func f(x : int) -> int { var y : int = 1\n var y : int = 2\n return y } }")
+        .unwrap_err();
+    assert!(e3.msg.contains("[E2007]"), "kurung kode: {}", e3.msg);
+    assert!(e3.line > 0, "harus berposisi: {}", e3.line);
+}
+
+// ── E2007 lintas-file untuk function/task level file ───────────────────
+
+#[test]
+fn check_duplicate_file_level_func_across_files_is_e2007() {
+    // Dua function level file dengan nama sama → dua deklarasi di scope FILE
+    // SV yang sama; verilator: "Duplicate declaration of function".
+    let a = parse("func dup(v : int) -> int { return v }\nmodule ma { in c : bit }").unwrap();
+    let b = parse("func dup(v : int) -> int { return v + 1 }\nmodule mb { in c : bit }").unwrap();
+    let e = super::check_many(&[&a, &b]).unwrap_err();
+    assert!(e.1.msg.contains("E2007"), "msg: {}", e.1.msg);
+    assert!(e.1.msg.contains("dup"), "msg: {}", e.1.msg);
+    assert!(e.1.line > 0, "harus berposisi");
+    // task juga
+    let c = parse("task tw() { }\nmodule mc { in c : bit }").unwrap();
+    let d = parse("task tw() { }\nmodule md { in c : bit }").unwrap();
+    let e2 = super::check_many(&[&c, &d]).unwrap_err();
+    assert!(e2.1.msg.contains("E2007"), "msg: {}", e2.1.msg);
+}

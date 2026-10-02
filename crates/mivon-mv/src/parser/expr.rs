@@ -140,6 +140,8 @@ impl Parser {
                 Tok::AmpAmp => ("&&", 2),
                 Tok::Pipe => ("|", 3),
                 Tok::Caret => ("^", 4),
+                // XNOR `~^` / `^~` — precedence sama dengan `^` (LRM 1800 §11.13)
+                Tok::TildeCaret => ("~^", 4),
                 Tok::Amp => ("&", 5),
                 Tok::Eq => ("==", 6),
                 Tok::Neq => ("!=", 6),
@@ -297,6 +299,21 @@ impl Parser {
                         let b = self.parse_expr()?;
                         self.expect(&Tok::RBrack)?;
                         e = Expr::Range(Box::new(e), Box::new(a), Box::new(b));
+                    } else if matches!(self.peek(), Tok::PlusColon | Tok::MinusColon) {
+                        // Indexed part-select `x[base +: w]` / `x[base -: w]`
+                        // (LRM 1800 §11.8.2) — `w` adalah LEBAR, bukan indeks
+                        // akhir, jadi bentuknya tidak bisa ditulis dengan
+                        // `Range` biasa.
+                        let plus = matches!(self.peek(), Tok::PlusColon);
+                        self.advance();
+                        let w = self.parse_expr()?;
+                        self.expect(&Tok::RBrack)?;
+                        e = Expr::PartSelect {
+                            base: Box::new(e),
+                            from: Box::new(a),
+                            width: Box::new(w),
+                            plus,
+                        };
                     } else {
                         self.expect(&Tok::RBrack)?;
                         e = Expr::Index(Box::new(e), Box::new(a));
@@ -316,13 +333,33 @@ impl Parser {
                         self.eat(&Tok::Comma);
                     }
                     match e {
-                        Expr::Ident(name, ..) => e = Expr::Call(name, args),
-                        Expr::Scoped(p, i, ..) => e = Expr::Call(format!("{}::{}", p, i), args),
-                        // method call `obj.method(args)` — termasuk `this`/`super`
-                        Expr::Member(obj, method, ..) => e = Expr::MethodCall { obj, method, args },
-                        Expr::MethodCall { obj, method, .. } => {
-                            e = Expr::MethodCall { obj, method, args }
+                        Expr::Ident(name, l, c) => e = Expr::Call(name, args, l, c),
+                        Expr::Scoped(p, i, l, c) => {
+                            e = Expr::Call(format!("{}::{}", p, i), args, l, c);
                         }
+                        // method call `obj.method(args)` — termasuk `this`/`super`
+                        Expr::Member(obj, method, l, c) => {
+                            e = Expr::MethodCall {
+                                obj,
+                                method,
+                                args,
+                                line: l,
+                                col: c,
+                            };
+                        }
+                        Expr::MethodCall {
+                            obj,
+                            method,
+                            line: l,
+                            col: c,
+                            ..
+                        } => e = Expr::MethodCall {
+                            obj,
+                            method,
+                            args,
+                            line: l,
+                            col: c,
+                        },
                         _ => {
                             let (l, c) = self.pos_line();
                             return Err(MvError::new(

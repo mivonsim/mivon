@@ -83,8 +83,9 @@ pub enum Expr {
     Binary(String, Box<Expr>, Box<Expr>),
     /// Ternary `c ? a : b`
     Ternary(Box<Expr>, Box<Expr>, Box<Expr>),
-    /// Call `$display(...)`, `clog2(...)`, `pkg::func(...)`
-    Call(String, Vec<Expr>),
+    /// Call `$display(...)`, `clog2(...)`, `pkg::func(...)`.
+    /// `(line, col)` = posisi nama fungsi — dipakai E2011 (jumlah argumen).
+    Call(String, Vec<Expr>, usize, usize),
     /// Named argument dalam call: `f(10, factor = 4)` — nama dengan `=`,
     /// di-emit SV `.factor(4)`. Hanya valid di argumen call.
     NamedArg { name: String, expr: Box<Expr> },
@@ -93,6 +94,9 @@ pub enum Expr {
         obj: Box<Expr>,
         method: String,
         args: Vec<Expr>,
+        /// posisi nama method — E2011
+        line: usize,
+        col: usize,
     },
     /// Member `packet.valid` — posisi (line, col) untuk E2001 field (F11).
     Member(Box<Expr>, String, usize, usize),
@@ -100,6 +104,15 @@ pub enum Expr {
     Index(Box<Expr>, Box<Expr>),
     /// Range select `q[i-1:0]`
     Range(Box<Expr>, Box<Expr>, Box<Expr>),
+    /// Indexed part-select `q[i +: 8]` (naik) / `q[i -: 8]` (turun).
+    /// `width` adalah LEBAR bit, bukan indeks akhir — LRM 1800 §11.8.2.
+    PartSelect {
+        base: Box<Expr>,
+        from: Box<Expr>,
+        width: Box<Expr>,
+        /// true = `+:` (naik), false = `-:` (turun)
+        plus: bool,
+    },
     /// Concatenation `{a, b}`
     Concat(Vec<Expr>),
     /// Array literal `'{e0, e1, ...}` (assignment pattern) — unpacked array
@@ -195,6 +208,9 @@ pub enum Stmt {
         default: Option<Box<Stmt>>,
         qual: Option<String>,
         kind: String,
+        /// posisi keyword `case` — E2013 (label duplikat)
+        line: usize,
+        col: usize,
     },
     /// `for var in from..to { body }` — optional `step` : `for i in 0..N step 2`
     /// → increment `i = i + 2` di SV (default `+ 1`).
@@ -265,11 +281,13 @@ pub enum Stmt {
         names: Vec<String>,
         ty: MvType,
         init: Option<Expr>,
+        line: usize,
+        col: usize,
     },
     /// `return expr`
-    Return(Option<Expr>),
-    Break,
-    Continue,
+    Return(Option<Expr>, usize, usize),
+    Break(usize, usize),
+    Continue(usize, usize),
     /// F39: `fork { ... } join / join_any / join_none` — branch berjalan
     /// konkurren (masing-masing independen, delay sendiri).
     Fork {

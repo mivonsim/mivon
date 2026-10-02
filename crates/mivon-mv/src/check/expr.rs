@@ -75,6 +75,125 @@ pub(crate) const MV_NON_SYSTASK: &[&str] = &[
     "continue",
 ];
 
+/// E2012: perbandingan relasional yang hasilnya pasti SALAH karena satu
+/// operand bertanda UNSIGNED.
+///
+/// LRM 1800 §11.8.2: begitu satu operand unsigned, seluruh operasi
+/// dievaluasi sebagai unsigned. Akibatnya nilai negatif "melewati" batas
+/// bawah dan perbandingan tertentu selalu salah:
+///
+/// - `u < 0` / `u <= -1` — selalu `false` karena `u` tak pernah negatif
+///   (buglog-mv #5: `s = -1; s < 0` → false saat `s` tak bertanda);
+/// - `u < 256` untuk `u : logic[7:0]` — selalu `false` (nilai maks 255).
+///
+/// Hanya dilaporkan kalau kita YAKIN: satu operand unsigned, dan lawannya
+/// konstanta yang bisa di-fold. Kondisi tak diketahui didiamkan supaya
+/// checker tidak menghasilkan false positive.
+fn check_signed_compare(
+    op: &str,
+    l: &Expr,
+    r: &Expr,
+    ctx: &Ctx,
+    scope: &Scope,
+    depth: usize,
+) -> Result<(), MvError> {
+    // Hanya operator relasional. `==`/`!=` TIDAK salah — unsigned 255 == -1
+    // tetap true, jadi pola umum `u == 0xFF` untuk checking byte != 0
+    // harus tetap lolos.
+    if !matches!(op, "<" | "<=" | ">" | ">=") {
+        return Ok(());
+    }
+    // Samakan arah: `(x REL C)` dengan `x` = operand unsigned.
+    let (sign_side, const_side, flipped) = match (
+        expr_signed(l, ctx, scope, depth + 1),
+        expr_signed(r, ctx, scope, depth + 1),
+    ) {
+        (Some(false), Some(true)) => (l, r, false),
+        (Some(true), Some(false)) => (r, l, true),
+        (Some(false), Some(false)) => (l, r, false),
+        _ => return Ok(()),
+    };
+    let Some(c) = fold_const(const_side, &scope.params, 0) else {
+        return Ok(());
+    };
+    // Normalisasi arah: `C > x`  ==  `x < C` (dengan && dibalik).
+    let (rel, v) = if flipped {
+        (flip_rel(op), c)
+    } else {
+        (op, c)
+    };
+    // Batas bawah: unsigned >= 0, jadi apa pun yang "melebihi 0" ke bawah
+    // tidak akan pernah benar.
+    let below = match rel {
+        "<" => v <= 0,
+        "<=" => v < 0,
+        _ => false,
+    };
+    // Batas atas: unsigned 0..2^W-1, jadi apa pun yang "melebihi" ke atas
+    // tidak akan pernah benar.
+    let max = expr_width(sign_side, ctx, scope, depth + 1)
+        .filter(|w| *w > 0 && *w < 64)
+        .map(|w| (1i64 << w) - 1);
+    let above = match (rel, max) {
+        (">", Some(m)) => v >= m,
+        (">=", Some(m)) => v > m,
+        ("<", Some(m)) => v > m,
+        ("<=", Some(m)) => v > m,
+        _ => false,
+    };
+    if !below && !above {
+        return Ok(());
+    }
+    let (lpos, cpos) = expr_pos_of(sign_side);
+    let why = match (below, above) {
+        (true, _) => format!("nilai unsigned selalu >= 0, jadi `x {rel} {v}` tidak pernah benar"),
+        (_, true) => format!(
+            "nilai unsigned maksimum {} (lebar {}), jadi `x {rel} {v}` tidak pernah benar",
+            max.unwrap_or(0),
+            expr_width(sign_side, ctx, scope, depth + 1).unwrap_or(0),
+        ),
+        _ => unreachable!(),
+    };
+    Err(err_at(
+        lpos,
+        cpos,
+        "E2012",
+        format!(
+            "operand `{sign_side:?}` bertanda UNSIGNED — {why} \
+             (LRM 1800 §11.8.2: satu operand unsigned membuat seluruh \
+             perbandingan unsigned). declare `signed logic[..]` atau pakai `int`"
+        ),
+    ))
+}
+
+/// `a > b` ≡ `b < a`, `a >= b` ≡ `b <= a` (untuk E2012).
+fn flip_rel(op: &str) -> &str {
+    match op {
+        ">" => "<",
+        ">=" => "<=",
+        "<" => ">",
+        "<=" => ">=",
+        other => other,
+    }
+}
+
+/// Posisi best-effort ekspresi untuk pesan E2012.
+fn expr_pos_of(e: &Expr) -> (usize, usize) {
+    match e {
+        Expr::Ident(_, l, c) | Expr::Member(_, _, l, c) | Expr::Sized(_, _, _, l, c) => (*l, *c),
+        _ => (0, 0),
+    }
+}
+
+/// Pesan E2011: kalimat yang menjelaskan rentang argumen yang sah.
+fn arity_msg(required: usize, total: usize) -> String {
+    if required == total {
+        format!("taksonya {total} argumen")
+    } else {
+        format!("taksonya {required}..{total} argumen")
+    }
+}
+
 pub(crate) fn check_expr<'a>(
     e: &'a Expr,
     ctx: &'a Ctx<'a>,
@@ -193,18 +312,34 @@ pub(crate) fn check_expr<'a>(
         }
         Expr::Unary(_, inner) => check_expr(inner, ctx, scope, depth + 1)?,
         Expr::IncDec { expr, .. } => check_expr(expr, ctx, scope, depth + 1)?,
-        Expr::Binary(_, l, r) => {
+        Expr::Binary(op, l, r) => {
             check_expr(l, ctx, scope, depth + 1)?;
             check_expr(r, ctx, scope, depth + 1)?;
+            check_signed_compare(op, l, r, ctx, scope, depth)?;
         }
         Expr::Ternary(c, t, f) => {
             check_expr(c, ctx, scope, depth + 1)?;
             check_expr(t, ctx, scope, depth + 1)?;
             check_expr(f, ctx, scope, depth + 1)?;
         }
-        Expr::Call(_, args) => {
+        Expr::Call(name, args, l, c) => {
             for a in args {
                 check_expr(a, ctx, scope, depth + 1)?;
+            }
+            // E2011: jumlah argumen harus cocok dengan tanda tangan function.
+            let n = args.len();
+            if let Some(Some((req, total))) = scope.func_arity.get(name.as_str()) {
+                if n < *req || n > *total {
+                    return Err(err_at(
+                        *l,
+                        *c,
+                        "E2011",
+                        format!(
+                            "function '{name}' menerima {n} argumen — {}",
+                            arity_msg(*req, *total)
+                        ),
+                    ));
+                }
             }
         }
         // Named arg `f(x = 4)` — validasi ekspresi dalam; nama tidak divalidasi
@@ -212,12 +347,29 @@ pub(crate) fn check_expr<'a>(
         Expr::NamedArg { expr, .. } => check_expr(expr, ctx, scope, depth + 1)?,
         Expr::MethodCall {
             obj,
-            method: _,
+            method,
             args,
+            line,
+            col,
         } => {
             check_expr(obj, ctx, scope, depth + 1)?;
             for a in args {
                 check_expr(a, ctx, scope, depth + 1)?;
+            }
+            // E2011 juga untuk method class (yang dicari = nama method).
+            let n = args.len();
+            if let Some(Some((req, total))) = ctx.method_arity.get(method.as_str()) {
+                if n < *req || n > *total {
+                    return Err(err_at(
+                        *line,
+                        *col,
+                        "E2011",
+                        format!(
+                            "method '{method}' menerima {n} argumen — {}",
+                            arity_msg(*req, *total)
+                        ),
+                    ));
+                }
             }
         }
         Expr::Member(obj, f, l, c) => {
@@ -249,6 +401,16 @@ pub(crate) fn check_expr<'a>(
             check_expr(obj, ctx, scope, depth + 1)?;
             check_expr(a, ctx, scope, depth + 1)?;
             check_expr(b, ctx, scope, depth + 1)?;
+        }
+        Expr::PartSelect {
+            base,
+            from,
+            width,
+            ..
+        } => {
+            check_expr(base, ctx, scope, depth + 1)?;
+            check_expr(from, ctx, scope, depth + 1)?;
+            check_expr(width, ctx, scope, depth + 1)?;
         }
         Expr::Concat(parts) => {
             for p in parts {
@@ -370,6 +532,97 @@ pub(crate) fn check_type_scope(
     Ok(())
 }
 
+/// Signedness suatu tipe: `Some(true)` = signed, `Some(false)` = unsigned,
+/// `None` = tidak berlaku / tidak diketahui (real, time, string, tipe
+/// eksternal).
+///
+/// LRM 1800 §6.2.1 + §11.8.2: `logic`/`bit` **unsigned** kecuali ditandai
+/// `signed`; `int`/`byte`/`shortint`/`longint` signed; `uint`/`ulongint`
+/// unsigned; `enum` unsigned (kecuali base signed); `real`/`string`/`time`
+/// tidak punya signedness aritmetika.
+pub(crate) fn type_signed(ty: &MvType, ctx: &Ctx, scope: &Scope, depth: usize) -> Option<bool> {
+    if depth > 8 {
+        return None;
+    }
+    match ty {
+        MvType::Bit | MvType::Logic(_) => Some(false),
+        MvType::Int | MvType::LongInt | MvType::ShortInt | MvType::Byte => Some(true),
+        MvType::Uint | MvType::ULongInt => Some(false),
+        // real/time/string: signedness tidak relevan untuk perbandingan.
+        MvType::Real | MvType::Time | MvType::Str => None,
+        MvType::Signed(_) => Some(true),
+        MvType::Array(inner, _) | MvType::Queue(inner) => type_signed(inner, ctx, scope, depth + 1),
+        MvType::Named(n, ..) => {
+            // type parameter module → dari default-nya (kalau ada)
+            if let Some(Some(td)) = scope.type_params.get(n.as_str()).copied() {
+                return type_signed(td, ctx, scope, depth + 1);
+            }
+            if let Some(td) = scope.local_types.get(n.as_str()).copied() {
+                return typedef_signed(td, ctx, scope, depth + 1);
+            }
+            let key = n.rsplit("::").next().unwrap_or(n.as_str());
+            ctx.types.get(key).copied().and_then(|td| {
+                typedef_signed(td, ctx, scope, depth + 1)
+            })
+        }
+    }
+}
+
+/// Signedness sebuah typedef.
+fn typedef_signed(
+    td: &Typedef,
+    ctx: &Ctx,
+    scope: &Scope,
+    depth: usize,
+) -> Option<bool> {
+    match td {
+        Typedef::Alias { ty, .. } => type_signed(ty, ctx, scope, depth + 1),
+        // Enum unsigned kecuali ada base signed (LRM 1800 §6.9).
+        Typedef::Enum { .. } => Some(false),
+        // Struct/union: signedness follow field pertama yang relevan
+        // (LRM 1800 §7.2). Tanpa dasar eksplisit, semua field tak
+        // bertanda → unsigned.
+        Typedef::Struct { fields, .. } | Typedef::Union { fields, .. } => fields
+            .first()
+            .and_then(|f| type_signed(&f.ty, ctx, scope, depth + 1)),
+    }
+}
+
+/// Signedness best-effort dari sebuah ekspresi.
+pub(crate) fn expr_signed(e: &Expr, ctx: &Ctx, scope: &Scope, depth: usize) -> Option<bool> {
+    if depth > 16 {
+        return None;
+    }
+    match e {
+        Expr::Int(v) => Some(*v >= 0),
+        Expr::Fill(_) => Some(false),
+        Expr::Ident(n, ..) => scope
+            .types
+            .get(n.as_str())
+            .and_then(|t| type_signed(t, ctx, scope, depth + 1)),
+        Expr::Paren(i) => expr_signed(i, ctx, scope, depth + 1),
+        Expr::Binary(_, l, r) => {
+            // LRM 1800 §11.8.2: hasil operasi bertanda HANYA bila kedua
+            // operand bertanda; begitu ada satu operand unsigned, seluruh
+            // ekspresi jadi unsigned.
+            let ls = expr_signed(l, ctx, scope, depth + 1);
+            let rs = expr_signed(r, ctx, scope, depth + 1);
+            match (ls, rs) {
+                (Some(true), Some(true)) => Some(true),
+                (Some(false), _) | (_, Some(false)) => Some(false),
+                _ => None,
+            }
+        }
+        Expr::Cast { ty, .. } => type_signed(ty, ctx, scope, depth + 1),
+        // Unary minus TETAP menghasilkan nilai bertanda (Literal minus
+        // adalah operand bertanda di LRM 1800 §11.8.1).
+        Expr::Unary(o, inner) if o == "-" => {
+            expr_signed(inner, ctx, scope, depth + 1).or(Some(true))
+        }
+        _ => None,
+    }
+}
+
 /// Lebar bit tipe; None bila tidak diketahui (eksternal / non-konstanta).
 pub(crate) fn type_width(ty: &MvType, ctx: &Ctx, scope: &Scope, depth: usize) -> Option<i64> {
     if depth > 8 {
@@ -432,10 +685,21 @@ pub(crate) fn type_width(ty: &MvType, ctx: &Ctx, scope: &Scope, depth: usize) ->
                     Some(max_w)
                 }
                 Typedef::Union { packed: false, .. } => None,
-                Typedef::Enum { width, members, .. } => match width {
-                    Some(Expr::Int(n)) => Some(*n),
-                    _ => Some(crate::enum_bits(members.len())),
-                },
+                Typedef::Enum { width, members, .. } => {
+                    // Lebar TOTAL bit. `enum_width` = `enum_bits + 1` karena
+                    // emitter menulis `logic [enum_bits:0]`. Sebelumnya
+                    // `enum_bits` dipakai langsung sebagai lebar total →
+                    // sinyal enum dianggap 1 bit lebih sempit dari kenyataan,
+                    // sehingga E2002 (truncation) tak pernah menyalakan
+                    // padahal lebih longgar dari SV.
+                    match width {
+                        Some(w) => match fold_const(w, &scope.params, 0) {
+                            Some(n) if n > 0 => Some(n),
+                            _ => Some(crate::enum_width(members.len())),
+                        },
+                        None => Some(crate::enum_width(members.len())),
+                    }
+                }
             }
         }
         MvType::Array(inner, _) => type_width(inner, ctx, scope, depth + 1),
@@ -583,6 +847,16 @@ pub(crate) fn expr_width(e: &Expr, ctx: &Ctx, scope: &Scope, depth: usize) -> Op
             match (wa, wb) {
                 (Some(x), Some(y)) => Some((x - y).abs() + 1),
                 _ => None,
+            }
+        }
+        Expr::PartSelect { width, .. } => {
+            // Part-select punya lebar tepat sebesar argumen lebarnya
+            // (LRM 1800 §11.8.2) — bukan `from..from+width` seperti Range.
+            let w = fold_const(width, &scope.params, 0)?;
+            if w > 0 {
+                Some(w)
+            } else {
+                None
             }
         }
         Expr::Concat(parts) => {

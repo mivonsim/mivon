@@ -14,7 +14,7 @@ module func_dut (
     // ── logika kombinasional ──
     always_comb begin
         o = clog2(a);
-        s = scale(a[7:0]);
+        s = dbl(a[7:0]);
     end
 endmodule
 
@@ -46,7 +46,7 @@ function int clog2(input int x);
     return r;
 endfunction
 
-function int scale(input int v);
+function int dbl(input int v);
     int w = v * 2;
     return w;
 endfunction

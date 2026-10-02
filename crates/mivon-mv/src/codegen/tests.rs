@@ -1036,3 +1036,50 @@ fn lrm_uint_bracket_is_width_not_array() {
         out2.sv
     );
 }
+
+// ── Bahasa: operator & literal yang sebelumnya tidak didukung ───────────
+
+#[test]
+fn lang_binary_xnor_tildecaret_and_caret_tilde() {
+    // Binary XNOR `~^` / `^~` (LRM 1800 §11.13). Sebelumnya `~` selalu
+    // diperlakukan unary sehingga `a ~^ b` gagal parse, padahal operator ini
+    // didokumentasikan di MIVON-HDL.md §6.6. Kedua ejaan di-emit kanonik `~^`.
+    let src = "module xn { in a, b : logic[7:0]\n out y, z : logic[7:0]\n comb { y = a ~^ b  z = a ^~ b } }";
+    let out = generate(&parse(src).unwrap(), "xn");
+    assert!(out.sv.contains("y = a ~^ b;"), "sv: {}", out.sv);
+    assert!(out.sv.contains("z = a ~^ b;"), "ejaan ^~ dinormalkan: {}", out.sv);
+    // `~` unary tetap berfungsi
+    let out2 = generate(&parse("module xn2 { in a : logic[7:0]\n out y : logic[7:0]\n comb { y = ~a } }").unwrap(), "xn2");
+    assert!(out2.sv.contains("y = ~a;"), "unary ~: {}", out2.sv);
+}
+
+#[test]
+fn lang_indexed_part_select_plus_minus_colon() {
+    // Indexed part-select `q[i +: w]` / `q[i -: w]` (LRM 1800 §11.8.2).
+    // `w` adalah LEBAR bit, bukan indeks akhir.
+    let src = "module ps { in d : logic[2:0]\n in a : logic[15:0]\n out hi, lo : logic[7:0]\n comb { hi = a[d +: 8]  lo = a[d -: 8] } }";
+    let out = generate(&parse(src).unwrap(), "ps");
+    assert!(out.sv.contains("hi = a[d +: 8];"), "sv: {}", out.sv);
+    assert!(out.sv.contains("lo = a[d -: 8];"), "sv: {}", out.sv);
+    // lebar part-select = argumen lebarnya (bukan `from..from+width`)
+    let out2 = generate(
+        &parse("module w { in a : logic[15:0]\n out y : logic[7:0]\n comb { y = a[3 +: 8] } }")
+            .unwrap(),
+        "w",
+    );
+    assert!(out2.sv.contains("output logic [7:0] y"), "sv: {}", out2.sv);
+}
+
+#[test]
+fn lang_uint_int_bracket_width_and_unpacked_after() {
+    // `uint[8]` = lebar 8-bit; dimensi unpacked setelah kurung lebar.
+    let out = generate(&parse("module t { in c : bit\n sig a : uint[8][4]\n sig b : int[16] }").unwrap(), "t");
+    assert!(out.sv.contains("logic [7:0] a [0:3];"), "uint[8][4]: {}", out.sv);
+    assert!(out.sv.contains("logic signed [15:0] b;"), "int[16]: {}", out.sv);
+}
+
+// ── Type-check (E2010/E2011/E2012/E2013) dipindah ke `check/tests.rs` ──
+
+// Type-check tests (E2002-lewat-const, enum width, E2010/E2011/E2012/E2013,
+// posisi E2007/E2008/E2009) berada di `check/tests.rs` — satu file satu
+// tanggung jawab.

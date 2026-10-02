@@ -1096,12 +1096,24 @@ fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), SimError> {
         .filter_map(|s| std::fs::metadata(s).ok())
         .map(|m| m.len())
         .sum();
-    if inline_src.is_empty()
-        && !cli.print_tokens
-        && !cli.print_ast
-        && (cli.fast || cli.filelist.is_some() || total_src_bytes > 256 * 1024)
-    {
-        return run_fast(cli, None, env);
+    // `.mv` di-transpile on-the-fly ke buffer inline; `run_fast` tidak
+    // melakukan transpile, jadi jalur legacy WAJIB dipakai di sini.
+    if inline_src.is_empty() {
+        if (cli.fast || cli.filelist.is_some() || total_src_bytes > 256 * 1024)
+            && !cli.print_tokens
+            && !cli.print_ast
+        {
+            return run_fast(cli, None, env);
+        }
+    } else if cli.fast || cli.filelist.is_some() {
+        // Jangan diam-diam mengabaikan flag: user meminta jalur cepat, tapi
+        // `--fast`/`-f` tidak kompatibel dengan transpile `.mv` on-the-fly.
+        eprintln!(
+            "[warn] --fast/--filelist diabaikan: input mengandung .mv/.mvh yang \
+             perlu transpile on-the-fly (tidak didukung jalur cepat). \
+             Jalur legacy dipakai. Garis besar: implementasikan transpile di \
+             `run_fast` untuk mengaktifkan kembali."
+        );
     }
 
     // ── Animasi pipeline (baris status gaya Cargo) ──

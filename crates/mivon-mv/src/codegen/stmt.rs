@@ -57,6 +57,7 @@ pub(crate) fn emit_stmt(out: &mut String, indent: usize, stmt: &Stmt) {
             default,
             qual,
             kind,
+            ..
         } => {
             let kw = match kind.as_str() {
                 "casez" => "casez",
@@ -207,13 +208,15 @@ pub(crate) fn emit_stmt(out: &mut String, indent: usize, stmt: &Stmt) {
         Stmt::ExprStmt(e) => {
             line(out, indent, &format!("{};", emit_expr(e)));
         }
-        Stmt::Return(v) => match v {
+        Stmt::Return(v, ..) => match v {
             Some(e) => line(out, indent, &format!("return {};", emit_expr(e))),
             None => line(out, indent, "return;"),
         },
-        Stmt::Break => line(out, indent, "break;"),
-        Stmt::Continue => line(out, indent, "continue;"),
-        Stmt::VarDecl { names, ty, init } => {
+        Stmt::Break(..) => line(out, indent, "break;"),
+        Stmt::Continue(..) => line(out, indent, "continue;"),
+        Stmt::VarDecl {
+            names, ty, init, ..
+        } => {
             let init_s = super::emit_init(init);
             line(
                 out,

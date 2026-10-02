@@ -22671,3 +22671,197 @@ fn test_lrm_unpacked_dim_after_name_is_accepted() {
     );
     assert!(ok2.is_ok(), "deklarasi dengan dimensi setelah nama harus valid");
 }
+
+// ══════════════════════════════════════════════════════════════════════
+// Mivon HDL (`.mv`) — bahasa & type-check yang ditambahkan (F66–F70)
+//
+// Semua test di bawah menjalankan rantai penuh: `.mv` → lex → parse →
+// type-check → codegen SV → parser/elaborator SV Mivon → engine → nilai
+// sinyal. Tujuannya: fitur baru benar-benar bisa DISIMULASI, bukan cuma
+// lolos parse.
+// ══════════════════════════════════════════════════════════════════════
+
+/// Binary XNOR `~^` / `^~` (LRM 1800 §11.13) — sebelumnya `~` selalu
+/// unary sehingga `a ~^ b` gagal parse meski didokumentasikan di §6.6.
+#[test]
+fn test_mv_binary_xnor_end_to_end() {
+    let src = r#"
+module tb_xnor {
+    sig a, b, y, z : logic[7:0]
+    initial {
+        a = 8'h0F
+        b = 8'h33
+        y = a ~^ b
+        z = a ^~ b
+        $display("XNOR_OK y=%h z=%h", y, z)
+        $finish
+    }
+}
+"#;
+    let r = mivon_mv::transpile(src, "xnor").expect("transpile .mv OK");
+    assert!(r.sv.contains("y = a ~^ b;"), "sv: {}", r.sv);
+    assert!(r.sv.contains("z = a ~^ b;"), "ejaan ^~ dinormalkan: {}", r.sv);
+    let sigs = simulate_signals(&r.sv, 20).expect("simulasi harus jalan");
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    // ~0x0F ^ 0x33 == ~0x3C == 0xC3
+    assert_eq!(get("y"), 0xC3, "XNOR");
+    assert_eq!(get("z"), 0xC3, "ejaan alternatif harus sama");
+}
+
+/// Indexed part-select `q[i +: w]` / `q[i -: w]` (LRM 1800 §11.8.2) —
+/// `w` adalah LEBAR bit, bukan indeks akhir.
+#[test]
+fn test_mv_indexed_part_select_end_to_end() {
+    let src = r#"
+module tb_psel {
+    sig a : logic[15:0]
+    sig d : logic[2:0]
+    sig up, down : logic[7:0]
+    initial {
+        a = 16'hBEEF
+        d = 3'd4
+        up   = a[d +: 8]
+        down = a[d +: 4]
+        $display("PSEL_OK up=%h down=%h", up, down)
+        $finish
+    }
+}
+"#;
+    let r = mivon_mv::transpile(src, "psel").expect("transpile .mv OK");
+    assert!(r.sv.contains("up = a[d +: 8];"), "sv: {}", r.sv);
+    let sigs = simulate_signals(&r.sv, 20).expect("simulasi harus jalan");
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    // 0xBEEF >> 4 = 0x0BEE; 8 bit rendah = 0xEE
+    assert_eq!(get("up"), 0xEE, "a[4 +: 8]");
+    assert_eq!(get("down"), 0x0E, "a[4 +: 4]");
+}
+
+/// Literal yang sebelumnya tidak didukung: real berpangkat (`1e3`),
+/// awalan basis tanpa lebar (`0x`/`0o`/`0b`), underscore desimal.
+#[test]
+fn test_mv_extended_literals_end_to_end() {
+    let src = r#"
+module tb_lit {
+    sig a : logic[31:0]
+    initial {
+        a = 1_000_000
+        $display("LIT dec=%0d", a)
+        a = 0xFF
+        $display("LIT hex=%h", a)
+        a = 0o17
+        $display("LIT oct=%h", a)
+        a = 0b1011
+        $display("LIT bin=%h", a)
+        $display("LIT re=%f rf=%f", 1e3, 2.5e-2)
+        $finish
+    }
+}
+"#;
+    let r = mivon_mv::transpile(src, "lit").expect("transpile .mv OK");
+    let sigs = simulate_signals(&r.sv, 20).expect("simulasi harus jalan");
+    let a = sigs.iter().find(|(s, _)| s == "a").unwrap().1.to_u64();
+    assert_eq!(a, 0b1011, "literal terakhir = 0b1011");
+}
+
+/// E2010 — parameter & `const` module tak boleh di-assign (LRM 1800 §6.20
+/// "shall be illegal"). Sebelumnya lolos type-check lalu ditolak elaborator.
+#[test]
+fn test_mv_reject_assign_to_const_end_to_end() {
+    let src = "module m #(W = 8) { in c : bit\n sig s : logic[7:0]\n comb { W = 4 } }";
+    let e = mivon_mv::transpile(src, "lv").unwrap_err();
+    assert!(
+        e.msg.contains("E2010"),
+        "harus E2010, dapat: {} ({}:{})",
+        e.msg,
+        e.line,
+        e.col
+    );
+    assert!(e.line > 0, "error harus berposisi");
+}
+
+/// E2011 — jumlah argumen pemanggilan harus cocok dengan tanda tangan.
+#[test]
+fn test_mv_reject_wrong_call_arity() {
+    let src = "func f(a : int, b : int = 2) -> int { return a + b }\nmodule m { in c : bit\n sig r : int\n comb { r = f(1, 2, 3) } }";
+    let e = mivon_mv::transpile(src, "ar").unwrap_err();
+    assert!(e.msg.contains("E2011"), "msg: {}", e.msg);
+    assert!(e.line > 0, "error harus berposisi");
+    // bentuk sah tetap jalan
+    let ok = "func f(a : int, b : int = 2) -> int { return a + b }\nmodule m2 { in c : bit\n sig r : int\n initial { r = f(7) } }";
+    mivon_mv::transpile(ok, "ar2").expect("1 argumen + default harus sah");
+}
+
+/// E2012 — `logic` unsigned → `u < 0` selalu false (LRM 1800 §11.8.2).
+/// Ini jebakan yang menghasilkan bug senyap (buglog-mv #5).
+#[test]
+fn test_mv_reject_unsigned_comparison_with_zero() {
+    let bad = "module m { in c : bit\n sig u : logic[7:0]\n sig y : bit\n comb { y = u < 0 } }";
+    let e = mivon_mv::transpile(bad, "sg").unwrap_err();
+    assert!(e.msg.contains("E2012"), "msg: {}", e.msg);
+    assert!(e.line > 0, "error harus berposisi");
+    // signed aman dan harus tetap bisa disimulasikan dengan benar
+    let ok = r#"
+module tb_sg {
+    sig s : signed logic[7:0]
+    sig hit : bit
+    initial {
+        s = -1
+        hit = 0
+        if (s < 0) { hit = 1 }
+        $display("SIGNED_OK hit=%0d", hit)
+        $finish
+    }
+}
+"#;
+    let r = mivon_mv::transpile(ok, "sg2").expect("signed < 0 harus lolos check");
+    let sigs = simulate_signals(&r.sv, 20).expect("simulasi harus jalan");
+    let hit = sigs.iter().find(|(s, _)| s == "hit").unwrap().1.to_u64();
+    assert_eq!(hit, 1, "s = -1 maka s < 0 harus true");
+}
+
+/// Lebar enum yang dilihat checker harus sama dengan yang di-emit
+/// (`enum 3 anggota` → `logic [1:0]`, 2 bit).
+#[test]
+fn test_mv_enum_width_matches_sv() {
+    let src = r#"
+package p { enum St { A, B, C } }
+module tb_en {
+    use p::*
+    sig s : St
+    sig got : int
+    initial {
+        s = B
+        got = 0
+        if (s == B) { got = 1 }
+        $display("ENUM_OK got=%0d", got)
+        $finish
+    }
+}
+"#;
+    let r = mivon_mv::transpile(src, "en").expect("enum 3 anggota = 2 bit");
+    assert!(r.svh.contains("typedef enum logic [1:0]"), "svh: {}", r.svh);
+    let combined = format!("{}\n{}", r.svh, r.sv);
+    let sigs = simulate_signals(&combined, 20).expect("simulasi harus jalan");
+    let got = sigs.iter().find(|(s, _)| s == "got").unwrap().1.to_u64();
+    assert_eq!(got, 1, "s == B");
+}
+
+/// `const` module bisa dipakai sebagai lebar sinyal (E2002 aktif lewatnya).
+#[test]
+fn test_mv_module_const_used_as_width() {
+    let bad = "module m { in c : bit\n const W = 4\n sig a : logic[W-1:0]\n comb { a = 8'hFF } }";
+    let e = mivon_mv::transpile(bad, "cw").unwrap_err();
+    assert!(e.msg.contains("E2002"), "msg: {}", e.msg);
+    // nilai yang muat lolos
+    let ok = "module m2 { in c : bit\n const W = 4\n sig a : logic[W-1:0]\n initial { a = 4'hF } }";
+    mivon_mv::transpile(ok, "cw2").expect("nilai yang muat harus sah");
+}
+
+/// E2013 — label `case` duplikat membuat branch tak pernah dieksekusi.
+#[test]
+fn test_mv_reject_duplicate_case_label() {
+    let src = "module m { in c : bit\n sig s : logic[1:0]\n sig o : logic[7:0]\n comb { case (s) { 2'd0: { o = 1 }  0: { o = 2 }  default: { o = 0 } } } }";
+    let e = mivon_mv::transpile(src, "cs").unwrap_err();
+    assert!(e.msg.contains("E2013"), "msg: {}", e.msg);
+    assert!(e.line > 0, "error harus berposisi");
+}

@@ -415,6 +415,7 @@ jawab). Pindah dari `src/tools/` ke crate `mivon-tools` (migrasi monorepo crate
 | `mprof` | `prof.rs` | Profiler pipeline: timing per fase + bottleneck + hint |
 | `mcheck` | `check.rs` | Health check: missing `include, circular include, unresolved deps, cycle module, timescale + `--ast-diff b.sv` (AST differential, PARSER-13) |
 | `mbench` | `bench.rs` | Benchmark: compile speed, throughput, peak RSS (VmHWM), cache hit |
+| `mgen` | `gen.rs` | **Generator SV dari Mivon HDL (`.mv`/`.mvh`)** — `.mv` → lex → parse → type-check (E2001–E2013) → codegen → `.sv` + `.svh`. `--package/--check/--stdout/--no-check/--svh-only/--sv-only/-o`. Konteks type-check gabungan per direktori; scan rekursif lewat `negative/`, dotdir, prefiks `_`. Alias CLI `mivon gen` |
 | `synth` | `synth.rs` | Synthesis (SYNTHESIS.md): SYN check (SYN-1..9), lowering RTL→SIR (`mivon-sir`, `--dump-sir`), inferensi FF, netlist `.mvnet`, report utilisasi. Nama lama `msynth` = alias |
 
 Shared infra di `crates/mivon-tools/src/lib.rs` (ex `src/tools/mod.rs`):

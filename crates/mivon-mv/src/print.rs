@@ -159,18 +159,29 @@ pub fn print_expr(e: &Expr) -> String {
         }
         Expr::Binary(op, l, r) => format!("{} {} {}", wrap(l), op, wrap(r)),
         Expr::Ternary(c, t, f) => format!("{} ? {} : {}", wrap(c), wrap(t), wrap(f)),
-        Expr::Call(name, args) => {
+        Expr::Call(name, args, ..) => {
             let a: Vec<String> = args.iter().map(wrap).collect();
             format!("{name}({})", a.join(", "))
         }
         Expr::NamedArg { name, expr } => format!("{name} = {}", wrap(expr)),
-        Expr::MethodCall { obj, method, args } => {
+        Expr::MethodCall {
+            obj, method, args, ..
+        } => {
             let a: Vec<String> = args.iter().map(wrap).collect();
             format!("{}.{}({})", wrap(obj), method, a.join(", "))
         }
         Expr::Member(o, f, _, _) => format!("{}.{}", wrap(o), f),
         Expr::Index(o, i) => format!("{}[{}]", wrap(o), wrap(i)),
         Expr::Range(o, hi, lo) => format!("{}[{}:{}]", wrap(o), wrap(hi), wrap(lo)),
+        Expr::PartSelect {
+            base,
+            from,
+            width,
+            plus,
+        } => {
+            let op = if *plus { "+:" } else { "-:" };
+            format!("{}[{} {op} {}]", wrap(base), wrap(from), wrap(width))
+        }
         Expr::Concat(parts) => {
             let p: Vec<String> = parts.iter().map(wrap).collect();
             format!("{{{}}}", p.join(", "))
@@ -304,6 +315,7 @@ fn print_stmt_b(b: &mut StrB, indent: usize, s: &Stmt) {
             default,
             qual,
             kind,
+            ..
         } => {
             let q = qual.as_ref().map(|s| format!("{s} ")).unwrap_or_default();
             b.line(indent, &format!("{q}{kind} ({}) {{", print_expr(expr)));
@@ -396,7 +408,9 @@ fn print_stmt_b(b: &mut StrB, indent: usize, s: &Stmt) {
             }
         }
         Stmt::ExprStmt(e) => b.line(indent, &print_expr(e)),
-        Stmt::VarDecl { names, ty, init } => {
+        Stmt::VarDecl {
+            names, ty, init, ..
+        } => {
             let i = init
                 .as_ref()
                 .map(|e| format!(" = {}", print_expr(e)))
@@ -406,12 +420,12 @@ fn print_stmt_b(b: &mut StrB, indent: usize, s: &Stmt) {
                 &format!("var {} : {}{i}", names.join(", "), print_type(ty)),
             );
         }
-        Stmt::Return(v) => match v {
+        Stmt::Return(v, ..) => match v {
             Some(e) => b.line(indent, &format!("return {}", print_expr(e))),
             None => b.line(indent, "return"),
         },
-        Stmt::Break => b.line(indent, "break"),
-        Stmt::Continue => b.line(indent, "continue"),
+        Stmt::Break(..) => b.line(indent, "break"),
+        Stmt::Continue(..) => b.line(indent, "continue"),
         Stmt::Fork { branches, join } => {
             b.line(indent, "fork");
             for br in branches {
@@ -485,8 +499,17 @@ fn print_typedef(out: &mut StrB, td: &Typedef) {
             print_fields(out, 1, fields);
             out.line(0, "}");
         }
-        Typedef::Union { name, fields, .. } => {
-            out.line(0, &format!("union {name} {{"));
+        Typedef::Union {
+            name,
+            packed,
+            fields,
+            ..
+        } => {
+            // `packed` WAJIB dicetak — tanpa ini `parse(print(x)) != x`
+            // (union `packed` jadi tak-packed), melanggar invariant
+            // idempotensi yang diklaim di header file ini.
+            let p = if *packed { "packed " } else { "" };
+            out.line(0, &format!("{p}union {name} {{"));
             print_fields(out, 1, fields);
             out.line(0, "}");
         }

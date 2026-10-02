@@ -5,6 +5,37 @@ use super::{err_at, expr::check_expr, BlockKind, Ctx, Scope};
 use crate::ast::*;
 use crate::MvError;
 
+/// Kunci kanonik untuk label `case` — konstanta yang bernilai sama di dua
+/// branch dianggap label yang sama. `2'd0` dan `0` harus menghasilkan kunci
+/// yang sama, kalau tidak cek duplikat lolos.
+fn expr_label_key(e: &Expr) -> String {
+    match e {
+        Expr::Int(v) => format!("#{v}"),
+        Expr::Sized(w, b, d, ..) => {
+            // Digit x/z/? (wildcard) tak bisa di-fold ke integer — kunci
+            // fallback berbasis teks, dipisah dari bentuk numerik.
+            let clean: String = d.chars().filter(|c| *c != '_').collect();
+            let radix = match b {
+                'b' => Some(2),
+                'o' => Some(8),
+                'd' => Some(10),
+                'h' => Some(16),
+                _ => None,
+            };
+            match (radix, i64::from_str_radix(&clean, radix.unwrap_or(10))) {
+                (Some(_), Ok(v)) => format!("#{v}"),
+                _ => format!("{}'{b}{clean}", w.unwrap_or(-1)),
+            }
+        }
+        Expr::Fill(c) => format!("'{c}"),
+        Expr::Unary(o, inner) => format!("({o}{})", expr_label_key(inner)),
+        Expr::Paren(inner) => expr_label_key(inner),
+        Expr::Binary(o, l, r) => format!("({}{o}{})", expr_label_key(l), expr_label_key(r)),
+        Expr::Ident(n, ..) => n.clone(),
+        other => format!("{other:?}"),
+    }
+}
+
 pub(crate) fn check_stmt<'a>(
     stmt: &'a Stmt,
     ctx: &'a Ctx<'a>,
@@ -73,6 +104,7 @@ pub(crate) fn check_stmt<'a>(
             }
             check_expr(lhs, ctx, scope, 0)?;
             check_expr(rhs, ctx, scope, 0)?;
+            check_lvalue_not_const(lhs, scope, *line, *col)?;
             // E2002: RHS lebih lebar dari LHS → truncation
             let wl = super::expr::expr_width(lhs, ctx, scope, 0);
             let wr = super::expr::expr_width(rhs, ctx, scope, 0);
@@ -128,6 +160,7 @@ pub(crate) fn check_stmt<'a>(
             }
             check_expr(lhs, ctx, scope, 0)?;
             check_expr(rhs, ctx, scope, 0)?;
+            check_lvalue_not_const(lhs, scope, *line, *col)?;
             let wl = super::expr::expr_width(lhs, ctx, scope, 0);
             let wr = super::expr::expr_width(rhs, ctx, scope, 0);
             if let (Some(l), Some(r)) = (wl, wr) {
@@ -175,6 +208,7 @@ pub(crate) fn check_stmt<'a>(
                 }
             }
             check_expr(lhs, ctx, scope, 0)?;
+            check_lvalue_not_const(lhs, scope, *line, *col)?;
             Ok(())
         }
         Stmt::If { cond, then, els } => {
@@ -189,13 +223,44 @@ pub(crate) fn check_stmt<'a>(
             expr,
             items,
             default,
-            qual: _,
-            kind: _,
+            qual,
+            line,
+            col,
+            ..
         } => {
             check_expr(expr, ctx, scope, 0)?;
+            // E2013: label `case` yang duplikat membuat branch kedua TAK
+            // PERNAH dieksekusi — bug senyap yang lolos review karena SV
+            // sendiri tidak menolak (untuk `unique`/`priority` dia hanya
+            // memberi peringatan runtime, LRM 1800 §10.10.4).
+            //
+            // Kelengkapan `default` SENGAJA tidak dipaksa: pada `case`
+            // biasa SV meng-fallback ke x/z (LRM 1800 §10.10.1) dan pada
+            // `casez`/`casex` pola tanpa-default itu justru idiom dekoder
+            // yang wajar — memaksanya akan jadi false positive.
+            let mut seen: Vec<String> = Vec::new();
             for (vals, body) in items {
                 for v in vals {
                     check_expr(v, ctx, scope, 0)?;
+                    let key = expr_label_key(v);
+                    if seen.contains(&key) {
+                        let qual_s = qual.as_deref().unwrap_or("");
+                        return Err(err_at(
+                            *line,
+                            *col,
+                            "E2013",
+                            format!(
+                                "label case '{key}' duplikat — branch ini tidak akan \
+                                 pernah dieksekusi{}",
+                                if qual_s.is_empty() {
+                                    String::new()
+                                } else {
+                                    format!(" (qualifier '{qual_s}')")
+                                }
+                            ),
+                        ));
+                    }
+                    seen.push(key);
                 }
                 check_stmt(body, ctx, scope, kind)?;
             }
@@ -347,17 +412,24 @@ pub(crate) fn check_stmt<'a>(
             check_stmt(body, ctx, scope, kind)
         }
         Stmt::ExprStmt(e) => check_expr(e, ctx, scope, 0),
-        Stmt::VarDecl { names, ty, init } => {
+        Stmt::VarDecl {
+            names,
+            ty,
+            init,
+            line,
+            col,
+        } => {
             super::expr::check_type_scope(ty, ctx, Some(scope), 0)?;
             if let Some(i) = init {
                 check_expr(i, ctx, scope, 0)?;
             }
             for n in names {
                 if scope.sigs.contains(n.as_str()) {
-                    return Err(MvError::new(
-                        0,
-                        0,
-                        format!("E2007: variabel '{}' sudah dideklarasikan", n),
+                    return Err(err_at(
+                        *line,
+                        *col,
+                        "E2007",
+                        format!("variabel '{n}' sudah dideklarasikan di scope ini"),
                     ));
                 }
                 scope.sigs.insert(n.as_str());
@@ -365,25 +437,29 @@ pub(crate) fn check_stmt<'a>(
             }
             Ok(())
         }
-        Stmt::Return(v) => {
+        Stmt::Return(v, line, col) => {
             if let Some(v) = v {
                 if scope.in_task {
-                    return Err(MvError::new(
-                        0,
-                        0,
-                        "E2008: task tidak boleh mengembalikan nilai (return expr)".to_string(),
+                    return Err(err_at(
+                        *line,
+                        *col,
+                        "E2008",
+                        "task tidak boleh mengembalikan nilai (return expr) — \
+                         pakai `func` kalau butuh nilai balik"
+                            .to_string(),
                     ));
                 }
                 check_expr(v, ctx, scope, 0)?;
             }
             Ok(())
         }
-        Stmt::Break | Stmt::Continue => {
+        Stmt::Break(line, col) | Stmt::Continue(line, col) => {
             if scope.loop_depth == 0 {
-                return Err(MvError::new(
-                    0,
-                    0,
-                    "E2009: break/continue hanya boleh di dalam loop".to_string(),
+                return Err(err_at(
+                    *line,
+                    *col,
+                    "E2009",
+                    "break/continue hanya boleh di dalam loop".to_string(),
                 ));
             }
             Ok(())
@@ -427,6 +503,49 @@ pub(crate) fn describe_lhs(e: &Expr) -> String {
             describe_lhs(a),
             describe_lhs(b)
         ),
+        Expr::PartSelect {
+            base,
+            from,
+            width,
+            plus,
+        } => format!(
+            "{}[{} {} {}]",
+            describe_lhs(base),
+            describe_lhs(from),
+            if *plus { "+:" } else { "-:" },
+            describe_lhs(width)
+        ),
         other => format!("{other:?}"),
     }
+}
+
+/// E2010: LHS tak boleh menunjuk `parameter` module atau `const` module.
+///
+/// SV menandai keduanya `localparam` (konstanta waktu-elipsi) — menulisnya
+/// adalah illegal (LRM 1800 §6.20 "shall be illegal"). Sebelumnya hanya
+/// aturan "jangan drive input port" (E2003) yang ada, jadi
+/// `WIDTH = 8` di dalam `seq` lolos type-check lalu menghasilkan SV yang
+/// ditolak elaborator.
+pub(crate) fn check_lvalue_not_const(
+    lhs: &Expr,
+    scope: &Scope,
+    line: usize,
+    col: usize,
+) -> Result<(), MvError> {
+    let Some(base) = base_ident(lhs) else { return Ok(()) };
+    // `scope.params` berisi parameter module DAN konstanta module yang
+    // ter-fold (lihat `check/module.rs` MItem::Const) — keduanya immutable.
+    if scope.params.contains_key(base) || scope.local_consts.contains(base) {
+        return Err(err_at(
+            line,
+            col,
+            "E2010",
+            format!(
+                "'{base}' adalah konstanta (parameter/const) — tidak bisa \
+                 di-assign (LRM 1800 §6.20). buat sinyal terpisah jika perlu \
+                 nilai yang bisa berubah"
+            ),
+        ));
+    }
+    Ok(())
 }

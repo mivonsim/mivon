@@ -13,7 +13,10 @@ func clog2(x : int) -> int {
 }
 
 // Function dgn init yang mereferensikan port (bukan literal).
-func scale(v : int) -> int {
+// Nama `scale` dipakai `features_new.mv` juga — dua function level file
+// dengan nama sama akan di-emit ke scope FILE SV yang sama dan ditolak
+// tool EDA ("Duplicate declaration of function"), jadi E2007.
+func dbl(v : int) -> int {
     var w : int = v * 2
     return w
 }
@@ -24,7 +27,7 @@ module func_dut {
     out s : logic[15:0]
     comb {
         o = clog2(a)
-        s = scale(a[7:0])
+        s = dbl(a[7:0])
     }
 }
 

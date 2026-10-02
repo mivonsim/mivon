@@ -55,9 +55,19 @@ pub(crate) fn check_module<'a>(m: &'a Module, ctx: &'a Ctx<'a>) -> Result<(), Mv
         match item {
             MItem::Func(f) => {
                 scope.funcs.insert(f.name.as_str());
+                super::insert_arity_pub(
+                    &mut scope.func_arity,
+                    f.name.as_str(),
+                    super::arity_of_pub(&f.args),
+                );
             }
             MItem::Task(t) => {
                 scope.funcs.insert(t.name.as_str());
+                super::insert_arity_pub(
+                    &mut scope.func_arity,
+                    t.name.as_str(),
+                    super::arity_of_pub(&t.args),
+                );
             }
             _ => {}
         }
@@ -137,6 +147,7 @@ pub(crate) fn check_module<'a>(m: &'a Module, ctx: &'a Ctx<'a>) -> Result<(), Mv
             MItem::Const {
                 name,
                 ty,
+                value,
                 line,
                 col,
                 ..
@@ -166,6 +177,15 @@ pub(crate) fn check_module<'a>(m: &'a Module, ctx: &'a Ctx<'a>) -> Result<(), Mv
                         ),
                     ));
                 }
+                // Konstanta module ikut masuk `scope.params` (setelah di-fold)
+                // supaya lebarnya bisa dipakai di `logic[C-1:0]`, `for i in
+                // 0..C`, dll. Sebelumnya hanya nama yang didaftarkan tanpa
+                // nilai → semua cek lebar lewat konstanta mati diam-diam.
+                check_expr(value, ctx, &scope, 0)?;
+                if let Some(v) = super::expr::fold_const(value, &scope.params, 0) {
+                    scope.params.insert(name.as_str(), v);
+                }
+                scope.local_consts.insert(name.as_str());
                 scope.sigs.insert(name.as_str());
             }
             MItem::Initial(_) | MItem::Final(_) => {}

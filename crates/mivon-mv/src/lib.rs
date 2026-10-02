@@ -23,16 +23,25 @@ pub mod print;
 use crate::ast::MvFile;
 use std::fmt;
 
-/// Lebar enum SV untuk `n` anggota: clog2(n), minimal 1.
-/// Dipakai bersama oleh `check.rs` (validasi lebar/type_width) dan `codegen.rs`
-/// (emisi `typedef enum logic [w:0]`). Sinkron: jangan duplikasi logika ini
-/// di dua tempat secara terpisah.
+/// Lebar **index MSB** enum SV untuk `n` anggota: `clog2(n)`, minimal 1.
+///
+/// `enum_bits` adalah MSB, BUKAN jumlah bit. Emitter menulis
+/// `typedef enum logic [enum_bits(n):0]` → total `enum_bits(n) + 1` bit
+/// (3 anggota → `logic [1:0]`, cukup untuk 0..3). Pemanggil yang butuh
+/// JUMLAH bit harus memakai `enum_width`.
 pub(crate) fn enum_bits(n: usize) -> i64 {
     if n <= 2 {
         1
     } else {
         ((n - 1) as f64).log2().ceil() as i64
     }
+}
+
+/// Lebar total (jumlah bit) enum SV untuk `n` anggota — selalu sinkron
+/// dengan emisi `codegen/defs.rs`. Pakai ini di semua_places yang butuh
+/// "berapa bit sinyal enum ini", bukan `enum_bits`.
+pub(crate) fn enum_width(n: usize) -> i64 {
+    enum_bits(n) + 1
 }
 
 /// Error parse/lex Mivon HDL dengan posisi (line, col).

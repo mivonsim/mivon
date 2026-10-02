@@ -40,6 +40,17 @@ pub(crate) struct Ctx<'a> {
     /// nama function/task level file
     pub(crate) funcs: HashSet<&'a str>,
     pub(crate) tasks: HashSet<&'a str>,
+    /// nama function/task → (jumlah argumen WAJIB, jumlah argumen total).
+    /// Dipakai E2011: jumlah argumen saat pemanggilan harus antara keduanya
+    /// (argumen ber-default boleh dilewati dari belakang). Tanpa ini,
+    /// `f()` untuk `func f(a, b)` lolos type-check lalu gagal di simulator.
+    ///
+    /// Entri dengan value `None` = nama AMBIGU (dideklarasikan di lebih dari
+    /// satu file konteks gabungan) → E2011 dilewati agar tidak jadi false
+    /// positive. Duplikat lintas file sendiri sudah ditolak E2007.
+    pub(crate) func_arity: HashMap<&'a str, Option<(usize, usize)>>,
+    /// nama method class → (jumlah argumen WAJIB, jumlah argumen total).
+    pub(crate) method_arity: HashMap<&'a str, Option<(usize, usize)>>,
     /// nama class — sah sebagai tipe user-defined (lebar tidak diketahui,
     /// lihat type_width): `var it : item = item::new()` (F12).
     pub(crate) classes: HashSet<&'a str>,
@@ -77,6 +88,8 @@ pub(crate) struct Scope<'a> {
     pub(crate) sigs: HashSet<&'a str>,
     /// nama function/task (module + file level)
     pub(crate) funcs: HashSet<&'a str>,
+    /// arity function/task yang terlihat di scope (lihat `Ctx::func_arity`)
+    pub(crate) func_arity: HashMap<&'a str, Option<(usize, usize)>>,
     /// parameter module + nilai konstannya (untuk const-fold)
     pub(crate) params: Params<'a>,
     /// F32: type parameter module (`T : type = logic[7:0]`) — nama → default
@@ -90,6 +103,9 @@ pub(crate) struct Scope<'a> {
     pub(crate) enum_members: &'a HashMap<&'a str, i64>,
     /// konstanta package (terlihat sebagai ident di ekspresi)
     pub(crate) consts: &'a HashSet<&'a str>,
+    /// konstanta LOCAL module (`const C = 4` di badan module) — dipakai
+    /// aturan lvalue (E2010): `const`/`localparam` tak boleh di-assign.
+    pub(crate) local_consts: HashSet<&'a str>,
     pub(crate) env: Env<'a>,
     /// kedalaman loop (untuk validasi break/continue)
     pub(crate) loop_depth: usize,
@@ -155,6 +171,55 @@ pub fn check_many(files: &[&MvFile]) -> Result<(), (usize, MvError)> {
     // F26: interface berbagi namespace dengan package (definisi bersama di
     // .svh) — duplikat lintas-file juga error (E2007).
     let mut ifc_owner: HashMap<&str, usize> = HashMap::new();
+    // Function/task level file juga bentrok lintas-file: keduanya di-emit
+    // ke scope FILE SV yang sama, jadi verilator/iverilog menolak
+    // "Duplicate declaration of function".
+    let mut func_owner: HashMap<&str, usize> = HashMap::new();
+    let mut task_owner: HashMap<&str, usize> = HashMap::new();
+    for (i, f) in files.iter().enumerate() {
+        for f in &f.funcs {
+            if let Some(prev) = func_owner.insert(f.name.as_str(), i) {
+                if prev != i {
+                    return Err((
+                        i,
+                        err_at(
+                            f.line,
+                            f.col,
+                            "E2007",
+                            format!(
+                                "function '{}' dideklarasikan di file #{} dan #{} — \
+                                 keduanya jadi scope file SV yang sama",
+                                f.name,
+                                prev + 1,
+                                i + 1
+                            ),
+                        ),
+                    ));
+                }
+            }
+        }
+        for t in &f.tasks {
+            if let Some(prev) = task_owner.insert(t.name.as_str(), i) {
+                if prev != i {
+                    return Err((
+                        i,
+                        err_at(
+                            t.line,
+                            t.col,
+                            "E2007",
+                            format!(
+                                "task '{}' dideklarasikan di file #{} dan #{} — \
+                                 keduanya jadi scope file SV yang sama",
+                                t.name,
+                                prev + 1,
+                                i + 1
+                            ),
+                        ),
+                    ));
+                }
+            }
+        }
+    }
     for (i, f) in files.iter().enumerate() {
         for p in &f.packages {
             if let Some(prev) = pkg_owner.insert(p.name.as_str(), i) {
@@ -466,6 +531,8 @@ fn collect_ctx<'a>(files: impl IntoIterator<Item = &'a MvFile>) -> Ctx<'a> {
     let mut packages = HashMap::new();
     let mut enum_members = HashMap::new();
     let mut funcs = HashSet::new();
+    let mut func_arity: HashMap<&str, Option<(usize, usize)>> = HashMap::new();
+    let mut method_arity: HashMap<&str, Option<(usize, usize)>> = HashMap::new();
     let mut tasks = HashSet::new();
     let mut consts = HashSet::new();
     let mut classes = HashSet::new();
@@ -531,12 +598,28 @@ fn collect_ctx<'a>(files: impl IntoIterator<Item = &'a MvFile>) -> Ctx<'a> {
         }
         for f in &file.funcs {
             funcs.insert(f.name.as_str());
+            insert_arity(&mut func_arity, f.name.as_str(), arity_of(&f.args));
         }
         for t in &file.tasks {
             tasks.insert(t.name.as_str());
+            insert_arity(&mut func_arity, t.name.as_str(), arity_of(&t.args));
         }
         for c in &file.classes {
             classes.insert(c.name.as_str());
+            for f in &c.funcs {
+                insert_arity(
+                    &mut method_arity,
+                    f.name.as_str(),
+                    arity_of(&f.args),
+                );
+            }
+            for t in &c.tasks {
+                insert_arity(
+                    &mut method_arity,
+                    t.name.as_str(),
+                    arity_of(&t.args),
+                );
+            }
         }
     }
     Ctx {
@@ -546,6 +629,8 @@ fn collect_ctx<'a>(files: impl IntoIterator<Item = &'a MvFile>) -> Ctx<'a> {
         consts,
         funcs,
         tasks,
+        func_arity,
+        method_arity,
         classes,
         interfaces,
         modules,
@@ -557,6 +642,48 @@ fn collect_ctx<'a>(files: impl IntoIterator<Item = &'a MvFile>) -> Ctx<'a> {
 
 pub(crate) fn build_ctx<'a>(file: &'a MvFile) -> Ctx<'a> {
     collect_ctx(std::iter::once(file))
+}
+
+/// Sisipkan arity function/method. Nama yang muncul lebih dari sekali ditandai
+/// ambigu (`None`) supaya E2011 tidak salah paham tandatangannya.
+fn insert_arity<'a>(
+    map: &mut HashMap<&'a str, Option<(usize, usize)>>,
+    name: &'a str,
+    arity: (usize, usize),
+) {
+    match map.get(name) {
+        // Sudah ada dengan tanda tangan berbeda → ambigu.
+        Some(Some(prev)) if *prev != arity => {
+            map.insert(name, None);
+        }
+        Some(None) => {}
+        _ => {
+            map.insert(name, Some(arity));
+        }
+    }
+}
+
+/// `(jumlah argumen WAJIB, jumlah argumen total)` dari daftar argumen
+/// func/task. Argumen ber-`default` boleh dilewati dari belakang, jadi hanya
+/// argumen tanpa default yang wajib diberikan.
+pub(crate) fn arity_of(args: &[(String, MvType, Option<Dir>, Option<Expr>)]) -> (usize, usize) {
+    let total = args.len();
+    let required = args.iter().filter(|(_, _, _, d)| d.is_none()).count();
+    (required, total)
+}
+
+/// [`arity_of`] untuk sibling module crate.
+pub(crate) fn arity_of_pub(args: &[(String, MvType, Option<Dir>, Option<Expr>)]) -> (usize, usize) {
+    arity_of(args)
+}
+
+/// [`insert_arity`] untuk sibling module crate.
+pub(crate) fn insert_arity_pub<'a>(
+    map: &mut HashMap<&'a str, Option<(usize, usize)>>,
+    name: &'a str,
+    arity: (usize, usize),
+) {
+    insert_arity(map, name, arity)
 }
 
 pub(crate) fn build_ctx_many<'a>(files: &'a [&'a MvFile]) -> Ctx<'a> {
@@ -574,9 +701,11 @@ pub(crate) fn td_name(td: &Typedef) -> &str {
 
 pub(crate) fn collect_enum_members<'a>(td: &'a Typedef, out: &mut HashMap<&'a str, i64>) {
     if let Typedef::Enum { width, members, .. } = td {
+        // Lebar TOTAL bit — sinkron dengan `codegen/defs.rs`
+        // (`logic [enum_bits:0]`) via `enum_width`. `enum_bits` = MSB saja.
         let w = match width {
             Some(Expr::Int(n)) => *n,
-            _ => crate::enum_bits(members.len()),
+            _ => crate::enum_width(members.len()),
         };
         for m in members {
             out.entry(m.name.as_str()).or_insert(w);
@@ -597,15 +726,18 @@ pub(crate) fn resolve_typedef<'a>(name: &str, ctx: &'a Ctx<'a>) -> Option<&'a Ty
 pub(crate) fn new_scope<'a>(ctx: &'a Ctx<'a>, mname: &'a str) -> Scope<'a> {
     let mut funcs: HashSet<&'a str> = ctx.funcs.clone();
     funcs.extend(ctx.tasks.iter().copied());
+    let func_arity = ctx.func_arity.clone();
     Scope {
         sigs: HashSet::new(),
         funcs,
+        func_arity,
         params: HashMap::new(),
         type_params: HashMap::new(),
         types: HashMap::new(),
         local_types: HashMap::new(),
         enum_members: &ctx.enum_members,
         consts: &ctx.consts,
+        local_consts: HashSet::new(),
         env: Env {
             mname,
             ports: HashMap::new(),

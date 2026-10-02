@@ -204,8 +204,42 @@ Tetapi untuk
 
 Verilog
 SystemVerilog
-Mivon HDL
-8. mprof
+
+Belum mendukung Mivon HDL (`.mv`) — `mfmt` memakai lexer SV
+(`mivon_parser::lexer`) sehingga file `.mv` akan diformat sebagai SV dan
+menghasilkan hasil yang salah. Untuk `.mv` pakepakai `mivon mgen` (menulis
+`.sv`/`.svh` ber-format) atau `examples/mv` sebagai acuan format. Mendukung
+`.mv` ada di roadmap (`mfmt` backend `mivon_mv`).
+
+8. mgen
+
+Generator SystemVerilog dari Mivon HDL (`.mv`/`.mvh`).
+
+Rantai penuh
+
+.mv → lex → parse → type-check (E2001–E2013) → codegen → .sv + .svh
+
+Semua konstruk `.mv` punya mapping SystemVerilog yang deterministik dan
+LRM-1800-compliant (lihat MIVON-HDL.md §10). `mivon run counter.mv` juga
+menerima `.mv` langsung — di-transpile on-the-fly ke buffer, tanpa menulis
+file.
+
+mivon mgen counter.mv                    # counter.sv + counter.svh
+mivon mgen src/ -o build/gen             # scan rekursif (lewati negative/, tersembunyi, prefiks _)
+mivon mgen a.mv b.mv --check             # exit 1 bila output basi (CI)
+mivon mgen counter.mv --stdout           # print ke stdout
+mivon mgen counter.mv --package chip_types  # bungkus typedef level file dalam package
+mivon mgen counter.mv --no-check         # lewati type-check (konstruk eksternal/UVM)
+mivon mgen counter.mv --svh-only | --sv-only
+mivon mgen counter.mv --verbose
+
+Catatan: konteks `type-check` gabungan dibatasi per direktori, jadi dua
+subdirektori yang sama-sama mendefinisikan nama tipe yang sama tetap
+independen. Nama function/task level file bersifat global dalam satu
+konteks (E2007 bila bentrok) — pakai `package` atau module-level `func`
+bila butuh nama yang sama di unit berbeda.
+
+9. mprof
 
 Performance Profiler.
 
@@ -223,7 +257,7 @@ Simulation
 
 Bottleneck langsung terlihat.
 
-9. mcheck
+10. mcheck
 
 Project Health Checker.
 
@@ -238,7 +272,7 @@ Config
 PARSER-13 (AST differential): `mcheck a.sv --ast-diff b.sv` — bandingkan
 AST elaborasi dua file (module/signal/proses/class/covergroup), exit 0
 identik / 1 berbeda (regression gate).
-10. mbench
+11. mbench
 
 Benchmark Tool.
 
@@ -255,7 +289,7 @@ CPU
 Cache hit
 
 Parser throughput
-11. synth
+12. synth
 
 Synthesis Tool (SYNTHESIS.md — flow ala Vivado). Nama lama: `msynth` (alias).
 

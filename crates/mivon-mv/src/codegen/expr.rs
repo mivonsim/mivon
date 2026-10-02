@@ -79,19 +79,32 @@ pub(crate) fn emit_expr(e: &Expr) -> String {
         }
         Expr::Binary(op, l, r) => format!("{} {op} {}", emit_expr(l), emit_expr(r)),
         Expr::Ternary(c, t, f) => format!("{} ? {} : {}", emit_expr(c), emit_expr(t), emit_expr(f)),
-        Expr::Call(name, args) => {
+        Expr::Call(name, args, ..) => {
             let a: Vec<String> = args.iter().map(emit_expr).collect();
             format!("{name}({})", a.join(", "))
         }
         // Named arg `f(10, factor = 4)` → SV `.factor(4)`.
         Expr::NamedArg { name, expr } => format!(".{name}({})", emit_expr(expr)),
-        Expr::MethodCall { obj, method, args } => {
+        Expr::MethodCall {
+            obj, method, args, ..
+        } => {
             let a: Vec<String> = args.iter().map(emit_expr).collect();
             format!("{}.{method}({})", emit_expr(obj), a.join(", "))
         }
         Expr::Member(obj, f, ..) => format!("{}.{f}", emit_expr(obj)),
         Expr::Index(obj, i) => format!("{}[{}]", emit_expr(obj), emit_expr(i)),
         Expr::Range(obj, a, b) => format!("{}[{}:{}]", emit_expr(obj), emit_expr(a), emit_expr(b)),
+        Expr::PartSelect {
+            base,
+            from,
+            width,
+            plus,
+        } => {
+            // Indexed part-select naik/turun (LRM 1800 §11.8.2). `width` emit
+            // apa adanya — SV memang mengartikannya sebagai LEBAR.
+            let op = if *plus { "+:" } else { "-:" };
+            format!("{}[{} {op} {}]", emit_expr(base), emit_expr(from), emit_expr(width))
+        }
         Expr::Concat(parts) => {
             let p: Vec<String> = parts.iter().map(emit_expr).collect();
             format!("{{{}}}", p.join(", "))

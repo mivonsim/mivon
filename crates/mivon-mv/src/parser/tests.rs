@@ -323,11 +323,7 @@ class my_test extends uvm_test {
     let t = &c.tasks[0];
     assert!(t.body.iter().any(|s| matches!(
         s,
-        Stmt::ExprStmt(Expr::MethodCall {
-            method,
-            obj: _,
-            args: _
-        }) if method == "start_item"
+        Stmt::ExprStmt(Expr::MethodCall { method, .. }) if method == "start_item"
     )));
     assert!(t.body.iter().any(|s| matches!(
         s,
@@ -710,9 +706,9 @@ fn stmt_kinds(stmts: &[Stmt]) -> Vec<&'static str> {
             Stmt::Event { .. } => "Event",
             Stmt::Delay { .. } => "Delay",
             Stmt::VarDecl { .. } => "VarDecl",
-            Stmt::Return(_) => "Return",
-            Stmt::Break => "Break",
-            Stmt::Continue => "Continue",
+            Stmt::Return(..) => "Return",
+            Stmt::Break(..) => "Break",
+            Stmt::Continue(..) => "Continue",
             Stmt::Fork { .. } => "Fork",
             Stmt::Foreach { .. } => "Foreach",
             Stmt::Assert { .. } => "Assert",

@@ -142,7 +142,6 @@ pub enum Tok {
     CaseEq,
     CaseNeq,
     Lt,
-    Le,
     Gt,
     Ge,
     AmpAmp,
@@ -152,6 +151,8 @@ pub enum Tok {
     Pipe,
     Caret,
     Tilde,
+    /// Binary XNOR `~^` / `^~` (LRM 1800 §11.13) — both spellings.
+    TildeCaret,
     Shl,
     Shr,
     Sshl,
@@ -162,6 +163,9 @@ pub enum Tok {
     // F36: compound assignment `+=` `-=` `*=` `/=` `%=` `<<=` `>>=` `&=` `|=` `^=`
     PlusEq,
     MinusEq,
+    /// Indexed part-select `x[base +: w]` / `x[base -: w]` (LRM 1800 §11.8.2)
+    PlusColon,
+    MinusColon,
     StarEq,
     SlashEq,
     PercentEq,
@@ -340,24 +344,73 @@ pub fn tokenize(src: &str) -> Result<Vec<(Tok, usize, usize)>, MvError> {
         if c.is_ascii_digit() {
             // Desimal atau real
             let start = i;
-            while i < chars.len() && chars[i].is_ascii_digit() {
+            // Digit (termasuk `_` sebagai pemisah groups, LRM 1800 §5.7.1)
+            // atau awalan basis `'0x' '0o' '0b' (LRM 1800 §5.7.1).
+            if c == '0' && i + 1 < chars.len() {
+                let n = chars[i + 1].to_ascii_lowercase();
+                if matches!(n, 'x' | 'o' | 'b') {
+                    i += 2;
+                    col += 2;
+                    let dstart = i;
+                    while i < chars.len()
+                        && (chars[i].is_ascii_alphanumeric() || chars[i] == '_')
+                    {
+                        i += 1;
+                        col += 1;
+                    }
+                    let digits: String = chars[dstart..i].iter().collect();
+                    let base = match n {
+                        'x' => 'h',
+                        'o' => 'o',
+                        _ => 'b',
+                    };
+                    out.push((Tok::Sized(None, base, digits), tok_line, tok_col));
+                    continue;
+                }
+            }
+            while i < chars.len() && (chars[i].is_ascii_digit() || chars[i] == '_') {
                 i += 1;
                 col += 1;
             }
-            // Real: digits '.' digits
+            // Real: digits '.' digits, lalu opsional eksponen `e[+-]digits`.
+            // `1e3` / `2.5e-2` valid SV (LRM 1800 §5.7.3) — sebelumnya gagal.
+            let mut is_real = false;
             if i < chars.len()
                 && chars[i] == '.'
                 && i + 1 < chars.len()
                 && chars[i + 1].is_ascii_digit()
             {
+                is_real = true;
                 i += 1;
                 col += 1;
                 while i < chars.len() && chars[i].is_ascii_digit() {
                     i += 1;
                     col += 1;
                 }
+            }
+            // Eksponen: `e|E` diikuti tanda opsional + digit. Hasilnya real
+            // walau tanpa titik desimal (`1e3`, LRM 1800 §5.7.3).
+            if i < chars.len() && (chars[i] == 'e' || chars[i] == 'E') {
+                let mut j = i + 1;
+                if j < chars.len() && (chars[j] == '+' || chars[j] == '-') {
+                    j += 1;
+                }
+                if j < chars.len() && chars[j].is_ascii_digit() {
+                    is_real = true;
+                    while i < j {
+                        i += 1;
+                        col += 1;
+                    }
+                    while i < chars.len() && (chars[i].is_ascii_digit() || chars[i] == '_') {
+                        i += 1;
+                        col += 1;
+                    }
+                }
+            }
+            if is_real {
                 let text: String = chars[start..i].iter().collect();
-                match text.parse::<f64>() {
+                let clean: String = text.chars().filter(|c| *c != '_').collect();
+                match clean.parse::<f64>() {
                     Ok(v) => out.push((Tok::Real(v), tok_line, tok_col)),
                     Err(_) => {
                         return Err(err(
@@ -373,6 +426,7 @@ pub fn tokenize(src: &str) -> Result<Vec<(Tok, usize, usize)>, MvError> {
             if i < chars.len() && chars[i] == '\'' {
                 let width: i64 = chars[start..i]
                     .iter()
+                    .filter(|c| **c != '_')
                     .collect::<String>()
                     .parse()
                     .map_err(|_| err(tok_line, tok_col, "width literal tidak valid".into()))?;
@@ -386,6 +440,18 @@ pub fn tokenize(src: &str) -> Result<Vec<(Tok, usize, usize)>, MvError> {
                     ));
                 }
                 let base = chars[i].to_ascii_lowercase();
+                if base == 's' {
+                    // `32'shFF` — signedness ditegakkan di `.mv` lewat tipe,
+                    // bukan lewat base literal. Menangkapnya di sini (dan
+                    // membuangnya) akan menghilangkan signedness secara diam-diam.
+                    return Err(err(
+                        tok_line,
+                        tok_col,
+                        "base 's' tidak didukung .mv — pakai tipe signed: \
+                         `sig x : signed logic[32] = 32'hFF`"
+                            .to_string(),
+                    ));
+                }
                 if !matches!(base, 'b' | 'o' | 'd' | 'h') {
                     return Err(err(
                         tok_line,
@@ -412,7 +478,8 @@ pub fn tokenize(src: &str) -> Result<Vec<(Tok, usize, usize)>, MvError> {
                 continue;
             }
             let text: String = chars[start..i].iter().collect();
-            let v = text.parse::<i64>().map_err(|_| {
+            let clean: String = text.chars().filter(|c| *c != '_').collect();
+            let v = clean.parse::<i64>().map_err(|_| {
                 err(
                     tok_line,
                     tok_col,
@@ -608,7 +675,16 @@ pub fn tokenize(src: &str) -> Result<Vec<(Tok, usize, usize)>, MvError> {
             '?' => (Tok::Question, 1),
             '@' => (Tok::At, 1),
             '#' => (Tok::Hash, 1),
-            '~' => (Tok::Tilde, 1),
+            '~' => {
+                // Binary XNOR `~^` — LRM 1800 §11.13. Sebelumnya `~`
+                // selalu diperlakukan unary, sehingga `a ~^ b` gagal parse
+                // padahal operator ini didokumentasikan di §6.6.
+                if peek(&chars, i, '^') {
+                    (Tok::TildeCaret, 2)
+                } else {
+                    (Tok::Tilde, 1)
+                }
+            }
             ':' => {
                 if peek(&chars, i, ':') {
                     (Tok::Scope, 2)
@@ -635,6 +711,9 @@ pub fn tokenize(src: &str) -> Result<Vec<(Tok, usize, usize)>, MvError> {
                 } else if peek(&chars, i, '-') {
                     // F36: `--` decrement
                     (Tok::MinusMinus, 2)
+                } else if peek(&chars, i, ':') {
+                    // indexed part-select turun `x[base -: w]`
+                    (Tok::MinusColon, 2)
                 } else if peek(&chars, i, '=') {
                     // F36: `-=` compound
                     (Tok::MinusEq, 2)
@@ -646,6 +725,9 @@ pub fn tokenize(src: &str) -> Result<Vec<(Tok, usize, usize)>, MvError> {
                 if peek(&chars, i, '+') {
                     // F36: `++` increment
                     (Tok::PlusPlus, 2)
+                } else if peek(&chars, i, ':') {
+                    // indexed part-select naik `x[base +: w]`
+                    (Tok::PlusColon, 2)
                 } else if peek(&chars, i, '=') {
                     // F36: `+=` compound
                     (Tok::PlusEq, 2)
@@ -757,6 +839,10 @@ pub fn tokenize(src: &str) -> Result<Vec<(Tok, usize, usize)>, MvError> {
                 if peek(&chars, i, '=') {
                     // F36: `^=` compound
                     (Tok::XorEq, 2)
+                } else if peek(&chars, i, '~') {
+                    // Binary XNOR `^~` — ejaan alternatif dari `~^`
+                    // (LRM 1800 §11.13)
+                    (Tok::TildeCaret, 2)
                 } else {
                     (Tok::Caret, 1)
                 }
@@ -885,5 +971,70 @@ mod tests {
         assert!(t2.contains(&Tok::Scope));
         assert!(!t2.contains(&Tok::Equiv));
         assert!(!t2.contains(&Tok::ColonSlash));
+    }
+}
+
+#[cfg(test)]
+mod literal_tests {
+    use super::*;
+
+    fn toks_of(src: &str) -> Vec<Tok> {
+        tokenize(src)
+            .unwrap_or_else(|e| panic!("lex {src:?}: {}", e))
+            .into_iter()
+            .map(|(t, _, _)| t)
+            .collect()
+    }
+
+    #[test]
+    fn lex_real_exponent_without_decimal_point() {
+        // `1e3` / `2.5e-2` — LRM 1800 §5.7.3. Sebelumnya `1e3` gagal lex
+        // (harus ada titik desimal dulu).
+        let t = toks_of("1e3 2.5e-2 1E+3 3.0e0");
+        assert!(t.contains(&Tok::Real(1000.0)), "{t:?}");
+        assert!(t.contains(&Tok::Real(0.025)), "{t:?}");
+        assert!(t.contains(&Tok::Real(3.0)), "{t:?}");
+    }
+
+    #[test]
+    fn lex_base_prefix_without_size() {
+        // Awalan basis tanpa lebar: `0xFF` ≡ `8'hFF` (LRM 1800 §5.7.1).
+        let t = toks_of("0xFF 0o17 0b1011 0x_F");
+        assert!(t.contains(&Tok::Sized(None, 'h', "FF".into())), "{t:?}");
+        assert!(t.contains(&Tok::Sized(None, 'o', "17".into())), "{t:?}");
+        assert!(t.contains(&Tok::Sized(None, 'b', "1011".into())), "{t:?}");
+        // underscore diabaikan
+        assert!(t.contains(&Tok::Sized(None, 'h', "_F".into())), "{t:?}");
+    }
+
+    #[test]
+    fn lex_underscore_in_decimal() {
+        let t = toks_of("1_000_000");
+        assert!(t.contains(&Tok::Int(1_000_000)), "{t:?}");
+    }
+
+    #[test]
+    fn lex_signed_base_rejected_with_hint() {
+        // `32'shFF` Signedness di `.mv` ditegakkan lewat TIPE, bukan lewat
+        // base literal. Menangkapnya lalu membuangnya akan menghilangkan
+        // signedness secara diam-diam — jadi ditolak dengan petunjuk.
+        let e = tokenize("32'shFF").unwrap_err();
+        assert!(e.msg.contains("signed"), "msg: {}", e.msg);
+    }
+
+    #[test]
+    fn lex_binary_xnor_both_spellings() {
+        // `~^` dan `^~` → token sama (LRM 1800 §11.13).
+        let t = toks_of("a ~^ b a ^~ b");
+        assert_eq!(t.iter().filter(|x| **x == Tok::TildeCaret).count(), 2, "{t:?}");
+        // `~` unary tetap tokenizer sendiri
+        assert!(t.contains(&Tok::Ident("a".into())), "{t:?}");
+    }
+
+    #[test]
+    fn lex_indexed_part_select_tokens() {
+        let t = toks_of("a[3 +: 8] a[3 -: 8]");
+        assert!(t.contains(&Tok::PlusColon), "{t:?}");
+        assert!(t.contains(&Tok::MinusColon), "{t:?}");
     }
 }

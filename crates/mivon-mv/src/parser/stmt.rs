@@ -58,6 +58,10 @@ impl Parser {
         qual: Option<String>,
         kind: String,
     ) -> Result<Stmt, MvError> {
+        // Posisi yang dipakai untuk E2013: keyword `case`/`casez`/`casex`
+        // sudah dimakan pemanggil, jadi caret menunjuk `(` — cukup untuk
+        // menunjuk blok case yang salah.
+        let (line, col) = self.pos_line();
         self.expect(&Tok::LParen)?;
         let expr = self.parse_expr()?;
         self.expect(&Tok::RParen)?;
@@ -84,6 +88,8 @@ impl Parser {
             default,
             qual,
             kind,
+            line,
+            col,
         })
     }
 
@@ -398,6 +404,7 @@ impl Parser {
                 })
             }
             Tok::Return => {
+                let (l, c) = self.pos_line();
                 self.advance();
                 let v = if matches!(self.peek(), Tok::RBrace) || matches!(self.peek(), Tok::Semi) {
                     None
@@ -405,19 +412,22 @@ impl Parser {
                     Some(self.parse_expr()?)
                 };
                 self.eat(&Tok::Semi);
-                Ok(Stmt::Return(v))
+                Ok(Stmt::Return(v, l, c))
             }
             Tok::Break => {
+                let (l, c) = self.pos_line();
                 self.advance();
                 self.eat(&Tok::Semi);
-                Ok(Stmt::Break)
+                Ok(Stmt::Break(l, c))
             }
             Tok::Continue => {
+                let (l, c) = self.pos_line();
                 self.advance();
                 self.eat(&Tok::Semi);
-                Ok(Stmt::Continue)
+                Ok(Stmt::Continue(l, c))
             }
             Tok::Var => {
+                let (l, c) = self.pos_line();
                 self.advance();
                 let mut names = vec![self.expect_ident()?];
                 while self.eat(&Tok::Comma) {
@@ -430,7 +440,13 @@ impl Parser {
                 } else {
                     None
                 };
-                Ok(Stmt::VarDecl { names, ty, init })
+                Ok(Stmt::VarDecl {
+                    names,
+                    ty,
+                    init,
+                    line: l,
+                    col: c,
+                })
             }
             Tok::Assert => {
                 self.advance();

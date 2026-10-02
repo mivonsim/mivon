@@ -566,7 +566,40 @@ Emisi: `always begin ... end` / `always_latch begin ... end`.
 | `return expr` | `return expr;` |
 | `break` / `continue` | `break;` / `continue;` |
 
-Operand/operator: sama semantiknya dengan SV (`+ - * / % ** << >> & | ^ ~ ! && || == != === !== < <= > >= ? :`, concat `{a,b}`, replication `{n{a}}`, literal `'0 '1 'x 'z`, `8'hFF`, `32'd10`, `1.5`).
+Operand/operator: sama semantiknya dengan SV (`+ - * / % ** << >> & | ^ ~ ~^
+^~ ! && || == != === !== < <= > >= ? :`, concat `{a,b}`, replication `{n{a}}`,
+literal `'0 '1 'x 'z`, `8'hFF`, `32'd10`, `1.5`, `0xFF`, `0o17`, `0b1011`,
+`1e3`, `1_000_000`).
+
+#### Select Operator (LRM 1800 §11.8.2)
+
+Bentuk `q[hi:lo]` adalah **range select**; bentuk dengan lebar relatif
+adalah **indexed part-select** dan memakai operator `+:` / `-:`:
+
+```mv
+q[7:0]        // range select        → q[7:0]
+q[3 +: 8]     // part-select naik    → q[3 +: 8]   (bit 3..10)
+q[11 -: 8]    // part-select turun   → q[11 -: 8]  (bit 4..11)
+```
+
+`width` pada `+:`/`-:` adalah **LEBAR** bit, bukan indeks akhir — inilah
+sebabnya bentuk ini tidak bisa ditulis dengan operator `:` biasa. Lebar
+hasil ekspresi part-select untuk type-check = argumen lebarnya.
+
+#### Literal (LRM 1800 §5.7)
+
+| Bentuk | Makna | Catatan |
+|--------|-------|---------|
+| `123` / `1_000_000` | desimal | `_` sebagai pemisah groups, diabaikan |
+| `8'hFF` / `'hFF` | sized / unsized | basis `b`/`o`/`d`/`h` |
+| `0xFF` / `0o17` / `0b1011` | basis tanpa lebar | setara `'hFF` / `'o17` / `'b1011` (self-determined) |
+| `1.5`, `1e3`, `2.5e-2` | real | eksponen tanpa titik desimal sah |
+| `'0` `'1` `'x` `'z` | fill | |
+| `"teks"` | string | |
+
+Base literal `'s` (signed) **ditolak** — signedness di `.mv` ditegakkan lewat
+TIPE (`signed logic[N]`), bukan lewat base literal. Menangkap lalu
+membuangnya akan menghilangkan signedness secara diam-diam.
 
 #### Kata kerja DSL (bukan sintaks SystemVerilog)
 
@@ -1045,6 +1078,15 @@ Aturan:
 | Tipe tak dikenal | `E2005: unknown type 'Foo'` |
 | Konstanta overflow | `E2006: literal 256 exceeds 8-bit` |
 | Duplikasi nama | `E2007: signal 'x' already declared` |
+| Isi `.mvh` bukan definisi bersama | `E2008: file .mvh hanya berisi typedef/package/interface` |
+| `break`/`continue` di luar loop | `E2009: break/continue hanya boleh di dalam loop` |
+| Assign ke `parameter`/`const` | `E2010: 'WIDTH' adalah konstanta — tidak bisa di-assign (LRM 1800 §6.20)` |
+| Jumlah argumen call ≠ tanda tangan | `E2011: function 'scale' menerima 3 argumen — taksonya 1..2` |
+| Perbandingan unsigned selalu salah | `E2012: operand 'u' UNSIGNED — nilai unsigned selalu >= 0, jadi 'u < 0' tidak pernah benar` |
+| Label `case` duplikat | `E2013: label case '#0' duplikat — branch ini tidak akan pernah dieksekusi` |
+
+Semua kode di atas **berposisi** (`line:col`) dan memakai kurung `[E20xx]`
+konsisten — termasuk E2008/E2009 yang sebelumnya `0:0` tanpa kurung.
 
 **Semantik implementasi (`crates/mivon-mv/src/check/`, Fase 4):**
 - **E2002** di-trigger hanya saat RHS **lebih lebar** dari LHS (risiko truncation).
@@ -1053,8 +1095,36 @@ Aturan:
   Module testbench boleh me-drive port `in`.
 - **E2001/E2005 konservatif**: package/tipe/function yang tidak didefinisikan di
   file yang sama dianggap **eksternal** (file `.mv` lain) → dilewati, bukan error.
-  Nama pemanggilan `f(...)` tidak divalidasi; hanya argumennya.
+  Nama pemanggilan `f(...)` tidak divalidasi terhadap daftar tipe; yang
+  divalidasi adalah **jumlah argumennya** (E2011).
 - `port` + `reg`/`sig` dengan nama sama diizinkan (reg implementasi port output).
+- **E2010 (lvalue)**: `parameter` module dan `const` module adalah konstanta
+  waktu-elipsi — LRM 1800 §6.20 menyatakan menulisnya "shall be illegal".
+  Nilainya di-fold ke `scope.params` sehingga bisa dipakai sebagai lebar
+  (`logic[C-1:0]`), yang sebelumnya membuat seluruh cek lebar lewat konstanta
+  mati diam-diam.
+- **E2011 (arity)**: jumlah argumen saat pemanggilan harus antara jumlah argumen
+  wajib dan total (argumen ber-`default` boleh dilewati dari belakang). Nama
+  yang dideklarasikan di lebih dari satu file konteks ditandai ambigu dan
+  dilewati, supaya tidak ada false positive.
+- **E2012 (signedness)**: `logic`/`bit` unsigned kecuali ditandai `signed`;
+  `int`/`byte`/`shortint`/`longint` signed; `uint`/`ulongint` unsigned; enum
+  unsigned (LRM 1800 §6.2.1 + §6.9). Begitu satu operand unsigned, seluruh
+  perbandingan jadi unsigned
+  (LRM 1800 §11.8.2) — sehingga `u < 0` dan `u < 256` (untuk `logic[7:0]`)
+  selalu `false`. Pola seperti ini ditolak karena menghasilkan bug senyap
+  (lihat `doc/buglog-mv.md` #5). `==`/`!=` TIDAK dilaporkan: `u == 0xFF`
+  tetap benar untuk nilai unsigned.
+- **E2013 (label `case`)**: label duplikat membuat branch kedua tak pernah
+  dieksekusi. Konstanta yang bernilai sama dihitung sama (`2'd0` == `0` ==
+  `8'h0`). Kelengkapan `default` SENGAJA tidak dipaksa — pada `casez`/`casex`
+  pola tanpa-`default` itu idiom dekoder yang wajar.
+- **Lebar enum sinkron dengan emisi**: `enum` 3 anggota di-emit
+  `logic [1:0]` = 2 bit, jadi checker juga menghitung 2 (`enum_width`), bukan
+  MSB-nya saja. Sebelumnya checker memakai MSB sehingga E2002 tak pernah
+  menyalakan untuk sinyal enum.
+- **Lebar part-select** = argumen lebarnya (LRM 1800 §11.8.2), bukan
+  `from..from+width` seperti range select.
 - **Posisi `line:col` (F11)**: SEMUA error type-check kini berposisi — AST
   membawa span dari parser, dan `mgen`/`run` menampilkan snippet source +
   caret menunjuk kolom persis (gaya rustc):

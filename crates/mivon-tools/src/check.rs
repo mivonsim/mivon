@@ -6,6 +6,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+use crate::gen::is_mv_source;
 use crate::{collect_targets, kv, section};
 use mivon_ast::types::GenerateItem;
 use mivon_core::error::SimError;
@@ -86,7 +87,16 @@ fn scan_includes(
     let mut missing_seen: HashSet<PathBuf> = HashSet::new();
 
     section("Include Scan");
+    let mut mv_skipped = 0usize;
     for path in &files {
+        // `.mv`/`.mvh` tidak punya preprocessor (lexer `.mv` menolak
+        // backtick sebagai karakter tak dikenal), jadi tidak ada directive
+        // `include` yang bisa dipindai. Memindai mentah `.mv` akan
+        // melaporkan "tidak ada include" — menyesatkan. Lewati + laporkan.
+        if is_mv_source(path) {
+            mv_skipped += 1;
+            continue;
+        }
         let info = analyze_includes(path, &files)?;
         graph.insert(path.clone(), info.resolved.clone());
         if do_missing {
@@ -100,6 +110,9 @@ fn scan_includes(
             }
         }
         missing_seen.extend(info.missing.iter().map(PathBuf::from));
+    }
+    if mv_skipped > 0 {
+        kv("file .mv (tanpa preprocessor, dilewati)", mv_skipped);
     }
 
     let mut problem = 0usize;
@@ -306,6 +319,10 @@ fn scan_design(
         // Scan tiap file untuk `timescale
         let files = collect_targets(targets)?;
         for f in &files {
+            // `.mv`/`.mvh` tidak punya directive backtick — lewat saja.
+            if is_mv_source(f) {
+                continue;
+            }
             if let Ok(src) = std::fs::read_to_string(f) {
                 for line in src.lines() {
                     let t = line.trim();
@@ -602,9 +619,18 @@ fn run_sv_version_check(targets: &[String]) -> Result<(), SimError> {
 
     let mut feature_counts: HashMap<String, (usize, bool, &str)> = HashMap::new();
     let mut file_count = 0usize;
+    let mut mv_skipped = 0usize;
 
     for file in &files {
         let path = std::path::Path::new(file);
+        // `.mv`/`.mvh` BUKAN SystemVerilog — grep kata kunci SV di atas akan
+        // salah klasifikasi (mis. `int` di `print`, `bit` di `orbit`). Yang
+        // relevan untuk `.mv` adalah versi SV hasil `mgen`, jadi di sini
+        // dilewati dan dilaporkan terpisah.
+        if is_mv_source(path) {
+            mv_skipped += 1;
+            continue;
+        }
         let content = match std::fs::read_to_string(path) {
             Ok(c) => c,
             Err(e) => {
@@ -634,6 +660,13 @@ fn run_sv_version_check(targets: &[String]) -> Result<(), SimError> {
     // Report.
     println!("═══ ENT-22: SV Version Compatibility Report ═══");
     println!("Files scanned: {}", file_count);
+    if mv_skipped > 0 {
+        println!(
+            "Mivon HDL (.mv/.mvh) skipped: {} — bukan SV; cek versi SV-nya \
+             di output `mgen`",
+            mv_skipped
+        );
+    }
     println!();
 
     let mut supported: Vec<_> = Vec::new();
