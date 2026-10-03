@@ -226,6 +226,14 @@ fn print_dist_item(d: &DistItem) -> String {
     format!("{val} {w} {}", print_expr(&d.weight))
 }
 
+/// Satu label `case inside`: nilai atau `[lo:hi]`.
+fn print_inside_item(it: &InsideItem) -> String {
+    match it {
+        InsideItem::Value(e) => print_expr(e),
+        InsideItem::Range(lo, hi) => format!("[{}:{}]", print_expr(lo), print_expr(hi)),
+    }
+}
+
 /// f64 → teks yang round-trip sebagai `Real` (lexer butuh titik desimal):
 /// bilangan bulat dipaksa `N.0`; selain itu Display standar.
 fn print_real(v: f64) -> String {
@@ -321,6 +329,30 @@ fn print_stmt_b(b: &mut StrB, indent: usize, s: &Stmt) {
             b.line(indent, &format!("{q}{kind} ({}) {{", print_expr(expr)));
             for (vals, body) in items {
                 let v: Vec<String> = vals.iter().map(print_expr).collect();
+                b.line(
+                    indent + 1,
+                    &format!("{}: {}", v.join(", "), print_stmt(indent + 1, body)),
+                );
+            }
+            if let Some(d) = default {
+                b.line(
+                    indent + 1,
+                    &format!("default: {}", print_stmt(indent + 1, d)),
+                );
+            }
+            b.line(indent, "}");
+        }
+        Stmt::CaseInside {
+            expr,
+            items,
+            default,
+            qual,
+            ..
+        } => {
+            let q = qual.as_ref().map(|s| format!("{s} ")).unwrap_or_default();
+            b.line(indent, &format!("{q}case ({}) inside {{", print_expr(expr)));
+            for (vals, body) in items {
+                let v: Vec<String> = vals.iter().map(print_inside_item).collect();
                 b.line(
                     indent + 1,
                     &format!("{}: {}", v.join(", "), print_stmt(indent + 1, body)),

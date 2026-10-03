@@ -558,6 +558,7 @@ Emisi: `always begin ... end` / `always_latch begin ... end`.
 | `assume property (...)` (F66, module item) | `assume property (...);` — mirror `assert property` (LRM 1800 §14) |
 | `cover (c) [A]` (F69) | `cover (c) A;` — tanpa `else` (tak ada cabang gagal); `else` ditolak parser |
 | `cover property (...)` (F69, module item) | `cover property (...);` — mirror `assert property` (LRM 1800 §14) |
+| `case (e) inside { v: ... [lo:hi]: ... default: ... }` (F70) | `case (e) inside v: ... [lo:hi]: ...` — nilai + rentang + multi-label (contoh: `examples/mv/case_inside.mv`) |
 | `foreach (arr[i]) { ... }` | `foreach (arr[i]) begin ... end` — loop elemen array unpacked |
 | `@(posedge clk) stmt` | `@(posedge clk) stmt` |
 | `#10 stmt` | `#10 stmt` |
@@ -1221,6 +1222,7 @@ Ringkasan mapping konstruk `.mv` → SV:
 | `assume property (...)` (F66, module item) | `assume property (...);` — mirror `assert property` (LRM 1800 §14) |
 | `cover (c) [A]` (F69) | `cover (c) A;` — tanpa `else` (tak ada cabang gagal) |
 | `cover property (...)` (F69, module item) | `cover property (...);` — mirror `assert property` (LRM 1800 §14) |
+| `case (e) inside { ... }` (F70) | `case (e) inside ... [lo:hi] ...` — label nilai + rentang |
 | `@sv { ... }` (F40) | emisi isi SV **verbatim** — escape hatch utk konstruk SV yang belum didukung bahasa; isi diambil mentah dari source (isolasi dari lexer .mv), type-check dilewati |
 
 ### 10.1 Isi `.svh` vs `.sv`
@@ -1578,6 +1580,7 @@ module tb_traffic {
 | **F67** ✅ | **Fix: default `parameter type T = logic[7:0]` lebar 8 (bukan 1)** — `parse_type_expr` membuang packed range → `ParamDecl.range` selalu None → `T` 1-bit → `TB_TP_BROKEN q8=0 q16=0`. Tambah `parse_type_expr_with_range` (range pertama dikembalikan) untuk cabang type-param (`mivon-parser/src/decl.rs`) | oracle `TB_TP_OK q8=4 q16=8` (on-the-fly `.mv` maupun hasil `mgen`); test `test_param_type_default_packed_range_width`; buglog-mv #20 |
 | **F68** ✅ | **Fix: `priority/unique casez/casex` pakai wildcard** — parser membuang kind saat ada qualifier → engine exact-match (`3'b101` vs `3'b1??` tak cocok; iverilog: cocok). Tambah `CaseKind` di AST qualifier + `CaseType::{Unique,Unique0,Priority}{X,Z}` + match `casex/z_eq` di engine. Contoh `case_qualifiers.mv` diperbaiki (`priority case` → `priority casez`) → `CASEQ_OK`, verilator bersih | oracle iverilog identik (10/11/12); test `test_priority_casez_wildcard`, `test_unique_casez_wildcard`, `test_mv_priority_casez_wildcard`; buglog-mv #21 |
 | **F69** ✅ | **`cover` + `cover property` di `.mv`** — gap: `cover` tanpa keyword di-parse diam-diam jadi call `cover(...)` + statement lepas (silent miscompile). Kini `Tok::Cover` reserved + `Stmt::Cover{cond,pass}` (tanpa `else` — ditolak pesan jelas) + `Stmt::CoverProperty`/`MItem::CoverProperty` RAW (module item LRM §14); codegen `cover (c) A;` + `cover property …;`; check E2001 + print | demo e2e `cover_demo.mv` → `cover point hit` + `COVER_DEMO_OK ack=1`; immediate iverilog OK + verilator OK, concurrent verilator OK; negatif: `else` → error jelas, immediate di level module → ditolak; 7 test baru (parse ×3, codegen, check ×2, e2e `test_mv_cover_immediate_and_property`); contoh `examples/mv/cover_demo.mv` |
+| **F70** ✅ | **`case (x) inside` di `.mv`** — gap: `inside` sesudah `)` ditolak `diharapkan LBrace`. Kini `parse_case_body` deteksi `inside` → `Stmt::CaseInside{expr,items:Vec<(Vec<InsideItem>,Stmt)>,default,qual}` (reuse `InsideItem` F12; qualifier `priority/unique` diteruskan); label `[lo:hi]` rentang / nilai (tanpa `:` sesudah `[` ditolak jelas); codegen `case (e) inside` + `[lo:hi]` (bentuk dibaca `inside_range_bounds` SV); check E2001 + E2013 nilai-duplikat (rentang konservatif dilewati) + print | demo e2e `ci_demo` → nilai/rentang/multi/default `CASE_INSIDE_OK y=ff`; SV hasil generate disimulasikan ulang identik; verilator OK (iverilog tak support `case inside` — limit tool); negatif: `[5]` → error jelas, nilai duplikat → E2013; 6 test baru (parse ×3, codegen, check ×2, e2e `test_mv_case_inside_decoder`); contoh `examples/mv/case_inside.mv` |
 
 **Kriteria selesai F2:** `mivon mgen examples/mv/counter.mv` menghasilkan
 `counter.sv` yang bisa disimulasikan oleh `mivon counter.sv` tanpa error.

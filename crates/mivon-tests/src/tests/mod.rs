@@ -22786,6 +22786,42 @@ module tb_cv {
     assert_eq!(a, 0, "a=0");
 }
 
+/// `.mv` `case (x) inside` — nilai + rentang + multi-label + default.
+/// Output SV bentuk yang diterima pipeline SV (`inside_range_bounds`).
+#[test]
+fn test_mv_case_inside_decoder() {
+    let src = r#"
+module tb_ci {
+    sig sel : logic[7:0]
+    sig y : logic[7:0]
+    comb {
+        case (sel) inside {
+            0 : { y = 8'h00 }
+            [1:10] : { y = 8'h0A }
+            [11:20], 30 : { y = 8'h14 }
+            default : { y = 8'hFF }
+        }
+    }
+    initial {
+        sel = 5
+        #1
+        $display("CI y=%0h", y)
+        $finish
+    }
+}
+"#;
+    let r = mivon_mv::transpile(src, "ci").expect("transpile .mv OK");
+    assert!(
+        r.sv.contains("case (sel) inside"),
+        "emisi inside: {}",
+        r.sv
+    );
+    assert!(r.sv.contains("[1:10]:"), "rentang: {}", r.sv);
+    let sigs = simulate_signals(&r.sv, 50).expect("simulasi harus jalan");
+    let y = sigs.iter().find(|(s, _)| s == "y").unwrap().1.to_u64();
+    assert_eq!(y, 0x0A, "sel=5 dalam [1:10] => 0A (y={y:02x})");
+}
+
 /// `uint[8]` = vektor 8-bit (angka = LEBAR), bukan array 8 x 32-bit.
 #[test]
 fn test_mv_uint_bracket_is_bit_width() {

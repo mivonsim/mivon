@@ -269,6 +269,57 @@ pub(crate) fn check_stmt<'a>(
             }
             Ok(())
         }
+        Stmt::CaseInside {
+            expr,
+            items,
+            default,
+            qual,
+            line,
+            col,
+        } => {
+            check_expr(expr, ctx, scope, 0)?;
+            // E2013 untuk label NILAI duplikat (kunci sama seperti `case`
+            // biasa). Rentang `[lo:hi]` dilewati konservatif — overlap
+            // parsial antar-rentang bukan duplikat pasti.
+            let mut seen: Vec<String> = Vec::new();
+            for (vals, body) in items {
+                for v in vals {
+                    match v {
+                        InsideItem::Value(e) => {
+                            check_expr(e, ctx, scope, 0)?;
+                            let key = expr_label_key(e);
+                            if seen.contains(&key) {
+                                let qual_s = qual.as_deref().unwrap_or("");
+                                return Err(err_at(
+                                    *line,
+                                    *col,
+                                    "E2013",
+                                    format!(
+                                        "label case inside '{key}' duplikat — branch ini tidak akan \
+                                         pernah dieksekusi{}",
+                                        if qual_s.is_empty() {
+                                            String::new()
+                                        } else {
+                                            format!(" (qualifier '{qual_s}')")
+                                        }
+                                    ),
+                                ));
+                            }
+                            seen.push(key);
+                        }
+                        InsideItem::Range(lo, hi) => {
+                            check_expr(lo, ctx, scope, 0)?;
+                            check_expr(hi, ctx, scope, 0)?;
+                        }
+                    }
+                }
+                check_stmt(body, ctx, scope, kind)?;
+            }
+            if let Some(d) = default {
+                check_stmt(d, ctx, scope, kind)?;
+            }
+            Ok(())
+        }
         Stmt::For {
             var,
             from,

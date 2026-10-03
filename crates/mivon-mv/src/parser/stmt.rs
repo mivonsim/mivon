@@ -50,9 +50,34 @@ impl Parser {
         }
     }
 
+    /// Parse satu label `case inside`: rentang `[lo:hi]` atau nilai tunggal.
+    /// `[` di posisi label SELALU pembuka rentang (bukan bit-select — tak ada
+    /// base); tanpa `:` ditolak dengan pesan jelas (bukan ditebak diam-diam).
+    pub(crate) fn parse_inside_label(&mut self) -> Result<InsideItem, MvError> {
+        if self.eat(&Tok::LBrack) {
+            let lo = self.parse_expr()?;
+            if !self.eat(&Tok::Colon) {
+                let (l, c) = self.pos_line();
+                return Err(MvError::new(
+                    l,
+                    c,
+                    "label 'case inside' berbentuk nilai atau rentang '[lo:hi]' — \
+                     '[' tanpa ':' tidak sah di sini"
+                        .to_string(),
+                ));
+            }
+            let hi = self.parse_expr()?;
+            self.expect(&Tok::RBrack)?;
+            return Ok(InsideItem::Range(lo, hi));
+        }
+        Ok(InsideItem::Value(self.parse_expr()?))
+    }
+
     /// F26: parse body `case (...)` setelah keyword — items `val: stmt`,
     /// `a, b: stmt`, dan `default: stmt`. `qual` = priority/unique/unique0
     /// (None utk biasa), `kind` = "case"/"casez"/"casex".
+    /// Bila setelah `)` ada keyword `inside`, parse body `case inside`
+    /// (label nilai `[lo:hi]` rentang) → `Stmt::CaseInside`.
     pub(crate) fn parse_case_body(
         &mut self,
         qual: Option<String>,
@@ -65,9 +90,37 @@ impl Parser {
         self.expect(&Tok::LParen)?;
         let expr = self.parse_expr()?;
         self.expect(&Tok::RParen)?;
+        // `case (x) inside { ... }` — membership + rentang (LRM 1800 §12.5).
+        // `inside` di sini keyword struktural (bukan operator constraint).
+        let is_inside = self.eat(&Tok::Inside);
         self.expect(&Tok::LBrace)?;
-        let mut items = Vec::new();
         let mut default: Option<Box<Stmt>> = None;
+        if is_inside {
+            let mut items = Vec::new();
+            while !self.eat(&Tok::RBrace) {
+                if self.eat(&Tok::Default) {
+                    self.expect(&Tok::Colon)?;
+                    default = Some(Box::new(self.parse_stmt()?));
+                } else {
+                    let mut vals = vec![self.parse_inside_label()?];
+                    while self.eat(&Tok::Comma) {
+                        vals.push(self.parse_inside_label()?);
+                    }
+                    self.expect(&Tok::Colon)?;
+                    let body = self.parse_stmt()?;
+                    items.push((vals, body));
+                }
+            }
+            return Ok(Stmt::CaseInside {
+                expr,
+                items,
+                default,
+                qual,
+                line,
+                col,
+            });
+        }
+        let mut items = Vec::new();
         while !self.eat(&Tok::RBrace) {
             if self.eat(&Tok::Default) {
                 self.expect(&Tok::Colon)?;

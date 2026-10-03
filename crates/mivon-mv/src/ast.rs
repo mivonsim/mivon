@@ -212,6 +212,18 @@ pub enum Stmt {
         line: usize,
         col: usize,
     },
+    /// `case (expr) inside { v: ...; [lo:hi]: ...; default: ... }` —
+    /// membership + rentang (LRM 1800 §12.5). Label `InsideItem::Value`
+    /// atau `Range` (bukan `Expr` biasa — `[lo:hi]` bukan select di sini).
+    CaseInside {
+        expr: Expr,
+        items: Vec<(Vec<InsideItem>, Stmt)>,
+        default: Option<Box<Stmt>>,
+        qual: Option<String>,
+        /// posisi keyword `case` — E2013 (label duplikat)
+        line: usize,
+        col: usize,
+    },
     /// `for var in from..to { body }` — optional `step` : `for i in 0..N step 2`
     /// → increment `i = i + 2` di SV (default `+ 1`).
     For {

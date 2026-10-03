@@ -176,6 +176,22 @@ fn e2001_in_cover_cond() {
 }
 
 #[test]
+fn ok_case_inside_values_and_ranges() {
+    // Label nilai + rentang + default lolos; sinyal dikenal.
+    let src = "module m {\n sig x : logic[7:0]\n sig y : logic[7:0]\n comb {\n case (x) inside {\n 0 : { y = 0 }\n [1:10], x : { y = 1 }\n default : { y = 2 }\n }\n }\n}\n";
+    check_src(src).expect("case inside harus lolos");
+}
+
+#[test]
+fn e2013_in_case_inside_value_dup() {
+    // Label NILAI duplikat → E2013 (rentang dilewati konservatif).
+    let src = "module m {\n sig x : logic[7:0]\n sig y : bit\n comb {\n case (x) inside {\n 5 : { y = 1 }\n 5 : { y = 0 }\n }\n }\n}\n";
+    let e = check_src(src).unwrap_err();
+    assert!(e.msg.contains("E2013"), "msg: {}", e.msg);
+    assert!(e.msg.contains("inside"), "msg: {}", e.msg);
+}
+
+#[test]
 fn ok_package_const_in_enum_width() {
     let src = "package p {\n const N = 4\n enum(N) Color { RED, GREEN } }\nmodule m { in clk : bit\n out c : p::Color\n comb { c = RED } }";
     check_src(src).expect("const package boleh dipakai di lebar enum");

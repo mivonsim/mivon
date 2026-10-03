@@ -3,6 +3,7 @@
 //! 1 file = 1 tanggung jawab.
 
 use super::expr::emit_expr;
+use super::expr::emit_inside_item;
 use super::line;
 use crate::ast::*;
 
@@ -71,6 +72,31 @@ pub(crate) fn emit_stmt(out: &mut String, indent: usize, stmt: &Stmt) {
             line(out, indent, &format!("{} ({})", head, emit_expr(expr)));
             for (vals, body) in items {
                 let vs: Vec<String> = vals.iter().map(emit_expr).collect();
+                line(out, indent + 1, &format!("{}: begin", vs.join(", ")));
+                emit_body(out, indent + 2, body);
+                line(out, indent + 1, "end");
+            }
+            if let Some(d) = default {
+                line(out, indent + 1, "default: begin");
+                emit_body(out, indent + 2, d);
+                line(out, indent + 1, "end");
+            }
+            line(out, indent, "endcase");
+        }
+        Stmt::CaseInside {
+            expr,
+            items,
+            default,
+            qual,
+            ..
+        } => {
+            let head = match qual {
+                Some(q) => format!("{} case", q),
+                None => "case".to_string(),
+            };
+            line(out, indent, &format!("{} ({}) inside", head, emit_expr(expr)));
+            for (vals, body) in items {
+                let vs: Vec<String> = vals.iter().map(emit_inside_item).collect();
                 line(out, indent + 1, &format!("{}: begin", vs.join(", ")));
                 emit_body(out, indent + 2, body);
                 line(out, indent + 1, "end");

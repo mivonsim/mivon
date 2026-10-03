@@ -245,6 +245,33 @@ module m {
 }
 
 #[test]
+fn codegen_case_inside_ranges() {
+    // `case (x) inside` + label `[lo:hi]` di-emit 1:1 (bentuk yang diterima
+    // pipeline SV Mivon — `inside_range_bounds` membaca RangeSelect base-0).
+    let src = r#"
+module m {
+    sig x : logic[7:0]
+    sig y : logic[7:0]
+    comb {
+        case (x) inside {
+            0 : { y = 8'h00 }
+            [1:10], 30 : { y = 8'h0A }
+            default : { y = 8'hFF }
+        }
+    }
+}
+"#;
+    let file = parse(src).unwrap();
+    let out = generate(&file, "m");
+    assert!(
+        out.sv.contains("case (x) inside"),
+        "head inside: {}",
+        out.sv
+    );
+    assert!(out.sv.contains("[1:10], 30:"), "rentang + multi: {}", out.sv);
+}
+
+#[test]
 fn codegen_testbench() {
     let src = r#"
 module counter #(WIDTH = 8) {

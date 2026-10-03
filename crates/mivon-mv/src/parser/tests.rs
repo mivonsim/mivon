@@ -691,6 +691,51 @@ fn parse_immediate_assume_at_module_level_is_rejected() {
 }
 
 #[test]
+fn parse_case_inside_values_ranges_default() {
+    // `case (x) inside` — label nilai, rentang `[lo:hi]`, multi-label, default.
+    let src = "module m {\n sig x : logic[7:0]\n sig y : bit\n comb {\n case (x) inside {\n 0 : { y = 0 }\n [1:10], 30 : { y = 1 }\n default : { y = 0 }\n }\n }\n}\n";
+    let f = parse(src).expect("parse case inside");
+    let stmts = first_comb(&f);
+    let ci = stmts
+        .iter()
+        .find_map(|s| match s {
+            Stmt::CaseInside { items, default, .. } => Some((items, default)),
+            _ => None,
+        })
+        .expect("harus ada Stmt::CaseInside");
+    assert_eq!(ci.0.len(), 2, "2 branch: {ci:?}");
+    assert!(matches!(ci.0[0].0[0], InsideItem::Value(_)), "label 0 nilai");
+    assert!(matches!(ci.0[1].0[0], InsideItem::Range(_, _)), "label [1:10] rentang");
+    assert!(matches!(ci.0[1].0[1], InsideItem::Value(_)), "label 30 nilai");
+    assert!(ci.1.is_some(), "default ada");
+}
+
+#[test]
+fn parse_case_inside_with_qualifier() {
+    // Qualifier + inside ortogonal: `priority case (x) inside`.
+    let src = "module m {\n sig x : logic[7:0]\n sig y : bit\n comb {\n priority case (x) inside {\n [1:10] : { y = 1 }\n }\n }\n}\n";
+    let f = parse(src).expect("parse priority case inside");
+    let stmts = first_comb(&f);
+    assert!(
+        stmts.iter().any(|s| matches!(
+            s,
+            Stmt::CaseInside {
+                qual: Some(_),
+                ..
+            }
+        )),
+        "qualifier dipertahankan: {stmts:?}"
+    );
+}
+
+#[test]
+fn parse_case_inside_bracket_without_colon_rejected() {
+    // `[` tanpa `:` di posisi label ditolak eksplisit.
+    let err = parse("module m {\n sig x : logic[7:0]\n sig y : bit\n comb {\n case (x) inside {\n [5] : { y = 1 }\n }\n }\n}\n").unwrap_err();
+    assert!(err.msg.contains("'[lo:hi]'"), "msg: {}", err.msg);
+}
+
+#[test]
 fn parse_cover_immediate_and_property() {
     // `cover (c)` immediate (tanpa `else`) + `cover property` RAW.
     let src = "module m {\n sig a : bit\n initial {\n cover (a == 0) $info(\"ok\")\n }\n cover property (@(posedge clk) a |-> b)\n }\n";
@@ -738,6 +783,21 @@ fn first_initial(f: &MvFile) -> Vec<Stmt> {
         .expect("harus ada blok initial")
 }
 
+/// Isi blok `comb` pertama (helper test case-inside).
+fn first_comb(f: &MvFile) -> Vec<Stmt> {
+    f.modules[0]
+        .items
+        .iter()
+        .find_map(|i| match i {
+            MItem::Comb(body) => match body {
+                Stmt::Block(s) => Some(s.clone()),
+                other => Some(vec![other.clone()]),
+            },
+            _ => None,
+        })
+        .expect("harus ada blok comb")
+}
+
 /// Nama varian statement (tanpa posisi) — bentuk DSL dan bentuk SV harus
 /// menghasilkan urutan varian yang sama walau `line`/`col` berbeda
 /// (kata `emit` 4 huruf vs `->` 2 huruf).
@@ -776,6 +836,7 @@ fn stmt_kinds(stmts: &[Stmt]) -> Vec<&'static str> {
             Stmt::AssumeProperty(_) => "AssumeProperty",
             Stmt::Cover { .. } => "Cover",
             Stmt::CoverProperty(_) => "CoverProperty",
+            Stmt::CaseInside { .. } => "CaseInside",
             Stmt::ExprStmt(_) => "ExprStmt",
             Stmt::RawSvh(_) => "RawSvh",
         }

@@ -129,7 +129,7 @@ pub(crate) fn emit_expr(e: &Expr) -> String {
 }
 
 /// Emit satu item inside: nilai tunggal atau `[lo:hi]` (F12).
-fn emit_inside_item(it: &InsideItem) -> String {
+pub(crate) fn emit_inside_item(it: &InsideItem) -> String {
     match it {
         InsideItem::Value(e) => emit_expr(e),
         InsideItem::Range(lo, hi) => format!("[{}:{}]", emit_expr(lo), emit_expr(hi)),
