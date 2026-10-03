@@ -245,6 +245,38 @@ module m {
 }
 
 #[test]
+fn codegen_statement_level_property() {
+    // `assert/assume/cover property` di blok prosedural di-emit di tempatnya.
+    let src = r#"
+module m {
+    sig a : bit
+    initial {
+        assert property (@(posedge clk) a == 1)
+        assume property (@(posedge clk) a == 1)
+        cover property (@(posedge clk) a == 1)
+    }
+}
+"#;
+    let file = parse(src).unwrap();
+    let out = generate(&file, "m");
+    assert!(
+        out.sv.contains("assert property (@(posedge clk) a == 1);"),
+        "sv: {}",
+        out.sv
+    );
+    assert!(
+        out.sv.contains("assume property (@(posedge clk) a == 1);"),
+        "sv: {}",
+        out.sv
+    );
+    assert!(
+        out.sv.contains("cover property (@(posedge clk) a == 1);"),
+        "sv: {}",
+        out.sv
+    );
+}
+
+#[test]
 fn codegen_case_inside_ranges() {
     // `case (x) inside` + label `[lo:hi]` di-emit 1:1 (bentuk yang diterima
     // pipeline SV Mivon — `inside_range_bounds` membaca RangeSelect base-0).

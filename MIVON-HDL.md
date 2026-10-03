@@ -881,11 +881,15 @@ assert (count <= 99) $info("count ok") else $error("count overflow")
 assume (req == 0) $info("idle") else $error("req saat reset")
 cover (state == DONE) $info("done covered")
 
-// concurrent — di LEVEL MODULE (bukan di dalam initial/always)
+// concurrent — UTAMA di LEVEL MODULE (bukan di dalam initial/always)
 assert property (@(posedge clk) enable |-> count == $past(count) + 1)
 assume property (@(posedge clk) req |-> ack)
 cover property (@(posedge clk) state == DONE)
 ```
+
+Bentuk `assert/assume/cover property` juga sah di DALAM blok prosedural
+(statement-level, di-emit di tempatnya) — parser sempat gagal di sini
+(missing `advance()` sesudah keyword `property`, F74).
 
 Emisi ke SV:
 
@@ -1590,6 +1594,7 @@ module tb_traffic {
 | **F71** ✅ | **`unique/priority/unique0 if` di `.mv`** — gap: qualifier + `if` ditolak `diharapkan 'case'/...`. Kini `Stmt::If{qual}` (pola field seperti `Case::qual`); arm qualifier parse `if` dulu (error menyebut `if` sbg opsi); codegen `unique if (c) begin` + rantai `else if` plain; check & print ikut | demo e2e `ui_demo` → first-match + rantai + else `UNIQUE_IF_OK y=0`; SV regen disimulasikan ulang identik; verilator OK (iverilog tak support `unique if` — limit tool, diverifikasi minimal); 4 test baru (parse ×2, codegen, check, e2e `test_mv_unique_if_chain`); contoh `examples/mv/unique_if.mv` |
 | **F72** ✅ | **Tipe UVM bawaan dikenal checker `.mv`** — `var seqr : uvm_sequencer` → E2005, paksa `--no-check` untuk semua testbench UVM. Kini allowlist `UVM_KNOWN_TYPES` (31 kelas `__uvm_*` engine) di `check_type_scope`: deklarasi bertipe UVM lolos; typo (`uvm_sequncer`) tetap E2005, sinyal tak dikenal di argumen call tetap E2001 | demo e2e `examples/mv_uvm/my_test.mv` → `mgen` tanpa flag OK + SV identik kecuali baris `item` (contoh diperbaiki: `item` dideklarasikan `uvm_sequence_item`); `.svh` kosong basi dihapus; `mgen --check` OK; 4 test baru (check ×3, e2e `test_mv_uvm_class_transpiles_with_check`) |
 | **F73** ✅ | **Type param override + cast lebar benar (tutup limitasi F32/F33)** — (a) `T'(a)` lebar 1 (data loss → 0): `cur_type_param_widths` diinstal per `elaborate_module_with_params_and_type` (pola `current_module`), dibaca `resolve_cast_name_width` lebih dulu → `q=0x34`; (b) `#(.T(Wide16))` Ident-typedef salah-bucket jadi value-override (T tetap default; e2e F32 tak sensitif lebar!): re-bucket di flatten bila pname type-param target & nilai resolve-sbg-tipe → `q=0x0800`; (c) `#(.T(logic[15:0]))`: `TypeParamAssign{dtype,range}` baru (range `parse_type_expr_with_range`, bukan dibuang) → 16 | oracle: `CT q=34`, `TPOV/CT16 q=0x800`, `TPL2 q=0x800`; 3 test baru width-sensitive (`typedef_override`, `literal_override`, `cast_effective_width`); buglog-mv #22 |
+| **F74** ✅ | **Fix: statement-level `assert/assume/cover property` gagal parse** — arm statement memakan keyword tapi lupa `advance()` sesudah `property` (warisan F6, dikopi F66/F69) → `diharapkan LParen, ditemukan Ident(property)`; varian AST `Stmt::*Property` tak terjangkau. Tambah 1 baris `advance()` per arm (`parser/stmt.rs`) | demo e2e `STMT_PROP_OK`; verilator OK penempatan; 3 test baru (parse statement-level ×3 keyword, codegen blok, e2e `test_mv_statement_level_assert_property`); buglog-mv #23 |
 
 **Kriteria selesai F2:** `mivon mgen examples/mv/counter.mv` menghasilkan
 `counter.sv` yang bisa disimulasikan oleh `mivon counter.sv` tanpa error.

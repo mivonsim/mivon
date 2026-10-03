@@ -525,6 +525,7 @@ impl Parser {
                 // RAW (teks persis `(...)`) karena berisi operator SVA (`|->`,
                 // `##`, `[*]`) yang bukan token .mv. Emisi 1:1 (MIVON-HDL.md §7.2).
                 if self.is_ident("property") {
+                    self.advance();
                     return Ok(Stmt::AssertProperty(self.parse_assert_property_raw()?));
                 }
                 self.expect(&Tok::LParen)?;
@@ -547,6 +548,7 @@ impl Parser {
                 self.advance();
                 // `assume property (...)` — mirror `assert property` (RAW SVA).
                 if self.is_ident("property") {
+                    self.advance();
                     return Ok(Stmt::AssumeProperty(self.parse_assert_property_raw()?));
                 }
                 self.expect(&Tok::LParen)?;
@@ -569,6 +571,7 @@ impl Parser {
                 self.advance();
                 // `cover property (...)` — mirror `assert property` (RAW SVA).
                 if self.is_ident("property") {
+                    self.advance();
                     return Ok(Stmt::CoverProperty(self.parse_assert_property_raw()?));
                 }
                 self.expect(&Tok::LParen)?;

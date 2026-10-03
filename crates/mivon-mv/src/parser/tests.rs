@@ -783,6 +783,28 @@ fn parse_cover_with_else_is_rejected() {
 }
 
 #[test]
+fn parse_statement_level_property() {
+    // `assert/assume/cover property` di dalam blok prosedural (bukan cuma
+    // level module): `property` harus dimakan parser — regresi missing
+    // `advance()` yang melempar `diharapkan LParen, ditemukan Ident(property)`.
+    let src = "module m {\n sig a : bit\n initial {\n assert property (@(posedge clk) a == 1)\n assume property (@(posedge clk) a == 1)\n cover property (@(posedge clk) a == 1)\n }\n}\n";
+    let f = parse(src).expect("parse statement-level property");
+    let stmts = first_initial(&f);
+    assert!(
+        stmts.iter().any(|s| matches!(s, Stmt::AssertProperty(_))),
+        "assert property: {stmts:?}"
+    );
+    assert!(
+        stmts.iter().any(|s| matches!(s, Stmt::AssumeProperty(_))),
+        "assume property: {stmts:?}"
+    );
+    assert!(
+        stmts.iter().any(|s| matches!(s, Stmt::CoverProperty(_))),
+        "cover property: {stmts:?}"
+    );
+}
+
+#[test]
 fn parse_immediate_cover_at_module_level_is_rejected() {
     // Mirror `assert`: immediate `cover` di level module ditolak.
     let err = parse("module m {\n in clk : bit\n cover (1'b1) $info(\"x\")\n }\n").unwrap_err();

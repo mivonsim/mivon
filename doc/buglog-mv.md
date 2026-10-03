@@ -224,6 +224,16 @@ bug di mivon utama (parser/elaborator/simulator). Status: ✅ fixed / ⏳ open.
     instance (range sebelumnya dibuang `parse_type_expr`). Oracle:
     `TPOV/CT16/TPL2 q=0x800`, `CT q=0x34`; 3 test width-sensitive baru.
 
+23. **Statement-level `assert/assume/cover property` gagal parse** — arm
+    statement memakan keyword (`advance`) tapi lupa maju sesudah `property`
+    (warisan F6, dikopi F66/F69): `is_ident` hanya peek → RAW parser
+    `expect(LParen)` melihat `Ident(property)` → error membingungkan;
+    varian AST `Stmt::AssertProperty/AssumeProperty/CoverProperty` sebagai
+    statement TAK TERJANGKAU (termasuk bentuk pre-existing `assert`!).
+    Ditemukan saat sweep matriks statement × blok. Fix: 1 baris
+    `self.advance()` per arm (`mivon-mv/src/parser/stmt.rs`). Emisi +
+    sim + check sudah benar (dipakai jalur module-level) — tanpa ubahan.
+
 ## ⏳ Open
 
 (tidak ada item open — semua bug historis sudah tertutup)

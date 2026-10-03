@@ -1209,4 +1209,52 @@ module tim {
         let t2 = print_file(&parse(&t1).unwrap());
         assert_eq!(t1, t2, "stabil: {}", t1);
     }
+
+    #[test]
+    fn roundtrip_assume_cover() {
+        // F66/F69: print `assume`/`cover` re-parse + stabil (pola
+        // stabilitas-teks seperti roundtrip_exprs — posisi diabaikan).
+        let src = r#"
+module m {
+    sig a : bit
+    initial {
+        assume (a == 0) $info("ok") else $error("bad")
+        cover (a == 1) $info("hit")
+    }
+    assume property (@(posedge clk) a |-> b)
+    cover property (@(posedge clk) a |-> b)
+}
+"#;
+        let f = parse(src).unwrap();
+        let t1 = print_file(&f);
+        let t2 = print_file(&parse(&t1).unwrap());
+        assert_eq!(t1, t2, "stabil: {}", t1);
+    }
+
+    #[test]
+    fn roundtrip_case_inside_unique_if() {
+        // F70/F71: print `case inside` + `unique if` re-parse + stabil.
+        let src = r#"
+module m {
+    sig x : logic[7:0]
+    sig y : logic[7:0]
+    comb {
+        case (x) inside {
+            0 : { y = 0 }
+            [1:10], 30 : { y = 1 }
+            default : { y = 2 }
+        }
+        unique if (y == 1) {
+            y = 2
+        } else {
+            y = 3
+        }
+    }
+}
+"#;
+        let f = parse(src).unwrap();
+        let t1 = print_file(&f);
+        let t2 = print_file(&parse(&t1).unwrap());
+        assert_eq!(t1, t2, "stabil: {}", t1);
+    }
 }

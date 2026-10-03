@@ -22947,6 +22947,36 @@ module tb_ui {
     assert_eq!(y, 1, "a=b=1 first-match => 1 (y={y})");
 }
 
+/// `assert property` di blok prosedural (statement-level) — regresi missing
+/// `advance()` sesudah keyword `property`.
+#[test]
+fn test_mv_statement_level_assert_property() {
+    let src = r#"
+module tb_sp {
+    sig clk : bit
+    sig a : bit
+    initial {
+        clk = 0
+        a = 1
+        #10
+        assert property (@(posedge clk) a == 1)
+        $display("STMT_PROP_OK")
+        $finish
+    }
+    initial {
+        forever #5 clk = ~clk
+    }
+}
+"#;
+    let r = mivon_mv::transpile(src, "sp").expect("transpile .mv OK");
+    assert!(
+        r.sv.contains("assert property (@(posedge clk) a == 1);"),
+        "emisi: {}",
+        r.sv
+    );
+    simulate_signals(&r.sv, 50).expect("simulasi harus jalan");
+}
+
 /// F72: class UVM tertranspile DENGAN check (tanpa `--no-check`) —
 /// `examples/mv_uvm/my_test.mv` lolos E2005 untuk tipe UVM bawaan.
 #[test]
