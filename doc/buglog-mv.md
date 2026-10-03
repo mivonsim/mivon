@@ -245,6 +245,15 @@ bug di mivon utama (parser/elaborator/simulator). Status: ✅ fixed / ⏳ open.
     sama, `<<` balik urutan slice; test lama `>>8=CDAB`/`>>1=B3D5`
     dikoreksi + test noslice baru.
 
+25. **`$past(v,n)` riwayat tercampur antar tick** — kunci histori hanya arg
+    (`$past(cnt)` utk n=1,2,3 berbagi 1 deque) + cap n+1 per panggilan saling
+    menggusur: tiap edge mendorong 3 salinan → p1=p2=p3=4 (harus 30/20/10
+    utk cnt steps 10/20/30/40). Bonus: riwayat-kurang mengembalikan 0,
+    bukan X (4-state). Ditemukan saat hunt diferensial buglog (probe tick
+    1/2/3). Fix: kunci per (arg,n) + X-fill `LogicVec::new` saat
+    `len<=n` (`engine/eval/expr.rs`). Oracle: model per-evaluasi cocok
+    Verilator tick-1 (cyc3 p1=20); tick-2/3 Verilator tak support arg.
+
 ## ⏳ Open
 
 (tidak ada item open — semua bug historis sudah tertutup)

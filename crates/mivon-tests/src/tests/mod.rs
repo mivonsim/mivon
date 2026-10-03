@@ -4455,6 +4455,59 @@ endmodule
     assert_eq!(r, 4, "$countones(8'b10100101) = 4");
 }
 
+/// `$past(v[,n])`: riwayat per (arg, n) — tick 1/2/3 lag 1/2/3 sampel.
+/// Regresi: kunci hanya arg → deque tercampur (p1=p2=p3=4, harus 30/20/10).
+#[test]
+fn test_sysfunc_past_ticks() {
+    let source = r#"
+module tb;
+bit clk;
+logic [7:0] cnt, p1, p2, p3;
+initial begin
+clk = 0; cnt = 8'd10;
+#12 cnt = 8'd20;
+#10 cnt = 8'd30;
+#10 cnt = 8'd40;
+#10;
+$display("cnt=%0d p1=%0d p2=%0d p3=%0d", cnt, p1, p2, p3);
+$finish;
+end
+always @(posedge clk) begin
+p1 <= $past(cnt);
+p2 <= $past(cnt, 2);
+p3 <= $past(cnt, 3);
+end
+initial begin forever #5 clk = ~clk; end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 100).unwrap();
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    assert_eq!(get("p1"), 30, "$past(cnt) lag 1");
+    assert_eq!(get("p2"), 20, "$past(cnt,2) lag 2");
+    assert_eq!(get("p3"), 10, "$past(cnt,3) lag 3");
+}
+
+/// `$past` tanpa riwayat cukup → X (4-state), bukan 0.
+#[test]
+fn test_sysfunc_past_initial_x() {
+    let source = r#"
+module tb;
+logic [7:0] v;
+bit w1, w2;
+initial begin
+v = 8'hAA;
+w1 = $isunknown($past(v));
+w2 = $isunknown($past(v));
+#1 $finish;
+end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 20).unwrap();
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    assert_eq!(get("w1"), 1, "$past pertama harus X");
+    assert_eq!(get("w2"), 0, "$past kedua sudah ada riwayat");
+}
+
 #[test]
 fn test_sysfunc_onehot() {
     let source = r#"

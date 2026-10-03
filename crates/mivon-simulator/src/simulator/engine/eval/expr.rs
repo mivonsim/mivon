@@ -1777,6 +1777,7 @@ impl SimulationEngine {
                     "$past" => {
                         if let Some(arg) = args.first() {
                             let val = self.evaluate_expr(arg)?;
+                            let w = val.width.max(1);
                             let n = if args.len() > 1 {
                                 if let Ok(nv) = self.evaluate_expr(&args[1]) {
                                     nv.to_u64().max(1) as usize
@@ -1786,7 +1787,12 @@ impl SimulationEngine {
                             } else {
                                 1
                             };
-                            let key = format!("$past({:?})", arg);
+                            // Kunci per (arg, n): `$past(x)`, `$past(x,2)`,
+                            // `$past(x,3)` riwayatnya TERPISAH. Sebelumnya
+                            // kunci hanya arg → 3 deque tercampur + cap
+                            // n+1 per panggilan saling menggusur (probe:
+                            // p1=p2=p3=4 padahal harus 5,4,3).
+                            let key = format!("$past({:?},{n})", arg);
                             let hist = self
                                 .sysfunc_history
                                 .entry(Symbol::intern(&key))
@@ -1802,7 +1808,8 @@ impl SimulationEngine {
                                 let past = hist[hist.len() - 1 - n].clone();
                                 Ok(past)
                             } else {
-                                Ok(LogicVec::fill(LogicVal::Zero, hist[0].width))
+                                // Belum ada sampel cukup: X (4-state), bukan 0.
+                                Ok(LogicVec::new(w))
                             }
                         } else {
                             Ok(LogicVec::from_u64(0, 32))
