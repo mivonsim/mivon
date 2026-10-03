@@ -423,8 +423,9 @@ pub fn evaluate_expr_simple(
         // Streaming concat `{<<{...}}` / `{>>{...}}` — mirror serial
         // eval/expr.rs agar DAG-parallel identik (ditemukan mivon-fuzz:
         // `{<<{ {4{1'b1}} }}` = 0f di serial, X di dag → differential).
+        // LRM 1800 §11.4.14: `>>` identitas; `<<` balik urutan slice.
         IrExpr::StreamingConcat {
-            op: _,
+            op,
             slice_size,
             slices,
         } => {
@@ -432,14 +433,15 @@ pub fn evaluate_expr_simple(
             for sl in slices {
                 vals.push(evaluate_expr_simple(sl, signals, sig_info)?);
             }
-            let all_bits: Vec<LogicVal> =
-                vals.iter().flat_map(|v| v.bits.iter().copied()).collect();
+            let msb_first: Vec<LogicVal> =
+                vals.iter().flat_map(|v| v.bits.iter().rev().copied()).collect();
             let slen = slice_size.unwrap_or(1).max(1);
-            let mut result = Vec::new();
-            // Reverse slice order (arah stream: `<<`/`>>` sama di jalur serial).
-            for chunk in all_bits.chunks(slen).rev() {
-                result.extend(chunk.iter());
-            }
+            let packed_msb: Vec<LogicVal> = if op == ">>" {
+                msb_first
+            } else {
+                msb_first.chunks(slen).rev().flat_map(|c| c.iter().copied()).collect()
+            };
+            let result: Vec<LogicVal> = packed_msb.into_iter().rev().collect();
             Ok(LogicVec {
                 width: result.len(),
                 bits: result,

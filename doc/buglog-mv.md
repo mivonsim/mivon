@@ -234,6 +234,17 @@ bug di mivon utama (parser/elaborator/simulator). Status: ✅ fixed / ⏳ open.
     `self.advance()` per arm (`mivon-mv/src/parser/stmt.rs`). Emisi +
     sim + check sudah benar (dipakai jalur module-level) — tanpa ubahan.
 
+24. **Streaming concat `>>`/`<<` identik & default salah** — ketiga evaluator
+    (IR serial, AST, DAG-parallel) kumpulkan bit LSB-first lalu balik urutan
+    chunk utk KEDUA operator + default slice=1 bit: `{>>{a}}` full-reversal
+    (harusnya identitas), `{>>8{a}}` byte-swap (harusnya identitas).
+    Ditemukan saat hunt diferensial buglog; oracle runtime Verilator
+    (bukan const-fold): `>>` identitas semua slice; `<<` balik urutan slice
+    MSB-first (`<<`=bitrev, `<<2`=73ea, `<<4`=dcba, `<<8`=cdab utk abcd).
+    Fix LRM 1800 §11.4.14 di 3 situs: stream MSB-first, `>>` pack urutan
+    sama, `<<` balik urutan slice; test lama `>>8=CDAB`/`>>1=B3D5`
+    dikoreksi + test noslice baru.
+
 ## ⏳ Open
 
 (tidak ada item open — semua bug historis sudah tertutup)

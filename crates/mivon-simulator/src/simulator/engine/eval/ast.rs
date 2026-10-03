@@ -972,8 +972,10 @@ impl SimulationEngine {
                 for sl in slices {
                     vals.push(self.evaluate_ast_expr(sl)?);
                 }
-                let all_bits: Vec<LogicVal> =
-                    vals.iter().flat_map(|v| v.bits.iter().copied()).collect();
+                // LRM 1800 §11.4.14 (mirror jalur IR): `>>` identitas;
+                // `<<` balik urutan slice, bit dalam slice tetap.
+                let msb_first: Vec<LogicVal> =
+                    vals.iter().flat_map(|v| v.bits.iter().rev().copied()).collect();
                 let slen = if let Some(ss_expr) = slice_size {
                     let ss_val = self.evaluate_ast_expr(ss_expr)?;
                     let n = ss_val.to_u64() as usize;
@@ -987,16 +989,12 @@ impl SimulationEngine {
                 } else {
                     1
                 };
-                let mut result = Vec::new();
-                if op == ">>" {
-                    for chunk in all_bits.chunks(slen).rev() {
-                        result.extend(chunk.iter().rev());
-                    }
+                let packed_msb: Vec<LogicVal> = if op == ">>" {
+                    msb_first
                 } else {
-                    for chunk in all_bits.chunks(slen).rev() {
-                        result.extend(chunk.iter());
-                    }
-                }
+                    msb_first.chunks(slen).rev().flat_map(|c| c.iter().copied()).collect()
+                };
+                let result: Vec<LogicVal> = packed_msb.into_iter().rev().collect();
                 Ok(LogicVec {
                     width: result.len(),
                     bits: result,

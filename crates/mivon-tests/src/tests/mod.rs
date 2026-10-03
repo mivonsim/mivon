@@ -18564,11 +18564,10 @@ module tb;
     reg [15:0] a, b, c;
     initial begin
         a = 16'hABCD;
-        // {>> 8 {a}}: reverse 8-bit slice order => byte swap
-        // 0xABCD -> [0xAB, 0xCD] reversed => [0xCD, 0xAB] = 0xCDAB
+        // {>> 8 {a}}: LRM 1800 §11.4.14 — right-streaming pack urutan sama
+        // (identitas utk packed): 0xABCD tetap 0xABCD.
         b = {>> 8 {a}};
-        // {>> 1 {a}}: reverse 1-bit slice order => full bit-reversal
-        // 0xABCD = 1010_1011_1100_1101 -> 1011_0011_1101_0101 = 0xB3D5
+        // {>> 1 {a}}: identitas juga (bukan bit-reversal).
         c = {>> 1 {a}};
         #1 $finish;
     end
@@ -18585,8 +18584,39 @@ endmodule
         .find(|(n, _)| n == "c")
         .map(|(_, v)| v.to_u64())
         .unwrap_or(0);
-    assert_eq!(b_val, 0xCDAB, "stream >>8 16hABCD = 0xCDAB (byte swap)");
-    assert_eq!(c_val, 0xB3D5, "stream >>1 16hABCD = 0xB3D5 (bit reversal)");
+    assert_eq!(b_val, 0xABCD, "stream >>8 16hABCD = 0xABCD (identitas)");
+    assert_eq!(c_val, 0xABCD, "stream >>1 16hABCD = 0xABCD (identitas)");
+}
+
+#[test]
+fn test_streaming_concat_ltlt_noslice_bitrev() {
+    // {<< {a}} tanpa slice: full bit-reversal (oracle Verilator runtime).
+    // 0xABCD = 1010_1011_1100_1101 -> 1011_0011_1101_0101 = 0xB3D5.
+    // {>> {a}} tanpa slice: identitas.
+    let source = r#"
+module tb;
+    reg [15:0] a, b, c;
+    initial begin
+        a = 16'hABCD;
+        b = {<< {a}};
+        c = {>> {a}};
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 5).unwrap();
+    let b_val = sigs
+        .iter()
+        .find(|(n, _)| n == "b")
+        .map(|(_, v)| v.to_u64())
+        .unwrap_or(0);
+    let c_val = sigs
+        .iter()
+        .find(|(n, _)| n == "c")
+        .map(|(_, v)| v.to_u64())
+        .unwrap_or(0);
+    assert_eq!(b_val, 0xB3D5, "stream << 16hABCD = 0xB3D5 (bitrev)");
+    assert_eq!(c_val, 0xABCD, "stream >> 16hABCD = 0xABCD (identitas)");
 }
 
 #[test]

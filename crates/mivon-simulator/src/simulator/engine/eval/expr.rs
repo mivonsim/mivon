@@ -2306,8 +2306,9 @@ impl SimulationEngine {
                 for sl in slices {
                     vals.push(self.evaluate_expr(sl)?);
                 }
-                let all_bits: Vec<LogicVal> =
-                    vals.iter().flat_map(|v| v.bits.iter().copied()).collect();
+                // Bit stream MSB-first: `bits` LSB-first → balik.
+                let msb_first: Vec<LogicVal> =
+                    vals.iter().flat_map(|v| v.bits.iter().rev().copied()).collect();
                 let slen = slice_size.unwrap_or(1);
                 if slen == 0 {
                     return Err(self.diag_error(
@@ -2315,19 +2316,14 @@ impl SimulationEngine {
                         "streaming slice size must be > 0",
                     ));
                 }
-                let mut result = Vec::new();
-                if op == ">>" {
-                    // Right streaming: reverse slice order only (same as <<).
-                    // Direction only matters for padding on non-multiple widths.
-                    for chunk in all_bits.chunks(slen).rev() {
-                        result.extend(chunk.iter());
-                    }
+                // LRM 1800 §11.4.14: `>>` pack slice urutan sama (identitas
+                // utk packed); `<<` balik urutan slice, bit dalam slice tetap.
+                let packed_msb: Vec<LogicVal> = if op == ">>" {
+                    msb_first
                 } else {
-                    // reverse slice order only
-                    for chunk in all_bits.chunks(slen).rev() {
-                        result.extend(chunk.iter());
-                    }
-                }
+                    msb_first.chunks(slen).rev().flat_map(|c| c.iter().copied()).collect()
+                };
+                let result: Vec<LogicVal> = packed_msb.into_iter().rev().collect();
                 Ok(LogicVec {
                     width: result.len(),
                     bits: result,
