@@ -8929,6 +8929,39 @@ endmodule
     assert_eq!(get_val("eq"), 0, "5.5 == 3.0 should be false");
 }
 
+/// Fungsi matematika real LRM 1800 §20.8 (`$sqrt`, `$ln`, `$pow`, ...).
+/// Regresi: tak dikenal → 0 + warning RT9003 (mis. `$sqrt(2.0)` = 0).
+/// Oracle: iverilog (`sqrt=1.414214 ln=1.000000 floor=3.000000 exp=2.718282`).
+#[test]
+fn test_real_math_sysfuncs() {
+    let source = r#"
+module tb;
+    real a, b, c, d;
+    integer n1, n2, n3;
+    initial begin
+        a = $sqrt(2.0);
+        b = $pow(2.0, 10.0);
+        c = $sin(0.0) + $cos(0.0);
+        d = $atan2(1.0, 1.0);
+        n1 = $rtoi(a * 1000.0);
+        n2 = $rtoi(b);
+        n3 = $rtoi(d * 1000.0);
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 2).unwrap();
+    let get_val = |name: &str| {
+        sigs.iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, v)| v.to_u64())
+            .unwrap()
+    };
+    assert_eq!(get_val("n1"), 1414, "$rtoi($sqrt(2)*1000) = 1414");
+    assert_eq!(get_val("n2"), 1024, "$rtoi($pow(2,10)) = 1024");
+    assert_eq!(get_val("n3"), 785, "$rtoi($atan2(1,1)*1000) = 785");
+}
+
 #[test]
 fn test_simulation_state_send_sync_audit() {
     // DEBT-17: Simulation state Send/Sync audit — compile-time guard.

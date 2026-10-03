@@ -417,7 +417,13 @@ pub fn ir_expr_is_real(e: &IrExpr, signals: &[SignalInfo]) -> bool {
         IrExpr::BinaryOp(_, a, b) | IrExpr::Cond(_, a, b) => {
             ir_expr_is_real(a, signals) || ir_expr_is_real(b, signals)
         }
-        IrExpr::SysFunc { name, .. } => matches!(name.as_str(), "$itor" | "$bitstoreal"),
+        IrExpr::SysFunc { name, .. } => matches!(
+            name.as_str(),
+            "$itor" | "$bitstoreal" | "$ln" | "$log10" | "$exp" | "$sqrt" | "$pow"
+                | "$floor" | "$ceil" | "$round" | "$sin" | "$cos" | "$tan"
+                | "$asin" | "$acos" | "$atan" | "$atan2" | "$hypot" | "$sinh"
+                | "$cosh" | "$tanh" | "$asinh" | "$acosh" | "$atanh"
+        ),
         _ => false,
     }
 }

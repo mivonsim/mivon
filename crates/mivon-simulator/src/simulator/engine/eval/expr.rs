@@ -111,6 +111,18 @@ impl SimulationEngine {
         self.evaluate_expr(expr)
     }
 
+    /// Argumen fungsi matematika real: nilai f64 dari ekspresi — bit-pattern
+    /// bila bertipe real, integer (signed) bila bukan (LRM 1800 §20.8 argumen
+    /// boleh integer).
+    pub(crate) fn eval_sysfunc_real_arg(&mut self, arg: &IrExpr) -> Result<f64, SimError> {
+        let v = self.evaluate_expr(arg)?;
+        if crate::simulator::util::ir_expr_is_real(arg, &self.design.top.signals) {
+            Ok(f64::from_bits(v.to_u64()))
+        } else {
+            Ok(v.to_i64() as f64)
+        }
+    }
+
     pub(crate) fn evaluate_expr(&mut self, expr: &IrExpr) -> Result<LogicVec, SimError> {
         self.expr_recursion_depth += 1;
         if self.expr_recursion_depth > 4096 {
@@ -796,6 +808,61 @@ impl SimulationEngine {
                             Err(self.diag_error(
                                 mivon_core::diagnostics::DiagCode::DpiError,
                                 "$onehot0 expects 1 argument",
+                            ))
+                        }
+                    }
+                    // Fungsi matematika real LRM 1800 §20.8: argumen real
+                    // (atau integer → konversi) → hasil real (bit-pattern
+                    // f64 64-bit, sama seperti `$itor`). Sebelumnya tak
+                    // dikenal → 0 + warning RT9003 (mis. `$sqrt(2.0)` = 0).
+                    "$ln" | "$log10" | "$exp" | "$sqrt" | "$floor" | "$ceil" | "$round"
+                    | "$sin" | "$cos" | "$tan" | "$asin" | "$acos" | "$atan" | "$sinh"
+                    | "$cosh" | "$tanh" | "$asinh" | "$acosh" | "$atanh" => {
+                        if let Some(arg) = args.first() {
+                            let x = self.eval_sysfunc_real_arg(arg)?;
+                            let r = match name.as_str() {
+                                "$ln" => x.ln(),
+                                "$log10" => x.log10(),
+                                "$exp" => x.exp(),
+                                "$sqrt" => x.sqrt(),
+                                "$floor" => x.floor(),
+                                "$ceil" => x.ceil(),
+                                "$round" => x.round(),
+                                "$sin" => x.sin(),
+                                "$cos" => x.cos(),
+                                "$tan" => x.tan(),
+                                "$asin" => x.asin(),
+                                "$acos" => x.acos(),
+                                "$atan" => x.atan(),
+                                "$sinh" => x.sinh(),
+                                "$cosh" => x.cosh(),
+                                "$tanh" => x.tanh(),
+                                "$asinh" => x.asinh(),
+                                "$acosh" => x.acosh(),
+                                _ => x.atanh(),
+                            };
+                            Ok(LogicVec::from_u64(r.to_bits(), 64))
+                        } else {
+                            Err(self.diag_error(
+                                mivon_core::diagnostics::DiagCode::DpiError,
+                                "real math function expects 1 argument",
+                            ))
+                        }
+                    }
+                    "$pow" | "$atan2" | "$hypot" => {
+                        if args.len() >= 2 {
+                            let x = self.eval_sysfunc_real_arg(&args[0])?;
+                            let y = self.eval_sysfunc_real_arg(&args[1])?;
+                            let r = match name.as_str() {
+                                "$pow" => x.powf(y),
+                                "$atan2" => x.atan2(y),
+                                _ => x.hypot(y),
+                            };
+                            Ok(LogicVec::from_u64(r.to_bits(), 64))
+                        } else {
+                            Err(self.diag_error(
+                                mivon_core::diagnostics::DiagCode::DpiError,
+                                "real math function expects 2 arguments",
                             ))
                         }
                     }

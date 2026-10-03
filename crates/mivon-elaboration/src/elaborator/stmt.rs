@@ -290,6 +290,20 @@ fn expr_approx_width(expr: &IrExpr, signals: &[SignalInfo]) -> usize {
             slices.iter().map(|e| expr_approx_width(e, signals)).sum()
         }
         IrExpr::Inside { .. } => 1,
+        // Fungsi matematika real → 64-bit (bit-pattern f64, sama `$itor`).
+        // `$rtoi` → 32-bit integer.
+        IrExpr::SysFunc { name, .. }
+            if matches!(
+                name.as_str(),
+                "$itor" | "$bitstoreal" | "$ln" | "$log10" | "$exp" | "$sqrt" | "$pow"
+                    | "$floor" | "$ceil" | "$round" | "$sin" | "$cos" | "$tan"
+                    | "$asin" | "$acos" | "$atan" | "$atan2" | "$hypot" | "$sinh"
+                    | "$cosh" | "$tanh" | "$asinh" | "$acosh" | "$atanh"
+            ) =>
+        {
+            64
+        }
+        IrExpr::SysFunc { name, .. } if name.as_str() == "$rtoi" => 32,
         _ => 1,
     }
 }

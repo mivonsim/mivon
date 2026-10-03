@@ -254,6 +254,17 @@ bug di mivon utama (parser/elaborator/simulator). Status: ✅ fixed / ⏳ open.
     `len<=n` (`engine/eval/expr.rs`). Oracle: model per-evaluasi cocok
     Verilator tick-1 (cyc3 p1=20); tick-2/3 Verilator tak support arg.
 
+26. **Fungsi matematika real tak dikenal (`$sqrt`, `$ln`, ...)** — LRM 1800
+    §20.8 `$sqrt(2.0)`/`$ln`/`$floor`/`$exp`/`$pow`/trigonometri jatuh ke
+    "unsupported system function" → 0 + warning RT9003; plus
+    `expr_approx_width` = 1 → warning WR0102 palsu `lhs=64, rhs=1` saat
+    assign ke `real`. Ditemukan saat hunt diferensial buglog (probe vs
+    iverilog: `sqrt=0.000000`, harusnya `1.414214`). Fix: arm SysFunc
+    matematika real di `engine/eval/expr.rs` (hasil bit-pattern f64 64-bit
+    spt `$itor`; argumen real→f64 / integer→f64) + helper
+    `eval_sysfunc_real_arg` + `ir_expr_is_real` kenali hasilnya (nested) +
+    lebar 64 (`$rtoi` → 32 sekalian) di `elaborator/stmt.rs`.
+
 ## ⏳ Open
 
 (tidak ada item open — semua bug historis sudah tertutup)
