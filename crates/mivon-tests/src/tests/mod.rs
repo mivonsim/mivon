@@ -22864,6 +22864,43 @@ module tb_ui {
     assert_eq!(y, 1, "a=b=1 first-match => 1 (y={y})");
 }
 
+/// F72: class UVM tertranspile DENGAN check (tanpa `--no-check`) —
+/// `examples/mv_uvm/my_test.mv` lolos E2005 untuk tipe UVM bawaan.
+#[test]
+fn test_mv_uvm_class_transpiles_with_check() {
+    let src = r#"
+class my_test extends uvm_test {
+    field count     : uint
+    rand field seed : uint
+
+    constraint c { seed > 10, seed < 200 }
+
+    func new(name : string) {
+        super.new(name)
+    }
+
+    task run_phase() {
+        var seqr : uvm_sequencer
+        var item : uvm_sequence_item
+        seqr.start_item(item)
+        seqr.finish_item(item)
+        #100
+    }
+}
+"#;
+    let r = mivon_mv::transpile(src, "my_test").expect("transpile .mv OK tanpa no-check");
+    assert!(
+        r.sv.contains("class my_test extends uvm_test;"),
+        "class: {}",
+        r.sv
+    );
+    assert!(
+        r.sv.contains("uvm_sequence_item item;"),
+        "item terdeklarasi: {}",
+        r.sv
+    );
+}
+
 /// `uint[8]` = vektor 8-bit (angka = LEBAR), bukan array 8 x 32-bit.
 #[test]
 fn test_mv_uint_bracket_is_bit_width() {

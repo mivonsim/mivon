@@ -474,6 +474,44 @@ fn sized_value(base: char, digits: &str) -> Option<i64> {
 
 // ── Tipe: validasi (E2005) + lebar bit ──
 
+/// Kelas UVM bawaan yang dikenal engine Mivon (lihat elaborator
+/// `build_pkg_param_ctx`: `extends uvm_*` di-remap ke `__uvm_*` builtin).
+/// Nama-nama ini SAH sebagai tipe di `.mv` (field/var/sig/port) tanpa
+/// definisi lokal — tanpa ini setiap testbench UVM butuh `--no-check`.
+const UVM_KNOWN_TYPES: &[&str] = &[
+    "uvm_object",
+    "uvm_transaction",
+    "uvm_component",
+    "uvm_report_object",
+    "uvm_report_server",
+    "uvm_default_report_server",
+    "uvm_sequence_item",
+    "uvm_sequence",
+    "uvm_sequencer",
+    "uvm_seq_item_port",
+    "uvm_driver",
+    "uvm_monitor",
+    "uvm_scoreboard",
+    "uvm_env",
+    "uvm_agent",
+    "uvm_subscriber",
+    "uvm_analysis_port",
+    "uvm_analysis_imp",
+    "uvm_analysis_export",
+    "uvm_comparator",
+    "uvm_in_order_comparator",
+    "uvm_heartbeat",
+    "uvm_tlm_fifo",
+    "uvm_test",
+    "uvm_config_db",
+    "uvm_event",
+    "uvm_barrier",
+    "uvm_reg",
+    "uvm_reg_field",
+    "uvm_reg_map",
+    "uvm_reg_block",
+];
+
 /// Validasi tipe: `Named` harus ter-resolve (E2005). Rekursif ke dalam.
 pub(crate) fn check_type(ty: &MvType, ctx: &Ctx, depth: usize) -> Result<(), MvError> {
     check_type_scope(ty, ctx, None, depth)
@@ -501,6 +539,11 @@ pub(crate) fn check_type_scope(
                 if sc.local_types.contains_key(n.as_str()) {
                     return Ok(());
                 }
+            }
+            // F72: kelas UVM bawaan sah tanpa definisi lokal (engine
+            // mengeksekusinya sebagai builtin `__uvm_*`).
+            if UVM_KNOWN_TYPES.contains(&n.as_str()) {
+                return Ok(());
             }
             if let Some((pkg, item)) = n.split_once("::") {
                 if let Some(p) = ctx.packages.get(pkg) {

@@ -1011,9 +1011,11 @@ Aturan:
 - Delay-only `#100` (tanpa statement lanjutan) → `#100;`.
 - Type-check class: field/constraint/method divalidasi (E2001–E2007);
   `this`/`super`/nama method tidak divalidasi (konservatif).
-- Tipe eksternal seperti `uvm_sequencer` (kelas UVM) tidak dikenal checker —
-  contoh UVM di-generate dengan escape hatch `mgen --no-check` (lihat
-  `examples/mv_uvm/my_test.mv`).
+- Tipe UVM bawaan (`uvm_test`, `uvm_sequencer`, `uvm_sequence_item`, ...) dikenal
+  checker (F72, allowlist `UVM_KNOWN_TYPES`) — contoh UVM yang ditulis benar
+  (`var`/`field` bertipe UVM + semua sinyal dideklarasikan) lolos check
+  tanpa `--no-check` (lihat `examples/mv_uvm/my_test.mv`). Sinyal tak dikenal
+  TETAP E2001 (typo detection tidak dilemahkan).
 - **Subset constraint (F7)**: awalnya hanya ekspresi relasional/equality yang
   dipisah koma (`seed > 10, seed < 200`).
 - **Constraint lanjutan (F12 ✅)**: `inside` (nilai & range `[lo:hi]`),
@@ -1119,6 +1121,9 @@ konsisten — termasuk E2008/E2009 yang sebelumnya `0:0` tanpa kurung.
   file yang sama dianggap **eksternal** (file `.mv` lain) → dilewati, bukan error.
   Nama pemanggilan `f(...)` tidak divalidasi terhadap daftar tipe; yang
   divalidasi adalah **jumlah argumennya** (E2011).
+- **Tipe UVM bawaan (F72)**: 31 kelas `uvm_*` yang dikenal engine (`UVM_KNOWN_TYPES`)
+  sah sebagai tipe deklarasi tanpa definisi lokal. Typo (`uvm_sequncer`) tetap
+  E2005; sinyal tak dikenal tetap E2001.
 - `port` + `reg`/`sig` dengan nama sama diizinkan (reg implementasi port output).
 - **E2010 (lvalue)**: `parameter` module dan `const` module adalah konstanta
   waktu-elipsi — LRM 1800 §6.20 menyatakan menulisnya "shall be illegal".
@@ -1583,6 +1588,7 @@ module tb_traffic {
 | **F69** ✅ | **`cover` + `cover property` di `.mv`** — gap: `cover` tanpa keyword di-parse diam-diam jadi call `cover(...)` + statement lepas (silent miscompile). Kini `Tok::Cover` reserved + `Stmt::Cover{cond,pass}` (tanpa `else` — ditolak pesan jelas) + `Stmt::CoverProperty`/`MItem::CoverProperty` RAW (module item LRM §14); codegen `cover (c) A;` + `cover property …;`; check E2001 + print | demo e2e `cover_demo.mv` → `cover point hit` + `COVER_DEMO_OK ack=1`; immediate iverilog OK + verilator OK, concurrent verilator OK; negatif: `else` → error jelas, immediate di level module → ditolak; 7 test baru (parse ×3, codegen, check ×2, e2e `test_mv_cover_immediate_and_property`); contoh `examples/mv/cover_demo.mv` |
 | **F70** ✅ | **`case (x) inside` di `.mv`** — gap: `inside` sesudah `)` ditolak `diharapkan LBrace`. Kini `parse_case_body` deteksi `inside` → `Stmt::CaseInside{expr,items:Vec<(Vec<InsideItem>,Stmt)>,default,qual}` (reuse `InsideItem` F12; qualifier `priority/unique` diteruskan); label `[lo:hi]` rentang / nilai (tanpa `:` sesudah `[` ditolak jelas); codegen `case (e) inside` + `[lo:hi]` (bentuk dibaca `inside_range_bounds` SV); check E2001 + E2013 nilai-duplikat (rentang konservatif dilewati) + print | demo e2e `ci_demo` → nilai/rentang/multi/default `CASE_INSIDE_OK y=ff`; SV hasil generate disimulasikan ulang identik; verilator OK (iverilog tak support `case inside` — limit tool); negatif: `[5]` → error jelas, nilai duplikat → E2013; 6 test baru (parse ×3, codegen, check ×2, e2e `test_mv_case_inside_decoder`); contoh `examples/mv/case_inside.mv` |
 | **F71** ✅ | **`unique/priority/unique0 if` di `.mv`** — gap: qualifier + `if` ditolak `diharapkan 'case'/...`. Kini `Stmt::If{qual}` (pola field seperti `Case::qual`); arm qualifier parse `if` dulu (error menyebut `if` sbg opsi); codegen `unique if (c) begin` + rantai `else if` plain; check & print ikut | demo e2e `ui_demo` → first-match + rantai + else `UNIQUE_IF_OK y=0`; SV regen disimulasikan ulang identik; verilator OK (iverilog tak support `unique if` — limit tool, diverifikasi minimal); 4 test baru (parse ×2, codegen, check, e2e `test_mv_unique_if_chain`); contoh `examples/mv/unique_if.mv` |
+| **F72** ✅ | **Tipe UVM bawaan dikenal checker `.mv`** — `var seqr : uvm_sequencer` → E2005, paksa `--no-check` untuk semua testbench UVM. Kini allowlist `UVM_KNOWN_TYPES` (31 kelas `__uvm_*` engine) di `check_type_scope`: deklarasi bertipe UVM lolos; typo (`uvm_sequncer`) tetap E2005, sinyal tak dikenal di argumen call tetap E2001 | demo e2e `examples/mv_uvm/my_test.mv` → `mgen` tanpa flag OK + SV identik kecuali baris `item` (contoh diperbaiki: `item` dideklarasikan `uvm_sequence_item`); `.svh` kosong basi dihapus; `mgen --check` OK; 4 test baru (check ×3, e2e `test_mv_uvm_class_transpiles_with_check`) |
 
 **Kriteria selesai F2:** `mivon mgen examples/mv/counter.mv` menghasilkan
 `counter.sv` yang bisa disimulasikan oleh `mivon counter.sv` tanpa error.

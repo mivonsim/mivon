@@ -176,6 +176,32 @@ fn e2001_in_cover_cond() {
 }
 
 #[test]
+fn ok_uvm_known_types_in_decls() {
+    // F72: tipe UVM bawaan sah di field/var tanpa definisi lokal —
+    // testbench UVM tak lagi butuh `--no-check` untuk deklarasi.
+    let src = "class my_test extends uvm_test {\n field count : uint\n task run_phase() {\n var seqr : uvm_sequencer\n var item : uvm_sequence_item\n seqr.start_item(item)\n }\n}\n";
+    check_src(src).expect("tipe UVM harus lolos");
+}
+
+#[test]
+fn e2005_still_fires_for_unknown_non_uvm_type() {
+    // Allowlist presisi: typo / tipe asing tetap E2005.
+    let src = "class c {\n task t() {\n var x : uvm_sequncer\n }\n}\n";
+    let e = check_src(src).unwrap_err();
+    assert!(e.msg.contains("E2005"), "msg: {}", e.msg);
+    assert!(e.msg.contains("uvm_sequncer"), "msg: {}", e.msg);
+}
+
+#[test]
+fn e2001_still_fires_for_undeclared_signal_in_uvm_call() {
+    // E2001 tetap: argumen tak dikenal di call UVM ditolak (bukan
+    // dilemahkan) — contoh harus deklarasikan item-nya.
+    let src = "class c extends uvm_test {\n task t() {\n var seqr : uvm_sequencer\n seqr.start_item(item)\n }\n}\n";
+    let e = check_src(src).unwrap_err();
+    assert!(e.msg.contains("E2001"), "msg: {}", e.msg);
+}
+
+#[test]
 fn ok_case_inside_values_and_ranges() {
     // Label nilai + rentang + default lolos; sinyal dikenal.
     let src = "module m {\n sig x : logic[7:0]\n sig y : logic[7:0]\n comb {\n case (x) inside {\n 0 : { y = 0 }\n [1:10], x : { y = 1 }\n default : { y = 2 }\n }\n }\n}\n";

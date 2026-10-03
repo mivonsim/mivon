@@ -24,6 +24,7 @@ class my_test extends uvm_test;
 
     task run_phase();
         uvm_sequencer seqr;
+        uvm_sequence_item item;
         seqr.start_item(item);
         seqr.finish_item(item);
         #100;

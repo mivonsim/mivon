@@ -4,9 +4,9 @@
 //   * `uvm_config_db::set(...)` (static scoped), `super.new(...)`,
 //     method call `seqr.start_item(...)`, delay-only `#100`
 //
-// CATATAN: contoh ini memakai tipe UVM eksternal (`uvm_sequencer`)
-// yang tidak didefinisikan di file ini → generate dengan escape hatch:
-//     mivon mgen my_test.mv --no-check
+// CATATAN: tipe UVM bawaan (`uvm_sequencer`, `uvm_sequence_item`, ...)
+// dikenal checker (F72) — generate langsung tanpa `--no-check`:
+//     mivon mgen my_test.mv
 // Output class SV valid untuk tool dengan pustaka UVM (Verilator/VCS).
 // ─────────────────────────────────────────────────────────────
 
@@ -26,6 +26,7 @@ class my_test extends uvm_test {
 
     task run_phase() {
         var seqr : uvm_sequencer
+        var item : uvm_sequence_item
         seqr.start_item(item)
         seqr.finish_item(item)
         #100
