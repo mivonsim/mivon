@@ -212,6 +212,18 @@ bug di mivon utama (parser/elaborator/simulator). Status: ✅ fixed / ⏳ open.
     di engine (`block_control.rs`, `parallel.rs`). Contoh kini
     `CASEQ_OK`, verilator bersih.
 
+22. **Override type param typedef tak pernah berlaku** — `is_type_token`
+    false utk Ident sehingga `#(.T(Wide16))` ter-parse sbg VALUE override
+    (`param_map[T]=0`, T tetap default 8-bit; e2e F32 `q16=8` tak sensitif
+    lebar sehingga lolos!). Ditemukan saat menutup limitasi F33 (`T'(a)`
+    lebar 1 → `q=0` bukan `0x34`): selidik override typedef lebih dulu.
+    Fix: (a) `cur_type_param_widths` + `resolve_cast_name_width` baca lebih
+    dulu → `T'(a)` lebar efektif; (b) re-bucket Ident/ScopedIdent utk pname
+    type-param target di flatten; (c) `#(.T(logic[15:0]))`: struct baru
+    `TypeParamAssign{dtype,range}` + `parse_type_expr_with_range` di
+    instance (range sebelumnya dibuang `parse_type_expr`). Oracle:
+    `TPOV/CT16/TPL2 q=0x800`, `CT q=0x34`; 3 test width-sensitive baru.
+
 ## ⏳ Open
 
 (tidak ada item open — semua bug historis sudah tertutup)

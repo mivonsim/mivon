@@ -14675,6 +14675,89 @@ endmodule
     let _d = compile_str(src).expect("type-param arg dgn range harus parse");
 }
 
+/// Override type param via typedef BERLAKU (`#(.T(Wide16))`): port/sinyal
+/// `T` 16-bit. Nilai width-sensitive (`0x0100<<3=0x0800` tak muat 8-bit).
+/// Regresi: Ident-typedef salah-bucket jadi value-override → T tetap 8-bit.
+#[test]
+fn test_type_param_typedef_override_applies() {
+    let source = r#"
+package p;
+typedef logic [15:0] Wide16;
+endpackage
+module shifter #(parameter type T = logic [7:0], parameter N = 2) (input bit clk, input T d, output T q);
+T r;
+always_ff @(posedge clk) begin r <= d << N; q <= r; end
+endmodule
+module tb;
+import p::*;
+bit clk;
+logic [15:0] d16, q16;
+shifter #(.T(Wide16), .N(3)) u16 (.clk(clk), .d(d16), .q(q16));
+initial begin
+clk = 0; d16 = 16'h0100; #10;
+repeat (3) @(posedge clk); #1;
+$display("TPOV q=%0h", q16);
+$finish; end
+initial begin forever #5 clk = ~clk; end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 200).expect("simulasi harus jalan");
+    let q = sigs.iter().find(|(n, _)| n == "q16").unwrap().1.to_u64();
+    assert_eq!(q, 0x0800, "T=Wide16: 0100<<3=0800 (q={q:04x})");
+}
+
+/// Override type param literal (`#(.T(logic[15:0]))`): range disimpan
+/// parser (bukan dibuang) → lebar 16.
+#[test]
+fn test_type_param_literal_override_applies() {
+    let source = r#"
+module shifter #(parameter type T = logic [7:0], parameter N = 2) (input bit clk, input T d, output T q);
+T r;
+always_ff @(posedge clk) begin r <= d << N; q <= r; end
+endmodule
+module tb;
+bit clk;
+logic [15:0] d16, q16;
+shifter #(.T(logic[15:0]), .N(3)) u (.clk(clk), .d(d16), .q(q16));
+initial begin
+clk = 0; d16 = 16'h0100; #10;
+repeat (3) @(posedge clk); #1;
+$display("TPL2 q=%0h", q16);
+$finish; end
+initial begin forever #5 clk = ~clk; end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 200).expect("simulasi harus jalan");
+    let q = sigs.iter().find(|(n, _)| n == "q16").unwrap().1.to_u64();
+    assert_eq!(q, 0x0800, "T=logic[15:0]: 0100<<3=0800 (q={q:04x})");
+}
+
+/// Cast ke type param (`T'(a)`) memakai lebar EFEKTIF (default/override),
+/// bukan fallback 1-bit (data loss → 0).
+#[test]
+fn test_type_param_cast_uses_effective_width() {
+    let source = r#"
+module m #(parameter type T = logic [7:0]) (input logic [15:0] a, output logic [15:0] q);
+assign q = T'(a);
+endmodule
+module tb;
+logic [15:0] a, q8, q16;
+m u8 (.a(a), .q(q8));
+m #(.T(logic[15:0])) u16 (.a(a), .q(q16));
+initial begin
+a = 16'h1234; #1;
+$display("CT8 q=%0h CT16 q=%0h", q8, q16);
+$finish;
+end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 50).expect("simulasi harus jalan");
+    let q8 = sigs.iter().find(|(n, _)| n == "q8").unwrap().1.to_u64();
+    let q16 = sigs.iter().find(|(n, _)| n == "q16").unwrap().1.to_u64();
+    assert_eq!(q8, 0x34, "T default 8-bit: 1234→34 (q8={q8:04x})");
+    assert_eq!(q16, 0x1234, "T override 16-bit: 1234→1234 (q16={q16:04x})");
+}
+
 /// `define M(a, b = $sformatf("%m")) $fatal(1, "...", b, a);` — penutup
 /// param-list STRING/paren aware; invokasi dgn arg berisi `)` dalam string
 /// (`dv_fatal("...ready()")`). Sebelumnya body bocor `)` / arg terpotong →

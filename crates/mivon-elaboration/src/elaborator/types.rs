@@ -323,6 +323,14 @@ impl Elaborator {
     /// package (mis. `mubi4_t'(x)`). Prioritas: param modul → package param
     /// (default) → typedef package.
     pub(crate) fn resolve_cast_name_width(&self, type_name: &str) -> Option<usize> {
+        let name = Symbol::intern(type_name);
+        // Type param module yang SEDANG dielaborasi (`T'(x)`) — lebar
+        // efektif (default/override) dari peta yang diinstal
+        // `elaborate_module_with_params_and_type` via RAII guard. Tanpa ini
+        // `T` jatuh ke fallback 1-bit (data loss, mis. `T'(a)` → 0).
+        if let Some(&w) = self.cur_type_param_widths.get(&name) {
+            return Some(w);
+        }
         // 0. Size cast numerik eksplisit (`22'(x)`, `8'(y)`): lebar = angka.
         // Sebelumnya tak ter-resolve → fallback 1 → warning width mismatch
         // palsu (mis. `data_o = 22'(data_i)` dilaporkan rhs=1).
@@ -330,7 +338,6 @@ impl Elaborator {
         if !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()) {
             return digits.parse::<usize>().ok();
         }
-        let name = Symbol::intern(type_name);
         // 1. Parameter modul / konstanta ter-evaluasi.
         if let Some(&v) = self.param_vals.get(&name) {
             return Some(v as usize);

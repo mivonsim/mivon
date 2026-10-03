@@ -1116,7 +1116,8 @@ impl Parser {
     /// Parse blok parameter instance `#(...)` (SEBELUM nama instance).
     /// Caller memastikan `self.peek() == Hash` — helper mengonsumsi `#(`
     /// sampai `)`. Menghasilkan dua map: parameter nilai (`Symbol → Expr`)
-    /// dan parameter tipe (`Symbol → DataType`). Item posisional diberi
+    /// dan parameter tipe (`Symbol → TypeParamAssign`: tipe + range packed
+    /// literal bila ada). Item posisional diberi
     /// key `__param0`, `__param1`, … (konvensi lama elaborator).
     /// F31: dipakai di DUA posisi (`mod #(.P(1)) u (...)` dan
     /// `mod u #(.P(1)) (...)`).
@@ -1125,14 +1126,16 @@ impl Parser {
     ) -> Result<
         (
             std::collections::HashMap<Symbol, mivon_ast::Expr>,
-            std::collections::HashMap<Symbol, mivon_ast::DataType>,
+            std::collections::HashMap<Symbol, mivon_ast::TypeParamAssign>,
         ),
         SimError,
     > {
         let mut param_assigns: std::collections::HashMap<Symbol, mivon_ast::Expr> =
             std::collections::HashMap::new();
-        let mut type_param_assigns: std::collections::HashMap<Symbol, mivon_ast::DataType> =
-            std::collections::HashMap::new();
+        let mut type_param_assigns: std::collections::HashMap<
+            Symbol,
+            mivon_ast::TypeParamAssign,
+        > = std::collections::HashMap::new();
 
         self.advance(); // consume '#'
         self.expect(Token::LParen)?;
@@ -1156,9 +1159,15 @@ impl Parser {
                     };
                     self.expect(Token::LParen)?;
                     if self.is_type_token() {
-                        let dt = self.parse_type_expr()?;
+                        // Range packed literal (`logic[15:0]`) dipertahankan
+                        // (bukan dibuang `parse_type_expr`) agar lebar
+                        // override ter-resolve di elaborasi.
+                        let (dt, range) = self.parse_type_expr_with_range()?;
                         self.expect(Token::RParen)?;
-                        type_param_assigns.insert(pname, dt);
+                        type_param_assigns.insert(
+                            pname,
+                            mivon_ast::TypeParamAssign { dtype: dt, range },
+                        );
                     } else {
                         let val = self.parse_expr(0)?;
                         self.expect(Token::RParen)?;

@@ -325,6 +325,25 @@ pub struct ParamDecl {
     pub type_default: Option<DataType>,
 }
 
+/// Override type param pada instansiasi (`#(.T(Wide16))`,
+/// `#(.T(logic[15:0]))`): tipe + range packed literal bila ada.
+/// `DataType` tidak membawa range, jadi range disimpan terpisah agar
+/// lebar override literal ter-resolve (`logic[15:0]` → 16, bukan 1).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct TypeParamAssign {
+    pub dtype: DataType,
+    pub range: Option<(Expr, Expr)>,
+}
+
+impl Default for TypeParamAssign {
+    fn default() -> Self {
+        TypeParamAssign {
+            dtype: DataType::Void,
+            range: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Decl {
     pub dtype: DataType,
@@ -962,7 +981,7 @@ pub struct ModuleInstance {
     pub instance_name: Symbol,
     pub range: Option<ExprRange>,
     pub param_assigns: HashMap<Symbol, Expr>,
-    pub type_param_assigns: HashMap<Symbol, DataType>,
+    pub type_param_assigns: HashMap<Symbol, TypeParamAssign>,
     pub port_conns: Vec<PortConnection>,
     /// Posisi token module name di source (untuk diagnostic).
     pub line: usize,

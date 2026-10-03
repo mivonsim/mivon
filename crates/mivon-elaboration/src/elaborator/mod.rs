@@ -471,6 +471,9 @@ pub struct Elaborator {
     pub design: Design,
     pub modules: HashMap<Symbol, IrModule>,
     pub param_vals: HashMap<Symbol, i64>,
+    /// Lebar type param module yang SEDANG dielaborasi (nama → lebar bit
+    /// efektif). Lihat inisialisasi di constructor untuk dokumentasi.
+    pub cur_type_param_widths: HashMap<Symbol, usize>,
     /// Nama param bertipe SIGNED (int/integer/byte/.../sign-typed) pada module
     /// saat ini. IEEE 1800 §6.11 + §6.20: `localparam int X = -2` bersifat
     /// signed — tanpa ini, resolve param jadi `Const(u64,64)` UNSIGNED
@@ -905,6 +908,13 @@ impl Elaborator {
             stmt_lines: std::cell::RefCell::new(HashMap::new()),
             current_proc_name: std::cell::RefCell::new(None),
             current_module: None,
+            // Lebar type param module yang SEDANG dielaborasi (nama → lebar
+            // bit efektif, termasuk override instance). Dibaca
+            // `resolve_cast_name_width` agar `T'(x)` tidak jatuh ke lebar 1
+            // (data loss). Diinstal per-panggilan
+            // `elaborate_module_with_params_and_type` (pola yang sama seperti
+            // `current_module`: setiap elaborasi modul menimpa miliknya).
+            cur_type_param_widths: HashMap::new(),
             reachable: std::collections::HashSet::new(),
             recovered: false,
 
@@ -3913,6 +3923,11 @@ impl Elaborator {
                 type_param_widths.insert(param.name, width);
             }
         }
+        // Instal peta lebar type param utk modul ini (dibaca
+        // `resolve_cast_name_width` saat elaborasi ekspresi `T'(x)`).
+        // Pola yang sama seperti `current_module`: setiap elaborasi modul
+        // menimpa miliknya sendiri sebelum memakai.
+        self.cur_type_param_widths = type_param_widths.clone();
 
         let mut signals = Vec::new();
         let mut signal_map: HashMap<Symbol, SignalId> = HashMap::new();
@@ -6098,13 +6113,64 @@ impl Elaborator {
                             }
                         }
                         let mut type_param_map: HashMap<Symbol, usize> = HashMap::new();
-                        for (pname, dt) in &inst.type_param_assigns {
-                            // F32 fix: override type param `#(.T(Word16))` — lebar
-                            // dari UserDefined harus di-RESOLVE ke typedef
-                            // (`resolve_type_width`), bukan `dt.width()` yang selalu
-                            // 1 utk UserDefined. Gagal resolve → fallback dt.width().
-                            let w = self.resolve_type_width(dt).unwrap_or_else(|_| dt.width());
+                        for (pname, ta) in &inst.type_param_assigns {
+                            // Override type param `#(.T(Word16))` — lebar dari
+                            // UserDefined harus di-RESOLVE ke typedef
+                            // (`resolve_type_width`), bukan `dt.width()` yang
+                            // selalu 1 utk UserDefined. Override literal
+                            // (`#(.T(logic[15:0]))`) memakai range yang
+                            // disimpan parser (F32: sebelumnya dibuang → 1).
+                            // Gagal resolve → fallback dt.width().
+                            let w = if let Some((msb, lsb)) = &ta.range {
+                                match (
+                                    const_eval_with_params(msb, &effective_params),
+                                    const_eval_with_params(lsb, &effective_params),
+                                ) {
+                                    (Ok(m), Ok(l)) => m.abs_diff(l) as usize + 1,
+                                    _ => self
+                                        .resolve_type_width(&ta.dtype)
+                                        .unwrap_or_else(|_| ta.dtype.width()),
+                                }
+                            } else {
+                                self.resolve_type_width(&ta.dtype)
+                                    .unwrap_or_else(|_| ta.dtype.width())
+                            };
                             type_param_map.insert(*pname, w);
+                        }
+                        // Re-bucket: override type param yang ter-parse sebagai
+                        // VALUE (`#(.T(Wide16))` — Ident bukan type-token) →
+                        // pindahkan ke type_param_map bila pname adalah type
+                        // param target & nilainya me-resolve sebagai tipe.
+                        // Tanpa ini override typedef tak pernah berlaku
+                        // (T tetap default). Value param tak tersentuh
+                        // (pname-nya bukan type param).
+                        if let Some(tm) = target_module {
+                            for p in &tm.params {
+                                if !p.is_type_param
+                                    || type_param_map.contains_key(&p.name)
+                                {
+                                    continue;
+                                }
+                                let type_name = match inst.param_assigns.get(&p.name) {
+                                    Some(Expr::Ident { name, .. }) => {
+                                        Some(name.as_str().to_string())
+                                    }
+                                    Some(Expr::ScopedIdent { package, item, .. }) => {
+                                        Some(format!(
+                                            "{}::{}",
+                                            package.as_str(),
+                                            item.as_str()
+                                        ))
+                                    }
+                                    _ => None,
+                                };
+                                if let Some(tn) = type_name {
+                                    if let Some(w) = self.resolve_cast_name_width(&tn) {
+                                        type_param_map.insert(p.name, w);
+                                        param_map.remove(&p.name);
+                                    }
+                                }
+                            }
                         }
 
                         if let Some(range) = &inst.range {
