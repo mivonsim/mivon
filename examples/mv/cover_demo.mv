@@ -1,0 +1,40 @@
+// ─────────────────────────────────────────────────────────────
+// Contoh Mivon HDL (.mv) — cover immediate + cover property (F69).
+// Generate: mivon mgen cover_demo.mv
+// Sim: mivon cover_demo.mv --top tb_cov -T 100
+// ─────────────────────────────────────────────────────────────
+
+module cov_dut {
+    in clk : bit
+    in req : bit
+    out ack : bit
+
+    cover property (@(posedge clk) req |-> ack)
+
+    comb {
+        ack = req
+    }
+}
+
+module tb_cov {
+    sig clk : bit
+    sig req : bit
+    sig ack : bit
+    inst cov_dut u (.clk, .req, .ack(ack))
+
+    initial {
+        clk = 0
+        req = 0
+        #10
+        req = 1
+        #10
+        cover (ack == 1) $info("covered ack=1")
+        assert (ack == 1) $info("ack ok") else $error("ack bad")
+        $display("COVER_DEMO_OK ack=%0d", ack)
+        $finish
+    }
+
+    initial {
+        forever #5 clk = ~clk
+    }
+}

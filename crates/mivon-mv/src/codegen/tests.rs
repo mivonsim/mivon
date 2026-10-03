@@ -218,6 +218,33 @@ module m {
 }
 
 #[test]
+fn codegen_cover_immediate_no_else() {
+    // `cover (c) action;` — tanpa `else`; `cover property` = module item.
+    let src = r#"
+module m {
+    sig a : bit
+    initial {
+        cover (a == 0) $info("ok")
+    }
+    cover property (@(posedge clk) a |-> b)
+}
+"#;
+    let file = parse(src).unwrap();
+    let out = generate(&file, "m");
+    assert!(
+        out.sv.contains("cover (a == 0) $info(\"ok\");"),
+        "sv: {}",
+        out.sv
+    );
+    assert!(!out.sv.contains("else"), "cover tanpa else: {}", out.sv);
+    assert!(
+        out.sv.contains("cover property (@(posedge clk) a |-> b);"),
+        "sv: {}",
+        out.sv
+    );
+}
+
+#[test]
 fn codegen_testbench() {
     let src = r#"
 module counter #(WIDTH = 8) {

@@ -321,6 +321,15 @@ pub enum Stmt {
     /// `assume property (...)` — asumsi concurrent (module item, LRM 1800 §14).
     /// Body RAW seperti `AssertProperty`.
     AssumeProperty(String),
+    /// `cover (cond) [pass]` — titik coverage (tanpa `else`: tak ada cabang
+    /// gagal; bila `cond` benar, `pass` jalan + hit dicatat engine).
+    Cover {
+        cond: Expr,
+        pass: Option<Box<Stmt>>,
+    },
+    /// `cover property (...)` — cover concurrent (module item, LRM 1800 §14).
+    /// Body RAW seperti `AssertProperty`.
+    CoverProperty(String),
     /// Escape hatch: `@sv { ... }` — teks SystemVerilog mentah yang di-emit
     /// verbatim (untuk konstruk SV yang belum didukung bahasa). Body diambil
     /// mentah dari source oleh lexer (bukan token .mv).
@@ -597,6 +606,9 @@ pub enum MItem {
     /// `assume property ( … )` di LEVEL MODULE — asumsi concurrent
     /// (module item, LRM 1800 §14). Mirror `AssertProperty`.
     AssumeProperty(String),
+    /// `cover property ( … )` di LEVEL MODULE — cover concurrent
+    /// (module item, LRM 1800 §14). Mirror `AssertProperty`.
+    CoverProperty(String),
 }
 
 /// Module `.mv`. Posisi (line, col) nama untuk E2007 duplikat (F11).

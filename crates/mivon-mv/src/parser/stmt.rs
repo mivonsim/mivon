@@ -494,6 +494,43 @@ impl Parser {
                 };
                 Ok(Stmt::Assume { cond, pass, fail })
             }
+            Tok::Cover => {
+                self.advance();
+                // `cover property (...)` — mirror `assert property` (RAW SVA).
+                if self.is_ident("property") {
+                    return Ok(Stmt::CoverProperty(self.parse_assert_property_raw()?));
+                }
+                self.expect(&Tok::LParen)?;
+                let cond = self.parse_expr()?;
+                self.expect(&Tok::RParen)?;
+                // `cover` tanpa `else` (tak ada cabang gagal, LRM 1800 §20.11):
+                // `else` di sini ditolak eksplisit agar tak disalahartikan.
+                if matches!(self.peek(), Tok::Else) {
+                    let (l, c) = self.pos_line();
+                    return Err(MvError::new(
+                        l,
+                        c,
+                        "'cover' tidak memakai 'else' (tak ada cabang gagal) — hapus 'else'".to_string(),
+                    ));
+                }
+                let pass = if matches!(self.peek(), Tok::RBrace) {
+                    None
+                } else {
+                    Some(Box::new(self.parse_stmt()?))
+                };
+                // `cover` tanpa `else` — tolak eksplisit dengan pesan jelas
+                // (tanpa ini `else` bocor jadi statement berikutnya yang gagal
+                // parse dengan pesan generik).
+                if matches!(self.peek(), Tok::Else) {
+                    let (l, c) = self.pos_line();
+                    return Err(MvError::new(
+                        l,
+                        c,
+                        "'cover' tidak memakai 'else' (tak ada cabang gagal) — hapus 'else'".to_string(),
+                    ));
+                }
+                Ok(Stmt::Cover { cond, pass })
+            }
             // F37: prefix `++lhs` / `--lhs` di level statement. Hasil sama
             // dengan postfix (`lhs++`); di-emit sesuai aslinya.
             Tok::PlusPlus | Tok::MinusMinus => {

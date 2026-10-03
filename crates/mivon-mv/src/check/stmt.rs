@@ -488,6 +488,15 @@ pub(crate) fn check_stmt<'a>(
         }
         // `assume property (...)` — mirror `assert property` (RAW, konservatif).
         Stmt::AssumeProperty(_) => Ok(()),
+        Stmt::Cover { cond, pass } => {
+            check_expr(cond, ctx, scope, 0)?;
+            if let Some(p) = pass {
+                check_stmt(p, ctx, scope, kind)?;
+            }
+            Ok(())
+        }
+        // `cover property (...)` — mirror `assert property` (RAW, konservatif).
+        Stmt::CoverProperty(_) => Ok(()),
         // Escape hatch `@sv { ... }` — teks SV mentah, ditangani lexer/codegen;
         // check tidak menganalisis isi (konservatif, seperti assert property).
         Stmt::RawSvh(_) => Ok(()),

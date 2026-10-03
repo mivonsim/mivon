@@ -238,7 +238,7 @@ fn check_module_item<'a>(
         // Body SVA mentah: dilewati (konservatif, sama seperti
         // `Stmt::AssertProperty` di check/stmt.rs) — operator SVA bukan
         // ekspresi `.mv` yang bisa divalidasi.
-        MItem::AssertProperty(_) | MItem::AssumeProperty(_) => Ok(()),
+        MItem::AssertProperty(_) | MItem::AssumeProperty(_) | MItem::CoverProperty(_) => Ok(()),
         MItem::Sig {
             names, ty, init, ..
         }

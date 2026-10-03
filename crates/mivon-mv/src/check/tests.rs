@@ -161,6 +161,21 @@ fn e2001_in_assume_cond() {
 }
 
 #[test]
+fn ok_cover_immediate_and_property() {
+    // `cover` mirror `assert` (tanpa `else`): sinyal dikenal lolos.
+    let src = "module m {\n sig a : bit\n initial {\n cover (a == 0) $info(\"ok\")\n }\n cover property (@(posedge clk) a |-> b)\n }\n";
+    check_src(src).expect("cover harus lolos");
+}
+
+#[test]
+fn e2001_in_cover_cond() {
+    // Kondisi `cover` ikut validasi E2001 seperti `assert`.
+    let src = "module m {\n sig a : bit\n initial {\n cover (nope == 0) $info(\"ok\")\n }\n }\n";
+    let e = check_src(src).unwrap_err();
+    assert!(e.msg.contains("E2001"), "msg: {}", e.msg);
+}
+
+#[test]
 fn ok_package_const_in_enum_width() {
     let src = "package p {\n const N = 4\n enum(N) Color { RED, GREEN } }\nmodule m { in clk : bit\n out c : p::Color\n comb { c = RED } }";
     check_src(src).expect("const package boleh dipakai di lebar enum");

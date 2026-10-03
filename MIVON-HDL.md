@@ -556,6 +556,8 @@ Emisi: `always begin ... end` / `always_latch begin ... end`.
 | `restore x` / `release x` (F46) | `release x;` — lepas force, assign prosedural berlaku lagi (`sig`/`reg` = variabel: unblock; restore driver hanya net `wire` LRM 10.6.2) |
 | `assume (c) A else B` (F66) | `assume (c) A; else B;` — mirror `assert`, branch pass `;` (LRM 1800 §20.11) |
 | `assume property (...)` (F66, module item) | `assume property (...);` — mirror `assert property` (LRM 1800 §14) |
+| `cover (c) [A]` (F69) | `cover (c) A;` — tanpa `else` (tak ada cabang gagal); `else` ditolak parser |
+| `cover property (...)` (F69, module item) | `cover property (...);` — mirror `assert property` (LRM 1800 §14) |
 | `foreach (arr[i]) { ... }` | `foreach (arr[i]) begin ... end` — loop elemen array unpacked |
 | `@(posedge clk) stmt` | `@(posedge clk) stmt` |
 | `#10 stmt` | `#10 stmt` |
@@ -867,30 +869,36 @@ module tb_counter {
 }
 ```
 
-### 7.2 Assertion & Assumption (`assert` / `assume`)
+### 7.2 Assertion, Assumption & Cover (`assert` / `assume` / `cover`)
 
 ```mv
 // immediate — di dalam blok prosedural (initial/always/seq/comb/...)
-// `assume` mirror `assert` (asumsi formal tentang input/lingkungan)
+// `assume` mirror `assert` (asumsi formal tentang input/lingkungan);
+// `cover` TANPA `else` (tak ada cabang gagal — titik coverage)
 assert (count <= 99) $info("count ok") else $error("count overflow")
 assume (req == 0) $info("idle") else $error("req saat reset")
+cover (state == DONE) $info("done covered")
 
 // concurrent — di LEVEL MODULE (bukan di dalam initial/always)
 assert property (@(posedge clk) enable |-> count == $past(count) + 1)
 assume property (@(posedge clk) req |-> ack)
+cover property (@(posedge clk) state == DONE)
 ```
 
 Emisi ke SV:
 
 ```systemverilog
 // immediate — branch pass adalah STATEMENT (LRM 1800 §20.11) jadi WAJIB
-// diakhiri `;` sebelum `else` (berlaku untuk `assert` DAN `assume`):
+// diakhiri `;` sebelum `else` (berlaku untuk `assert` DAN `assume`;
+// `cover` tanpa `else`):
 assert (count <= 99) $info("count ok"); else $error("count overflow");
 assume (req == 0) $info("idle"); else $error("req saat reset");
+cover (state == DONE) $info("done covered");
 
 // concurrent — module item, di-emit apa adanya di body module:
 assert property (@(posedge clk) enable |-> count == $past(count) + 1);
 assume property (@(posedge clk) req |-> ack);
+cover property (@(posedge clk) state == DONE);
 ```
 
 Dua aturan LRM yang ditegakkan:
@@ -901,12 +909,15 @@ Dua aturan LRM yang ditegakkan:
   (`syntax error, unexpected else, expecting ';'`). Berlaku identik untuk
   `assume (c) A else B`. Action berbentuk blok
   (`begin … end`) sudah membawa `;` sendiri lewat statement di dalamnya.
+  Berlaku identik untuk `assume`; `cover` tidak memakai `else` sama sekali
+  (parser menolak `else` setelah `cover` dengan pesan jelas).
 - **LRM 1800 §14** — `assert property` adalah *concurrent assertion*, yaitu
-  **module item**, bukan statement prosedural. Sama untuk `assume property`.
+  **module item**, bukan statement prosedural. Sama untuk `assume property`
+  dan `cover property`.
   Menuliskannya di dalam
   `initial`/`always` menghasilkan SV yang ditolak tool
   (`Procedural concurrent assertion … inside always`, IEEE 1800-2017
-  §16.14.6). Parser `.mv` menolak `assert`/`assume` immediate di level module dengan
+  §16.14.6). Parser `.mv` menolak `assert`/`assume`/`cover` immediate di level module dengan
   pesan yang mengarahkan ke dua bentuk yang benar di atas.
 
 **Implementasi (F6):**
@@ -1208,6 +1219,8 @@ Ringkasan mapping konstruk `.mv` → SV:
 | `assert property (...)` (module item) | `assert property (...);` apa adanya (LRM 1800 §14) |
 | `assume (c) A else B` (F66) | `assume (c) A; else B;` — mirror `assert` (LRM 1800 §20.11) |
 | `assume property (...)` (F66, module item) | `assume property (...);` — mirror `assert property` (LRM 1800 §14) |
+| `cover (c) [A]` (F69) | `cover (c) A;` — tanpa `else` (tak ada cabang gagal) |
+| `cover property (...)` (F69, module item) | `cover property (...);` — mirror `assert property` (LRM 1800 §14) |
 | `@sv { ... }` (F40) | emisi isi SV **verbatim** — escape hatch utk konstruk SV yang belum didukung bahasa; isi diambil mentah dari source (isolasi dari lexer .mv), type-check dilewati |
 
 ### 10.1 Isi `.svh` vs `.sv`
@@ -1564,6 +1577,7 @@ module tb_traffic {
 | **F66** ✅ | **`assume` + `assume property` di `.mv`** — gap frontend: SV utama sudah support `Assume`/`AssumeProperty`, `.mv` hanya punya `assert`; `assume` kini mirror `assert` 1:1 (immediate + concurrent RAW, `;` sebelum `else` LRM §20.11, module-item LRM §14) | (1) **lexer** (`mivon-mv/src/lexer.rs`): `Tok::Assume` + keyword `assume`; (2) **AST** (`ast.rs`): `Stmt::Assume{cond,pass,fail}` + `Stmt::AssumeProperty(String)` + `MItem::AssumeProperty(String)`; (3) **parser** (`parser/stmt.rs` + `parser/module.rs`): arm immediate + property RAW + tolak immediate di level module; (4) **codegen** (`codegen/stmt.rs` + `codegen/module.rs` 2 situs): emit `assume …;` + `assume property …;` + `single_line_stmt` + `assert_branch_stmt` (nested assume); (5) **check** (`check/stmt.rs` + `check/module.rs`): E2001 cond + property skip konservatif; (6) **print** (`print.rs`): pretty-print + `print_m_item` | demo e2e `/tmp/opencode/assume_demo.mv` → `Info: assume hold` + `ASSUME_DEMO_OK ack=1`; immediate iverilog OK + verilator OK, concurrent verilator OK (iverilog tolak concurrent, limit tool sama spt `assert`); 6 test baru (parse ×2, codegen, check ×2, e2e `test_mv_assume_immediate_and_property`); contoh `examples/mv/assume_demo.mv` |
 | **F67** ✅ | **Fix: default `parameter type T = logic[7:0]` lebar 8 (bukan 1)** — `parse_type_expr` membuang packed range → `ParamDecl.range` selalu None → `T` 1-bit → `TB_TP_BROKEN q8=0 q16=0`. Tambah `parse_type_expr_with_range` (range pertama dikembalikan) untuk cabang type-param (`mivon-parser/src/decl.rs`) | oracle `TB_TP_OK q8=4 q16=8` (on-the-fly `.mv` maupun hasil `mgen`); test `test_param_type_default_packed_range_width`; buglog-mv #20 |
 | **F68** ✅ | **Fix: `priority/unique casez/casex` pakai wildcard** — parser membuang kind saat ada qualifier → engine exact-match (`3'b101` vs `3'b1??` tak cocok; iverilog: cocok). Tambah `CaseKind` di AST qualifier + `CaseType::{Unique,Unique0,Priority}{X,Z}` + match `casex/z_eq` di engine. Contoh `case_qualifiers.mv` diperbaiki (`priority case` → `priority casez`) → `CASEQ_OK`, verilator bersih | oracle iverilog identik (10/11/12); test `test_priority_casez_wildcard`, `test_unique_casez_wildcard`, `test_mv_priority_casez_wildcard`; buglog-mv #21 |
+| **F69** ✅ | **`cover` + `cover property` di `.mv`** — gap: `cover` tanpa keyword di-parse diam-diam jadi call `cover(...)` + statement lepas (silent miscompile). Kini `Tok::Cover` reserved + `Stmt::Cover{cond,pass}` (tanpa `else` — ditolak pesan jelas) + `Stmt::CoverProperty`/`MItem::CoverProperty` RAW (module item LRM §14); codegen `cover (c) A;` + `cover property …;`; check E2001 + print | demo e2e `cover_demo.mv` → `cover point hit` + `COVER_DEMO_OK ack=1`; immediate iverilog OK + verilator OK, concurrent verilator OK; negatif: `else` → error jelas, immediate di level module → ditolak; 7 test baru (parse ×3, codegen, check ×2, e2e `test_mv_cover_immediate_and_property`); contoh `examples/mv/cover_demo.mv` |
 
 **Kriteria selesai F2:** `mivon mgen examples/mv/counter.mv` menghasilkan
 `counter.sv` yang bisa disimulasikan oleh `mivon counter.sv` tanpa error.

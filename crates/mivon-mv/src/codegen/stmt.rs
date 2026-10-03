@@ -266,6 +266,20 @@ pub(crate) fn emit_stmt(out: &mut String, indent: usize, stmt: &Stmt) {
         Stmt::AssumeProperty(raw) => {
             line(out, indent, &format!("assume property {raw};"));
         }
+        Stmt::Cover { cond, pass } => {
+            if let Some(s) = single_line_stmt(stmt) {
+                line(out, indent, &s);
+            } else {
+                line(out, indent, &format!("cover ({})", emit_expr(cond)));
+                if let Some(p) = pass {
+                    emit_stmt(out, indent + 1, p);
+                }
+                line(out, indent, ";");
+            }
+        }
+        Stmt::CoverProperty(raw) => {
+            line(out, indent, &format!("cover property {raw};"));
+        }
         // Escape hatch `@sv { ... }` — emit body SV mentah verbatim.
         Stmt::RawSvh(text) => emit_raw(out, indent, text),
     }
@@ -318,6 +332,7 @@ pub(crate) fn single_line_stmt(stmt: &Stmt) -> Option<String> {
         Stmt::Release { target } => Some(format!("release {};", emit_expr(target))),
         Stmt::AssertProperty(raw) => Some(format!("assert property {raw};")),
         Stmt::AssumeProperty(raw) => Some(format!("assume property {raw};")),
+        Stmt::CoverProperty(raw) => Some(format!("cover property {raw};")),
         Stmt::Event { expr, body } => {
             match body {
                 Some(b) => {
@@ -390,18 +405,33 @@ pub(crate) fn single_line_stmt(stmt: &Stmt) -> Option<String> {
                 (None, None) => Some(format!("assume ({c});")),
             }
         }
+        Stmt::Cover { cond, pass } => {
+            let p = match pass.as_ref().map(|s| assert_branch_stmt(s)) {
+                Some(Some(s)) => Some(s),
+                Some(None) => return None,
+                None => None,
+            };
+            let c = emit_expr(cond);
+            // `cover` tanpa `else`: `cover (c) action;` / `cover (c);`.
+            match p {
+                Some(p) => Some(format!("cover ({c}) {p};")),
+                None => Some(format!("cover ({c});")),
+            }
+        }
         _ => None,
     }
 }
 
 /// Branch pass/fail assertion yang aman di-compact tanpa semicolon di antara
-/// branch. Call-like saja (`$info(...)`, `assert/assume property`, nested `assert`/`assume`).
+/// branch. Call-like saja (`$info(...)`, `assert/assume/cover property`,
+/// nested `assert`/`assume`/`cover`).
 fn assert_branch_stmt(stmt: &Stmt) -> Option<String> {
     match stmt {
         Stmt::ExprStmt(e) => Some(emit_expr(e)),
         Stmt::AssertProperty(raw) => Some(format!("assert property {raw}")),
         Stmt::AssumeProperty(raw) => Some(format!("assume property {raw}")),
-        Stmt::Assert { .. } | Stmt::Assume { .. } => {
+        Stmt::CoverProperty(raw) => Some(format!("cover property {raw}")),
+        Stmt::Assert { .. } | Stmt::Assume { .. } | Stmt::Cover { .. } => {
             single_line_stmt(stmt).map(|s| s.trim_end_matches(';').to_string())
         }
         _ => None,

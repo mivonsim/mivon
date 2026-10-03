@@ -22747,6 +22747,45 @@ module tb_pcz {
     assert_eq!(y, 0xA0, "3'b101 vs 3'b1?? => A0 (y={y:02x})");
 }
 
+/// `.mv` `cover` + `cover property` → SV 1:1 + hit tercatat engine.
+/// Regresi: `cover` tanpa keyword di-parse jadi call `cover(...)` diam-diam.
+#[test]
+fn test_mv_cover_immediate_and_property() {
+    let src = r#"
+module tb_cv {
+    sig a : bit
+    sig b : bit
+    cover property (@(posedge a) a |-> b)
+    initial {
+        a = 0
+        b = 1
+        cover (a == 0) $info("covered")
+        $display("TB_COVER_OK a=%0d b=%0d", a, b)
+        $finish
+    }
+}
+"#;
+    let r = mivon_mv::transpile(src, "cov").expect("transpile .mv OK");
+    assert!(
+        r.sv.contains("cover (a == 0) $info(\"covered\");"),
+        "emisi cover: {}",
+        r.sv
+    );
+    assert!(
+        !r.sv.contains("cover(a"),
+        "cover bukan call: {}",
+        r.sv
+    );
+    assert!(
+        r.sv.contains("cover property (@(posedge a) a |-> b);"),
+        "cover property module item: {}",
+        r.sv
+    );
+    let sigs = simulate_signals(&r.sv, 50).expect("simulasi harus jalan");
+    let a = sigs.iter().find(|(s, _)| s == "a").unwrap().1.to_u64();
+    assert_eq!(a, 0, "a=0");
+}
+
 /// `uint[8]` = vektor 8-bit (angka = LEBAR), bukan array 8 x 32-bit.
 #[test]
 fn test_mv_uint_bracket_is_bit_width() {

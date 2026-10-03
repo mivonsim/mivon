@@ -690,6 +690,39 @@ fn parse_immediate_assume_at_module_level_is_rejected() {
     assert!(err.msg.contains("assume property"), "msg: {}", err.msg);
 }
 
+#[test]
+fn parse_cover_immediate_and_property() {
+    // `cover (c)` immediate (tanpa `else`) + `cover property` RAW.
+    let src = "module m {\n sig a : bit\n initial {\n cover (a == 0) $info(\"ok\")\n }\n cover property (@(posedge clk) a |-> b)\n }\n";
+    let f = parse(src).expect("parse cover");
+    let stmts = first_initial(&f);
+    assert!(
+        stmts.iter().any(|s| matches!(s, Stmt::Cover { .. })),
+        "harus ada Stmt::Cover: {stmts:?}"
+    );
+    assert!(
+        f.modules[0]
+            .items
+            .iter()
+            .any(|i| matches!(i, MItem::CoverProperty(_))),
+        "harus ada MItem::CoverProperty"
+    );
+}
+
+#[test]
+fn parse_cover_with_else_is_rejected() {
+    // `cover` tanpa `else` (tak ada cabang gagal).
+    let err = parse("module m {\n sig a : bit\n initial {\n cover (a == 0) $info(\"x\") else $error(\"y\")\n }\n }\n").unwrap_err();
+    assert!(err.msg.contains("tidak memakai 'else'"), "msg: {}", err.msg);
+}
+
+#[test]
+fn parse_immediate_cover_at_module_level_is_rejected() {
+    // Mirror `assert`: immediate `cover` di level module ditolak.
+    let err = parse("module m {\n in clk : bit\n cover (1'b1) $info(\"x\")\n }\n").unwrap_err();
+    assert!(err.msg.contains("cover property"), "msg: {}", err.msg);
+}
+
 /// Statement pertama pada blok `initial` pertama (helper test DSL-verb).
 fn first_initial(f: &MvFile) -> Vec<Stmt> {
     f.modules[0]
@@ -741,6 +774,8 @@ fn stmt_kinds(stmts: &[Stmt]) -> Vec<&'static str> {
             Stmt::AssertProperty(_) => "AssertProperty",
             Stmt::Assume { .. } => "Assume",
             Stmt::AssumeProperty(_) => "AssumeProperty",
+            Stmt::Cover { .. } => "Cover",
+            Stmt::CoverProperty(_) => "CoverProperty",
             Stmt::ExprStmt(_) => "ExprStmt",
             Stmt::RawSvh(_) => "RawSvh",
         }

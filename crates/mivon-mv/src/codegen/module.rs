@@ -212,6 +212,9 @@ pub(crate) fn emit_module_kw(out: &mut String, m: &Module, kw: &str, iface_names
             MItem::AssumeProperty(raw) => {
                 line(out, 1, &format!("assume property {raw};"));
             }
+            MItem::CoverProperty(raw) => {
+                line(out, 1, &format!("cover property {raw};"));
+            }
             MItem::Seq(spec, body) => {
                 line(out, 0, "");
                 line(out, 1, "// ── logika sekuensial ──");
@@ -384,6 +387,10 @@ pub(crate) fn emit_module_item_at(
         MItem::AssumeProperty(raw) => {
             // Mirror `assert property`: asumsi concurrent = module item.
             line(out, indent, &format!("assume property {raw};"));
+        }
+        MItem::CoverProperty(raw) => {
+            // Mirror `assert property`: cover concurrent = module item.
+            line(out, indent, &format!("cover property {raw};"));
         }
         MItem::Seq(spec, body) => emit_seq(out, indent, spec, body),
         MItem::Comb(body) => {

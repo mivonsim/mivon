@@ -376,6 +376,24 @@ impl Parser {
                         .to_string(),
                 ))
             }
+            // `cover property ( … )` di level module — mirror `assert property`.
+            Tok::Cover => {
+                self.advance();
+                if self.is_ident("property") {
+                    self.advance();
+                    let raw = self.parse_assert_property_raw()?;
+                    return Ok(MItem::CoverProperty(raw));
+                }
+                let (l, c) = self.pos_line();
+                Err(MvError::new(
+                    l,
+                    c,
+                    "di level module hanya 'cover property (…)' yang sah \
+                     (concurrent assertion, LRM 1800 §14) — immediate \
+                     'cover (…)' harus di dalam initial/always/seq/comb"
+                        .to_string(),
+                ))
+            }
             Tok::Seq => Ok(MItem::Seq(self.parse_seq_spec()?, self.parse_stmt()?)),
             Tok::Comb => {
                 self.advance();
