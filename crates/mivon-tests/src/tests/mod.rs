@@ -5435,6 +5435,81 @@ endmodule
     assert_eq!(sz, 2, "queue size should be 2 after 2 pushes");
 }
 
+/// `q[$]` = elemen TERAKHIR (bukan pertama); tulis `q[$] = v` juga jalan.
+/// Regresi: `$` jadi SysFunc tak dikenal → 0 → elemen pertama.
+/// Oracle: iverilog (baca; tulis crash di iverilog).
+#[test]
+fn test_queue_dollar_index() {
+    let source = r#"
+module tb;
+    int q[$];
+    reg [31:0] last, first, w1;
+    initial begin
+        q.push_back(10);
+        q.push_back(20);
+        q.push_back(30);
+        last = q[$];
+        q[$] = 99;
+        first = q[0];
+        w1 = q[1];
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 5).unwrap();
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    assert_eq!(get("last"), 30, "q[$] = 30");
+    assert_eq!(get("first"), 10, "q[0] tetap 10");
+    assert_eq!(get("w1"), 20, "q[1] tetap 20");
+    // last dibaca SEBELUM tulis; baca ulang implisit via w1? cek via sim kedua:
+    let source2 = r#"
+module tb;
+    int q[$];
+    reg [31:0] rl;
+    initial begin
+        q.push_back(10);
+        q.push_back(20);
+        q[$] = 99;
+        rl = q[$];
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs2 = simulate_signals(source2, 5).unwrap();
+    let rl = sigs2.iter().find(|(s, _)| s == "rl").unwrap().1.to_u64();
+    assert_eq!(rl, 99, "tulis q[$] = 99 terbaca kembali");
+}
+
+/// Index string `s[i]` = BYTE ke-i (karakter), bukan bit tunggal.
+/// Regresi: BitSelect 1-bit → bit LSB char (`s[0]`="h" → 0, harus 104).
+/// Oracle: Verilator (104,101,108,108,111).
+#[test]
+fn test_string_byte_index() {
+    let source = r#"
+module tb;
+    string s;
+    reg [7:0] c0, c2, c4, w0, w2;
+    string t;
+    initial begin
+        s = "hello";
+        c0 = s[0]; c2 = s[2]; c4 = s[4];
+        t = "hello";
+        t[0] = 74;
+        t[2] = 90;
+        w0 = t[0]; w2 = t[2];
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 5).unwrap();
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    assert_eq!(get("c0"), 104, "s[0]='h'");
+    assert_eq!(get("c2"), 108, "s[2]='l'");
+    assert_eq!(get("c4"), 111, "s[4]='o'");
+    assert_eq!(get("w0"), 74, "tulis t[0]='J'");
+    assert_eq!(get("w2"), 90, "tulis t[2]='Z'");
+}
+
 #[test]
 fn test_queue_push_front() {
     let source = r#"

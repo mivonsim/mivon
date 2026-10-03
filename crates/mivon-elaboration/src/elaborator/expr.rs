@@ -30,6 +30,27 @@ impl Elaborator {
         Ok(folded)
     }
 
+    /// Index `$` (elemen terakhir array, LRM 1800 §7.5)?
+    pub(crate) fn is_dollar_index(index: &Expr) -> bool {
+        matches!(index, Expr::Ident { name, .. } if name.as_str() == "$")
+    }
+
+    /// Ekspresi runtime `size-1` utk index `$` pada array dinamis/queue —
+    /// ukuran hanya diketahui saat simulasi (MethodCall `size` di-resolve
+    /// engine dari lebar aktual).
+    pub(crate) fn dollar_last_index(sig_id: SignalId, width: usize) -> IrExpr {
+        IrExpr::BinaryOp(
+            BinaryIrOp::Sub,
+            Box::new(IrExpr::MethodCall {
+                obj: Box::new(IrExpr::Signal(sig_id, width)),
+                method: Symbol::intern("size"),
+                args: vec![],
+                with_clause: None,
+            }),
+            Box::new(IrExpr::Const(LogicVec::from_u64(1, 32))),
+        )
+    }
+
     pub(crate) fn is_current_module_instance(&self, name: &Symbol) -> bool {
         let Some(cur) = self.current_module else {
             return false;
@@ -358,6 +379,29 @@ impl Elaborator {
                 }
                 if let IrExpr::Signal(sid, _) = &inner_expr {
                     let sig = &signals[*sid];
+                    // String `s[i]` memilih BYTE ke-i (karakter, LRM 1800
+                    // §6.16.2) — bukan bit tunggal. Storage flat byte-per-byte
+                    // (`string_to_logicvec`), jadi offset = i*8, lebar 8.
+                    // Sebelumnya BitSelect 1-bit → bit LSB char (selalu 0/1
+                    // ngawur; probe `s[0]`="h" → 0, harusnya 104).
+                    if sig.is_string {
+                        if let Ok(idx) = const_eval_params(index, &self.param_vals) {
+                            let idx = idx.max(0) as usize;
+                            let lsb = idx.saturating_mul(8);
+                            return Ok(IrExpr::RangeSelect(*sid, lsb + 7, lsb));
+                        }
+                        let index_expr = self.elaborate_expr(index, signal_map, signals)?;
+                        let base_expr = IrExpr::BinaryOp(
+                            BinaryIrOp::Mul,
+                            Box::new(index_expr),
+                            Box::new(IrExpr::Const(LogicVec::from_u64(8, 32))),
+                        );
+                        return Ok(IrExpr::ExprPartSelect(
+                            Box::new(IrExpr::Signal(*sid, sig.width)),
+                            Box::new(base_expr),
+                            Box::new(IrExpr::Const(LogicVec::from_u64(8, 32))),
+                        ));
+                    }
                     // Multi-dim packed array: `mem[i]` memilih ELEMEN (sub-array),
                     // bukan bit tunggal — `logic [3:0][7:0] mem; mem[2]` = 8 bit
                     // (bit 23:16), bukan bit 2. Jalur tulis (elaborate_lvalue)
@@ -400,7 +444,17 @@ impl Elaborator {
                         || sig.is_queue
                         || sig.is_associative
                     {
-                        let index_expr = self.elaborate_expr(index, signal_map, signals)?;
+                        // `$` = indeks elemen TERAKHIR (LRM 1800 §7.5) —
+                        // `size-1` runtime via MethodCall (engine hitung dari
+                        // lebar aktual). Sebelumnya `$` jadi SysFunc tak
+                        // dikenal → 0 → elemen PERTAMA (bug vs iverilog).
+                        let index_expr = if Self::is_dollar_index(index)
+                            && (sig.is_dynamic || sig.is_queue)
+                        {
+                            Self::dollar_last_index(*sid, sig.width)
+                        } else {
+                            self.elaborate_expr(index, signal_map, signals)?
+                        };
                         // F39: multi-dim unpacked — index pertama memilih ROW
                         // (sub-array): lebar = elem_width × Π dims[1..].
                         // ArrayIndex engine: start = idx × elem_width → row

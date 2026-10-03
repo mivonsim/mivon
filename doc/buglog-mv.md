@@ -273,6 +273,17 @@ bug di mivon utama (parser/elaborator/simulator). Status: ✅ fixed / ⏳ open.
     min(old,new) bit rendah — elemen 0 di bit rendah (`parser/expr.rs`,
     `engine/eval/expr.rs`).
 
+28. **`q[$]` baca elemen PERTAMA + `s[i]` baca bit (bukan byte)** —
+    `$` jadi SysFunc tak dikenal → index 0 (`qlast`=10, harus 30);
+    index string di-BitSelect 1-bit → bit LSB char (`s[0]`="h" → 0,
+    harus 104; LRM 1800 §6.16.2: `s[i]` = byte). Ditemukan saat hunt
+    diferensial buglog (probe queue/string vs iverilog/Verilator).
+    Fix: `$` → `size-1` runtime via MethodCall di elaborator baca+tulis
+    (dinamis/queue); string → RangeSelect/ExprPartSelect 8-bit baca+tulis
+    (`elaborator/{expr,stmt}.rs`). Oracle: queue baca identik iverilog
+    (tulis crash di iverilog); string identik Verilator (104,101,108,108,
+    111); queue kosong tak crash.
+
 ## ⏳ Open
 
 (tidak ada item open — semua bug historis sudah tertutup)

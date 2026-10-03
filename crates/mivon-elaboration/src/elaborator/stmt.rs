@@ -2590,7 +2590,14 @@ impl Elaborator {
                             || sig.is_queue
                             || sig.is_associative
                         {
-                            let index_expr = self.elaborate_expr(bs_index, signal_map, signals)?;
+                            // `$` = indeks terakhir (mirror jalur baca).
+                            let index_expr = if Self::is_dollar_index(bs_index)
+                                && (sig.is_dynamic || sig.is_queue)
+                            {
+                                Self::dollar_last_index(sid, sig.width)
+                            } else {
+                                self.elaborate_expr(bs_index, signal_map, signals)?
+                            };
                             // F39: multi-dim unpacked — index pertama memilih
                             // ROW: lebar = elem_width × Π dims[1..] (bit offset
                             // i × row_w terbaca/tertulis utuh oleh engine).
@@ -2607,6 +2614,22 @@ impl Elaborator {
                                 index: Box::new(index_expr),
                                 elem_width: ew,
                             })
+                        } else if sig.is_string {
+                            // Tulis byte string `s[i] = v` (mirror jalur baca:
+                            // engine kalikan index × elem_width sendiri).
+                            if let Ok(idx) = const_eval_params(bs_index, &self.param_vals) {
+                                let idx = idx.max(0) as usize;
+                                let lsb = idx.saturating_mul(8);
+                                Ok(IrLValue::RangeSelect(sid, lsb + 7, lsb))
+                            } else {
+                                let index_expr =
+                                    self.elaborate_expr(bs_index, signal_map, signals)?;
+                                Ok(IrLValue::ArrayIndex {
+                                    sig_id: sid,
+                                    index: Box::new(index_expr),
+                                    elem_width: 8,
+                                })
+                            }
                         } else if let Ok(idx) = const_eval_params(bs_index, &self.param_vals) {
                             Ok(IrLValue::BitSelect(sid, idx as usize))
                         } else {
