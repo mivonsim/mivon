@@ -284,6 +284,15 @@ bug di mivon utama (parser/elaborator/simulator). Status: ✅ fixed / ⏳ open.
     (tulis crash di iverilog); string identik Verilator (104,101,108,108,
     111); queue kosong tak crash.
 
+29. **`release`/`deassign` kembalikan snapshot basi** — driver berubah
+    saat forced (write ditahan) lalu release → restore nilai pra-force
+    (d=1, release → 0; iverilog: 1 karena driver dihitung ulang).
+    Ditemukan saat hunt diferensial buglog (probe force/release vs
+    iverilog). Fix: `redrive_after_release` — jalankan ulang proses
+    kombinasional penulis sinyal (atribusi netral anti-race) di 4 situs
+    Release/Deassign (`engine/scheduler/block.rs`); `reg` tak tersentuh
+    (tetap pegang forced, LRM §10.6.2).
+
 ## ⏳ Open
 
 (tidak ada item open — semua bug historis sudah tertutup)

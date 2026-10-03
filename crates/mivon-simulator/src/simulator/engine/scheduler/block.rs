@@ -121,6 +121,41 @@ impl SimulationEngine {
         r
     }
 
+    /// LRM §10.6.2: setelah `release`/`deassign`, wire kembali ke NILAI
+    /// DRIVER SAAT INI. Driver bisa berubah selama forced (write ditahan
+    /// `forced_signals`), jadi snapshot pra-force basi — jalankan ulang
+    /// proses kombinasional yang menulis sinyal (idempoten bila tak ada
+    /// perubahan). Tanpa ini release mengembalikan nilai basi (probe:
+    /// d=1 saat forced, release → 0 padahal driver 1; iverilog: 1).
+    pub(crate) fn redrive_after_release(&mut self, id: SignalId) -> Result<(), SimError> {
+        let bodies: Vec<Vec<IrStmt>> = self
+            .design
+            .top
+            .processes
+            .iter()
+            .filter_map(|p| match p {
+                mivon_ir::Process::Combinational { body, .. }
+                | mivon_ir::Process::CombReactive { body, .. } => {
+                    if crate::scheduler::cdc::collect_writes_from_stmts(body).contains(&id) {
+                        Some(body.clone())
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            })
+            .collect();
+        // Atribusi netral: tulis driver jangan dicatat sbg race dgn proses
+        // testbench yang memanggil release.
+        let saved_pid = self.current_process_id;
+        self.current_process_id = None;
+        for body in &bodies {
+            self.evaluate_block_with_delay_fork(body, None)?;
+        }
+        self.current_process_id = saved_pid;
+        Ok(())
+    }
+
     pub(crate) fn evaluate_block_with_delay_fork(
         &mut self,
         stmts: &[IrStmt],
@@ -422,6 +457,9 @@ impl SimulationEngine {
                                 *sig = saved;
                             }
                         }
+                        // Driver bisa berubah SELAMA forced (write ditahan) —
+                        // hitung ulang dari driver kini (bukan snapshot basi).
+                        self.redrive_after_release(id)?;
                     }
                 }
                 IrStmt::Deassign { lvalue } => {
@@ -432,6 +470,7 @@ impl SimulationEngine {
                                 *sig = saved;
                             }
                         }
+                        self.redrive_after_release(id)?;
                     }
                 }
                 IrStmt::Wait { cond, body } => {
@@ -2940,6 +2979,9 @@ impl SimulationEngine {
                                 *sig = saved;
                             }
                         }
+                        // Driver bisa berubah SELAMA forced (write ditahan) —
+                        // hitung ulang dari driver kini (bukan snapshot basi).
+                        self.redrive_after_release(id)?;
                     }
                 }
                 IrStmt::Deassign { lvalue } => {
@@ -2950,6 +2992,7 @@ impl SimulationEngine {
                                 *sig = saved;
                             }
                         }
+                        self.redrive_after_release(id)?;
                     }
                 }
                 IrStmt::Fork {

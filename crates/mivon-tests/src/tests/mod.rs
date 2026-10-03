@@ -16298,6 +16298,37 @@ endmodule"#,
     );
 }
 
+/// `release` wire hitung ulang dari DRIVER KINI (bukan snapshot basi).
+/// Regresi: driver berubah saat forced → release kembalikan nilai basi
+/// (d=1, release → 0; iverilog: 1). Oracle: iverilog.
+#[test]
+fn test_force_release_redrives_wire() {
+    let sigs = simulate_signals(
+        r#"
+module tb;
+    wire w;
+    reg d;
+    reg got_release, got_toggle;
+    assign w = d;
+    initial begin
+        d = 0; #10;
+        force w = 1'b1; #10;
+        d = 1; #10;
+        release w; #1;
+        got_release = w;
+        d = 0; #10;
+        got_toggle = w;
+        #1 $finish;
+    end
+endmodule"#,
+        60,
+    )
+    .unwrap();
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    assert_eq!(get("got_release"), 1, "release ikut driver kini (d=1)");
+    assert_eq!(get("got_toggle"), 0, "toggle pasca-release jalan");
+}
+
 #[test]
 fn test_force_overrides_nba() {
     let sigs = simulate_signals(
