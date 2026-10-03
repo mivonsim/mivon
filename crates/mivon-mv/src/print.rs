@@ -308,10 +308,13 @@ fn print_stmt_b(b: &mut StrB, indent: usize, s: &Stmt) {
                 b.line(indent, &format!("{}{op}", print_expr(lhs)));
             }
         }
-        Stmt::If { cond, then, els } => {
+        Stmt::If {
+            cond, then, els, qual, ..
+        } => {
+            let q = qual.as_ref().map(|s| format!("{s} ")).unwrap_or_default();
             b.line(
                 indent,
-                &format!("if ({}) {}", print_expr(cond), print_stmt(indent, then)),
+                &format!("{q}if ({}) {}", print_expr(cond), print_stmt(indent, then)),
             );
             if let Some(e) = els {
                 b.line(indent, &format!("else {}", print_stmt(indent, e)));

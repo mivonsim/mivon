@@ -272,6 +272,32 @@ module m {
 }
 
 #[test]
+fn codegen_unique_if_head_only() {
+    // Qualifier hanya di head; `else if` lanjutan plain (LRM 1800 §12.5).
+    let src = r#"
+module m {
+    sig a : bit
+    sig b : bit
+    sig y : bit
+    comb {
+        unique if (a) {
+            y = 1
+        } else if (b) {
+            y = 1
+        } else {
+            y = 0
+        }
+    }
+}
+"#;
+    let file = parse(src).unwrap();
+    let out = generate(&file, "m");
+    assert!(out.sv.contains("unique if (a) begin"), "head: {}", out.sv);
+    assert!(out.sv.contains("end else if (b) begin"), "rantai: {}", out.sv);
+    assert!(!out.sv.contains("unique if (b)"), "lanjutan plain: {}", out.sv);
+}
+
+#[test]
 fn codegen_testbench() {
     let src = r#"
 module counter #(WIDTH = 8) {

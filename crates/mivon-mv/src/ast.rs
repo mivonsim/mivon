@@ -193,11 +193,14 @@ pub enum Stmt {
         line: usize,
         col: usize,
     },
-    /// `if (cond) then else`
+    /// `if (cond) then else` — `qual` = qualifier `unique`/`unique0`/
+    /// `priority` (None utk `if` biasa). Qualifier hanya di head rantai;
+    /// `else if` lanjutan selalu plain (LRM 1800 §12.5).
     If {
         cond: Expr,
         then: Box<Stmt>,
         els: Option<Box<Stmt>>,
+        qual: Option<String>,
     },
     /// `case (expr) { items... default: ... }` (F26: qualifier
     /// priority/unique/unique0 + kind casez/casex — `qual` None utk `case`

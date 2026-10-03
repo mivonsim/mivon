@@ -736,6 +736,27 @@ fn parse_case_inside_bracket_without_colon_rejected() {
 }
 
 #[test]
+fn parse_unique_if_keeps_qualifier() {
+    // `unique if` / `priority if` / `unique0 if` — qualifier di head.
+    for (kw, want) in [("unique", "unique"), ("priority", "priority"), ("unique0", "unique0")] {
+        let src = format!("module m {{\n sig a : bit\n sig y : bit\n comb {{\n {kw} if (a) {{ y = 1 }} else {{ y = 0 }}\n }}\n}}\n");
+        let f = parse(&src).expect("parse qualified if");
+        let stmts = first_comb(&f);
+        assert!(
+            stmts.iter().any(|s| matches!(s, Stmt::If { qual: Some(q), .. } if q == want)),
+            "{kw}: qualifier dipertahankan: {stmts:?}"
+        );
+    }
+}
+
+#[test]
+fn parse_qualifier_without_if_or_case_rejected() {
+    // Pesan error menyebut `if` sebagai opsi sah.
+    let err = parse("module m {\n sig a : bit\n comb {\n unique foo { }\n }\n}\n").unwrap_err();
+    assert!(err.msg.contains("'if'"), "msg: {}", err.msg);
+}
+
+#[test]
 fn parse_cover_immediate_and_property() {
     // `cover (c)` immediate (tanpa `else`) + `cover property` RAW.
     let src = "module m {\n sig a : bit\n initial {\n cover (a == 0) $info(\"ok\")\n }\n cover property (@(posedge clk) a |-> b)\n }\n";

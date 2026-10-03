@@ -47,8 +47,14 @@ pub(crate) fn emit_stmt(out: &mut String, indent: usize, stmt: &Stmt) {
                 line(out, indent, &format!("{}{};", emit_expr(lhs), op));
             }
         }
-        Stmt::If { cond, then, els } => {
-            line(out, indent, &format!("if ({}) begin", emit_expr(cond)));
+        Stmt::If {
+            cond, then, els, qual, ..
+        } => {
+            let head = match qual {
+                Some(q) => format!("{} if", q),
+                None => "if".to_string(),
+            };
+            line(out, indent, &format!("{} ({}) begin", head, emit_expr(cond)));
             emit_body(out, indent + 1, then);
             emit_else_chain(out, indent, els.as_deref());
         }
@@ -468,7 +474,8 @@ fn assert_branch_stmt(stmt: &Stmt) -> Option<String> {
 /// langsung dari blok sebelumnya agar output satu blok utuh.
 fn emit_else_chain(out: &mut String, indent: usize, els: Option<&Stmt>) {
     match els {
-        Some(Stmt::If { cond, then, els }) => {
+        // `else if` lanjutan selalu plain — qualifier hanya di head rantai.
+        Some(Stmt::If { cond, then, els, .. }) => {
             line(
                 out,
                 indent,

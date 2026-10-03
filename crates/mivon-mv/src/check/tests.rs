@@ -192,6 +192,16 @@ fn e2013_in_case_inside_value_dup() {
 }
 
 #[test]
+fn ok_unique_if_branches_checked() {
+    // Kondisi + cabang `unique if` ikut validasi seperti `if` biasa.
+    let src = "module m {\n sig a : bit\n sig y : bit\n comb {\n unique if (nope) { y = 1 } else { y = 0 }\n }\n}\n";
+    let e = check_src(src).unwrap_err();
+    assert!(e.msg.contains("E2001"), "msg: {}", e.msg);
+    let ok = "module m {\n sig a : bit\n sig y : bit\n comb {\n priority if (a) { y = 1 } else { y = 0 }\n }\n}\n";
+    check_src(ok).expect("priority if harus lolos");
+}
+
+#[test]
 fn ok_package_const_in_enum_width() {
     let src = "package p {\n const N = 4\n enum(N) Color { RED, GREEN } }\nmodule m { in clk : bit\n out c : p::Color\n comb { c = RED } }";
     check_src(src).expect("const package boleh dipakai di lebar enum");

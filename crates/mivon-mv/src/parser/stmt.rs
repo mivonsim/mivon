@@ -189,11 +189,11 @@ impl Parser {
                     cond,
                     then: Box::new(then),
                     els,
+                    qual: None,
                 })
             }
-            // F26: case qualifier + casez/casex — `priority case (...)`,
-            // `unique casez (...)`, `casex (...)`. Qualifier/kind dibaca dulu,
-            // lalu body case di-parse oleh parse_case_body.
+            // Qualifier `priority`/`unique`/`unique0` + `if` (F71) atau
+            // `case`/`casez`/`casex` (F26). Qualifier & kind ortogonal.
             Tok::Priority | Tok::Unique | Tok::Unique0 => {
                 let qual = match self.peek() {
                     Tok::Priority => "priority",
@@ -202,6 +202,24 @@ impl Parser {
                 }
                 .to_string();
                 self.advance();
+                // F71: `unique if (c) ...` / `priority if` / `unique0 if`.
+                if self.eat(&Tok::If) {
+                    self.expect(&Tok::LParen)?;
+                    let cond = self.parse_expr()?;
+                    self.expect(&Tok::RParen)?;
+                    let then = self.parse_stmt()?;
+                    let els = if self.eat(&Tok::Else) {
+                        Some(Box::new(self.parse_stmt()?))
+                    } else {
+                        None
+                    };
+                    return Ok(Stmt::If {
+                        cond,
+                        then: Box::new(then),
+                        els,
+                        qual: Some(qual),
+                    });
+                }
                 let kind = match self.peek() {
                     Tok::Case => "case",
                     Tok::Casez => "casez",
@@ -211,7 +229,7 @@ impl Parser {
                         return Err(MvError::new(
                             l,
                             c,
-                            "diharapkan 'case'/'casez'/'casex' setelah qualifier".to_string(),
+                            "diharapkan 'if'/'case'/'casez'/'casex' setelah qualifier".to_string(),
                         ));
                     }
                 }

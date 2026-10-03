@@ -211,7 +211,9 @@ pub(crate) fn check_stmt<'a>(
             check_lvalue_not_const(lhs, scope, *line, *col)?;
             Ok(())
         }
-        Stmt::If { cond, then, els } => {
+        Stmt::If {
+            cond, then, els, ..
+        } => {
             check_expr(cond, ctx, scope, 0)?;
             check_stmt(then, ctx, scope, kind)?;
             if let Some(e) = els {

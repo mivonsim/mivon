@@ -22822,6 +22822,48 @@ module tb_ci {
     assert_eq!(y, 0x0A, "sel=5 dalam [1:10] => 0A (y={y:02x})");
 }
 
+/// `.mv` `unique if` — qualifier di head, rantai `else if` plain.
+#[test]
+fn test_mv_unique_if_chain() {
+    let src = r#"
+module tb_ui {
+    sig a : bit
+    sig b : bit
+    sig y : logic[1:0]
+    comb {
+        unique if (a) {
+            y = 1
+        } else if (b) {
+            y = 2
+        } else {
+            y = 0
+        }
+    }
+    initial {
+        a = 1
+        b = 1
+        #1
+        $display("UI y=%0d", y)
+        $finish
+    }
+}
+"#;
+    let r = mivon_mv::transpile(src, "ui").expect("transpile .mv OK");
+    assert!(
+        r.sv.contains("unique if (a) begin"),
+        "head qualified: {}",
+        r.sv
+    );
+    assert!(
+        r.sv.contains("end else if (b) begin"),
+        "rantai plain: {}",
+        r.sv
+    );
+    let sigs = simulate_signals(&r.sv, 50).expect("simulasi harus jalan");
+    let y = sigs.iter().find(|(s, _)| s == "y").unwrap().1.to_u64();
+    assert_eq!(y, 1, "a=b=1 first-match => 1 (y={y})");
+}
+
 /// `uint[8]` = vektor 8-bit (angka = LEBAR), bukan array 8 x 32-bit.
 #[test]
 fn test_mv_uint_bracket_is_bit_width() {

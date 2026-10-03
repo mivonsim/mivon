@@ -1,0 +1,43 @@
+// ─────────────────────────────────────────────────────────────
+// Contoh Mivon HDL (.mv) — unique if + else-if chain (F71).
+// Generate: mivon mgen unique_if.mv
+// Sim: mivon unique_if.mv --top tb_ui -T 50
+// ─────────────────────────────────────────────────────────────
+
+module ui_dut {
+    in a : bit
+    in b : bit
+    out y : logic[1:0]
+
+    comb {
+        unique if (a) {
+            y = 1
+        } else if (b) {
+            y = 2
+        } else {
+            y = 0
+        }
+    }
+}
+
+module tb_ui {
+    sig a : bit
+    sig b : bit
+    sig y : logic[1:0]
+    inst ui_dut u (.a(a), .b(b), .y(y))
+
+    initial {
+        a = 1
+        b = 1
+        #1
+        assert (y == 1) $info("unique-a ok") else $error("unique-a bad")
+        a = 0
+        #1
+        assert (y == 2) $info("elseif-b ok") else $error("elseif-b bad")
+        b = 0
+        #1
+        assert (y == 0) $info("else ok") else $error("else bad")
+        $display("UNIQUE_IF_OK y=%0d", y)
+        $finish
+    }
+}
