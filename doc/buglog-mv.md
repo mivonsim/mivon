@@ -265,6 +265,14 @@ bug di mivon utama (parser/elaborator/simulator). Status: ✅ fixed / ⏳ open.
     `eval_sysfunc_real_arg` + `ir_expr_is_real` kenali hasilnya (nested) +
     lebar 64 (`$rtoi` → 32 sekalian) di `elaborator/stmt.rs`.
 
+27. **`new[N](old)` dynamic array kehilangan data** — parser parse lalu
+    BUANG expr copy (`_init`) → engine alokasi X fresh: grow `new[6](d)`
+    maupun shrink `new[2](d)` berisi 0 semua (iverilog: elemen
+    dipertahankan). Ditemukan saat hunt diferensial buglog (probe
+    string/array). Fix: teruskan init sbg argumen ke-2 + engine salin
+    min(old,new) bit rendah — elemen 0 di bit rendah (`parser/expr.rs`,
+    `engine/eval/expr.rs`).
+
 ## ⏳ Open
 
 (tidak ada item open — semua bug historis sudah tertutup)

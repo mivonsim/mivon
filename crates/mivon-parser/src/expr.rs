@@ -1076,17 +1076,19 @@ impl Parser {
                     self.advance();
                     let size = self.parse_expr(0)?;
                     self.expect(Token::RBrack)?;
-                    let _init = if self.peek() == &Token::LParen {
+                    // `new[N](old)` — salin min(old,new) elemen pertama
+                    // (LRM 1800 §7.5.2.1). Sebelumnya init dibuang diam-diam
+                    // → resize kehilangan data (probe: new[6](d) → d3=0).
+                    let mut new_args = vec![size];
+                    if self.peek() == &Token::LParen {
                         self.advance();
                         let val = self.parse_expr(0)?;
                         self.expect(Token::RParen)?;
-                        Some(Box::new(val))
-                    } else {
-                        None
-                    };
+                        new_args.push(val);
+                    }
                     Ok(Expr::FuncCall {
                         name: Symbol::intern("new"),
-                        args: vec![size],
+                        args: new_args,
                         line: fl,
                         col: fc,
                     })

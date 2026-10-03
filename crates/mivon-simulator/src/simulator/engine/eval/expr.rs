@@ -39,7 +39,7 @@ impl SimulationEngine {
             }
             Ok(val)
         } else if let IrExpr::NewCall { class_name, args } = expr {
-            if class_name.is_empty() && args.len() == 1 {
+            if class_name.is_empty() && !args.is_empty() {
                 let size_val = self.evaluate_expr(&args[0])?;
                 let size = size_val.to_u64() as usize;
                 if let Some(sig_id) = self.signal_id_from_lvalue(lhs) {
@@ -50,7 +50,15 @@ impl SimulationEngine {
                         .get(sig_id)
                         .map(|s| s.elem_width)
                         .unwrap_or(1);
-                    Ok(LogicVec::fill(LogicVal::X, size * elem_width))
+                    let mut out = LogicVec::fill(LogicVal::X, size * elem_width);
+                    // `new[N](old)` — salin min(old,new) elemen pertama
+                    // (elemen 0 di bit rendah; LRM 1800 §7.5.2.1).
+                    if let Some(src) = args.get(1) {
+                        let old = self.evaluate_expr(src)?;
+                        let n = old.bits.len().min(out.bits.len());
+                        out.bits[..n].copy_from_slice(&old.bits[..n]);
+                    }
+                    Ok(out)
                 } else {
                     self.evaluate_expr(expr)
                 }

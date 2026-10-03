@@ -5358,6 +5358,36 @@ endmodule
     assert_eq!(sz, 5, "dynamic array size should be 5 after new[5]");
 }
 
+/// `new[N](old)` menyalin min(old,new) elemen pertama (LRM 1800 §7.5.2.1).
+/// Regresi: init dibuang parser → resize kehilangan semua data.
+/// Oracle: iverilog (`size=6 d0=10..d3=40`, shrink `size=2 d0=10 d1=20`).
+#[test]
+fn test_dynamic_array_new_with_copy() {
+    let source = r#"
+module tb;
+    int d[];
+    reg [31:0] sz, v0, v3, s2, w0, w1;
+    initial begin
+        d = new[4];
+        d[0] = 10; d[1] = 20; d[2] = 30; d[3] = 40;
+        d = new[6](d);
+        sz = d.size(); v0 = d[0]; v3 = d[3];
+        d = new[2](d);
+        s2 = d.size(); w0 = d[0]; w1 = d[1];
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 5).unwrap();
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    assert_eq!(get("sz"), 6, "grow size");
+    assert_eq!(get("v0"), 10, "grow d0 preserved");
+    assert_eq!(get("v3"), 40, "grow d3 preserved");
+    assert_eq!(get("s2"), 2, "shrink size");
+    assert_eq!(get("w0"), 10, "shrink d0 preserved");
+    assert_eq!(get("w1"), 20, "shrink d1 preserved");
+}
+
 #[test]
 fn test_queue_push_pop() {
     let source = r#"
