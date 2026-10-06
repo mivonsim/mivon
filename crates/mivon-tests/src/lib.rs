@@ -68,5 +68,10 @@ mod dotstar_tests;
 #[cfg(test)]
 mod syscall_noargs_tests;
 
+/// Regresi const-fold X/Z pada concat + lebar hasil `**` — sweep
+/// differential vs `iverilog -g2012`.
+#[cfg(test)]
+mod const_fold_xz_power_tests;
+
 // Guided structure-aware fuzzer (metode test fuzzing "tidak buta"):
 // grammar-aware generation + coverage feedback + differential oracle.

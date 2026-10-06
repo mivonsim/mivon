@@ -478,6 +478,24 @@ pub fn try_fold_const(
     if matches!(expr, Expr::Replicate { .. }) {
         return Ok(None);
     }
+    // Literal berpola X/Z: `const_eval_with_params`/`parse_literal`
+    // mengganti digit x/z dengan 0, jadi fold menghapus X/Z secara diam-diam.
+    //
+    // Kerusakan yang ditemukan (sweep differential vs iverilog -g2012,
+    // bug mivon #2 dari fuzzer):
+    //     $display("%h", {4'bx, 4'b0});   mivon 00   iverilog x0
+    //     $display("%h", {4'bz, 4'hA});   mivon 0a   iverilog za
+    //     $display("%h", {2'bxx, 2'b0}); mivon 0    iverilog X
+    // Guard yang sama sudah ada di `try_fold_const_at_width` (baris ~74) —
+    // jalur ini terlewat, jadi `elaborate_expr` yang memanggil
+    // `try_fold_const` untuk `Expr::Concat`/`Expr::UnaryOp`/dsb
+    // menghilangkan X/Z.
+    //
+    // Jalur runtime yang benar: `elaborate_expr` → `value_to_logicvec`
+    // memetakan digit X/Z ke `LogicVal::X`/`Z` sesuai posisinya.
+    if contains_xz_literal(expr) {
+        return Ok(None);
+    }
     // Jangan fold relational comparison (Lt/Le/Gt/Ge) untuk ekspresi unsigned
     // karena const_eval_with_params memakai i64 signed arithmetic yang salah
     // untuk unsigned semantics (mis. 187 < -111 sebagai i64 = false, tapi

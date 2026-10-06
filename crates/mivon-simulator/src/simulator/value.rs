@@ -686,6 +686,23 @@ pub fn eval_binary(op: BinaryIrOp, lhs: &LogicVec, rhs: &LogicVec) -> LogicVec {
             }
         }
         BinaryIrOp::Power => {
+            // LRM §11.6.1 Tabel 11-21: `i ** j` → lebar hasil = L(i) =
+            // lebar operand KIRI, sama seperti shift. Amount `j` bersifat
+            // self-determined dan TIDAK melebarkan hasil.
+            //
+            // Bug ditemukan sweep differential vs iverilog -g2012
+            // (bug mivon #3 dari fuzzer):
+            //     a = 8'h11 (17); a ** 2  →  mivon 289   iverilog 33
+            //     a = 8'h02;      a ** 10 →  mivon 1024  iverilog 0
+            //     a = -3;         a ** 2  →  mivon 64009 iverilog 9
+            // Penyebab: `max_width = lhs.width.max(rhs.width)` dan operand
+            // kanan berupa literal unsized `2` yang lebarnya 32 bit →
+            // mask ke 32 bit, hasil 289 lolos penuh. LRM: truncate ke 8 bit
+            // → 289 & 0xff = 33.
+            //
+            // `result_width` (bukan `max_width`) dipakai untuk mask DAN
+            // lebar keluaran, konsisten dengan lengan `Sshr` di bawah.
+            let result_width = lhs.width.max(1);
             let l_has_x = lhs_ext
                 .bits
                 .iter()
@@ -696,18 +713,18 @@ pub fn eval_binary(op: BinaryIrOp, lhs: &LogicVec, rhs: &LogicVec) -> LogicVec {
                 .any(|b| *b == LogicVal::X || *b == LogicVal::Z);
             if l_has_x || r_has_x {
                 LogicVec {
-                    bits: vec![LogicVal::X; max_width],
-                    width: max_width,
+                    bits: vec![LogicVal::X; result_width],
+                    width: result_width,
                 }
-            } else if max_width <= 128 {
-                // Square-and-multiply pada u128 — operan SV bisa >64-bit;
+            } else if result_width <= 128 {
+                // Square-and-multiply pada u128 — operand SV bisa >64-bit;
                 // dulu jatuh ke jalur u64 yang memotong pola 96/128-bit
                 // (ditemukan guided_fuzz seed=79912420; emas + Icarus).
                 let exp = to_u128_wide(&rhs_ext);
-                let m: u128 = if max_width >= 128 {
+                let m: u128 = if result_width >= 128 {
                     u128::MAX
                 } else {
-                    (1u128 << max_width) - 1
+                    (1u128 << result_width) - 1
                 };
                 let mut base = to_u128_wide(&lhs_ext) & m;
                 let mut acc: u128 = 1 & m;
@@ -721,12 +738,12 @@ pub fn eval_binary(op: BinaryIrOp, lhs: &LogicVec, rhs: &LogicVec) -> LogicVec {
                         base = base.wrapping_mul(base) & m;
                     }
                 }
-                from_u128_wide(acc, max_width)
+                from_u128_wide(acc, result_width)
             } else {
                 // >128 bit: square-and-multiply generik pada bit LogicVal
-                // (perkalian shift-add mod 2^max_width, tanpa X — X sudah
+                // (perkalian shift-add mod 2^result_width, tanpa X — X sudah
                 // ditangani di atas).
-                let w = max_width;
+                let w = result_width;
                 let zero = || vec![LogicVal::Zero; w];
                 let mut acc = {
                     let mut v = zero();

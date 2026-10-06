@@ -395,14 +395,28 @@ pub fn const_eval_with_params(
         } => {
             let base = const_eval_with_params(lhs, param_vals)?;
             let exp = const_eval_with_params(rhs, param_vals)?;
-            // Eksponensiasi modular biner mod 2^ow — hasil `**` di-size ke
-            // max(lebar operan, 32 utk unsized). Dulu wrapping i64 penuh
-            // tanpa mask: `7'b0010010 ** 7'b0011100` = 0 mod 128 tapi
-            // menghasilkan nilai 64-bit besar → comparison menyusul salah
-            // (ditemukan fuzzer seed=34711072, dikonfirmasi Icarus).
+            // Eksponensiasi modular biner mod 2^ow.
+            //
+            // LRM 1800-2017 §11.6.1 Tabel 11-21: `i ** j` → lebar hasil =
+            // L(i) = lebar operand KIRI. Amount `j` self-determined dan TIDAK
+            // melebarkan hasil — sama persis aturan shift (`<<`/`>>`).
+            //
+            // Dulu `ow = max(lebar lhs, lebar rhs)`: eksponen berupa literal
+            // unsized (`17 ** 2`, `2` di-size 32 bit) melebarkan mask ke 32
+            // bit, sehingga hasil 289 lolos penuh padahal konteksnya 8 bit:
+            //     localparam logic [7:0] E = 17 ** 2;
+            //     mivon E = 289 (289 & 0xff = 33) iverilog E = 33
+            // Sama dengan bug runtime yang sudah diperbaiki di
+            // `mivon-simulator/.../value.rs` (`BinaryIrOp::Power`) — kedua
+            // jalur harus sepakat, kalau tidak parameter dan ekspresi biasa memberi
+            // jawaban berbeda untuk sumber yang sama.
+            // memberi jawaban berbeda untuk sumber yang sama.
+            //
+            // Fallback `.unwrap_or(64)`: kedua operand unsized → LRM memakai
+            // lebar operand kiri, tapi `sized_width` tak bisa memastikan
+            // (operand non-literal); 64 = i64 penuh, perilaku lama.
             let ow = sized_width(lhs)
-                .max(sized_width(rhs))
-                .unwrap_or(64)
+                .unwrap_or_else(|| sized_width(rhs).unwrap_or(64))
                 .clamp(1, 64) as u32;
             // Mask mod 2^ow — ow=64 → m=MAX (1u64 << 64 overflows).
             let m: u64 = if ow >= 64 { u64::MAX } else { (1u64 << ow) - 1 };
