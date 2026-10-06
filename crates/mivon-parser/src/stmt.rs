@@ -3267,6 +3267,21 @@ impl Parser {
                 self.advance();
                 Symbol::intern("deassign")
             }
+            // IEEE 1800-2017 §20.2: `$time`/`$realtime` adalah system FUNCTION
+            // sah, dan `time`/`realtime` adalah keyword SV — jadi lexer
+            // memverbatakannya sebagai Token::Time/Token::RealTime, BUKAN
+            // Token::Ident. Tanpa lengan ini `$time;` (tanpa argumen, sah)
+            // ditolak "expected system call name after $" karena nama system
+            // call tak pernah bisa berupa keyword. Padanan di lengan
+            // `expr` sudah benar; yang hilang hanya jalur statement.
+            Token::Time => {
+                self.advance();
+                Symbol::intern("time")
+            }
+            Token::RealTime => {
+                self.advance();
+                Symbol::intern("realtime")
+            }
             _ => return Err(self.err("expected system call name after $")),
         };
         match name.as_str() {
@@ -3314,6 +3329,30 @@ impl Parser {
                 }
             }
             _ => {
+                // IEEE 1800-2017 §20.2: argumen system task/function bersifat
+                // OPSIONAL dalam kurung, dan kurungnya sendiri boleh
+                // DIHILANGKAN total — `$display;` (tanpa kurung) legal.
+                // Lengan ini sebelumnya `expect(LParen)` tanpa syarat, jadi
+                // SEMUA system task tanpa argumen ditolak:
+                //   $display; $fflush; $monitor; $strobe; $fdisplay;
+                //   $random; $urandom; $dumpvars; $exit; $stime;
+                //   $ferror; $feof;
+                // semuanya error E1002 "expected LParen, found Semi" padahal
+                // sah (iverilog -g2012 menerima semuanya).
+                //
+                // Aturan: kalau token berikutnya BUKAN `(` → nol argumen.
+                // Nol argumen tetap harus diikuti `;` supaya `$display "hi";`
+                // (bukan SV sah — iverilog juga tolak) tetap ditolak dengan
+                // pesan akurat, bukan diam-diam jadi `$display $display`.
+                if self.peek() != &Token::LParen {
+                    self.expect(Token::Semi)?;
+                    return Ok(Stmt::SysCall {
+                        name,
+                        args: vec![],
+                        line: sc_line,
+                        col: sc_col,
+                    });
+                }
                 self.expect(Token::LParen)?;
                 let mut args = Vec::new();
                 if self.peek() != &Token::RParen {

@@ -63,5 +63,10 @@ mod generate_localparam_tests;
 #[cfg(test)]
 mod dotstar_tests;
 
+/// Regresi system task/function tanpa argumen kurung (`$display;`,
+/// `$time;`) — fuzzer MV roundtrip, golden `iverilog -g2012`.
+#[cfg(test)]
+mod syscall_noargs_tests;
+
 // Guided structure-aware fuzzer (metode test fuzzing "tidak buta"):
 // grammar-aware generation + coverage feedback + differential oracle.
