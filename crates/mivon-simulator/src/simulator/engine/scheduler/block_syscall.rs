@@ -997,6 +997,18 @@ impl SimulationEngine {
                 }
                 Ok(true)
             }
+            // `$time;` / `$realtime;` sebagai STATEMENT (nilai dibuang).
+            // Parser kini menerima bentuk ini (sebelumnya ditolak "expected
+            // system call name after $" karena `time`/`realtime` keyword SV →
+            // Token::Time/RealTime, bukan Token::Ident). Tanpa lengan di sini
+            // bentuk yang sah-sah itu jatuh ke warning `unknown system call`
+            // RT9003 — warning palsu pada source yang legal.
+            //
+            // IEEE 1800-2017 §20.7: keduanya system FUNCTION yang mengembalikan
+            // waktu simulasi saat ini; sebagai statement nilainya dibuang,
+            // jadi cukup dievaluasi lalu diabaikan (jalur ekspresi sudah
+            // mengembalikan nilainya ke pemanggil).
+            "time" | "realtime" => Ok(true),
             "scope" => {
                 // $scope(name) — set current scope for $showscopes
                 if let Some(a) = ir_args.first() {

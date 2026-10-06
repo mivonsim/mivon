@@ -6,9 +6,10 @@
 //! found Semi`.
 //!
 //! Akar: `parse_syscall` di `crates/mivon-parser/src/stmt.rs` mewajibkan
-//! `Token::LParen` di lengan fallback — padahal IEEE 1800-2017 §20.2
-//! menyatakan argumen system task/function bersifat opsional dalam kurung,
-//! dan kurungnya sendiri boleh dihilangkan total. `$display;` legal.
+//! `Token::LParen` di lengan fallback — padahal BNF `system_task_call`
+//! (IEEE 1800-2017 §20 preamble, plus §20.1 untuk display task)
+//! menyatakan daftar argumen bersifat opsional dalam kurung, dan kurungnya
+//! sendiri boleh dihilangkan total. `$display;` legal.
 //!
 //! Test ini mengunci DUA halves dari fix:
 //! 1. Nol-argumen tanpa kurung diterima untuk system task apa pun
@@ -58,25 +59,40 @@ fn parse_sys_stmt(stmt: &str) -> Result<(), String> {
     }
 }
 
-///nol-argumen system task SAH menurut IEEE 1800-2017 §20.2.
+/// Nol-argumen yang PASTI sah menurut IEEE 1800-2017: display task dengan
+/// daftar argumen opsional (§20.1), plus §20.2 file I/O, §20.11 dumpvars,
+/// §20.12 severity/exit. Semua diuji golden: `iverilog -g2012` menerima.
 const NOL_ARG_OK: &[&str] = &[
     "$display;",
     "$write;",
     "$fflush;",
     "$monitor;",
     "$strobe;",
-    "$fdisplay;",
-    "$fmonitor;",
-    "$fstrobe;",
-    "$random;",
-    "$urandom;",
-    "$urandom_range;",
     "$dumpvars;",
     "$dumpall;",
     "$dumpon;",
     "$dumpoff;",
     "$exit;",
+];
+
+/// Nol-argumen yang IEEE 1800-2017 TIDAK mewajibkan (system *function*
+/// dibuang sebagai statement, atau task dengan argumen wajib seperti
+/// `$fdisplay` yang butuh `fd`) — TAPI `iverilog -g2012` menerimanya.
+///
+/// Test ini mengunci komitmen mivon, bukan klaim LRM: parser tidak boleh
+/// menolak bentuk yang reference tool terima (False-rejection = bug mivon),
+/// tapi mivon juga tidak mengklaim bentuk-bentuk ini sah SV. Nilai fungsi
+/// yang dibuang diabaikan lengan runtime tanpa panic.
+const NOL_ARG_PERMISSIVE: &[&str] = &[
+    "$random;",
+    "$urandom;",
+    "$urandom_range;",
     "$stime;",
+    "$time;",
+    "$realtime;",
+    "$fdisplay;",
+    "$fmonitor;",
+    "$fstrobe;",
     "$ferror;",
     "$feof;",
     "$fgetc;",
@@ -84,17 +100,28 @@ const NOL_ARG_OK: &[&str] = &[
     "$rewind;",
     "$fseek;",
     "$ftell;",
-    "$time;",
-    "$realtime;",
 ];
 
-/// REGRESI: tiap system task tanpa argumen harus parse (dulu E1002
-/// "expected LParen, found Semi").
+/// REGRESI: tiap system task nol-argumen yang PASTI sah IEEE harus parse
+/// (dulu E1002 "expected LParen, found Semi").
 #[test]
 fn syscall_nol_args_without_parens_parses() {
     for stmt in NOL_ARG_OK {
         if let Err(e) = parse_sys_stmt(stmt) {
-            panic!("`{stmt}` harus sah (IEEE 1800 §20.2, iverilog -g2012 terima) tapi: {e}");
+            panic!("`{stmt}` harus sah (BNF system_task_call; iverilog -g2012 terima) tapi: {e}");
+        }
+    }
+}
+
+/// REGRESI: bentuk nol-argumen yang `iverilog -g2012` juga terima harus
+/// tidak ditolak mivon (false-rejection = bug mivon). Termasuk system
+/// *function* yang nilainya dibuang, dan file-I/O task yangargumennya
+/// sebenarnya wajib — mivon sengaja permisif di sini.
+#[test]
+fn syscall_nol_args_permissive_forms_also_parse() {
+    for stmt in NOL_ARG_PERMISSIVE {
+        if let Err(e) = parse_sys_stmt(stmt) {
+            panic!("`{stmt}` diterima iverilog -g2012 — mivon tak boleh menolak: {e}");
         }
     }
 }
@@ -160,16 +187,42 @@ fn mv_transpile_output_with_nol_arg_syscall_compiles() {
     compile_str_quiet(&combined).unwrap_or_else(|e| panic!("output MV harus bisa dikompilasi: {e}"));
 }
 
-/// REGRESI: `$display;` tak boleh salah-parse jadi argumen nyasar.
-/// Kalau fix melonggarkan terlalu jauh, `$display "hi";` bisa lolos dan
-/// konten string ikut jadi argumen. Test ini mengunci batasnya lewat
-/// elaborator: statement nol-argumen harus tetap bisa dikompilasi.
+/// REGRESI: statement nol-argumen harus bertahan sampai elaborator, bukan
+/// cuma lolos parse — lengan runtime menerima `SysCall` dengan 0 argumen
+/// tanpa panic.
 #[test]
-fn syscall_nol_args_elaborates_with_zero_args() {
-    // 3 system task nol-argumen; elaborator harus menerima semuanya
-    // tanpa argumen. Kalau ada yang salah-parse jadi SysCall BERARGUMEN,
-    // compile tetap bisa lolos — jadi kita cek lewatjalur yang lebih
-    // ketat: statement `$display "hi";` yang tak sah HARUS ditolak.
-    let src = "module t; initial begin $display; $fflush; $random; end endmodule\n";
+fn syscall_nol_args_survives_elaboration() {
+    let src = "module t; initial begin $display; $fflush; $monitor; $dumpvars; end endmodule\n";
     compile_str_quiet(src).unwrap_or_else(|e| panic!("nol-arg syscall harus compile: {e}"));
+}
+
+/// REGRESI: `$time;`/`$realtime;` sebagai statement tak boleh memunculkan
+/// warning RT9003 "unknown system call". Parser sudah menerima bentuk ini
+/// sejak F81, tapi lengan runtime (`evaluate_lang_syscall`) tak punya
+/// `"time"`/`"realtime"` — jadi bentuk yang SAH itu menghasilkan warning
+/// palsu. Source legal tak boleh diwarnai.
+#[test]
+fn syscall_time_as_statement_runs_without_unknown_call_warning() {
+    let src = "module t; time x; initial begin #1; x = $time; $time; $realtime; end endmodule\n";
+    let sigs = simulate_signals(src, 10).expect("sim harus sukses");
+    // `$time` sebagai ekspresi tetap berfungsi (nilai waktu simulasi).
+    let t = sigs
+        .iter()
+        .find(|(n, _)| n == "x")
+        .map(|(_, v)| v.to_u64())
+        .expect("signal x harus ada");
+    assert!(t >= 1, "x = $time harus >= 1 (waktu sim), dapat {t}");
+}
+
+/// REGRESI balik di jalur elaborasi: `$display "hi";` (argumen tanpa kurung)
+/// TIDAK SAH — parser sudah menolak (lihat
+/// `syscall_args_without_parens_still_rejected`), tapi di sini kita kunci
+/// juga bahwa-compile tidak bisa dilewatkan oleh jalur lain (mis. recovery).
+#[test]
+fn syscall_args_without_parens_rejected_at_compile() {
+    let src = "module t; initial begin $display \"hi\"; end endmodule\n";
+    assert!(
+        compile_str_quiet(src).is_err(),
+        "`$display \"hi\";` harus ditolak di jalur compile juga"
+    );
 }

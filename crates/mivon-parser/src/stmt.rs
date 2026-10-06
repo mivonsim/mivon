@@ -3267,13 +3267,19 @@ impl Parser {
                 self.advance();
                 Symbol::intern("deassign")
             }
-            // IEEE 1800-2017 §20.2: `$time`/`$realtime` adalah system FUNCTION
+            // IEEE 1800-2017 §20.7: `$time`/`$realtime` adalah system FUNCTION
             // sah, dan `time`/`realtime` adalah keyword SV — jadi lexer
             // memverbatakannya sebagai Token::Time/Token::RealTime, BUKAN
-            // Token::Ident. Tanpa lengan ini `$time;` (tanpa argumen, sah)
-            // ditolak "expected system call name after $" karena nama system
-            // call tak pernah bisa berupa keyword. Padanan di lengan
-            // `expr` sudah benar; yang hilang hanya jalur statement.
+            // Token::Ident. Tanpa lengan ini `$time;` ditolak "expected
+            // system call name after $" karena nama system call tak pernah
+            // bisa berupa keyword. Padanan di lengan `expr` sudah benar;
+            // yang hilang hanya jalur statement.
+            //
+            // CATATAN: bentuk "fungsi sebagai statement" — value-nya dibuang
+            // (IEEE tidak menyatakannya eksplisit, tapi `iverilog -g2012`
+            // menerimanya) — konsisten denganuka mivon yang permisif
+            // untuk VPI task. Lengan runtime sudah mengabaikan nilainya
+            // tanpa panic.
             Token::Time => {
                 self.advance();
                 Symbol::intern("time")
@@ -3320,6 +3326,15 @@ impl Parser {
                         col: sc_col,
                     })
                 } else {
+                    // WAJIB `skip_semi`: jalur `$time;` yang baru diaktifkan
+                    // (lihat lengan Token::Time di bawah) meninggalkan `;`
+                    // di token stream. Tanpa ini, loop blok mem-parse `;`
+                    // sebagai statement kedua yang spurious (`Stmt::Null`) —
+                    // bentuk AST beda dari `$display;` (yang konsumsi `;`
+                    // lewat `expect`) untuk konsep yang sama, dan menggeser
+                    // hitungan statement yang dipakai `--timeline`/step
+                    // debugging/line-coverage.
+                    self.skip_semi();
                     Ok(Stmt::SysCall {
                         name,
                         args: vec![],
@@ -3329,8 +3344,8 @@ impl Parser {
                 }
             }
             _ => {
-                // IEEE 1800-2017 §20.2: argumen system task/function bersifat
-                // OPSIONAL dalam kurung, dan kurungnya sendiri boleh
+                // IEEE 1800-2017 §20.1 + §20 preamble (BNF `system_task_call`):
+                // daftar argumen bersifat OPSIONAL, dan kurungnya sendiri boleh
                 // DIHILANGKAN total — `$display;` (tanpa kurung) legal.
                 // Lengan ini sebelumnya `expect(LParen)` tanpa syarat, jadi
                 // SEMUA system task tanpa argumen ditolak:
