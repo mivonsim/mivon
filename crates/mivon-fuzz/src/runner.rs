@@ -188,10 +188,20 @@ fn spawn(cmd: &mut Command, timeout_ms: u64) -> Outcome {
             Err(_) => break None,
         }
         if start.elapsed() > kill_limit {
-            killed_by_us = true;
             let _ = child.kill();
-            let _ = child.wait();
-            break None; // hang asli (melebihi grace 3×)
+            // RAS: proses bisa exit NORMAL di antara `try_wait()` dan
+            // `kill()` (kill lalu ESRCH). Membuang status hasil `wait()` =
+            // laporkan `Hang` padahal proses selesai tepat di batas → noise
+            // palsu kelas yang grace 3× ini ada untuk dihilangkan.
+            // Ambil statusnya: kalau mati karena SIGKILL (kill kita) →
+            // hang; kalau exit normal → proses memang selesai, pakai status.
+            let status = match child.wait() {
+                Ok(st) if is_killed_by_us(&st) => None,
+                Ok(st) => Some(st),
+                Err(_) => None,
+            };
+            killed_by_us = status.is_none();
+            break status;
         }
         std::thread::sleep(Duration::from_millis(5));
     };
@@ -255,11 +265,14 @@ fn classify_status(status: &std::process::ExitStatus, stderr: &str) -> (Kind, Op
         return match sig {
             // SIGABRT (6): abort(), double-panic, `panic = "abort"`.
             SIGABRT => (Kind::Abort, Some(code)),
-            // SIGKILL (9): biasanya OOM-killer saat cases besar + thread
-            // watchdog bocor menumpuk → memory blowup = bug juga.
-            SIGKILL => (Kind::Crash(code), Some(code)),
-            // SIGSEGV(11)/SIGBUS(7)/SIGILL(4)/SIGFPE(8): crash memory-safety
-            // atau stack overflow (parser/elaborator rekursif).
+            // Sinyal dari luar: proses dibunuh orang lain (supervisor,
+            // `pkill`, cgroup teardown, Ctrl-C) — BUKAN bug mivon. Tanpa
+            // lengan ini, setiap interruptkampanye jadi `Crash(143)` yang
+            // disimpan sebagai temuan.
+            SIGTERM | SIGINT | SIGHUP | SIGQUIT => (Kind::CleanError, Some(code)),
+            // Sisanya (SIGKILL=9 OOM-killer, SIGSEGV=11, SIGBUS=7, SIGILL=4,
+            // SIGFPE=8): crash memory-safety, stack overflow, atau memory
+            // blowup dari case besar + thread watchdog bocor menumpuk.
             _ => (Kind::Crash(code), Some(code)),
         };
     }
@@ -280,6 +293,33 @@ fn classify_status(status: &std::process::ExitStatus, stderr: &str) -> (Kind, Op
 const SIGABRT: i32 = 6;
 #[cfg(unix)]
 const SIGKILL: i32 = 9;
+/// Sinyal yang BUKAN bug mivon: dikirim dari luar (supervisor, `pkill`,
+/// job-object/cgroup teardown, Ctrl-C). Proses bunuh-dirinya sendiri akibat
+/// perintah eksternal = bukan temuan fuzzer.
+#[cfg(unix)]
+const SIGTERM: i32 = 15;
+#[cfg(unix)]
+const SIGINT: i32 = 2;
+#[cfg(unix)]
+const SIGHUP: i32 = 1;
+#[cfg(unix)]
+const SIGQUIT: i32 = 3;
+
+/// Apakah status ini hasil KILL kita sendiri (SIGKILL dari `Child::kill`)?
+///
+/// Dipakai saat grace habis: kalau proses mati SIGKILL = memang tak selesai
+/// (hang). Kalau exit normal, berarti ia selesai di detik terakhir dan
+/// `kill()`-nya hanya ESRCH — itu BUKAN hang.
+#[cfg(unix)]
+fn is_killed_by_us(status: &std::process::ExitStatus) -> bool {
+    use std::os::unix::process::ExitStatusExt;
+    status.signal() == Some(SIGKILL)
+}
+
+#[cfg(not(unix))]
+fn is_killed_by_us(_status: &std::process::ExitStatus) -> bool {
+    true
+}
 
 fn classify(code: Option<i32>, stderr: &str) -> (Kind, Option<i32>) {
     let Some(code) = code else {
@@ -368,9 +408,25 @@ mod tests {
         assert_eq!(classify_status(&ok, "").0, Kind::Ok);
     }
 
-    /// REGRESI fuzzer: `ExitStatus::from_raw(0)` di unix = exit 0 (bukan
-    /// sinyal). Jaga test `from_raw_zero_is_not_a_signal` tetap valid dan
-    /// test sinyal tidak salah arti karena encoding `from_raw`.
+    /// REGRESI fuzzer: sinyal dari LUAR (supervisor/pkill/Ctrl-C) bukan bug
+    /// mivon — tak boleh jadi `Crash` yang tersimpan di `.mivon-fuzz-bugs`.
+    #[cfg(unix)]
+    #[test]
+    fn classify_external_signal_is_not_a_bug() {
+        use std::os::unix::process::ExitStatusExt;
+        for sig in [SIGTERM, SIGINT, SIGHUP, SIGQUIT] {
+            let st = std::process::ExitStatus::from_raw(sig);
+            assert_eq!(
+                classify_status(&st, "").0,
+                Kind::CleanError,
+                "sinyal eksternal {sig} bukan crash mivon"
+            );
+        }
+    }
+
+    /// REGRESI fuzzer: `ExitStatus::from_raw(0)` = exit 0; di unix hanya
+    /// menandai sinyal bila bit ORed rendah. Jaga test sinyal di atas tak
+    /// salah arti karena encoding `from_raw`.
     #[cfg(unix)]
     #[test]
     fn from_raw_zero_is_not_a_signal() {
@@ -387,15 +443,20 @@ mod tests {
     ///
     /// Pakai `spawn` langsung (bukan `run_args` yang argv[0]-nya selalu
     /// `find_mivon()`, bukan argumen yang diberikan pemanggil).
+    ///
+    /// Loop `while :; do :; done` — BUILTIN saja: tanpa `sleep` (bisa hilang
+    /// dari PATH) dan tanpa proses anak yatim yang memegang pipe setelah
+    /// shell-nya di-kill (yatim = `join()` reader thread macet).
+    #[cfg(unix)]
     #[test]
     fn spawn_timeout_is_hang_not_crash() {
         let mut cmd = Command::new("sh");
         cmd.arg("-c")
-            .arg("sleep 5")
+            .arg("while :; do :; done")
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .stdin(Stdio::null());
-        // timeout 300ms → kill_limit 900ms < 5s → pasti di-kill oleh kita.
+        // timeout 300ms → kill_limit 900ms → pasti di-kill oleh kita.
         let out = spawn(&mut cmd, 300);
         assert_eq!(out.kind, Kind::Hang, "timeout harus Hang, bukan crash");
         assert_eq!(out.code, None);
@@ -404,11 +465,13 @@ mod tests {
     /// REGRESI fuzzer: proses yang MATI KARENA SINYAL (bukan oleh timeout
     /// kita) harus `Crash`, bukan `CleanError`. Sebelumnya `code()==None`
     /// → CleanError sehingga segfault/abort/OOM 100% tak terlihat.
+    #[cfg(unix)]
     #[test]
     fn spawn_signal_death_is_crash() {
         let mut cmd = Command::new("sh");
         cmd.arg("-c")
-            // SIGSEGV: dd ke alamat tak-terpetakan, atau `kill -SEGV $$`.
+            // `$$` di mode `-c` = PID shell itu sendiri (tak ada fork) →
+            // tak ada proses anak yatim yang memegang pipe.
             .arg("kill -SEGV $$")
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

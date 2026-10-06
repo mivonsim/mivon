@@ -136,8 +136,36 @@ fn markers_of(out: &Outcome) -> Vec<String> {
     ms
 }
 
-/// Jalankan command (list arg) avec timeout + drain pipe (mirror runner.spawn).
-fn run_capture(args: &[String], timeout_ms: u64) -> (Option<i32>, String, String) {
+
+
+fn read_pipe<R: std::io::Read + Send + 'static>(pipe: Option<R>) -> String {
+    let mut buf = String::new();
+    if let Some(mut p) = pipe {
+        let _ = p.read_to_string(&mut buf);
+    }
+    buf
+}
+
+/// Hasil proses reference, dibedakan 3 hal yang lama tercampur jadi `None`.
+///
+/// `run_capture` lama balik `Option<i32>` dari `status.code()`. Di Unix itu
+/// `None` untuk DUA sebab berbeda jauh: proses timeout (kita kill) DAN proses
+/// mati karena sinyal (segfault/abort/OOM). `run_iverilog` memetakan keduanya
+/// ke `RefUnavailable` "iverilog compile gagal" — artinya reference yang
+/// RUSAK dilaporkan "reference tak tersedia", dan verdict bug hilang.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RefRun {
+    /// Proses selesai dengan exit code `i32`.
+    Exited(i32),
+    /// Timeout — kita kill.
+    TimedOut,
+    /// Mati karena sinyal (bukan oleh timeout kita).
+    Signaled(i32),
+}
+
+/// Jalankan command reference:timeout eksak (tanpa grace, berbeda dari
+/// runner.rs yang 3×) + return klasifikasi 3-jenis di atas.
+fn run_capture_classified(args: &[String], timeout_ms: u64) -> (RefRun, String, String) {
     let mut cmd = Command::new(args[0].clone());
     for a in &args[1..] {
         cmd.arg(a);
@@ -150,7 +178,7 @@ fn run_capture(args: &[String], timeout_ms: u64) -> (Option<i32>, String, String
     let mut child: Child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
-            return (None, String::new(), format!("spawn gagal: {e}"));
+            return (RefRun::Exited(-1), String::new(), format!("spawn gagal: {e}"));
         }
     };
 
@@ -169,27 +197,57 @@ fn run_capture(args: &[String], timeout_ms: u64) -> (Option<i32>, String, String
         if start.elapsed() > timeout {
             let _ = child.kill();
             let _ = child.wait();
-            break None; // hang
+            break None;
         }
         std::thread::sleep(Duration::from_millis(5));
     };
     let out = out_handle.join().unwrap_or_default();
     let err = err_handle.join().unwrap_or_default();
-    let code = status.and_then(|s| s.code());
-    (code, out, err)
+
+    let run = match status {
+        Some(st) => match exit_status_run(&st) {
+            Some(r) => r,
+            // `Some(status)` tapi tanpa code = mati sinyal.
+            None => RefRun::Signaled(status_signal(&st).unwrap_or(0)),
+        },
+        // `None` = kita kill saat timeout (atau try_wait error) → timeout.
+        None => RefRun::TimedOut,
+    };
+    (run, out, err)
 }
 
-fn read_pipe<R: std::io::Read + Send + 'static>(pipe: Option<R>) -> String {
-    let mut buf = String::new();
-    if let Some(mut p) = pipe {
-        let _ = p.read_to_string(&mut buf);
+/// Exit code dari `ExitStatus`, atau `None` bila mati sinyal.
+#[cfg(unix)]
+fn exit_status_run(status: &std::process::ExitStatus) -> Option<RefRun> {
+    use std::os::unix::process::ExitStatusExt;
+    match (status.code(), status.signal()) {
+        (Some(c), _) => Some(RefRun::Exited(c)),
+        (None, Some(s)) => Some(RefRun::Signaled(s)),
+        (None, None) => None,
     }
-    buf
+}
+
+#[cfg(not(unix))]
+fn exit_status_run(status: &std::process::ExitStatus) -> Option<RefRun> {
+    status.code().map(RefRun::Exited)
+}
+
+/// Nomor sinyal (unix) atau `None`.
+#[cfg(unix)]
+fn status_signal(status: &std::process::ExitStatus) -> Option<i32> {
+    use std::os::unix::process::ExitStatusExt;
+    status.signal()
+}
+
+#[cfg(not(unix))]
+fn status_signal(_status: &std::process::ExitStatus) -> Option<i32> {
+    None
 }
 
 /// Cek availability iverilog binary — pub utk auto-verify default kampanye (main.rs).
 pub fn iverilog_available() -> bool {
-    let (_c, _o, err) = run_capture(&["iverilog".to_string(), "-V".to_string()], 3000);
+    let args = vec!["iverilog".to_string(), "-V".to_string()];
+    let (_run, _o, err) = run_capture_classified(&args, 3000);
     !err.contains("not found") && !err.contains("No such file")
 }
 
@@ -215,7 +273,8 @@ fn run_iverilog(source: &str, timeout_ms: u64) -> (Option<i32>, String, String) 
     let vvp = base.join(format!("{stem}.vvp"));
     let _ = std::fs::write(&sv, source);
 
-    let (code, _o, err) = run_capture(
+    // 1. compile iverilog → vvp.
+    let (c_run, _o, c_err) = run_capture_classified(
         &[
             "iverilog".to_string(),
             "-g2012".to_string(),
@@ -227,20 +286,48 @@ fn run_iverilog(source: &str, timeout_ms: u64) -> (Option<i32>, String, String) 
         timeout_ms,
     );
     let _ = std::fs::remove_file(&sv);
-    // compile gagal → code != 0 → reference N/A
-    if code.unwrap_or(1) != 0 {
-        return (None, String::new(), err);
+    match c_run {
+        // Compile GAGAL (exit != 0) → reference memang tak bisa pakai.
+        RefRun::Exited(0) => {}
+        RefRun::Exited(_) => return (None, String::new(), c_err),
+        RefRun::TimedOut => {
+            return (
+                None,
+                String::new(),
+                format!("iverilog compile TIMEOUT > {timeout_ms}ms (reference tak pakai)"),
+            )
+        }
+        // Reference CRASH (segfault/abort/OOM). Versi lama melaporkan ini
+        // sama dengan "compile gagal" → verdict RefUnavailable, bug iverilog
+        // hilang. Sekarang_surface sebagai pesan eksplisit TETAP N/A tapi
+        // jelas ENGINE reference-nya rusak, bukan SV-nya.
+        RefRun::Signaled(sig) => {
+            return (
+                None,
+                String::new(),
+                format!("iverilog ENGINE CRASH (sinyal {sig}) — reference rusak, bukan SV"),
+            )
+        }
     }
-    let (code2, out, err2) = run_capture(
+
+    // 2. jalankan vvp.
+    let (v_run, out, v_err) = run_capture_classified(
         &["vvp".to_string(), vvp.to_string_lossy().to_string()],
         timeout_ms,
     );
     let _ = std::fs::remove_file(&vvp);
-    if code2.is_none() {
-        // vvp hang — reference not reliable
-        return (None, out, err2);
+    match v_run {
+        RefRun::Exited(code2) => (Some(code2), out, v_err),
+        RefRun::TimedOut => {
+            // vvp hang — reference not reliable
+            (None, out, v_err)
+        }
+        RefRun::Signaled(sig) => (
+            None,
+            out,
+            format!("vvp ENGINE CRASH (sinyal {sig}): {}", v_err),
+        ),
     }
-    (code2, out, err2)
 }
 /// Differential reference vs Icarus: jawab "hasil sim mivon CORRECT (== iverilog)?".
 pub fn evaluate_icarus(source: &str, timeout_ms: u64) -> IcarusResult {
@@ -345,6 +432,54 @@ mod tests {
         assert!(m.iter().any(|t| t == "ASRT_SUM=<7>"));
         assert!(m.iter().any(|t| t == "ASRT_BAD=<9>"));
         assert!(!m.iter().any(|t| t == "count=0"));
+    }
+
+    /// REGRESI fuzzer: `run_capture` lama balik `Option<i32>` dan memetakan
+    /// timeout DAN mati-sinyal ke `None` yang sama → `run_iverilog`
+    /// melaporkan keduanya "compile gagal → RefUnavailable". Sekarang 3
+    /// sebab dipisah, dan yang penting: reference yang CRASH harus punya
+    /// pesan berbeda dari SV yang memang tak didukung.
+    #[test]
+    fn ref_run_distinguishes_exit_timeout_and_signal() {
+        // Exit 0 → normal, reference bisa dipakai.
+        assert_eq!(RefRun::Exited(0), RefRun::Exited(0));
+        // Timeout dan crash adalah nilai BERBEDA (bukan `None` yang sama).
+        assert_ne!(RefRun::TimedOut, RefRun::Signaled(11));
+        assert_ne!(RefRun::Exited(1), RefRun::Signaled(11));
+        // Tidak ada `None` di enum: tak ada lagi jalan yang bisa
+        // administering "reference rusak" sebagai "reference tak tersedia".
+        assert_ne!(RefRun::Exited(1), RefRun::TimedOut);
+    }
+
+    /// REGRESI fuzzer: proses reference yang crash harus `Signaled`, bukan
+    /// `None`/`TimedOut`. Versi lama (`and_then(|s| s.code())`) couldn't
+    /// membedakannya dari timeout → reference rusak dilaporkan "tak tersedia".
+    #[cfg(unix)]
+    #[test]
+    fn ref_process_crash_is_signaled_not_timeout() {
+        let args = vec![
+            "sh".to_string(),
+            "-c".to_string(),
+            "kill -SEGV $$".to_string(),
+        ];
+        let (run, _out, _err) = run_capture_classified(&args, 10_000);
+        assert!(
+            matches!(run, RefRun::Signaled(_)),
+            "crash harus Signaled, dapat {run:?}"
+        );
+    }
+
+    /// REGRESI fuzzer: proses yang tak berujung = `TimedOut` (bukan crash).
+    #[cfg(unix)]
+    #[test]
+    fn ref_process_infinite_loop_is_timed_out() {
+        let args = vec![
+            "sh".to_string(),
+            "-c".to_string(),
+            "while :; do :; done".to_string(),
+        ];
+        let (run, _out, _err) = run_capture_classified(&args, 300);
+        assert_eq!(run, RefRun::TimedOut, "loop tak-berujung = timeout");
     }
 
     /// Different marker streams → detect via equality (unit).
