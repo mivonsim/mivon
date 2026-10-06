@@ -423,6 +423,14 @@ pub fn ir_expr_is_real(e: &IrExpr, signals: &[SignalInfo]) -> bool {
                 | "$floor" | "$ceil" | "$round" | "$sin" | "$cos" | "$tan"
                 | "$asin" | "$acos" | "$atan" | "$atan2" | "$hypot" | "$sinh"
                 | "$cosh" | "$tanh" | "$asinh" | "$acosh" | "$atanh"
+        // `$realtime` mengembalikan real (LRM 1800-2017 §20.7). Tanpa arm ini
+        // `ir_expr_is_real` = false → `fmt_arg_as_real` salah baca: nilai
+        // `$realtime` adalah bit-pattern f64, tapi flag is_real=false membuat
+        // `val.to_u64() as f64` memperlakukan bit-pattern itu sebagai
+        // integer biasa. Akibatnya `$display("%f", $realtime)` di t=5
+        // menghasilkan 4617315517961601024 (bit-pattern 5.0) alih-alih
+        // 5.000000.
+        | "$realtime"
         ),
         _ => false,
     }
@@ -436,7 +444,15 @@ pub fn ast_expr_is_real(e: &mivon_ast::Expr) -> bool {
             matches!(dtype.as_str(), "real" | "realtime") || ast_expr_is_real(expr)
         }
         mivon_ast::Expr::Paren(inner) => ast_expr_is_real(inner),
-        mivon_ast::Expr::Ident { name, .. } => matches!(name.as_str(), "$itor" | "$bitstoreal"),
+        mivon_ast::Expr::Ident { name, .. } => matches!(
+            name.as_str(),
+            "$itor" | "$bitstoreal"
+            // `$realtime` real (LRM §20.7) — sama seperti arm pasangannya di
+            // `ir_expr_is_real`. Tanpa ini, `$display("%f", $realtime)` di
+            // dalam class method (jalur AST `format_display_ast`) tetap salah
+            // baca bit-pattern sebagai integer, meski jalur IR sudah benar.
+            | "$realtime"
+        ),
         _ => false,
     }
 }
@@ -1311,6 +1327,92 @@ mod tests {
             "-5",
             "signed known tetap negatif"
         );
+    }
+
+    /// REGRESI — `$realtime` harus dikenal sebagai REAL oleh
+    /// `ir_expr_is_real` (LRM 1800-2017 §20.7).
+    ///
+    /// Bug: `$realtime` tidak ada di daftar SysFunc real → `is_real=false` →
+    /// `fmt_arg_as_real` memakai `val.to_u64() as f64`, yaitu membaca
+    /// BIT-PATTERN f64 sebagai integer. `$display("%f", $realtime)` di t=5
+    /// tercetak `4617315517961601024` (= `f64::to_bits(5.0)`) bukan
+    /// `5.000000`. Ditemukan differential sweep vs `iverilog -g2012`.
+    #[test]
+    fn realtime_is_real_expr() {
+        let sigs: Vec<SignalInfo> = Vec::new();
+        assert!(
+            ir_expr_is_real(
+                &IrExpr::SysFunc {
+                    name: "$realtime".into(),
+                    args: Vec::new(),
+                    line: 0,
+                    col: 0,
+                },
+                &sigs,
+            ),
+            "$realtime menghasilkan real → arm SysFunc WAJIB ada"
+        );
+        // `$time`/`$stime` tetap integer (LRM §20.6/§20.8) — jangan ikut real.
+        for name in ["$time", "$stime"] {
+            assert!(
+                !ir_expr_is_real(
+                    &IrExpr::SysFunc {
+                        name: name.into(),
+                        args: Vec::new(),
+                        line: 0,
+                        col: 0,
+                    },
+                    &sigs,
+                ),
+                "{name} integer — tak boleh ikut real"
+            );
+        }
+    }
+
+    /// REGRESI — efek lanjutan: nilai `$realtime` di-`%f` harus dibaca sebagai
+    /// f64 (bit-pattern), bukan sebagai integer biasa.
+    #[test]
+    fn fmt_realtime_reads_f64_bits() {
+        // Engine evaluation mengembalikan LogicVec berisi to_bits(5.0).
+        let rt = real(5.0);
+        let args = || vec![(rt.clone(), false, true)].into_iter();
+        assert_eq!(
+            format_display_core("%f", args(), 0, &tf()),
+            "5.000000",
+            "$realtime di-%f = 5.000000 (bukan bit-pattern 4617315517961601024)"
+        );
+        // Bukti bug lama: is_real=false → to_u64() as f64 → angka sangat besar.
+        let buggy = || vec![(rt, false, false)].into_iter();
+        assert_ne!(
+            format_display_core("%f", buggy(), 0, &tf()),
+            "5.000000",
+            "is_real=false menghasilkan angka lain — itulah bug yang ditutup"
+        );
+    }
+
+    /// REGRESI — jalur AST (`$display` di class method, `format_display_ast`)
+    /// harus mengenal `$realtime` sebagai real, sama seperti jalur IR.
+    ///
+    /// Tanpa arm ini, design yang sama tercetak berbeda tergantung apakah
+    /// `$display`-nya di module (jalur IR, sudah benar) atau di class method
+    /// (jalur AST, masih salah) — inkonsistensi yang sulit dilacak.
+    #[test]
+    fn ast_realtime_is_real_expr() {
+        let e = mivon_ast::Expr::Ident {
+            name: "$realtime".into(),
+            line: 0,
+            col: 0,
+        };
+        assert!(
+            ast_expr_is_real(&e),
+            "$realtime real di jalur AST juga — bukan hanya jalur IR"
+        );
+        let t = mivon_ast::Expr::Ident {
+            name: "$time".into(),
+            line: 0,
+            col: 0,
+        };
+        assert!(!ast_expr_is_real(&t), "$time tetap integer di jalur AST");
     }
 
     /// Default `$timeformat` utk unit test (sama dgn inisialisasi engine).

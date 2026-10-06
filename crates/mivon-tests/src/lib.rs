@@ -73,5 +73,10 @@ mod syscall_noargs_tests;
 #[cfg(test)]
 mod const_fold_xz_power_tests;
 
+/// Regresi `$realtime` sebagai real — sweep differential vs `iverilog -g2012`
+/// (marker `%f` di-cetak dari bit-pattern f64 yang salah dibaca sebagai integer).
+#[cfg(test)]
+mod realtime_tests;
+
 // Guided structure-aware fuzzer (metode test fuzzing "tidak buta"):
 // grammar-aware generation + coverage feedback + differential oracle.
