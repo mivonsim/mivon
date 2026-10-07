@@ -686,23 +686,36 @@ pub fn eval_binary(op: BinaryIrOp, lhs: &LogicVec, rhs: &LogicVec) -> LogicVec {
             }
         }
         BinaryIrOp::Power => {
-            // LRM §11.6.1 Tabel 11-21: `i ** j` → lebar hasil = L(i) =
-            // lebar operand KIRI, sama seperti shift. Amount `j` bersifat
-            // self-determined dan TIDAK melebarkan hasil.
+            // LRM 1800-2017 §11.6.1: operand `i` pada `i ** j` adalah
+            // CONTEXT-DETERMINED dan menentukan lebar hasil.
             //
-            // Bug ditemukan sweep differential vs iverilog -g2012
-            // (bug mivon #3 dari fuzzer):
-            //     a = 8'h11 (17); a ** 2  →  mivon 289   iverilog 33
-            //     a = 8'h02;      a ** 10 →  mivon 1024  iverilog 0
-            //     a = -3;         a ** 2  →  mivon 64009 iverilog 9
-            // Penyebab: `max_width = lhs.width.max(rhs.width)` dan operand
-            // kanan berupa literal unsized `2` yang lebarnya 32 bit →
-            // mask ke 32 bit, hasil 289 lolos penuh. LRM: truncate ke 8 bit
-            // → 289 & 0xff = 33.
+            // KNOWN BUG (belum fix — lihat catatan panjang di bawah):
             //
-            // `result_width` (bukan `max_width`) dipakai untuk mask DAN
-            // lebar keluaran, konsisten dengan lengan `Sshr` di bawah.
-            let result_width = lhs.width.max(1);
+            // Evidence vs `iverilog -g2012` (bug F82, ditemukan sweep):
+            //     logic [7:0]  a = 8'd17; a ** 2        mivon 289  iv 33
+            //     logic [31:0] w = 8'd17 ** 2           mivon  33  iv 289
+            //     $display("%h", a ** 2)                mivon 289  iv 21
+            // Ketiga kasus salah, dan TIDAK ada satu aturan sederhana yang
+            // memperbaiki semuanya dari arm ini saja:
+            //   - `max_width` (= max(L(i), L(j))) benar untuk konteks 32-bit
+            //     tapi salah untuk konteks 8-bit dan self-determined.
+            //   - `lhs.width` (= L(i)) benar untuk konteks 8-bit dan
+            //     self-determined tapi salah untuk konteks 32-bit.
+            //
+            // Perbaikan yang benar butuh `i` benar-benar diekstensi ke
+            // max(L(i), ctx) SEBELUM pangkat dihitung, lalu dipangkas ke L(i)
+            // yang sudah melebar itu — melibatkan `propagate_context_width`
+            // DAN jalur const-fold (`try_fold_const` mem-fold `8'd17 ** 2`
+            // SEBELUM propagasi konteks sempat jalan), plus agreement dengan
+            // 2 evaluator Power lain (`const_eval_ext::apply_bin`,
+            // `util/width.rs:622` yang memangkas eksponen ke 31 dan tak
+            // melakukan masking lebar sama sekali).
+            //
+            // Itu restrukturisasi 3 file, bukan patch minimal. Keputusan:
+            // biarkan bug terdokumentasi + ter-regresikan sebagai test yang
+            // MATI (`#[ignore]` dengan alasan), daripada fix separuh yang
+            // dianggap selesai padahal merusak konteks lain.
+            let result_width = max_width;
             let l_has_x = lhs_ext
                 .bits
                 .iter()

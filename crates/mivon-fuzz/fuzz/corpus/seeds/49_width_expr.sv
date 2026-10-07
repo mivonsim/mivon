@@ -21,7 +21,7 @@ module width_sensitive_probe (
   output logic [31:0] add_res,
   output logic [7:0]  trunc_res
 );
-  // Pangkat: hasil haruslebAR OPERAN KIRI, bukan max dengan literal unsized.
+  // Pangkat: hasil harus selebar OPERAN KIRI, bukan max dengan literal unsized.
   // `2` adalah literal unsized 32-bit — inilah trigger bug F82.
   wire [7:0]  p8  = op8  ** 2;      // truncate ke 8 bit
   wire [15:0] p16 = op16 ** 3;      // truncate ke 16 bit

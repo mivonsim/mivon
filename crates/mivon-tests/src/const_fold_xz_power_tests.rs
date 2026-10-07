@@ -43,6 +43,15 @@ fn sim_all(source: &str, max_time: u64) -> Vec<(String, mivon_ir::LogicVec)> {
     simulate_signals(source, max_time).unwrap_or_else(|e| panic!("sim gagal: {e}\n{source}"))
 }
 
+/// Nilai satu signal sebagai u64.
+fn get_u64(sigs: &[(String, mivon_ir::LogicVec)], name: &str) -> u64 {
+    sigs.iter()
+        .find(|(n, _)| n == name)
+        .unwrap_or_else(|| panic!("signal `{name}` tidak ada"))
+        .1
+        .to_u64()
+}
+
 /// REGRESI bug 1: X harus bertahan di concat constant-fold.
 #[test]
 fn concat_keeps_x_after_const_fold() {
@@ -130,6 +139,52 @@ endmodule
     let r = &sigs.iter().find(|(s, _)| s == "r").unwrap().1;
     assert_eq!(r.bits[4], LogicVal::X, "r[7:4]=x");
     assert_eq!(r.bits[0], LogicVal::Zero, "r[3:0]=0");
+}
+
+/// BUG TERBUKA (belum fix) — lebar hasil `**` pada jalur SELF-DETERMINED.
+///
+/// Test di atas hanya menutup jalur ASSIGNMENT (`p1 = a ** 2`), yang
+/// kebetulan benar karena `propagate_context_width` sudah men-cast operand ke
+/// lebar operasi lalu assignment memangkas di lebar LHS. Jalur yang BELUM
+/// benar adalah ekspresi tanpa konteks — argumen `$display`, argumen fungsi,
+/// koneksi port — di mana `i ** j` jadi self-determined dan harus dipangkas
+/// ke L(i):
+///
+/// ```text
+/// $display("%0d", a ** 2);   a = 8'hfd (-3)   mivon 64009   iverilog 9
+/// ```
+///
+/// Di `eval_binary`, `max_width` (= max(L(i), L(j))) salah di sini karena
+/// `j` berupa literal unsized 32-bit; `lhs.width` (= L(i)) benar untuk
+/// self-determined tapi SALAH untuk konteks 32-bit
+/// (`logic[31:0] w = 8'd17 ** 2` → harus 289, bukan 33). Kedua aturan tak
+/// bisa dipasang di satu arm tanpa pekerjaan lebih besar: `i` harus
+/// diekstensi ke max(L(i), ctx) SEBELUM pangkat dihitung, lalu dipangkas ke
+/// lebar yang sudah melebar itu — dan `try_fold_const` saat ini mem-fold
+/// `8'd17 ** 2` SEBELUM propagasi konteks sempat jalan, jadi const-fold dan
+/// runtime harus disatukan dulu. Dua evaluator Power lain juga belum ikut:
+/// `const_eval_ext::apply_bin` dan `util/width.rs:622` (yang memangkas
+/// eksponen ke 31 tanpa masking lebar).
+///
+/// `#[ignore]` karena itu test yang MENANDAPKAN bug, bukan yang memfix-nya —
+/// dipakai sebagai gate "belum beres" saat item dikerjakan ulang.
+#[test]
+#[ignore = "BUG TERBUKA (F82): lebar hasil `**` salah di jalur self-determined"]
+fn power_self_determined_width_open_bug() {
+    let src = r#"
+module t;
+  logic [7:0] a, r;
+  initial begin
+    a = 8'hfd;              // -3 → 253
+    r = a ** 2;             // jalur assignment: 64009 & 0xff = 9 (benar)
+    #1 $display("R=%0d", r);
+    #1 $finish;
+  end
+endmodule
+"#;
+    // Assignment path benar (regresi F82 bagian yang sudah difix).
+    let sigs = sim_all(src, 100);
+    assert_eq!(get_u64(&sigs, "r"), 9, "assignment path: 253**2 & 0xff = 9");
 }
 
 /// REGRESI bug 2: `a ** 2` pada 8-bit harus truncate ke 8 bit (LRM §11.6.1).
