@@ -21,6 +21,14 @@ pub mod runner;
 pub mod triage;
 pub mod validate;
 
+// ── LRM Judge system ────────────────────────────────────────────────────────
+pub mod lrm_model;
+pub mod lrm_rules;
+pub mod lrm_judge;
+pub mod observer;
+pub mod testcase;
+pub mod verdict;
+
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 
