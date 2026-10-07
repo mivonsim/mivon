@@ -118,6 +118,12 @@ pub struct Module {
     pub params: Vec<ParamDecl>,
     pub decls: Vec<Decl>,
     pub items: Vec<ModuleItem>,
+    /// `` `timescale `` yang berlaku untuk module ini (F84, LRM §19.8).
+    ///
+    /// Bersifat per-module, bukan global: `#5` pada module `1us/1ns` berarti
+    /// 5us walau module lain di design yang sama memakai `1ns/1ps`. `None` =
+    /// belum ada directive `timescale` sebelum module ini.
+    pub timescale: Option<(String, String)>,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -140,6 +146,9 @@ pub struct Interface {
     pub decls: Vec<Decl>,
     pub items: Vec<ModuleItem>,
     pub modports: Vec<Modport>,
+    /// `` `timescale `` yang berlaku untuk interface ini (F84, LRM §19.8).
+    /// Dipakai saat interface dikonversi jadi `Module` sintetik oleh elaborator.
+    pub timescale: Option<(String, String)>,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]

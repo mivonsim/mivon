@@ -76,8 +76,80 @@ pub struct Parser {
     /// Catches loops that check peek() without calling advance().
     /// Uses Cell for interior mutability (peek() takes &self).
     peek_count: std::cell::Cell<usize>,
+    /// Segmen `` `timescale `` dari preprocessor (F84, LRM §19.8), koordinat
+    /// baris output preprocessed. Dipakai `parse_module` untuk menempelkan
+    /// timescale per-module. Kosong = caller tidak mengisinya; semua module
+    /// memakai satuan global `Design::timescale`.
+    pub timescale_segments: Vec<(usize, (String, String))>,
+    /// Timescale aktif untuk module yang SEDANG di-parse — diisi di awal
+    /// `parse_module` dari segmen, dipakai saat membuat `Module`.
+    pub(crate) timescale_at_line: Option<(String, String)>,
     pub errors: Vec<Diagnostic>,
 }
+
+/// `timescale` dengan satuan TERHALUS (eksponen terkecil) di daftar segmen
+/// (F84, LRM §19.8). Ini basis tick elaborator — harus sehalus mungkin
+/// supaya tidak ada delay yang terpotong.
+fn finest_timescale(
+    segments: &[(usize, (String, String))],
+) -> Option<(String, String)> {
+    let mut best: Option<(i32, &(String, String))> = None;
+    for (_, ts) in segments {
+        let Some(exp) = timescale_unit_exponent(&ts.0) else {
+            continue;
+        };
+        match best {
+            Some((e, _)) if e <= exp => {}
+            _ => best = Some((exp, ts)),
+        }
+    }
+    best.map(|(_, ts)| ts.clone())
+}
+
+/// Eksponen basis-10 satuan `timescale` (`1ns` → -9, `10ps` → -11).
+/// Nol/negatif tak sah (LRM butuh > 0); satuan tak dikenal → `None`.
+fn timescale_unit_exponent(unit: &str) -> Option<i32> {
+    let u = unit.trim();
+    let digits: String = u.chars().take_while(|c| c.is_ascii_digit()).collect();
+    let mag: i32 = if digits.is_empty() {
+        1
+    } else {
+        digits.parse().ok()?
+    };
+    if mag <= 0 {
+        return None;
+    }
+    let mut exp: i32 = match u[digits.len()..].trim() {
+        "s" => 0,
+        "ms" => -3,
+        "us" => -6,
+        "ns" => -9,
+        "ps" => -12,
+        "fs" => -15,
+        _ => return None,
+    };
+    let mut m = mag;
+    while m > 1 {
+        if m % 10 == 0 {
+            m /= 10;
+            exp += 1;
+        } else if m % 2 == 0 {
+            m /= 2;
+            exp -= 1;
+        } else {
+            return None;
+        }
+    }
+    Some(exp)
+}
+
+/// Sama seperti `mivon_elaboration::util::generate::time_unit_exponent` dan
+/// `mivon_compiler::frontend::compile_session::timescale_unit_exponent` —
+/// tiga salinan karena ketiga crate berada pada posisi dependensi berbeda
+/// (parser tidak bergantung ke elaborator/compiler, dan sebaliknya). Semua
+/// tiga harus menghasilkan nilai sama; `timescale_tests` di mivon-tests
+/// menguji hasil akhirnya, dan ketiga sisi diuji lewat test yang sama itu
+/// (nilai delay yang benar hanya mungkin bila ketiganya sepakat).
 
 impl Parser {
     /// Batas advance per token (budget amat luas untuk backtracking normal,
@@ -134,6 +206,8 @@ impl Parser {
             recursion_depth: 0,
             parse_steps: 0,
             peek_count: std::cell::Cell::new(0),
+            timescale_segments: Vec::new(),
+            timescale_at_line: None,
             errors: Vec::new(),
         }
     }
@@ -1527,7 +1601,12 @@ impl Parser {
             unit_tasks,
             unit_typedefs,
             unit_params,
-            timescale: None,
+            // F84: `timescale global` = satuan TERHALUS di design (basis tick
+            // elaborator). Nilai per-module tetap menempel di tiap `Module`;
+            // yang di sini cuma penentu basis. Mengambil TERAKHIR (seperti
+            // `Preprocessor::timescale`) membuat module `1ns` ikut diskalakan
+            // basis `1us` dan seluruh delay meleset 1000×.
+            timescale: finest_timescale(&self.timescale_segments),
         })
     }
 
@@ -2996,6 +3075,10 @@ impl Parser {
             params,
             decls,
             items,
+            // Modul implisit/recovery: belum ada `timescale` yang dapat
+            // di-mapping (F84) → default global, biarkan elaborator pakai
+            // fallback design-wide.
+            timescale: None,
         })
     }
 

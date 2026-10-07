@@ -11,7 +11,11 @@ use mivon_ast::Design;
 /// Versi format serialisasi AST (increment bila skema AST berubah).
 /// Update 4: `CovergroupDecl.clocking_event` → `Option<CovergroupClocking>`
 /// (edge disimpan penuh utk implicit sampling §19.8).
-pub const AST_FORMAT_VERSION: u64 = 4;
+/// Bumped 4 → 5 (F84): `Module`/`Interface` dapat field `timescale`
+/// (LRM §19.8). Cache AST v4 tak punya field itu — bincode akan gagal decode
+/// struct baru dari bytes lama, jadi versi wajib naik supaya cache lama
+/// di-invalidate, bukan salah-decode diam-diam.
+pub const AST_FORMAT_VERSION: u64 = 5;
 
 /// Serialisasi `Design` → bytes biner (bincode).
 pub fn serialize_design(design: &Design) -> Result<Vec<u8>, String> {
@@ -29,7 +33,11 @@ pub fn deserialize_design(bytes: &[u8]) -> Option<Design> {
 /// meng-invalidasi yang lain).
 /// Update 3: `IrCovergroup` + `event_signal`/`event_posedge` (implicit
 /// sampling covergroup §19.8).
-pub const IR_FORMAT_VERSION: u64 = 3;
+/// Bumped 3 → 4 (F84): delay di-IR kini SUDAH diskalakan ke satuan basis
+/// (finest design). IR cache v3 menyimpan delay mentah per-satuan-module, jadi
+/// restore-nya menghasilkan simulasi yang salah SENYAP — cache lama wajib
+/// di-invalidate, bukan dipakai ulang.
+pub const IR_FORMAT_VERSION: u64 = 4;
 
 /// Serialisasi `IrDesign` → bytes biner (bincode). Dipakai menyimpan hasil
 /// elaborasi penuh ke cache `elaborate/` agar warm run dapat meng-restore IR

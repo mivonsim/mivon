@@ -342,18 +342,35 @@ pub fn read_project_with_foreign(path: &str) -> Result<ProjectFile, SimError> {
 pub fn compile_files(paths: &[String]) -> Result<mivon_ir::IrDesign, SimError> {
     let mut combined = String::new();
     let mut last_timescale = None;
+    // F84 (LRM §19.8): segmen `timescale per-file digeser ke koordinat input
+    // gabungan. Pass-2 (`compile_str_inner`) tak melihat directive lagi
+    // (sudah di-consume pass-1 per-file) → segmen gabungan inilah yang dipakai
+    // parser, bukan hasil pass-2 (yang kosong).
+    let mut merged_ts: Vec<(usize, (String, String))> = Vec::new();
     for path in paths {
         let mut pp = Preprocessor::new();
         let processed = pp.preprocess_file(path)?;
         if pp.timescale.is_some() {
             last_timescale = pp.timescale.clone();
         }
+        // Marker menempati 1 baris input gabungan; konten file mulai sesudahnya
+        // (koordinat 1-based). `merge_timescale_segments` menggeser tiap `from`
+        // dengan offset ini.
+        let content_offset = combined.lines().count() + 1;
+        mivon_parser::preprocessor::Preprocessor::merge_timescale_segments(
+            &pp.timescale_segments,
+            content_offset,
+            &mut merged_ts,
+        );
         combined.push_str(&format!("`line 1 \"{}\"\n", path));
         combined.push_str(&processed);
         combined.push('\n');
     }
-    let mut result = compile_str(&combined)?;
+    let mut result = compile_str_inner(&combined, false, Some(merged_ts))?;
     if last_timescale.is_some() && result.timescale.is_none() {
+        // Fallback: tak ada segmen sama sekali (mis. semua file tak punya
+        // directive, tapi `pp.timescale` terisi dari cache lama). Basis
+        // terhalus tak ada pilihan lain.
         result.timescale = last_timescale;
     }
     Ok(result)
@@ -513,6 +530,10 @@ pub fn compile_collect_errors_inc(paths: &[String], incdirs: &[String]) -> Vec<P
     let mut parser = Parser::new(tokens, &first_source)
         .with_source_lines(&preprocessed)
         .with_file_line_map(file_line_map);
+    // F84 (LRM §19.8): segmen `timescale per baris → parser menempelkannya
+    // ke tiap module. Tanpa ini semua delay diskalakan dengan satu satuan
+    // global dan `#5` di module `1us` diperlakukan 5ns.
+    parser.timescale_segments = pp.timescale_segments.clone();
     let design = match parser.parse_design() {
         Err(_) => {
             out.extend(
@@ -612,7 +633,7 @@ pub fn compile_diag_counts(source: &str) -> (usize, usize) {
 
 /// Compile SystemVerilog source string into IR
 pub fn compile_str(source: &str) -> Result<mivon_ir::IrDesign, SimError> {
-    compile_str_inner(source, false)
+    compile_str_inner(source, false, None)
 }
 
 /// Compile SystemVerilog source string into IR — versi SENYAP: diagnostik
@@ -621,15 +642,22 @@ pub fn compile_str(source: &str) -> Result<mivon_ir::IrDesign, SimError> {
 /// mencetak puluhan baris diagnosa (E1002/E1005/WR0102) → noise stderr +
 /// biaya I/O per iterasi.
 pub fn compile_str_quiet(source: &str) -> Result<mivon_ir::IrDesign, SimError> {
-    compile_str_inner(source, true)
+    compile_str_inner(source, true, None)
 }
 
-fn compile_str_inner(source: &str, quiet: bool) -> Result<mivon_ir::IrDesign, SimError> {
+/// Inti kompilasi string. `ts_override`: segmen `timescale siap pakai
+/// (F84) — dipakai `compile_files` yang directive-nya sudah di-consume
+/// pass-1 per-file sehingga pass-2 tak bisa menurunkannya sendiri.
+/// `None` = turunkan dari preprocess pass ini (jalur normal).
+fn compile_str_inner(
+    source: &str,
+    quiet: bool,
+    ts_override: Option<Vec<(usize, (String, String))>>,
+) -> Result<mivon_ir::IrDesign, SimError> {
     let mut pp = Preprocessor::new();
     let preprocessed = pp.preprocess(source, None).map_err(|e| {
         SimError::with_diag(DiagCode::InvalidSyntax, format!("preprocessor: {}", e))
     })?;
-    let timescale = pp.timescale.clone();
     let mut lexer = Lexer::new(&preprocessed);
     let mut tokens = Vec::new();
     loop {
@@ -655,7 +683,12 @@ fn compile_str_inner(source: &str, quiet: bool) -> Result<mivon_ir::IrDesign, Si
     let mut parser = Parser::new(tokens, &first_source)
         .with_source_lines(&source_with_header)
         .with_file_line_map(file_line_map);
-    let mut design = match parser.parse_design() {
+    // F84 (LRM §19.8): `timescale per-baris → tempel ke tiap module. Tanpa ini
+    // semua delay diskalakan dengan satu satuan global, sehingga `#5` di
+    // module `1us/1ns` diperlakukan 5 tick basis `1ns`. `compile_files`
+    // memasok segmen gabungan (directive sudah di-consume pass-1).
+    parser.timescale_segments = ts_override.unwrap_or_else(|| pp.timescale_segments.clone());
+    let design = match parser.parse_design() {
         Ok(d) => d,
         Err(e) => {
             // Parse function returned fatal error — emit collected errors too
@@ -684,7 +717,10 @@ fn compile_str_inner(source: &str, quiet: bool) -> Result<mivon_ir::IrDesign, Si
             return Err(SimError::from_parse_diagnostic(parser.errors[0].clone()));
         }
     }
-    design.timescale = timescale;
+    // F84: `design.timescale` kini di-set parser dari segmen (satuan TERHALUS
+    // — basis tick elaborator). Nilai lama `pp.timescale` = directive TERAKHIR
+    // dan tak boleh menimpa: `1us` terakhir akan membuat module `1ns` ikut
+    // diskalakan 1000×.
 
     let source_lines: Vec<String> = preprocessed.lines().map(|s| s.to_string()).collect();
     let mut elaborator =
@@ -721,7 +757,6 @@ pub fn compile_str_analyze(source: &str) -> Result<mivon_ir::IrDesign, SimError>
     let preprocessed = pp.preprocess(source, None).map_err(|e| {
         SimError::with_diag(DiagCode::InvalidSyntax, format!("preprocessor: {}", e))
     })?;
-    let timescale = pp.timescale.clone();
     let mut lexer = Lexer::new(&preprocessed);
     let mut tokens = Vec::new();
     loop {
@@ -744,11 +779,14 @@ pub fn compile_str_analyze(source: &str) -> Result<mivon_ir::IrDesign, SimError>
     let mut parser = Parser::new(tokens, &first_source)
         .with_source_lines(&source_with_header)
         .with_file_line_map(file_line_map);
-    let mut design = parser.parse_design()?;
+    // F84 (LRM §19.8): sama seperti compile_str_inner — `timescale per module.
+    parser.timescale_segments = pp.timescale_segments.clone();
+    let design = parser.parse_design()?;
     if parser.errors.iter().any(|d| d.is_error()) {
         // Parse error fatal — recovery tetap lanjut bila modul masih utuh.
     }
-    design.timescale = timescale;
+    // F84: `design.timescale` diisi parser dari segmen (satuan terhalus) —
+    // lihat catatan di `compile_str_inner`.
 
     let source_lines: Vec<String> = preprocessed.lines().map(|s| s.to_string()).collect();
     let mut elaborator =

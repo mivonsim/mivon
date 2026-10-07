@@ -171,6 +171,19 @@ pub struct PreprocEntry {
     pub content_hash: u64,
     pub combined: String,
     pub timescale: Option<(String, String)>,
+    /// Segmen `` `timescale `` per baris output preprocessed (F84,
+    /// LRM §19.8): `(baris_output_1based, (unit, precision))`.
+    ///
+    /// Wajib disimpan: directive `` `timescale `` di-consume saat preprocess,
+    /// jadi dari `combined` saja info per-module tak bisa diturunkan lagi.
+    /// Tanpa field ini, run hangat (AST/preproc cache-hit) kehilangan satuan
+    /// per-module dan delay kembali diskalakan dengan satuan global.
+    ///
+    /// `#[serde(default)]` supaya entry lama (tanpa field) tetap bisa decode —
+    /// nilainya kosong = jatuh ke satuan global, sama seperti perilaku
+    /// sebelum F84, bukan crash.
+    #[serde(default)]
+    pub timescale_segments: Vec<(usize, (String, String))>,
 }
 
 /// Info project di `registry.json` (identifikasi pid secara manusiawi).
@@ -1942,6 +1955,7 @@ mod tests {
                     content_hash: hash,
                     combined: "`line 1 \"test/counter.sv\"\nmodule c;\nendmodule".into(),
                     timescale: None,
+                    timescale_segments: Vec::new(),
                 },
             );
             db.set_verify(VerifyResult {
@@ -2578,6 +2592,7 @@ mod tests {
                 content_hash: 99,
                 combined: "module counter; endmodule".into(),
                 timescale: None,
+                timescale_segments: Vec::new(),
             },
         );
         db.set_diags(crate::micd::FileDiags {

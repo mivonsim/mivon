@@ -963,6 +963,33 @@ fn load_project_foreign_libs(proj: &mivon_api::ProjectFile, cli: &Cli) {
     }
 }
 
+/// Apakah source mentah memuat directive `` `timescale `` (F84).
+///
+/// Dipakai sebagai gerbang reuse MICD: entry preproc yang tak menyimpan
+/// segmen hanya aman bila source-nya memang tak punya directive sama sekali
+/// (sehingga satuan global sudah benar). Scan baris demi baris — cukup untuk
+/// keputusan cache, tak perlu parser.
+fn content_has_timescale(content: &[u8]) -> bool {
+    let text = String::from_utf8_lossy(content);
+    for line in text.lines() {
+        let t = line.trim_start();
+        if t.starts_with("//") {
+            continue;
+        }
+        if t.starts_with('`') {
+            let rest = t.trim_start_matches('`');
+            let name: String = rest
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect();
+            if name == "timescale" {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 fn read_source_bytes(
     path: &Path,
     inline: &std::collections::HashMap<PathBuf, Vec<u8>>,
@@ -1247,10 +1274,17 @@ fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), SimError> {
 
     let mut combined = String::new();
     let mut design_timescale = None;
+    // F84 (LRM §19.8): segmen `timescale dalam koordinat source gabungan —
+    // delay tiap module diskalakan dengan satuan modul sendiri.
+    let mut timescale_segments: Vec<(usize, (String, String))> = Vec::new();
 
     // Slot per source; diisi dari MICD bila cache valid (konten + include sama).
-    let mut pp_combined: Vec<Option<Result<(String, Option<(String, String)>), String>>> =
-        vec![None; sources.len()];
+    // Isi tuple = (combined, `timescale global, segmen `timescale per baris) — F84:
+    // segmen dibutuhkan parser supaya delay tiap module diskalakan dengan
+    // satuan modul SENDIRI (LRM §19.8), bukan satuan global.
+    let mut pp_combined: Vec<
+        Option<Result<(String, Option<(String, String)>, Vec<(usize, (String, String))>), String>>,
+    > = vec![None; sources.len()];
     let mut micd_reused = 0usize;
     let mut need_preprocess: Vec<(usize, &String)> = Vec::new();
     for (idx, path) in sources.iter().enumerate() {
@@ -1262,9 +1296,26 @@ fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), SimError> {
                 .unwrap_or(false);
             if deps_ok {
                 if let Some(entry) = micd.get_preprocessed(std::path::Path::new(path), h) {
-                    pp_combined[idx] = Some(Ok((entry.combined, entry.timescale)));
-                    micd_reused += 1;
-                    continue;
+                    // F84: entry yang TIDAK punya segmen `timescale` tak boleh
+                    // dipakai. Directive `timescale sudah di-consume saat
+                    // preprocess, jadi dari `combined` saja satuan per-module
+                    // tak bisa diturunkan — memakai entry itu = delay module
+                    // `1us` diskalakan seolah `1ns`, SALAH SENYAP. Entry lama
+                    // (Sebelum F84) dan entry yang ditulis `CompileSession`
+                    // (yang tak menyimpan segmen) sama-sama kena → paksa
+                    // preprocess ulang, yang biayanya kecil dibanding sim
+                    // yang diam-diam salah.
+                    let has_segments = !entry.timescale_segments.is_empty();
+                    let source_has_directive = content_has_timescale(&content);
+                    if has_segments || !source_has_directive {
+                        pp_combined[idx] = Some(Ok((
+                            entry.combined,
+                            entry.timescale,
+                            entry.timescale_segments,
+                        )));
+                        micd_reused += 1;
+                        continue;
+                    }
                 }
             }
         }
@@ -1289,7 +1340,16 @@ fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), SimError> {
     // Progres per-file dari worker rayon (clone handle sekali, bukan per-file).
     let anim_h = anim.as_ref().map(|a| a.handle());
     let fresh_results: Vec<
-        Result<(usize, String, Option<(String, String)>, Vec<PathBuf>), String>,
+        Result<
+            (
+                usize,
+                String,
+                Option<(String, String)>,
+                Vec<(usize, (String, String))>,
+                Vec<PathBuf>,
+            ),
+            String,
+        >,
     > = need_preprocess
         .par_iter()
         .map(|(idx, path)| {
@@ -1304,7 +1364,13 @@ fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), SimError> {
                             h.file_done(Path::new(path), false);
                         }
                         let combined_str = format!("`line 1 \"{}\"\n{}\n", path, processed);
-                        Ok((*idx, combined_str, pp.timescale.clone(), Vec::new()))
+                        Ok((
+                            *idx,
+                            combined_str,
+                            pp.timescale.clone(),
+                            pp.timescale_segments.clone(),
+                            Vec::new(),
+                        ))
                     }
                     Err(e) => Err(format!("preprocessor '{}': {}", path, e)),
                 };
@@ -1316,7 +1382,13 @@ fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), SimError> {
                     }
                     let combined_str = format!("`line 1 \"{}\"\n{}\n", path, processed);
                     let includes: Vec<PathBuf> = pp.resolved_includes.iter().cloned().collect();
-                    Ok((*idx, combined_str, pp.timescale.clone(), includes))
+                    Ok((
+                        *idx,
+                        combined_str,
+                        pp.timescale.clone(),
+                        pp.timescale_segments.clone(),
+                        includes,
+                    ))
                 }
                 Err(e) => Err(format!("preprocessor '{}': {}", path, e)),
             }
@@ -1329,8 +1401,8 @@ fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), SimError> {
 
     for r in &fresh_results {
         match r {
-            Ok((idx, combined_str, ts, _includes)) => {
-                pp_combined[*idx] = Some(Ok((combined_str.clone(), ts.clone())))
+            Ok((idx, combined_str, ts, segs, _includes)) => {
+                pp_combined[*idx] = Some(Ok((combined_str.clone(), ts.clone(), segs.clone())))
             }
             Err(e) => {
                 return Err(SimError::with_diag(
@@ -1343,9 +1415,16 @@ fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), SimError> {
 
     for (i, _path) in sources.iter().enumerate() {
         match &pp_combined[i] {
-            Some(Ok((combined_str, ts))) => {
+            Some(Ok((combined_str, ts, segs))) => {
                 if let Some(ts) = ts {
                     design_timescale = Some(ts.clone());
+                }
+                // F84: geser segmen ke koordinat `combined` (offset kumulatif
+                // baris yang sudah ditulis). Parser nanti menempelkan satuan
+                // per-module dari daftar ini.
+                let content_offset = combined.lines().count() + 1;
+                for (from, ts_pair) in segs {
+                    timescale_segments.push((from + content_offset, ts_pair.clone()));
                 }
                 combined.push_str(combined_str);
             }
@@ -1365,7 +1444,7 @@ fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), SimError> {
     }
 
     // ── MICD: simpan hasil preprocess baru untuk run berikutnya ──
-    for (idx, combined_str, ts, includes) in fresh_results.iter().flatten() {
+    for (idx, combined_str, ts, segs, includes) in fresh_results.iter().flatten() {
         if let Ok(content) = read_source_bytes(Path::new(&sources[*idx]), &inline_src) {
             let h = mivon_compiler::cache::compute_checksum(&content);
             let path = std::path::PathBuf::from(&sources[*idx]);
@@ -1375,6 +1454,9 @@ fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), SimError> {
                     content_hash: h,
                     combined: combined_str.clone(),
                     timescale: ts.clone(),
+                    // F84: segmen ikut di-cache agar run hangat tak kehilangan
+                    // satuan per-module.
+                    timescale_segments: segs.clone(),
                 },
             );
             // Metadata + include hashes (verifikasi header saat reuse).
@@ -1500,6 +1582,10 @@ fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), SimError> {
     let mut parser = Parser::new(tokens, first_source)
         .with_source_lines(&combined)
         .with_file_line_map(file_line_map);
+    // F84 (LRM §19.8): tanpa ini semua delay diskalakan dengan satuan global
+    // (`design_timescale` = directive terakhir), sehingga `#5` di module `1us`
+    // diperlakukan 5 tick basis `1ns`.
+    parser.timescale_segments = timescale_segments.clone();
     let mut design = match parser.parse_design() {
         Ok(d) => {
             if anim_active(&anim) {
@@ -1569,8 +1655,19 @@ fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), SimError> {
             parser.errors[0].clone(),
         ));
     }
+    // F84 (LRM §19.8): JANGAN timpa `design.timescale` dengan directive terakhir
+    // (`design_timescale`) — parser sudah mengisinya dengan satuan TERHALUS,
+    // dan nilai itulah basis diskalakan delay tiap module. Menimpanya dengan
+    // `1us` terakhir membuat module `1ns` ikut skala 1us (faktor 1) dan delay
+    // design meleset 1000×. Nilai terakhir tetap dipakai `ts_for_ir` untuk
+    // konsistensi metadata, tapi TIDAK untuk basis elaborasi.
     let ts_for_ir = design_timescale.clone();
-    design.timescale = design_timescale;
+    if design.timescale.is_none() {
+        // Tanpa directive sama sekali → tak ada segmen; basis default elaborator
+        // (`None` → 1ns) sudah benar. Fallback ini hanya bila parser gagal
+        // menyetel (mis. jalur yang tak memasang segmen).
+        design.timescale = design_timescale;
+    }
 
     // ── Library scanning: always scan library directories/files before elaboration ──
     for libdir in &cli.libdirs {
@@ -1803,7 +1900,7 @@ fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), SimError> {
                 .collect();
             let mut combined_map = std::collections::HashMap::new();
             for (i, src) in sources.iter().enumerate() {
-                if let Some(Ok((combined_str, _))) = &pp_combined[i] {
+                if let Some(Ok((combined_str, _, _))) = &pp_combined[i] {
                     combined_map.insert(std::path::PathBuf::from(src), combined_str.clone());
                 }
             }
@@ -2247,7 +2344,15 @@ fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), SimError> {
         return Ok(());
     }
 
-    ir_design.timescale = ts_for_ir;
+    // Basis tick elaborator = satuan TERHALUS (lihat catatan F84 di atas).
+    // Menimpanya dengan directive terakhir di sini akan membuat display
+    // `$time`/`%t` dan konversi SDF ps→tick memakai satuan yang BERBEDA dari
+    // yang dipakai untuk menghitung delay — hasil simulasi jadi tak konsisten
+    // dengan basisnya sendiri.
+    let _ = &ts_for_ir;
+    if ir_design.timescale.is_none() {
+        ir_design.timescale = ts_for_ir;
+    }
 
     // ── Lapisan cache pipeline: isi kategori elaborate/ + generate/ dari IR
     // hasil elaborasi (db.md "5. elaborate/", "16. generate/") — dipanggil

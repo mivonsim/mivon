@@ -174,7 +174,70 @@ impl<'a> SourceBytes<'a> {
 
 /// Merge `other` into `target` by MOVING elements (O(1) per field, no cloning).
 /// After calling, `other`'s Vec fields are empty (elements moved to `target`).
+/// Eksponen basis-10 satuan `timescale` (`1ns` → -9, `1us` → -6).
+///
+/// Duplikat ringan dari `mivon_elaboration::util::generate::time_unit_exponent`
+/// (crate `pub(crate)`). Tanpa shared helper karena elaborator tidak bergantung
+/// ke `mivon-compiler`; ketiga salinan diuji tak langsung lewat
+/// `timescale_tests` + `timescale_session_tests` (delay yang benar hanya
+/// mungkin bila ketiganya menghasilkan nilai sama).
+fn timescale_unit_exponent(unit: &str) -> Option<i32> {
+    let u = unit.trim();
+    let digits: String = u.chars().take_while(|c| c.is_ascii_digit()).collect();
+    let mag: i32 = if digits.is_empty() {
+        1
+    } else {
+        digits.parse().ok()?
+    };
+    if mag <= 0 {
+        return None;
+    }
+    let mut exp: i32 = match u[digits.len()..].trim() {
+        "s" => 0,
+        "ms" => -3,
+        "us" => -6,
+        "ns" => -9,
+        "ps" => -12,
+        "fs" => -15,
+        _ => return None,
+    };
+    let mut m = mag;
+    while m > 1 {
+        if m % 10 == 0 {
+            m /= 10;
+            exp += 1;
+        } else if m % 2 == 0 {
+            m /= 2;
+            exp -= 1;
+        } else {
+            return None;
+        }
+    }
+    Some(exp)
+}
+
 fn extend_design_move(target: &mut Design, other: &mut Design) {
+    // F84: `timescale global butuh SATU nilai untuk semua file. Ambil yang
+    // paling FINEST (eksponen terkecil) supaya delay tiap module bisa diskalakan
+    // ke basis terhalus — ambil yang terakhir (urutan file) justru membuat
+    // module `1ns` ikut skala `1us` dan seluruh delay design meleset 1000×.
+    if let Some(ts) = other.timescale.as_ref() {
+        let pick = match target.timescale.as_ref() {
+            None => true,
+            Some(cur) => {
+                let e_new = timescale_unit_exponent(&ts.0);
+                let e_cur = timescale_unit_exponent(&cur.0);
+                match (e_new, e_cur) {
+                    (Some(n), Some(c)) => n < c,
+                    (Some(_), None) => true,
+                    _ => false,
+                }
+            }
+        };
+        if pick {
+            target.timescale = Some(ts.clone());
+        }
+    }
     target.modules.append(&mut other.modules);
     target.packages.append(&mut other.packages);
     target.interfaces.append(&mut other.interfaces);
@@ -355,6 +418,13 @@ impl CompileSession {
         let combined_parts = &self.combined_parts;
         // Include deps per file (untuk verifikasi header MICD)
         let include_deps = std::sync::Mutex::new(HashMap::<PathBuf, Vec<PathBuf>>::new());
+        // Segmen `timescale per file (F84, LRM §19.8): koordinat baris output
+        // preprocessed per-file. Dipakai phase 5 untuk mengisi
+        // `parser.timescale_segments` (dengan geseran +1 baris marker `line`
+        // + base offset global). Tanpa ini parser CompileSession tak pernah
+        // tahu satuan per-module → semua delay diskala global.
+        let ts_segments =
+            std::sync::Mutex::new(Vec::<(usize, Vec<(usize, (String, String))>)>::new());
         // Clear any previous parts
         {
             let mut parts = combined_parts.lock().unwrap();
@@ -425,6 +495,12 @@ impl CompileSession {
                     let mut parts = combined_parts.lock().unwrap();
                     parts.push((file_idx, combined.clone()));
                 }
+                // F84: simpan segmen `timescale file ini untuk phase 5.
+                // File cache-hit tak perlu (design di-restore, tak di-parse).
+                if !pp.timescale_segments.is_empty() {
+                    let mut segs = ts_segments.lock().unwrap();
+                    segs.push((file_idx, pp.timescale_segments.clone()));
+                }
                 Ok((path.clone(), None, cksum, Some(combined)))
             })
             .collect();
@@ -451,6 +527,23 @@ impl CompileSession {
                 std::fs::write("/tmp/opencode/combined_dump.txt", out).ok();
             }
         }
+
+        // F84: petakan segmen `timescale per-file ke koordinat GLOBAL
+        // (sama seperti token: combined-coord + base). Combined = 1 baris
+        // marker `` `line `` + output preprocessed, jadi segmen (koordinat
+        // output preprocessed) digeser +1 lalu + base file ini.
+        let ts_global: HashMap<usize, Vec<(usize, (String, String))>> = {
+            let segs = ts_segments.lock().unwrap();
+            let mut map: HashMap<usize, Vec<(usize, (String, String))>> = HashMap::new();
+            for (idx, v) in segs.iter() {
+                let base = base_offsets.get(*idx).copied().unwrap_or(0);
+                map.insert(
+                    *idx,
+                    v.iter().map(|(from, ts)| (from + 1 + base, ts.clone())).collect(),
+                );
+            }
+            map
+        };
 
         self.timing.preprocess_us = pp_start.elapsed().as_micros() as u64;
 
@@ -616,6 +709,11 @@ impl CompileSession {
                     .with_source_lines(&combined)
                     .with_file_line_map(file_line_map)
                     .with_line_base(base); // token global = line + base (cumulative)
+                // F84: segmen `timescale file ini (koordinat global, sejajar
+                // token) → timescale per-module. Absen = file tanpa directive.
+                if let Some(segs) = ts_global.get(&file_idx) {
+                    parser.timescale_segments = segs.clone();
+                }
                 let design = parser.parse_design()?;
                 let parse_errors = parser.errors;
                 if std::env::var("MIVON_DEBUG_PARSE").is_ok() && !parse_errors.is_empty() {
@@ -1814,6 +1912,11 @@ impl CompileSession {
                         content_hash,
                         combined,
                         timescale: None,
+                        // F84: jalur ini menyimpan entry dari sumber yang tak
+                        // menyimpan segmen — parser akan pakai satuan global
+                        // untuk file tersebut (perilaku pre-F84, tak diam-diam
+                        // salah untuk design multi-timescale).
+                        timescale_segments: Vec::new(),
                     },
                 );
             }

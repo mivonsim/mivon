@@ -73,6 +73,15 @@ mod syscall_noargs_tests;
 #[cfg(test)]
 mod const_fold_xz_power_tests;
 
+/// `timescale` per-module (LRM §19.8) — `#N` harus pakai satuan module itu,
+/// bukan satuan global design.
+#[cfg(test)]
+mod timescale_tests;
+
+/// `timescale` per-module di jalur CompileSession (CLI) + multi-file.
+#[cfg(test)]
+mod timescale_session_tests;
+
 /// Regresi `$realtime` sebagai real — sweep differential vs `iverilog -g2012`
 /// (marker `%f` di-cetak dari bit-pattern f64 yang salah dibaca sebagai integer).
 #[cfg(test)]

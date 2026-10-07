@@ -1715,7 +1715,7 @@ impl Elaborator {
                 // (modul AST oscillator OpenTitan seperti io_osc/sys_osc/rng
                 // memakai pola ini): emit warning + fallback delay 1 agar
                 // modul tetap bisa dielaborasi dan disimulasikan.
-                let d = match const_eval_params(delay, &self.param_vals) {
+                let d_raw = match const_eval_params(delay, &self.param_vals) {
                     Ok(v) => v as u64,
                     Err(e) => {
                         let (l, c) = crate::util::generate::expr_location(delay);
@@ -1728,6 +1728,13 @@ impl Elaborator {
                         1
                     }
                 };
+                // F84 (LRM §19.8): `#N` punya satuan `timescale module INI`.
+                // Tick basis design = satuan TERHALUS design, jadi delay module
+                // `1us` dikali 1000 saat basis `1ns` (`#5` = 5us, bukan 5ns).
+                // `#0` TIDAK dinaikkan ke 1: itu delta cycle asli (golden
+                // `iverilog`: `#0`\;`#0`\;`#1` → posedge pertama di t=1),
+                // memaksa 1 membuat jam maju 4 tick dan test regress.
+                let d = d_raw.saturating_mul(self.current_delay_scale());
                 let body = vec![self.elaborate_stmt(stmt, signal_map, known_modules, signals)?];
                 Ok(IrStmt::Delay { delay: d, body })
             }

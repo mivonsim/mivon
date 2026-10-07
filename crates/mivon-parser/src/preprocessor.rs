@@ -56,6 +56,21 @@ pub struct Preprocessor {
     /// preprocessed, yang di-exclude dari coverage oleh `` `coverage_off ``
     /// ... `` `coverage_on `` (IEEE 1800 simulation control directives).
     pub coverage_exclusions: Vec<(usize, usize)>,
+    /// Segmen `` `timescale `` per baris OUTPUT preprocessed (F84).
+    ///
+    /// LRM 1800-2017 §19.8: `` `timescale `` berlaku untuk SEMUA module yang
+    /// SETELAH directive, dan berubah setiap ada directive baru — bukan
+    /// properti design global. Design satu file bisa mencampur beberapa
+    /// satuan (mis. RTL inti `1ns/1ps` + testbench `1us/1ns`), dan `#5` di
+    /// masing-masing berarti 5ns vs 5us.
+    ///
+    /// Dulu `timescale` tunggal dipakai untuk seluruh design, sehingga
+    /// `#5` di module `1us` diperlakukan 5 tick basis `1ns` (atau sebaliknya)
+    /// → hasil simulasi menyimpang diam-diam vs `iverilog`.
+    ///
+    /// Isi: `(baris_output_1based_dimulai_berlaku, (unit, precision))`,
+    /// terurut menaik. Baris sebelum entri pertama = belum ada directive.
+    pub timescale_segments: Vec<(usize, (String, String))>,
 }
 
 impl Preprocessor {
@@ -71,7 +86,36 @@ impl Preprocessor {
             warnings: Vec::new(),
             resolved_includes: std::collections::HashSet::new(),
             coverage_exclusions: Vec::new(),
+            timescale_segments: Vec::new(),
             cur_path: None,
+        }
+    }
+
+    /// Timescale yang berlaku pada baris OUTPUT tertentu (1-based).
+    ///
+    /// Entri terakhir dengan `from_line <= line` menang; `None` kalau baris
+    /// itu belum didahului directive `` `timescale `` (LRM §19.8 — module
+    /// sebelum directive pertama memakai default simulator).
+    pub fn timescale_at_line(&self, line: usize) -> Option<&(String, String)> {
+        self.timescale_segments
+            .iter()
+            .rev()
+            .find(|(from, _)| *from <= line)
+            .map(|(_, ts)| ts)
+    }
+
+    /// Gabung segmen dari beberapa file menjadi satu daftar terurut (F84).
+    ///
+    /// `compile_files` memproses tiap file terpisah lalu menyambung source-nya
+    /// dengan penanda `` `line ``. Segmen per file harus digeser sesuai
+    /// offset baris file tersebut agar lookup di source gabungan tetap benar.
+    pub fn merge_timescale_segments(
+        segments: &[(usize, (String, String))],
+        line_offset: usize,
+        out: &mut Vec<(usize, (String, String))>,
+    ) {
+        for (from, ts) in segments {
+            out.push((from + line_offset, ts.clone()));
         }
     }
 
@@ -446,14 +490,34 @@ impl Preprocessor {
                     }
                 }
                 "timescale" => {
-                    // `timescale 1ns / 1ps — parse and store
+                    // `timescale 1ns / 1ps — parse, store sebagai fallback
+                    // global DAN catat SEGMEN per baris output (LRM §19.8:
+                    // berlaku ke module sesudah directive, berubah tiap
+                    // directive baru — lihat `timescale_segments`).
                     let ts = rest.trim();
-                    if let Some(slash_pos) = ts.find('/') {
+                    let parsed = if let Some(slash_pos) = ts.find('/') {
                         let unit = ts[..slash_pos].trim().to_string();
                         let prec = ts[slash_pos + 1..].trim().to_string();
-                        self.timescale = Some((unit, prec));
+                        Some((unit, prec))
                     } else if !ts.is_empty() {
-                        self.timescale = Some((ts.to_string(), String::new()));
+                        Some((ts.to_string(), String::new()))
+                    } else {
+                        None
+                    };
+                    if let Some(p) = parsed {
+                        self.timescale = Some(p.clone());
+                        // Directive ini TIDAK ikut output (sudah dikonsumsi), jadi
+                        // baris output berikutnya = baris pertama yang
+                        // terpengaruh directive ini.
+                        let from_line = output.lines().count() + 1;
+                        // Directive di dalam `ifdef` yang TIDAK diemitting
+                        // tak berlaku — hanya directive yang lolos
+                        // preprocessing yang punya efek (sama dengan
+                        // `timescale` global yang juga hanya di-set di
+                        // cabang ini).
+                        if emitting {
+                            self.timescale_segments.push((from_line, p));
+                        }
                     }
                 }
                 "coverage_off" => {
@@ -1585,6 +1649,54 @@ fn trailing_backslash_is_continuation(line: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::Preprocessor;
+
+    /// F84 (LRM §19.8): `` `timescale `` berlaku ke module SESUDAH directive
+    /// dan berubah tiap directive baru — bukan properti global. Tanpa ini
+    /// `#5` di module `1us` ikut diskalakan dengan satuan `1ns`.
+    #[test]
+    fn timescale_segments_are_per_directive() {
+        let src = "`timescale 1ns/1ps\nmodule fast; endmodule\n\
+                   `timescale 1us/1ns\nmodule slow; endmodule\n";
+        let mut pp = Preprocessor::new();
+        pp.preprocess(src, None).unwrap();
+        assert_eq!(
+            pp.timescale_segments.len(),
+            2,
+            "dua directive → dua segmen: {:?}",
+            pp.timescale_segments
+        );
+        // Directive tidak ikut output, jadi `module fast` = baris output 1 dan
+        // `module slow` = baris output 2.
+        assert_eq!(
+            pp.timescale_at_line(1).map(|(u, _)| u.as_str()),
+            Some("1ns"),
+            "module fast ikut 1ns"
+        );
+        assert_eq!(
+            pp.timescale_at_line(2).map(|(u, _)| u.as_str()),
+            Some("1us"),
+            "module slow ikut 1us"
+        );
+        // Baris sebelum directive pertama = belum ada directive.
+        assert!(
+            pp.timescale_segments.iter().all(|(f, _)| *f >= 1),
+            "segmen mulai baris output >= 1"
+        );
+    }
+
+    /// Directive di cabang `ifdef yang TIDAK diemitting tak berlaku (LRM §19.8:
+    /// hanya directive yang lolos preprocessing).
+    #[test]
+    fn timescale_in_dead_ifdef_branch_is_ignored() {
+        let src = "`ifdef NEVER\n`timescale 1us/1ns\n`endif\nmodule m; endmodule\n";
+        let mut pp = Preprocessor::new();
+        pp.preprocess(src, None).unwrap();
+        assert!(
+            pp.timescale_segments.is_empty(),
+            "directive di cabang mati jangan dicatat: {:?}",
+            pp.timescale_segments
+        );
+    }
 
     /// Regresi mivon-fuzz (kampanye sim seed 9999, bug_0004 hang uart_tx):
     /// `` `elsif `` tanpa `` `ifdef `` (di sini: di dalam komentar `//`) membuat

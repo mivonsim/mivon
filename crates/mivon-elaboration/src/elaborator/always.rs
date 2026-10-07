@@ -69,11 +69,12 @@ impl Elaborator {
                                 &[],
                                 signals,
                             )?;
-                            return Ok(Process::AlwaysWithDelay {
-                                name,
-                                delay: d as u64,
-                                body,
-                            });
+                            // F84 (LRM §19.8): satuan `always #N` milik
+                            // module ini, sama seperti `Stmt::Delay` biasa.
+                            // `#0` tetap 0 (delta cycle) — konsisten dgn
+                            // lengan `Stmt::Delay`.
+                            let delay = (d as u64).saturating_mul(self.current_delay_scale());
+                            return Ok(Process::AlwaysWithDelay { name, delay, body });
                         }
                     }
                 }

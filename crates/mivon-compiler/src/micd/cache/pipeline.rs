@@ -1042,6 +1042,7 @@ mod tests {
                 col: 1,
                 attrs: Vec::new(),
             })],
+            timescale: None,
         };
         m.params.push(mivon_ast::types::ParamDecl {
             name: Symbol::intern("WIDTH"),
@@ -1251,6 +1252,7 @@ mod tests {
                     label: None,
                 }],
             })],
+            timescale: None,
         };
         m.params.push(mivon_ast::types::ParamDecl {
             name: Symbol::intern("N"),
@@ -1339,6 +1341,7 @@ mod tests {
                     attrs: Vec::new(),
                 }),
             ],
+            timescale: None,
         };
         let mut d = Design::default();
         d.modules.push(m);

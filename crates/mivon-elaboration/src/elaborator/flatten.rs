@@ -173,6 +173,10 @@ impl Elaborator {
                                         params: vec![],
                                         decls: iface.decls.clone(),
                                         items: vec![],
+                                        // F84: interface yang dikonversi jadi
+                                        // Module mengikuti satuannya sendiri,
+                                        // bukan default global.
+                                        timescale: iface.timescale.clone(),
                                     },
                                     None => {
                                         return Err(self.elab_diag_at(

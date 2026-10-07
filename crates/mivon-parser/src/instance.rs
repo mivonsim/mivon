@@ -12,6 +12,15 @@ use mivon_core::intern::Symbol;
 
 impl Parser {
     pub(crate) fn parse_module(&mut self) -> Result<Module, SimError> {
+        // F84 (LRM §19.8): rekam `timescale yang berlaku untuk module ini —
+        // directive terakhir pada/sebelum baris `module`. `advance()` di bawah
+        // sudah konsumsi keyword, jadi baris diambil SEBELUM itu.
+        self.timescale_at_line = self
+            .timescale_segments
+            .iter()
+            .rev()
+            .find(|(from, _)| *from <= self.peek_line())
+            .map(|(_, ts)| ts.clone());
         self.advance(); // consume 'module', 'interface', or 'program'
         self.typedef_names.clear();
         // Re-seed typedef GLOBAL (lintas file) yang di-clear di atas — tanpa
@@ -224,6 +233,7 @@ impl Parser {
             params,
             decls,
             items,
+            timescale: self.timescale_at_line.take(),
         })
     }
 
@@ -422,6 +432,14 @@ impl Parser {
     }
 
     pub(crate) fn parse_interface(&mut self) -> Result<Interface, SimError> {
+        // F84 (LRM §19.8): interface punya satuan delay sendiri, sama seperti
+        // module — direkam sebelum keyword-nya di-konsumsi.
+        let ts_line = self
+            .timescale_segments
+            .iter()
+            .rev()
+            .find(|(from, _)| *from <= self.peek_line())
+            .map(|(_, ts)| ts.clone());
         self.advance(); // consume 'interface'
         self.typedef_names.clear();
         // Re-seed typedef GLOBAL (lintas file) yang di-clear di atas.
@@ -617,6 +635,7 @@ impl Parser {
             decls,
             items,
             modports,
+            timescale: ts_line,
         })
     }
 

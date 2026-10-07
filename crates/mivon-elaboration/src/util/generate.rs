@@ -68,6 +68,49 @@ impl From<ElabError> for mivon_core::error::SimError {
     }
 }
 
+/// Eksponen basis-10 dari satuan `` `timescale `` (F84, LRM §19.8).
+///
+/// `"1ns"` → -9, `"10ps"` → -11, `"1us"` → -6. Mengembalikan `None` untuk
+/// satuan tak dikenal dan untuk magnitudo ≤ 0 (LRM 1800 §19.8 mensyaratkan
+/// satuan > 0).
+pub(crate) fn time_unit_exponent(unit: &str) -> Option<i32> {
+    let u = unit.trim();
+    let digits: String = u.chars().take_while(|c| c.is_ascii_digit()).collect();
+    let mag: i32 = if digits.is_empty() {
+        1
+    } else {
+        digits.parse().ok()?
+    };
+    if mag <= 0 {
+        return None;
+    }
+    let suffix = u[digits.len()..].trim();
+    let base: i32 = match suffix {
+        "s" => 0,
+        "ms" => -3,
+        "us" => -6,
+        "ns" => -9,
+        "ps" => -12,
+        "fs" => -15,
+        _ => return None,
+    };
+    // mag > 1 → geser sebesar faktor mag (mis. "100ns" → -7, "10ps" → -11).
+    let mut exp = base;
+    let mut m = mag;
+    while m > 1 {
+        if m % 10 == 0 {
+            m /= 10;
+            exp += 1;
+        } else if m % 2 == 0 {
+            m /= 2;
+            exp -= 1;
+        } else {
+            return None;
+        }
+    }
+    Some(exp)
+}
+
 /// Extract the best available source location from an expression.
 pub(crate) fn expr_location(expr: &Expr) -> (usize, usize) {
     match expr {
