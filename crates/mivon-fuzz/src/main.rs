@@ -15,6 +15,7 @@ fn main() {
     let code = match cmd {
         "run" => cmd_run(&args[2..]),
         "replay" => cmd_replay(&args[2..]),
+        "judge" => cmd_judge(&args[2..]),
         "triage" => cmd_triage(&args[2..]),
         "minimize" => cmd_minimize(&args[2..]),
         "report" => cmd_report(&args[2..]),
@@ -39,6 +40,7 @@ fn print_help() {
 USAGE:
   mivon-fuzz run     [--target <t>] [-c <n>] [--seed <n>] [--timeout <ms>] [--corpus <dir>] [--no-save]
   mivon-fuzz replay  <file.sv> [--target <t>] [--timeout <ms>]
+  mivon-fuzz judge   <file.sv> [--timeout <ms>]   # nilai LRM IEEE 1800 (lrm_judge)
   mivon-fuzz triage  <dir>
   mivon-fuzz minimize <file.sv> [--target <t>] [--timeout <ms>]
   mivon-fuzz verify  [<corpus-dir>] [--timeout <ms>]      # differential vs iverilog atas seed corpus
@@ -229,6 +231,37 @@ fn cmd_replay(args: &[String]) -> i32 {
     println!("oracle:   {}", result.oracle);
     println!("detail:   {}", result.detail.lines().next().unwrap_or(""));
     if result.category.is_bug() {
+        1
+    } else {
+        0
+    }
+}
+
+/// JUDGE: nilai satu file terhadap hakim LRM IEEE 1800 (lrm_judge +
+/// registry penuh). Exit 1 bila verdict layak-simpan (violation/internal
+/// failure), 0 bila tidak.
+fn cmd_judge(args: &[String]) -> i32 {
+    let (timeout_s, rest) = take_flag(args, "--timeout");
+    let file = rest.first().cloned().unwrap_or_default();
+    if file.is_empty() {
+        eprintln!("usage: mivon-fuzz judge <file.sv> [--timeout <ms>]");
+        return 1;
+    }
+    let source = match std::fs::read_to_string(&file) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("gagal baca {file}: {e}");
+            return 1;
+        }
+    };
+    let timeout = timeout_s
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(FuzzConfig::default().timeout_ms);
+
+    eprintln!("JUDGE: {file} (aturan LRM penuh)");
+    let report = mivon_fuzz::judge::judge_single(&source, timeout);
+    print!("{}", mivon_fuzz::judge::render_report(&report));
+    if report.should_save() {
         1
     } else {
         0

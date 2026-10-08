@@ -13,6 +13,7 @@
 pub mod corpus;
 pub mod deps;
 pub mod directed;
+pub mod judge;
 pub mod minimize;
 pub mod mutator;
 pub mod oracle;
