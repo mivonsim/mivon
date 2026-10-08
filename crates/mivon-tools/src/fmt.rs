@@ -372,6 +372,14 @@ fn space_between(prev: Option<&Token>, cur: &Token, next: Option<&Token>, _cur_t
     if matches!(prev, Dollar) {
         return false;
     }
+    // Kata (keyword/ident) diikuti `$`: `return $f`, `else $display`.
+    // Tanpa spasi re-lex menyatu (`return$f(` → E1002: lexer rakus menggabung
+    // kata+`$` jadi satu Ident) — temuan fuzzer O3. Pasangan token kata+Dollar
+    // yang terpisah pasti berasal dari source terpisah, jadi spasi wajib di
+    // sini + idempotent (pass kedua ambil keputusan sama).
+    if (matches!(prev, Ident(_)) || is_keyword(prev)) && matches!(cur, Dollar) {
+        return true;
+    }
 
     // Operator biner → spasi dua sisi
     if is_bin_op(cur) {
@@ -829,6 +837,23 @@ mod tests {
             "output harus mempertahankan spasi setelah kutip: {once}"
         );
         // Round-trip: fmt(fmt(s)) == fmt(s).
+        let twice = format_source(&once, 4);
+        assert_eq!(once, twice, "round-trip harus idempoten");
+    }
+
+    /// Regresi temuan fuzzer (O3 round-trip, kampanye tahap 3): kata
+    /// (keyword/ident) diikuti `$` system-call wajib ber-spasi —
+    /// `return $f(` diformat jadi `return$f(` → re-lex gagal (E1002
+    /// "expected endfunction") padahal input valid. Minimized:
+    /// `function t;return $f({{"" )endfunction` + `module f endmodule`.
+    #[test]
+    fn word_dollar_space_preserved() {
+        let src = "function t;return $f(1);endfunction\nmodule f;endmodule\n";
+        let once = format_source(src, 4);
+        assert!(
+            once.contains("return $f("),
+            "spasi return→$ harus bertahan: {once}"
+        );
         let twice = format_source(&once, 4);
         assert_eq!(once, twice, "round-trip harus idempoten");
     }
