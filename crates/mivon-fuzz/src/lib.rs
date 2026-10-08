@@ -274,15 +274,28 @@ pub struct CaseResult {
 }
 
 impl CaseResult {
-    /// Signature untuk dedup (target|oracle|category|first-detail-line).
+    /// Signature untuk dedup (target|oracle|category|2-baris-detail).
+    ///
+    /// Dua baris pertama (bukan satu): detail differential icarus/engine
+    /// selalu berawalan baris generik yang SAMA ("SEMANTIC MISMATCH vs
+    /// iverilog:" / "differential default vs ...") — baris-2 (`ref : ...`)
+    /// yang membedakan divergensi. Satu baris = semua mismatch runtuh jadi
+    /// satu grup, bug berbeda terkubur (temuan triage tahap 2). Baris-2
+    /// dipotong 160 char agar signature tetap ringkas; detail 1-baris tetap
+    /// satu grup per nilai baris-1 (pengelompokan tak berubah, walau string
+    /// bertambah sufiks `|`).
     pub fn signature(&self) -> String {
-        let first_line = self.detail.lines().next().unwrap_or("");
+        let mut lines = self.detail.lines();
+        let first_line = lines.next().unwrap_or("");
+        let second_line = lines.next().unwrap_or("");
+        let second_trunc: String = second_line.chars().take(160).collect();
         format!(
-            "{}|{}|{}|{}",
+            "{}|{}|{}|{}|{}",
             self.target.as_str(),
             self.oracle,
             self.category.label(),
-            first_line
+            first_line,
+            second_trunc
         )
     }
 }
@@ -883,5 +896,37 @@ mod bugdb_tests {
         let broken = "not json at all ]}";
         let out = bugdb_insert_entry(broken, "{\"kind\":\"Ok\"}");
         assert_eq!(out, r#"{"entries":[{"kind":"Ok"}]}"#);
+    }
+
+    fn mk_case(detail: &str) -> CaseResult {
+        CaseResult {
+            target: Target::Simulator,
+            category: Category::Differential,
+            oracle: "O5-differential",
+            detail: detail.to_string(),
+            source: "module x; endmodule".to_string(),
+        }
+    }
+
+    /// REGRESI fuzz-dedup (temuan triage tahap 2): dua mismatch dengan baris
+    /// pertama generik SAMA tapi sinyal beda wajib beda signature — dulu
+    /// runtuh jadi satu grup, bug kedua terkubur tak tersimpan.
+    #[test]
+    fn signature_separates_same_header_different_signals() {
+        let a = mk_case("SEMANTIC MISMATCH vs iverilog:\n  ref : ASRT_Q=<15>\n  mivon: ASRT_Q=<31>");
+        let b = mk_case("SEMANTIC MISMATCH vs iverilog:\n  ref : ASRT_D=<17>\n  mivon: ASRT_D=<34>");
+        assert_ne!(a.signature(), b.signature(), "sinyal beda = grup beda");
+        let a2 = mk_case("SEMANTIC MISMATCH vs iverilog:\n  ref : ASRT_Q=<15>\n  mivon: ASRT_Q=<31>");
+        assert_eq!(a.signature(), a2.signature(), "detail identik = grup sama");
+    }
+
+    /// Detail satu baris (kasus lama: hang/panic) tetap stabil — baris-2
+    /// kosong tak menambah noise pemisah.
+    #[test]
+    fn signature_single_line_stable() {
+        let a = mk_case("hang > 5000 ms (grace 2x habis; worker dilanjutkan di background)");
+        let b = mk_case("hang > 5000 ms (grace 2x habis; worker dilanjutkan di background)");
+        assert_eq!(a.signature(), b.signature());
+        assert!(a.signature().ends_with('|'), "baris-2 kosong = sufiks '|'");
     }
 }
