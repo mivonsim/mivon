@@ -115,6 +115,9 @@ pub fn run_gc(db: &mut MicdDatabase, cfg: &GcConfig) -> GcStats {
                     if v.ast_hash != 0 {
                         db.verify_ast_index.remove(&v.ast_hash);
                     }
+                    if v.semantic_hash != 0 {
+                        db.verify_semantic_index.remove(&v.semantic_hash);
+                    }
                     st.evicted_verify += 1;
                 }
                 false
@@ -219,6 +222,9 @@ fn evict_lru_verify(db: &mut MicdDatabase, max: usize, st: &mut GcStats) {
             if v.ast_hash != 0 {
                 db.verify_ast_index.remove(&v.ast_hash);
             }
+            if v.semantic_hash != 0 {
+                db.verify_semantic_index.remove(&v.semantic_hash);
+            }
             st.evicted_verify += 1;
         }
     }
@@ -294,6 +300,9 @@ fn compact_unreachable(db: &mut MicdDatabase, st: &mut GcStats) {
             db.verify_accessed.remove(&h);
             if v.ast_hash != 0 {
                 db.verify_ast_index.remove(&v.ast_hash);
+            }
+            if v.semantic_hash != 0 {
+                db.verify_semantic_index.remove(&v.semantic_hash);
             }
             st.compacted_verify += 1;
         }

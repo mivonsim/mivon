@@ -245,6 +245,9 @@ pub struct MicdDatabase {
     /// verification saat content hash berubah tapi AST identik (mis. komentar
     /// berubah).
     pub verify_ast_index: HashMap<u64, u64>,
+    /// Indeks semantic hash → content hash (Kritik E). Menggantikan
+    /// O(n) linear scan di reuse_verify() dengan O(1) lookup.
+    pub verify_semantic_index: HashMap<u64, u64>,
     /// Diagnostic per file.
     pub diags: HashMap<PathBuf, FileDiags>,
     /// Index simbol.
@@ -471,6 +474,7 @@ impl MicdDatabase {
             graph: FileGraph::new(),
             verify: HashMap::new(),
             verify_ast_index: HashMap::new(),
+            verify_semantic_index: HashMap::new(),
             diags: HashMap::new(),
             symbols: SymbolIndex::new(),
             ast_cache: HashMap::new(),
@@ -589,6 +593,10 @@ impl MicdDatabase {
                     if let Ok(v) = bincode::deserialize::<VerifyResult>(&b) {
                         if v.ast_hash != 0 {
                             db.verify_ast_index.insert(v.ast_hash, v.content_hash);
+                        }
+                        if v.semantic_hash != 0 {
+                            db.verify_semantic_index
+                                .insert(v.semantic_hash, v.content_hash);
                         }
                         let at = v.verified_at_ns;
                         db.verify_accessed.insert(v.content_hash, at);
@@ -916,6 +924,10 @@ impl MicdDatabase {
             self.verify_ast_index
                 .insert(result.ast_hash, result.content_hash);
         }
+        if result.semantic_hash != 0 {
+            self.verify_semantic_index
+                .insert(result.semantic_hash, result.content_hash);
+        }
         self.verify_accessed.insert(result.content_hash, now_ns());
         self.verify.insert(result.content_hash, result);
         self.dirty = true;
@@ -927,6 +939,8 @@ impl MicdDatabase {
     /// AST/semantic yang cocok, hasil verifikasi tetap valid walau content
     /// hash berubah (mis. hanya komentar yang berubah) — tidak perlu
     /// lint/verify ulang.
+    ///
+    /// Semua level O(1) via index (Kritik E: sebelumnya semantic = O(n) scan).
     pub fn reuse_verify(
         &self,
         content_hash: u64,
@@ -946,9 +960,11 @@ impl MicdDatabase {
             }
         }
         if semantic_hash != 0 {
-            for v in self.verify.values() {
-                if v.matches_semantic(semantic_hash) {
-                    return Some(v);
+            if let Some(ch) = self.verify_semantic_index.get(&semantic_hash) {
+                if let Some(v) = self.verify.get(ch) {
+                    if v.matches_semantic(semantic_hash) {
+                        return Some(v);
+                    }
                 }
             }
         }
@@ -1420,6 +1436,7 @@ impl MicdDatabase {
         self.graph = FileGraph::new();
         self.verify.clear();
         self.verify_ast_index.clear();
+        self.verify_semantic_index.clear();
         self.diags.clear();
         self.symbols = SymbolIndex::new();
         self.ast_cache.clear();
@@ -2485,6 +2502,47 @@ mod tests {
         let v2 = db.reuse_verify(999_999, 999_999, 45_002).unwrap();
         assert_eq!(v2.content_hash, 4500);
         assert!(db.reuse_verify(0, 0, 0).is_none());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn test_semantic_index_persists_across_reload() {
+        // Kritik E: verify_semantic_index harus persist dan O(1) lookup
+        // setelah save/reload (bukan rebuild dari linear scan).
+        let root = test_root("semantic_idx");
+        {
+            let mut db = MicdDatabase::open(&root);
+            // Daftarkan file agar verify entry tidak di-compact GC.
+            db.record_file(
+                PathBuf::from("a.sv"),
+                100,
+                vec![],
+                FileStatus::New,
+                0,
+                5,
+                vec![],
+            );
+            let mut v = VerifyResult::fresh(100);
+            v.ast_hash = 0xAAA;
+            v.semantic_hash = 0xBBB;
+            v.parse_ok = true;
+            v.elab_ok = true;
+            db.set_verify(v);
+            db.save().unwrap();
+        }
+        {
+            let db = MicdDatabase::open(&root);
+            // Semantic index harus terisi dari load.
+            assert!(
+                db.verify_semantic_index.contains_key(&0xBBB),
+                "semantic index harus ter-load dari disk"
+            );
+            // Lookup via semantic harus O(1) dan berhasil.
+            let v = db
+                .reuse_verify(999, 0x9999, 0xBBB)
+                .expect("semantic index harus menemukan entry");
+            assert_eq!(v.content_hash, 100);
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 
