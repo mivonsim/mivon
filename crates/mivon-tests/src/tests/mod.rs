@@ -19461,6 +19461,86 @@ endmodule
 }
 
 #[test]
+fn test_e2003_shorthand_port_conn_has_location() {
+    // Temuan fuzzer O2 (loop tahap 4): E2003 "width computation failed for
+    // port" dari koneksi shorthand `.p` (signal senama, tanpa `(expr)`)
+    // dilaporkan TANPA file:line:col. Dua lapis fix:
+    // parser (instance.rs) Ident sintesis bawa posisi token port +
+    // elab (elaborator/expr.rs) teruskan posisi expr ke elab_diag_at.
+    // Pipeline lengkap seperti compile_str tapi tangkap diags agar pesan
+    // E2003 asli (bukan wrapper top-fail) bisa diperiksa lokasinya.
+    let source = "module child(input logic [7:0] p);\nendmodule\nmodule tb;\nchild u(.p);\nendmodule\n";
+    let mut pp = mivon_parser::preprocessor::Preprocessor::new();
+    let preprocessed = pp.preprocess(source, None).unwrap();
+    let mut lexer = mivon_parser::lexer::Lexer::new(&preprocessed);
+    let mut tokens = Vec::new();
+    loop {
+        let (tok, line, col) = lexer.next_token();
+        if tok == mivon_parser::lexer::Token::Eof {
+            break;
+        }
+        tokens.push((tok, line, col));
+    }
+    let mut parser = mivon_parser::Parser::new(tokens, "<string>").with_source_lines(&preprocessed);
+    let design = parser.parse_design().unwrap();
+    let source_lines: Vec<String> = preprocessed.lines().map(|s| s.to_string()).collect();
+    let mut elaborator =
+        mivon_elaboration::Elaborator::with_source(design, source_lines, "<string>".to_string());
+    let _ = elaborator.elaborate(None, mivon_elaboration::elaborator::ElaborateMode::StrictSimulation);
+    let diags = elaborator.flush_diagnostics();
+    let width_diag = diags.iter().find(|d| {
+        d.message.contains("width computation failed for port")
+            && d.message.contains("u.p")
+    });
+    assert!(
+        width_diag.is_some(),
+        "harus ada diag E2003 width port u.p: {:?}",
+        diags.iter().map(|d| (d.code.as_str(), d.message.as_ref())).collect::<Vec<_>>()
+    );
+    let snap = width_diag.unwrap().source_snippet.as_ref();
+    assert!(
+        snap.is_some(),
+        "E2003 shorthand port WAJIB punya source snippet (file:line:col)"
+    );
+    let s = snap.unwrap();
+    assert_eq!(s.line, 4, "snippet harus menunjuk baris koneksi `.p`, got {}", s.line);
+    assert!(
+        s.source_line.contains(".p"),
+        "snippet harus menunjuk koneksi `.p`: {:?}",
+        s.source_line
+    );
+
+    // Site kedua (instance.rs spasi-separated `child u .p .q(qq);`): posisi sama.
+    // Catatan: `.p` tanpa paren sama sekali sebaris (`child u .p;`) tidak
+    // masuk jalur instance (caller butuh `(` di depan) — butuh satu koneksi
+    // ber-paren agar rute instance terpicu.
+    let source2 = "module child(input logic [7:0] p, input logic [7:0] q);\nendmodule\nmodule tb;\nlogic [7:0] qq;\nchild u .p .q(qq);\nendmodule\n";
+    let preprocessed2 = pp.preprocess(source2, None).unwrap();
+    let mut lexer2 = mivon_parser::lexer::Lexer::new(&preprocessed2);
+    let mut tokens2 = Vec::new();
+    loop {
+        let (tok, line, col) = lexer2.next_token();
+        if tok == mivon_parser::lexer::Token::Eof {
+            break;
+        }
+        tokens2.push((tok, line, col));
+    }
+    let mut parser2 = mivon_parser::Parser::new(tokens2, "<string>").with_source_lines(&preprocessed2);
+    let design2 = parser2.parse_design().unwrap();
+    let source_lines2: Vec<String> = preprocessed2.lines().map(|s| s.to_string()).collect();
+    let mut elaborator2 =
+        mivon_elaboration::Elaborator::with_source(design2, source_lines2, "<string>".to_string());
+    let _ = elaborator2.elaborate(None, mivon_elaboration::elaborator::ElaborateMode::StrictSimulation);
+    let diags2 = elaborator2.flush_diagnostics();
+    let w2 = diags2.iter().find(|d| {
+        d.message.contains("width computation failed for port") && d.message.contains("u.p")
+    });
+    assert!(w2.is_some(), "site spasi `.p` juga harus E2003 ber-lokasi");
+    let s2 = w2.unwrap().source_snippet.as_ref().expect("site spasi wajib snippet");
+    assert_eq!(s2.line, 5, "site spasi: snippet baris 5, got {}", s2.line);
+}
+
+#[test]
 fn test_expect_statement_failure_runs_else() {
     // LANG-14: `expect (cond) else stmt` — assertion dalam procedural code
     // (IEEE 1800-2017 §17.16.2). Kondisi dievaluasi SEKETIKA; false →

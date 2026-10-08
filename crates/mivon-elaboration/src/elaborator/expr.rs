@@ -2693,9 +2693,17 @@ impl Elaborator {
             &self.package_symbols,
         )
         .map_err(|e| {
-            self.elab_diag(
+            // Lokasi dari ekspresi koneksi port (port 'i.L' di baris instance)
+            // agar E2003 punya snippet — dulu elab_diag tanpa lokasi lalu
+            // fallback find_name_in_source gagal untuk nama dotted yang
+            // terpisah spasi di source (`i .L`) → diagnostik tanpa lokasi
+            // (temuan fuzzer O2 diag_missing). (0,0) tetap fallback lama.
+            let (e_l, e_c) = expr_location(expr);
+            self.elab_diag_at(
                 mivon_core::diagnostics::diagnostic::DiagCode::WidthMismatch,
                 format!("width computation failed for port '{}': {}", hint_name, e),
+                e_l,
+                e_c,
             )
         })?;
         let width = if width_val > 0 { width_val } else { 1 };

@@ -1332,6 +1332,11 @@ impl Parser {
                         }
 
                         let port_tok = self.peek().clone();
+                        // Posisi token nama port — dipakai Ident sintesis utk
+                        // koneksi shorthand `.port` (tanpa ini Ident berposisi
+                        // 0,0 → diagnostik elab kehilangan lokasi; temuan
+                        // fuzzer O2 diag_missing E2003).
+                        let (port_line, port_col) = (self.peek_line(), self.peek_col());
                         let port_name = match &port_tok {
                             Token::Ident(s) => {
                                 self.advance();
@@ -1359,8 +1364,8 @@ impl Parser {
                                 port: port_name,
                                 expr: Expr::Ident {
                                     name: port_name,
-                                    line: 0,
-                                    col: 0,
+                                    line: port_line,
+                                    col: port_col,
                                 },
                             });
                         }
@@ -1393,6 +1398,9 @@ impl Parser {
                     self.advance(); // '.*' wildcard — skip, while re-checks Dot
                     continue;
                 }
+                // Posisi token nama port (lihat site kurung di atas — alasan
+                // sama: Ident sintesis `.port` wajib bawa lokasi).
+                let (port_line, port_col) = (self.peek_line(), self.peek_col());
                 let port_name = match self.peek() {
                     Token::Ident(s) => {
                         let n = *s;
@@ -1419,8 +1427,8 @@ impl Parser {
                     // `.port` tanpa `(expr)` = koneksi ke signal senama.
                     Expr::Ident {
                         name: port_name,
-                        line: 0,
-                        col: 0,
+                        line: port_line,
+                        col: port_col,
                     }
                 };
                 port_conns.push(PortConnection::Named {
