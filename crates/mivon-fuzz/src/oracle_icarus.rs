@@ -393,16 +393,28 @@ pub fn evaluate_icarus(source: &str, timeout_ms: u64) -> IcarusResult {
     a.sort();
     let mut b = mine.clone();
     b.sort();
-    if a == b {
-        return IcarusResult {
-            verdict: Verdict::Match,
-            category: crate::Category::Ok,
-            oracle: "O5-differential",
-            detail: format!(
-                "hasil sim mivon == iverilog ({} marker identik)",
-                ref_markers.len()
-            ),
-        };
+    match classify_markers(&a, &b) {
+        Verdict::Match => {
+            return IcarusResult {
+                verdict: Verdict::Match,
+                category: crate::Category::Ok,
+                oracle: "O5-differential",
+                detail: format!(
+                    "hasil sim mivon == iverilog ({} marker identik)",
+                    ref_markers.len()
+                ),
+            };
+        }
+        Verdict::RefUnavailable => {
+            return IcarusResult {
+                verdict: Verdict::RefUnavailable,
+                category: crate::Category::CleanError,
+                oracle: "N/A",
+                detail: "tidak ada marker ASRT_=<val> di kedua sisi — compare vakum, bukan Match".to_string(),
+            };
+        }
+        Verdict::Mismatch => {}
+        _ => {}
     }
 
     IcarusResult {
@@ -414,6 +426,25 @@ pub fn evaluate_icarus(source: &str, timeout_ms: u64) -> IcarusResult {
             ref_markers.join(" "),
             mine.join(" ")
         ),
+    }
+}
+
+/// Klasifikasi dua marker stream (sudah multiset-sort) — LOGIKA MURNI.
+///
+/// Vakum (`a` dan `b` sama-sama kosong) = `RefUnavailable`, BUKAN `Match`:
+/// marker `ASRT_X=ok` tanpa `<>` tak ter-extract, dan TB yang tak jalan
+/// (top resolution salah) menghasilkan nol marker dua-duanya — dulu dilaporkan
+/// `Match "0 marker identik"` = false negative (temuan triage verify_bad:
+/// kasus `=ok`-only lolos sebagai match bermakna).
+fn classify_markers(a: &[String], b: &[String]) -> Verdict {
+    if a == b {
+        if a.is_empty() {
+            Verdict::RefUnavailable
+        } else {
+            Verdict::Match
+        }
+    } else {
+        Verdict::Mismatch
     }
 }
 
@@ -488,5 +519,33 @@ mod tests {
         let expected = vec!["ASRT_SUM=<7>".to_string(), "ASRT_END tb".to_string()];
         let mine = vec!["ASRT_SUM=<7>".to_string(), "ASRT_END tb2".to_string()];
         assert!(expected != mine);
+    }
+
+    /// Marker `=ok` tanpa `<>` tak ter-extract (kontrak `=<val>`): TB yang
+    /// hanya mencetak `ASRT_X=ok` menghasilkan NOL marker — pemicu vakum.
+    /// Temuan triage verify_bad_0052 (mivon benar semua `=ok`, iverilog x).
+    #[test]
+    fn extract_ignores_ok_without_brackets() {
+        let s = "ASRT_START tb\nASRT_UNSIGNED=ok\nASRT_MATRIX=ok\nASRT_END tb\n";
+        assert!(extract_markers(s).is_empty(), "=ok tanpa <> bukan marker");
+    }
+
+    /// REGRESI fuzz-verify: compare vakum (nol marker dua sisi) = N/A,
+    /// bukan Match. Dulu `a == b` kosong → Match "0 marker identik".
+    #[test]
+    fn classify_vacuous_is_not_a_match() {
+        let empty: Vec<String> = vec![];
+        assert_eq!(
+            classify_markers(&empty, &empty),
+            Verdict::RefUnavailable,
+            "vakum bukan Match"
+        );
+        let a = vec!["ASRT_Q=<15>".to_string()];
+        let b = vec!["ASRT_Q=<15>".to_string()];
+        assert_eq!(classify_markers(&a, &b), Verdict::Match);
+        let c = vec!["ASRT_Q=<16>".to_string()];
+        assert_eq!(classify_markers(&a, &c), Verdict::Mismatch);
+        // Satu sisi kosong, satu berisi = mismatch (TB tak jalan satu sisi).
+        assert_eq!(classify_markers(&empty, &b), Verdict::Mismatch);
     }
 }

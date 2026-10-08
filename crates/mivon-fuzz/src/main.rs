@@ -518,10 +518,10 @@ fn verify_mutated(cases: usize, seed: u64, timeout_ms: u64) -> i32 {
             base_source
         };
 
-        // Jangan buang waktu icarus untuk source tanpa MARKER ASRT_ — kontrak
-        // marker kosong dua sisi = "match" vakum (tak bermakna). Filter:
-        // hanya source yang punya marker (TB fuzz) ATAU design berstimulus
-        // ($display) — untuk real RTL tanpa tb, compare vakum.
+        // Jangan buang waktu icarus untuk source tanpa MARKER ASRT_ — tanpa
+        // marker di source, compare pasti vakum (RefUnavailable, tak bermakna).
+        // Filter: hanya source yang punya marker (TB fuzz) ATAU design
+        // berstimulus ($display) — untuk real RTL tanpa tb, compare vakum.
         if !source.contains("ASRT_") && !source.contains("$display") && !source.contains("$finish")
         {
             n_clean += 1;
