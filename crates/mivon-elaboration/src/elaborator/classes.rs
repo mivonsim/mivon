@@ -13,6 +13,74 @@ use mivon_ir::{IrClassDef, IrClassField, IrClassMethod, IrTypeParam};
 
 use super::Elaborator;
 
+/// Merge `rand` fields warisan: parent-first (rantai `extends`), lalu rand
+/// milik sendiri; field yang di-redeclare NON-rand di child mengeluarkan
+/// nama dari daftar. Tanpa ini field warisan tak pernah di-sample solver →
+/// `randomize() with` di subclass selalu gagal (temuan tahap 7).
+/// Sejajar merge fields/methods (order-dependent sama: parent harus sudah
+/// ada di map; guard siklus + depth 16).
+fn merged_rand_fields(
+    classes: &HashMap<Symbol, IrClassDef>,
+    cd: &mivon_ast::types::ClassDecl,
+    own_rand: &[Symbol],
+) -> Vec<Symbol> {
+    use std::collections::HashSet;
+    let mut out: Vec<Symbol> = Vec::new();
+    let mut seen: HashSet<Symbol> = HashSet::new();
+    // Rantai ancestor, child-first → dibalik jadi parent-first.
+    let mut chain: Vec<Symbol> = Vec::new();
+    let mut visited: HashSet<Symbol> = HashSet::new();
+    let mut cur = cd.extends;
+    let mut guard = 0;
+    while let Some(pn) = cur {
+        if guard >= 16 {
+            break;
+        }
+        guard += 1;
+        let key = pn.split("::").last().unwrap_or_else(|| pn.as_str());
+        let Some(pd) = classes.get(&Symbol::intern(key)) else {
+            break;
+        };
+        if !visited.insert(pd.name) {
+            break;
+        }
+        chain.push(pd.name);
+        cur = pd.extends;
+    }
+    for cn in chain.iter().rev() {
+        if let Some(pd) = classes.get(cn) {
+            for r in &pd.rand_fields {
+                if seen.insert(*r) {
+                    out.push(*r);
+                }
+            }
+        }
+    }
+    // Override: redeclare non-rand di child mengeluarkan nama warisan.
+    let own_nonrand: HashSet<Symbol> = cd
+        .members
+        .iter()
+        .filter_map(|m| match m {
+            ClassMember::Decl(d) => Some(
+                d.names
+                    .iter()
+                    .filter(|v| !v.is_rand)
+                    .map(|v| v.name)
+                    .collect::<Vec<_>>(),
+            ),
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    out.retain(|n| !own_nonrand.contains(n));
+    for r in own_rand {
+        if seen.insert(*r) {
+            out.push(*r);
+        }
+    }
+    out
+}
+
 /// Standalone helper — resolve width tipe class field, termasuk generic type param.
 pub(super) fn resolve_class_field_width_standalone(
     dtype: &mivon_ast::types::DataType,
@@ -240,7 +308,7 @@ impl Elaborator {
                     fields: all_fields,
                     methods,
                     constraints,
-                    rand_fields,
+                    rand_fields: merged_rand_fields(&classes, cd, &rand_fields),
                     lets,
                 },
             );

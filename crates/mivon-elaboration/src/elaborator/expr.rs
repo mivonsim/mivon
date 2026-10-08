@@ -802,9 +802,10 @@ impl Elaborator {
     /// let) TAPI ada di field class receiver yang di-rewrite jadi
     /// `MemberAccess{obj, field}` (runtime sudah sanggup: engine eval
     /// MemberAccess di object handle). Kasus yang jalan hari ini tak berubah.
-    /// Batas slice: single class TANPA traversal `extends`; receiver harus
-    /// Ident signal ber-class (bukan `this`/chain) — di luar itu with
-    /// dielaborasi seperti dulu (bisa tetap E2001, bukan regresi).
+    /// Batas slice: receiver harus Ident signal ber-class (bukan `this`/chain)
+    /// — di luar itu with dielaborasi seperti dulu (bisa tetap E2001, bukan
+    /// regresi). `extends` di-traverse (sejajar runtime); typedef-alias
+    /// class_name yang miss tetap fallback lama.
     fn bind_randomize_with(
         &self,
         obj: &Expr,
@@ -834,10 +835,29 @@ impl Elaborator {
         self.bind_with_fields(with_clause, &obj_owned, &fields, signal_map)
     }
 
-    /// Kumpulkan nama field data sebuah class AST.
+    /// Kumpulkan nama field data sebuah class AST + rantai `extends` (parent
+    /// duluan, child boleh override — sejajar merge runtime di
+    /// elaborator/classes.rs). Guard siklus + batas depth 16.
     fn class_field_names(&self, class_name: Symbol) -> std::collections::HashSet<Symbol> {
         let mut out = std::collections::HashSet::new();
-        if let Some(decl) = self.design.classes.iter().find(|c| c.name == class_name) {
+        let mut seen = std::collections::HashSet::new();
+        let mut cur = Some(class_name);
+        let mut depth = 0;
+        while let Some(cn) = cur {
+            if !seen.insert(cn) || depth >= 16 {
+                break;
+            }
+            depth += 1;
+            // Samakan dgn merged_rand_fields: `extends pkg::B` di-strip ke `B`.
+            let key = cn.as_str().split("::").last().unwrap_or(cn.as_str());
+            let Some(decl) = self
+                .design
+                .classes
+                .iter()
+                .find(|c| c.name.as_str() == key)
+            else {
+                break;
+            };
             for m in &decl.members {
                 if let mivon_ast::types::ClassMember::Decl(d) = m {
                     for v in &d.names {
@@ -845,6 +865,7 @@ impl Elaborator {
                     }
                 }
             }
+            cur = decl.extends;
         }
         out
     }

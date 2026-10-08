@@ -3133,6 +3133,39 @@ endmodule
     assert_eq!(val.to_u64(), 1, "randomize with harus sukses");
     let (_, av) = sigs.iter().find(|(n, _)| n == "av").unwrap();
     assert_eq!(av.to_u64(), 0xAA, "with addr==AA harus ditegakkan");
+
+    // Field WARISAN via extends: class_field_names traverse parent (sejajar
+    // merge runtime classes.rs) — tanpa ini E2001 "signal not found".
+    let source2 = r#"
+class BaseW;
+    rand logic [7:0] addr;
+endclass
+class ChildW extends BaseW;
+    rand logic [7:0] data;
+endclass
+
+module tb;
+    ChildW p;
+    int result;
+    int av;
+    initial begin
+        p = new();
+        if (p.randomize() with { addr == 8'hAA; }) begin
+            result = 1;
+            av = p.addr;
+        end else begin
+            result = 0;
+            av = 0;
+        end
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs2 = simulate_signals(source2, 50).unwrap();
+    let (_, v2) = sigs2.iter().find(|(n, _)| n == "result").unwrap();
+    assert_eq!(v2.to_u64(), 1, "randomize with field warisan harus sukses");
+    let (_, a2) = sigs2.iter().find(|(n, _)| n == "av").unwrap();
+    assert_eq!(a2.to_u64(), 0xAA, "with addr==AA warisan harus ditegakkan");
 }
 
 #[test]
