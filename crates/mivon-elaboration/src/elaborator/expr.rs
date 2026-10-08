@@ -793,6 +793,146 @@ impl Elaborator {
     /// binggkai stack tiap fungsi tetap kecil: bingkai versi monolitik
     /// ~163 KB pada build debug membuat rekursi ekspresi bersarang
     /// melebihi stack thread 2 MB (stack overflow, metamorphic fuzz).
+    /// Ikat blok `with` randomize ke receiver object (scope class LRM 1800 §18.7).
+    ///
+    /// `p.randomize() with { addr == 8'hAA }` — `addr` field class, bukan
+    /// signal scope enclosing. Tanpa pengikatan, elaborate_expr gagal E2001
+    /// "signal not found" (temuan verify tb_22_class). Konservatif: hanya
+    /// Ident yang TAK ter-resolve di scope enclosing (signal/param/package/
+    /// let) TAPI ada di field class receiver yang di-rewrite jadi
+    /// `MemberAccess{obj, field}` (runtime sudah sanggup: engine eval
+    /// MemberAccess di object handle). Kasus yang jalan hari ini tak berubah.
+    /// Batas slice: single class TANPA traversal `extends`; receiver harus
+    /// Ident signal ber-class (bukan `this`/chain) — di luar itu with
+    /// dielaborasi seperti dulu (bisa tetap E2001, bukan regresi).
+    fn bind_randomize_with(
+        &self,
+        obj: &Expr,
+        method: &Symbol,
+        with_clause: &Expr,
+        signal_map: &HashMap<Symbol, SignalId>,
+        signals: &[SignalInfo],
+    ) -> Expr {
+        if method.as_str() != "randomize" {
+            return with_clause.clone();
+        }
+        let class_name = match obj {
+            Expr::Ident { name, .. } => signal_map
+                .get(name)
+                .and_then(|sid| signals.get(*sid))
+                .and_then(|info| info.class_name),
+            _ => None,
+        };
+        let Some(class_name) = class_name else {
+            return with_clause.clone();
+        };
+        let fields = self.class_field_names(class_name);
+        if fields.is_empty() {
+            return with_clause.clone();
+        }
+        let obj_owned = obj.clone();
+        self.bind_with_fields(with_clause, &obj_owned, &fields, signal_map)
+    }
+
+    /// Kumpulkan nama field data sebuah class AST.
+    fn class_field_names(&self, class_name: Symbol) -> std::collections::HashSet<Symbol> {
+        let mut out = std::collections::HashSet::new();
+        if let Some(decl) = self.design.classes.iter().find(|c| c.name == class_name) {
+            for m in &decl.members {
+                if let mivon_ast::types::ClassMember::Decl(d) = m {
+                    for v in &d.names {
+                        out.insert(v.name);
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Rewrite rekursif Ident field → MemberAccess{obj, field} (lihat
+    /// bind_randomize_with). Bentuk constraint umum di-cover; sisanya
+    /// di-clone apa adanya (perilaku lama).
+    fn bind_with_fields(
+        &self,
+        expr: &Expr,
+        obj: &Expr,
+        fields: &std::collections::HashSet<Symbol>,
+        signal_map: &HashMap<Symbol, SignalId>,
+    ) -> Expr {
+        match expr {
+            Expr::Ident { name, .. } => {
+                if fields.contains(name)
+                    && !signal_map.contains_key(name)
+                    && !self.param_vals.contains_key(name)
+                    && !self.pkg_param_ctx.contains_key(name)
+                    && !self.let_decls.contains_key(name)
+                {
+                    Expr::MemberAccess {
+                        obj: Box::new(obj.clone()),
+                        field: *name,
+                    }
+                } else {
+                    expr.clone()
+                }
+            }
+            Expr::BinaryOp { op, lhs, rhs } => Expr::BinaryOp {
+                op: op.clone(),
+                lhs: Box::new(self.bind_with_fields(lhs, obj, fields, signal_map)),
+                rhs: Box::new(self.bind_with_fields(rhs, obj, fields, signal_map)),
+            },
+            Expr::UnaryOp { op, expr: inner } => Expr::UnaryOp {
+                op: op.clone(),
+                expr: Box::new(self.bind_with_fields(inner, obj, fields, signal_map)),
+            },
+            Expr::Paren(inner) => {
+                Expr::Paren(Box::new(self.bind_with_fields(inner, obj, fields, signal_map)))
+            }
+            Expr::TernaryOp { cond, true_expr, false_expr } => Expr::TernaryOp {
+                cond: Box::new(self.bind_with_fields(cond, obj, fields, signal_map)),
+                true_expr: Box::new(self.bind_with_fields(true_expr, obj, fields, signal_map)),
+                false_expr: Box::new(self.bind_with_fields(false_expr, obj, fields, signal_map)),
+            },
+            Expr::Concat(items) => Expr::Concat(
+                items.iter().map(|e| self.bind_with_fields(e, obj, fields, signal_map)).collect(),
+            ),
+            Expr::RangeSelect { expr: b, msb, lsb } => Expr::RangeSelect {
+                expr: Box::new(self.bind_with_fields(b, obj, fields, signal_map)),
+                msb: Box::new(self.bind_with_fields(msb, obj, fields, signal_map)),
+                lsb: Box::new(self.bind_with_fields(lsb, obj, fields, signal_map)),
+            },
+            Expr::BitSelect { expr: b, index } => Expr::BitSelect {
+                expr: Box::new(self.bind_with_fields(b, obj, fields, signal_map)),
+                index: Box::new(self.bind_with_fields(index, obj, fields, signal_map)),
+            },
+            Expr::Cast { dtype, expr: inner } => Expr::Cast {
+                dtype: *dtype,
+                expr: Box::new(self.bind_with_fields(inner, obj, fields, signal_map)),
+            },
+            Expr::Inside { expr: inner, range_list } => Expr::Inside {
+                expr: Box::new(self.bind_with_fields(inner, obj, fields, signal_map)),
+                range_list: range_list
+                    .iter()
+                    .map(|e| self.bind_with_fields(e, obj, fields, signal_map))
+                    .collect(),
+            },
+            Expr::FuncCall { name, args, line, col } => Expr::FuncCall {
+                name: *name,
+                args: args.iter().map(|a| self.bind_with_fields(a, obj, fields, signal_map)).collect(),
+                line: *line,
+                col: *col,
+            },
+            // MethodCall bersarang: obj+args ikut scope luar; with-block
+            // dalamnya milik receiver lain — biarkan (perilaku lama).
+            Expr::MethodCall { obj: inner_obj, method, args, with_clause } => Expr::MethodCall {
+                obj: Box::new(self.bind_with_fields(inner_obj, obj, fields, signal_map)),
+                method: *method,
+                args: args.iter().map(|a| self.bind_with_fields(a, obj, fields, signal_map)).collect(),
+                with_clause: with_clause.clone(),
+            },
+            _ => expr.clone(),
+        }
+    }
+
     fn elaborate_expr_tail(
         &self,
         expr: &Expr,
@@ -1217,7 +1357,11 @@ impl Elaborator {
                             .collect();
                         let ir_with = match with_clause {
                             Some(wc) => {
-                                Some(Box::new(self.elaborate_expr(wc, signal_map, signals)?))
+                                let bound =
+                                    self.bind_randomize_with(obj, method, wc, signal_map, signals);
+                                Some(Box::new(
+                                    self.elaborate_expr(&bound, signal_map, signals)?,
+                                ))
                             }
                             None => None,
                         };
@@ -1235,7 +1379,11 @@ impl Elaborator {
                     .map(|a| self.elaborate_expr(a, signal_map, signals))
                     .collect();
                 let ir_with = match with_clause {
-                    Some(wc) => Some(Box::new(self.elaborate_expr(wc, signal_map, signals)?)),
+                    Some(wc) => {
+                        let bound =
+                            self.bind_randomize_with(obj, method, wc, signal_map, signals);
+                        Some(Box::new(self.elaborate_expr(&bound, signal_map, signals)?))
+                    }
                     None => None,
                 };
                 Ok(IrExpr::MethodCall {

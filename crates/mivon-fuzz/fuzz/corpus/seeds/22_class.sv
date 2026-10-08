@@ -15,8 +15,14 @@ module class_top (
 
   initial begin
     p = new();
+    // NOTE differential-hygiene: with-block deterministik PENUH (addr==AA;
+    // out=p.addr → ASRT_OUT=<aa> stabil antar run mivon, untuk oracle
+    // internal O1/O4/O5). BUKAN vs iverilog: iverilog tak dukung deklarasi
+    // `constraint` ("sorry: Constraint declarations not supported") → selalu
+    // RefUnavailable. `out = p.addr ^ p.data` lama nondeterministik
+    // (PRNG beda tiap tool). TANPA $finish di DUT ($finish DUT mematikan sim
+    // sebelum TB sampling — pola sama dgn seed 21_fork; TB yang $finish).
     assert (p.randomize() with { addr == 8'hAA; });
-    out = p.addr ^ p.data;
-    $finish;
+    out = p.addr;
   end
 endmodule

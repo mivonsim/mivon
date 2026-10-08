@@ -3096,6 +3096,46 @@ endmodule
 }
 
 #[test]
+fn test_randomize_with_binds_class_fields() {
+    // Temuan verify tb_22_class (loop tahap 6): `p.randomize() with
+    // { addr == 8'hAA }` gagal E2001 "signal 'addr' not found" — blok with
+    // dielaborasi di scope enclosing, padahal LRM 1800 §18.7 nama di
+    // constraint_block milik scope class. Fix: Ident tak-ter-resolve yang
+    // cocok field class receiver di-rewrite jadi MemberAccess{obj, field}
+    // (elaborator/expr.rs bind_randomize_with). Runtime sudah sanggup
+    // (engine eval MemberAccess di object handle).
+    let source = r#"
+class PacketW;
+    rand logic [7:0] addr;
+    rand logic [7:0] data;
+    constraint c_addr { addr != 8'h00; }
+endclass
+
+module tb;
+    PacketW p;
+    int result;
+    int av;
+    initial begin
+        p = new();
+        if (p.randomize() with { addr == 8'hAA; }) begin
+            result = 1;
+            av = p.addr;
+        end else begin
+            result = 0;
+            av = 0;
+        end
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 50).unwrap();
+    let (_, val) = sigs.iter().find(|(n, _)| n == "result").unwrap();
+    assert_eq!(val.to_u64(), 1, "randomize with harus sukses");
+    let (_, av) = sigs.iter().find(|(n, _)| n == "av").unwrap();
+    assert_eq!(av.to_u64(), 0xAA, "with addr==AA harus ditegakkan");
+}
+
+#[test]
 fn test_constraint_signed_domains() {
     // ROUND 36: solver constraint signed — domain narrowing memakai signedness
     // field class (`rand int`): mixed-sign relational bounds, inside negatif,
