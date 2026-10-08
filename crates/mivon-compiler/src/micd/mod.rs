@@ -1008,6 +1008,7 @@ impl MicdDatabase {
         self.dirty = true;
         self.dirty_ast = true;
         self.dirty_preproc = true;
+        self.dirty_diag = true;
         stale.len()
     }
 
