@@ -24,7 +24,7 @@ use crate::verdict::{JudgeConfidence, JudgeReport, Verdict};
 /// 3. `LrmJudge::judge` atas registry penuh.
 pub fn judge_single(source: &str, timeout_ms: u64) -> JudgeReport {
     let tc = TestCase::new("judge-single", source);
-    let outcome = crate::runner::run_file(source, timeout_ms);
+    let outcome = crate::oracle::with_micd_isolated(|| crate::runner::run_file(source, timeout_ms));
     let obs = collect_from_runner(&outcome);
     let compiled = std::panic::catch_unwind(|| mivon_api::compile_str_quiet(source))
         .ok()

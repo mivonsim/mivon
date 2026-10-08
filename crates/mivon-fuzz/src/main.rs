@@ -48,7 +48,7 @@ USAGE:
   mivon-fuzz report  [<dir>]
   mivon-fuzz help
 
-TARGETS: all | lexer | parser | elab | sim | fmt | cli | preproc | mv | vcd | sdf | micd | synth | astdiff
+TARGETS: all | lexer | parser | elab | sim | fmt | cli | preproc | mv | vcd | sdf | micd | synth | astdiff | judge
 Default: all (2000 cases/target). Corpus default: {corpus}
 Bug output: {bugs}
 "#,

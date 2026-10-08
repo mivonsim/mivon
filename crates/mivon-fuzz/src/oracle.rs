@@ -26,6 +26,7 @@ pub fn evaluate(target: Target, source: &str, timeout_ms: u64) -> CaseResult {
         Target::Micd => evaluate_micd(source, timeout_ms),
         Target::Synth => evaluate_synth(source, timeout_ms),
         Target::Astdiff => evaluate_astdiff(source, timeout_ms),
+        Target::Judge => evaluate_judge(source, timeout_ms),
         Target::All => unreachable!("Target::All dipecah di run()"),
     }
 }
@@ -55,7 +56,8 @@ fn mk(
 /// `std::env::set_var` process-global — worker watchdog yang dibiarkan hidup
 /// setelah timeout masih menjalankan subprocess dgn env case lamanya saat
 /// case berikut ganti env = data race antar thread (review sesi ini).
-fn with_micd_isolated<T>(f: impl FnOnce() -> T) -> T {
+/// Dipakai juga oleh `judge::judge_single` (subprocess runner di sana).
+pub(crate) fn with_micd_isolated<T>(f: impl FnOnce() -> T) -> T {
     let dir = std::env::temp_dir().join(format!(
         "mivonfz_iso_{}_{}",
         std::process::id(),
@@ -2556,6 +2558,77 @@ fn mv_eval(source: &str) -> CaseResult {
             Category::NonDeterministic,
             "transpile panic/error non-deterministik",
             source,
+        ),
+    }
+}
+
+/// Fuzzing HAKIM LRM (O6): `judge_single` atas source mutasi — registry
+/// aturan penuh. `Violation` layak-simpan → `LrmViolation` (bug kepatuhan);
+/// sumber tak-ter-compile (`InvalidTest`) → `CleanError` (bukan bug mivon);
+/// sisanya → `Ok`. Berat per-case (subprocess + compile + judge), jadi
+/// target ini untuk kampanye terarah, bukan default cepat.
+fn evaluate_judge(source: &str, timeout_ms: u64) -> CaseResult {
+    // Watchdog + stack besar + budget 6× seperti evaluate_sim: judge_single
+    // = rantai (subprocess + compile + registry penuh), dan input mutasi bisa
+    // overflow stack 8MB (stack overflow = abort proses, tak tertangkap
+    // catch_unwind → kampanye mati total tanpa watchdog).
+    let budget_ms = timeout_ms.saturating_mul(6);
+    run_with_watchdog(
+        Target::Judge,
+        source,
+        budget_ms,
+        "mivon-fuzz-judge",
+        move |src| judge_in_thread(src, timeout_ms),
+    )
+}
+
+/// Isi evaluate_judge di thread watchdog (lihat atas).
+fn judge_in_thread(source: &str, timeout_ms: u64) -> CaseResult {
+    let mk_j = |c: Category, o: Oracle, d: &str| mk(Target::Judge, o, c, d, source);
+    let caught = std::panic::catch_unwind(|| crate::judge::judge_single(source, timeout_ms));
+    let report = match caught {
+        Ok(r) => r,
+        Err(_) => {
+            return mk_j(
+                Category::Panic,
+                Oracle::O1NoCrash,
+                "panic di judge_single (hakim crash pada input ini)",
+            )
+        }
+    };
+    if report.should_save() {
+        // Detail diskriminatif: aturan pertama yang violated + alasannya
+        // (signature dedup pakai 2 baris detail → grup per aturan).
+        let first = report
+            .rule_results
+            .iter()
+            .find(|r| {
+                matches!(
+                    r.verdict,
+                    crate::verdict::RuleVerdict::Violated { .. }
+                )
+            })
+            .map(|r| format!("{}: {}", (r.rule.0), r.explanation.lines().next().unwrap_or("")))
+            .unwrap_or_else(|| report.verdict.label().to_string());
+        return mk_j(Category::LrmViolation, Oracle::O6LrmJudge, &first);
+    }
+    match &report.verdict {
+        crate::verdict::Verdict::InvalidTest { reason } => {
+            mk_j(Category::CleanError, Oracle::O1NoCrash, reason)
+        }
+        crate::verdict::Verdict::MivonInternalFailure { kind, detail } => {
+            // Seharusnya should_save() true — pertahanan bila klasifikasi
+            // berubah: tetap bug, jangan senyap.
+            mk_j(
+                Category::Panic,
+                Oracle::O1NoCrash,
+                &format!("internal failure lolos should_save: {kind:?}: {detail}"),
+            )
+        }
+        _ => mk_j(
+            Category::Ok,
+            Oracle::O6LrmJudge,
+            &format!("lrm judge ok: {}", report.verdict.label()),
         ),
     }
 }

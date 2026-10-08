@@ -75,6 +75,11 @@ pub enum Target {
     /// HashSet-iteration di render (SYN-9-class nondeterminisme kembali masuk
     /// lewat pintu lain).
     Astdiff,
+    /// Hakim LRM IEEE 1800 (`judge_single`): seed mutasi → observasi black-box
+    /// + state struktural → registry aturan penuh. `Violation` /
+    /// `MivonInternalFailure` yang layak-simpan = bug (kepatuhan LRM, bukan
+    /// sekadar no-crash/konsistensi internal O1-O5).
+    Judge,
 }
 
 impl Target {
@@ -92,6 +97,7 @@ impl Target {
         Target::Micd,
         Target::Synth,
         Target::Astdiff,
+        Target::Judge,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -110,6 +116,7 @@ impl Target {
             Target::Micd => "micd",
             Target::Synth => "synth",
             Target::Astdiff => "astdiff",
+            Target::Judge => "judge",
         }
     }
 
@@ -129,6 +136,7 @@ impl Target {
             "micd" | "fast" => Some(Target::Micd),
             "synth" | "sir" => Some(Target::Synth),
             "astdiff" | "ast-diff" => Some(Target::Astdiff),
+            "judge" | "lrm" => Some(Target::Judge),
             _ => None,
         }
     }
@@ -179,6 +187,9 @@ pub enum Category {
     /// TAPI dihitung & tampil di summary kampanye supaya lonjakan degradasi
     /// cepat ketahuan (dulu semua kategori Ok → senyap).
     Degraded,
+    /// Pelanggaran LRM IEEE 1800 menurut hakim (`judge_single` verdict
+    /// `Violation` layak-simpan): kepatuhan, bukan sekadar no-crash.
+    LrmViolation,
 }
 
 impl Category {
@@ -194,6 +205,7 @@ impl Category {
                 | Category::GuardBypass
                 | Category::Differential
                 | Category::HiddenBug
+                | Category::LrmViolation
         )
     }
 
@@ -213,6 +225,7 @@ impl Category {
             Category::Slow => "slow",
             Category::HiddenBug => "hidden_bug",
             Category::Degraded => "degraded",
+            Category::LrmViolation => "lrm_violation",
         }
     }
 
@@ -232,6 +245,7 @@ impl Category {
             "slow" => Some(Category::Slow),
             "hidden_bug" => Some(Category::HiddenBug),
             "degraded" => Some(Category::Degraded),
+            "lrm_violation" => Some(Category::LrmViolation),
             _ => None,
         }
     }
@@ -250,6 +264,8 @@ pub enum Oracle {
     O4Determinism,
     /// Differential: hasil beda antar engine path.
     O5Differential,
+    /// Kepatuhan LRM: hakim IEEE 1800 atas observasi + state struktural.
+    O6LrmJudge,
 }
 
 impl Oracle {
@@ -260,6 +276,7 @@ impl Oracle {
             Oracle::O3Roundtrip => "O3-roundtrip",
             Oracle::O4Determinism => "O4-determinism",
             Oracle::O5Differential => "O5-differential",
+            Oracle::O6LrmJudge => "O6-lrm-judge",
         }
     }
 }
@@ -929,5 +946,18 @@ mod bugdb_tests {
         let b = mk_case("hang > 5000 ms (grace 2x habis; worker dilanjutkan di background)");
         assert_eq!(a.signature(), b.signature());
         assert!(a.signature().ends_with('|'), "baris-2 kosong = sufiks '|'");
+    }
+
+    /// Plumbing target/kategori judge (tahap 10): token, label, is_bug.
+    #[test]
+    fn judge_target_and_category_plumbing() {
+        assert_eq!(Target::from_token("judge"), Some(Target::Judge));
+        assert_eq!(Target::from_token("lrm"), Some(Target::Judge));
+        assert_eq!(Target::Judge.as_str(), "judge");
+        assert!(Target::ALL.contains(&Target::Judge), "judge ikut kampanye all");
+        assert_eq!(Category::from_label("lrm_violation"), Some(Category::LrmViolation));
+        assert_eq!(Category::LrmViolation.label(), "lrm_violation");
+        assert!(Category::LrmViolation.is_bug(), "violasi LRM = bug");
+        assert_eq!(Oracle::O6LrmJudge.as_str(), "O6-lrm-judge");
     }
 }
