@@ -1036,13 +1036,18 @@ impl MicdDatabase {
 
     /// Tandai seluruh verify entry sebagai ter-elaborasi + simpan verify.mdb
     /// SAJA (ringan — tidak menulis ulang metadata/ast/graph).
+    /// GC di-skip: mark_elaborated hanya menandai flag, tidak perlu evict.
     pub fn mark_elaborated(&mut self) -> io::Result<()> {
         for v in self.verify.values_mut() {
             v.elab_ok = true;
             v.set_check(VerifyCheckKind::Elaborate, CheckResult::pass(v.result_hash));
         }
         self.dirty_verify = true;
-        self.save().map(|_| ())
+        let prev_gc = self.gc_on_save;
+        self.gc_on_save = false;
+        let result = self.save().map(|_| ());
+        self.gc_on_save = prev_gc;
+        result
     }
 
     /// Simpan `IrDesign` hasil elaborasi LENGKAP ke cache pipeline (db.md
