@@ -283,6 +283,10 @@ pub struct MicdDatabase {
     pub dirty_graph: bool,
     /// stats.mdb perlu ditulis ulang.
     pub dirty_stats: bool,
+    /// diagnostics.mdb perlu ditulis ulang (terpisah dari dirty metadata).
+    /// Kritik B: set_diags sebelumnya menandai dirty=true yang memicu tulis
+    /// ulang SELURUH metadata.mdb — padahal hanya diagnostic yang berubah.
+    pub dirty_diag: bool,
     /// Snapshot yang tersedia.
     pub snapshots: Vec<u64>,
     /// Jumlah restore AST pada sesi ini.
@@ -483,6 +487,7 @@ impl MicdDatabase {
             dirty_type: false,
             dirty_graph: false,
             dirty_stats: false,
+            dirty_diag: false,
             snapshots: Vec::new(),
             restored: 0,
             changed: 0,
@@ -1082,7 +1087,7 @@ impl MicdDatabase {
 
     pub fn set_diags(&mut self, diags: FileDiags) {
         self.diags.insert(diags.path.clone(), diags);
-        self.dirty = true;
+        self.dirty_diag = true;
     }
 
     /// File yang terdampak bila `changed` berubah (via dependency graph).
@@ -1119,7 +1124,8 @@ impl MicdDatabase {
             || self.dirty_symbol
             || self.dirty_type
             || self.dirty_graph
-            || self.dirty_stats;
+            || self.dirty_stats
+            || self.dirty_diag;
         if !any_dirty {
             // State tidak berubah, tapi lapisan cache pipeline bisa saja dirty
             // (mis. tool menulis cache saja). Simpan cache, state dilewati.
@@ -1203,8 +1209,9 @@ impl MicdDatabase {
             pending.push((st.join(DB_VERIFY), w.serialize().map_err(io::Error::other)?));
         }
 
-        // diagnostics.mdb
-        if self.dirty {
+        // diagnostics.mdb — hanya tulis bila dirty_diag (Kritik B: sebelumnya
+        // ikut dirty metadata → tulis ulang metadata.mdb tanpa perlu).
+        if self.dirty_diag {
             let mut w = MdbWriter::new();
             for (path, d) in self.diags.iter() {
                 w.put(
@@ -1317,6 +1324,7 @@ impl MicdDatabase {
         self.dirty_type = false;
         self.dirty_graph = false;
         self.dirty_stats = false;
+        self.dirty_diag = false;
         self.changed = 0;
         Ok(stats)
     }
@@ -1420,6 +1428,7 @@ impl MicdDatabase {
         self.dirty_type = false;
         self.dirty_graph = false;
         self.dirty_stats = false;
+        self.dirty_diag = false;
         Ok(())
     }
 
@@ -2623,6 +2632,103 @@ mod tests {
         assert!(db.files.contains_key(&PathBuf::from("ot_0.sv")));
         // Save setelah prune tidak error.
         db.save().unwrap();
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // ── Kritik B: dirty_diag terpisah dari dirty metadata ──
+
+    #[test]
+    fn test_dirty_diag_does_not_rewrite_metadata() {
+        // set_diags SAJA (tanpa record_file) → hanya diagnostics.mdb yang
+        // ditulis, metadata.mdb TIDAK ikut tulis ulang.
+        let root = test_root("dirty_diag");
+        let st = default_state(&root);
+        let path = PathBuf::from("a.sv");
+        {
+            let mut db = MicdDatabase::open(&root);
+            db.record_file(
+                path.clone(),
+                42,
+                vec![],
+                FileStatus::New,
+                0,
+                5,
+                vec![],
+            );
+            db.save().unwrap();
+        }
+        // Simpan checksum metadata.mdb awal.
+        let meta_before = std::fs::read(st.join(DB_METADATA)).unwrap();
+        {
+            let mut db = MicdDatabase::open(&root);
+            // Hanya set diagnostic — tidak menyentuh metadata.
+            db.set_diags(crate::micd::FileDiags {
+                path: path.clone(),
+                entries: vec![crate::micd::DiagEntry::new(
+                    10,
+                    5,
+                    crate::micd::DiagSeverity::Warning,
+                    "unused signal".into(),
+                    "W001".into(),
+                )],
+                content_hash: 42,
+            });
+            // dirty_diag harus true, dirty metadata harus false.
+            assert!(db.dirty_diag, "dirty_diag harus true setelah set_diags");
+            assert!(!db.dirty, "dirty metadata tidak boleh true dari set_diags");
+            db.save().unwrap();
+        }
+        // Metadata.mdb harus TIDAK berubah (byte identik).
+        let meta_after = std::fs::read(st.join(DB_METADATA)).unwrap();
+        assert_eq!(
+            meta_before, meta_after,
+            "metadata.mdb tidak boleh tulis ulang saat hanya diagnostic berubah"
+        );
+        // diagnostics.mdb harus ada dan berisi data baru.
+        assert!(st.join(DB_DIAG).exists(), "diagnostics.mdb harus ditulis");
+        {
+            let db = MicdDatabase::open(&root);
+            let d = db.get_diags(&path).unwrap();
+            assert_eq!(d.entries.len(), 1);
+            assert_eq!(d.entries[0].message, "unused signal");
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn test_dirty_diag_only_save_minimal() {
+        // Hanya set_diags → save() tidak menulis metadata/graph/verify/symbol/
+        // type/stats — hanya diagnostics.mdb.
+        let root = test_root("dirty_diag_minimal");
+        let st = default_state(&root);
+        {
+            let mut db = MicdDatabase::open(&root);
+            db.record_file(
+                PathBuf::from("a.sv"),
+                1,
+                vec![],
+                FileStatus::New,
+                0,
+                3,
+                vec![],
+            );
+            db.save().unwrap();
+        }
+        // Hapus diagnostics.mdb lama (bila ada) supaya bisa cek fresh write.
+        let _ = std::fs::remove_file(st.join(DB_DIAG));
+        {
+            let mut db = MicdDatabase::open(&root);
+            db.set_diags(crate::micd::FileDiags {
+                path: PathBuf::from("a.sv"),
+                entries: vec![],
+                content_hash: 1,
+            });
+            db.save().unwrap();
+        }
+        // diagnostics.mdb harus ditulis.
+        assert!(st.join(DB_DIAG).exists());
+        // Tidak ada journal tersisa.
+        assert!(!st.join(DB_JOURNAL).exists());
         let _ = std::fs::remove_dir_all(&root);
     }
 }

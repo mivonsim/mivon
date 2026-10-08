@@ -1939,7 +1939,7 @@ impl CompileSession {
                 if !unchanged {
                     if new_entries.is_empty() {
                         db.diags.remove(&path);
-                        db.dirty = true;
+                        db.dirty_diag = true;
                     } else {
                         db.set_diags(micd::FileDiags {
                             path: path.clone(),
