@@ -50,6 +50,7 @@ pub mod verify;
 use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
@@ -249,7 +250,10 @@ pub struct MicdDatabase {
     /// Index simbol.
     pub symbols: SymbolIndex,
     /// AST cache: path → (content_hash, bytes bincode).
-    pub ast_cache: HashMap<PathBuf, (u64, Vec<u8>)>,
+    /// `Arc<[u8]>` untuk zero-copy clone — get_ast() mengembalikan Arc clone
+    /// (increment refcount) bukan memcpy penuh. Kritik B: cache hit 500MB
+    /// sebelumnya = memcpy 500MB.
+    pub ast_cache: HashMap<PathBuf, (u64, Arc<[u8]>)>,
     /// Preprocess cache: path → combined source.
     pub preproc_cache: HashMap<PathBuf, PreprocEntry>,
     /// Index tipe/signature: module → signature hash.
@@ -626,14 +630,13 @@ impl MicdDatabase {
                 if let Ok((ver, bytes)) = bincode::deserialize::<(u64, Vec<u8>)>(&b) {
                     if ver == AST_FORMAT_VERSION {
                         db.ast_bytes = db.ast_bytes.saturating_add(bytes.len() as u64);
-                        // Akses awal = mtime entry (heuristik LRU antar run).
                         let at = db
                             .files
                             .get(p)
                             .map(|m| m.compiled_at_ns)
                             .unwrap_or_else(now_ns);
                         db.ast_accessed.insert(p.clone(), at);
-                        db.ast_cache.insert(p.clone(), (meta.content_hash, bytes));
+                        db.ast_cache.insert(p.clone(), (meta.content_hash, Arc::from(bytes)));
                     }
                 }
             }
@@ -697,11 +700,12 @@ impl MicdDatabase {
             .unwrap_or(false)
     }
 
-    /// Ambil AST terserialisasi bila hash cocok.
-    pub fn get_ast(&self, path: &Path, content_hash: u64) -> Option<Vec<u8>> {
+    /// Ambil AST terserialisasi bila hash cocok. Mengembalikan Arc clone
+    /// (zero-copy: increment refcount, bukan memcpy penuh).
+    pub fn get_ast(&self, path: &Path, content_hash: u64) -> Option<Arc<[u8]>> {
         let (h, bytes) = self.ast_cache.get(path)?;
         if *h == content_hash {
-            Some(bytes.clone())
+            Some(Arc::clone(bytes))
         } else {
             None
         }
@@ -733,9 +737,10 @@ impl MicdDatabase {
     }
 
     /// Simpan AST cache. Melacak `ast_bytes` (budget GC, Kritik 6 db.md).
+    /// Payload disimpan sebagai `Arc<[u8]>` untuk zero-copy clone di get_ast().
     pub fn cache_ast(&mut self, path: PathBuf, content_hash: u64, bytes: Vec<u8>) {
         let changed = match self.ast_cache.get(&path) {
-            Some((h, b)) => *h != content_hash || *b != bytes,
+            Some((h, b)) => *h != content_hash || **b != *bytes,
             None => true,
         };
         if changed {
@@ -745,7 +750,8 @@ impl MicdDatabase {
             self.ast_bytes = self.ast_bytes.saturating_add(bytes.len() as u64);
             self.ast_accessed.insert(path.clone(), now_ns());
         }
-        self.ast_cache.insert(path, (content_hash, bytes));
+        self.ast_cache
+            .insert(path, (content_hash, Arc::from(bytes)));
         if changed {
             self.dirty = true;
             self.dirty_ast = true;
@@ -1344,7 +1350,7 @@ impl MicdDatabase {
                 continue;
             }
             let payload =
-                bincode::serialize(&(AST_FORMAT_VERSION, bytes)).map_err(io::Error::other)?;
+                bincode::serialize(&(AST_FORMAT_VERSION, &**bytes)).map_err(io::Error::other)?;
             // Object CAS — tanpa fsync (lihat write_tmp_unflushed): file partial
             // akibat crash ditolak saat load (bincode deserialize + AST version
             // check → miss → dibangun ulang).
@@ -1993,7 +1999,7 @@ mod tests {
             let meta = db.get_file_meta(&path).unwrap();
             assert_eq!(meta.content_hash, hash);
             assert!(db.has_valid_ast(&path, hash));
-            assert_eq!(db.get_ast(&path, hash).unwrap(), vec![1, 2, 3, 4]);
+            assert_eq!(&*db.get_ast(&path, hash).unwrap(), &[1, 2, 3, 4][..]);
             assert!(!db.has_valid_ast(&path, 999));
             assert_eq!(
                 db.get_preprocessed(&path, hash).unwrap().combined,
@@ -2560,7 +2566,7 @@ mod tests {
             let p = PathBuf::from(format!("f{:02}.sv", i));
             db.record_file(p.clone(), i, vec![], FileStatus::New, 0, 10_000, vec![]);
             db.ast_accessed.insert(p.clone(), now_ns());
-            db.ast_cache.insert(p, (i, vec![0u8; 10_000]));
+            db.ast_cache.insert(p, (i, vec![0u8; 10_000].into()));
             db.ast_bytes += 10_000;
         }
         // GcConfig default budget 256MB tidak men-trigger untuk 500KB.

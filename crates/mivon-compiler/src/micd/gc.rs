@@ -320,10 +320,10 @@ mod tests {
         let mut db = MicdDatabase::open(&root);
         // 2 AST @ 100B, budget 150B → 1 ter-evict (paling lama diakses).
         db.ast_accessed.insert("a.sv".into(), 1);
-        db.ast_cache.insert("a.sv".into(), (1, vec![0u8; 100]));
+        db.ast_cache.insert("a.sv".into(), (1, vec![0u8; 100].into()));
         db.ast_bytes += 100;
         db.ast_accessed.insert("b.sv".into(), 2);
-        db.ast_cache.insert("b.sv".into(), (2, vec![1u8; 100]));
+        db.ast_cache.insert("b.sv".into(), (2, vec![1u8; 100].into()));
         db.ast_bytes += 100;
 
         let cfg = GcConfig {
@@ -349,10 +349,10 @@ mod tests {
         let now = now_ns();
         // a.sv diakses 10 detik lalu; b.sv baru saja.
         db.ast_accessed.insert("a.sv".into(), now - 10_000_000_000);
-        db.ast_cache.insert("a.sv".into(), (1, vec![0u8; 10]));
+        db.ast_cache.insert("a.sv".into(), (1, vec![0u8; 10].into()));
         db.ast_bytes += 10;
         db.ast_accessed.insert("b.sv".into(), now);
-        db.ast_cache.insert("b.sv".into(), (2, vec![1u8; 10]));
+        db.ast_cache.insert("b.sv".into(), (2, vec![1u8; 10].into()));
         db.ast_bytes += 10;
 
         let cfg = GcConfig {
@@ -391,10 +391,10 @@ mod tests {
         );
         // AST untuk a.sv (valid) dan ghost.sv (sampah).
         db.ast_accessed.insert("a.sv".into(), 1);
-        db.ast_cache.insert("a.sv".into(), (100, vec![0u8; 5]));
+        db.ast_cache.insert("a.sv".into(), (100, vec![0u8; 5].into()));
         db.ast_bytes += 5;
         db.ast_accessed.insert("ghost.sv".into(), 1);
-        db.ast_cache.insert("ghost.sv".into(), (999, vec![1u8; 5]));
+        db.ast_cache.insert("ghost.sv".into(), (999, vec![1u8; 5].into()));
         db.ast_bytes += 5;
         // Verify untuk hash 100 (hidup) dan 999 (sampah).
         db.set_verify(VerifyResult::fresh(100));
