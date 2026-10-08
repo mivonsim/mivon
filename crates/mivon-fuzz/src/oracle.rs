@@ -2591,7 +2591,7 @@ fn judge_in_thread(source: &str, timeout_ms: u64) -> CaseResult {
         Err(_) => {
             return mk_j(
                 Category::Panic,
-                Oracle::O1NoCrash,
+                Oracle::O6LrmJudge,
                 "panic di judge_single (hakim crash pada input ini)",
             )
         }
@@ -2599,6 +2599,8 @@ fn judge_in_thread(source: &str, timeout_ms: u64) -> CaseResult {
     if report.should_save() {
         // Detail diskriminatif: aturan pertama yang violated + alasannya
         // (signature dedup pakai 2 baris detail → grup per aturan).
+        // Fallback sertakan verdict lengkap (kasus MivonInternalFailure:
+        // kind+detail ikut, tak runtuh jadi satu label).
         let first = report
             .rule_results
             .iter()
@@ -2609,7 +2611,7 @@ fn judge_in_thread(source: &str, timeout_ms: u64) -> CaseResult {
                 )
             })
             .map(|r| format!("{}: {}", (r.rule.0), r.explanation.lines().next().unwrap_or("")))
-            .unwrap_or_else(|| report.verdict.label().to_string());
+            .unwrap_or_else(|| format!("{:?}", report.verdict));
         return mk_j(Category::LrmViolation, Oracle::O6LrmJudge, &first);
     }
     match &report.verdict {
@@ -2618,10 +2620,10 @@ fn judge_in_thread(source: &str, timeout_ms: u64) -> CaseResult {
         }
         crate::verdict::Verdict::MivonInternalFailure { kind, detail } => {
             // Seharusnya should_save() true — pertahanan bila klasifikasi
-            // berubah: tetap bug, jangan senyap.
+            // berubah: tetap bug, jangan senyap. Oracle O6 (ditemukan hakim).
             mk_j(
                 Category::Panic,
-                Oracle::O1NoCrash,
+                Oracle::O6LrmJudge,
                 &format!("internal failure lolos should_save: {kind:?}: {detail}"),
             )
         }
