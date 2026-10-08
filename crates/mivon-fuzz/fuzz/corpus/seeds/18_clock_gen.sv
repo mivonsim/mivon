@@ -1,4 +1,6 @@
 // Seed 18: initial + delays + $display + clock gen pattern
+// NOTE differential-hygiene: `timescale SAMA dgn TB (lihat 21_fork.sv).
+`timescale 1ns/1ps
 module clock_gen (
   output logic clk,
   output logic [3:0] count
