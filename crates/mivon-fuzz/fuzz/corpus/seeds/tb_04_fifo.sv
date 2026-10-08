@@ -30,11 +30,13 @@ module tb_fifo;
     din = 8'h33; push = 1; @(posedge clk); #1; push = 0;
     $display("ASRT_FULL0=<%0d>", full);
     $display("ASRT_DOUT0=<%0d>", dout);
-    // pop 2 — baca SETELAH settle (#1) agar nilai comb (dout=mem[head])
-    // sudah terpropagasi; isolasi bug engine vs race read-saya.
-    pop = 1; @(posedge clk); pop = 0; #1;
+    // pop 2 — pola SAMA dgn push: #1 sesudah edge SEBELUM clear (clear di
+    // slot edge = race: DUT bisa sampling pop=0 bila TB dijadwalkan dulu →
+    // pulse hilang; iverilog vs mivon beda hasil. Baca SETELAH settle (#1
+    // kedua) agar dout comb sudah terpropagasi.
+    pop = 1; @(posedge clk); #1; pop = 0; #1;
     $display("ASRT_DOUT1=<%0d>", dout);
-    pop = 1; @(posedge clk); pop = 0; #1;
+    pop = 1; @(posedge clk); #1; pop = 0; #1;
     $display("ASRT_DOUT2=<%0d>", dout);
     $display("ASRT_EMPTY1=<%0d>", empty);
     $finish;
