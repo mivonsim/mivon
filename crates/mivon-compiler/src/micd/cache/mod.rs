@@ -18,6 +18,7 @@ pub mod category;
 pub mod index;
 pub mod manifest;
 pub mod pipeline;
+pub mod stage;
 pub mod stats;
 pub mod store;
 
@@ -27,6 +28,7 @@ use std::path::{Path, PathBuf};
 
 pub use category::CacheCategory;
 pub use manifest::{CacheManifest, CACHE_SCHEMA_VERSION};
+pub use stage::{stage_schema_version, StageKey, StageStore, StageValue};
 pub use stats::{CacheLayerStats, CategoryStats};
 pub use store::CategoryStore;
 
@@ -133,6 +135,56 @@ impl CacheLayer {
             .get_mut(&cat)
             .map(|s| s.remove(key).is_some())
             .unwrap_or(false)
+    }
+
+    // ── Fase 1: API bertipe via StageStore (satu engine, facade generik) ──
+    //
+    // Jalur baru untuk kode bertipe; jalur mentah put/get di atas tetap ada
+    // (kompatibel). Byte di disk identik — hanya encode/decode di tepi.
+
+    /// Simpan nilai bertipe di kategori `cat` (Fase 1: `StageStore`).
+    pub fn put_typed<K: StageKey, V: StageValue>(
+        &mut self,
+        cat: CacheCategory,
+        key: &K,
+        value: &V,
+    ) -> Option<u64> {
+        let st = self.stores.get_mut(&cat)?;
+        let k = key.encode_key();
+        let bytes = value.encode_value();
+        st.put(&k, &bytes)
+    }
+
+    /// Ambil nilai bertipe dari kategori `cat` (lazy dari disk).
+    pub fn get_typed<K: StageKey, V: StageValue>(
+        &mut self,
+        cat: CacheCategory,
+        key: &K,
+    ) -> Option<V> {
+        let st = self.stores.get_mut(&cat)?;
+        let bytes = st.get(&key.encode_key())?;
+        V::decode_value(&bytes)
+    }
+
+    /// Cek keberadaan kunci bertipe (tanpa membaca payload).
+    pub fn contains_typed<K: StageKey>(&self, cat: CacheCategory, key: &K) -> bool {
+        self.stores
+            .get(&cat)
+            .map(|s| s.contains(&key.encode_key()))
+            .unwrap_or(false)
+    }
+
+    /// Hapus kunci bertipe. `false` bila tak ada.
+    pub fn remove_typed<K: StageKey>(&mut self, cat: CacheCategory, key: &K) -> bool {
+        self.stores
+            .get_mut(&cat)
+            .map(|s| s.remove(&key.encode_key()).is_some())
+            .unwrap_or(false)
+    }
+
+    /// Versi skema stage untuk `cat` (fondasi invalidasi per-stage Fase 3).
+    pub fn stage_schema(&self, cat: CacheCategory) -> u64 {
+        stage_schema_version(cat)
     }
 
     /// Jumlah entry satu kategori.
@@ -409,6 +461,63 @@ mod tests {
         let removed = layer.run_gc();
         assert!(removed >= 1);
         assert!(layer.entry_count(CacheCategory::Parser) <= 1);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // ── Fase 1: 21 kategori lewat facade bertipe, perilaku identik ──
+
+    #[test]
+    fn test_fase1_typed_across_all_21_categories() {
+        // Semua stage lewat SATU facade generik; byte di disk identik dengan
+        // jalur mentah (kompatibel silang put ↔ put_typed).
+        let root = test_root("fase1_all21");
+        let db = root.join("db");
+        std::fs::create_dir_all(&db).unwrap();
+        {
+            let mut layer = CacheLayer::open(&db, "pid1", 0).unwrap();
+            assert_eq!(layer.stats().stores, CacheCategory::ALL.len());
+            for cat in CacheCategory::ALL {
+                let key = format!("key-{}", cat.name());
+                let val = format!("val-{}", cat.name());
+                layer.put_typed(cat, &key, &val).unwrap();
+                assert!(layer.contains_typed(cat, &key));
+                assert_eq!(layer.stage_schema(cat), 1);
+            }
+            layer.save().unwrap();
+        }
+        {
+            let mut layer = CacheLayer::open(&db, "pid1", 0).unwrap();
+            for cat in CacheCategory::ALL {
+                let key = format!("key-{}", cat.name());
+                let expect = format!("val-{}", cat.name());
+                // Baca bertipe…
+                assert_eq!(layer.get_typed::<String, String>(cat, &key).unwrap(), expect);
+                // …dan mentah (kompatibel silang, byte identik).
+                assert_eq!(layer.get(cat, &key).unwrap(), expect.as_bytes());
+            }
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn test_fase1_typed_pathbuf_keys_across_reopen() {
+        let root = test_root("fase1_path");
+        let db = root.join("db");
+        std::fs::create_dir_all(&db).unwrap();
+        {
+            let mut layer = CacheLayer::open(&db, "pid1", 0).unwrap();
+            let k = PathBuf::from("rtl/top.sv");
+            layer.put_typed(CacheCategory::Preprocess, &k, &12345u64).unwrap();
+            layer.save().unwrap();
+        }
+        {
+            let mut layer = CacheLayer::open(&db, "pid1", 0).unwrap();
+            let k = PathBuf::from("rtl/top.sv");
+            assert_eq!(
+                layer.get_typed::<PathBuf, u64>(CacheCategory::Preprocess, &k).unwrap(),
+                12345u64
+            );
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 }
