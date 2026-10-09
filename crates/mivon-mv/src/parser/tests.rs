@@ -914,3 +914,49 @@ module m {
     assert_eq!(wires.len(), 2);
     assert_eq!(wires[1].len(), 2, "wire multi-nama");
 }
+
+#[test]
+fn parse_net_kinds_and_aliases() {
+    // F76: `wand`/`wor`/`tri`/`tri0`/`tri1`/`supply0`/`supply1` + alias
+    // `triand`→wand, `trior`→wor (LRM 1800 §6.5).
+    let src = r#"
+module m {
+    in a : bit
+    wand wa : bit
+    wor wo : bit
+    tri tr : bit
+    tri0 t0 : bit
+    tri1 t1 : bit
+    triand ta : bit
+    trior to : bit
+    supply0 s0 : bit
+    supply1 s1 : bit
+    assign wa = a
+    assign wo = a
+}
+"#;
+    let f = parse(src).expect("parse net kinds");
+    let kinds: Vec<NetKind> = f.modules[0]
+        .items
+        .iter()
+        .filter_map(|i| match i {
+            MItem::Wire { net, .. } => Some(*net),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        kinds,
+        vec![
+            NetKind::Wand,
+            NetKind::Wor,
+            NetKind::Tri,
+            NetKind::Tri0,
+            NetKind::Tri1,
+            NetKind::Wand,
+            NetKind::Wor,
+            NetKind::Supply0,
+            NetKind::Supply1,
+        ],
+        "net kinds + alias: {kinds:?}"
+    );
+}

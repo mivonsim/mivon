@@ -270,7 +270,7 @@ impl Parser {
                     col: c,
                 }))
             }
-            Tok::Sig | Tok::Reg | Tok::Wire => {
+            Tok::Sig | Tok::Reg | Tok::Wire | Tok::Wand | Tok::Wor | Tok::Tri | Tok::Tri0 | Tok::Tri1 | Tok::TriAnd | Tok::TriOr | Tok::Supply0 | Tok::Supply1 => {
                 let (l, c) = self.pos_line();
                 let kind = self.peek().clone();
                 self.advance();
@@ -293,8 +293,33 @@ impl Parser {
                         line: l,
                         col: c,
                     })
-                } else if matches!(kind, Tok::Wire) {
+                } else if matches!(
+                    kind,
+                    Tok::Wire
+                        | Tok::Wand
+                        | Tok::Wor
+                        | Tok::Tri
+                        | Tok::Tri0
+                        | Tok::Tri1
+                        | Tok::TriAnd
+                        | Tok::TriOr
+                        | Tok::Supply0
+                        | Tok::Supply1
+                ) {
+                    // F76: triand/trior = alias wand/wor (LRM 1800 §6.5).
+                    let net = match kind {
+                        Tok::Wire => NetKind::Wire,
+                        Tok::Wand | Tok::TriAnd => NetKind::Wand,
+                        Tok::Wor | Tok::TriOr => NetKind::Wor,
+                        Tok::Tri => NetKind::Tri,
+                        Tok::Tri0 => NetKind::Tri0,
+                        Tok::Tri1 => NetKind::Tri1,
+                        Tok::Supply0 => NetKind::Supply0,
+                        Tok::Supply1 => NetKind::Supply1,
+                        _ => NetKind::Wire,
+                    };
                     Ok(MItem::Wire {
+                        net,
                         names,
                         ty,
                         init,

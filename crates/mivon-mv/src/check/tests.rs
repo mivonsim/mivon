@@ -1093,3 +1093,10 @@ fn f75_assign_width_mismatch_is_e2002() {
     .unwrap_err();
     assert!(e.msg.contains("E2002"), "msg: {}", e.msg);
 }
+
+#[test]
+fn f76_all_net_kinds_ok() {
+    // F76: semua varian net lolos check (tipe bit/logic).
+    let src = "module m { in a : bit\n wand wa : bit\n wor wo : logic[7:0]\n tri tr : bit\n tri0 t0 : bit\n tri1 t1 : bit\n supply0 s0 : bit\n supply1 s1 : bit\n assign wa = a\n assign tr = a }";
+    check_src(src).expect("semua net kinds harus lolos");
+}

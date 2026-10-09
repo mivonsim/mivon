@@ -746,7 +746,7 @@ fn print_m_item(b: &mut StrB, indent: usize, item: &MItem) {
             );
         }
         MItem::Wire {
-            names, ty, init, ..
+            net, names, ty, init, ..
         } => {
             let i = init
                 .as_ref()
@@ -754,7 +754,7 @@ fn print_m_item(b: &mut StrB, indent: usize, item: &MItem) {
                 .unwrap_or_default();
             b.line(
                 indent,
-                &format!("wire {} : {}{i}", names.join(", "), print_type(ty)),
+                &format!("{} {} : {}{i}", net.as_str(), names.join(", "), print_type(ty)),
             );
         }
         MItem::Assign { lhs, rhs, .. } => {
@@ -1291,5 +1291,29 @@ module m {
         let t1 = print_file(&f);
         let t2 = print_file(&parse(&t1).unwrap());
         assert_eq!(t1, t2, "stabil: {}", t1);
+    }
+
+    #[test]
+    fn roundtrip_net_kinds() {
+        // F76: print semua varian net re-parse + stabil (alias ternormalisasi
+        // wand/wor — teks kedua stabil).
+        let src = r#"
+module m {
+    wand wa : bit
+    wor wo : logic[7:0]
+    tri tr : bit
+    tri0 t0 : bit
+    tri1 t1 : bit
+    supply0 s0 : bit
+    supply1 s1 : bit
+    assign wa = 1
+}
+"#;
+        let f = parse(src).unwrap();
+        let t1 = print_file(&f);
+        let t2 = print_file(&parse(&t1).unwrap());
+        assert_eq!(t1, t2, "stabil: {}", t1);
+        assert!(t1.contains("wand wa : bit"), "wand: {t1}");
+        assert!(t1.contains("wor wo : logic[7:0]"), "wor: {t1}");
     }
 }

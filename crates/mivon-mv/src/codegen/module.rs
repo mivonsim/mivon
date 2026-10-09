@@ -188,7 +188,7 @@ pub(crate) fn emit_module_kw(out: &mut String, m: &Module, kw: &str, iface_names
                 }
             }
             MItem::Wire {
-                names, ty, init, ..
+                net, names, ty, init, ..
             } => {
                 let fresh: Vec<String> = names
                     .iter()
@@ -200,7 +200,7 @@ pub(crate) fn emit_module_kw(out: &mut String, m: &Module, kw: &str, iface_names
                     line(
                         out,
                         1,
-                        &format!("{}{};", super::emit_wire_decl_multi(ty, &fresh), init_s),
+                        &format!("{}{};", super::emit_wire_decl_multi(net.as_str(), ty, &fresh), init_s),
                     );
                 }
             }
@@ -383,13 +383,13 @@ pub(crate) fn emit_module_item_at(
             );
         }
         MItem::Wire {
-            names, ty, init, ..
+            net, names, ty, init, ..
         } => {
             let init_s = super::emit_init(init);
             line(
                 out,
                 indent,
-                &format!("{}{};", super::emit_wire_decl_multi(ty, names), init_s),
+                &format!("{}{};", super::emit_wire_decl_multi(net.as_str(), ty, names), init_s),
             );
         }
         MItem::Assign { lhs, rhs, .. } => {

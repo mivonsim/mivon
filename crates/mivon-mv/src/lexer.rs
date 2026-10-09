@@ -42,6 +42,17 @@ pub enum Tok {
     Reg,
     Wire,
     Assign,
+    /// F76: varian net (LRM 1800 §6.5) — `wand`/`wor`/`tri`/`tri0`/`tri1`/
+    /// `triand`/`trior`/`supply0`/`supply1` (triand/trior = alias wand/wor).
+    Wand,
+    Wor,
+    Tri,
+    Tri0,
+    Tri1,
+    TriAnd,
+    TriOr,
+    Supply0,
+    Supply1,
     Const,
     Use,
     Seq,
@@ -205,6 +216,15 @@ fn keyword(s: &str) -> Option<Tok> {
         "reg" => Tok::Reg,
         "wire" => Tok::Wire,
         "assign" => Tok::Assign,
+        "wand" => Tok::Wand,
+        "wor" => Tok::Wor,
+        "tri" => Tok::Tri,
+        "tri0" => Tok::Tri0,
+        "tri1" => Tok::Tri1,
+        "triand" => Tok::TriAnd,
+        "trior" => Tok::TriOr,
+        "supply0" => Tok::Supply0,
+        "supply1" => Tok::Supply1,
         "const" => Tok::Const,
         "use" => Tok::Use,
         "seq" => Tok::Seq,
@@ -989,6 +1009,21 @@ mod tests {
         assert!(t.contains(&Tok::Assign), "{t:?}");
         assert!(!t.contains(&Tok::Ident("wire".into())), "{t:?}");
         assert!(!t.contains(&Tok::Ident("assign".into())), "{t:?}");
+    }
+
+    #[test]
+    fn lex_net_kind_keywords() {
+        // F76: varian net (LRM §6.5) — reserved, bukan Ident.
+        let t = toks("wand a wor b tri c tri0 d tri1 e triand f trior g supply0 h supply1 i");
+        assert!(t.contains(&Tok::Wand), "{t:?}");
+        assert!(t.contains(&Tok::Wor), "{t:?}");
+        assert!(t.contains(&Tok::Tri), "{t:?}");
+        assert!(t.contains(&Tok::Tri0), "{t:?}");
+        assert!(t.contains(&Tok::Tri1), "{t:?}");
+        assert!(t.contains(&Tok::TriAnd), "{t:?}");
+        assert!(t.contains(&Tok::TriOr), "{t:?}");
+        assert!(t.contains(&Tok::Supply0), "{t:?}");
+        assert!(t.contains(&Tok::Supply1), "{t:?}");
     }
 }
 

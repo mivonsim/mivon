@@ -1199,6 +1199,38 @@ module tb_wa {
 }
 
 #[test]
+fn test_mv_net_kind_resolution() {
+    // F76: resolusi multi-driver per varian net (LRM 1800 §6.5):
+    // wand(1,0)=0, wor(1,0)=1. Engine sudah dukung (matrix ✅), .mv kini mengeksposnya.
+    let src = r#"
+module tb_nets {
+    sig a : bit
+    sig o_and : bit
+    sig o_or : bit
+    wand w_and : bit
+    wor w_or : bit
+    assign w_and = a
+    assign w_and = 0
+    assign w_or = a
+    assign w_or = 0
+    assign o_and = w_and
+    assign o_or = w_or
+    initial {
+        a = 1
+        #1
+    }
+}
+"#;
+    let r = mivon_mv::transpile(src, "nets").expect("transpile .mv OK");
+    assert!(r.sv.contains("wand w_and;"), "emit wand: {}", r.sv);
+    assert!(r.sv.contains("wor w_or;"), "emit wor: {}", r.sv);
+    let sigs = simulate_signals(&r.sv, 20).unwrap();
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    assert_eq!(get("o_and"), 0, "wand(1,0)=0 AND-resolution");
+    assert_eq!(get("o_or"), 1, "wor(1,0)=1 OR-resolution");
+}
+
+#[test]
 fn test_mv_compound_more_ops() {
     // F36 coverage: operator compound lain (`%=` `>>=` `|=` `^=`) + decrement
     // (`--`) — memastikan semua token compound ter-lex & ter-emit benar.

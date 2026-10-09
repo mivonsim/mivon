@@ -362,6 +362,36 @@ pub enum ForkJoin {
     JoinNone,
 }
 
+/// F76: varian net Verilog (LRM 1800 §6.5) — resolution multi-driver.
+/// `triand`/`trior` = alias `wand`/`wor`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NetKind {
+    Wire,
+    Wand,
+    Wor,
+    Tri,
+    Tri0,
+    Tri1,
+    Supply0,
+    Supply1,
+}
+
+impl NetKind {
+    /// Nama SV untuk emisi (`wand`, `wor`, ...).
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            NetKind::Wire => "wire",
+            NetKind::Wand => "wand",
+            NetKind::Wor => "wor",
+            NetKind::Tri => "tri",
+            NetKind::Tri0 => "tri0",
+            NetKind::Tri1 => "tri1",
+            NetKind::Supply0 => "supply0",
+            NetKind::Supply1 => "supply1",
+        }
+    }
+}
+
 /// Field struct/union: `valid : bit, addr : Addr`. Posisi (line, col) untuk
 /// E2007 duplikat field (F11).
 #[derive(Debug, Clone, PartialEq)]
@@ -559,7 +589,9 @@ pub enum MItem {
     /// F75: `wire w : logic[7:0]` — net Verilog (LRM 1800 §6.5/§10.2).
     /// Di-emit `wire ...;`, bukan `logic`. Init opsional di-emit inline
     /// (`wire [7:0] w = expr;` — net decl assignment, sah §10.2).
+    /// F76: `net` = varian resolution (`wand`/`wor`/`tri`/...) — LRM §6.5.
     Wire {
+        net: NetKind,
         names: Vec<String>,
         ty: MvType,
         init: Option<Expr>,

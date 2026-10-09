@@ -380,12 +380,13 @@ pub(crate) fn emit_signal_decl_multi(ty: &MvType, names: &[String]) -> String {
     format!("{ty_s} {}", name_parts.join(", "))
 }
 
-/// Deklarasi net `wire` multi-nama yang BENAR utk SV (LRM 1800 §6.5/§10.2):
-/// `wire` adalah tipe net sendiri — TIDAK digabung dengan tipe variabel
+/// Deklarasi net multi-nama yang BENAR utk SV (LRM 1800 §6.5/§10.2):
+/// net adalah tipe sendiri — TIDAK digabung dengan tipe variabel
 /// (`wire bit w` INVALID, ditolak parser SV). Bentuk sah:
-/// `wire w`, `wire [7:0] w`, `wire signed [7:0] w`, `wire Addr w` (typedef),
+/// `wire w`, `wand [7:0] w`, `tri signed [7:0] w`, `wire Addr w` (typedef),
 /// unpacked setelah nama (`wire [7:0] m [0:3]`).
-pub(crate) fn emit_wire_decl_multi(ty: &MvType, names: &[String]) -> String {
+/// F76: `net` = prefix resolution (`wire`/`wand`/`wor`/`tri`/...)
+pub(crate) fn emit_wire_decl_multi(net: &str, ty: &MvType, names: &[String]) -> String {
     use crate::ast::{Expr, MvType};
     use expr::emit_expr;
     let mut dims: Vec<&Expr> = Vec::new();
@@ -423,7 +424,7 @@ pub(crate) fn emit_wire_decl_multi(ty: &MvType, names: &[String]) -> String {
             s
         })
         .collect();
-    format!("wire{packed} {}", name_parts.join(", "))
+    format!("{net}{packed} {}", name_parts.join(", "))
 }
 /// Deklarasi signal array unpacked yang BENAR utk SV:
 /// `logic[8][4]` → `logic [7:0] name [0:3]` (dims `[0:N-1]` SETELAH nama,

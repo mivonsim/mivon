@@ -1241,6 +1241,41 @@ module m {
     assert!(out.sv.contains("assign y = w;"), "assign y: {}", out.sv);
 }
 
+#[test]
+fn f76_net_kind_codegen() {
+    // F76: tiap varian net di-emit prefix-nya (LRM 1800 §6.5).
+    let src = r#"
+module m {
+    wand wa : bit
+    wor wo : logic[7:0]
+    tri tr : bit
+    tri0 t0 : bit
+    tri1 t1 : bit
+    supply0 s0 : bit
+    supply1 s1 : bit
+}
+"#;
+    let out = generate(&parse(src).unwrap(), "m");
+    for want in [
+        "wand wa;",
+        "wor [7:0] wo;",
+        "tri tr;",
+        "tri0 t0;",
+        "tri1 t1;",
+        "supply0 s0;",
+        "supply1 s1;",
+    ] {
+        assert!(out.sv.contains(want), "{want} hilang: {}", out.sv);
+    }
+    // alias triand/trior di-emit bentuk kanonik wand/wor
+    let out2 = generate(
+        &parse("module n { triand a : bit\n trior b : bit }").unwrap(),
+        "n",
+    );
+    assert!(out2.sv.contains("wand a;"), "triand→wand: {}", out2.sv);
+    assert!(out2.sv.contains("wor b;"), "trior→wor: {}", out2.sv);
+}
+
 // ── Type-check (E2010/E2011/E2012/E2013) dipindah ke `check/tests.rs` ──
 
 // Type-check tests (E2002-lewat-const, enum width, E2010/E2011/E2012/E2013,
