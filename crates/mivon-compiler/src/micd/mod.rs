@@ -84,13 +84,23 @@ pub use verify::{now_ns, CheckResult, VerifyCheckKind, VerifyResult};
 /// (stale IR bug — ROUND 36). Kedua sisi enforcement hidup: schema check
 /// (bawah) dan `CacheManifest::valid()` membandingkan `compiler_version`.
 ///
-/// **Fingerprint otomatis** (`binary_fingerprint`): sejak ditemukan stale
-/// cache lupa bump `-p<N>` (elaborator `inside` context-width), revisi
-/// pipeline efektif kini juga menyertakan fingerprint binary yang berjalan
-/// (size + mtime `current_exe`) via [`pipeline_revision`] — rebuild cargo
-/// apa pun otomatis meng-invalidasi database lama tanpa bump manual. Bump
-/// `-p<N>` tetap berguna untuk memaksa invalidasi eksplisit saat semantik
-/// berubah tanpa rebuild (jarang).
+/// FASE 3 (peringatan S1): karena fingerprint binary tak lagi auto-wipe,
+/// disiplin bump menjadi SATU-SATUNYA pelindung saat semantik berubah tanpa
+/// perubahan format stage. Lupa bump + rebuild = stale-cache senyap. Bila
+/// yang berubah hanya format satu stage, naikkan
+/// [`cache::stage_schema_version`] stage itu (evict selektif = Fase 3b).
+///
+/// **Fingerprint otomatis** (`binary_fingerprint`): SEBELUM Fase 3, revisi
+/// pipeline efektif menyertakan fingerprint binary (size + mtime
+/// `current_exe`) — setiap rebuild cargo me-wipe seluruh database, tepat saat
+/// developer paling butuh incremental (Kritik C).
+///
+/// FASE 3: fingerprint DITURUNKAN menjadi statistik/peringatan, bukan gerbang
+/// invalidasi. Gerbang utama kini: `COMPILER_VERSION` (bump `-p<N>` manual
+/// saat semantik berubah) + `SCHEMA_VERSION` + versi skema PER STAGE
+/// (`stage_schemas` di manifest). Rebuild binary tanpa perubahan format =
+/// cache tetap hidup. Fingerprint tercatat di `registry.json` (statistik) dan
+/// hanya memicu peringatan debug bila berubah.
 pub const COMPILER_VERSION: &str = concat!("Mivon ", env!("CARGO_PKG_VERSION"), "-p2");
 
 /// Fingerprint identitas binary yang sedang berjalan: xxh64 atas ukuran +
@@ -124,18 +134,50 @@ pub fn binary_fingerprint() -> u64 {
     })
 }
 
-/// Revisi pipeline **efektif** untuk validasi cache: `COMPILER_VERSION` +
-/// fingerprint binary ([`binary_fingerprint`]). Dipakai sebagai pembanding
-/// `compiler_version` di schema check dan `CacheManifest::valid()` — satu
-/// sumber kebenaran, bukan `COMPILER_VERSION` telanjang.
+/// Revisi pipeline **efektif** LEGACY (sebelum Fase 3): `COMPILER_VERSION` +
+/// fingerprint binary. Dipertahankan untuk kompatibilitas baca manifest lama
+/// (lihat [`compiler_base_matches`]) + statistik/debug. BUKAN lagi gerbang
+/// invalidasi — jangan dipakai untuk pid/check baru.
 pub fn pipeline_revision() -> String {
     format!("{}-{:016x}", COMPILER_VERSION, binary_fingerprint())
+}
+
+/// Apakah `compiler_version` tersimpan kompatibel dengan binary ini (Fase 3).
+///
+/// Menerima format baru (`COMPILER_VERSION` telanjang) maupun legacy persis
+/// (`COMPILER_VERSION` + `-` + 16 hex fingerprint dari sebelum Fase 3).
+/// Beda base (bump `-p<N>`/versi) atau suffix bukan-hex → tolak.
+pub fn compiler_base_matches(stored: &str) -> bool {
+    if stored == COMPILER_VERSION {
+        return true;
+    }
+    match stored.strip_prefix(&format!("{}-", COMPILER_VERSION)) {
+        Some(fp) => fp.len() == 16 && fp.chars().all(|c| c.is_ascii_hexdigit()),
+        None => false,
+    }
+}
+
+/// Versi skema per stage saat ini (Fase 3: fondasi invalidasi per-stage).
+/// Disimpan di manifest tiap save; dibandingkan tiap open.
+pub fn current_stage_schemas() -> Vec<(String, u64)> {
+    cache::CacheCategory::ALL
+        .iter()
+        .map(|c| {
+            (
+                c.name().to_string(),
+                cache::stage_schema_version(*c),
+            )
+        })
+        .collect()
 }
 
 /// Versi skema database (Kritik 3 db.md). Naikkan bila layout/format
 /// persistensi berubah (field struct, key store, semantik). Database lama
 /// dengan schema version berbeda dianggap tidak kompatibel → dibangun ulang.
-pub const SCHEMA_VERSION: u64 = 4;
+///
+/// Fase 3: 4 → 5 (manifest + `stage_schemas` per-stage; pid + compiler check
+/// lepas dari fingerprint binary).
+pub const SCHEMA_VERSION: u64 = 5;
 
 /// Nama file database.
 pub const DB_METADATA: &str = "metadata.mdb";
@@ -200,6 +242,12 @@ pub struct ProjectInfo {
     pub created_ns: u64,
     /// Waktu terakhir dibangun (unix ns).
     pub last_built_ns: u64,
+    /// Fase 3: revisi compiler saat build terakhir (statistik, bukan gerbang).
+    #[serde(default)]
+    pub compiler_version: String,
+    /// Fase 3: fingerprint binary saat build terakhir (statistik/peringatan).
+    #[serde(default)]
+    pub binary_fingerprint: u64,
 }
 
 /// Statistik MICD setelah `save()`.
@@ -414,7 +462,10 @@ impl MicdDatabase {
         use crate::cache::checksum::{checksum_fold, compute_checksum};
         let mut h: Vec<u64> = Vec::with_capacity(sources.len() + incdirs.len() + defines.len() + 4);
         h.push(compute_checksum(root.to_string_lossy().as_bytes()));
-        h.push(compute_checksum(pipeline_revision().as_bytes()));
+        // Fase 3 (Kritik C): pid stabil lintas rebuild — basis COMPILER_VERSION
+        // saja, TANPA fingerprint binary (mtime exe). Bump -p<N> manual saat
+        // semantik berubah tetap mengganti pid.
+        h.push(compute_checksum(COMPILER_VERSION.as_bytes()));
         h.push(compute_checksum(b"systemverilog-2012"));
         for s in sources {
             h.push(path_hash(s));
@@ -545,7 +596,7 @@ impl MicdDatabase {
             pid: pid.to_string(),
             registry: ProjectInfo::default(),
             flags_hash: 0,
-            compiler_version: pipeline_revision(),
+            compiler_version: COMPILER_VERSION.to_string(),
             created_ns: now_ns(),
             schema_version: 0,
             files: HashMap::new(),
@@ -604,14 +655,14 @@ impl MicdDatabase {
                 .get(KEY_SINGLETON)
                 .and_then(|b| bincode::deserialize::<MetadataManifest>(&b).ok())
             {
-                // compiler_version juga dibandingkan: revisi pipeline efektif
-                // berubah (bump manual ATAU fingerprint binary baru — rebuild
-                // cargo apa pun) → database lama dianggap tidak kompatibel →
-                // dibangun ulang. Sebelumnya hanya schema_version dicek;
-                // COMPILER_VERSION statis tak pernah berubah sehingga
-                // elaborasi hasil binary LAMA bisa di-restore binary BARU.
+                // Fase 3 (Kritik C): gerbang = base compiler + schema + stage.
+                // Fingerprint binary TIDAK lagi meng-invalidate (hanya
+                // statistik di registry). Manifest legacy (base + suffix hex)
+                // tetap diterima via compiler_base_matches. Stage wajib sama
+                // persis (strict — tanpa cabang kosong).
                 if manifest.schema_version == SCHEMA_VERSION
-                    && manifest.compiler_version == pipeline_revision()
+                    && compiler_base_matches(&manifest.compiler_version)
+                    && manifest.stage_schemas == current_stage_schemas()
                 {
                     schema_ok = true;
                     db.schema_version = manifest.schema_version;
@@ -1304,9 +1355,10 @@ impl MicdDatabase {
             let manifest = MetadataManifest {
                 paths: self.files.keys().cloned().collect(),
                 flags_hash: self.flags_hash,
-                compiler_version: self.compiler_version.clone(),
+                compiler_version: COMPILER_VERSION.to_string(),
                 created_ns: self.created_ns,
                 schema_version: SCHEMA_VERSION,
+                stage_schemas: current_stage_schemas(),
             };
             let mut w = MdbWriter::new();
             w.put(
@@ -1659,9 +1711,12 @@ fn write_registry(db_root: &Path, map: &HashMap<String, ProjectInfo>) {
 }
 
 /// Catat pid di registri (dipanggil saat save — last_built di-update tiap run).
+/// Fase 3: fingerprint + revisi compiler dicatat sebagai statistik (bukan
+/// gerbang invalidasi). Beda fingerprint vs build lalu → peringatan debug.
 fn register_project(db: &MicdDatabase) {
     let mut map = read_registry(&db.root);
     let now = now_ns();
+    let fp = binary_fingerprint();
     let entry = map.entry(db.pid.clone()).or_default();
     if entry.root.is_empty() {
         entry.root = db.registry.root.clone();
@@ -1671,6 +1726,17 @@ fn register_project(db: &MicdDatabase) {
     if entry.created_ns == 0 {
         entry.created_ns = now;
     }
+    if entry.binary_fingerprint != 0
+        && entry.binary_fingerprint != fp
+        && std::env::var("MIVON_DEBUG_MICD").is_ok()
+    {
+        eprintln!(
+            "[MICD] binary berubah sejak build lalu (fp {:016x} → {:016x}) — cache tetap dipakai (Fase 3: fingerprint hanya statistik)",
+            entry.binary_fingerprint, fp
+        );
+    }
+    entry.binary_fingerprint = fp;
+    entry.compiler_version = COMPILER_VERSION.to_string();
     entry.last_built_ns = now;
     write_registry(&db.root, &map);
 }
@@ -2047,6 +2113,7 @@ mod tests {
                 compiler_version: pipeline_revision(),
                 created_ns: 0,
                 schema_version: SCHEMA_VERSION,
+                stage_schemas: current_stage_schemas(),
             };
             w.put(
                 KEY_SINGLETON,
@@ -2518,6 +2585,118 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    // ── Fase 3 (Kritik C): invalidasi per-stage, fingerprint = statistik ──
+
+    #[test]
+    fn test_fase3_pid_stabil_lintas_rebuild() {
+        // pid hanya dari base compiler — tidak memuat fingerprint binary.
+        let pid1 = MicdDatabase::project_id(Path::new("/p"), &[PathBuf::from("a.sv")], &[], &[]);
+        let pid2 = MicdDatabase::project_id(Path::new("/p"), &[PathBuf::from("a.sv")], &[], &[]);
+        assert_eq!(pid1, pid2, "deterministik");
+        assert!(
+            !pid1.contains(&format!("{:016x}", binary_fingerprint())),
+            "pid tidak boleh memuat fingerprint (dulu via pipeline_revision)"
+        );
+    }
+
+    #[test]
+    fn test_fase3_compiler_base_matches() {
+        assert!(compiler_base_matches(COMPILER_VERSION));
+        assert!(compiler_base_matches(&pipeline_revision()), "legacy suffix diterima");
+        assert!(!compiler_base_matches("Mivon 0.0.0-p99"));
+        assert!(!compiler_base_matches("acak-tanpa-arti-kecuali-base"));
+        assert!(!compiler_base_matches(""));
+        // Suffix bukan-hex / panjang salah ditolak (R1).
+        assert!(!compiler_base_matches(&format!("{}-zzz", COMPILER_VERSION)));
+        assert!(!compiler_base_matches(&format!("{}-", COMPILER_VERSION)));
+        assert!(!compiler_base_matches(&format!("{}-123", COMPILER_VERSION)));
+    }
+
+    #[test]
+    fn test_fase3_manifest_legacy_dan_bump() {
+        // Manifest legacy (base+suffix, tanpa stage) tetap di-reuse;
+        // bump -p (base beda) → wipe; stage beda → wipe.
+        let root = test_root("fase3_compat");
+        let st = state_dir(&root, "default");
+        let path = PathBuf::from("a.sv");
+        std::fs::create_dir_all(&st).unwrap();
+        let write_manifest = |compiler: &str, stages: Vec<(String, u64)>| {
+            let mut w = MdbWriter::new();
+            w.put(
+                KEY_SINGLETON,
+                format::KIND_MANIFEST,
+                bincode::serialize(&MetadataManifest {
+                    paths: vec![path.clone()],
+                    flags_hash: 0,
+                    compiler_version: compiler.to_string(),
+                    created_ns: 0,
+                    schema_version: SCHEMA_VERSION,
+                    stage_schemas: stages,
+                })
+                .unwrap(),
+            );
+            w.put(
+                path_hash(&path),
+                format::KIND_META,
+                bincode::serialize(&FileMeta {
+                    path: path.clone(),
+                    content_hash: 7,
+                    mtime_ns: 0,
+                    size: 3,
+                    status: FileStatus::Unchanged,
+                    flags_hash: 0,
+                    deps: vec![],
+                    include_hashes: vec![],
+                    compiled_at_ns: 0,
+                    ast_format_version: AST_FORMAT_VERSION,
+                })
+                .unwrap(),
+            );
+            w.write_to(&st.join(DB_METADATA)).unwrap();
+        };
+        // Legacy: suffix fingerprint + stage current → reuse.
+        write_manifest(&pipeline_revision(), current_stage_schemas());
+        let db = MicdDatabase::open(&root);
+        assert_eq!(db.files.len(), 1, "manifest legacy harus di-reuse (bukan wipe)");
+        // Bump -p → wipe.
+        write_manifest("Mivon 0.0.0-p99", vec![]);
+        let db2 = MicdDatabase::open(&root);
+        assert!(db2.files.is_empty(), "base beda harus wipe");
+        // Stage beda → wipe.
+        let mut stages = current_stage_schemas();
+        stages[0].1 += 1000;
+        write_manifest(COMPILER_VERSION, stages);
+        let db3 = MicdDatabase::open(&root);
+        assert!(db3.files.is_empty(), "stage beda harus wipe");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn test_fase3_stage_tersimpan_dan_registry_statistik() {
+        let root = test_root("fase3_stats");
+        {
+            let mut db = MicdDatabase::open(&root);
+            db.record_file(PathBuf::from("a.sv"), 3, vec![], FileStatus::New, 0, 5, vec![]);
+            db.save().unwrap();
+        }
+        // Manifest menyimpan stage_schemas current.
+        let r = MdbReader::open(&state_dir(&root, "default").join(DB_METADATA)).unwrap();
+        let m: MetadataManifest =
+            bincode::deserialize(&r.get(KEY_SINGLETON).unwrap()).unwrap();
+        assert_eq!(m.compiler_version, COMPILER_VERSION, "tanpa suffix fingerprint");
+        assert_eq!(m.stage_schemas, current_stage_schemas());
+        assert_eq!(m.schema_version, SCHEMA_VERSION);
+        // Registry: fingerprint + revisi tercatat sebagai statistik.
+        let map = read_registry(&root);
+        let info = map.get("default").expect("pid tercatat");
+        assert_eq!(info.compiler_version, COMPILER_VERSION);
+        assert_eq!(info.binary_fingerprint, binary_fingerprint());
+        // Reopen: reuse penuh (tidak wipe).
+        let db2 = MicdDatabase::open(&root);
+        assert_eq!(db2.files.len(), 1);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn test_fase0_singleton_terkompresi_fallback_get() {        // Review Fase 0: satu-satunya store terkompresi adalah graph.mdb
         // (LZ4) — get_slice mengembalikan None, helper harus fallback ke get.
@@ -2611,6 +2790,7 @@ mod tests {
                 compiler_version: COMPILER_VERSION.into(),
                 created_ns: 0,
                 schema_version: SCHEMA_VERSION - 1,
+                stage_schemas: Vec::new(),
             };
             w.put(
                 KEY_SINGLETON,

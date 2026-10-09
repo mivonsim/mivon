@@ -7,7 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::super::pipeline_revision;
+use super::super::{compiler_base_matches, COMPILER_VERSION};
 use super::super::verify::now_ns;
 
 /// Versi skema lapisan `cache/`. Naikkan bila struktur persistensi kategori
@@ -33,7 +33,7 @@ impl CacheManifest {
     pub fn fresh(config_hash: u64) -> Self {
         CacheManifest {
             schema_version: CACHE_SCHEMA_VERSION,
-            compiler_version: pipeline_revision(),
+            compiler_version: COMPILER_VERSION.to_string(),
             config_hash,
             created_ns: now_ns(),
             updated_ns: now_ns(),
@@ -42,12 +42,12 @@ impl CacheManifest {
         }
     }
 
-    /// Apakah skema kompatibel dengan versi terkini. compiler_version juga
-    /// dibandingkan: revisi pipeline efektif berubah (bump manual ATAU
-    /// fingerprint binary baru — rebuild cargo apa pun) → seluruh kategori
-    /// cache dibangun ulang, mencegah restore hasil lama dari binary baru.
+    /// Apakah skema kompatibel dengan versi terkini. Fase 3 (Kritik C):
+    /// bandingkan BASE compiler (bump `-p<N>` manual) — fingerprint binary
+    /// tidak lagi me-rebuild; manifest legacy (base+suffix) tetap diterima.
     pub fn valid(&self) -> bool {
-        self.schema_version == CACHE_SCHEMA_VERSION && self.compiler_version == pipeline_revision()
+        self.schema_version == CACHE_SCHEMA_VERSION
+            && compiler_base_matches(&self.compiler_version)
     }
 }
 

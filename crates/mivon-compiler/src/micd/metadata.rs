@@ -83,6 +83,10 @@ pub struct MetadataManifest {
     /// Versi skema database (Kritik 3 db.md). Berubah → seluruh database
     /// lama dianggap tidak kompatibel dan dibangun ulang dari kosong.
     pub schema_version: u64,
+    /// Fase 3: versi skema per stage (nama → versi). Dibandingkan tiap open;
+    /// beda → rebuild (evict selektif per-store = lanjutan Fase 3b).
+    #[serde(default)]
+    pub stage_schemas: Vec<(String, u64)>,
 }
 
 // ─── Tests ───
