@@ -290,6 +290,21 @@ impl MicdDatabase {
             .collect();
         self.graph = snap.graph;
         self.verify = snap.verify.into_iter().collect();
+        // Fase 0: rollback mengganti verify map — indeks turunan harus
+        // dibangun ulang, kalau tidak reuse_verify() gagal walau entry ada.
+        self.verify_ast_index.clear();
+        self.verify_semantic_index.clear();
+        self.verify_accessed.clear();
+        for v in self.verify.values() {
+            if v.ast_hash != 0 {
+                self.verify_ast_index.insert(v.ast_hash, v.content_hash);
+            }
+            if v.semantic_hash != 0 {
+                self.verify_semantic_index
+                    .insert(v.semantic_hash, v.content_hash);
+            }
+            self.verify_accessed.insert(v.content_hash, v.verified_at_ns);
+        }
         self.symbols = snap.symbols;
         self.diags = snap
             .diags
@@ -297,7 +312,15 @@ impl MicdDatabase {
             .map(|d| (d.path.clone(), d))
             .collect();
         self.flags_hash = snap.flags_hash;
+        // Fase 0 (Kritik B): rollback mengubah metadata + graph + verify +
+        // symbol + diag — tandai SEMUA store terkait, bukan hanya dirty
+        // metadata. Sebelumnya hanya dirty=true sehingga graph/verify/diag
+        // hasil rollback hilang pada save() berikutnya.
         self.dirty = true;
+        self.dirty_graph = true;
+        self.dirty_verify = true;
+        self.dirty_symbol = true;
+        self.dirty_diag = true;
         Ok(())
     }
 }

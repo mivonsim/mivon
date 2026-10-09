@@ -1491,8 +1491,10 @@ impl CompileSession {
                     let ast = db_ref
                         .get_ast(path, hash)
                         .and_then(|bytes| micd::deserialize_design(&bytes))?;
-                    let preproc = db_ref.get_preprocessed(path, hash)?;
-                    Some((path.clone(), ast, preproc.combined))
+                    // Fase 0 (Kritik B): ref tanpa clone PreprocEntry penuh —
+                    // clone hanya combined String, bukan timescale_segments.
+                    let combined = db_ref.get_preprocessed_combined(path, hash)?.to_owned();
+                    Some((path.clone(), ast, combined))
                 })
                 .collect();
 
@@ -1527,7 +1529,8 @@ impl CompileSession {
                         deps_ok += 1;
                         if db_ref.get_ast(path, hash).is_some() {
                             ast_ok += 1;
-                            if db_ref.get_preprocessed(path, hash).is_some() {
+                            // Fase 0: cek tanpa clone.
+                            if db_ref.has_valid_preproc(path, hash) {
                                 pre_ok += 1;
                             }
                         }

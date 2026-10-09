@@ -315,16 +315,27 @@ pub struct MicdDatabase {
 
 /// Baca satu objek singleton dari file MDB. Mengembalikan `None` bila file
 /// tidak ada, corrupt, atau key tidak ditemukan.
+///
+/// Fase 0 (Kritik B): pakai `get_slice` zero-copy (tanpa memcpy) untuk store
+/// tanpa kompresi; fallback ke `get` (copy + decompress) untuk store LZ4.
 fn read_mdb_singleton<T: serde::de::DeserializeOwned>(
     dir: &Path,
     filename: &str,
 ) -> Option<T> {
     let r = MdbReader::open(&dir.join(filename)).ok()?;
+    if let Some(slice) = r.get_slice(KEY_SINGLETON) {
+        if let Ok(v) = bincode::deserialize(slice) {
+            return Some(v);
+        }
+    }
     let b = r.get(KEY_SINGLETON)?;
     bincode::deserialize(&b).ok()
 }
 
 /// Baca semua objek (kecuali singleton) dari file MDB.
+///
+/// Fase 0 (Kritik B): sama seperti singleton — `get_slice` dulu, fallback
+/// `get` untuk entry terkompresi.
 fn read_mdb_entries<T: serde::de::DeserializeOwned>(
     dir: &Path,
     filename: &str,
@@ -335,7 +346,14 @@ fn read_mdb_entries<T: serde::de::DeserializeOwned>(
     r.keys()
         .iter()
         .filter(|(k, _)| *k != KEY_SINGLETON)
-        .filter_map(|(k, _)| r.get(*k).and_then(|b| bincode::deserialize(&b).ok()))
+        .filter_map(|(k, _)| {
+            if let Some(slice) = r.get_slice(*k) {
+                if let Ok(v) = bincode::deserialize(slice) {
+                    return Some(v);
+                }
+            }
+            r.get(*k).and_then(|b| bincode::deserialize(&b).ok())
+        })
         .collect()
 }
 
@@ -797,6 +815,42 @@ impl MicdDatabase {
         } else {
             None
         }
+    }
+
+    /// Fase 0 (Kritik B): referensi tanpa clone ke entry preprocessed.
+    /// Jalur panas (`attach_micd`) hanya butuh `combined` — pakai ini lalu
+    /// clone `&str`-nya saja, tanpa clone `timescale_segments` (Vec) yang
+    /// bisa besar. `None` bila path tak ada / hash beda.
+    pub fn get_preprocessed_ref(
+        &self,
+        path: &Path,
+        content_hash: u64,
+    ) -> Option<&PreprocEntry> {
+        let e = self.preproc_cache.get(path)?;
+        if e.content_hash == content_hash {
+            Some(e)
+        } else {
+            None
+        }
+    }
+
+    /// Fase 0 (Kritik B): referensi `&str` ke combined source (tanpa clone).
+    /// Dipakai jalur panas restore + debug check.
+    pub fn get_preprocessed_combined(
+        &self,
+        path: &Path,
+        content_hash: u64,
+    ) -> Option<&str> {
+        self.get_preprocessed_ref(path, content_hash)
+            .map(|e| e.combined.as_str())
+    }
+
+    /// Fase 0: cek validitas preproc tanpa clone (simetri `has_valid_ast`).
+    pub fn has_valid_preproc(&self, path: &Path, content_hash: u64) -> bool {
+        self.preproc_cache
+            .get(path)
+            .map(|e| e.content_hash == content_hash)
+            .unwrap_or(false)
     }
 
     /// Lepas cache AST/preprocessed IN-MEMORY setelah disimpan ke disk
@@ -2096,6 +2150,202 @@ mod tests {
             assert_eq!(db.get_file_meta(&path).unwrap().content_hash, 111);
         }
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // ── Fase 0 (Kritik B): dirty_diag isolasi + zero-copy get_slice ──
+
+    #[test]
+    fn test_fase0_dirty_diag_tidak_menulis_metadata() {
+        // set_diags saja → hanya dirty_diag, metadata.mdb tidak tersentuh.
+        let root = test_root("fase0_diag");
+        let path = PathBuf::from("a.sv");
+        {
+            let mut db = MicdDatabase::open(&root);
+            db.record_file(path.clone(), 1, vec![], FileStatus::New, 0, 5, vec![]);
+            db.save().unwrap();
+            assert!(!db.dirty && !db.dirty_diag);
+        }
+        let meta_path = state_dir(&root, "default").join(DB_METADATA);
+        let meta_before = std::fs::read(&meta_path).unwrap();
+        {
+            let mut db = MicdDatabase::open(&root);
+            assert!(!db.dirty && !db.dirty_diag);
+            db.set_diags(FileDiags {
+                path: path.clone(),
+                content_hash: 1,
+                entries: vec![],
+            });
+            assert!(db.dirty_diag, "set_diags harus tandai dirty_diag");
+            assert!(!db.dirty, "set_diags TIDAK boleh tandai dirty metadata");
+            db.save().unwrap();
+        }
+        let meta_after = std::fs::read(&meta_path).unwrap();
+        assert_eq!(
+            meta_before, meta_after,
+            "metadata.mdb tidak boleh berubah saat hanya diag berubah"
+        );
+        {
+            let db = MicdDatabase::open(&root);
+            assert!(db.get_diags(&path).is_some());
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn test_fase0_get_slice_sama_dengan_get() {
+        // Helper read_mdb_singleton/entries pakai get_slice zero-copy —
+        // hasilnya harus identik dengan jalur get().
+        let root = test_root("fase0_slice");
+        let path = PathBuf::from("a.sv");
+        {
+            let mut db = MicdDatabase::open(&root);
+            db.record_file(path.clone(), 77, vec![], FileStatus::New, 0, 5, vec![]);
+            db.set_diags(FileDiags {
+                path: path.clone(),
+                content_hash: 77,
+                entries: vec![],
+            });
+            let mut v = VerifyResult::fresh(77);
+            v.ast_hash = 0xABCD;
+            v.semantic_hash = 0x1234;
+            v.parse_ok = true;
+            db.set_verify(v);
+            db.save().unwrap();
+        }
+        {
+            let db = MicdDatabase::open(&root);
+            // Load via helper baru (get_slice) — semua store terbaca.
+            assert_eq!(db.files.len(), 1);
+            assert!(db.get_diags(&path).is_some());
+            assert!(db.reuse_verify(77, 0, 0).is_some());
+            assert!(db.reuse_verify(999, 0xABCD, 0).is_some());
+            assert!(db.reuse_verify(999, 0, 0x1234).is_some());
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn test_fase0_preproc_ref_tanpa_clone_vec() {
+        // get_preprocessed_ref / combined: tanpa clone timescale_segments.
+        let root = test_root("fase0_preproc_ref");
+        let path = PathBuf::from("a.sv");
+        let entry = PreprocEntry {
+            content_hash: 55,
+            combined: "module a; endmodule".to_string(),
+            timescale: Some(("1ns".to_string(), "1ps".to_string())),
+            timescale_segments: vec![(3, ("1ns".to_string(), "1ps".to_string())); 16],
+        };
+        {
+            let mut db = MicdDatabase::open(&root);
+            db.record_file(path.clone(), 55, vec![], FileStatus::New, 0, 5, vec![]);
+            db.cache_preprocessed(path.clone(), entry.clone());
+            // Ref: pointer sama dengan isi cache, tanpa alokasi baru.
+            let r = db.get_preprocessed_ref(&path, 55).unwrap();
+            assert_eq!(r.combined, "module a; endmodule");
+            assert_eq!(r.timescale_segments.len(), 16);
+            assert_eq!(db.get_preprocessed_combined(&path, 55).unwrap(), "module a; endmodule");
+            assert!(db.has_valid_preproc(&path, 55));
+            assert!(!db.has_valid_preproc(&path, 999));
+            assert!(db.get_preprocessed_ref(&path, 999).is_none());
+            db.save().unwrap();
+        }
+        {
+            let db = MicdDatabase::open(&root);
+            // Setelah reload, ref tetap valid + combined sama.
+            assert_eq!(db.get_preprocessed_combined(&path, 55).unwrap(), "module a; endmodule");
+            // Jalur lama (clone) tetap kompatibel.
+            assert_eq!(db.get_preprocessed(&path, 55).unwrap().combined, "module a; endmodule");
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn test_fase0_rollback_menandai_semua_dirty_dan_rebuild_index() {
+        // Rollback harus tandai graph/verify/symbol/diag + rebuild index.
+        let root = test_root("fase0_rollback");
+        let path = PathBuf::from("a.sv");
+        {
+            let mut db = MicdDatabase::open(&root);
+            db.record_file(path.clone(), 100, vec![], FileStatus::New, 0, 5, vec![]);
+            let mut v = VerifyResult::fresh(100);
+            v.ast_hash = 0xAAA;
+            v.semantic_hash = 0xBBB;
+            v.parse_ok = true;
+            db.set_verify(v);
+            db.add_symbol("top".into(), "module".into(), path.clone());
+            db.set_diags(FileDiags {
+                path: path.clone(),
+                content_hash: 100,
+                entries: vec![],
+            });
+            db.save().unwrap();
+            let id = db.snapshot("s1".into()).unwrap();
+            assert_eq!(id, 1);
+            // Ubah semua store setelah snapshot.
+            db.record_file(path.clone(), 200, vec![], FileStatus::Recompiled, 0, 5, vec![]);
+            db.save().unwrap();
+            // Rollback → semua dirty flag terkait harus menyala.
+            db.rollback(1).unwrap();
+            assert!(db.dirty, "metadata berubah → dirty");
+            assert!(db.dirty_graph, "graph di-restore → dirty_graph");
+            assert!(db.dirty_verify, "verify di-restore → dirty_verify");
+            assert!(db.dirty_symbol, "symbol di-restore → dirty_symbol");
+            assert!(db.dirty_diag, "diag di-restore → dirty_diag");
+            // Indeks verify dibangun ulang → reuse via ast/semantic jalan.
+            assert!(db.reuse_verify(999, 0xAAA, 0).is_some(), "ast index rollback");
+            assert!(db.reuse_verify(999, 0, 0xBBB).is_some(), "semantic index rollback");
+            db.save().unwrap();
+        }
+        {
+            let db = MicdDatabase::open(&root);
+            assert_eq!(db.get_file_meta(&path).unwrap().content_hash, 100);
+            assert!(db.reuse_verify(999, 0xAAA, 0).is_some(), "index persist setelah save");
+            // Review Fase 0: graph/symbol/diag hasil rollback harus persist.
+            assert!(
+                db.symbols.locate("top", "module").is_some(),
+                "symbol rollback harus persist"
+            );
+            assert!(
+                db.get_diags(&path).is_some(),
+                "diag rollback harus persist"
+            );
+            assert!(
+                db.get_verify(100).is_some(),
+                "verify rollback harus persist"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn test_fase0_singleton_terkompresi_fallback_get() {
+        // Review Fase 0: satu-satunya store terkompresi adalah graph.mdb
+        // (LZ4) — get_slice mengembalikan None, helper harus fallback ke get.
+        use crate::micd::format::{Compression, MdbReader, MdbWriter, KIND_GRAPH};
+        let dir = test_root("fase0_lz4");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut g = FileGraph::new();
+        g.set_deps(PathBuf::from("cpu.sv"), vec![PathBuf::from("uart.sv")]);
+        g.rebuild();
+        let mut w = MdbWriter::with_compression(Compression::Lz4);
+        w.put(
+            KEY_SINGLETON,
+            KIND_GRAPH,
+            bincode::serialize(&g).unwrap(),
+        );
+        w.write_to(&dir.join(DB_GRAPH)).unwrap();
+        // Bukti premis: store terkompresi → get_slice None.
+        let r = MdbReader::open(&dir.join(DB_GRAPH)).unwrap();
+        assert!(r.get_slice(KEY_SINGLETON).is_none());
+        // Helper tetap bisa baca via fallback get().
+        let back: Option<FileGraph> = read_mdb_singleton(&dir, DB_GRAPH);
+        assert!(back.is_some(), "fallback get untuk LZ4 harus berhasil");
+        let affected = {
+            let mut gg = back.unwrap();
+            gg.affected(&[PathBuf::from("uart.sv")])
+        };
+        assert!(affected.contains(&PathBuf::from("cpu.sv")));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
