@@ -1021,6 +1021,34 @@ pub(crate) fn scan_hidden_diags(output: &str) -> Option<(Category, String)> {
     degraded.map(|d| (Category::Degraded, d))
 }
 
+/// Subprocess selesai TAPI melewati ≥1 perpanjangan deadline progresif
+/// (`Outcome.slow`) → kategori `Slow` (lambat-berprogres: bukan hang, bukan
+/// bug, TAPI terlihat di summary — dulu senyap `Ok`). Dipasang di arm `Ok`
+/// evaluator subprocess SETELAH scan HiddenBug/Degraded (pola bug menang
+/// atas lambat). Dikecualikan: gerbang sim (verdict ikut in-process),
+/// micd (verdict soal drift, bukan speed), astdiff (verdict dari analisis
+/// diff, bukan kecepatan run).
+fn slow_if_extended(
+    target: Target,
+    outcome: &crate::runner::Outcome,
+    source: &str,
+) -> Option<CaseResult> {
+    if outcome.slow {
+        Some(mk(
+            target,
+            Oracle::O1NoCrash,
+            Category::Slow,
+            &format!(
+                "selesai setelah perpanjangan deadline progresif ({} ms) — lambat-berprogres, bukan hang",
+                outcome.ms
+            ),
+            source,
+        ))
+    } else {
+        None
+    }
+}
+
 /// Target CLI: jalankan mivon binary dengan arg random di cwd temp.
 fn evaluate_cli(source: &str, timeout_ms: u64) -> CaseResult {
     // CLI/tool dijalankan ATAS source mutasi nyata — sebelum ini argumen acak
@@ -1099,6 +1127,8 @@ fn evaluate_cli(source: &str, timeout_ms: u64) -> CaseResult {
             let combined = format!("{}\n{}", outcome.stdout, outcome.stderr);
             if let Some((cat, detail)) = scan_hidden_diags(&combined) {
                 mk(Target::Cli, Oracle::O1NoCrash, cat, &detail, source)
+            } else if let Some(slow) = slow_if_extended(Target::Cli, &outcome, source) {
+                slow
             } else {
                 mk(
                     Target::Cli,
@@ -1305,9 +1335,11 @@ fn evaluate_vcd(source: &str, timeout_ms: u64) -> CaseResult {
         ],
     ];
     let n = 1 + rng.below(2);
+    let mut stage_slow = false;
     for _ in 0..n {
         let idx = rng.below(cmds.len());
         let o = mcmd(cmds[idx].clone());
+        stage_slow |= o.slow;
         match o.kind {
             crate::runner::Kind::Ok => {}
             crate::runner::Kind::CleanError => {
@@ -1379,6 +1411,12 @@ fn evaluate_vcd(source: &str, timeout_ms: u64) -> CaseResult {
     let _ = std::fs::remove_file(&vcd_base);
     let _ = std::fs::remove_file(&vcd_mut);
     let _ = std::fs::remove_file(&vcd_out);
+    if o1.slow || o2.slow || stage_slow {
+        // mwave stats double-run atau stage acak selesai via perpanjangan
+        // progresif (kind sudah Ok semua di titik ini — Hang/Crash/Panic
+        // return lebih awal di atas).
+        return mk_v(Category::Slow, Oracle::O1NoCrash, "mwave lambat-berprogres");
+    }
     mk_v(
         Category::Ok,
         Oracle::O1NoCrash,
@@ -1491,11 +1529,16 @@ fn evaluate_sdf(source: &str, timeout_ms: u64) -> CaseResult {
             let combined = format!("{}\n{}", outcome.stdout, outcome.stderr);
             match scan_hidden_diags(&combined) {
                 Some((cat, detail)) => mk_s(cat, Oracle::O1NoCrash, &detail),
-                None => mk_s(
-                    Category::Ok,
-                    Oracle::O1NoCrash,
-                    &format!("sdf pipeline ok: parse+annotate+sim ({:?})", stem),
-                ),
+                None => {
+                    if let Some(slow) = slow_if_extended(Target::Sdf, &outcome, source) {
+                        return slow;
+                    }
+                    mk_s(
+                        Category::Ok,
+                        Oracle::O1NoCrash,
+                        &format!("sdf pipeline ok: parse+annotate+sim ({:?})", stem),
+                    )
+                }
             }
         }
         crate::runner::Kind::CleanError => mk_s(
@@ -1751,11 +1794,16 @@ fn evaluate_synth(source: &str, timeout_ms: u64) -> CaseResult {
             let combined = format!("{}\n{}", outcome.stdout, outcome.stderr);
             match scan_hidden_diags(&combined) {
                 Some((cat, detail)) => mk_y(cat, Oracle::O1NoCrash, &detail),
-                None => mk_y(
-                    Category::Ok,
-                    Oracle::O1NoCrash,
-                    &format!("synth check-only ok: {args_desc}"),
-                ),
+                None => {
+                    if let Some(slow) = slow_if_extended(Target::Synth, &outcome, source) {
+                        return slow;
+                    }
+                    mk_y(
+                        Category::Ok,
+                        Oracle::O1NoCrash,
+                        &format!("synth check-only ok: {args_desc}"),
+                    )
+                }
             }
         }
         crate::runner::Kind::CleanError => mk_y(
@@ -1884,6 +1932,7 @@ fn evaluate_astdiff(source: &str, timeout_ms: u64) -> CaseResult {
             stdout: String::new(),
             stderr: String::new(),
             ms: 0,
+            slow: false,
         }
     };
     let _ = std::fs::remove_file(&a);
