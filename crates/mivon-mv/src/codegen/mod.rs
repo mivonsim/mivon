@@ -380,6 +380,51 @@ pub(crate) fn emit_signal_decl_multi(ty: &MvType, names: &[String]) -> String {
     format!("{ty_s} {}", name_parts.join(", "))
 }
 
+/// Deklarasi net `wire` multi-nama yang BENAR utk SV (LRM 1800 §6.5/§10.2):
+/// `wire` adalah tipe net sendiri — TIDAK digabung dengan tipe variabel
+/// (`wire bit w` INVALID, ditolak parser SV). Bentuk sah:
+/// `wire w`, `wire [7:0] w`, `wire signed [7:0] w`, `wire Addr w` (typedef),
+/// unpacked setelah nama (`wire [7:0] m [0:3]`).
+pub(crate) fn emit_wire_decl_multi(ty: &MvType, names: &[String]) -> String {
+    use crate::ast::{Expr, MvType};
+    use expr::emit_expr;
+    let mut dims: Vec<&Expr> = Vec::new();
+    let mut elem = ty;
+    while let MvType::Array(inner, ds) = elem {
+        dims.extend(ds.iter());
+        elem = inner;
+    }
+    // Packed range net: Bit → tanpa range, Logic(range) → range, Signed → signed+range.
+    let packed = match elem {
+        MvType::Bit => String::new(),
+        MvType::Logic(None) => String::new(),
+        MvType::Logic(Some((a, b))) => format!(" [{}:{}]", emit_expr(a), emit_expr(b)),
+        MvType::Signed(inner) => match inner.as_ref() {
+            MvType::Bit | MvType::Logic(None) => " signed".to_string(),
+            MvType::Logic(Some((a, b))) => {
+                format!(" signed [{}:{}]", emit_expr(a), emit_expr(b))
+            }
+            other => format!(" {}", expr::emit_type(other)),
+        },
+        MvType::Named(s, ..) => format!(" {s}"),
+        other => format!(" {}", expr::emit_type(other)),
+    };
+    let name_parts: Vec<String> = names
+        .iter()
+        .map(|n| {
+            let mut s = n.clone();
+            for d in &dims {
+                let nn = match d {
+                    Expr::Int(v) => format!("{}", v.saturating_sub(1)),
+                    other => format!("{} - 1", emit_expr(other)),
+                };
+                s.push_str(&format!(" [0:{nn}]"));
+            }
+            s
+        })
+        .collect();
+    format!("wire{packed} {}", name_parts.join(", "))
+}
 /// Deklarasi signal array unpacked yang BENAR utk SV:
 /// `logic[8][4]` → `logic [7:0] name [0:3]` (dims `[0:N-1]` SETELAH nama,
 /// bukan `logic [7:0] [4] name` yang di-parse SV sbg packed multi-dim).

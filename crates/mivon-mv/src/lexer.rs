@@ -40,6 +40,8 @@ pub enum Tok {
     Inout,
     Sig,
     Reg,
+    Wire,
+    Assign,
     Const,
     Use,
     Seq,
@@ -201,6 +203,8 @@ fn keyword(s: &str) -> Option<Tok> {
         "inout" => Tok::Inout,
         "sig" => Tok::Sig,
         "reg" => Tok::Reg,
+        "wire" => Tok::Wire,
+        "assign" => Tok::Assign,
         "const" => Tok::Const,
         "use" => Tok::Use,
         "seq" => Tok::Seq,
@@ -975,6 +979,16 @@ mod tests {
         assert!(t2.contains(&Tok::Scope));
         assert!(!t2.contains(&Tok::Equiv));
         assert!(!t2.contains(&Tok::ColonSlash));
+    }
+
+    #[test]
+    fn lex_wire_assign_keywords() {
+        // F75: `wire` (net) + `assign` (continuous) — reserved, bukan Ident.
+        let t = toks("wire w : bit assign y = w");
+        assert!(t.contains(&Tok::Wire), "{t:?}");
+        assert!(t.contains(&Tok::Assign), "{t:?}");
+        assert!(!t.contains(&Tok::Ident("wire".into())), "{t:?}");
+        assert!(!t.contains(&Tok::Ident("assign".into())), "{t:?}");
     }
 }
 

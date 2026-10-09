@@ -270,9 +270,9 @@ impl Parser {
                     col: c,
                 }))
             }
-            Tok::Sig | Tok::Reg => {
+            Tok::Sig | Tok::Reg | Tok::Wire => {
                 let (l, c) = self.pos_line();
-                let is_reg = matches!(self.peek(), Tok::Reg);
+                let kind = self.peek().clone();
                 self.advance();
                 let mut names = vec![self.expect_ident()?];
                 while self.eat(&Tok::Comma) {
@@ -285,8 +285,16 @@ impl Parser {
                 } else {
                     None
                 };
-                if is_reg {
+                if matches!(kind, Tok::Reg) {
                     Ok(MItem::Reg {
+                        names,
+                        ty,
+                        init,
+                        line: l,
+                        col: c,
+                    })
+                } else if matches!(kind, Tok::Wire) {
+                    Ok(MItem::Wire {
                         names,
                         ty,
                         init,
@@ -302,6 +310,19 @@ impl Parser {
                         col: c,
                     })
                 }
+            }
+            Tok::Assign => {
+                let (l, c) = self.pos_line();
+                self.advance();
+                let lhs = self.parse_postfix_expr_stmt()?;
+                self.expect(&Tok::BlockingAssign)?;
+                let rhs = self.parse_expr()?;
+                Ok(MItem::Assign {
+                    lhs,
+                    rhs,
+                    line: l,
+                    col: c,
+                })
             }
             Tok::Const => {
                 let (l, c) = self.pos_line();

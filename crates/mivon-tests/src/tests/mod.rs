@@ -1164,6 +1164,41 @@ module tb_post {
 }
 
 #[test]
+fn test_mv_wire_assign() {
+    // F75: `wire` (net, LRM §6.5/§10.2) + `assign` continuous — 1 baris vs blok comb.
+    // Demo: examples/mv/wire_assign.mv → y=1 (1^0), v=42 (41+1).
+    let src = r#"
+module tb_wa {
+    sig a, b : bit
+    sig x : logic[7:0]
+    sig y : bit
+    sig v : logic[7:0]
+    wire w_and : bit
+    wire wv : logic[7:0]
+    assign w_and = a & b
+    assign y = w_and ^ b
+    assign wv = x + 1
+    assign v = wv
+    initial {
+        a = 1
+        b = 0
+        x = 41
+        #1
+    }
+}
+"#;
+    let r = mivon_mv::transpile(src, "wire_assign").expect("transpile .mv OK");
+    assert!(r.sv.contains("wire w_and;"), "emit wire net: {}", r.sv);
+    assert!(r.sv.contains("wire [7:0] wv;"), "emit wire vektor: {}", r.sv);
+    assert!(!r.sv.contains("wire bit"), "wire+bit INVALID: {}", r.sv);
+    assert!(r.sv.contains("assign w_and = a & b;"), "emit assign: {}", r.sv);
+    let sigs = simulate_signals(&r.sv, 20).unwrap();
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    assert_eq!(get("y"), 0, "a=1,b=0 → w=0 → y=0^0=0");
+    assert_eq!(get("v"), 42, "41+1 via wire");
+}
+
+#[test]
 fn test_mv_compound_more_ops() {
     // F36 coverage: operator compound lain (`%=` `>>=` `|=` `^=`) + decrement
     // (`--`) — memastikan semua token compound ter-lex & ter-emit benar.

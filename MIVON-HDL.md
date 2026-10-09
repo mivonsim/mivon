@@ -433,7 +433,7 @@ Aturan:
   awal ke deklarasi port (`output logic [7:0] count = 8'h0;`, sah LRM 1800
   §6.8.2). Input port tidak boleh diinisialisasi → nilainya diabaikan.
 
-### 6.4 Signal, Register, Konstanta
+### 6.4 Signal, Register, Wire, Konstanta
 
 ```mv
 // signal biasa (wire/var)
@@ -442,6 +442,10 @@ addr, data : logic[15:0]
 
 // register (dengan reset value opsional)
 reg count  : logic[7:0] = '0
+
+// net Verilog (F75, LRM 1800 §6.5/§10.2) — untuk `assign` kontinu
+wire w     : bit
+wire bv    : logic[7:0]
 
 // konstanta → localparam
 const DEPTH_LOG = 4
@@ -454,9 +458,15 @@ Emisi:
 logic [7:0] sig;
 logic [15:0] addr, data;
 logic [7:0] count;             // reset value dipakai di always_ff
+wire w;
+wire [7:0] bv;                 // `wire` = net sendiri, tanpa `bit`/`logic`
 localparam DEPTH_LOG = 4;
 localparam logic [7:0] MASK = 8'hF0;
 ```
+
+Aturan `wire`: hanya `bit`/`logic` (signed) / typedef / array-nya (E2005
+menolak `int`/`real`/`string`/`queue`). Init inline sah
+(`wire w : bit = a & b` → `wire w = a & b;`, LRM §10.2).
 
 ### 6.5 Blok logika: `seq`, `comb`, `always`, `latch`
 
@@ -565,6 +575,7 @@ Emisi: `always begin ... end` / `always_latch begin ... end`.
 | `#10 stmt` | `#10 stmt` |
 | `sig = expr` | `sig = expr;` (blocking) |
 | `sig <= expr` | `sig <= expr;` (non-blocking) |
+| `assign y = expr` (F75, module item) | `assign y = expr;` — continuous assignment (LRM 1800 §10.2, contoh: `examples/mv/wire_assign.mv`) |
 | `sig += expr` (F36) | `sig += expr;` — compound `+= -= *= /= %= <<= >>= &= |= ^=` (blocking) |
 | `sig++` / `sig--` (F36) | `sig++;` / `sig--;` — increment/decrement postfix (blocking) |
 | `++sig` / `--sig` (F37) | `++sig;` / `--sig;` — increment/decrement PREFIX (blocking) |
@@ -1208,6 +1219,8 @@ Ringkasan mapping konstruk `.mv` → SV:
 | `in/out/inout` | `input/output/inout` + tipe |
 | `sig : T` | `T sig;` — dimensi unpacked **setelah nama** (`logic [7:0] m [0:3]`, LRM 1800 §7.3) |
 | `reg r : T = v` | `T r;` + reset branch di `always_ff` |
+| `wire w : T` (F75) | `wire ...;` — net tanpa `bit`/`logic` (`wire w;` / `wire [7:0] w;`, LRM 1800 §6.5) |
+| `assign y = e` (F75) | `assign y = e;` — continuous assignment (LRM 1800 §10.2) |
 | `const C = e` | `localparam C = e;` |
 | `seq(clk[,rst][,sync])` | `always_ff @(posedge clk [or negedge rst_n])` |
 | `comb { }` | `always_comb begin ... end` |
@@ -1595,6 +1608,7 @@ module tb_traffic {
 | **F72** ✅ | **Tipe UVM bawaan dikenal checker `.mv`** — `var seqr : uvm_sequencer` → E2005, paksa `--no-check` untuk semua testbench UVM. Kini allowlist `UVM_KNOWN_TYPES` (31 kelas `__uvm_*` engine) di `check_type_scope`: deklarasi bertipe UVM lolos; typo (`uvm_sequncer`) tetap E2005, sinyal tak dikenal di argumen call tetap E2001 | demo e2e `examples/mv_uvm/my_test.mv` → `mgen` tanpa flag OK + SV identik kecuali baris `item` (contoh diperbaiki: `item` dideklarasikan `uvm_sequence_item`); `.svh` kosong basi dihapus; `mgen --check` OK; 4 test baru (check ×3, e2e `test_mv_uvm_class_transpiles_with_check`) |
 | **F73** ✅ | **Type param override + cast lebar benar (tutup limitasi F32/F33)** — (a) `T'(a)` lebar 1 (data loss → 0): `cur_type_param_widths` diinstal per `elaborate_module_with_params_and_type` (pola `current_module`), dibaca `resolve_cast_name_width` lebih dulu → `q=0x34`; (b) `#(.T(Wide16))` Ident-typedef salah-bucket jadi value-override (T tetap default; e2e F32 tak sensitif lebar!): re-bucket di flatten bila pname type-param target & nilai resolve-sbg-tipe → `q=0x0800`; (c) `#(.T(logic[15:0]))`: `TypeParamAssign{dtype,range}` baru (range `parse_type_expr_with_range`, bukan dibuang) → 16 | oracle: `CT q=34`, `TPOV/CT16 q=0x800`, `TPL2 q=0x800`; 3 test baru width-sensitive (`typedef_override`, `literal_override`, `cast_effective_width`); buglog-mv #22 |
 | **F74** ✅ | **Fix: statement-level `assert/assume/cover property` gagal parse** — arm statement memakan keyword tapi lupa `advance()` sesudah `property` (warisan F6, dikopi F66/F69) → `diharapkan LParen, ditemukan Ident(property)`; varian AST `Stmt::*Property` tak terjangkau. Tambah 1 baris `advance()` per arm (`parser/stmt.rs`) | demo e2e `STMT_PROP_OK`; verilator OK penempatan; 3 test baru (parse statement-level ×3 keyword, codegen blok, e2e `test_mv_statement_level_assert_property`); buglog-mv #23 |
+| **F75** ✅ | **`wire` + `assign` kontinu di `.mv`** — gap: kombinasional 1-baris wajib blok `comb`, net `wire` tak ada (LRM 1800 §6.5/§10.2). Kini `wire w : bit/logic` → net SV (`wire w;` / `wire [7:0] w;` — TANPA `bit`/`logic`, `wire bit` INVALID ditolak parser SV) + `assign y = expr` level module (termasuk generate) → `assign y = expr;`. Check: E2005 utk tipe non-net (`int`/`real`/`string`/`queue`), E2003 drive input (DUT saja, TB bebas), E2002 truncation, E2010 const | `mgen wire_assign.mv` → iverilog + verilator bersih; `run --top tb_wire` → `WIRE_ASSIGN_OK y=1 v=42`; 9 test baru (lexer, parse, codegen, check ×4, print roundtrip, e2e `test_mv_wire_assign`); contoh `examples/mv/wire_assign.mv` |
 
 **Kriteria selesai F2:** `mivon mgen examples/mv/counter.mv` menghasilkan
 `counter.sv` yang bisa disimulasikan oleh `mivon counter.sv` tanpa error.

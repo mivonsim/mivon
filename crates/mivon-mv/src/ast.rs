@@ -556,6 +556,24 @@ pub enum MItem {
         line: usize,
         col: usize,
     },
+    /// F75: `wire w : logic[7:0]` — net Verilog (LRM 1800 §6.5/§10.2).
+    /// Di-emit `wire ...;`, bukan `logic`. Init opsional di-emit inline
+    /// (`wire [7:0] w = expr;` — net decl assignment, sah §10.2).
+    Wire {
+        names: Vec<String>,
+        ty: MvType,
+        init: Option<Expr>,
+        line: usize,
+        col: usize,
+    },
+    /// F75: `assign y = expr` — continuous assignment level module
+    /// (LRM 1800 §10.2). Di-emit `assign y = expr;`.
+    Assign {
+        lhs: Expr,
+        rhs: Expr,
+        line: usize,
+        col: usize,
+    },
     /// `const NAME = expr` — posisi (line, col) untuk E2007 (F11).
     Const {
         name: String,

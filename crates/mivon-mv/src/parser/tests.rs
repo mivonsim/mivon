@@ -886,3 +886,31 @@ fn stmt_kinds(stmts: &[Stmt]) -> Vec<&'static str> {
     }
     stmts.iter().map(kind).collect()
 }
+
+#[test]
+fn parse_wire_and_assign() {
+    // F75: `wire w : logic[7:0]` (net) + `assign y = expr` (continuous).
+    let src = r#"
+module m {
+    in a, b : bit
+    out y : bit
+    wire w1 : bit
+    wire w2, w3 : logic[7:0]
+    assign w1 = a & b
+    assign y = w1
+}
+"#;
+    let f = parse(src).expect("parse wire/assign");
+    let m = &f.modules[0];
+    let has_wire = m.items.iter().any(|i| matches!(i, MItem::Wire { .. }));
+    let has_assign = m.items.iter().any(|i| matches!(i, MItem::Assign { .. }));
+    assert!(has_wire, "wire harus ter-parse");
+    assert!(has_assign, "assign harus ter-parse");
+    // multi-nama wire
+    let wires: Vec<_> = m.items.iter().filter_map(|i| match i {
+        MItem::Wire { names, .. } => Some(names.clone()),
+        _ => None,
+    }).collect();
+    assert_eq!(wires.len(), 2);
+    assert_eq!(wires[1].len(), 2, "wire multi-nama");
+}

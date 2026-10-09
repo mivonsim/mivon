@@ -745,6 +745,21 @@ fn print_m_item(b: &mut StrB, indent: usize, item: &MItem) {
                 &format!("reg {} : {}{i}", names.join(", "), print_type(ty)),
             );
         }
+        MItem::Wire {
+            names, ty, init, ..
+        } => {
+            let i = init
+                .as_ref()
+                .map(|e| format!(" = {}", print_expr(e)))
+                .unwrap_or_default();
+            b.line(
+                indent,
+                &format!("wire {} : {}{i}", names.join(", "), print_type(ty)),
+            );
+        }
+        MItem::Assign { lhs, rhs, .. } => {
+            b.line(indent, &format!("assign {} = {}", print_expr(lhs), print_expr(rhs)));
+        }
         MItem::Const {
             name, ty, value, ..
         } => {
@@ -1250,6 +1265,26 @@ module m {
             y = 3
         }
     }
+}
+"#;
+        let f = parse(src).unwrap();
+        let t1 = print_file(&f);
+        let t2 = print_file(&parse(&t1).unwrap());
+        assert_eq!(t1, t2, "stabil: {}", t1);
+    }
+
+    #[test]
+    fn roundtrip_wire_assign() {
+        // F75: print `wire` + `assign` re-parse + stabil.
+        let src = r#"
+module m {
+    in a, b : bit
+    out y : bit
+    wire w : bit
+    wire bv : logic[7:0]
+    assign w = a & b
+    assign y = w
+    assign bv = {a, b, 6'd0}
 }
 "#;
         let f = parse(src).unwrap();

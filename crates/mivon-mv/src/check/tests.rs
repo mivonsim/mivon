@@ -1055,3 +1055,41 @@ fn check_duplicate_file_level_func_across_files_is_e2007() {
     let e2 = super::check_many(&[&c, &d]).unwrap_err();
     assert!(e2.1.msg.contains("E2007"), "msg: {}", e2.1.msg);
 }
+
+#[test]
+fn f75_wire_assign_ok() {
+    // F75 sehat: wire bit/logic + assign driver valid lolos.
+    let src = "module m { in a, b : bit\n out y : bit\n wire w : bit\n assign w = a & b\n assign y = w }";
+    check_src(src).expect("wire/assign sehat harus lolos");
+    // wire vektor + typedef + init inline
+    let src2 = "module m2 { in a : logic[7:0]\n out y : logic[7:0]\n wire w : logic[7:0] = a\n assign y = w }";
+    check_src(src2).expect("wire init harus lolos");
+}
+
+#[test]
+fn f75_wire_bad_type_is_e2005() {
+    // wire hanya bit/logic/typedef — int/real/string ditolak E2005.
+    let e = check_src("module m { wire x : int\n assign x = 1 }").unwrap_err();
+    assert!(e.msg.contains("E2005"), "msg: {}", e.msg);
+    let e2 = check_src("module m { wire s : string\n assign s = \"a\" }").unwrap_err();
+    assert!(e2.msg.contains("E2005"), "msg: {}", e2.msg);
+}
+
+#[test]
+fn f75_assign_drive_input_is_e2003() {
+    // assign ke input port di DUT → E2003; di TB (ada initial) boleh.
+    let e = check_src("module m { in a : bit\n out y : bit\n assign a = y }").unwrap_err();
+    assert!(e.msg.contains("E2003"), "msg: {}", e.msg);
+    let tb = "module tb { in a : bit\n out y : bit\n assign a = y\n initial { a = 0 } }";
+    check_src(tb).expect("TB boleh drive input via assign");
+}
+
+#[test]
+fn f75_assign_width_mismatch_is_e2002() {
+    // RHS 16-bit ke LHS 8-bit → E2002 truncation.
+    let e = check_src(
+        "module m { in a : logic[15:0]\n out y : logic[7:0]\n wire w : logic[7:0]\n assign w = a\n assign y = w }",
+    )
+    .unwrap_err();
+    assert!(e.msg.contains("E2002"), "msg: {}", e.msg);
+}

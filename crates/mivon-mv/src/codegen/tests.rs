@@ -1216,6 +1216,31 @@ fn lang_uint_int_bracket_width_and_unpacked_after() {
     assert!(out.sv.contains("logic signed [15:0] b;"), "int[16]: {}", out.sv);
 }
 
+#[test]
+fn f75_wire_assign_codegen() {
+    // F75: `wire` di-emit sintaks net (`wire [7:0]`, bukan `wire logic`),
+    // `assign` di-emit `assign lhs = rhs;` (LRM 1800 §10.2).
+    let src = r#"
+module m {
+    in a, b : bit
+    out y : bit
+    out v : logic[7:0]
+    wire w : bit
+    wire bv : logic[7:0]
+    assign w = a & b
+    assign y = w
+    assign v = {a, b, 6'd0}
+}
+"#;
+    let out = generate(&parse(src).unwrap(), "m");
+    assert!(out.sv.contains("wire w;"), "wire 1-bit: {}", out.sv);
+    assert!(out.sv.contains("wire [7:0] bv;"), "wire vektor: {}", out.sv);
+    assert!(!out.sv.contains("wire bit"), "wire+bit INVALID: {}", out.sv);
+    assert!(!out.sv.contains("wire logic"), "wire+logic INVALID: {}", out.sv);
+    assert!(out.sv.contains("assign w = a & b;"), "assign: {}", out.sv);
+    assert!(out.sv.contains("assign y = w;"), "assign y: {}", out.sv);
+}
+
 // ── Type-check (E2010/E2011/E2012/E2013) dipindah ke `check/tests.rs` ──
 
 // Type-check tests (E2002-lewat-const, enum width, E2010/E2011/E2012/E2013,

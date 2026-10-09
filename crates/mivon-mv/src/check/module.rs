@@ -113,6 +113,13 @@ pub(crate) fn check_module<'a>(m: &'a Module, ctx: &'a Ctx<'a>) -> Result<(), Mv
                 line,
                 col,
                 ..
+            }
+            | MItem::Wire {
+                names,
+                ty,
+                line,
+                col,
+                ..
             } => {
                 check_type_scope(ty, ctx, Some(&scope), 0)?;
                 for n in names {
@@ -214,8 +221,13 @@ pub(crate) fn check_module<'a>(m: &'a Module, ctx: &'a Ctx<'a>) -> Result<(), Mv
     }
 
     // ── pass 2: statement (seq/comb/always/latch/initial/final/inst/gen/…) ──
+    // E2003 hanya di DUT (tanpa initial/final); TB boleh drive input port.
+    let is_tb = m
+        .items
+        .iter()
+        .any(|i| matches!(i, MItem::Initial(_) | MItem::Final(_)));
     for item in &m.items {
-        check_module_item(item, ctx, &mut scope)?;
+        check_module_item(item, ctx, &mut scope, is_tb)?;
     }
     Ok(())
 }
@@ -226,11 +238,27 @@ pub(crate) fn is_iface_type(ty: &MvType, ctx: &Ctx) -> bool {
     matches!(ty, MvType::Named(n, ..) if ctx.interfaces.contains(n.as_str()))
 }
 
+/// F75: tipe yang sah untuk `wire` — net hanya untuk bit/logic (signed)
+/// atau typedef/array-nya. `int/real/string/queue` ditolak E2005.
+fn is_wireable(ty: &MvType) -> bool {
+    match ty {
+        MvType::Bit | MvType::Logic(_) => true,
+        MvType::Signed(inner) => matches!(
+            inner.as_ref(),
+            MvType::Bit | MvType::Logic(_) | MvType::Named(..)
+        ),
+        MvType::Array(inner, _) => is_wireable(inner),
+        MvType::Named(..) => true,
+        _ => false,
+    }
+}
+
 /// Item module (termasuk di dalam blok generate).
 fn check_module_item<'a>(
     item: &'a MItem,
     ctx: &'a Ctx<'a>,
     scope: &mut Scope<'a>,
+    is_tb: bool,
 ) -> Result<(), MvError> {
     match item {
         MItem::Port(_) => Ok(()),    // port tidak valid di dalam generate — abaikan
@@ -252,6 +280,70 @@ fn check_module_item<'a>(
             for n in names {
                 scope.sigs.insert(n.as_str());
                 scope.types.insert(n.as_str(), ty);
+            }
+            Ok(())
+        }
+        MItem::Wire {
+            names, ty, init, line, col, ..
+        } => {
+            check_type_scope(ty, ctx, Some(scope), 0)?;
+            if !is_wireable(ty) {
+                return Err(err_at(
+                    *line,
+                    *col,
+                    "E2005",
+                    format!(
+                        "wire hanya mendukung bit/logic (signed) atau typedef/array-nya — di '{}'",
+                        scope.env.mname
+                    ),
+                ));
+            }
+            if let Some(i) = init {
+                check_expr(i, ctx, scope, 0)?;
+            }
+            for n in names {
+                scope.sigs.insert(n.as_str());
+                scope.types.insert(n.as_str(), ty);
+            }
+            Ok(())
+        }
+        MItem::Assign { lhs, rhs, line, col } => {
+            // Continuous assign: blocking semantik, bukan di seq.
+            // Aturan sama seperti blocking di comb: E2003 (input port hanya
+            // boleh di TB), E2001 via check_expr, E2010 lvalue const, E2002 width.
+            if !is_tb {
+                if let Some(base) = super::stmt::base_ident(lhs) {
+                    if let Some(Dir::In) = scope.env.ports.get(base) {
+                        return Err(err_at(
+                            *line,
+                            *col,
+                            "E2003",
+                            format!(
+                                "cannot drive input port '{base}' — di '{}'",
+                                scope.env.mname
+                            ),
+                        ));
+                    }
+                }
+            }
+            check_expr(lhs, ctx, scope, 0)?;
+            check_expr(rhs, ctx, scope, 0)?;
+            super::stmt::check_lvalue_not_const(lhs, scope, *line, *col)?;
+            let wl = super::expr::expr_width(lhs, ctx, scope, 0);
+            let wr = super::expr::expr_width(rhs, ctx, scope, 0);
+            if let (Some(l), Some(r)) = (wl, wr) {
+                if r > l {
+                    return Err(err_at(
+                        *line,
+                        *col,
+                        "E2002",
+                        format!(
+                            "lebar {r} bit ke sinyal {l}-bit '{}' — di '{}'",
+                            super::stmt::describe_lhs(lhs),
+                            scope.env.mname
+                        ),
+                    ));
+                }
             }
             Ok(())
         }
@@ -475,7 +567,7 @@ fn check_module_item<'a>(
             let mut inner = scope.clone();
             inner.sigs.insert(var.as_str());
             for it in body {
-                check_module_item(it, ctx, &mut inner)?;
+                check_module_item(it, ctx, &mut inner, is_tb)?;
             }
             Ok(())
         }
@@ -483,11 +575,11 @@ fn check_module_item<'a>(
             check_expr(cond, ctx, scope, 0)?;
             let mut inner = scope.clone();
             for it in then {
-                check_module_item(it, ctx, &mut inner)?;
+                check_module_item(it, ctx, &mut inner, is_tb)?;
             }
             let mut inner2 = scope.clone();
             for it in els {
-                check_module_item(it, ctx, &mut inner2)?;
+                check_module_item(it, ctx, &mut inner2, is_tb)?;
             }
             Ok(())
         }

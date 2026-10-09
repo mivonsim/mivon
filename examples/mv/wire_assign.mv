@@ -1,0 +1,52 @@
+// ─────────────────────────────────────────────────────────────
+// Contoh F75 — wire + assign kontinu (MIVON-HDL.md §6.4/§6.6)
+//   * wire = net Verilog (LRM §6.5/§10.2), assign = continuous assignment
+//   * 1 baris assign vs blok comb — penulisan jauh lebih ringkas
+// Generate: mivon mgen wire_assign.mv
+// Simulasi: mivon wire_assign.mv --top tb_wire -T 50
+// ─────────────────────────────────────────────────────────────
+
+module wire_alu {
+    in a, b : bit
+    in x : logic[7:0]
+    out y : bit
+    out v : logic[7:0]
+
+    wire w_and : bit
+    wire w_or : bit
+    wire wv : logic[7:0]
+
+    assign w_and = a & b
+    assign w_or = a | b
+    assign y = w_and ^ w_or
+    assign wv = x + 1
+    assign v = wv
+}
+
+module tb_wire {
+    sig a, b : bit
+    sig x : logic[7:0]
+    sig y : bit
+    sig v : logic[7:0]
+
+    inst wire_alu u (.a, .b, .x, .y, .v)
+
+    initial {
+        a = 0
+        b = 0
+        x = 41
+        #1
+        assert (y == 0) $info("c0 ok") else $error("c0 fail")
+        assert (v == 42) $info("v ok") else $error("v fail")
+        a = 1
+        b = 1
+        #1
+        assert (y == 0) $info("c1 ok") else $error("c1 fail")
+        a = 1
+        b = 0
+        #1
+        assert (y == 1) $info("c2 ok") else $error("c2 fail")
+        $display("WIRE_ASSIGN_OK y=%0d v=%0d", y, v)
+        $finish
+    }
+}

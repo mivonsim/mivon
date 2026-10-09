@@ -56,7 +56,9 @@ pub(crate) fn emit_module_kw(out: &mut String, m: &Module, kw: &str, iface_names
     let mut port_init: std::collections::HashMap<&str, &Expr> = std::collections::HashMap::new();
     for item in &m.items {
         let (names, init) = match item {
-            MItem::Sig { names, init, .. } | MItem::Reg { names, init, .. } => (names, init),
+            MItem::Sig { names, init, .. }
+            | MItem::Reg { names, init, .. }
+            | MItem::Wire { names, init, .. } => (names, init),
             _ => continue,
         };
         if let Some(init) = init {
@@ -184,6 +186,26 @@ pub(crate) fn emit_module_kw(out: &mut String, m: &Module, kw: &str, iface_names
                         ),
                     );
                 }
+            }
+            MItem::Wire {
+                names, ty, init, ..
+            } => {
+                let fresh: Vec<String> = names
+                    .iter()
+                    .filter(|n| !port_names.contains(n))
+                    .cloned()
+                    .collect();
+                if !fresh.is_empty() {
+                    let init_s = super::emit_init(init);
+                    line(
+                        out,
+                        1,
+                        &format!("{}{};", super::emit_wire_decl_multi(ty, &fresh), init_s),
+                    );
+                }
+            }
+            MItem::Assign { lhs, rhs, .. } => {
+                line(out, 1, &format!("assign {} = {};", emit_expr(lhs), emit_expr(rhs)));
             }
             MItem::Const {
                 name, ty, value, ..
@@ -359,6 +381,19 @@ pub(crate) fn emit_module_item_at(
                 indent,
                 &format!("{}{};", super::emit_signal_decl_multi(ty, names), init_s),
             );
+        }
+        MItem::Wire {
+            names, ty, init, ..
+        } => {
+            let init_s = super::emit_init(init);
+            line(
+                out,
+                indent,
+                &format!("{}{};", super::emit_wire_decl_multi(ty, names), init_s),
+            );
+        }
+        MItem::Assign { lhs, rhs, .. } => {
+            line(out, indent, &format!("assign {} = {};", emit_expr(lhs), emit_expr(rhs)));
         }
         MItem::Const {
             name, ty, value, ..
