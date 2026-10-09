@@ -311,6 +311,63 @@ pub struct MicdDatabase {
     pub precompiled_db: Option<precompiled::PrecompiledDb>,
 }
 
+// ─── Helper I/O: mengurangi duplikasi open/save ───
+
+/// Baca satu objek singleton dari file MDB. Mengembalikan `None` bila file
+/// tidak ada, corrupt, atau key tidak ditemukan.
+fn read_mdb_singleton<T: serde::de::DeserializeOwned>(
+    dir: &Path,
+    filename: &str,
+) -> Option<T> {
+    let r = MdbReader::open(&dir.join(filename)).ok()?;
+    let b = r.get(KEY_SINGLETON)?;
+    bincode::deserialize(&b).ok()
+}
+
+/// Baca semua objek (kecuali singleton) dari file MDB.
+fn read_mdb_entries<T: serde::de::DeserializeOwned>(
+    dir: &Path,
+    filename: &str,
+) -> Vec<T> {
+    let Ok(r) = MdbReader::open(&dir.join(filename)) else {
+        return Vec::new();
+    };
+    r.keys()
+        .iter()
+        .filter(|(k, _)| *k != KEY_SINGLETON)
+        .filter_map(|(k, _)| r.get(*k).and_then(|b| bincode::deserialize(&b).ok()))
+        .collect()
+}
+
+/// Serialisasi satu objek singleton ke bytes MDB (belum ditulis ke disk).
+fn serialize_mdb_singleton<T: serde::Serialize>(
+    obj: &T,
+    kind: u8,
+) -> io::Result<Vec<u8>> {
+    let mut w = MdbWriter::new();
+    w.put(
+        KEY_SINGLETON,
+        kind,
+        bincode::serialize(obj).map_err(io::Error::other)?,
+    );
+    w.serialize().map_err(io::Error::other)
+}
+
+/// Serialisasi satu objek singleton ke bytes MDB dengan kompresi.
+fn serialize_mdb_singleton_compressed<T: serde::Serialize>(
+    obj: &T,
+    kind: u8,
+    compression: format::Compression,
+) -> io::Result<Vec<u8>> {
+    let mut w = MdbWriter::with_compression(compression);
+    w.put(
+        KEY_SINGLETON,
+        kind,
+        bincode::serialize(obj).map_err(io::Error::other)?,
+    );
+    w.serialize().map_err(io::Error::other)
+}
+
 impl MicdDatabase {
     /// Lokasi alternatif saat root default tidak bisa dipakai: `.mivon` adalah
     /// FILE (project file untuk `--filelist`/`-f`), bukan folder → MICD harus
@@ -575,58 +632,32 @@ impl MicdDatabase {
         }
 
         // graph.mdb
-        if let Ok(r) = MdbReader::open(&st.join(DB_GRAPH)) {
-            if let Some(b) = r.get(KEY_SINGLETON) {
-                if let Ok(g) = bincode::deserialize::<FileGraph>(&b) {
-                    db.graph = g;
-                }
-            }
+        if let Some(g) = read_mdb_singleton::<FileGraph>(&st, DB_GRAPH) {
+            db.graph = g;
         }
 
-        // verify.mdb
-        if let Ok(r) = MdbReader::open(&st.join(DB_VERIFY)) {
-            for (key, _kind) in r.keys() {
-                if key == KEY_SINGLETON {
-                    continue;
-                }
-                if let Some(b) = r.get(key) {
-                    if let Ok(v) = bincode::deserialize::<VerifyResult>(&b) {
-                        if v.ast_hash != 0 {
-                            db.verify_ast_index.insert(v.ast_hash, v.content_hash);
-                        }
-                        if v.semantic_hash != 0 {
-                            db.verify_semantic_index
-                                .insert(v.semantic_hash, v.content_hash);
-                        }
-                        let at = v.verified_at_ns;
-                        db.verify_accessed.insert(v.content_hash, at);
-                        db.verify.insert(v.content_hash, v);
-                    }
-                }
+        // verify.mdb — multi-entry: content_hash → VerifyResult
+        for v in read_mdb_entries::<VerifyResult>(&st, DB_VERIFY) {
+            if v.ast_hash != 0 {
+                db.verify_ast_index.insert(v.ast_hash, v.content_hash);
             }
+            if v.semantic_hash != 0 {
+                db.verify_semantic_index
+                    .insert(v.semantic_hash, v.content_hash);
+            }
+            let at = v.verified_at_ns;
+            db.verify_accessed.insert(v.content_hash, at);
+            db.verify.insert(v.content_hash, v);
         }
 
-        // diagnostics.mdb
-        if let Ok(r) = MdbReader::open(&st.join(DB_DIAG)) {
-            for (key, _kind) in r.keys() {
-                if key == KEY_SINGLETON {
-                    continue;
-                }
-                if let Some(b) = r.get(key) {
-                    if let Ok(d) = bincode::deserialize::<FileDiags>(&b) {
-                        db.diags.insert(d.path.clone(), d);
-                    }
-                }
-            }
+        // diagnostics.mdb — multi-entry: path_hash → FileDiags
+        for d in read_mdb_entries::<FileDiags>(&st, DB_DIAG) {
+            db.diags.insert(d.path.clone(), d);
         }
 
         // symbol.mdb
-        if let Ok(r) = MdbReader::open(&st.join(DB_SYMBOL)) {
-            if let Some(b) = r.get(KEY_SINGLETON) {
-                if let Ok(s) = bincode::deserialize::<SymbolIndex>(&b) {
-                    db.symbols = s;
-                }
-            }
+        if let Some(s) = read_mdb_singleton::<SymbolIndex>(&st, DB_SYMBOL) {
+            db.symbols = s;
         }
 
         // Objek AST — payload CAS di `objects/<pid>/<hex-hash>.ast`.
@@ -671,21 +702,13 @@ impl MicdDatabase {
         }
 
         // types.mdb (signature index)
-        if let Ok(r) = MdbReader::open(&st.join(DB_TYPE)) {
-            if let Some(b) = r.get(KEY_SINGLETON) {
-                if let Ok(m) = bincode::deserialize::<HashMap<String, u64>>(&b) {
-                    db.type_index = m;
-                }
-            }
+        if let Some(m) = read_mdb_singleton::<HashMap<String, u64>>(&st, DB_TYPE) {
+            db.type_index = m;
         }
 
         // stats.mdb (Kritik 14 db.md)
-        if let Ok(r) = MdbReader::open(&st.join(DB_STATS)) {
-            if let Some(b) = r.get(KEY_SINGLETON) {
-                if let Ok(s) = bincode::deserialize::<StatsDb>(&b) {
-                    db.stats_db = s;
-                }
-            }
+        if let Some(s) = read_mdb_singleton::<StatsDb>(&st, DB_STATS) {
+            db.stats_db = s;
         }
 
         db
@@ -1215,13 +1238,14 @@ impl MicdDatabase {
         // tidak rebuild per-call).
         if self.dirty_graph {
             self.graph.rebuild();
-            let mut w = MdbWriter::with_compression(format::Compression::Lz4);
-            w.put(
-                KEY_SINGLETON,
-                format::KIND_GRAPH,
-                bincode::serialize(&self.graph).map_err(io::Error::other)?,
-            );
-            pending.push((st.join(DB_GRAPH), w.serialize().map_err(io::Error::other)?));
+            pending.push((
+                st.join(DB_GRAPH),
+                serialize_mdb_singleton_compressed(
+                    &self.graph,
+                    format::KIND_GRAPH,
+                    format::Compression::Lz4,
+                )?,
+            ));
         }
 
         // verify.mdb
@@ -1253,24 +1277,18 @@ impl MicdDatabase {
 
         // symbol.mdb
         if self.dirty_symbol {
-            let mut w = MdbWriter::new();
-            w.put(
-                KEY_SINGLETON,
-                format::KIND_SYMBOL,
-                bincode::serialize(&self.symbols).map_err(io::Error::other)?,
-            );
-            pending.push((st.join(DB_SYMBOL), w.serialize().map_err(io::Error::other)?));
+            pending.push((
+                st.join(DB_SYMBOL),
+                serialize_mdb_singleton(&self.symbols, format::KIND_SYMBOL)?,
+            ));
         }
 
         // types.mdb
         if self.dirty_type {
-            let mut w = MdbWriter::new();
-            w.put(
-                KEY_SINGLETON,
-                format::KIND_TYPE,
-                bincode::serialize(&self.type_index).map_err(io::Error::other)?,
-            );
-            pending.push((st.join(DB_TYPE), w.serialize().map_err(io::Error::other)?));
+            pending.push((
+                st.join(DB_TYPE),
+                serialize_mdb_singleton(&self.type_index, format::KIND_TYPE)?,
+            ));
         }
 
         // ── Objek CAS (payload immutable) — ditulis di luar transaksi batch:
@@ -1285,13 +1303,10 @@ impl MicdDatabase {
 
         // stats.mdb (Kritik 14 db.md).
         if self.dirty_stats {
-            let mut w = MdbWriter::new();
-            w.put(
-                KEY_SINGLETON,
-                format::KIND_STATS,
-                bincode::serialize(&self.stats_db).map_err(io::Error::other)?,
-            );
-            pending.push((st.join(DB_STATS), w.serialize().map_err(io::Error::other)?));
+            pending.push((
+                st.join(DB_STATS),
+                serialize_mdb_singleton(&self.stats_db, format::KIND_STATS)?,
+            ));
         }
 
         // ── Fase 2–5: transaksi (lock → journal → tmp → commit → bersihkan). ──
