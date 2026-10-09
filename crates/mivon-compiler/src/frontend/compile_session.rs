@@ -108,9 +108,6 @@ pub struct CompileSession {
     micd_restored_paths: HashSet<PathBuf>,
     /// Include deps per file (dari preprocessor) untuk verifikasi header.
     micd_include_deps: HashMap<PathBuf, Vec<PathBuf>>,
-    /// Payload lexer per file yang di-lex sesi ini: summary + token stream
-    /// (db.md "2. lexer/") untuk cache lexer/.
-    lexer_payloads: std::sync::Mutex<Vec<(PathBuf, crate::micd::cache::pipeline::LexerPayload)>>,
     /// Parse errors collected during compilation
     pub parse_errors: Vec<mivon_core::diagnostics::Diagnostic>,
     /// Diagnostik parse PER FILE (path → diagnostics) dari compile terakhir.
@@ -348,7 +345,6 @@ impl CompileSession {
             micd_restored: 0,
             micd_restored_paths: HashSet::new(),
             micd_include_deps: HashMap::new(),
-            lexer_payloads: std::sync::Mutex::new(Vec::new()),
             parse_errors: Vec::new(),
             file_parse_diags: HashMap::new(),
             elab_diagnostics: Vec::new(),
@@ -590,7 +586,6 @@ impl CompileSession {
 
         // ── Phase 5: Parallel lexing + parsing dengan posisi global ──
         let lex_start = Instant::now();
-        let lexer_payloads = &self.lexer_payloads;
         // Clone callback progres per-file sebelum closure par_iter (tanpa
         // mem-borrow self di dalam rayon).
         let file_progress = self.file_progress.clone();
@@ -676,34 +671,7 @@ impl CompileSession {
                     toks
                 };
 
-                // Cache lexer/ (db.md "2. lexer/"): simpan summary + token
-                // stream asli (TokenID/Kind + Location) agar tool dapat
-                // membaca token tanpa menjalankan lexer ulang.
-                let mut summary = crate::micd::cache::pipeline::LexerSummary {
-                    token_count: 0,
-                    identifiers: 0,
-                    numbers: 0,
-                    strings: 0,
-                    errors: 0,
-                    source_bytes: combined.len() as u64,
-                };
-                let mut records = Vec::with_capacity(tokens.len());
-                for (tok, line, col) in &tokens {
-                    summary.observe(tok);
-                    records.push(crate::micd::cache::pipeline::TokenRecord {
-                        kind: crate::micd::cache::pipeline::token_family(tok),
-                        line: *line as u32,
-                        col: *col as u32,
-                    });
-                }
-                lexer_payloads.lock().unwrap().push((
-                    path.clone(),
-                    crate::micd::cache::pipeline::LexerPayload {
-                        summary,
-                        tokens: records,
-                    },
-                ));
-
+                // Parser: token global → design per file.
                 let mut parser = Parser::new(tokens, &path_str)
                     .with_global_type_names(&global_classes, &global_typedefs)
                     .with_source_lines(&combined)
@@ -1374,7 +1342,6 @@ impl CompileSession {
             }
         }
         self.micd_restored = 0;
-        self.lexer_payloads.lock().unwrap().clear();
         self.prev_checksums.clear();
         self.prev_designs.clear();
         self.prev_combined_sources.clear();
@@ -1834,30 +1801,14 @@ impl CompileSession {
             }
         }
 
-        // ── Fase 2b: lapisan cache pipeline (db.md cache/, baris 1141-1605) ──
-        // Isi kategori cache (preprocess/lexer/parser/semantic/type/constant/
-        // hierarchy/resolve/macro/include/dependency/verify) dari data compile.
+        // ── Fase 2b: lapisan cache pipeline — HANYA kategori dibaca tools
+        // (elaborate/generate/optimize/expression). 12 kategori tak-terbaca
+        // tak lagi diisi (hemat I/O ribuan put per build).
         // Hanya saat ada perubahan (full_write) — warm run melewati (entry lama
         // tetap valid). Save store-nya ikut `db.save()` di Fase 3.
         if full_write {
-            let module_file: HashMap<String, PathBuf> = self
-                .module_index
-                .iter()
-                .map(|(name, _kind, meta)| (name.to_string(), meta.file.clone()))
-                .collect();
-            let lexer_payloads = std::mem::take(&mut self.lexer_payloads)
-                .into_inner()
-                .unwrap_or_default();
             let input = crate::micd::cache::pipeline::CachePopulateInput {
                 designs: self.prev_designs.iter().collect(),
-                combined: &self.prev_combined_sources,
-                defines: &self.config.defines,
-                include_deps: &self.micd_include_deps,
-                include_hashes: &inc_hashes,
-                lexer_payloads,
-                symbols: symbols.clone(),
-                type_entries: type_entries.clone(),
-                module_file,
                 // IR hanya tersedia bila save_micd dipanggil SETELAH
                 // compile_and_elaborate (jalur tool). Jalur run_fast memanggil
                 // save_micd sebelum elaborate — kategori elaborate/generate
@@ -2063,21 +2014,8 @@ impl CompileSession {
         opt_snapshot: Option<mivon_elaboration::util::OptimizeSnapshot>,
     ) {
         let Some(db) = self.micd.as_mut() else { return };
-        let module_file: HashMap<String, PathBuf> = self
-            .module_index
-            .iter()
-            .map(|(name, _kind, meta)| (name.to_string(), meta.file.clone()))
-            .collect();
         let input = crate::micd::cache::pipeline::CachePopulateInput {
             designs: self.prev_designs.iter().collect(),
-            combined: &self.prev_combined_sources,
-            defines: &self.config.defines,
-            include_deps: &self.micd_include_deps,
-            include_hashes: &HashMap::new(),
-            lexer_payloads: vec![],
-            symbols: vec![],
-            type_entries: vec![],
-            module_file,
             ir_design: Some(ir),
             expanded_design,
             opt_snapshot,

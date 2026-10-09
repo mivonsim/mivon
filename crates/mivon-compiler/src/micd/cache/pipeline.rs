@@ -2,35 +2,27 @@
 //! kompilasi (db.md "Saran arsitektur cache": tiap kategori menyimpan artefak
 //! tahapnya agar skip ulang saat hash identik).
 //!
-//! STATUS FASE 2 (Kritik A): file ini dalam masa transisi menuju write-through
-//! (stage menulis langsung saat menghasilkan artefak). Kategori yang datanya
-//! sudah di-mirror dari setter state/ (`verify`, `profile`) tidak lagi
-//! bergantung pada populator — populator tersisa untuk kategori yang dibaca
-//! tools (`elaborate`, `generate`, `optimize`, `profile`) sampai write-through
-//! penuh (Fase 2b). Jangan tambah kategori derivasi baru di sini; tulis
-//! langsung via `StageStore`/`CacheLayer` di titik produksi.
+//! STATUS FASE 2b (Kritik A, internal): populator derivasi 12 kategori
+//! tak-terbaca dihapus (preprocess/lexer/parser/semantic/macro/include/
+//! dependency/resolve/constant/type/hierarchy) + mirror verify/profile sudah
+//! write-through dari setter state/. Tersisa HANYA kategori dibaca tools:
+//! elaborate/generate (baca `melab`), optimize/expression (baca `minspect`).
+//! simulation/waveform/coverage/lint ditulis langsung tools terkait.
+//! Jangan tambah kategori derivasi baru di sini; tulis langsung via
+//! `StageStore`/`CacheLayer` di titik produksi.
 //!
 //! Kategori yang diisi otomatis pada save (data tersedia di compile):
 //!
 //! | Kategori       | Payload                                    | Kunci        |
 //! |----------------|--------------------------------------------|--------------|
-//! | preprocess/    | expanded source + timescale                | path file    |
-//! | lexer/         | ringkasan token (jumlah per keluarga)      | path file    |
-//! | parser/        | ringkasan parse (module/error)             | path file    |
-//! | semantic/      | signature + lebar port module              | nama module  |
-//! | verify/        | hasil per kategori analisis                | hash hex     |
-//! | macro/         | tabel define                               | "defines"    |
-//! | include/       | pohon include + hash header                | path file    |
-//! | dependency/    | edge file + def/use simbol                 | "graph"      |
-//! | resolve/       | simbol → file/kind                         | nama simbol  |
-//! | constant/      | parameter & default module                 | nama module  |
-//! | type/          | signature + port type module               | nama module  |
-//! | hierarchy/     | instance & import tiap module              | nama module  |
 //! | elaborate/     | instance, port binding, proses, net (IR)   | nama module  |
 //! | generate/      | blok if/for/case + instance hasil generate | nama module  |
 //! | optimize/      | const fold + loop unroll (elaborator)      | "last"       |
 //! | expression/    | evaluasi ekspresi + sampel hasil fold      | "last"       |
-//! | profile/       | profil build terakhir                      | "last"       |
+//!
+//! 12 kategori lain (preprocess/lexer/parser/semantic/verify/macro/include/
+//! dependency/resolve/constant/type/hierarchy) + profile TIDAK diisi populator
+//! (verify/profile via mirror setter; sisanya tak punya pembaca produksi).
 //!
 //! elaborate/ diisi dari IR bila tersedia (dipakai `save_elaborate_cache`
 //!   setelah elaborasi); tanpa IR diisi fallback AST (instance saja). optimize/
@@ -42,181 +34,19 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use mivon_ast::types::{Module, ModuleItem, PortDirection};
+use mivon_ast::types::{Module, ModuleItem};
 use mivon_ast::Design;
 use serde::{Deserialize, Serialize};
 
 use super::super::verify::{CheckResult, VerifyCheckKind};
 use super::{CacheCategory, CacheLayer};
-use crate::cache::compute_checksum;
 use crate::micd::metadata::path_hash;
 
 // ─── Payload per kategori ───
 
-/// Ringkasan lexer per file (db.md "2. lexer/").
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct LexerSummary {
-    pub token_count: u64,
-    pub identifiers: u64,
-    pub numbers: u64,
-    pub strings: u64,
-    pub errors: u64,
-    /// Panjang combined source (byte).
-    pub source_bytes: u64,
-}
-
-impl LexerSummary {
-    /// Akumulasi satu token ke ringkasan.
-    pub fn observe(&mut self, tok: &mivon_parser::lexer::Token) {
-        use mivon_parser::lexer::Token::*;
-        self.token_count += 1;
-        match tok {
-            Ident(_) => self.identifiers += 1,
-            Number { .. } | RealNum(_) => self.numbers += 1,
-            StringLit(_) => self.strings += 1,
-            Error(_) => self.errors += 1,
-            _ => {}
-        }
-    }
-}
-
-/// Satu token dalam stream cache lexer/ (db.md "2. lexer/": TokenID + Kind +
-/// Location). `kind` adalah kode keluarga token yang stabil (lihat
-/// [`token_family`]); `line`/`col` adalah lokasi di combined source.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TokenRecord {
-    pub kind: u8,
-    pub line: u32,
-    pub col: u32,
-}
-
-/// Payload kategori lexer/ per file: ringkasan + token stream asli sehingga
-/// IDE/tool dapat membaca token tanpa menjalankan lexer ulang (db.md
-/// "module.lex berisi TokenID, Kind, Location").
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct LexerPayload {
-    pub summary: LexerSummary,
-    pub tokens: Vec<TokenRecord>,
-}
-
-/// Keluarga token (kind byte stabil untuk cache lexer/).
-/// 0=Eof 1=Ident 2=Number 3=String 4=FillLit 5=Error 6=Keyword 7=Operator/Punct
-pub const KIND_EOF: u8 = 0;
-pub const KIND_IDENT: u8 = 1;
-pub const KIND_NUMBER: u8 = 2;
-pub const KIND_STRING: u8 = 3;
-pub const KIND_FILL: u8 = 4;
-pub const KIND_ERROR: u8 = 5;
-pub const KIND_KEYWORD: u8 = 6;
-pub const KIND_OPERATOR: u8 = 7;
-
-/// Kode keluarga stabil untuk satu token (exhaustive — operator/punctuation
-/// yang tidak terdaftar masuk ke `KIND_OPERATOR`).
-pub fn token_family(tok: &mivon_parser::lexer::Token) -> u8 {
-    use mivon_parser::lexer::Token::*;
-    match tok {
-        Eof => KIND_EOF,
-        Ident(_) => KIND_IDENT,
-        Number { .. } | RealNum(_) => KIND_NUMBER,
-        StringLit(_) => KIND_STRING,
-        FillLit(_) => KIND_FILL,
-        Error(_) => KIND_ERROR,
-        // Keywords (unit variants berteks kata kunci SV).
-        Module | Endmodule | Input | Output | Inout | Ref | Wire | Reg | Logic | Int | Integer
-        | Signed | Unsigned | Wand | Wor | Tri | Tri0 | Tri1 | TriAnd | TriOr | Supply0
-        | Supply1 | Always | AlwaysComb | AlwaysFF | AlwaysLatch | Initial | Final | Assign
-        | Begin | End | If | Else | Case | CaseX | CaseZ | Endcase | For | While | Do | Repeat
-        | Forever | PosEdge | NegEdge | Or | Param | Parameter | LocalParam | GenVar | Generate
-        | EndGenerate | Function | EndFunction | Task | EndTask | Foreach | Auto | Static
-        | Real | WReal | Time | RealTime | String | Class | EndClass | Virtual | Extends | This
-        | New | Void | Break | Continue | Default | Disable | Force | Release | Deassign
-        | Return | Wait | Null | None | Some_ | And | Xor | Nand | Nor | Xnor | Buf | NotGate
-        | Module_ | Interface | EndInterface | ModPort | Program | EndProgram | Fork | Join
-        | JoinAny | JoinNone | Bit | Enum | Typedef | Byte | Shortint | Longint | Struct
-        | Union | EndEnum | Inside | Unique | Priority | Unique0 | Rand | RandC | Constraint
-        | Const | Var | Solve | Assert | Assume | Cover | Expect | WaitOrder | Property
-        | Sequence | EndSequence | Package | EndPackage | Import | Export | Mailbox | Semaphore
-        | Bind | Specify | EndSpecify | SpecParam | Clocking | EndClocking | Config | EndConfig
-        | Design | Liblist | Cell | Use | Instance | Covergroup | EndGroup | Coverpoint | Cross
-        | Bins | IllegalBins | IgnoreBins | Option_ | Primitive | EndPrimitive | Table
-        | EndTable | Type => KIND_KEYWORD,
-        // Operator & punctuation.
-        _ => KIND_OPERATOR,
-    }
-}
-
-/// Ringkasan parse per file (db.md "3. parser/").
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ParseSummary {
-    pub modules: usize,
-    pub packages: usize,
-    pub interfaces: usize,
-    pub classes: usize,
-    pub error_count: usize,
-}
-
-/// Payload preprocess per file (db.md "1. preprocess/").
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct PreprocessPayload {
-    pub combined: String,
-    pub timescale: Option<(String, String)>,
-}
-
-/// Tabel define (db.md "13. macro/").
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct MacroTable {
-    pub defines: Vec<(String, String)>,
-}
-
-/// Pohon include + hash (db.md "14. include/").
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct IncludeTree {
-    pub includes: Vec<(PathBuf, u64)>,
-}
-
-/// Info satu port untuk semantic/type cache.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct PortInfo {
-    pub name: String,
-    pub dir: String,
-    pub width: usize,
-}
-
-/// Signature + port module (db.md "4. semantic/").
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ModuleSemantic {
-    pub signature: u64,
-    pub ports: Vec<PortInfo>,
-}
-
-/// Index tipe module (db.md "12. type/").
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ModuleType {
-    pub signature: u64,
-    pub ports: Vec<PortInfo>,
-}
-
-/// Hierarki module: instance + import (db.md "15. hierarchy/").
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct ModuleHierarchy {
-    pub instances: Vec<String>,
-    pub imports: Vec<(String, String)>,
-}
-
-/// Tabel konstanta module (parameter) (db.md "11. constant/").
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct ConstTable {
-    /// (nama, punya default, is_type_param, is_localparam)
-    pub params: Vec<(String, bool, bool, bool)>,
-}
-
-/// Hasil resolver untuk satu simbol (db.md "9. resolve/").
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ResolveInfo {
-    pub kind: String,
-    pub file: String,
-    pub signature: u64,
-}
+// (Fase 2b: payload lexer/preprocess/parser/semantic/type/hierarchy/
+// constant/resolve/dependency/macro/include dihapus bersama populatornya —
+// tak ada pembaca produksi. VerifyPayload tetap (mirror write-through).)
 
 /// Hasil verifikasi (db.md "7. verify/", Kritik 9).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -228,17 +58,6 @@ pub struct VerifyPayload {
     pub info_count: usize,
     /// Hasil per kategori analisis — bukan satu blob.
     pub checks: Vec<(VerifyCheckKind, CheckResult)>,
-}
-
-/// Dependency file + simbol (db.md "8. dependency/").
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct DependencyPayload {
-    /// file → dependensi file lain.
-    pub file_deps: Vec<(String, Vec<String>)>,
-    /// (simbol, file) — definisi.
-    pub symbol_defs: Vec<(String, String)>,
-    /// (file, simbol) — pemakaian.
-    pub symbol_uses: Vec<(String, String)>,
 }
 
 /// Satu instance hasil elaborasi (db.md "5. elaborate/": Module Instance +
@@ -398,24 +217,6 @@ pub struct ExpressionPayload {
 pub struct CachePopulateInput<'a> {
     /// Design per file (path → design).
     pub designs: Vec<(&'a PathBuf, &'a Design)>,
-    /// Combined source per file.
-    pub combined: &'a HashMap<PathBuf, String>,
-    pub defines: &'a [(String, String)],
-    /// Include deps per file.
-    pub include_deps: &'a HashMap<PathBuf, Vec<PathBuf>>,
-    /// Hash include PRECOMPUTED per path (di-cache caller — save_micd sudah
-    /// menghitungnya di fase gather). Hindari baca ulang setiap include file
-    /// dari disk di populate_include (double-read besar utk OpenTitan).
-    /// Kosong → populate_include fallback ke hitung sendiri.
-    pub include_hashes: &'a HashMap<PathBuf, u64>,
-    /// Payload lexer per file (summary + token stream, di-capture saat lex).
-    pub lexer_payloads: Vec<(PathBuf, LexerPayload)>,
-    /// Simbol yang dikumpulkan compile: (name, kind, file).
-    pub symbols: Vec<(String, String, PathBuf)>,
-    /// Signature tipe: (module, signature).
-    pub type_entries: Vec<(String, u64)>,
-    /// Module → file (atribusi).
-    pub module_file: HashMap<String, PathBuf>,
     /// IR hasil elaborasi — dipakai untuk kategori elaborate/ + generate/
     /// (db.md "5. elaborate/", "16. generate/"). `None` pada jalur parse-only
     /// (legacy / compile-only): elaborate/ diisi ringkasan AST sebagai
@@ -458,245 +259,25 @@ impl CachePopulator {
     /// Isi kategori yang datanya tersedia. Best-effort — kegagalan satu
     /// kategori tidak menggagalkan yang lain (cache bersifat non-kritis).
     ///
-    /// Fase 2: `verify` dan `profile` TIDAK lagi di sini — keduanya di-mirror
-    /// write-through dari setter state/ (`set_verify`/`set_stats`, format
-    /// identik, data current bukan stale). Satu jalur tulis, bukan dua.
+    /// Fase 2b (internal, tanpa beban kompatibel publik): HANYA kategori yang
+    /// dibaca tools yang diisi (elaborate/generate/optimize/expression).
+    /// 12 kategori tak-terbaca produksi (preprocess/lexer/parser/semantic/
+    /// verify/macro/include/dependency/resolve/constant/type/hierarchy)
+    /// dihapus dari sini — verify/profile sudah di-mirror write-through dari
+    /// setter state/ (Fase 2), sisanya tak punya pembaca (grep: hanya writer
+    /// + test). Menulisnya tiap build = I/O dobel tanpa manfaat.
     pub fn populate(layer: &mut CacheLayer, input: &CachePopulateInput) {
-        let sig_of = |name: &str| {
-            input
-                .type_entries
-                .iter()
-                .find(|(n, _)| n == name)
-                .map(|(_, s)| *s)
-                .unwrap_or(0)
-        };
-
-        Self::populate_preprocess(layer, input);
-        Self::populate_lexer(layer, input);
-        Self::populate_parser(layer, input);
-        Self::populate_macro(layer, input);
-        Self::populate_include(layer, input);
-        Self::populate_dependency(layer, input);
-        Self::populate_resolve(layer, input, &sig_of);
-        Self::populate_modules(layer, input, &sig_of);
-        Self::populate_elaborate(layer, input);
-        Self::populate_generate(layer, input);
-        Self::populate_optimize(layer, input);
+        Self::populate_elab(layer, input);
     }
 
     /// Isi hanya kategori elaborate/ + generate/ + optimize/ + expression/
     /// (dipakai jalur yang sudah punya IR setelah elaborasi — save_micd
     /// dipanggil sebelum elaborate agar cache parse tetap tersimpan walau
-    /// elaborasi gagal).
+    /// elaborasi gagal). `populate()` delegasi ke sini (satu badan).
     pub fn populate_elab(layer: &mut CacheLayer, input: &CachePopulateInput) {
         Self::populate_elaborate(layer, input);
         Self::populate_generate(layer, input);
         Self::populate_optimize(layer, input);
-    }
-
-    /// preprocess/: expanded source + timescale per file.
-    ///
-    /// Fase 2 (Kritik A): timescale diisi dari design file itu (bukan `None`
-    /// buta seperti sebelumnya — data hilang padahal `PreprocEntry` di state/
-    /// menyimpannya). Tanpa ini cache hangat kehilangan satuan per-module.
-    fn populate_preprocess(layer: &mut CacheLayer, input: &CachePopulateInput) {
-        for (path, combined) in input.combined {
-            let timescale = input
-                .designs
-                .iter()
-                .find(|(p, _)| *p == path)
-                .and_then(|(_, d)| design_timescale(d));
-            let payload = PreprocessPayload {
-                combined: combined.clone(),
-                timescale,
-            };
-            let key = path.to_string_lossy().to_string();
-            if let Ok(b) = bincode::serialize(&payload) {
-                let _ = layer.put(CacheCategory::Preprocess, &key, &b);
-            }
-        }
-    }
-
-    /// lexer/: summary + token stream asli per file (db.md "2. lexer/" —
-    /// TokenID + Kind + Location, dibaca tanpa menjalankan lexer ulang).
-    fn populate_lexer(layer: &mut CacheLayer, input: &CachePopulateInput) {
-        for (path, payload) in &input.lexer_payloads {
-            let key = path.to_string_lossy().to_string();
-            if let Ok(b) = bincode::serialize(payload) {
-                let _ = layer.put(CacheCategory::Lexer, &key, &b);
-            }
-        }
-    }
-
-    /// parser/: ringkasan parse per file.
-    fn populate_parser(layer: &mut CacheLayer, input: &CachePopulateInput) {
-        for (path, design) in &input.designs {
-            let summary = ParseSummary {
-                modules: design.modules.len(),
-                packages: design.packages.len(),
-                interfaces: design.interfaces.len(),
-                classes: design.classes.len(),
-                error_count: 0,
-            };
-            let key = path.to_string_lossy().to_string();
-            if let Ok(b) = bincode::serialize(&summary) {
-                let _ = layer.put(CacheCategory::Parser, &key, &b);
-            }
-        }
-    }
-
-    /// macro/: tabel define.
-    fn populate_macro(layer: &mut CacheLayer, input: &CachePopulateInput) {
-        let table = MacroTable {
-            defines: input.defines.to_vec(),
-        };
-        if let Ok(b) = bincode::serialize(&table) {
-            let _ = layer.put(CacheCategory::Macro, "defines", &b);
-        }
-    }
-
-    /// include/: pohon include + hash header per file.
-    fn populate_include(layer: &mut CacheLayer, input: &CachePopulateInput) {
-        for (path, deps) in input.include_deps {
-            let tree = IncludeTree {
-                includes: deps
-                    .iter()
-                    .map(|inc| {
-                        // Hash precomputed (save_micd gather) → tanpa baca ulang
-                        // disk; fallback hitung sendiri bila tak tersedia.
-                        let h = input.include_hashes.get(inc).copied().unwrap_or_else(|| {
-                            std::fs::read(inc)
-                                .map(|b| compute_checksum(&b))
-                                .unwrap_or(0)
-                        });
-                        (inc.clone(), h)
-                    })
-                    .collect(),
-            };
-            let key = path.to_string_lossy().to_string();
-            if let Ok(b) = bincode::serialize(&tree) {
-                let _ = layer.put(CacheCategory::Include, &key, &b);
-            }
-        }
-    }
-
-    /// dependency/: edge file + def/use simbol, diturunkan dari design.
-    fn populate_dependency(layer: &mut CacheLayer, input: &CachePopulateInput) {
-        let mut payload = DependencyPayload::default();
-        let file_of = |name: &str| input.module_file.get(name).cloned();
-
-        // Edge file: module A menginstansiasi/mengimpor module di file lain.
-        let mut file_deps: HashMap<String, Vec<String>> = HashMap::new();
-        for (_path, design) in &input.designs {
-            for m in &design.modules {
-                let Some(my_file) = file_of(m.name.as_str()) else {
-                    continue;
-                };
-                let my = my_file.to_string_lossy().to_string();
-                let deps = file_deps.entry(my.clone()).or_default();
-                for item in &m.items {
-                    match item {
-                        ModuleItem::Instance(inst) => {
-                            if let Some(f) = file_of(inst.module_name.as_str()) {
-                                let fs = f.to_string_lossy().to_string();
-                                if fs != my && !deps.contains(&fs) {
-                                    deps.push(fs);
-                                }
-                            }
-                            payload
-                                .symbol_uses
-                                .push((my.clone(), inst.module_name.to_string()));
-                        }
-                        ModuleItem::Import { package, item } => {
-                            if let Some(f) = file_of(package.as_str()) {
-                                let fs = f.to_string_lossy().to_string();
-                                if fs != my && !deps.contains(&fs) {
-                                    deps.push(fs);
-                                }
-                            }
-                            if item.as_str() != "*" {
-                                payload.symbol_uses.push((my.clone(), item.to_string()));
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-            }
-        }
-        for (f, ds) in file_deps {
-            if !ds.is_empty() {
-                payload.file_deps.push((f, ds));
-            }
-        }
-        for (name, kind, file) in &input.symbols {
-            if kind == "module" || kind == "package" || kind == "class" || kind == "interface" {
-                payload
-                    .symbol_defs
-                    .push((name.clone(), file.to_string_lossy().to_string()));
-            }
-        }
-        if let Ok(b) = bincode::serialize(&payload) {
-            let _ = layer.put(CacheCategory::Dependency, "graph", &b);
-        }
-    }
-
-    /// resolve/: simbol → kind/file/signature.
-    fn populate_resolve(
-        layer: &mut CacheLayer,
-        input: &CachePopulateInput,
-        sig_of: &dyn Fn(&str) -> u64,
-    ) {
-        for (name, kind, file) in &input.symbols {
-            let info = ResolveInfo {
-                kind: kind.clone(),
-                file: file.to_string_lossy().to_string(),
-                signature: sig_of(name),
-            };
-            if let Ok(b) = bincode::serialize(&info) {
-                let _ = layer.put(CacheCategory::Resolve, name, &b);
-            }
-        }
-    }
-
-    /// semantic/type/constant/hierarchy per module.
-    fn populate_modules(
-        layer: &mut CacheLayer,
-        input: &CachePopulateInput,
-        sig_of: &dyn Fn(&str) -> u64,
-    ) {
-        for (_path, design) in &input.designs {
-            for m in &design.modules {
-                let name = m.name.to_string();
-                let ports = module_ports(m);
-                let signature = sig_of(&name);
-                // semantic/
-                let sem = ModuleSemantic {
-                    signature,
-                    ports: ports.clone(),
-                };
-                if let Ok(b) = bincode::serialize(&sem) {
-                    let _ = layer.put(CacheCategory::Semantic, &name, &b);
-                }
-                // type/
-                let ty = ModuleType {
-                    signature,
-                    ports: ports.clone(),
-                };
-                if let Ok(b) = bincode::serialize(&ty) {
-                    let _ = layer.put(CacheCategory::Type, &name, &b);
-                }
-                // constant/
-                let consts = module_constants(m);
-                if let Ok(b) = bincode::serialize(&consts) {
-                    let _ = layer.put(CacheCategory::Constant, &name, &b);
-                }
-                // hierarchy/
-                let hier = module_hierarchy(m);
-                if let Ok(b) = bincode::serialize(&hier) {
-                    let _ = layer.put(CacheCategory::Hierarchy, &name, &b);
-                }
-            }
-        }
     }
 
     /// elaborate/: per module dari IR (db.md "5. elaborate/" — generate
@@ -813,60 +394,6 @@ impl CachePopulator {
             let _ = layer.put(CacheCategory::Expression, "last", &b);
         }
     }
-}
-
-/// Port module → daftar PortInfo (lebar default 1 bila tanpa range).
-fn module_ports(m: &Module) -> Vec<PortInfo> {
-    m.ports
-        .iter()
-        .map(|p| {
-            let width = p.range.as_ref().map(|r| r.width()).unwrap_or(1);
-            let dir = match p.direction {
-                PortDirection::Input => "input",
-                PortDirection::Output => "output",
-                PortDirection::Inout => "inout",
-                PortDirection::Ref => "ref",
-            };
-            PortInfo {
-                name: p.name.to_string(),
-                dir: dir.to_string(),
-                width,
-            }
-        })
-        .collect()
-}
-
-/// Parameter module → ConstTable.
-fn module_constants(m: &Module) -> ConstTable {
-    ConstTable {
-        params: m
-            .params
-            .iter()
-            .map(|p| {
-                (
-                    p.name.to_string(),
-                    p.default.is_some(),
-                    p.is_type_param,
-                    p.is_localparam,
-                )
-            })
-            .collect(),
-    }
-}
-
-/// Instance + import module → ModuleHierarchy.
-fn module_hierarchy(m: &Module) -> ModuleHierarchy {
-    let mut h = ModuleHierarchy::default();
-    for item in &m.items {
-        match item {
-            ModuleItem::Instance(inst) => h.instances.push(inst.module_name.to_string()),
-            ModuleItem::Import { package, item } => {
-                h.imports.push((package.to_string(), item.to_string()));
-            }
-            _ => {}
-        }
-    }
-    h
 }
 
 /// ElaboratePayload dari IR (data penuh: proses + net resolution).
@@ -1097,65 +624,6 @@ mod tests {
     }
 
     #[test]
-    fn test_fase2_populate_preprocess_bawa_timescale() {
-        let root = test_root("ts_pre");
-        let db = root.join("db");
-        std::fs::create_dir_all(&db).unwrap();
-        let mut layer = CacheLayer::open(&db, "pid", 0).unwrap();
-        let path = PathBuf::from("a.sv");
-        let mut design = sample_design();
-        design.timescale = Some(("1ns".to_string(), "1ps".to_string()));
-        let mut combined = HashMap::new();
-        combined.insert(path.clone(), "module counter; endmodule".to_string());
-        let input = CachePopulateInput {
-            designs: vec![(&path, &design)],
-            combined: &combined,
-            defines: &[],
-            include_deps: &HashMap::new(),
-            include_hashes: &HashMap::new(),
-            lexer_payloads: vec![],
-            symbols: vec![],
-            type_entries: vec![],
-            module_file: HashMap::new(),
-            ir_design: None,
-            expanded_design: None,
-            opt_snapshot: None,
-        };
-        CachePopulator::populate(&mut layer, &input);
-        let bytes = layer.get(CacheCategory::Preprocess, "a.sv").unwrap();
-        let p: PreprocessPayload = bincode::deserialize(&bytes).unwrap();
-        assert_eq!(
-            p.timescale,
-            Some(("1ns".to_string(), "1ps".to_string())),
-            "timescale design harus masuk cache (dulu None buta)"
-        );
-        // File tanpa directive → None (fallback global, bukan salah isi).
-        let path2 = PathBuf::from("b.sv");
-        let design2 = sample_design();
-        let mut combined2 = HashMap::new();
-        combined2.insert(path2.clone(), "module x; endmodule".to_string());
-        let input2 = CachePopulateInput {
-            designs: vec![(&path2, &design2)],
-            combined: &combined2,
-            defines: &[],
-            include_deps: &HashMap::new(),
-            include_hashes: &HashMap::new(),
-            lexer_payloads: vec![],
-            symbols: vec![],
-            type_entries: vec![],
-            module_file: HashMap::new(),
-            ir_design: None,
-            expanded_design: None,
-            opt_snapshot: None,
-        };
-        CachePopulator::populate(&mut layer, &input2);
-        let bytes2 = layer.get(CacheCategory::Preprocess, "b.sv").unwrap();
-        let p2: PreprocessPayload = bincode::deserialize(&bytes2).unwrap();
-        assert_eq!(p2.timescale, None);
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
     fn test_populate_all_categories() {
         let root = test_root("pop");
         let db = root.join("db");
@@ -1164,56 +632,9 @@ mod tests {
 
         let path = PathBuf::from("counter.sv");
         let design = sample_design();
-        let mut combined = HashMap::new();
-        combined.insert(
-            path.clone(),
-            "`line 1 \"counter.sv\"\nmodule counter; endmodule".to_string(),
-        );
-        let mut include_deps = HashMap::new();
-        include_deps.insert(path.clone(), vec![PathBuf::from("defines.svh")]);
-        let mut summary = LexerSummary {
-            token_count: 0,
-            identifiers: 0,
-            numbers: 0,
-            strings: 0,
-            errors: 0,
-            source_bytes: combined[&path].len() as u64,
-        };
-        summary.observe(&mivon_parser::lexer::Token::Module);
-        summary.observe(&mivon_parser::lexer::Token::Ident(Symbol::intern(
-            "counter",
-        )));
-        let lexer_payloads = vec![(
-            path.clone(),
-            LexerPayload {
-                summary: summary.clone(),
-                tokens: vec![
-                    TokenRecord {
-                        kind: token_family(&mivon_parser::lexer::Token::Module),
-                        line: 1,
-                        col: 1,
-                    },
-                    TokenRecord {
-                        kind: token_family(&mivon_parser::lexer::Token::Ident(Symbol::intern(
-                            "counter",
-                        ))),
-                        line: 1,
-                        col: 8,
-                    },
-                ],
-            },
-        )];
 
         let input = CachePopulateInput {
             designs: vec![(&path, &design)],
-            combined: &combined,
-            defines: &[("TOP".to_string(), "counter".to_string())],
-            include_deps: &include_deps,
-            include_hashes: &HashMap::new(),
-            lexer_payloads,
-            symbols: vec![("counter".to_string(), "module".to_string(), path.clone())],
-            type_entries: vec![("counter".to_string(), 42)],
-            module_file: HashMap::from([("counter".to_string(), path.clone())]),
             ir_design: None,
             expanded_design: None,
             opt_snapshot: None,
@@ -1221,47 +642,34 @@ mod tests {
         CachePopulator::populate(&mut layer, &input);
         layer.save().unwrap();
 
-        // Kategori yang diisi otomatis punya entry.
+        // Fase 2b: HANYA kategori dibaca tools yang terisi (elaborate dari
+        // fallback AST + generate). 12 kategori tak-terbaca + verify/profile
+        // (mirror write-through) tetap kosong.
+        assert!(layer.entry_count(CacheCategory::Elaborate) >= 1, "elaborate terisi");
+        assert!(layer.entry_count(CacheCategory::Generate) >= 1, "generate terisi");
         for cat in [
             CacheCategory::Preprocess,
             CacheCategory::Lexer,
             CacheCategory::Parser,
             CacheCategory::Macro,
             CacheCategory::Include,
+            CacheCategory::Verify,
             CacheCategory::Dependency,
             CacheCategory::Resolve,
             CacheCategory::Semantic,
             CacheCategory::Type,
             CacheCategory::Constant,
             CacheCategory::Hierarchy,
+            CacheCategory::Profile,
         ] {
-            assert!(layer.entry_count(cat) >= 1, "{} harus terisi", cat.name());
+            assert_eq!(layer.entry_count(cat), 0, "{} harus kosong (tak diisi)", cat.name());
         }
-        // Fase 2: Verify/Profile TIDAK lagi via populator — di-mirror
-        // write-through dari setter state/ (set_verify/set_stats).
-        assert_eq!(layer.entry_count(CacheCategory::Verify), 0);
-        assert_eq!(layer.entry_count(CacheCategory::Profile), 0);
 
-        // Periksa isi lexer: summary + token stream asli (db.md "2. lexer/").
-        let lex: LexerPayload =
-            bincode::deserialize(&layer.get(CacheCategory::Lexer, "counter.sv").unwrap()).unwrap();
-        assert_eq!(lex.tokens.len(), 2);
-        assert_eq!(lex.tokens[0].kind, KIND_KEYWORD);
-        assert_eq!(lex.tokens[1].kind, KIND_IDENT);
-        assert_eq!(lex.summary.token_count, 2);
-
-        // Periksa isi semantic + hierarchy + resolve.
-        let sem: ModuleSemantic =
-            bincode::deserialize(&layer.get(CacheCategory::Semantic, "counter").unwrap()).unwrap();
-        assert_eq!(sem.ports.len(), 2);
-        assert_eq!(sem.ports[1].width, 8);
-        let hier: ModuleHierarchy =
-            bincode::deserialize(&layer.get(CacheCategory::Hierarchy, "counter").unwrap()).unwrap();
-        assert_eq!(hier.instances, vec!["alu".to_string()]);
-        let res: ResolveInfo =
-            bincode::deserialize(&layer.get(CacheCategory::Resolve, "counter").unwrap()).unwrap();
-        assert_eq!(res.kind, "module");
-        assert_eq!(res.signature, 42);
+        // Periksa isi elaborate fallback AST: 1 instance alu.
+        let elab: ElaboratePayload =
+            bincode::deserialize(&layer.get(CacheCategory::Elaborate, "counter").unwrap()).unwrap();
+        assert_eq!(elab.instance_count, 1);
+        assert_eq!(elab.instances[0].module, "alu");
         // Kategori tanpa data tetap kosong (fungsional, bukan diisi).
         assert_eq!(layer.entry_count(CacheCategory::Simulation), 0);
         let _ = std::fs::remove_dir_all(&root);
@@ -1278,14 +686,6 @@ mod tests {
             let mut layer = CacheLayer::open(&db, "pid", 0).unwrap();
             let input = CachePopulateInput {
                 designs: vec![(&path, &design)],
-                combined: &HashMap::new(),
-                defines: &[],
-                include_deps: &HashMap::new(),
-                include_hashes: &HashMap::new(),
-                lexer_payloads: vec![],
-                symbols: vec![("a".to_string(), "module".to_string(), path.clone())],
-                type_entries: vec![],
-                module_file: HashMap::from([("a".to_string(), path.clone())]),
                 ir_design: None,
                 expanded_design: None,
                 opt_snapshot: None,
@@ -1295,10 +695,10 @@ mod tests {
         }
         {
             let mut layer = CacheLayer::open(&db, "pid", 0).unwrap();
-            assert!(layer.contains(CacheCategory::Resolve, "a"));
-            let res: ResolveInfo =
-                bincode::deserialize(&layer.get(CacheCategory::Resolve, "a").unwrap()).unwrap();
-            assert_eq!(res.kind, "module");
+            assert!(layer.contains(CacheCategory::Generate, "counter"));
+            let gen: GeneratePayload =
+                bincode::deserialize(&layer.get(CacheCategory::Generate, "counter").unwrap()).unwrap();
+            assert_eq!(gen, GeneratePayload::default());
         }
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -1447,14 +847,6 @@ mod tests {
         ir.top = top_ir;
         let input = CachePopulateInput {
             designs: vec![(&path, &design)],
-            combined: &HashMap::new(),
-            defines: &[],
-            include_deps: &HashMap::new(),
-            include_hashes: &HashMap::new(),
-            lexer_payloads: vec![],
-            symbols: vec![],
-            type_entries: vec![],
-            module_file: HashMap::new(),
             ir_design: Some(&ir),
             expanded_design: Some(&expanded),
             opt_snapshot: None,
@@ -1489,14 +881,6 @@ mod tests {
         let ir = sample_ir();
         let input = CachePopulateInput {
             designs: vec![(&path, &design)],
-            combined: &HashMap::new(),
-            defines: &[],
-            include_deps: &HashMap::new(),
-            include_hashes: &HashMap::new(),
-            lexer_payloads: vec![],
-            symbols: vec![],
-            type_entries: vec![],
-            module_file: HashMap::from([("genmod".to_string(), path.clone())]),
             ir_design: Some(&ir),
             expanded_design: None,
             opt_snapshot: None,
@@ -1591,14 +975,6 @@ mod tests {
         let design = generate_design();
         let input = CachePopulateInput {
             designs: vec![(&path, &design)],
-            combined: &HashMap::new(),
-            defines: &[],
-            include_deps: &HashMap::new(),
-            include_hashes: &HashMap::new(),
-            lexer_payloads: vec![],
-            symbols: vec![],
-            type_entries: vec![],
-            module_file: HashMap::new(),
             ir_design: None,
             expanded_design: None,
             opt_snapshot: None,
@@ -1692,14 +1068,6 @@ mod tests {
         let design = sample_design();
         let input = CachePopulateInput {
             designs: vec![(&path, &design)],
-            combined: &HashMap::new(),
-            defines: &[],
-            include_deps: &HashMap::new(),
-            include_hashes: &HashMap::new(),
-            lexer_payloads: vec![],
-            symbols: vec![],
-            type_entries: vec![],
-            module_file: HashMap::new(),
             ir_design: None,
             expanded_design: None,
             opt_snapshot: Some(mivon_elaboration::util::OptimizeSnapshot {

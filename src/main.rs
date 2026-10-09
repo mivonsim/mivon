@@ -1517,40 +1517,8 @@ fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), SimError> {
         }
         tokens.push((tok, line, col));
     }
-    // ── MICD: cache lexer payload (tokens summary + stream) ──
-    // Legacy path sebelumnya tidak menyimpan token data → lexer/ selalu 0.
-    {
-        use mivon_compiler::micd::cache::pipeline::{
-            token_family, LexerPayload, LexerSummary, TokenRecord,
-        };
-        let mut summary = LexerSummary {
-            token_count: tokens.len() as u64,
-            identifiers: 0,
-            numbers: 0,
-            strings: 0,
-            errors: 0,
-            source_bytes: combined.len() as u64,
-        };
-        let mut records = Vec::with_capacity(tokens.len());
-        for (tok, line, col) in &tokens {
-            summary.observe(tok);
-            records.push(TokenRecord {
-                kind: token_family(tok),
-                line: *line as u32,
-                col: *col as u32,
-            });
-        }
-        // Cache ke pipeline: kunci = combined source path (fallback: first source).
-        let key = sources.first().map(|s| s.to_string()).unwrap_or_default();
-        if let Some(layer) = micd.cache_layer.as_mut() {
-            if let Ok(b) = bincode::serialize(&LexerPayload {
-                summary,
-                tokens: records,
-            }) {
-                let _ = layer.put(mivon_compiler::micd::CacheCategory::Lexer, &key, &b);
-            }
-        }
-    }
+    // Fase 2b: payload lexer/ tak lagi ditulis (tak ada pembaca produksi) —
+    // blok cache lexer dihapus (hemat observasi per-token tiap build).
     anim_log(
         &anim,
         &format!(
@@ -1887,63 +1855,8 @@ fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), SimError> {
         // hanya saat ada file fresh (changed); store disimpan di save terpadu. ──
         if micd.cache_layer.is_some() && !fresh_results.is_empty() {
             use mivon_compiler::micd::cache::pipeline::{CachePopulateInput, CachePopulator};
-            let cli_defines: Vec<(String, String)> = cli
-                .defines
-                .iter()
-                .map(|d| {
-                    if let Some((k, v)) = d.split_once('=') {
-                        (k.to_string(), v.to_string())
-                    } else {
-                        (d.clone(), String::new())
-                    }
-                })
-                .collect();
-            let mut combined_map = std::collections::HashMap::new();
-            for (i, src) in sources.iter().enumerate() {
-                if let Some(Ok((combined_str, _, _))) = &pp_combined[i] {
-                    combined_map.insert(std::path::PathBuf::from(src), combined_str.clone());
-                }
-            }
-            let include_deps = micd
-                .files
-                .iter()
-                .filter(|(_, m)| !m.include_hashes.is_empty())
-                .map(|(p, m)| {
-                    (
-                        p.clone(),
-                        m.include_hashes.iter().map(|(d, _)| d.clone()).collect(),
-                    )
-                })
-                .collect();
-            let symbols: Vec<(String, String, std::path::PathBuf)> = syms
-                .iter()
-                .map(|(name, kind)| {
-                    let file = def_file
-                        .get(name)
-                        .cloned()
-                        .unwrap_or_else(|| fallback.clone());
-                    (name.clone(), kind.clone(), file)
-                })
-                .collect();
-            let type_entries: Vec<(String, u64)> = micd
-                .type_index
-                .iter()
-                .map(|(k, v)| (k.clone(), *v))
-                .collect();
-            let verify: Vec<mivon_compiler::micd::VerifyResult> =
-                micd.verify.values().cloned().collect();
             let input = CachePopulateInput {
                 designs: vec![(&fallback, &design)],
-                combined: &combined_map,
-                defines: &cli_defines,
-                include_deps: &include_deps,
-                include_hashes: &std::collections::HashMap::new(),
-                lexer_payloads: vec![],
-                symbols,
-                type_entries,
-                verify,
-                module_file: def_file.clone(),
-                profile: micd.stats_db.last().cloned(),
                 // Jalur legacy tidak punya IR di titik ini (elaborasi belum
                 // jalan) — elaborate/ terisi fallback AST, generate/ dari AST.
                 ir_design: None,
@@ -2361,10 +2274,6 @@ fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), SimError> {
     // konstruksi). Best-effort; store disimpan via layer.save(). ──
     if micd.cache_layer.is_some() {
         use mivon_compiler::micd::cache::pipeline::{CachePopulateInput, CachePopulator};
-        let empty_combined: std::collections::HashMap<PathBuf, String> =
-            std::collections::HashMap::new();
-        let empty_deps: std::collections::HashMap<PathBuf, Vec<PathBuf>> =
-            std::collections::HashMap::new();
         let fb = sources.first().map(PathBuf::from).unwrap_or_default();
         let (elab_designs, elab_design, opt_snapshot) = match elaborator_opt.as_ref() {
             Some(elab) => (
@@ -2378,16 +2287,6 @@ fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), SimError> {
         };
         let input = CachePopulateInput {
             designs: elab_designs,
-            combined: &empty_combined,
-            defines: &[],
-            include_deps: &empty_deps,
-            include_hashes: &std::collections::HashMap::new(),
-            lexer_payloads: vec![],
-            symbols: vec![],
-            type_entries: vec![],
-            verify: vec![],
-            module_file: std::collections::HashMap::new(),
-            profile: None,
             ir_design: Some(&ir_design),
             // designs sudah post-expansion (elaborator.design) — fallback
             // elaborate/ memakai designs itu sendiri.
