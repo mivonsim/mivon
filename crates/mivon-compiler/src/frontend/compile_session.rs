@@ -1840,7 +1840,6 @@ impl CompileSession {
         // Hanya saat ada perubahan (full_write) — warm run melewati (entry lama
         // tetap valid). Save store-nya ikut `db.save()` di Fase 3.
         if full_write {
-            let prev_profile = self.micd.as_ref().and_then(|d| d.stats_db.last()).cloned();
             let module_file: HashMap<String, PathBuf> = self
                 .module_index
                 .iter()
@@ -1858,9 +1857,7 @@ impl CompileSession {
                 lexer_payloads,
                 symbols: symbols.clone(),
                 type_entries: type_entries.clone(),
-                verify: verify_results.clone(),
                 module_file,
-                profile: prev_profile,
                 // IR hanya tersedia bila save_micd dipanggil SETELAH
                 // compile_and_elaborate (jalur tool). Jalur run_fast memanggil
                 // save_micd sebelum elaborate — kategori elaborate/generate
@@ -1909,16 +1906,21 @@ impl CompileSession {
                 db.cache_ast(path.clone(), content_hash, bytes);
             }
             if let Some(combined) = combined {
+                // Fase 2 (Kritik A): timescale dari design file itu — bukan
+                // None buta. File tanpa directive → None (fallback global).
+                let timescale = self
+                    .prev_designs
+                    .get(&path)
+                    .and_then(crate::micd::cache::pipeline::design_timescale);
                 db.cache_preprocessed(
                     path.clone(),
                     PreprocEntry {
                         content_hash,
                         combined,
-                        timescale: None,
-                        // F84: jalur ini menyimpan entry dari sumber yang tak
-                        // menyimpan segmen — parser akan pakai satuan global
-                        // untuk file tersebut (perilaku pre-F84, tak diam-diam
-                        // salah untuk design multi-timescale).
+                        timescale,
+                        // Segmen presisi multi-timescale tetap kosong di jalur
+                        // ini (butuh koordinat global); timescale tunggal di
+                        // atas mencakup kasus umum 1 timescale per file.
                         timescale_segments: Vec::new(),
                     },
                 );
@@ -2018,20 +2020,13 @@ impl CompileSession {
         prof.cache_misses = db.files.len().saturating_sub(self.micd_restored);
         prof.peak_mem_kb = micd::peak_rss_kb();
         prof.snapshot_id = stats.snapshot_id;
-        // Serialize SEBELUM dipindah ke stats_db (dipakai cache profile/).
-        let prof_bytes = bincode::serialize(&prof).ok();
+        // Fase 2: cermin cache/profile "last" ditulis di dalam set_stats
+        // (satu jalur via mirror) — tidak ada tulis manual ganda lagi.
+        // db.save() di bawah ikut menyimpan cache_layer yang dirty.
         db.set_stats(prof);
         let _ = db.save().map_err(|e| e.to_string())?;
         if std::env::var("MIVON_DEBUG_MICD").is_ok() {
             eprintln!("[MICD-DBG] stats save = {:?}", t_stats.elapsed());
-        }
-
-        // profile cache (db.md cache/ "20. profile/"): profil build terakhir.
-        if let Some(prof_bytes) = prof_bytes {
-            if let Some(layer) = self.micd.as_mut().and_then(|d| d.cache_layer.as_mut()) {
-                layer.put(crate::micd::CacheCategory::Profile, "last", &prof_bytes);
-                let _ = layer.save();
-            }
         }
 
         self.micd_restored = 0;
@@ -2082,9 +2077,7 @@ impl CompileSession {
             lexer_payloads: vec![],
             symbols: vec![],
             type_entries: vec![],
-            verify: vec![],
             module_file,
-            profile: None,
             ir_design: Some(ir),
             expanded_design,
             opt_snapshot,

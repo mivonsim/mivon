@@ -531,6 +531,9 @@ impl MicdDatabase {
 
         // Migrasi layout lama `projects/<pid>/` → `state/` + `objects/`.
         migrate_legacy(&root, pid);
+        // Fase 2: sapu store mati (`ast.mdb`/`preproc.mdb` gaya lama di
+        // state/ — tidak dibaca lagi sejak CAS). Perluasan terakhir legacy.
+        sweep_dead_stores(&st);
 
         // Crash recovery (Kritik 5 db.md): journal tersisa → transaksi
         // sebelumnya terputus. Validasi store yang terdaftar, buang yang
@@ -996,6 +999,13 @@ impl MicdDatabase {
         self.dirty_graph = true;
     }
 
+    /// Fase 2 (Kritik A): selain state/ (`verify.mdb`), tulis juga cermin ke
+    /// kategori `cache/verify` (format `VerifyPayload` identik dengan yang
+    /// dulu ditulis populator; belum ada pembaca tools hari ini — future-proof
+    /// menuju satu engine).
+    /// Satu setter = satu jalur tulis (write-through); populator derivasi
+    /// terpisah tidak lagi dibutuhkan untuk kategori ini (Fase 2b menghapusnya).
+    /// Best-effort: gagal tulis cache tidak menggagalkan state.
     pub fn set_verify(&mut self, result: VerifyResult) {
         if result.ast_hash != 0 {
             self.verify_ast_index
@@ -1006,9 +1016,30 @@ impl MicdDatabase {
                 .insert(result.semantic_hash, result.content_hash);
         }
         self.verify_accessed.insert(result.content_hash, now_ns());
+        // Cermin cache ditulis SEBELUM move (borrow result masih hidup).
+        self.mirror_verify_to_cache(&result);
         self.verify.insert(result.content_hash, result);
         self.dirty = true;
         self.dirty_verify = true;
+    }
+
+    /// Cermin `VerifyResult` → `cache/verify` (format baca tools).
+    fn mirror_verify_to_cache(&mut self, result: &VerifyResult) {
+        let Some(layer) = self.cache_layer.as_mut() else {
+            return;
+        };
+        let payload = cache::pipeline::VerifyPayload {
+            parse_ok: result.parse_ok,
+            elab_ok: result.elab_ok,
+            err_count: result.err_count,
+            warn_count: result.warn_count,
+            info_count: result.info_count,
+            checks: result.checks.iter().map(|(k, c)| (*k, c.clone())).collect(),
+        };
+        if let Ok(bytes) = bincode::serialize(&payload) {
+            let key = format!("{:016x}", result.content_hash);
+            let _ = layer.put(cache::CacheCategory::Verify, &key, &bytes);
+        }
     }
 
     /// Lookup verification dengan multi-level hash (Kritik 1 db.md).
@@ -1049,7 +1080,16 @@ impl MicdDatabase {
     }
 
     /// Rekam profil build ke stats.mdb (Kritik 14 db.md).
+    ///
+    /// Fase 2 (Kritik A): sekaligus cermin ke `cache/profile` key `"last"`
+    /// (format yang dibaca `mprof`) — menggantikan tulis manual di
+    /// `save_micd` (satu jalur, bukan dua).
     pub fn set_stats(&mut self, profile: BuildProfile) {
+        if let Ok(bytes) = bincode::serialize(&profile) {
+            if let Some(layer) = self.cache_layer.as_mut() {
+                let _ = layer.put(cache::CacheCategory::Profile, "last", &bytes);
+            }
+        }
         self.stats_db.record(profile);
         self.dirty_stats = true;
     }
@@ -1635,7 +1675,28 @@ fn register_project(db: &MicdDatabase) {
     write_registry(&db.root, &map);
 }
 
+/// Sapu store mati di `state/<pid>/` (Fase 2, perluasan terakhir legacy).
+///
+/// `ast.mdb`/`preproc.mdb` gaya lama tidak pernah dibaca lagi sejak payload
+/// CAS (`objects/<pid>/*.ast|*.preproc`) — `save()` tidak menulisnya, `open()`
+/// tidak membacanya. Sisa file usang hanya bobot disk; hapus deterministik.
+/// Idempoten (file tak ada → no-op).
+fn sweep_dead_stores(st: &Path) {
+    for name in [DB_AST, DB_PREPROC] {
+        let p = st.join(name);
+        if p.exists() {
+            let _ = std::fs::remove_file(&p);
+        }
+        let _ = std::fs::remove_file(p.with_extension("mdb.tmp"));
+    }
+}
+
 /// Migrasi layout lama `projects/<pid>/` → `state/<pid>/` + `objects/<pid>/`.
+///
+/// FROZEN (Fase 2): migrasi ini dibekukan — tidak akan diubah lagi. Layout
+/// lama sudah tidak diproduksi sejak CAS; fungsi ini hanya sapu sisa. Test
+/// `test_fase2_sweep_store_mati_dan_migrate_idempoten` mengunci perilaku
+/// (panggil 2× = sama).
 ///
 /// Layout lama menumpuk semua `.mdb` di satu direktori per project. Migrasi
 /// berjalan sekali (idempoten) untuk SEMUA project yang pernah ada: state
@@ -2317,9 +2378,148 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    // ── Fase 2 (Kritik A): mirror write-through + legacy freeze ──
+
     #[test]
-    fn test_fase0_singleton_terkompresi_fallback_get() {
-        // Review Fase 0: satu-satunya store terkompresi adalah graph.mdb
+    fn test_fase2_mirror_verify_state_dan_cache_sama() {
+        // set_verify menulis state/ DAN cermin cache/verify (satu setter).
+        use crate::micd::cache::pipeline::VerifyPayload;
+        let root = test_root("fase2_verify");
+        {
+            let mut db = MicdDatabase::open(&root);
+            // File terdaftar (wajib: tanpa metadata, reopen menganggap fresh).
+            db.record_file(
+                PathBuf::from("a.sv"),
+                500,
+                vec![],
+                FileStatus::New,
+                0,
+                5,
+                vec![],
+            );
+            let mut v = VerifyResult::fresh(500);
+            v.parse_ok = true;
+            v.elab_ok = true;
+            v.err_count = 2;
+            v.warn_count = 1;
+            db.set_verify(v);
+            db.save().unwrap();
+        }
+        {
+            let mut db = MicdDatabase::open(&root);
+            // State: ada.
+            let v = db.get_verify(500).unwrap();
+            assert!(v.parse_ok && v.elab_ok);
+            assert_eq!(v.err_count, 2);
+            // Cermin cache: ada + isi sama.
+            let key = format!("{:016x}", 500u64);
+            let bytes = db
+                .cache_layer
+                .as_mut()
+                .and_then(|l| l.get(CacheCategory::Verify, &key))
+                .expect("cermin cache/verify harus ada");
+            let p: VerifyPayload = bincode::deserialize(&bytes).unwrap();
+            assert!(p.parse_ok && p.elab_ok);
+            assert_eq!((p.err_count, p.warn_count, p.info_count), (2, 1, 0));
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn test_fase2_mirror_profile_last() {        // set_stats mencerminkan BuildProfile ke cache/profile "last".
+        let root = test_root("fase2_profile");
+        {
+            let mut db = MicdDatabase::open(&root);
+            db.record_file(
+                PathBuf::from("a.sv"),
+                1,
+                vec![],
+                FileStatus::New,
+                0,
+                5,
+                vec![],
+            );
+            let mut p = db.stats_db.next_profile();
+            p.total_ms = 777;
+            p.changed_files = 3;
+            db.set_stats(p);
+            db.save().unwrap();
+        }
+        {
+            let mut db = MicdDatabase::open(&root);
+            assert_eq!(db.stats_db.total_builds(), 1);
+            let bytes = db
+                .cache_layer
+                .as_mut()
+                .and_then(|l| l.get(CacheCategory::Profile, "last"))
+                .expect("cermin cache/profile harus ada");
+            let p: BuildProfile = bincode::deserialize(&bytes).unwrap();
+            assert_eq!(p.total_ms, 777);
+            assert_eq!(p.changed_files, 3);
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn test_fase2_mirror_best_effort_tanpa_cache() {
+        // Mirror tidak boleh panic/gagalkan state bila cache_layer None.
+        let root = test_root("fase2_nocache");
+        let mut db = MicdDatabase::open(&root);
+        db.cache_layer = None;
+        db.record_file(
+            PathBuf::from("a.sv"),
+            600,
+            vec![],
+            FileStatus::New,
+            0,
+            5,
+            vec![],
+        );
+        let mut v = VerifyResult::fresh(600);
+        v.parse_ok = true;
+        db.set_verify(v);
+        let mut p = db.stats_db.next_profile();
+        p.total_ms = 11;
+        db.set_stats(p);
+        db.save().unwrap();
+        assert!(db.get_verify(600).is_some(), "state tetap tersimpan");
+        assert_eq!(db.stats_db.total_builds(), 1);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn test_fase2_sweep_store_mati_dan_migrate_idempoten() {
+        // Store gaya lama di state/ disapu; open 2× hasil identik (frozen).
+        let root = test_root("fase2_sweep");
+        let pid = "default";
+        {
+            let mut db = MicdDatabase::open(&root);
+            db.record_file(PathBuf::from("a.sv"), 9, vec![], FileStatus::New, 0, 5, vec![]);
+            db.save().unwrap();
+        }
+        let st = state_dir(&root, pid);
+        // Tanam sisa usang + tmp menggantung.
+        std::fs::write(st.join(DB_AST), b"usang").unwrap();
+        std::fs::write(st.join(DB_PREPROC), b"usang").unwrap();
+        std::fs::write(st.join(DB_AST).with_extension("mdb.tmp"), b"tmp").unwrap();
+        {
+            let db = MicdDatabase::open(&root);
+            assert!(!st.join(DB_AST).exists(), "ast.mdb usang disapu");
+            assert!(!st.join(DB_PREPROC).exists(), "preproc.mdb usang disapu");
+            assert!(!st.join(DB_AST).with_extension("mdb.tmp").exists());
+            assert_eq!(db.files.len(), 1, "data valid tetap");
+        }
+        {
+            // Idempoten: open lagi → sama, tidak ada yang berubah.
+            let db2 = MicdDatabase::open(&root);
+            assert_eq!(db2.files.len(), 1);
+            assert!(!st.join(DB_AST).exists());
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn test_fase0_singleton_terkompresi_fallback_get() {        // Review Fase 0: satu-satunya store terkompresi adalah graph.mdb
         // (LZ4) — get_slice mengembalikan None, helper harus fallback ke get.
         use crate::micd::format::{Compression, MdbReader, MdbWriter, KIND_GRAPH};
         let dir = test_root("fase0_lz4");

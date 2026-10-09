@@ -2,6 +2,14 @@
 //! kompilasi (db.md "Saran arsitektur cache": tiap kategori menyimpan artefak
 //! tahapnya agar skip ulang saat hash identik).
 //!
+//! STATUS FASE 2 (Kritik A): file ini dalam masa transisi menuju write-through
+//! (stage menulis langsung saat menghasilkan artefak). Kategori yang datanya
+//! sudah di-mirror dari setter state/ (`verify`, `profile`) tidak lagi
+//! bergantung pada populator — populator tersisa untuk kategori yang dibaca
+//! tools (`elaborate`, `generate`, `optimize`, `profile`) sampai write-through
+//! penuh (Fase 2b). Jangan tambah kategori derivasi baru di sini; tulis
+//! langsung via `StageStore`/`CacheLayer` di titik produksi.
+//!
 //! Kategori yang diisi otomatis pada save (data tersedia di compile):
 //!
 //! | Kategori       | Payload                                    | Kunci        |
@@ -38,8 +46,7 @@ use mivon_ast::types::{Module, ModuleItem, PortDirection};
 use mivon_ast::Design;
 use serde::{Deserialize, Serialize};
 
-use super::super::stats::BuildProfile;
-use super::super::verify::{CheckResult, VerifyCheckKind, VerifyResult};
+use super::super::verify::{CheckResult, VerifyCheckKind};
 use super::{CacheCategory, CacheLayer};
 use crate::cache::compute_checksum;
 use crate::micd::metadata::path_hash;
@@ -407,11 +414,8 @@ pub struct CachePopulateInput<'a> {
     pub symbols: Vec<(String, String, PathBuf)>,
     /// Signature tipe: (module, signature).
     pub type_entries: Vec<(String, u64)>,
-    pub verify: Vec<VerifyResult>,
     /// Module → file (atribusi).
     pub module_file: HashMap<String, PathBuf>,
-    /// Profil build terakhir (db.md "20. profile/").
-    pub profile: Option<BuildProfile>,
     /// IR hasil elaborasi — dipakai untuk kategori elaborate/ + generate/
     /// (db.md "5. elaborate/", "16. generate/"). `None` pada jalur parse-only
     /// (legacy / compile-only): elaborate/ diisi ringkasan AST sebagai
@@ -429,12 +433,34 @@ pub struct CachePopulateInput<'a> {
     pub opt_snapshot: Option<mivon_elaboration::util::OptimizeSnapshot>,
 }
 
+/// Timescale efektif satu file dari design-nya (Fase 2, Kritik A).
+///
+/// Prioritas: `Design.timescale` (satuan TERHALUS file itu — lihat parser
+/// F84 `finest_timescale`) → timescale module pertama yang `Some` → `None`
+/// (file tanpa directive → fallback satuan global, perilaku pre-F84). Satu
+/// nilai per file adalah pendekatan untuk kasus umum (1 timescale per file);
+/// file multi-timescale tetap memakai `timescale_segments` di state/
+/// (`PreprocEntry`) yang presisi.
+pub fn design_timescale(design: &Design) -> Option<(String, String)> {
+    if let Some(ts) = design.timescale.clone() {
+        return Some(ts);
+    }
+    design
+        .modules
+        .iter()
+        .find_map(|m| m.timescale.clone())
+}
+
 /// Populator lapisan `cache/` dari data compile.
 pub struct CachePopulator;
 
 impl CachePopulator {
     /// Isi kategori yang datanya tersedia. Best-effort — kegagalan satu
     /// kategori tidak menggagalkan yang lain (cache bersifat non-kritis).
+    ///
+    /// Fase 2: `verify` dan `profile` TIDAK lagi di sini — keduanya di-mirror
+    /// write-through dari setter state/ (`set_verify`/`set_stats`, format
+    /// identik, data current bukan stale). Satu jalur tulis, bukan dua.
     pub fn populate(layer: &mut CacheLayer, input: &CachePopulateInput) {
         let sig_of = |name: &str| {
             input
@@ -450,14 +476,12 @@ impl CachePopulator {
         Self::populate_parser(layer, input);
         Self::populate_macro(layer, input);
         Self::populate_include(layer, input);
-        Self::populate_verify(layer, input);
         Self::populate_dependency(layer, input);
         Self::populate_resolve(layer, input, &sig_of);
         Self::populate_modules(layer, input, &sig_of);
         Self::populate_elaborate(layer, input);
         Self::populate_generate(layer, input);
         Self::populate_optimize(layer, input);
-        Self::populate_profile(layer, input);
     }
 
     /// Isi hanya kategori elaborate/ + generate/ + optimize/ + expression/
@@ -471,11 +495,20 @@ impl CachePopulator {
     }
 
     /// preprocess/: expanded source + timescale per file.
+    ///
+    /// Fase 2 (Kritik A): timescale diisi dari design file itu (bukan `None`
+    /// buta seperti sebelumnya — data hilang padahal `PreprocEntry` di state/
+    /// menyimpannya). Tanpa ini cache hangat kehilangan satuan per-module.
     fn populate_preprocess(layer: &mut CacheLayer, input: &CachePopulateInput) {
         for (path, combined) in input.combined {
+            let timescale = input
+                .designs
+                .iter()
+                .find(|(p, _)| *p == path)
+                .and_then(|(_, d)| design_timescale(d));
             let payload = PreprocessPayload {
                 combined: combined.clone(),
-                timescale: None,
+                timescale,
             };
             let key = path.to_string_lossy().to_string();
             if let Ok(b) = bincode::serialize(&payload) {
@@ -543,24 +576,6 @@ impl CachePopulator {
             let key = path.to_string_lossy().to_string();
             if let Ok(b) = bincode::serialize(&tree) {
                 let _ = layer.put(CacheCategory::Include, &key, &b);
-            }
-        }
-    }
-
-    /// verify/: hasil per kategori analisis.
-    fn populate_verify(layer: &mut CacheLayer, input: &CachePopulateInput) {
-        for v in &input.verify {
-            let payload = VerifyPayload {
-                parse_ok: v.parse_ok,
-                elab_ok: v.elab_ok,
-                err_count: v.err_count,
-                warn_count: v.warn_count,
-                info_count: v.info_count,
-                checks: v.checks.iter().map(|(k, c)| (*k, c.clone())).collect(),
-            };
-            let key = format!("{:016x}", v.content_hash);
-            if let Ok(b) = bincode::serialize(&payload) {
-                let _ = layer.put(CacheCategory::Verify, &key, &b);
             }
         }
     }
@@ -796,15 +811,6 @@ impl CachePopulator {
         };
         if let Ok(b) = bincode::serialize(&expr) {
             let _ = layer.put(CacheCategory::Expression, "last", &b);
-        }
-    }
-
-    /// profile/: profil build terakhir.
-    fn populate_profile(layer: &mut CacheLayer, input: &CachePopulateInput) {
-        if let Some(p) = &input.profile {
-            if let Ok(b) = bincode::serialize(p) {
-                let _ = layer.put(CacheCategory::Profile, "last", &b);
-            }
         }
     }
 }
@@ -1068,6 +1074,87 @@ mod tests {
         dir
     }
 
+    // ── Fase 2 (Kritik A): timescale tidak boleh hilang ──
+
+    #[test]
+    fn test_fase2_design_timescale_prioritas() {
+        // Design.timescale menang; fallback module pertama; kosong → None.
+        let mut d = Design::default();
+        assert_eq!(design_timescale(&d), None);
+        let mut m = sample_design().modules.pop().unwrap();
+        m.timescale = Some(("1ns".to_string(), "1ps".to_string()));
+        d.modules.push(m);
+        assert_eq!(
+            design_timescale(&d),
+            Some(("1ns".to_string(), "1ps".to_string()))
+        );
+        d.timescale = Some(("10ns".to_string(), "1ns".to_string()));
+        assert_eq!(
+            design_timescale(&d),
+            Some(("10ns".to_string(), "1ns".to_string())),
+            "Design.timescale menang atas module"
+        );
+    }
+
+    #[test]
+    fn test_fase2_populate_preprocess_bawa_timescale() {
+        let root = test_root("ts_pre");
+        let db = root.join("db");
+        std::fs::create_dir_all(&db).unwrap();
+        let mut layer = CacheLayer::open(&db, "pid", 0).unwrap();
+        let path = PathBuf::from("a.sv");
+        let mut design = sample_design();
+        design.timescale = Some(("1ns".to_string(), "1ps".to_string()));
+        let mut combined = HashMap::new();
+        combined.insert(path.clone(), "module counter; endmodule".to_string());
+        let input = CachePopulateInput {
+            designs: vec![(&path, &design)],
+            combined: &combined,
+            defines: &[],
+            include_deps: &HashMap::new(),
+            include_hashes: &HashMap::new(),
+            lexer_payloads: vec![],
+            symbols: vec![],
+            type_entries: vec![],
+            module_file: HashMap::new(),
+            ir_design: None,
+            expanded_design: None,
+            opt_snapshot: None,
+        };
+        CachePopulator::populate(&mut layer, &input);
+        let bytes = layer.get(CacheCategory::Preprocess, "a.sv").unwrap();
+        let p: PreprocessPayload = bincode::deserialize(&bytes).unwrap();
+        assert_eq!(
+            p.timescale,
+            Some(("1ns".to_string(), "1ps".to_string())),
+            "timescale design harus masuk cache (dulu None buta)"
+        );
+        // File tanpa directive → None (fallback global, bukan salah isi).
+        let path2 = PathBuf::from("b.sv");
+        let design2 = sample_design();
+        let mut combined2 = HashMap::new();
+        combined2.insert(path2.clone(), "module x; endmodule".to_string());
+        let input2 = CachePopulateInput {
+            designs: vec![(&path2, &design2)],
+            combined: &combined2,
+            defines: &[],
+            include_deps: &HashMap::new(),
+            include_hashes: &HashMap::new(),
+            lexer_payloads: vec![],
+            symbols: vec![],
+            type_entries: vec![],
+            module_file: HashMap::new(),
+            ir_design: None,
+            expanded_design: None,
+            opt_snapshot: None,
+        };
+        CachePopulator::populate(&mut layer, &input2);
+        let bytes2 = layer.get(CacheCategory::Preprocess, "b.sv").unwrap();
+        let p2: PreprocessPayload = bincode::deserialize(&bytes2).unwrap();
+        assert_eq!(p2.timescale, None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn test_populate_all_categories() {
         let root = test_root("pop");
@@ -1126,15 +1213,7 @@ mod tests {
             lexer_payloads,
             symbols: vec![("counter".to_string(), "module".to_string(), path.clone())],
             type_entries: vec![("counter".to_string(), 42)],
-            verify: vec![VerifyResult::fresh(7)],
             module_file: HashMap::from([("counter".to_string(), path.clone())]),
-            profile: Some(BuildProfile {
-                build_id: 1,
-                total_ms: 12,
-                files: 1,
-                changed_files: 1,
-                ..Default::default()
-            }),
             ir_design: None,
             expanded_design: None,
             opt_snapshot: None,
@@ -1149,17 +1228,19 @@ mod tests {
             CacheCategory::Parser,
             CacheCategory::Macro,
             CacheCategory::Include,
-            CacheCategory::Verify,
             CacheCategory::Dependency,
             CacheCategory::Resolve,
             CacheCategory::Semantic,
             CacheCategory::Type,
             CacheCategory::Constant,
             CacheCategory::Hierarchy,
-            CacheCategory::Profile,
         ] {
             assert!(layer.entry_count(cat) >= 1, "{} harus terisi", cat.name());
         }
+        // Fase 2: Verify/Profile TIDAK lagi via populator — di-mirror
+        // write-through dari setter state/ (set_verify/set_stats).
+        assert_eq!(layer.entry_count(CacheCategory::Verify), 0);
+        assert_eq!(layer.entry_count(CacheCategory::Profile), 0);
 
         // Periksa isi lexer: summary + token stream asli (db.md "2. lexer/").
         let lex: LexerPayload =
@@ -1204,9 +1285,7 @@ mod tests {
                 lexer_payloads: vec![],
                 symbols: vec![("a".to_string(), "module".to_string(), path.clone())],
                 type_entries: vec![],
-                verify: vec![],
                 module_file: HashMap::from([("a".to_string(), path.clone())]),
-                profile: None,
                 ir_design: None,
                 expanded_design: None,
                 opt_snapshot: None,
@@ -1375,9 +1454,7 @@ mod tests {
             lexer_payloads: vec![],
             symbols: vec![],
             type_entries: vec![],
-            verify: vec![],
             module_file: HashMap::new(),
-            profile: None,
             ir_design: Some(&ir),
             expanded_design: Some(&expanded),
             opt_snapshot: None,
@@ -1419,9 +1496,7 @@ mod tests {
             lexer_payloads: vec![],
             symbols: vec![],
             type_entries: vec![],
-            verify: vec![],
             module_file: HashMap::from([("genmod".to_string(), path.clone())]),
-            profile: None,
             ir_design: Some(&ir),
             expanded_design: None,
             opt_snapshot: None,
@@ -1523,9 +1598,7 @@ mod tests {
             lexer_payloads: vec![],
             symbols: vec![],
             type_entries: vec![],
-            verify: vec![],
             module_file: HashMap::new(),
-            profile: None,
             ir_design: None,
             expanded_design: None,
             opt_snapshot: None,
@@ -1626,9 +1699,7 @@ mod tests {
             lexer_payloads: vec![],
             symbols: vec![],
             type_entries: vec![],
-            verify: vec![],
             module_file: HashMap::new(),
-            profile: None,
             ir_design: None,
             expanded_design: None,
             opt_snapshot: Some(mivon_elaboration::util::OptimizeSnapshot {
