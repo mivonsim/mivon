@@ -37,24 +37,6 @@ use store::{DIR_BLOBS, DIR_OBJECTS, DIR_TEMP};
 /// Nama direktori lapisan cache di database root (`database/cache/`).
 pub const DIR_CACHE: &str = "cache";
 
-/// Budget default per kategori (GC LRU). Kategori data besar diberi budget
-/// lebih besar; record KV lebih kecil.
-pub fn default_budget(cat: CacheCategory) -> u64 {
-    match cat {
-        CacheCategory::Preprocess | CacheCategory::Parser | CacheCategory::Elaborate => {
-            256 * 1024 * 1024
-        }
-        CacheCategory::Lexer
-        | CacheCategory::Semantic
-        | CacheCategory::Optimize
-        | CacheCategory::Dependency
-        | CacheCategory::Hierarchy
-        | CacheCategory::Simulation
-        | CacheCategory::Waveform
-        | CacheCategory::Coverage => 64 * 1024 * 1024,
-        _ => 8 * 1024 * 1024,
-    }
-}
 
 /// TTL default (7 hari — Kritik 6 db.md).
 pub const DEFAULT_TTL_NS: u64 = 7 * 24 * 3600 * 1_000_000_000;
@@ -88,15 +70,17 @@ impl CacheLayer {
         let mut stores = HashMap::with_capacity(CacheCategory::ALL.len());
         for cat in CacheCategory::ALL {
             let mut st = CategoryStore::open(&root.join(cat.name()), cat, config_hash);
-            st.budget_bytes = default_budget(cat);
             st.ttl_ns = DEFAULT_TTL_NS;
             stores.insert(cat, st);
         }
-        Ok(CacheLayer {
+        let mut layer = CacheLayer {
             root,
             stores,
             gc_on_save: true,
-        })
+        };
+        // Fase 4: satu budget global dibagi proporsional (bukan 21× mandiri).
+        super::gc::apply_global_budget(&mut layer, super::gc::GLOBAL_CACHE_BUDGET_BYTES);
+        Ok(layer)
     }
 
     /// Direktori satu kategori.

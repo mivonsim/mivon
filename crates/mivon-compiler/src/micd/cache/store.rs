@@ -268,6 +268,25 @@ impl CategoryStore {
         self.index.get(key).map(|e| e.accessed_ns)
     }
 
+    /// Test-only: paksa waktu akses satu key (determinisme test LRU).
+    #[cfg(test)]
+    pub(crate) fn set_accessed_for_test(&mut self, key: &str, at: u64) {
+        if let Some(e) = self.index.entries.get_mut(key) {
+            e.accessed_ns = at;
+        }
+    }
+
+    /// Kunci dengan akses terlama + waktu aksesnya (Fase 4: GC global
+    /// lintas-kategori meng-evict yang terlama di SELURUH layer, bukan
+    /// per-kategori). `None` bila kosong.
+    pub(crate) fn oldest_key(&self) -> Option<(String, u64)> {
+        self.index
+            .entries
+            .iter()
+            .min_by_key(|(_, e)| e.accessed_ns)
+            .map(|(k, e)| (k.clone(), e.accessed_ns))
+    }
+
     /// Content hash tersimpan untuk `key`.
     pub fn content_hash_of(&self, key: &str) -> Option<u64> {
         self.index.get(key).map(|e| e.content_hash)

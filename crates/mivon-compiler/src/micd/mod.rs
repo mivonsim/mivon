@@ -58,7 +58,9 @@ pub use ast::{deserialize_design, serialize_design, AST_FORMAT_VERSION};
 pub use cache::{CacheCategory, CacheLayer, CacheLayerStats};
 pub use diag::{DiagEntry, DiagSeverity, FileDiags};
 pub use format::{MdbReader, MdbWriter};
-pub use gc::{run_gc, GcConfig, GcStats};
+pub use gc::{
+    run_cache_gc, run_gc, GcConfig, GcStats, ReclaimConfig, GLOBAL_CACHE_BUDGET_BYTES,
+};
 pub use graph::FileGraph;
 pub use lock::{acquire_write_lock, is_writer_locked, WriteLock};
 pub use metadata::{flags_hash, path_hash, FileMeta, FileStatus, MetadataManifest};
@@ -1308,8 +1310,13 @@ impl MicdDatabase {
         // GC otomatis (Kritik 6 db.md): jalankan SEBELUM cek dirty agar entry
         // yang di-evict ikut ditulis ulang pada save ini. Best-effort —
         // eviction hanya menandai store terkait, bukan menggagalkan save.
+        // Fase 4: + GC cache terpadu (satu budget global) + reklamasi pid idle.
         if self.gc_on_save {
             run_gc(self, &GcConfig::default());
+            if let Some(layer) = self.cache_layer.as_mut() {
+                gc::run_cache_gc(layer, gc::GLOBAL_CACHE_BUDGET_BYTES);
+            }
+            let _ = gc::reclaim_idle_projects(&self.root, &self.pid, &gc::ReclaimConfig::default());
         }
         // Registry: catat last_built (tiap run, warm atau tidak) di root.
         register_project(self);
