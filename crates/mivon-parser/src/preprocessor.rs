@@ -222,11 +222,19 @@ impl Preprocessor {
             // pertama (OpenTitan menulis `ASSERT_STATIC_IN_PACKAGE(Check,
             //     (a == b))` — paren argumen belum tertutup di baris pertama).
             // Gabungkan baris berikutnya selama parens invokasi belum seimbang.
-            if unbalanced_macro_call(&raw_line) {
-                while i + 1 < lines.len() && unbalanced_macro_call(&raw_line) {
+            // INKREMENTAL (bukan rescan): tiap baris tambahan hanya di-scan
+            // sekali — dulu tiap iterasi memindai ULANG seluruh string
+            // akumulasi → O(span²): satu paren tak-seimbang (typo/mutasi
+            // fuzz unbalance_paren) menarik ~30k baris dgn rescan kuadratik
+            // (hang preprocessor 60dtk+/1.2MB, bug_0000). Sekarang O(span).
+            let mut join_scan = MacroJoinScan::default();
+            join_scan.feed_str(&raw_line);
+            if join_scan.unbalanced() {
+                while i + 1 < lines.len() && join_scan.unbalanced() {
                     i += 1;
                     raw_line.push('\n');
                     raw_line.push_str(lines[i]);
+                    join_scan.feed_line(lines[i]);
                 }
             }
             let trimmed = raw_line.trim();
@@ -1531,19 +1539,23 @@ fn split_args_string_aware(args_str: &str, expected_count: usize) -> Vec<String>
     args
 }
 
-/// True jika baris berisi invokasi macro (`` `name(...) ``) yang parennya belum
-/// seimbang. Dipakai untuk menggabungkan baris-baris lanjutan argumen macro.
-fn unbalanced_macro_call(line: &str) -> bool {
-    let mut paren_depth = 0i64;
-    let mut macro_open = false;
-    // Proses per baris: komentar `//` hanya menghentikan scan PADA baris itu
-    // (baris lanjutan yang di-join tetap di-scan). Sebelumnya `break` di
-    // komentar menghentikan scan seluruh string join → paren yang belum
-    // ditutup di baris 1 membuat join menelan SEMUA baris berikutnya sampai
-    // EOF (mis. `ASSERT(...)` multiline yang punya komentar di tengah argumen
-    // di prim_diff_decode.sv) — endmodule ikut hilang.
-    for l in line.split('\n') {
-        let bytes = l.as_bytes();
+/// Scanner inkremental untuk join panggilan macro multi-baris: true bila
+/// baris berisi invokasi macro (`` `name(...) ``) yang parennya belum
+/// seimbang (dipakai menggabungkan baris lanjutan argumen macro).
+///
+/// State yang terbawa antar baris: `paren_depth` + `macro_open`; `in_string`
+/// reset per baris; komentar `//` menghentikan scan baris itu saja.
+/// Tiap baris dipindai tepat sekali (bukan rescan kuadratik).
+#[derive(Default)]
+struct MacroJoinScan {
+    paren_depth: i64,
+    macro_open: bool,
+}
+
+impl MacroJoinScan {
+    /// Pindai satu baris (atau panggil per baris via `feed_str`).
+    fn feed_line(&mut self, line: &str) {
+        let bytes = line.as_bytes();
         let mut in_string = false;
         let mut i = 0;
         while i < bytes.len() {
@@ -1572,16 +1584,27 @@ fn unbalanced_macro_call(line: &str) -> bool {
                 break;
             }
             if c == b'`' {
-                macro_open = true;
+                self.macro_open = true;
             } else if c == b'(' {
-                paren_depth += 1;
+                self.paren_depth += 1;
             } else if c == b')' {
-                paren_depth -= 1;
+                self.paren_depth -= 1;
             }
             i += 1;
         }
     }
-    macro_open && paren_depth > 0
+
+    /// Pindai string multi-baris (baris per baris, state terbawa).
+    fn feed_str(&mut self, s: &str) {
+        for l in s.split('\n') {
+            self.feed_line(l);
+        }
+    }
+
+    /// True bila ada pembuka macro dgn paren belum seimbang.
+    fn unbalanced(&self) -> bool {
+        self.macro_open && self.paren_depth > 0
+    }
 }
 
 /// True jika `\` di akhir baris adalah line-continuation sungguhan — yaitu
@@ -1714,6 +1737,33 @@ mod tests {
         assert!(
             out.contains("initial $finish"),
             "output harus memuat kode modul: {out}"
+        );
+    }
+
+    /// Regresi mivon-fuzz (bug_0000 hang preprocessor): paren tak-seimbang
+    /// dalam invokasi macro multi-baris menarik join sampai EOF — dulu tiap
+    /// baris tambahan memindai ULANG seluruh string akumulasi (O(span²):
+    /// 60dtk+/1.2MB, 33k baris). Join kini inkremental O(span): 20k baris
+    /// selesai seketika. Budget 30dtk = gagal pasti pre-fix, margin 1000×+
+    /// post-fix.
+    #[test]
+    fn unbalanced_macro_join_is_linear() {
+        let mut src = String::from("`FOO(a,\n");
+        for i in 0..20000 {
+            src.push_str(&format!("// filler {}\n", i));
+        }
+        src.push_str(") tail\n");
+        let start = std::time::Instant::now();
+        let mut pp = Preprocessor::new();
+        let out = pp.preprocess(&src, None).unwrap();
+        assert!(
+            start.elapsed().as_secs() < 30,
+            "join 20k baris harus linear, bukan kuadratik"
+        );
+        assert!(
+            out.contains("FOO"),
+            "invokasi macro harus tetap ter-emisi: {}",
+            &out[..out.len().min(120)]
         );
     }
 
