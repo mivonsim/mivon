@@ -593,6 +593,45 @@ impl MicdDatabase {
         // corrupt; sisanya dibangun ulang di save berikutnya.
         recover(&st, &st.join(DB_JOURNAL));
 
+        // Fase 5 (Fase 3b): baca manifest DULU untuk keputusan evict —
+        // wipe total hanya bila base/schema tak cocok; beda versi STAGE
+        // hanya menggugurkan kategori cache terkait (state tetap).
+        // SATU reader dipakai untuk keputusan + load entri (tanpa re-read:
+        // anti TOCTOU antar-proses di antara dua baca).
+        let mdb: Option<MdbReader> = MdbReader::open(&st.join(DB_METADATA)).ok();
+        let stored_manifest: Option<MetadataManifest> = mdb.as_ref().and_then(|r| {
+            r.get(KEY_SINGLETON)
+                .and_then(|b| bincode::deserialize::<MetadataManifest>(&b).ok())
+        });
+        let base_ok = stored_manifest.as_ref().is_some_and(|m| {
+            m.schema_version == SCHEMA_VERSION && compiler_base_matches(&m.compiler_version)
+        });
+        // Stage yang versinya beda dari current (Fase 5). Manifest tanpa
+        // stage_schemas + base ok hanya dari tulisan tangan (produksi selalu
+        // 21 entri) → `unknown_stages` = wipe total (strict, aman).
+        let mut mismatched_stages: Vec<String> = Vec::new();
+        let mut unknown_stages = false;
+        if base_ok {
+            let stored = stored_manifest.as_ref().unwrap();
+            if stored.stage_schemas.is_empty() {
+                unknown_stages = true;
+            } else {
+                let cur = current_stage_schemas();
+                for (name, ver) in &cur {
+                    if stored.stage_schemas.iter().find(|(n, _)| n == name)
+                        != Some(&(name.clone(), *ver))
+                    {
+                        mismatched_stages.push(name.clone());
+                    }
+                }
+                for (name, _) in &stored.stage_schemas {
+                    if !cur.iter().any(|(n, _)| n == name) {
+                        mismatched_stages.push(name.clone());
+                    }
+                }
+            }
+        }
+
         let mut db = MicdDatabase {
             root: root.clone(),
             pid: pid.to_string(),
@@ -637,35 +676,39 @@ impl MicdDatabase {
 
         db.snapshots = list_snapshots(&st);
 
-        // Lapisan cache pipeline per kategori (db.md cache/, baris 1141-1605):
-        // 21 store seragam di `cache/<pid>/`. Dibuka sekali saat open; `None`
-        // bila database root tak bisa ditulis (best-effort — non-kritis).
-        db.cache_layer = CacheLayer::open(&root, &db.pid, db.flags_hash).ok();
+        // Fase 5: gugurkan direktori kategori cache yang versinya beda
+        // SEBELUM layer dibuka (dibuka = fresh). Nama disanitasi: hanya
+        // kategori dikenal yang boleh dihapus (anti path-traversal dari
+        // manifest rusak/jahat).
+        for stage in &mismatched_stages {
+            if cache::CacheCategory::from_name(stage).is_some() {
+                let _ = std::fs::remove_dir_all(
+                    root.join(cache::DIR_CACHE).join(pid).join(stage),
+                );
+            }
+        }
 
-        // Database artefak precompiled (VCS AN.DB / Questa _info analog).
-        // Menyimpan hasil analisis per module agar tool downstream bisa baca
-        // tanpa compile ulang.
-        let precompiled_root = db.root.join(DIR_PRECOMPILED).join(&db.pid);
-        db.precompiled_db = Some(precompiled::PrecompiledDb::open(&precompiled_root));
+        // Database artefak precompiled dibuka di open_cache_and_precompiled
+        // (setelah keputusan wipe — lihat bawah).
 
-        // metadata.mdb — pintu schema (Kritik 3 db.md). Bila schema version
-        // tidak cocok, SELURUH store dianggap tidak kompatibel → bangun ulang
-        // dari kosong (AST lama diabaikan, tidak akan di-reuse).
+        // metadata.mdb — pintu schema (Kritik 3 db.md). Fase 5: base/schema
+        // tak cocok ATAU stage tak-dikenal → wipe total; beda versi stage
+        // (dikenal) → hanya kategori cache terkait yang digugurkan di atas,
+        // state (metadata/graph/verify/...) tetap di-load.
+        //
+        // Batasan jujur (S1): versi stage meng-gate FORMAT payload cache
+        // kategori itu saja. Perubahan SEMANTIK (hasil analisis beda untuk
+        // input sama) WAJIB bump `-p<N>` (COMPILER_VERSION), bukan versi
+        // stage — kecuali stage `verify` yang sekaligus menggugurkan
+        // verify.mdb di bawah (hasil verifikasi = downstream semua stage).
         let mut schema_ok = false;
-        if let Ok(r) = MdbReader::open(&st.join(DB_METADATA)) {
-            if let Some(manifest) = r
-                .get(KEY_SINGLETON)
-                .and_then(|b| bincode::deserialize::<MetadataManifest>(&b).ok())
-            {
-                // Fase 3 (Kritik C): gerbang = base compiler + schema + stage.
-                // Fingerprint binary TIDAK lagi meng-invalidate (hanya
-                // statistik di registry). Manifest legacy (base + suffix hex)
-                // tetap diterima via compiler_base_matches. Stage wajib sama
-                // persis (strict — tanpa cabang kosong).
-                if manifest.schema_version == SCHEMA_VERSION
-                    && compiler_base_matches(&manifest.compiler_version)
-                    && manifest.stage_schemas == current_stage_schemas()
+        if base_ok && !unknown_stages {
+            if let Some(r) = mdb.as_ref() {
+                if let Some(manifest) = r
+                    .get(KEY_SINGLETON)
+                    .and_then(|b| bincode::deserialize::<MetadataManifest>(&b).ok())
                 {
+                    // base_ok dari pre-read menjamin versi cocok.
                     schema_ok = true;
                     db.schema_version = manifest.schema_version;
                     db.flags_hash = manifest.flags_hash;
@@ -687,6 +730,8 @@ impl MicdDatabase {
             // kompatibel. Buang store lama secara deterministik (bukan
             // dibiarkan) agar tidak ada state campuran — mis. metadata schema
             // baru + graph/object/verify lama yang di-load pada run berikutnya.
+            // Fase 5: wipe BENAR-BENAR total — termasuk cache/<pid> dan
+            // precompiled/<pid> (dibuka ulang fresh di bawah).
             for name in [
                 DB_METADATA,
                 DB_GRAPH,
@@ -701,9 +746,16 @@ impl MicdDatabase {
                 let _ = std::fs::remove_file(st.join(name));
             }
             let _ = std::fs::remove_dir_all(objects_dir(&root, pid));
+            let _ = std::fs::remove_dir_all(root.join(cache::DIR_CACHE).join(pid));
+            let _ = std::fs::remove_dir_all(db.root.join(DIR_PRECOMPILED).join(&db.pid));
             db.schema_version = SCHEMA_VERSION;
+            open_cache_and_precompiled(&mut db, &root, pid);
             return db;
         }
+
+        // Jalur normal (termasuk evict selektif): buka layer setelah
+        // direktori kategori basi digugurkan.
+        open_cache_and_precompiled(&mut db, &root, pid);
 
         // graph.mdb
         if let Some(g) = read_mdb_singleton::<FileGraph>(&st, DB_GRAPH) {
@@ -722,6 +774,16 @@ impl MicdDatabase {
             let at = v.verified_at_ns;
             db.verify_accessed.insert(v.content_hash, at);
             db.verify.insert(v.content_hash, v);
+        }
+        // Fase 5 (S1): stage `verify` bump = hasil verifikasi tak dipercaya —
+        // gugurkan verify.mdb dari memori + tandai dirty agar save menulis
+        // ulang tanpa entri basi (file lama ikut tertimpa saat save).
+        if mismatched_stages.iter().any(|s| s == "verify") {
+            db.verify.clear();
+            db.verify_ast_index.clear();
+            db.verify_semantic_index.clear();
+            db.verify_accessed.clear();
+            db.dirty_verify = true;
         }
 
         // diagnostics.mdb — multi-entry: path_hash → FileDiags
@@ -1654,6 +1716,15 @@ impl MicdDatabase {
 // objek).
 
 // ─── Layout database (Opsi B db.md) ───
+
+/// Buka lapisan cache + precompiled untuk pid (Fase 5: SATU titik, dipanggil
+/// setelah keputusan evict/wipe agar direktori basi dibuka sebagai fresh).
+/// Keduanya best-effort (`None`/kosong bila root tak bisa ditulis).
+fn open_cache_and_precompiled(db: &mut MicdDatabase, db_root: &Path, pid: &str) {
+    db.cache_layer = CacheLayer::open(db_root, pid, db.flags_hash).ok();
+    let precompiled_root = db.root.join(DIR_PRECOMPILED).join(pid);
+    db.precompiled_db = Some(precompiled::PrecompiledDb::open(&precompiled_root));
+}
 
 /// Direktori index (state mutable) sebuah project.
 pub fn state_dir(db_root: &Path, pid: &str) -> PathBuf {
@@ -2669,12 +2740,164 @@ mod tests {
         write_manifest("Mivon 0.0.0-p99", vec![]);
         let db2 = MicdDatabase::open(&root);
         assert!(db2.files.is_empty(), "base beda harus wipe");
-        // Stage beda → wipe.
+        // Fase 5: stage beda → evict SELEKTIF (state kept, kategori basi gugur).
+        {
+            // Seed: state + 2 entri cache, lalu save (manifest jadi current).
+            let mut db = MicdDatabase::open(&root);
+            db.record_file(path.clone(), 7, vec![], FileStatus::New, 0, 3, vec![]);
+            if let Some(l) = db.cache_layer.as_mut() {
+                l.put(CacheCategory::Preprocess, "k", b"pre").unwrap();
+                l.put(CacheCategory::Lint, "k2", b"lint").unwrap();
+            }
+            db.save().unwrap();
+        }
         let mut stages = current_stage_schemas();
+        let bumped = stages[0].0.clone();
         stages[0].1 += 1000;
         write_manifest(COMPILER_VERSION, stages);
-        let db3 = MicdDatabase::open(&root);
-        assert!(db3.files.is_empty(), "stage beda harus wipe");
+        {
+            let mut db3 = MicdDatabase::open(&root);
+            assert_eq!(db3.files.len(), 1, "Fase 5: state tetap di-load");
+            let layer = db3.cache_layer.as_mut().unwrap();
+            assert!(
+                layer.get(CacheCategory::Preprocess, "k").is_none(),
+                "kategori basi ({}) digugurkan",
+                bumped
+            );
+            assert_eq!(
+                layer.get(CacheCategory::Lint, "k2").unwrap(),
+                b"lint",
+                "kategori lain selamat"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn test_fase5_stage_verify_gugurkan_verify_mdb() {
+        // S1: bump stage verify → verify map kosong (digugurkan), files tetap.
+        let root = test_root("fase5_verify");
+        let st = state_dir(&root, "default");
+        let path = PathBuf::from("a.sv");
+        {
+            let mut db = MicdDatabase::open(&root);
+            db.record_file(path.clone(), 7, vec![], FileStatus::New, 0, 3, vec![]);
+            let mut v = VerifyResult::fresh(7);
+            v.parse_ok = true;
+            db.set_verify(v);
+            db.save().unwrap();
+        }
+        let r = MdbReader::open(&st.join(DB_METADATA)).unwrap();
+        let mut m: MetadataManifest =
+            bincode::deserialize(&r.get(KEY_SINGLETON).unwrap()).unwrap();
+        m.stage_schemas = current_stage_schemas()
+            .into_iter()
+            .map(|(n, v)| if n == "verify" { (n, v + 1) } else { (n, v) })
+            .collect();
+        let mut w = MdbWriter::new();
+        w.put(
+            KEY_SINGLETON,
+            format::KIND_MANIFEST,
+            bincode::serialize(&m).unwrap(),
+        );
+        for (k, _) in r.keys() {
+            if k != KEY_SINGLETON {
+                if let Some(b) = r.get(k) {
+                    w.put(k, format::KIND_META, b);
+                }
+            }
+        }
+        drop(r);
+        w.write_to(&st.join(DB_METADATA)).unwrap();
+        {
+            let db = MicdDatabase::open(&root);
+            assert_eq!(db.files.len(), 1, "metadata selamat");
+            assert!(db.verify.is_empty(), "verify digugurkan saat stage verify bump");
+            assert!(db.dirty_verify, "save berikutnya menimpa verify.mdb basi");
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn test_fase5_stage_bogus_tidak_escape_dan_state_selamat() {
+        // Manifest jahat/rusak berisi nama stage asing: dilewati (sanitasi),
+        // state tetap di-load, tidak ada direktori di luar cache/ yang lenyap.
+        let root = test_root("fase5_bogus");
+        let st = state_dir(&root, "default");
+        let path = PathBuf::from("a.sv");
+        std::fs::create_dir_all(&st).unwrap();
+        let sentinel = root.join("sentinel_dir");
+        std::fs::create_dir_all(&sentinel).unwrap();
+        {
+            let mut db = MicdDatabase::open(&root);
+            db.record_file(path.clone(), 7, vec![], FileStatus::New, 0, 3, vec![]);
+            db.save().unwrap();
+        }
+        // Sisipkan stage asing "../sentinel_dir" + versi salah satu stage.
+        let mut stages = current_stage_schemas();
+        stages.push(("../sentinel_dir".to_string(), 999));
+        // Tulis ulang manifest: baca yang tersimpan, ganti stage_schemas.
+        let r = MdbReader::open(&st.join(DB_METADATA)).unwrap();
+        let mut m: MetadataManifest =
+            bincode::deserialize(&r.get(KEY_SINGLETON).unwrap()).unwrap();
+        m.stage_schemas = stages;
+        let mut w = MdbWriter::new();
+        w.put(
+            KEY_SINGLETON,
+            format::KIND_MANIFEST,
+            bincode::serialize(&m).unwrap(),
+        );
+        for (k, _) in r.keys() {
+            if k != KEY_SINGLETON {
+                if let Some(b) = r.get(k) {
+                    w.put(k, format::KIND_META, b);
+                }
+            }
+        }
+        drop(r);
+        w.write_to(&st.join(DB_METADATA)).unwrap();
+        {
+            let db = MicdDatabase::open(&root);
+            assert_eq!(db.files.len(), 1, "state selamat dari stage asing");
+            assert!(sentinel.exists(), "tidak ada escape path dari manifest");
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn test_fase5_stage_kosong_wipe_total() {
+        // Manifest tanpa stage_schemas (tulisan tangan) + base ok → strict:
+        // wipe total, bukan reuse buta.
+        let root = test_root("fase5_empty");
+        let st = state_dir(&root, "default");
+        {
+            let mut db = MicdDatabase::open(&root);
+            db.record_file(PathBuf::from("a.sv"), 7, vec![], FileStatus::New, 0, 3, vec![]);
+            db.save().unwrap();
+        }
+        let r = MdbReader::open(&st.join(DB_METADATA)).unwrap();
+        let mut m: MetadataManifest =
+            bincode::deserialize(&r.get(KEY_SINGLETON).unwrap()).unwrap();
+        m.stage_schemas = Vec::new();
+        let mut w = MdbWriter::new();
+        w.put(
+            KEY_SINGLETON,
+            format::KIND_MANIFEST,
+            bincode::serialize(&m).unwrap(),
+        );
+        for (k, _) in r.keys() {
+            if k != KEY_SINGLETON {
+                if let Some(b) = r.get(k) {
+                    w.put(k, format::KIND_META, b);
+                }
+            }
+        }
+        drop(r);
+        w.write_to(&st.join(DB_METADATA)).unwrap();
+        {
+            let db = MicdDatabase::open(&root);
+            assert!(db.files.is_empty(), "stage tak-dikenal → wipe total");
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 
