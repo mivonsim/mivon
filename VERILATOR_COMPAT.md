@@ -490,11 +490,16 @@ endmodule
 
 ## 9. Hasil Sweep `examples/mv/` (11 Okt 2026)
 
-Seluruh output `mgen` (36 file `.sv`) diuji terhadap iverilog `-g2012` dan
+Seluruh output `mgen` (36 file `.sv`, dengan `-I examples/mv` agar
+`` `include `` lintas-file ter-resolve — tanpa `-I`, 6 file gagal palsu
+`Include file *.svh not found`) diuji terhadap iverilog `-g2012` dan
 verilator `--lint-only --timing`. **Nol bug emisi baru** — semua penolakan
-terpetakan ke limitasi tool yang sudah terdokumentasi di `MIVON-HDL.md`:
+terpetakan ke limitasi tool yang sudah terdokumentasi di `MIVON-HDL.md`.
+(Klasifikasi "bersih" = exit 0; warning/sorry iverilog tetap dihitung
+bersih.)
 
-**iverilog bersih (20 file):** `always_latch`, `case_qualifiers`, `compound`,
+**iverilog bersih (21 file):** `always_latch`, `case_qualifiers`, `cast`
+(`sorry` constant-select saja), `compound`,
 `counter`, `disable_label`, `fib`, `force_release`, `fork_ctrl`,
 `forkjoin`, `for_step`, `func_local` (warning static-init saja),
 `gen_case` (warning sensivitas saja), `nets` (`wire`/`tri` OK),
@@ -507,20 +512,22 @@ property` (`assume_demo`, `cover_demo`, `escape_hatch`, `tb_counter`),
 (`case_inside`), `unique if` (`unique_if`), named event `-> ev`
 (`dowhile` — eksekusi), interface port (`axi_interface`), array-assign
 (`array_lit`, `dsl_demo`, `multidim`), constraint class (`class_model`),
-named function args `.factor(3)` (`features_new`), constant bit-select
-`sorry` (`cast`), static-init warning (`func_local`).
+named function args `.factor(3)` (`features_new`).
 
 **verilator bersih (27 file)** termasuk `axi_interface`, `case_inside`,
 `unique_if`, `tb_counter`, `assume_demo`, `cover_demo`.
 
-**verilator menolak (limit tool):** `covergroup` + coverage event
+**verilator menolak (limit tool, exit ≠ 0):** `covergroup` + coverage event
 (`cover` — `UNSUPPORTED`), `wand`/`wor` (`nets` — `UNSUPPORTED`;
-`wire`/`tri*` lolos), `disable` lintas-branch (`disable_label` —
+`wire`/`tri*` lolos), constraint class (`class_model`), named args +
+width warnings (`features_new`), `disable` lintas-branch (`disable_label` —
 non-standar, pakai `stop fork`), `-> ev` (`dowhile`/`dsl_demo` — Internal
 Error `V3Delayed`), rekursi `$unit`-function (`fib` — Internal Error
 `V3Scope`), `func_local` (Internal Error `V3Scope` + `IMPLICITSTATIC`
-warning). Warning benign: `WIDTHEXPAND` (`counter`), `CASEINCOMPLETE`
-(`traffic`), `IMPLICIT` bind-scope (`bind_check`).
+warning). Warning benign (exit ≠ 0 di `--lint-only`, tetap valid):
+`WIDTHEXPAND` (`counter`), `CASEINCOMPLETE` (`traffic`), `IMPLICIT`
+bind-scope (`bind_check`). Total: 27 bersih (24 exit-0 + 3 warning-only),
+9 menolak.
 
 ---
 
