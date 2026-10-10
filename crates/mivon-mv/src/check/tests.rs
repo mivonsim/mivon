@@ -1174,3 +1174,16 @@ fn f80r2_signal_shadows_enum_member() {
     let e = check_src(src).unwrap_err();
     assert!(e.msg.contains("E2014"), "msg: {}", e.msg);
 }
+
+#[test]
+fn f80r3_instance_genvar_shadow_enum() {
+    // Follow-up: instance juga NON-konstan — menutupi member enum &
+    // konstanta package bernama sama.
+    let src = "package p {\n enum E { W, X }\n}\nmodule foo {\n in clk : bit\n}\nmodule m {\n use p::*\n in clk : bit\n out y : bit\n inst foo W\n if (W) {\n comb { y = 1 }\n }\n}";
+    let e = check_src(src).unwrap_err();
+    assert!(e.msg.contains("E2014"), "instance menutupi enum: {}", e.msg);
+    // Genvar tersubstitusi per iterasi oleh elaborator → kondisi generate
+    // bersarang yang merujuknya dilewati E2014 (bukan false-positive).
+    let src2 = "module m #(N = 2) {\n in clk : bit\n out y : logic[7:0]\n for i in 0..N {\n if (i < N) {\n comb { y = i }\n }\n }\n}";
+    check_src(src2).expect("genvar bersarang harus lolos E2014");
+}

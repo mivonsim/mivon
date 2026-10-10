@@ -106,6 +106,15 @@ pub(crate) struct Scope<'a> {
     /// konstanta LOCAL module (`const C = 4` di badan module) — dipakai
     /// aturan lvalue (E2010): `const`/`localparam` tak boleh di-assign.
     pub(crate) local_consts: HashSet<&'a str>,
+    /// F80 follow-up: nama yang dideklarasikan sebagai NON-konstan (port,
+    /// sinyal/reg/wire, konstanta tak-ter-fold, instance, genvar, loop-var).
+    /// Menutupi member enum / konstanta package bernama sama saat fold
+    /// kondisi generate (prioritas deklarasi eksplisit, sesuai LRM).
+    pub(crate) nonconsts: HashSet<&'a str>,
+    /// F80 follow-up: variabel generate (`for i in ...`) yang terlihat.
+    /// Genvar TERSUBSTITUSI per iterasi oleh elaborator (bukan nilai tunggal)
+    /// sehingga kondisi generate yang merujuknya dilewati E2014.
+    pub(crate) genvars: HashSet<&'a str>,
     pub(crate) env: Env<'a>,
     /// kedalaman loop (untuk validasi break/continue)
     pub(crate) loop_depth: usize,
@@ -738,6 +747,8 @@ pub(crate) fn new_scope<'a>(ctx: &'a Ctx<'a>, mname: &'a str) -> Scope<'a> {
         enum_members: &ctx.enum_members,
         consts: &ctx.consts,
         local_consts: HashSet::new(),
+        nonconsts: HashSet::new(),
+        genvars: HashSet::new(),
         env: Env {
             mname,
             ports: HashMap::new(),

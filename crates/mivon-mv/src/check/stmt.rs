@@ -336,6 +336,7 @@ pub(crate) fn check_stmt<'a>(
             }
             let mut inner = scope.clone();
             inner.sigs.insert(var.as_str());
+            inner.nonconsts.insert(var.as_str());
             inner.loop_depth += 1;
             check_stmt(body, ctx, &mut inner, kind)
         }
@@ -378,6 +379,7 @@ pub(crate) fn check_stmt<'a>(
             let mut inner = scope.clone();
             for iv in inds {
                 inner.sigs.insert(iv.as_str());
+                inner.nonconsts.insert(iv.as_str());
             }
             inner.loop_depth += 1;
             check_stmt(body, ctx, &mut inner, kind)
@@ -487,6 +489,7 @@ pub(crate) fn check_stmt<'a>(
                 }
                 scope.sigs.insert(n.as_str());
                 scope.types.insert(n.as_str(), ty);
+                scope.nonconsts.insert(n.as_str());
             }
             Ok(())
         }

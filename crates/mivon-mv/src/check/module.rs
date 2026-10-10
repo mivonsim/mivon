@@ -98,6 +98,7 @@ pub(crate) fn check_module<'a>(m: &'a Module, ctx: &'a Ctx<'a>) -> Result<(), Mv
                 for n in &p.names {
                     scope.sigs.insert(n.as_str());
                     scope.types.insert(n.as_str(), &p.ty);
+                    scope.nonconsts.insert(n.as_str());
                 }
             }
             MItem::Sig {
@@ -149,6 +150,7 @@ pub(crate) fn check_module<'a>(m: &'a Module, ctx: &'a Ctx<'a>) -> Result<(), Mv
                 for n in names {
                     scope.sigs.insert(n.as_str());
                     scope.types.insert(n.as_str(), ty);
+                    scope.nonconsts.insert(n.as_str());
                 }
             }
             MItem::Const {
@@ -191,6 +193,10 @@ pub(crate) fn check_module<'a>(m: &'a Module, ctx: &'a Ctx<'a>) -> Result<(), Mv
                 check_expr(value, ctx, &scope, 0)?;
                 if let Some(v) = super::expr::fold_const(value, &scope.params, 0) {
                     scope.params.insert(name.as_str(), v);
+                } else {
+                    // Nilai tak ter-fold (mis. merujuk sinyal) — nama ini
+                    // NON-konstan untuk fold kondisi generate (F80).
+                    scope.nonconsts.insert(name.as_str());
                 }
                 scope.local_consts.insert(name.as_str());
                 scope.sigs.insert(name.as_str());
@@ -280,6 +286,7 @@ fn check_module_item<'a>(
             for n in names {
                 scope.sigs.insert(n.as_str());
                 scope.types.insert(n.as_str(), ty);
+                scope.nonconsts.insert(n.as_str());
             }
             Ok(())
         }
@@ -304,6 +311,7 @@ fn check_module_item<'a>(
             for n in names {
                 scope.sigs.insert(n.as_str());
                 scope.types.insert(n.as_str(), ty);
+                scope.nonconsts.insert(n.as_str());
             }
             Ok(())
         }
@@ -354,6 +362,13 @@ fn check_module_item<'a>(
                 check_type_scope(t, ctx, Some(scope), 0)?;
             }
             check_expr(value, ctx, scope, 0)?;
+            // Cerminkan pass-1: konstanta ter-fold ikut `params` (terlihat di
+            // kondisi generate tersarang); sisanya NON-konstan (F80).
+            if let Some(v) = super::expr::fold_const(value, &scope.params, 0) {
+                scope.params.insert(name.as_str(), v);
+            } else {
+                scope.nonconsts.insert(name.as_str());
+            }
             scope.sigs.insert(name.as_str());
             Ok(())
         }
@@ -564,8 +579,10 @@ fn check_module_item<'a>(
                     ),
                 ));
             }
-            // nama instance bisa direferensikan (mis. `u_mem.data`)
+            // nama instance bisa direferensikan (mis. `u_mem.data`) — tapi
+            // NON-konstan untuk fold generate (F80).
             scope.sigs.insert(name.as_str());
+            scope.nonconsts.insert(name.as_str());
             Ok(())
         }
         MItem::GenFor {
@@ -582,6 +599,7 @@ fn check_module_item<'a>(
             }
             let mut inner = scope.clone();
             inner.sigs.insert(var.as_str());
+            inner.genvars.insert(var.as_str());
             for it in body {
                 check_module_item(it, ctx, &mut inner, is_tb)?;
             }
@@ -598,7 +616,10 @@ fn check_module_item<'a>(
             // F80: kondisi generate WAJIB konstan waktu-elaborasi (LRM 1800
             // §27.5) — parameter/konstanta/literal, bukan sinyal. Elaborator
             // hanya warning + ambil cabang pertama diam-diam.
-            if super::expr::gen_const_value(cond, scope, ctx, 0).is_none() {
+            // Genvar tersubstitusi per iterasi oleh elaborator → E2014
+            // dilewati bila kondisi merujuknya.
+            let uses_genvar = scope.genvars.iter().any(|g| super::expr::expr_uses(cond, g));
+            if !uses_genvar && super::expr::gen_const_value(cond, scope, ctx, 0).is_none() {
                 return Err(err_at(
                     *line,
                     *col,
@@ -633,7 +654,10 @@ fn check_module_item<'a>(
             // terbaca di cabang-1 (cabang generate = scope terpisah).
             check_expr(expr, ctx, scope, 0)?;
             // F80: expr generate-case WAJIB konstan (LRM 1800 §27.5).
-            if super::expr::gen_const_value(expr, scope, ctx, 0).is_none() {
+            // Genvar tersubstitusi per iterasi → E2014 dilewati bila
+            // ekspresi merujuknya (lihat GenIf di atas).
+            let uses_genvar = scope.genvars.iter().any(|g| super::expr::expr_uses(expr, g));
+            if !uses_genvar && super::expr::gen_const_value(expr, scope, ctx, 0).is_none() {
                 return Err(err_at(
                     *line,
                     *col,

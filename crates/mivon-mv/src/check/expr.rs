@@ -1107,16 +1107,15 @@ pub(crate) fn gen_const_value(e: &Expr, scope: &Scope, ctx: &Ctx, depth: usize) 
             gen_const_value(if v != 0 { t } else { f }, scope, ctx, depth + 1)
         }
         Expr::Ident(s, ..) => {
-            // Parameter/konstanta module (lokal, prioritas tertinggi —
-            // menutupi konstanta package bernama sama, sesuai LRM).
+            // Parameter/konstanta module ter-fold (lokal, prioritas tertinggi
+            // — menutupi konstanta package bernama sama, sesuai LRM).
             if let Some(v) = scope.params.get(s.as_str()).copied() {
                 return Some(v);
             }
-            // Sinyal/port/func menutupi SEMUA nama konstan (enum + package) —
-            // review F80: `sig W` + member `W` harus E2014, bukan fold enum.
-            // (`scope.types` hanya berisi variabel; member enum hanya di
-            // `sigs`, konstanta module ter-fold sudah kembali di atas.)
-            if scope.types.contains_key(s.as_str()) || scope.funcs.contains(s.as_str()) {
+            // Deklarasi NON-konstan (sinyal/port/instance/genvar/loop-var/
+            // konstanta tak-ter-fold) menutupi member enum + konstanta
+            // package bernama sama — prioritas deklarasi eksplisit (LRM).
+            if scope.nonconsts.contains(s.as_str()) || scope.funcs.contains(s.as_str()) {
                 return None;
             }
             // Member enum.
@@ -1157,6 +1156,73 @@ fn pkg_const_value(
     let p = ctx.packages.get(pkg)?;
     let (_, _, value) = p.consts.iter().find(|(n, _, _)| n == name)?;
     gen_const_value(value, scope, ctx, depth + 1)
+}
+
+/// F80 follow-up: apakah ekspresi merujuk nama tertentu (dipakai untuk
+/// mendeteksi genvar di kondisi generate — genvar tersubstitusi per iterasi
+/// oleh elaborator sehingga E2014 dilewati untuknya).
+pub(crate) fn expr_uses(e: &Expr, name: &str) -> bool {
+    match e {
+        Expr::Ident(s, ..) => s == name,
+        Expr::Scoped(p, i, ..) => p == name || i == name,
+        Expr::Cast { ty, expr, .. } => type_uses(ty, name) || expr_uses(expr, name),
+        Expr::Unary(_, inner)
+        | Expr::Paren(inner)
+        | Expr::IncDec { expr: inner, .. }
+        | Expr::NamedArg { expr: inner, .. } => expr_uses(inner, name),
+        Expr::Binary(_, l, r)
+        | Expr::Ternary(l, r, _)
+        | Expr::Index(l, r)
+        | Expr::Replicate(l, r) => expr_uses(l, name) || expr_uses(r, name),
+        Expr::Concat(parts) | Expr::ArrayLit(parts) => {
+            parts.iter().any(|p| expr_uses(p, name))
+        }
+        Expr::Call(_, args, ..) => args.iter().any(|a| expr_uses(a, name)),
+        Expr::MethodCall { obj, args, .. } => {
+            expr_uses(obj, name) || args.iter().any(|a| expr_uses(a, name))
+        }
+        Expr::Member(o, f, ..) => expr_uses(o, name) || f == name,
+        Expr::Range(o, hi, lo) => {
+            expr_uses(o, name) || expr_uses(hi, name) || expr_uses(lo, name)
+        }
+        Expr::PartSelect { base, from, width, .. } => {
+            expr_uses(base, name) || expr_uses(from, name) || expr_uses(width, name)
+        }
+        Expr::Inside { expr, items } => {
+            expr_uses(expr, name)
+                || items.iter().any(|it| match it {
+                    crate::ast::InsideItem::Value(v) => expr_uses(v, name),
+                    crate::ast::InsideItem::Range(lo, hi) => {
+                        expr_uses(lo, name) || expr_uses(hi, name)
+                    }
+                })
+        }
+        Expr::Dist { expr, items } => {
+            expr_uses(expr, name)
+                || items.iter().any(|it| {
+                    expr_uses(&it.value, name)
+                        || it.range
+                            .as_ref()
+                            .is_some_and(|(lo, hi)| expr_uses(lo, name) || expr_uses(hi, name))
+                        || expr_uses(&it.weight, name)
+                })
+        }
+        _ => false,
+    }
+}
+
+/// F80 follow-up: apakah tipe merujuk nama tertentu (bound `[N]` / range).
+fn type_uses(ty: &MvType, name: &str) -> bool {
+    match ty {
+        MvType::Named(n, ..) => n == name,
+        MvType::Signed(inner) => type_uses(inner, name),
+        MvType::Array(inner, dims) => {
+            type_uses(inner, name) || dims.iter().any(|d| expr_uses(d, name))
+        }
+        MvType::Logic(Some((hi, lo))) => expr_uses(hi, name) || expr_uses(lo, name),
+        MvType::Queue(inner) => type_uses(inner, name),
+        _ => false,
+    }
 }
 
 /// F32: ekspresi yang BERBENTUK tipe (bukan nilai) — ident yang merupakan
