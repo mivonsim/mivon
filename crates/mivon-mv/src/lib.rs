@@ -647,6 +647,12 @@ fn collect_file_refs(file: &ast::MvFile, out: &mut Vec<String>) {
         for (_, ty, _) in &c.fields {
             collect_type_refs(ty, out);
         }
+        // Review F77 putaran 2: constraint `seed < p::MAX` membawa referensi.
+        for (_, items) in &c.constraints {
+            for it in items {
+                collect_constraint_item_refs(it, out);
+            }
+        }
         for f in &c.funcs {
             for (_, ty, _, def) in &f.args {
                 collect_type_refs(ty, out);
@@ -940,6 +946,19 @@ fn collect_inside_item_refs(it: &crate::ast::InsideItem, out: &mut Vec<String>) 
             collect_expr_refs(lo, out);
             collect_expr_refs(hi, out);
         }
+    }
+}
+
+fn collect_constraint_item_refs(it: &crate::ast::ConstraintItem, out: &mut Vec<String>) {
+    match it {
+        crate::ast::ConstraintItem::Expr(e) => collect_expr_refs(e, out),
+        crate::ast::ConstraintItem::If { cond, then, els } => {
+            collect_expr_refs(cond, out);
+            for x in then.iter().chain(els.iter()) {
+                collect_constraint_item_refs(x, out);
+            }
+        }
+        crate::ast::ConstraintItem::Solve { .. } => {}
     }
 }
 
@@ -1603,6 +1622,25 @@ interface bus_if {
             results[2].sv.contains("`include \"qdefs.svh\""),
             "n.sv: {}",
             results[2].sv
+        );
+    }
+
+    #[test]
+    fn f77r5_class_constraint_walked() {
+        // Review F77 putaran 2: `constraint c { seed < p::MAX }` membawa
+        // referensi package — wajib memicu include.
+        let items = vec![
+            MvItem::new("package p {\n const MAX = 200\n}\nmodule d1 {\n in clk : bit\n}\n", "pdefs"),
+            MvItem::new(
+                "class my_item {\n field seed : int\n constraint c { seed < p::MAX }\n}\nmodule m {\n in clk : bit\n}\n",
+                "m",
+            ),
+        ];
+        let results = transpile_many_items(&items).expect("batch constraint");
+        assert!(
+            results[1].sv.contains("`include \"pdefs.svh\""),
+            "m.sv: {}",
+            results[1].sv
         );
     }
 }
