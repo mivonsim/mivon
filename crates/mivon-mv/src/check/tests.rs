@@ -1125,4 +1125,8 @@ fn f79_gen_case_ok_and_e2001() {
     // sinyal tak dikenal di expr → E2001.
     let e = check_src("module m {\n in clk : bit\n out y : bit\n case (NOPE) {\n 0: { comb { y = 1 } }\n }\n}").unwrap_err();
     assert!(e.msg.contains("E2001"), "msg: {}", e.msg);
+    // Review F79: cabang generate = scope terpisah — `sig` cabang-0 tak
+    // terbaca di cabang-1 (sebelumnya satu `inner` bersama membocorkan).
+    let e2 = check_src("module m #(SEL = 1) {\n in clk : bit\n case (SEL) {\n 0: { sig t : bit\n comb { t = 1 } }\n 1: { comb { t = 0 } }\n }\n}").unwrap_err();
+    assert!(e2.msg.contains("E2001"), "msg: {}", e2.msg);
 }
