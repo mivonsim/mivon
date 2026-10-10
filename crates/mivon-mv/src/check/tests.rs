@@ -1150,3 +1150,18 @@ fn f80_gen_cond_nonconst_is_e2014() {
     assert!(e2.msg.contains("E2014"), "msg: {}", e2.msg);
     assert!(e2.line == 5, "posisi baris case: {}:{}", e2.line, e2.col);
 }
+
+#[test]
+fn f80r1_bare_package_const_no_false_positive() {
+    // Follow-up review: konstanta package via bare-import (`use p::*; if (W)`)
+    // ter-fold — bukan E2014. Sinyal lokal bernama sama MENUTUPI const
+    // (prioritas LRM) → tetap E2014.
+    let ok = "package p {\n const W = 8\n}\nmodule m {\n use p::*\n in clk : bit\n out y : bit\n if (W > 2) {\n comb { y = 1 }\n }\n}";
+    check_src(ok).expect("bare package const harus lolos");
+    let shadow = "package p {\n const W = 8\n}\nmodule m {\n use p::*\n in clk : bit\n sig W : bit\n out y : bit\n if (W) {\n comb { y = 1 }\n }\n}";
+    let e = check_src(shadow).unwrap_err();
+    assert!(e.msg.contains("E2014"), "sinyal menutupi const → E2014: {}", e.msg);
+    // literal sized ber-underscore ikut ter-fold.
+    let us = "module m #(N = 4) {\n in clk : bit\n out y : bit\n if (8'h0_4 == N) {\n comb { y = 1 }\n }\n}";
+    check_src(us).expect("underscore sized harus lolos");
+}

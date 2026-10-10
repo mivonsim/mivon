@@ -469,7 +469,13 @@ fn sized_value(base: char, digits: &str) -> Option<i64> {
         'b' => 2,
         _ => return None,
     };
-    i64::from_str_radix(digits, radix).ok()
+    // F80: `_` pemisah digit diabaikan (`8'hFF_FF` valid SV); `x`/`z`/`?`
+    // gagal parse → None (unknown, bukan 0 diam-diam).
+    let clean: String = digits.chars().filter(|c| *c != '_').collect();
+    if clean.is_empty() {
+        return None;
+    }
+    i64::from_str_radix(&clean, radix).ok()
 }
 
 // ── Tipe: validasi (E2005) + lebar bit ──
@@ -996,8 +1002,15 @@ pub(crate) fn fold_const(e: &Expr, params: &Params, depth: usize) -> Option<i64>
 
 /// F80: nilai member enum (`RED` dalam `enum { IDLE, RED }`) — auto-increment
 /// dari nilai eksplisit (sinkron dengan emisi codegen/defs.rs). Cari di
-/// typedef lokal module, lalu global (file + package).
-pub(crate) fn enum_member_value(name: &str, ctx: &Ctx, scope: &Scope) -> Option<i64> {
+/// typedef lokal module, lalu global (file + package). Nilai eksplisit boleh
+/// merujuk konstanta lain (di-fold via `gen_const_value`, depth+1 agar
+/// siklus A↔B terminate di cap 8).
+pub(crate) fn enum_member_value(
+    name: &str,
+    ctx: &Ctx,
+    scope: &Scope,
+    depth: usize,
+) -> Option<i64> {
     let mut found: Option<&Typedef> = None;
     for td in scope.local_types.values() {
         if let Typedef::Enum { members, .. } = td {
@@ -1023,7 +1036,7 @@ pub(crate) fn enum_member_value(name: &str, ctx: &Ctx, scope: &Scope) -> Option<
     if let Typedef::Enum { members, .. } = td {
         for m in members {
             let v = match &m.value {
-                Some(e) => fold_const(e, &scope.params, 1)?,
+                Some(e) => gen_const_value(e, scope, ctx, depth + 1)?,
                 None => next,
             };
             if m.name == name {
@@ -1092,19 +1105,49 @@ pub(crate) fn gen_const_value(e: &Expr, scope: &Scope, ctx: &Ctx, depth: usize) 
             gen_const_value(if v != 0 { t } else { f }, scope, ctx, depth + 1)
         }
         Expr::Ident(s, ..) => {
+            // Parameter/konstanta module (lokal, prioritas tertinggi —
+            // menutupi konstanta package bernama sama, sesuai LRM).
             if let Some(v) = scope.params.get(s.as_str()).copied() {
                 return Some(v);
             }
-            enum_member_value(s, ctx, scope)
+            // Member enum (tak bisa bentrok dengan sinyal — E2007).
+            if let Some(v) = enum_member_value(s, ctx, scope, depth) {
+                return Some(v);
+            }
+            // Konstanta package bare-import (`use p::*; if (W)`) — bukan
+            // deklarasi lokal (sinyal di sini berarti NON-konstan → None di
+            // bawah). Urutan nama package ter-sort agar deterministik.
+            if !scope.sigs.contains(s.as_str()) {
+                let mut pkgs: Vec<&&str> = ctx.packages.keys().collect();
+                pkgs.sort();
+                for pkg in pkgs {
+                    if let Some(v) = pkg_const_value(pkg, s, scope, ctx, depth) {
+                        return Some(v);
+                    }
+                }
+            }
+            None
         }
         Expr::Scoped(p, i, ..) => {
             // Konstanta package — nilai ekspresinya di-fold rekursif.
-            let pkg = ctx.packages.get(p.as_str())?;
-            let (_, _, value) = pkg.consts.iter().find(|(n, _, _)| n == i)?;
-            gen_const_value(value, scope, ctx, depth + 1)
+            pkg_const_value(p, i, scope, ctx, depth)
         }
         _ => None,
     }
+}
+
+/// F80 follow-up: nilai konstanta package (`const W = 8` dalam `package p`),
+/// di-fold rekursif (depth+1 per hop → siklus terminate di cap 8).
+fn pkg_const_value(
+    pkg: &str,
+    name: &str,
+    scope: &Scope,
+    ctx: &Ctx,
+    depth: usize,
+) -> Option<i64> {
+    let p = ctx.packages.get(pkg)?;
+    let (_, _, value) = p.consts.iter().find(|(n, _, _)| n == name)?;
+    gen_const_value(value, scope, ctx, depth + 1)
 }
 
 /// F32: ekspresi yang BERBENTUK tipe (bukan nilai) — ident yang merupakan
