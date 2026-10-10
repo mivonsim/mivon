@@ -1282,11 +1282,35 @@ impl MicdDatabase {
         result
     }
 
+    /// Sidik seluruh input elaborasi (Fase 6): lipat terurut (path,
+    /// content_hash, include_hashes) semua file + flags_hash + top. IR cache
+    /// hanya valid bila sidik saat restore SAMA dengan saat store — libfile
+    /// yang berubah (tak tercakup gerbang hitung-file) tetap menggagalkan
+    /// reuse. Deterministik (sort path) lintas run.
+    pub fn elaboration_inputs_hash(&self, top: &str) -> u64 {
+        use crate::cache::checksum::{checksum_fold, compute_checksum};
+        let mut paths: Vec<&PathBuf> = self.files.keys().collect();
+        paths.sort();
+        let mut h: Vec<u64> = Vec::with_capacity(paths.len() * 2 + 3);
+        for p in paths {
+            let m = &self.files[p];
+            h.push(compute_checksum(p.to_string_lossy().as_bytes()));
+            h.push(m.content_hash);
+            for (dep, hh) in &m.include_hashes {
+                h.push(compute_checksum(dep.to_string_lossy().as_bytes()));
+                h.push(*hh);
+            }
+        }
+        h.push(self.flags_hash);
+        h.push(compute_checksum(top.as_bytes()));
+        checksum_fold(&h)
+    }
+
     /// Simpan `IrDesign` hasil elaborasi LENGKAP ke cache pipeline (db.md
     /// "5. elaborate/", key `ir:<top>`). Dipakai warm run untuk melewati
     /// elaborator sepenuhnya. Best-effort — gagal menyimpan IR tidak
     /// menggagalkan save utama.
-    pub fn store_elaborate_ir(&mut self, ir: &mivon_ir::IrDesign) {
+    pub fn store_elaborate_ir(&mut self, ir: &mivon_ir::IrDesign, inputs_hash: u64, context: &str) {
         use crate::micd::cache::CacheCategory;
         let Some(layer) = self.cache_layer.as_mut() else {
             return;
@@ -1325,14 +1349,33 @@ impl MicdDatabase {
             ir.top.name.as_str()
         );
         let _ = layer.put(CacheCategory::Elaborate, &key, &bytes);
+        // Fase 6: sidecar (sidik input, konteks mode) — restore wajib cocok
+        // (anti stale IR saat input berubah tanpa mengubah hitungan file).
+        let sidecar = format!("irinputs:v{}:{}", crate::micd::ast::IR_FORMAT_VERSION, ir.top.name.as_str());
+        if let Ok(sb) = bincode::serialize(&(inputs_hash, context)) {
+            let _ = layer.put(CacheCategory::Elaborate, &sidecar, &sb);
+        }
     }
 
     /// Coba restore `IrDesign` hasil elaborasi dari cache pipeline (db.md
-    /// "5. elaborate/"). `None` bila tidak ada entry / corrupt / top berbeda.
-    pub fn restore_elaborate_ir(&mut self, top: &str) -> Option<mivon_ir::IrDesign> {
+    /// "5. elaborate/"). `None` bila tidak ada entry / corrupt / top berbeda
+    /// / sidik input beda / konteks mode beda (Fase 6: libfile/flag/header
+    /// berubah → jangan pakai).
+    pub fn restore_elaborate_ir(
+        &mut self,
+        top: &str,
+        expected_inputs_hash: u64,
+        expected_context: &str,
+    ) -> Option<mivon_ir::IrDesign> {
         use crate::micd::cache::CacheCategory;
         let layer = self.cache_layer.as_mut()?;
         let key = format!("ir:v{}:{}", crate::micd::ast::IR_FORMAT_VERSION, top);
+        let sidecar = format!("irinputs:v{}:{}", crate::micd::ast::IR_FORMAT_VERSION, top);
+        let sb = layer.get(CacheCategory::Elaborate, &sidecar)?;
+        let (saved_hash, saved_ctx): (u64, String) = bincode::deserialize(&sb).ok()?;
+        if saved_hash != expected_inputs_hash || saved_ctx != expected_context {
+            return None;
+        }
         let bytes = layer.get(CacheCategory::Elaborate, &key)?;
         let ir = crate::micd::ast::deserialize_ir(&bytes)?;
         if ir.top.name.as_str() != top {
@@ -2860,6 +2903,33 @@ mod tests {
             let db = MicdDatabase::open(&root);
             assert_eq!(db.files.len(), 1, "state selamat dari stage asing");
             assert!(sentinel.exists(), "tidak ada escape path dari manifest");
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn test_fase6_ir_sidecar_hash_dan_mode() {
+        // Fase 6: restore menolak sidik beda dan mode beda; menerima yang cocok.
+        let root = test_root("fase6_sidecar");
+        {
+            let mut db = MicdDatabase::open(&root);
+            db.record_file(PathBuf::from("a.sv"), 7, vec![], FileStatus::New, 0, 3, vec![]);
+            let ir = mivon_ir::IrDesign::default();
+            let top = ir.top.name.as_str().to_string();
+            let ih = db.elaboration_inputs_hash(&top);
+            db.store_elaborate_ir(&ir, ih, "StrictSimulation");
+            db.save().unwrap();
+        }
+        {
+            let mut db = MicdDatabase::open(&root);
+            let ir0 = mivon_ir::IrDesign::default();
+            let top = ir0.top.name.as_str().to_string();
+            let ih = db.elaboration_inputs_hash(&top);
+            let hit = db.restore_elaborate_ir(&top, ih, "StrictSimulation");
+            assert!(hit.is_some(), "sidik+mode cocok → hit");
+            assert!(db.restore_elaborate_ir(&top, ih + 1, "StrictSimulation").is_none());
+            assert!(db.restore_elaborate_ir(&top, ih, "AnalysisRecovery").is_none());
+            assert!(db.restore_elaborate_ir("top_lain", ih, "StrictSimulation").is_none());
         }
         let _ = std::fs::remove_dir_all(&root);
     }

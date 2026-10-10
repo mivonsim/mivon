@@ -106,6 +106,10 @@ pub struct CompileSession {
     micd_restored: usize,
     /// Path yang AST-nya di-restore dari MICD (skip write-back pada save).
     micd_restored_paths: HashSet<PathBuf>,
+    /// Jumlah path restorable saat attach (sources + libfiles − inline,
+    /// unik). Gerbang IR cache bandingkan ini, bukan `sources.len()` —
+    /// Fase 6: libfile yang berubah/tak-terestore harus menggagalkan reuse.
+    micd_restore_expected: usize,
     /// Include deps per file (dari preprocessor) untuk verifikasi header.
     micd_include_deps: HashMap<PathBuf, Vec<PathBuf>>,
     /// Parse errors collected during compilation
@@ -344,6 +348,7 @@ impl CompileSession {
             micd: None,
             micd_restored: 0,
             micd_restored_paths: HashSet::new(),
+            micd_restore_expected: 0,
             micd_include_deps: HashMap::new(),
             parse_errors: Vec::new(),
             file_parse_diags: HashMap::new(),
@@ -1036,7 +1041,10 @@ impl CompileSession {
     }
 
     fn discover_files(&mut self) -> Result<Vec<PathBuf>, SimError> {
-        if !self.config.sources.is_empty() {
+        // Fase 6: libfiles ikut dikompilasi (sebelumnya diabaikan discover →
+        // `--libfile` diam-diam tak berpengaruh di run_fast). Sources dulu
+        // (urutan = semantik override), lalu libfiles yang belum terdaftar.
+        let mut files: Vec<PathBuf> = if !self.config.sources.is_empty() {
             // File template (*.tpl*) bukan SystemVerilog — di-skip global.
             // Sebagian besar jalur (filelist/tool) sudah memfilter di source
             // discovery; filter ini pengaman terakhir untuk pemanggil API yang
@@ -1065,17 +1073,24 @@ impl CompileSession {
                     self.config.sources.len() - files.len()
                 );
             }
-            return Ok(files);
-        }
-        if self.config.auto_incdirs {
+            files
+        } else if self.config.auto_incdirs {
             let result = FileDiscovery::scan_dir(".", &DiscoveryOptions::default());
             self.timing.discovery_us = result.scan_time_ms * 1000;
-            return Ok(result.files.iter().map(|f| f.path.clone()).collect());
+            result.files.iter().map(|f| f.path.clone()).collect()
+        } else {
+            return Err(SimError::with_diag(
+                DiagCode::ModuleNotFound,
+                "no source files configured",
+            ));
+        };
+        // Fase 6: gabung libfiles (bukan template, belum terdaftar).
+        for lib in &self.config.libfiles {
+            if !mivon_core::template::is_template_source(lib) && !files.contains(lib) {
+                files.push(lib.clone());
+            }
         }
-        Err(SimError::with_diag(
-            DiagCode::ModuleNotFound,
-            "no source files configured",
-        ))
+        Ok(files)
     }
 
     /// Build module index, dependency graph, and incremental tracking from parsed designs.
@@ -1383,6 +1398,23 @@ impl CompileSession {
         self.micd = Some(db);
         self.micd_restored = 0;
         self.micd_restored_paths = HashSet::new();
+        self.micd_restore_expected = Self::restorable_count(&self.config);
+    }
+
+    /// Himpunan path restorable (sources + libfiles − inline, unik) — Fase 6.
+    fn restorable_paths(config: &SessionConfig) -> HashSet<PathBuf> {
+        config
+            .sources
+            .iter()
+            .chain(config.libfiles.iter())
+            .filter(|p| !config.inline_sources.contains_key(*p))
+            .cloned()
+            .collect()
+    }
+
+    /// Jumlah path restorable — penyebut gerbang reuse IR cache.
+    fn restorable_count(config: &SessionConfig) -> usize {
+        Self::restorable_paths(config).len()
     }
 
     /// Salin include deps dari database (dipakai saat save ulang).
@@ -1424,6 +1456,9 @@ impl CompileSession {
             .filter(|p| !self.config.inline_sources.contains_key(*p))
             .cloned()
             .collect();
+        // Fase 6: penyebut gerbang = himpunan restorable (unik), bukan
+        // `sources.len()` — libfile yang tak-terestore harus menggagalkan.
+        self.micd_restore_expected = sources.iter().collect::<HashSet<_>>().len();
 
         if !flags_changed {
             // Parallel restore: baca + hash + deserialize per file (independen).
@@ -2012,6 +2047,7 @@ impl CompileSession {
         ir: &mivon_ir::IrDesign,
         expanded_design: Option<&mivon_ast::types::Design>,
         opt_snapshot: Option<mivon_elaboration::util::OptimizeSnapshot>,
+        context: &str,
     ) {
         let Some(db) = self.micd.as_mut() else { return };
         let input = crate::micd::cache::pipeline::CachePopulateInput {
@@ -2024,8 +2060,9 @@ impl CompileSession {
         // run untuk melewati elaborator sepenuhnya (db.md "5. elaborate/"):
         // 1000 instance generate tidak perlu dielaborasi ulang. Dipanggil
         // SEBELUM populate (store juga memakai cache_layer, hindari double
-        // borrow).
-        db.store_elaborate_ir(ir);
+        // borrow). Sidik input dihitung dulu (immutable) lalu store (mutabel).
+        let inputs_hash = db.elaboration_inputs_hash(ir.top.name.as_str());
+        db.store_elaborate_ir(ir, inputs_hash, context);
         // Update precompiled modules dengan IR bytes (tool downstream bisa
         // skip elaborasi bila IR tersedia di precompiled). IR raksasa
         // (array memori 1e9 bit) TIDAK di-serialize: bytes ~1GB lalu di-clone
@@ -2073,15 +2110,40 @@ impl CompileSession {
         self.micd_restored_paths.len()
     }
 
+    /// Gerbang reuse IR cache (Fase 6): SELURUH path restorable (sources +
+    /// libfiles − inline) ter-restore, dan himpunan tak-kosong. Menggantikan
+    /// perbandingan `== sources.len()` yang buta libfile (miss bila libfile
+    /// ada; STALE bila libfile berubah).
+    pub fn micd_restore_complete(&self) -> bool {
+        self.micd_restore_expected > 0
+            && self.micd_restored_paths.len() == self.micd_restore_expected
+    }
+
     /// Coba restore `IrDesign` hasil elaborasi dari cache pipeline (db.md
     /// "5. elaborate/"). Dipanggil pada warm run (seluruh file tidak berubah
     /// — MICD restore penuh) agar elaborator bisa di-skip sepenuhnya.
-    /// `None` bila tidak ada entry / corrupt / top berbeda (pemanggil fallback
-    /// ke elaborasi penuh).
-    pub fn restore_elaborate_ir(&mut self, top: &str) -> Option<mivon_ir::IrDesign> {
-        self.micd.as_mut()?.restore_elaborate_ir(top)
+    /// `expected_inputs_hash` = sidik input kini (lihat
+    /// `MicdDatabase::elaboration_inputs_hash`); beda → `None` (Fase 6: anti
+    /// stale IR). `expected_context` = mode elaborasi (`StrictSimulation` vs
+    /// `AnalysisRecovery` — IR hasil recovery tak boleh dipakai sim strict).
+    /// `None` juga bila tidak ada entry / corrupt / top berbeda
+    /// (pemanggil fallback ke elaborasi penuh).
+    pub fn restore_elaborate_ir(
+        &mut self,
+        top: &str,
+        expected_inputs_hash: u64,
+        expected_context: &str,
+    ) -> Option<mivon_ir::IrDesign> {
+        self.micd
+            .as_mut()?
+            .restore_elaborate_ir(top, expected_inputs_hash, expected_context)
     }
 
+    /// Sidik input elaborasi kini (Fase 6) — `None` bila tanpa MICD.
+    /// Dipakai gerbang restore IR di run_fast/run.
+    pub fn micd_elaboration_inputs_hash(&self, top: &str) -> Option<u64> {
+        self.micd.as_ref().map(|db| db.elaboration_inputs_hash(top))
+    }
     /// Isi precompiled database dari hasil compile sesi ini (per module).
     /// Dipanggil setelah parsing/compile berhasil. Menyimpan artefak per module
     /// (AST, type signature, port info, dependensi) agar tool downstream
@@ -3092,6 +3154,75 @@ mod tests {
             );
             let (design, _) = s.compile().unwrap();
             assert_eq!(design.modules.len(), 1);
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_micd_restore_complete_covers_libfiles() {
+        // Fase 6: gerbang reuse IR harus mencakup libfiles. Gerbang lama
+        // (`restored == sources.len()`) MISS bila libfile ada (2 != 1) dan
+        // STALE bila libfile berubah (1 == 1 lolos padahal input beda).
+        use crate::micd::MicdDatabase;
+        use std::io::Write;
+
+        let dir =
+            std::env::temp_dir().join(format!("mivon_micd_libgate_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_root = dir.join("db");
+        let top = dir.join("top.sv");
+        let helper = dir.join("helper.sv");
+        std::fs::write(
+            &top,
+            "module top;\n  wire [7:0] x;\n  helper u_h (.x(x));\nendmodule\n",
+        )
+        .unwrap();
+        std::fs::write(&helper, "module helper(input wire [7:0] x);\nendmodule\n").unwrap();
+        let mk = || SessionConfig {
+            sources: vec![top.clone()],
+            libfiles: vec![helper.clone()],
+            ..Default::default()
+        };
+
+        // Sesi 1: cold compile + save.
+        {
+            let mut s = CompileSession::new(mk());
+            assert_eq!(s.attach_micd(MicdDatabase::open(&db_root)), 0);
+            let (design, _) = s.compile().unwrap();
+            assert_eq!(design.modules.len(), 2, "libfile ikut dikompilasi");
+            s.save_micd().unwrap();
+            assert!(!s.micd_restore_complete(), "cold run bukan reuse penuh");
+        }
+
+        // Sesi 2: tanpa perubahan → SEMUA ter-restore → gerbang benar.
+        {
+            let mut s = CompileSession::new(mk());
+            assert_eq!(s.attach_micd(MicdDatabase::open(&db_root)), 2);
+            assert!(
+                s.micd_restore_complete(),
+                "semua restorable ter-restore → reuse IR aman"
+            );
+        }
+
+        // Ubah HANYA libfile (source tetap).
+        {
+            let mut f = std::fs::File::create(&helper).unwrap();
+            writeln!(f, "module helper(input wire [7:0] x);").unwrap();
+            writeln!(f, "  initial $display(\"HELPER_V2\");").unwrap();
+            writeln!(f, "endmodule").unwrap();
+        }
+
+        // Sesi 3: libfile berubah → gerbang GAGAL (anti stale IR).
+        {
+            let mut s = CompileSession::new(mk());
+            let restored = s.attach_micd(MicdDatabase::open(&db_root));
+            assert_eq!(restored, 1, "hanya source yang ter-restore");
+            assert!(
+                !s.micd_restore_complete(),
+                "libfile berubah → reuse IR ditolak"
+            );
         }
 
         let _ = std::fs::remove_dir_all(&dir);

@@ -1251,9 +1251,17 @@ fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), SimError> {
     let micd_root = micd_root_for(&cli);
     let proot = std::env::current_dir().unwrap_or_default();
     let src_paths: Vec<std::path::PathBuf> = sources.iter().map(std::path::PathBuf::from).collect();
+    // Fase 6: pid mencakup libfiles (sama alasan dengan run_fast).
+    let mut pid_paths = src_paths.clone();
+    for lib in &cli.libfiles {
+        let p = std::path::PathBuf::from(lib);
+        if !pid_paths.contains(&p) {
+            pid_paths.push(p);
+        }
+    }
     let pid = mivon_compiler::micd::MicdDatabase::project_id(
         &proot,
-        &src_paths,
+        &pid_paths,
         &cli.incdirs.iter().map(PathBuf::from).collect::<Vec<_>>(),
         &cli.defines
             .iter()
@@ -1494,6 +1502,9 @@ fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), SimError> {
             micd.set_verify(v);
         }
     }
+    // Fase 6: rekam libfiles ke MICD di bawah (setelah parse libfiles),
+    // agar sidik input IR mencakupnya — libfile berubah → restore IR
+    // ditolak (anti stale). flags_hash diset dari defines agar sidik stabil.
     // Save ditunda ke akhir run (setelah symbol/type/graph + prune_stale)
     // agar hanya satu save transaksional per build (Gap #8).
 
@@ -1690,6 +1701,9 @@ fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), SimError> {
             }
         }
     }
+    // Fase 6: libfiles direkam ke MICD di bawah (setelah parse) agar sidik
+    // input IR mencakupnya. Kumpulkan libfile yang gagal parse/preprocess.
+    let mut lib_parse_failed = std::collections::HashSet::new();
     for libfile in &cli.libfiles {
         let mut pp = base_pp.clone();
         let libfile_path = std::path::Path::new(libfile);
@@ -1720,13 +1734,52 @@ fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), SimError> {
                             }
                         }
                     }
-                    Err(e) => eprintln!("warning: library file '{}' parse error: {}", libfile, e),
+                    Err(e) => {
+                        eprintln!("warning: library file '{}' parse error: {}", libfile, e);
+                        lib_parse_failed.insert(libfile.clone());
+                    }
                 }
             }
-            Err(e) => eprintln!(
-                "warning: library file '{}' preprocess error: {}",
-                libfile, e
-            ),
+            Err(e) => {
+                eprintln!(
+                    "warning: library file '{}' preprocess error: {}",
+                    libfile, e
+                );
+                lib_parse_failed.insert(libfile.clone());
+            }
+        }
+    }
+
+    // Fase 6: rekam libfiles ke MICD (hash + status parse jujur) agar sidik
+    // input IR mencakupnya — libfile berubah → restore IR ditolak.
+    // flags_hash diset dari defines agar sidik stabil lintas run sama.
+    {
+        let flag_h = mivon_compiler::micd::flags_hash(
+            &cli.defines
+                .iter()
+                .filter_map(|d| d.split_once('='))
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect::<Vec<_>>(),
+            &cli.incdirs.iter().map(PathBuf::from).collect::<Vec<_>>(),
+        );
+        micd.flags_hash = flag_h;
+        for libfile in &cli.libfiles {
+            if let Ok(content) = std::fs::read(libfile) {
+                let h = mivon_compiler::cache::compute_checksum(&content);
+                let path = std::path::PathBuf::from(libfile);
+                micd.record_file(
+                    path,
+                    h,
+                    vec![],
+                    mivon_compiler::micd::FileStatus::Unchanged,
+                    flag_h,
+                    content.len() as u64,
+                    vec![],
+                );
+                let mut v = mivon_compiler::micd::VerifyResult::fresh(h);
+                v.parse_ok = !lib_parse_failed.contains(libfile);
+                micd.set_verify(v);
+            }
         }
     }
 
@@ -1952,12 +2005,15 @@ fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), SimError> {
     let elab_start = std::time::Instant::now();
     // ── Reuse IR cache (db.md "5. elaborate/"): seluruh source di-reuse dari
     // MICD preprocess cache (konten tidak berubah) → coba restore IR hasil
-    // elaborasi sebelumnya, skip elaborator.─
+    // elaborasi sebelumnya, skip elaborator. Fase 6: sidik input (termasuk
+    // libfiles yang direkam) wajib cocok — libfile berubah → elaborasi ulang.
     let mut restored_legacy_ir: Option<mivon_ir::IrDesign> = None;
     if !cli.recompile && micd_reused == sources.len() && !sources.is_empty() {
         let top = top_name.or_else(|| design.modules.first().map(|m| m.name.as_str()));
         if let Some(top) = top {
-            restored_legacy_ir = micd.restore_elaborate_ir(top);
+            let ih = micd.elaboration_inputs_hash(top);
+            let ctx = format!("{:?}", pick_elab_mode(&cli));
+            restored_legacy_ir = micd.restore_elaborate_ir(top, ih, &ctx);
         }
     }
     let mut _from_legacy_cache = false;
@@ -2297,8 +2353,11 @@ fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), SimError> {
         };
         // Simpan IrDesign LENGKAP (bincode) di key `ir:<top>` — dipakai warm
         // run berikutnya untuk melewati elaborator sepenuhnya (db.md
-        // "5. elaborate/"). Best-effort.
-        micd.store_elaborate_ir(&ir_design);
+        // "5. elaborate/"). Best-effort. Fase 6: simpan dengan sidik input
+        // (termasuk libfiles yang direkam) agar restore menolak input beda.
+        let legacy_ih = micd.elaboration_inputs_hash(ir_design.top.name.as_str());
+        let legacy_ctx = format!("{:?}", pick_elab_mode(&cli));
+        micd.store_elaborate_ir(&ir_design, legacy_ih, &legacy_ctx);
         let mut layer = micd.cache_layer.take();
         if let Some(layer) = layer.as_mut() {
             CachePopulator::populate_elab(layer, &input);
@@ -3104,9 +3163,17 @@ fn run_fast(
     {
         let micd_root = micd_root_for(&cli);
         let proot = std::env::current_dir().unwrap_or_default();
+        // Fase 6: pid mencakup libfiles (sebelumnya sources saja → dua run
+        // dengan libfile beda berbagi pid = kontaminasi lintas project).
+        let mut pid_sources = session.config.sources.clone();
+        for lib in &session.config.libfiles {
+            if !pid_sources.contains(lib) {
+                pid_sources.push(lib.clone());
+            }
+        }
         let pid = mivon_compiler::micd::MicdDatabase::project_id(
             &proot,
-            &session.config.sources,
+            &pid_sources,
             &session.config.incdirs,
             &session.config.defines,
         );
@@ -3114,7 +3181,7 @@ fn run_fast(
             &micd_root,
             &pid,
             &proot,
-            &session.config.sources,
+            &pid_sources,
         );
         // `--cache-clear` HARUS menghapus database SEBELUM restore/compile —
         // clear di akhir run (lihat bawah) telat: restore sudah memakai data
@@ -3307,16 +3374,18 @@ fn run_fast(
     // disimpan setelah gate error/recovery lolos di run itu).
     let mut restored_ir: Option<mivon_ir::IrDesign> = None;
     // `micd_restored_count()` di-reset `save_micd()`; set path tidak → pakai
-    // `micd_restored_paths_count()` untuk deteksi warm run setelah save parse.
-    if !cli.recompile
-        && session.micd_restored_paths_count() == session.config.sources.len()
-        && !session.config.sources.is_empty()
-    {
+    // `micd_restore_complete()` (Fase 6: seluruh restorable incl. libfiles)
+    // untuk deteksi warm run setelah save parse.
+    if !cli.recompile && session.micd_restore_complete() {
         // Top eksplisit (`--top`) atau default (module pertama — sama dengan
-        // pilihan elaborator). Cache IR disimpan per top (`ir:<top>`).
+        // pilihan elaborator). Cache IR disimpan per top (`ir:<top>`) dan
+        // diikat sidik input (Fase 6: anti stale bila input berubah).
         let top = top_name.or_else(|| design.modules.first().map(|m| m.name.as_str()));
         if let Some(top) = top {
-            restored_ir = session.restore_elaborate_ir(top);
+            if let Some(ih) = session.micd_elaboration_inputs_hash(top) {
+                let ctx = format!("{:?}", pick_elab_mode(&cli));
+                restored_ir = session.restore_elaborate_ir(top, ih, &ctx);
+            }
         }
     }
 
@@ -3742,6 +3811,7 @@ fn run_fast(
             &ir_design,
             Some(&elab.design),
             Some(elab.opt_stats.snapshot()),
+            &format!("{:?}", pick_elab_mode(&cli)),
         );
     }
 
