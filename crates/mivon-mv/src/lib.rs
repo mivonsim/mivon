@@ -162,7 +162,7 @@ impl MvItem {
 pub fn transpile(src: &str, base: &str) -> Result<TranspileResult, MvError> {
     let file = parser::parse(src)?;
     check::check(&file)?;
-    generate_from(&file, base, &[], "mv", None)
+    generate_from(&file, base, &[], "mv", None, &[])
 }
 
 /// Transpile source `.mvh` (header Mivon HDL, F43) → `.svh` saja.
@@ -173,7 +173,7 @@ pub fn transpile_header(src: &str, base: &str) -> Result<TranspileResult, MvErro
     let file = parser::parse(src)?;
     check::check(&file)?;
     validate_header_only(&file)?;
-    generate_from(&file, base, &[], "mvh", None)
+    generate_from(&file, base, &[], "mvh", None, &[])
 }
 
 /// Transpile TANPA type-check (escape hatch `mgen --no-check` — untuk kode
@@ -182,14 +182,14 @@ pub fn transpile_header(src: &str, base: &str) -> Result<TranspileResult, MvErro
 /// bukan type-check.
 pub fn transpile_no_check(src: &str, base: &str) -> Result<TranspileResult, MvError> {
     let file = parser::parse(src)?;
-    generate_from(&file, base, &[], "mv", None)
+    generate_from(&file, base, &[], "mv", None, &[])
 }
 
 /// `transpile_no_check` untuk sumber `.mvh` — validate E2008 tetap jalan.
 pub fn transpile_header_no_check(src: &str, base: &str) -> Result<TranspileResult, MvError> {
     let file = parser::parse(src)?;
     validate_header_only(&file)?;
-    generate_from(&file, base, &[], "mvh", None)
+    generate_from(&file, base, &[], "mvh", None, &[])
 }
 
 /// Transpile BEBERAPA file `.mv`/`.mvh` sekaligus dengan KONTEKS GABUNGAN
@@ -311,14 +311,428 @@ fn generate_all(
         .iter()
         .flat_map(|f| f.interfaces.iter().map(|i| i.name.as_str()))
         .collect();
+    // F77: owner definisi bersama — file yang me-refer definisi file LAIN
+    // mendapat `include "<base>.svh"` supaya output mandiri di tool EDA.
+    // Resolusi meniru prioritas check: definisi file sendiri menang atas
+    // nama luar; anggota package via `use` ditutup oleh include package-nya.
+    let owners = build_owners(files);
+    // Base per file untuk emisi include (sejajar dgn items/files).
+    let bases: Vec<&str> = items.iter().map(|it| it.base.as_str()).collect();
     let mut out = Vec::with_capacity(items.len());
     for (i, it) in items.iter().enumerate() {
         let src_ext = if it.header { "mvh" } else { "mv" };
-        let r = generate_from(&files[i], &it.base, &all_ifaces, src_ext, it.package.as_deref())
-            .map_err(|e| (i, e))?;
+        let includes = cross_file_includes(&files[i], i, &owners, &bases);
+        let inc_refs: Vec<&str> = includes.iter().map(|s| s.as_str()).collect();
+        let r = generate_from(
+            &files[i],
+            &it.base,
+            &all_ifaces,
+            src_ext,
+            it.package.as_deref(),
+            &inc_refs,
+        )
+        .map_err(|e| (i, e))?;
         out.push(r);
     }
     Ok(out)
+}
+
+/// F77: indeks owner definisi bersama lintas-file.
+/// - `pkg_owner`: nama package → file pemilik.
+/// - `pkg_members`: nama package → nama typedef anggotanya (untukmembedakan
+///   `State` via `use traffic_pkg::*` dari typedef file-level bernama sama).
+/// - `filedef_owner`: typedef level file + interface → file pemilik (referensi
+///   bare tanpa `use`). Anggota package SENGAJA tidak masuk sini.
+/// First-wins bila nama ganda (check_many menolak E2007 lintas-file; jalur
+/// no-check konservatif).
+struct Owners<'a> {
+    pkg_owner: std::collections::HashMap<&'a str, usize>,
+    pkg_members: std::collections::HashMap<&'a str, std::collections::HashSet<&'a str>>,
+    filedef_owner: std::collections::HashMap<&'a str, usize>,
+}
+
+fn build_owners(files: &[ast::MvFile]) -> Owners<'_> {
+    let mut o = Owners {
+        pkg_owner: std::collections::HashMap::new(),
+        pkg_members: std::collections::HashMap::new(),
+        filedef_owner: std::collections::HashMap::new(),
+    };
+    for (i, f) in files.iter().enumerate() {
+        for td in &f.typedefs {
+            o.filedef_owner.entry(td_name(td)).or_insert(i);
+        }
+        for p in &f.packages {
+            o.pkg_owner.entry(p.name.as_str()).or_insert(i);
+            let members = o.pkg_members.entry(p.name.as_str()).or_default();
+            for td in &p.typedefs {
+                members.insert(td_name(td));
+            }
+        }
+        for ifc in &f.interfaces {
+            o.filedef_owner.entry(ifc.name.as_str()).or_insert(i);
+        }
+    }
+    o
+}
+
+fn td_name(td: &crate::ast::Typedef) -> &str {
+    match td {
+        crate::ast::Typedef::Alias { name, .. }
+        | crate::ast::Typedef::Struct { name, .. }
+        | crate::ast::Typedef::Union { name, .. }
+        | crate::ast::Typedef::Enum { name, .. } => name.as_str(),
+    }
+}
+
+/// F77: base file LAIN yang definisi bersamanya di-refer file ini.
+/// Urutan = urutan batch (deterministik), tanpa self, tanpa duplikat.
+fn cross_file_includes(
+    file: &ast::MvFile,
+    self_idx: usize,
+    owners: &Owners,
+    bases: &[&str],
+) -> Vec<String> {
+    use std::collections::HashSet;
+    // Definisi file sendiri selalu menang (prioritas check).
+    let mut own_pkgs: HashSet<&str> = HashSet::new();
+    let mut own_filedefs: HashSet<&str> = HashSet::new();
+    for p in &file.packages {
+        own_pkgs.insert(p.name.as_str());
+    }
+    for td in &file.typedefs {
+        own_filedefs.insert(td_name(td));
+    }
+    for ifc in &file.interfaces {
+        own_filedefs.insert(ifc.name.as_str());
+    }
+    // Package yang di-`use` file ini (termasuk di dalam generate).
+    let mut used_pkgs: HashSet<&str> = HashSet::new();
+    for m in file.modules.iter().chain(file.programs.iter()) {
+        collect_used_pkgs_in_items(&m.items, &mut used_pkgs);
+    }
+    let mut type_refs = Vec::new();
+    collect_file_refs(file, &mut type_refs);
+
+    let mut seen = HashSet::new();
+    let mut found: Vec<(usize, String)> = Vec::new();
+    let add = |owner: usize, seen: &mut HashSet<usize>, found: &mut Vec<(usize, String)>| {
+        if owner != self_idx && seen.insert(owner) {
+            found.push((owner, bases[owner].to_string()));
+        }
+    };
+    // `use pkg::*` → include pemilik package (kecuali milik sendiri).
+    for pkg in &used_pkgs {
+        if own_pkgs.contains(pkg) {
+            continue;
+        }
+        if let Some(&owner) = owners.pkg_owner.get(pkg) {
+            add(owner, &mut seen, &mut found);
+        }
+    }
+    for r in &type_refs {
+        if let Some((pkg, _)) = r.split_once("::") {
+            // `pkg::item` → pemilik package (kecuali milik sendiri).
+            if own_pkgs.contains(pkg) {
+                continue;
+            }
+            if let Some(&owner) = owners.pkg_owner.get(pkg) {
+                add(owner, &mut seen, &mut found);
+            }
+            continue;
+        }
+        // Nama bare: milik sendiri → skip; anggota package yang di-`use`
+        // (milik sendiri maupun luar) → ditutup include package-nya.
+        if own_filedefs.contains(r.as_str()) {
+            continue;
+        }
+        let via_use = used_pkgs.iter().any(|pkg| {
+            owners
+                .pkg_members
+                .get(*pkg)
+                .is_some_and(|m| m.contains(r.as_str()))
+        });
+        if via_use {
+            continue;
+        }
+        if let Some(&owner) = owners.filedef_owner.get(r.as_str()) {
+            add(owner, &mut seen, &mut found);
+        }
+    }
+    // Urutan batch (indeks owner) — deterministik mengikuti urutan input.
+    found.sort_by_key(|(idx, _)| *idx);
+    found.into_iter().map(|(_, b)| b).collect()
+}
+
+/// F77: kumpulkan package yang di-`use` (`use pkg::*`), termasuk di dalam
+/// blok generate.
+fn collect_used_pkgs_in_items<'a>(items: &'a [crate::ast::MItem], out: &mut std::collections::HashSet<&'a str>) {
+    use crate::ast::MItem;
+    for it in items {
+        match it {
+            MItem::Use { pkg, .. } => {
+                out.insert(pkg.as_str());
+            }
+            MItem::GenFor { body, .. } => collect_used_pkgs_in_items(body, out),
+            MItem::GenIf { then, els, .. } => {
+                collect_used_pkgs_in_items(then, out);
+                collect_used_pkgs_in_items(els, out);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// F77: kumpulkan semua referensi nama tipe/package dalam satu file:
+/// `use pkg::*` + setiap `MvType::Named` di port/sig/reg/wire/const/typedef/
+/// func/task/class/interface.
+fn collect_file_refs(file: &ast::MvFile, out: &mut Vec<String>) {
+    use crate::ast::{MItem, MvType};
+    for td in &file.typedefs {
+        collect_typedef_refs(td, out);
+    }
+    for p in &file.packages {
+        for td in &p.typedefs {
+            collect_typedef_refs(td, out);
+        }
+        for (_, ty, _) in &p.consts {
+            if let Some(t) = ty {
+                collect_type_refs(t, out);
+            }
+        }
+    }
+    for ifc in &file.interfaces {
+        for port in &ifc.ports {
+            collect_type_refs(&port.ty, out);
+        }
+        for (_, ty, _, _) in &ifc.sigs {
+            collect_type_refs(ty, out);
+        }
+    }
+    for m in file.modules.iter().chain(file.programs.iter()) {
+        for param in &m.params {
+            if let Some(t) = &param.ty {
+                // Marker `Named("type")` bukan referensi.
+                if !matches!(t, MvType::Named(s, ..) if s == "type") {
+                    collect_type_refs(t, out);
+                }
+            }
+            if let Some(t) = &param.type_default {
+                collect_type_refs(t, out);
+            }
+        }
+        for item in &m.items {
+            match item {
+                MItem::Port(p) => collect_type_refs(&p.ty, out),
+                MItem::Typedef(td) => collect_typedef_refs(td, out),
+                MItem::Sig { ty, .. } | MItem::Reg { ty, .. } | MItem::Wire { ty, .. } => {
+                    collect_type_refs(ty, out)
+                }
+                MItem::Const { ty, .. } => {
+                    if let Some(t) = ty {
+                        collect_type_refs(t, out);
+                    }
+                }
+                MItem::Use { pkg, .. } => out.push(pkg.clone()),
+                MItem::Seq(_, body)
+                | MItem::Comb(body)
+                | MItem::Always(body)
+                | MItem::Latch(body)
+                | MItem::Initial(body)
+                | MItem::Final(body) => collect_stmt_type_refs(body, out),
+                MItem::GenFor { body, .. } => {
+                    for it in body {
+                        collect_mitem_refs(it, out);
+                    }
+                }
+                MItem::GenIf { then, els, .. } => {
+                    for it in then.iter().chain(els.iter()) {
+                        collect_mitem_refs(it, out);
+                    }
+                }
+                MItem::Func(f) => {
+                    for (_, ty, _, _) in &f.args {
+                        collect_type_refs(ty, out);
+                    }
+                    if let Some(t) = &f.ret {
+                        collect_type_refs(t, out);
+                    }
+                    for s in &f.body {
+                        collect_stmt_type_refs(s, out);
+                    }
+                }
+                MItem::Task(t) => {
+                    for (_, ty, _, _) in &t.args {
+                        collect_type_refs(ty, out);
+                    }
+                    for s in &t.body {
+                        collect_stmt_type_refs(s, out);
+                    }
+                }
+                MItem::Inst { .. }
+                | MItem::Assign { .. }
+                | MItem::AssertProperty(_)
+                | MItem::AssumeProperty(_)
+                | MItem::CoverProperty(_) => {}
+            }
+        }
+    }
+    for c in &file.classes {
+        for (_, ty, _) in &c.fields {
+            collect_type_refs(ty, out);
+        }
+        for f in &c.funcs {
+            for (_, ty, _, _) in &f.args {
+                collect_type_refs(ty, out);
+            }
+            if let Some(t) = &f.ret {
+                collect_type_refs(t, out);
+            }
+        }
+        for t in &c.tasks {
+            for (_, ty, _, _) in &t.args {
+                collect_type_refs(ty, out);
+            }
+        }
+    }
+    for f in &file.funcs {
+        for (_, ty, _, _) in &f.args {
+            collect_type_refs(ty, out);
+        }
+        if let Some(t) = &f.ret {
+            collect_type_refs(t, out);
+        }
+    }
+    for t in &file.tasks {
+        for (_, ty, _, _) in &t.args {
+            collect_type_refs(ty, out);
+        }
+    }
+}
+
+fn collect_mitem_refs(item: &crate::ast::MItem, out: &mut Vec<String>) {
+    use crate::ast::MItem;
+    match item {
+        MItem::Port(p) => collect_type_refs(&p.ty, out),
+        MItem::Typedef(td) => collect_typedef_refs(td, out),
+        MItem::Sig { ty, .. } | MItem::Reg { ty, .. } | MItem::Wire { ty, .. } => {
+            collect_type_refs(ty, out)
+        }
+        MItem::Const { ty, .. } => {
+            if let Some(t) = ty {
+                collect_type_refs(t, out);
+            }
+        }
+        MItem::Use { pkg, .. } => out.push(pkg.clone()),
+        MItem::Seq(_, body)
+        | MItem::Comb(body)
+        | MItem::Always(body)
+        | MItem::Latch(body)
+        | MItem::Initial(body)
+        | MItem::Final(body) => collect_stmt_type_refs(body, out),
+        MItem::GenFor { body, .. } => {
+            for it in body {
+                collect_mitem_refs(it, out);
+            }
+        }
+        MItem::GenIf { then, els, .. } => {
+            for it in then.iter().chain(els.iter()) {
+                collect_mitem_refs(it, out);
+            }
+        }
+        MItem::Func(f) => {
+            for (_, ty, _, _) in &f.args {
+                collect_type_refs(ty, out);
+            }
+            if let Some(t) = &f.ret {
+                collect_type_refs(t, out);
+            }
+        }
+        MItem::Task(t) => {
+            for (_, ty, _, _) in &t.args {
+                collect_type_refs(ty, out);
+            }
+        }
+        MItem::Inst { .. }
+        | MItem::Assign { .. }
+        | MItem::AssertProperty(_)
+        | MItem::AssumeProperty(_)
+        | MItem::CoverProperty(_) => {}
+    }
+}
+
+fn collect_typedef_refs(td: &crate::ast::Typedef, out: &mut Vec<String>) {
+    use crate::ast::Typedef;
+    match td {
+        Typedef::Alias { ty, .. } => collect_type_refs(ty, out),
+        Typedef::Struct { fields, .. } | Typedef::Union { fields, .. } => {
+            for f in fields {
+                collect_type_refs(&f.ty, out);
+            }
+        }
+        Typedef::Enum { .. } => {}
+    }
+}
+
+fn collect_type_refs(ty: &crate::ast::MvType, out: &mut Vec<String>) {
+    use crate::ast::MvType;
+    match ty {
+        MvType::Named(n, ..) => {
+            out.push(n.clone());
+        }
+        MvType::Signed(inner) => collect_type_refs(inner, out),
+        MvType::Array(inner, _) => collect_type_refs(inner, out),
+        MvType::Queue(inner) => collect_type_refs(inner, out),
+        _ => {}
+    }
+}
+
+fn collect_stmt_type_refs(s: &crate::ast::Stmt, out: &mut Vec<String>) {
+    use crate::ast::Stmt;
+    match s {
+        Stmt::Block(stmts) | Stmt::Fork { branches: stmts, .. } => {
+            for x in stmts {
+                collect_stmt_type_refs(x, out);
+            }
+        }
+        Stmt::NamedBlock { stmts, .. } => {
+            for x in stmts {
+                collect_stmt_type_refs(x, out);
+            }
+        }
+        Stmt::VarDecl { ty, .. } => collect_type_refs(ty, out),
+        Stmt::If { then, els, .. } => {
+            collect_stmt_type_refs(then, out);
+            if let Some(e) = els {
+                collect_stmt_type_refs(e, out);
+            }
+        }
+        Stmt::Case { items, default, .. } => {
+            for (_, b) in items {
+                collect_stmt_type_refs(b, out);
+            }
+            if let Some(d) = default {
+                collect_stmt_type_refs(d, out);
+            }
+        }
+        Stmt::CaseInside { items, default, .. } => {
+            for (_, b) in items {
+                collect_stmt_type_refs(b, out);
+            }
+            if let Some(d) = default {
+                collect_stmt_type_refs(d, out);
+            }
+        }
+        Stmt::For { body, .. }
+        | Stmt::While { body, .. }
+        | Stmt::DoWhile { body, .. }
+        | Stmt::Repeat { body, .. }
+        | Stmt::Forever(body)
+        | Stmt::Wait { body, .. }
+        | Stmt::Event { body: Some(body), .. }
+        | Stmt::Delay { body, .. }
+        | Stmt::Foreach { body, .. } => collect_stmt_type_refs(body, out),
+        _ => {}
+    }
 }
 
 fn generate_from(
@@ -327,8 +741,12 @@ fn generate_from(
     iface_names: &[&str],
     src_ext: &str,
     package: Option<&str>,
+    includes: &[&str],
 ) -> Result<TranspileResult, MvError> {
-    let opts = codegen::GenOpts { package };
+    let opts = codegen::GenOpts {
+        package,
+        includes: includes.to_vec(),
+    };
     let out = codegen::generate_src_ext_opts(file, base, iface_names, src_ext, &opts);
     Ok(TranspileResult {
         sv: out.sv,
@@ -367,6 +785,7 @@ module counter #(WIDTH = 8) {
 
     #[test]
     fn transpile_error_position() {
+
         let err = transpile("module {", "m").unwrap_err();
         assert_eq!(err.line, 1);
         assert!(err.msg.contains("identifier"));
@@ -699,5 +1118,70 @@ interface bus_if {
         let results = transpile_many(&items).expect("legacy batch");
         assert!(results[0].sv.contains("module m"));
         assert!(results[0].sv.contains("Sumber    : m.mv"));
+    }
+
+    #[test]
+    fn f77_cross_file_include_in_sv() {
+        // F77: file yang memakai package file LAIN mendapat
+        // `` `include "<base>.svh" `` supaya output mandiri di tool EDA.
+        let items = vec![
+            MvItem::new(
+                "package types_pkg {\n type Addr = logic[15:0]\n}\nmodule types_dummy {\n in clk : bit\n}\n",
+                "types",
+            ),
+            MvItem::new(
+                "module counter {\n use types_pkg::*\n in clk : bit\n out addr : Addr\n comb { addr = 0 }\n}\n",
+                "counter",
+            ),
+        ];
+        let results = transpile_many_items(&items).expect("batch F77");
+        assert!(
+            results[1].sv.contains("`include \"types.svh\""),
+            "counter.sv harus include types.svh: {}",
+            results[1].sv
+        );
+        // Pemilik definisi hanya include .svh-nya sendiri (perilaku lama),
+        // bukan file lain.
+        assert!(
+            !results[0].sv.contains("`include \"counter.svh\""),
+            "types.sv tak boleh include counter.svh: {}",
+            results[0].sv
+        );
+    }
+
+    #[test]
+    fn f77_no_include_without_cross_ref() {
+        // Tanpa referensi lintas-file → tidak ada include tambahan
+        // (output lama tak berubah).
+        let items = vec![
+            MvItem::new("module a {\n in clk : bit\n out y : bit\n comb { y = 1 }\n}\n", "a"),
+            MvItem::new("module b {\n in clk : bit\n out y : bit\n comb { y = 0 }\n}\n", "b"),
+        ];
+        let results = transpile_many_items(&items).expect("batch tanpa cross-ref");
+        assert!(!results[0].sv.contains("`include"), "a.sv: {}", results[0].sv);
+        assert!(!results[1].sv.contains("`include"), "b.sv: {}", results[1].sv);
+    }
+
+    #[test]
+    fn f77_interface_typedef_cross_ref() {
+
+        // Referensi via tipe port interface & typedef scoped `pkg::T`
+        // juga memicu include.
+        let items = vec![
+            MvItem::new(
+                "package p {\n type W = logic[7:0]\n}\ninterface bus_if {\n in clk : bit\n}\nmodule d1 {\n in clk : bit\n}\n",
+                "defs",
+            ),
+            MvItem::new(
+                "module dut {\n use p::*\n in b : bus_if\n out y : p::W\n comb { y = 0 }\n}\n",
+                "dut",
+            ),
+        ];
+        let results = transpile_many_items(&items).expect("batch iface/typedef");
+        assert!(
+            results[1].sv.contains("`include \"defs.svh\""),
+            "dut.sv: {}",
+            results[1].sv
+        );
     }
 }

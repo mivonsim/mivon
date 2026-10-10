@@ -83,6 +83,11 @@ Aturan nama output:
 - `.svh` HANYA digenerate jika file punya definisi bersama (package atau
   typedef level file). Tanpa keduanya, `.sv` berdiri sendiri — tidak ada file
   `.svh` dan tidak ada baris `` `include `` di `.sv`. (Sesuai emisi `mgen`).
+- Batch lintas-file (F77): file yang memakai definisi bersama dari file LAIN
+  (`use pkg::*`, tipe port/sinyal, interface) otomatis mendapat
+  `` `include "<base>.svh" `` file pemiliknya — SEBELUM include `.svh`
+  sendiri — supaya output mandiri di tool EDA (contoh: `dut.sv` me-`include`
+  `types.svh`). Tanpa referensi lintas-file, output tak berubah.
 - Jika file `.mv` tidak memiliki definisi bersama (package/typedef), file
   `.svh` TIDAK digenerate sama sekali — tidak ada `include guard` kosong.
 
@@ -447,6 +452,12 @@ reg count  : logic[7:0] = '0
 wire w     : bit
 wire bv    : logic[7:0]
 
+// varian net resolution (F76, LRM 1800 §6.5) — `triand`/`trior` = alias
+// `wand`/`wor`; contoh: `examples/mv/nets.mv`
+wand wa    : bit
+wor wo     : logic[7:0]
+tri tr     : bit
+
 // konstanta → localparam
 const DEPTH_LOG = 4
 const MASK      : logic[7:0] = 8'hF0
@@ -460,6 +471,9 @@ logic [15:0] addr, data;
 logic [7:0] count;             // reset value dipakai di always_ff
 wire w;
 wire [7:0] bv;                 // `wire` = net sendiri, tanpa `bit`/`logic`
+wand wa;
+wor [7:0] wo;                  // AND/OR-resolution multi-driver (F76)
+tri tr;
 localparam DEPTH_LOG = 4;
 localparam logic [7:0] MASK = 8'hF0;
 ```
@@ -467,6 +481,10 @@ localparam logic [7:0] MASK = 8'hF0;
 Aturan `wire`: hanya `bit`/`logic` (signed) / typedef / array-nya (E2005
 menolak `int`/`real`/`string`/`queue`). Init inline sah
 (`wire w : bit = a & b` → `wire w = a & b;`, LRM §10.2).
+Berlaku sama untuk semua varian net F76 (`wand`/`wor`/`tri`/`tri0`/`tri1`/
+`supply0`/`supply1`). Catatan tool: iverilog bersih; verilator `--lint-only`
+menolak `wand`/`wor` (`UNSUPPORTED` — limit tool, bukan output salah;
+`tri`/`wire` lolos).
 
 ### 6.5 Blok logika: `seq`, `comb`, `always`, `latch`
 
@@ -1219,7 +1237,7 @@ Ringkasan mapping konstruk `.mv` → SV:
 | `in/out/inout` | `input/output/inout` + tipe |
 | `sig : T` | `T sig;` — dimensi unpacked **setelah nama** (`logic [7:0] m [0:3]`, LRM 1800 §7.3) |
 | `reg r : T = v` | `T r;` + reset branch di `always_ff` |
-| `wire w : T` (F75) | `wire ...;` — net tanpa `bit`/`logic` (`wire w;` / `wire [7:0] w;`, LRM 1800 §6.5) |
+| `wire w : T` (F75) | `wire ...;` — net tanpa `bit`/`logic` (`wire w;` / `wire [7:0] w;`, LRM 1800 §6.5). Varian resolution F76: `wand`/`wor`/`tri`/`tri0`/`tri1`/`supply0`/`supply1` (+ alias `triand`/`trior`) |
 | `assign y = e` (F75) | `assign y = e;` — continuous assignment (LRM 1800 §10.2) |
 | `const C = e` | `localparam C = e;` |
 | `seq(clk[,rst][,sync])` | `always_ff @(posedge clk [or negedge rst_n])` |
@@ -1609,6 +1627,8 @@ module tb_traffic {
 | **F73** ✅ | **Type param override + cast lebar benar (tutup limitasi F32/F33)** — (a) `T'(a)` lebar 1 (data loss → 0): `cur_type_param_widths` diinstal per `elaborate_module_with_params_and_type` (pola `current_module`), dibaca `resolve_cast_name_width` lebih dulu → `q=0x34`; (b) `#(.T(Wide16))` Ident-typedef salah-bucket jadi value-override (T tetap default; e2e F32 tak sensitif lebar!): re-bucket di flatten bila pname type-param target & nilai resolve-sbg-tipe → `q=0x0800`; (c) `#(.T(logic[15:0]))`: `TypeParamAssign{dtype,range}` baru (range `parse_type_expr_with_range`, bukan dibuang) → 16 | oracle: `CT q=34`, `TPOV/CT16 q=0x800`, `TPL2 q=0x800`; 3 test baru width-sensitive (`typedef_override`, `literal_override`, `cast_effective_width`); buglog-mv #22 |
 | **F74** ✅ | **Fix: statement-level `assert/assume/cover property` gagal parse** — arm statement memakan keyword tapi lupa `advance()` sesudah `property` (warisan F6, dikopi F66/F69) → `diharapkan LParen, ditemukan Ident(property)`; varian AST `Stmt::*Property` tak terjangkau. Tambah 1 baris `advance()` per arm (`parser/stmt.rs`) | demo e2e `STMT_PROP_OK`; verilator OK penempatan; 3 test baru (parse statement-level ×3 keyword, codegen blok, e2e `test_mv_statement_level_assert_property`); buglog-mv #23 |
 | **F75** ✅ | **`wire` + `assign` kontinu di `.mv`** — gap: kombinasional 1-baris wajib blok `comb`, net `wire` tak ada (LRM 1800 §6.5/§10.2). Kini `wire w : bit/logic` → net SV (`wire w;` / `wire [7:0] w;` — TANPA `bit`/`logic`, `wire bit` INVALID ditolak parser SV) + `assign y = expr` level module (termasuk generate) → `assign y = expr;`. Check: E2005 utk tipe non-net (`int`/`real`/`string`/`queue`), E2003 drive input (DUT saja, TB bebas), E2002 truncation, E2010 const | `mgen wire_assign.mv` → iverilog + verilator bersih; `run --top tb_wire` → `WIRE_ASSIGN_OK y=1 v=42`; 9 test baru (lexer, parse, codegen, check ×4, print roundtrip, e2e `test_mv_wire_assign`); contoh `examples/mv/wire_assign.mv` |
+| **F76** ✅ | **Varian net `wand`/`wor`/`tri`/`tri0`/`tri1`/`supply0`/`supply1` + alias `triand`/`trior`** — kelanjutan F75 (LRM 1800 §6.5): resolusi multi-driver (AND/OR). `NetKind` di AST, 9 keyword reserved, emisi prefix net (`wand wa;` / `wor [7:0] wo;`), print roundtrip (alias ternormalisasi). Check sama seperti `wire` | `run nets.mv --top tb_nets` → `NETS_OK and=0 or=1`; e2e `test_mv_net_kind_resolution` (`wand(1,0)=0`, `wor(1,0)=1`); iverilog bersih; verilator `--lint-only` menolak `wand`/`wor` (`UNSUPPORTED` — limit tool); contoh `examples/mv/nets.mv` |
+| **F77** ✅ | **`include` lintas-file otomatis di output `mgen` batch** — gap: file yang memakai definisi bersama file LAIN (`use pkg::*`, tipe port, interface) menghasilkan `.sv` dengan `import` menggantung — mandiri hanya bila user menyusun urutan file manual. Kini `transpile_many_items` menghitung referensi per file (walk `MvType::Named` + `use`) terhadap owner definisi (package/typedef/interface) dan meng-emit `` `include "<base>.svh" `` file pemilik SEBELUM include sendiri/`import`/module (di `.sv` maupun `.svh`). Tanpa cross-ref output byte-identik lama | `mgen multifile/` → `dut.sv`/`tb.sv` me-`include types.svh`; `sim dut.sv tb.sv --top tb_mem` → `TB_MF_OK`; verilator `--lint-only -I` bersih (iverilog menolak port interface — limit tool pre-existing); 3 test baru (`cross_file_include`, `no_include_without_cross_ref`, `interface_typedef_cross_ref`) |
 
 **Kriteria selesai F2:** `mivon mgen examples/mv/counter.mv` menghasilkan
 `counter.sv` yang bisa disimulasikan oleh `mivon counter.sv` tanpa error.

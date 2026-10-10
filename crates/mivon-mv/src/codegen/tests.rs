@@ -886,6 +886,7 @@ module tb {
     let file = parse(src).unwrap();
     let opts = GenOpts {
         package: Some("chip_types"),
+        ..Default::default()
     };
     let out = generate_src_ext_opts(&file, "tb", &[], "mv", &opts);
     assert!(
@@ -933,6 +934,7 @@ module m {
     let file = parse(src).unwrap();
     let opts = GenOpts {
         package: Some("chip_types"),
+        ..Default::default()
     };
     let out = generate_src_ext_opts(&file, "m", &[], "mv", &opts);
     assert!(out.svh.contains("package p;"), "package sumber tetap: {}", out.svh);

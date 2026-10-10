@@ -1,0 +1,48 @@
+// ─────────────────────────────────────────────────────────────
+// Contoh F76 — varian net (LRM 1800 §6.5): wand/wor/tri/tri0/tri1/
+// supply0/supply1 + alias triand/trior.
+// Resolusi multi-driver: wand=AND, wor=OR.
+// Generate: mivon mgen nets.mv
+// Simulasi: mivon nets.mv --top tb_nets -T 30
+// ─────────────────────────────────────────────────────────────
+
+module nets_demo {
+    in a : bit
+    out o_and : bit
+    out o_or : bit
+
+    wand w_and : bit
+    wor w_or : bit
+    tri tr : bit
+    tri0 t0 : bit
+    tri1 t1 : bit
+    supply0 s0 : bit
+    supply1 s1 : bit
+
+    assign w_and = a
+    assign w_and = 0
+    assign w_or = a
+    assign w_or = 0
+    assign tr = a
+    assign t0 = 1'bz
+    assign t1 = 1'bz
+    assign o_and = w_and & s1 & tr
+    assign o_or = w_or | s0 | tr
+}
+
+module tb_nets {
+    sig a : bit
+    sig o_and : bit
+    sig o_or : bit
+
+    inst nets_demo u (.a, .o_and, .o_or)
+
+    initial {
+        a = 1
+        #1
+        assert (o_and == 0) $info("wand ok") else $error("wand fail")
+        assert (o_or == 1) $info("wor ok") else $error("wor fail")
+        $display("NETS_OK and=%0d or=%0d", o_and, o_or)
+        $finish
+    }
+}

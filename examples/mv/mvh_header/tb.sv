@@ -4,6 +4,7 @@
 // Perintah  : mivon mgen tb.mv
 // ─────────────────────────────────────────────────────────────
 
+`include "defs.svh"
 import mvh_pkg::*;
 
 module tb_mvh;

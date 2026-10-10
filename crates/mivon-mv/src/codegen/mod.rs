@@ -34,6 +34,14 @@ pub struct GenOpts<'a> {
     /// `import <nama>::*;`. Paket yang SUDAH ada di sumber tetap di-emit
     /// apa adanya (nama dari sumber menang).
     pub package: Option<&'a str>,
+    /// F77: nama base `.svh` dari file LAIN dalam batch yang definisi
+    /// bersamanya (package/typedef/interface) di-refer file ini. Di-emit
+    /// `` `include "<base>.svh" `` di scope file SEBELUM `import`/module,
+    /// supaya `.sv`/`.svh` hasil generate mandiri di tool EDA (iverilog dan
+    /// verilator TIDAK resolve dependensi lintas-file sendiri). Urutan:
+    /// include lintas-file dulu, baru include `.svh` file sendiri, agar
+    /// package file sendiri yang merujuk tipe file lain sudah melihatnya.
+    pub includes: Vec<&'a str>,
 }
 
 /// Generate `.sv` + `.svh` dari `MvFile` (konteks satu file).
@@ -106,6 +114,16 @@ fn generate_svh_opts(file: &MvFile, base: &str, header: &str, opts: &GenOpts) ->
     out.push('\n');
     out.push_str(&format!("`ifndef {guard}\n`define {guard}\n"));
 
+    // F77: definisi bersama dari file LAIN dalam batch (package/typedef/
+    // interface yang di-refer file ini) di-`include` lebih dulu, supaya
+    // `.svh` mandiri di tool EDA. Guard di file sumber mencegah dobel.
+    for inc in &opts.includes {
+        out.push_str(&format!("`include \"{inc}.svh\"\n"));
+    }
+    if !opts.includes.is_empty() {
+        out.push('\n');
+    }
+
     // `--package`: typedef level file → di dalam satu package (deterministik,
     // SV valid). Package/interface dari sumber tetap di luar — nama dari
     // sumber menang.
@@ -166,6 +184,14 @@ fn generate_sv_opts(
     let mut out = String::new();
     out.push_str(header);
     out.push('\n');
+
+    // F77: definisi bersama dari file LAIN dalam batch (package/typedef/
+    // interface yang di-refer file ini) di-`include` lebih dulu, supaya
+    // `.sv` mandiri di tool EDA (iverilog/verilator tak resolve dependensi
+    // lintas-file sendiri). Include `.svh` file sendiri menyusul di bawah.
+    for inc in &opts.includes {
+        out.push_str(&format!("`include \"{inc}.svh\"\n"));
+    }
 
     let has_shared =
         !file.typedefs.is_empty() || !file.packages.is_empty() || !file.interfaces.is_empty();

@@ -4,6 +4,7 @@
 // Perintah  : mivon mgen dut.mv
 // ─────────────────────────────────────────────────────────────
 
+`include "defs.svh"
 import mvh_pkg::*;
 
 module upcounter (

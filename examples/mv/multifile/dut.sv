@@ -4,6 +4,7 @@
 // Perintah  : mivon mgen dut.mv
 // ─────────────────────────────────────────────────────────────
 
+`include "types.svh"
 import chip_types::*;
 
 module memory_dut (

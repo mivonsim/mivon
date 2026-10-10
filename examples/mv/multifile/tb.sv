@@ -4,6 +4,7 @@
 // Perintah  : mivon mgen tb.mv
 // ─────────────────────────────────────────────────────────────
 
+`include "types.svh"
 import chip_types::*;
 
 module tb_mem;
