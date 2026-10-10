@@ -1165,3 +1165,12 @@ fn f80r1_bare_package_const_no_false_positive() {
     let us = "module m #(N = 4) {\n in clk : bit\n out y : bit\n if (8'h0_4 == N) {\n comb { y = 1 }\n }\n}";
     check_src(us).expect("underscore sized harus lolos");
 }
+
+#[test]
+fn f80r2_signal_shadows_enum_member() {
+    // Review F80: `sig W` + member enum `W` → sinyal menang → E2014
+    // (sebelumnya ter-fold ke nilai enum).
+    let src = "package p {\n enum E { W, X }\n}\nmodule m {\n use p::*\n in clk : bit\n sig W : bit\n out y : bit\n if (W) {\n comb { y = 1 }\n }\n}";
+    let e = check_src(src).unwrap_err();
+    assert!(e.msg.contains("E2014"), "msg: {}", e.msg);
+}

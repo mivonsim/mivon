@@ -1032,17 +1032,19 @@ pub(crate) fn enum_member_value(
     }
     let td = found?;
     // Nilai eksplisit di-fold (bisa merujuk konstanta lain); depth+1.
-    let mut next: i64 = 0;
+    // `next` jadi None bila pendahulu tak ter-fold — member auto setelahnya
+    // ikut unknown (rantai auto-increment putus), bukan menebak.
+    let mut next: Option<i64> = Some(0);
     if let Typedef::Enum { members, .. } = td {
         for m in members {
             let v = match &m.value {
-                Some(e) => gen_const_value(e, scope, ctx, depth + 1)?,
+                Some(e) => gen_const_value(e, scope, ctx, depth + 1),
                 None => next,
             };
             if m.name == name {
-                return Some(v);
+                return v;
             }
-            next = v.wrapping_add(1);
+            next = v.map(|x| x.wrapping_add(1));
         }
     }
     None
@@ -1110,7 +1112,14 @@ pub(crate) fn gen_const_value(e: &Expr, scope: &Scope, ctx: &Ctx, depth: usize) 
             if let Some(v) = scope.params.get(s.as_str()).copied() {
                 return Some(v);
             }
-            // Member enum (tak bisa bentrok dengan sinyal — E2007).
+            // Sinyal/port/func menutupi SEMUA nama konstan (enum + package) —
+            // review F80: `sig W` + member `W` harus E2014, bukan fold enum.
+            // (`scope.types` hanya berisi variabel; member enum hanya di
+            // `sigs`, konstanta module ter-fold sudah kembali di atas.)
+            if scope.types.contains_key(s.as_str()) || scope.funcs.contains(s.as_str()) {
+                return None;
+            }
+            // Member enum.
             if let Some(v) = enum_member_value(s, ctx, scope, depth) {
                 return Some(v);
             }
