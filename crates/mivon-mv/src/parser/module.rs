@@ -471,6 +471,7 @@ impl Parser {
                     _ => "case",
                 }
                 .to_string();
+                let (line, col) = self.pos_line();
                 self.advance();
                 self.expect(&Tok::LParen)?;
                 let expr = self.parse_expr()?;
@@ -507,6 +508,8 @@ impl Parser {
                     items,
                     default,
                     kind,
+                    line,
+                    col,
                 })
             }
             Tok::For => {
@@ -529,6 +532,7 @@ impl Parser {
             }
             Tok::If => {
                 // generate if
+                let (line, col) = self.pos_line();
                 self.advance();
                 self.expect(&Tok::LParen)?;
                 let cond = self.parse_expr()?;
@@ -539,7 +543,13 @@ impl Parser {
                 } else {
                     Vec::new()
                 };
-                Ok(MItem::GenIf { cond, then, els })
+                Ok(MItem::GenIf {
+                    cond,
+                    then,
+                    els,
+                    line,
+                    col,
+                })
             }
             Tok::Func => Ok(MItem::Func(self.parse_func()?)),
             Tok::Task => Ok(MItem::Task(self.parse_task()?)),

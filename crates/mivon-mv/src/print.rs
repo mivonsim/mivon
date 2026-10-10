@@ -888,7 +888,7 @@ fn print_m_item(b: &mut StrB, indent: usize, item: &MItem) {
             }
             b.line(indent, "}");
         }
-        MItem::GenIf { cond, then, els } => {
+        MItem::GenIf { cond, then, els, .. } => {
             b.line(indent, &format!("if ({}) {{", print_expr(cond)));
             for it in then {
                 print_m_item(b, indent + 1, it);
@@ -902,7 +902,7 @@ fn print_m_item(b: &mut StrB, indent: usize, item: &MItem) {
                 b.line(indent, "}");
             }
         }
-        MItem::GenCase { expr, items, default, kind } => {
+        MItem::GenCase { expr, items, default, kind, .. } => {
             b.line(indent, &format!("{kind} ({}) {{", print_expr(expr)));
             for (vals, body) in items {
                 let v: Vec<String> = vals.iter().map(print_expr).collect();

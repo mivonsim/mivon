@@ -326,7 +326,7 @@ pub(crate) fn emit_module_kw(out: &mut String, m: &Module, kw: &str, iface_names
                 line(out, 1, "end");
                 line(out, 0, "endgenerate");
             }
-            MItem::GenIf { cond, then, els } => {
+            MItem::GenIf { cond, then, els, .. } => {
                 let lbl = labels.uniq("gen_cond");
                 let lbl_else = labels.uniq("gen_cond_else");
                 line(out, 0, "");
@@ -345,7 +345,7 @@ pub(crate) fn emit_module_kw(out: &mut String, m: &Module, kw: &str, iface_names
                 }
                 line(out, 0, "endgenerate");
             }
-            MItem::GenCase { expr, items, default, kind } => {
+            MItem::GenCase { expr, items, default, kind, .. } => {
                 // F79: generate case (LRM 1800 §27.5) — cabang ber-label unik.
                 line(out, 0, "");
                 line(out, 0, "generate");
@@ -536,7 +536,7 @@ pub(crate) fn emit_module_item_at(
             line(out, indent + 1, "end");
             line(out, indent, "endgenerate");
         }
-        MItem::GenCase { expr, items, default, kind } => {
+        MItem::GenCase { expr, items, default, kind, .. } => {
             // F79: generate case (LRM 1800 §27.5) — tiap cabang dibungkus
             // `begin : <label unik>` (label deterministik via GenLabels).
             line(out, indent, "generate");
@@ -561,7 +561,7 @@ pub(crate) fn emit_module_item_at(
             line(out, indent + 1, "endcase");
             line(out, indent, "endgenerate");
         }
-        MItem::GenIf { cond, then, els } => {
+        MItem::GenIf { cond, then, els, .. } => {
             let lbl = labels.uniq("gen_cond");
             let lbl_else = labels.uniq("gen_cond_else");
             line(out, indent, "generate");

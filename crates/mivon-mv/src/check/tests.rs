@@ -1130,3 +1130,23 @@ fn f79_gen_case_ok_and_e2001() {
     let e2 = check_src("module m #(SEL = 1) {\n in clk : bit\n case (SEL) {\n 0: { sig t : bit\n comb { t = 1 } }\n 1: { comb { t = 0 } }\n }\n}").unwrap_err();
     assert!(e2.msg.contains("E2001"), "msg: {}", e2.msg);
 }
+
+#[test]
+fn f80_gen_cond_const_forms_ok() {
+    // F80: kondisi generate konstan — parameter, perbandingan, sized,
+    // ternary, konstanta package, member enum — semua lolos.
+    let src = "package p {\n const W = 8\n enum S { A, B }\n}\nmodule m #(N = 4) {\n use p::*\n in clk : bit\n out y : bit\n if (N > 2) {\n comb { y = 1 }\n } else {\n comb { y = 0 }\n }\n if (8'd4 == N) {\n comb { y = 1 }\n }\n if (p::W == 8 ? 1 : 0) {\n comb { y = 1 }\n }\n if (N > A) {\n comb { y = 1 }\n }\n case (N) {\n 4: { comb { y = 1 } }\n default: { comb { y = 0 } }\n }\n case (A) {\n 0: { comb { y = 1 } }\n }\n}\n";
+    check_src(src).expect("kondisi konstan harus lolos");
+}
+
+#[test]
+fn f80_gen_cond_nonconst_is_e2014() {
+    // F80: sinyal di kondisi generate → E2014 berposisi (bukan warning
+    // diam-diam ambil cabang pertama seperti elaborator).
+    let e = check_src("module m {\n in clk : bit\n in sel : bit\n out y : bit\n if (sel) {\n comb { y = 1 }\n }\n}").unwrap_err();
+    assert!(e.msg.contains("E2014"), "msg: {}", e.msg);
+    assert!(e.line == 5, "posisi baris if: {}:{}", e.line, e.col);
+    let e2 = check_src("module m {\n in clk : bit\n sig s : bit\n out y : bit\n case (s) {\n 0: { comb { y = 1 } }\n }\n}").unwrap_err();
+    assert!(e2.msg.contains("E2014"), "msg: {}", e2.msg);
+    assert!(e2.line == 5, "posisi baris case: {}:{}", e2.line, e2.col);
+}

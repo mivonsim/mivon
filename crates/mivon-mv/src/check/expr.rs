@@ -940,6 +940,14 @@ pub(crate) fn fold_const(e: &Expr, params: &Params, depth: usize) -> Option<i64>
     match e {
         Expr::Int(v) => Some(*v),
         Expr::Paren(i) => fold_const(i, params, depth + 1),
+        // F80: literal sized (`8'd10`, `'b101`) — nilai digit sesuai basis.
+        Expr::Sized(_, base, digits, ..) => sized_value(*base, digits),
+        // F80: fill `'0` → 0, `'1` → -1 (semua bit 1); `'x`/`'z` unknown.
+        Expr::Fill(c) => match c {
+            '0' => Some(0),
+            '1' => Some(-1),
+            _ => None,
+        },
         Expr::Unary(op, i) => {
             let v = fold_const(i, params, depth + 1)?;
             match op.as_str() {
@@ -963,10 +971,138 @@ pub(crate) fn fold_const(e: &Expr, params: &Params, depth: usize) -> Option<i64>
                 "&" => Some(a & b),
                 "|" => Some(a | b),
                 "^" => Some(a ^ b),
+                // F80: perbandingan & logika → 0/1 (error literal E2012 di
+                // check/stmt.rs mengandalkan fold ini untuk `u < 0`).
+                "==" => Some((a == b) as i64),
+                "!=" => Some((a != b) as i64),
+                "<" => Some((a < b) as i64),
+                "<=" => Some((a <= b) as i64),
+                ">" => Some((a > b) as i64),
+                ">=" => Some((a >= b) as i64),
+                "&&" => Some(((a != 0) && (b != 0)) as i64),
+                "||" => Some(((a != 0) || (b != 0)) as i64),
                 _ => None,
             }
         }
+        Expr::Ternary(c, t, f) => {
+            // F80: `c ? t : f` — cabang sesuai kondisi ter-fold.
+            let v = fold_const(c, params, depth + 1)?;
+            fold_const(if v != 0 { t } else { f }, params, depth + 1)
+        }
         Expr::Ident(s, ..) => params.get(s.as_str()).copied(),
+        _ => None,
+    }
+}
+
+/// F80: nilai member enum (`RED` dalam `enum { IDLE, RED }`) — auto-increment
+/// dari nilai eksplisit (sinkron dengan emisi codegen/defs.rs). Cari di
+/// typedef lokal module, lalu global (file + package).
+pub(crate) fn enum_member_value(name: &str, ctx: &Ctx, scope: &Scope) -> Option<i64> {
+    let mut found: Option<&Typedef> = None;
+    for td in scope.local_types.values() {
+        if let Typedef::Enum { members, .. } = td {
+            if members.iter().any(|m| m.name == name) {
+                found = Some(td);
+                break;
+            }
+        }
+    }
+    if found.is_none() {
+        for td in ctx.types.values() {
+            if let Typedef::Enum { members, .. } = td {
+                if members.iter().any(|m| m.name == name) {
+                    found = Some(td);
+                    break;
+                }
+            }
+        }
+    }
+    let td = found?;
+    // Nilai eksplisit di-fold (bisa merujuk konstanta lain); depth+1.
+    let mut next: i64 = 0;
+    if let Typedef::Enum { members, .. } = td {
+        for m in members {
+            let v = match &m.value {
+                Some(e) => fold_const(e, &scope.params, 1)?,
+                None => next,
+            };
+            if m.name == name {
+                return Some(v);
+            }
+            next = v.wrapping_add(1);
+        }
+    }
+    None
+}
+
+/// F80: fold konstanta untuk KONDISI GENERATE — seperti `fold_const`
+/// ditambah resolusi atom penuh: parameter/konstanta module, member enum
+/// (nilai auto-increment), dan konstanta package (`pkg::ITEM`, rekursif
+/// depth-limited). `Ident` lain (sinyal/port) dan call/sistem → None.
+pub(crate) fn gen_const_value(e: &Expr, scope: &Scope, ctx: &Ctx, depth: usize) -> Option<i64> {
+    if depth > 8 {
+        return None;
+    }
+    match e {
+        Expr::Int(v) => Some(*v),
+        Expr::Paren(i) => gen_const_value(i, scope, ctx, depth + 1),
+        Expr::Sized(_, base, digits, ..) => sized_value(*base, digits),
+        Expr::Fill(c) => match c {
+            '0' => Some(0),
+            '1' => Some(-1),
+            _ => None,
+        },
+        Expr::Unary(op, i) => {
+            let v = gen_const_value(i, scope, ctx, depth + 1)?;
+            match op.as_str() {
+                "-" => Some(-v),
+                "+" => Some(v),
+                "~" => Some(!v),
+                "!" => Some((v == 0) as i64),
+                _ => None,
+            }
+        }
+        Expr::Binary(op, l, r) => {
+            let a = gen_const_value(l, scope, ctx, depth + 1)?;
+            let b = gen_const_value(r, scope, ctx, depth + 1)?;
+            match op.as_str() {
+                "+" => Some(a.wrapping_add(b)),
+                "-" => Some(a.wrapping_sub(b)),
+                "*" => Some(a.wrapping_mul(b)),
+                "/" => (b != 0).then(|| a.wrapping_div(b)),
+                "%" => (b != 0).then(|| a.wrapping_rem(b)),
+                "<<" => Some(a.wrapping_shl(b as u32)),
+                ">>" => Some(a.wrapping_shr(b as u32)),
+                "&" => Some(a & b),
+                "|" => Some(a | b),
+                "^" => Some(a ^ b),
+                "==" => Some((a == b) as i64),
+                "!=" => Some((a != b) as i64),
+                "<" => Some((a < b) as i64),
+                "<=" => Some((a <= b) as i64),
+                ">" => Some((a > b) as i64),
+                ">=" => Some((a >= b) as i64),
+                "&&" => Some(((a != 0) && (b != 0)) as i64),
+                "||" => Some(((a != 0) || (b != 0)) as i64),
+                _ => None,
+            }
+        }
+        Expr::Ternary(c, t, f) => {
+            let v = gen_const_value(c, scope, ctx, depth + 1)?;
+            gen_const_value(if v != 0 { t } else { f }, scope, ctx, depth + 1)
+        }
+        Expr::Ident(s, ..) => {
+            if let Some(v) = scope.params.get(s.as_str()).copied() {
+                return Some(v);
+            }
+            enum_member_value(s, ctx, scope)
+        }
+        Expr::Scoped(p, i, ..) => {
+            // Konstanta package — nilai ekspresinya di-fold rekursif.
+            let pkg = ctx.packages.get(p.as_str())?;
+            let (_, _, value) = pkg.consts.iter().find(|(n, _, _)| n == i)?;
+            gen_const_value(value, scope, ctx, depth + 1)
+        }
         _ => None,
     }
 }

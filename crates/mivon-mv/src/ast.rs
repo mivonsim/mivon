@@ -669,6 +669,8 @@ pub enum MItem {
         cond: Expr,
         then: Vec<MItem>,
         els: Vec<MItem>,
+        line: usize,
+        col: usize,
     },
     /// F79: `case (expr) { v: {...} default: {...} }` (generate, LRM 1800
     /// §27.5). `kind` = "case"/"casez"/"casex".
@@ -677,6 +679,8 @@ pub enum MItem {
         items: Vec<(Vec<Expr>, Vec<MItem>)>,
         default: Vec<MItem>,
         kind: String,
+        line: usize,
+        col: usize,
     },
     Func(MFunc),
     Task(MTask),

@@ -597,7 +597,7 @@ fn collect_file_refs(file: &ast::MvFile, out: &mut Vec<String>) {
                         collect_mitem_refs(it, out);
                     }
                 }
-                MItem::GenIf { cond, then, els } => {
+                MItem::GenIf { cond, then, els, .. } => {
                     collect_expr_refs(cond, out);
                     for it in then.iter().chain(els.iter()) {
                         collect_mitem_refs(it, out);
@@ -785,7 +785,7 @@ fn collect_mitem_refs(item: &crate::ast::MItem, out: &mut Vec<String>) {
                 collect_mitem_refs(it, out);
             }
         }
-        MItem::GenIf { cond, then, els } => {
+        MItem::GenIf { cond, then, els, .. } => {
             collect_expr_refs(cond, out);
             for it in then.iter().chain(els.iter()) {
                 collect_mitem_refs(it, out);

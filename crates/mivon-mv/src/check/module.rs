@@ -587,8 +587,28 @@ fn check_module_item<'a>(
             }
             Ok(())
         }
-        MItem::GenIf { cond, then, els } => {
+        MItem::GenIf {
+            cond,
+            then,
+            els,
+            line,
+            col,
+        } => {
             check_expr(cond, ctx, scope, 0)?;
+            // F80: kondisi generate WAJIB konstan waktu-elaborasi (LRM 1800
+            // §27.5) — parameter/konstanta/literal, bukan sinyal. Elaborator
+            // hanya warning + ambil cabang pertama diam-diam.
+            if super::expr::gen_const_value(cond, scope, ctx, 0).is_none() {
+                return Err(err_at(
+                    *line,
+                    *col,
+                    "E2014",
+                    format!(
+                        "kondisi generate-if harus konstan (parameter/konstanta) — di '{}'",
+                        scope.env.mname
+                    ),
+                ));
+            }
             let mut inner = scope.clone();
             for it in then {
                 check_module_item(it, ctx, &mut inner, is_tb)?;
@@ -599,12 +619,31 @@ fn check_module_item<'a>(
             }
             Ok(())
         }
-        MItem::GenCase { expr, items, default, .. } => {
+        MItem::GenCase {
+            expr,
+            items,
+            default,
+            line,
+            col,
+            ..
+        } => {
             // F79: generate case — label konstan divalidasi sebagai ekspresi
             // (E2001/E2005); konstness final ditegakkan elaborator SV.
             // Tiap cabang scope sendiri (pola GenIf): `sig` cabang-0 tak
             // terbaca di cabang-1 (cabang generate = scope terpisah).
             check_expr(expr, ctx, scope, 0)?;
+            // F80: expr generate-case WAJIB konstan (LRM 1800 §27.5).
+            if super::expr::gen_const_value(expr, scope, ctx, 0).is_none() {
+                return Err(err_at(
+                    *line,
+                    *col,
+                    "E2014",
+                    format!(
+                        "ekspresi generate-case harus konstan (parameter/konstanta) — di '{}'",
+                        scope.env.mname
+                    ),
+                ));
+            }
             for (labels, body) in items {
                 for l in labels {
                     check_expr(l, ctx, scope, 0)?;
