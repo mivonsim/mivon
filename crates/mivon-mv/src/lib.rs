@@ -409,13 +409,10 @@ fn cross_file_includes(
     // di module itu resolve lokal (check/module.rs), bukan ke file lain.
     // Over-aproksimasi: nama lokal dianggap own untuk SEMUA module file ini
     // (referensi ambigu antar-module file sama praktis tak terjadi; check
-    // menolak duplikat yang benar-benar bentrok).
+    // menolak duplikat yang benar-benar bentrok). Termasuk di dalam generate
+    // (under-approx di sana = false include).
     for m in file.modules.iter().chain(file.programs.iter()) {
-        for item in &m.items {
-            if let crate::ast::MItem::Typedef(td) = item {
-                own_filedefs.insert(td_name(td));
-            }
-        }
+        collect_local_typedefs(&m.items, &mut own_filedefs);
     }
     // Package yang di-`use` file ini (termasuk di dalam generate).
     let mut used_pkgs: HashSet<&str> = HashSet::new();
@@ -473,6 +470,25 @@ fn cross_file_includes(
     // Urutan batch (indeks owner) — deterministik mengikuti urutan input.
     found.sort_by_key(|(idx, _)| *idx);
     found.into_iter().map(|(_, b)| b).collect()
+}
+
+/// F77: kumpulkan nama typedef lokal (di body module/program, termasuk di
+/// dalam generate) — resolve lokal menang atas nama file-level file lain.
+fn collect_local_typedefs<'a>(items: &'a [crate::ast::MItem], out: &mut std::collections::HashSet<&'a str>) {
+    use crate::ast::MItem;
+    for it in items {
+        match it {
+            MItem::Typedef(td) => {
+                out.insert(td_name(td));
+            }
+            MItem::GenFor { body, .. } => collect_local_typedefs(body, out),
+            MItem::GenIf { then, els, .. } => {
+                collect_local_typedefs(then, out);
+                collect_local_typedefs(els, out);
+            }
+            _ => {}
+        }
+    }
 }
 
 /// F77: kumpulkan package yang di-`use` (`use pkg::*`), termasuk di dalam
@@ -540,8 +556,11 @@ fn collect_file_refs(file: &ast::MvFile, out: &mut Vec<String>) {
             match item {
                 MItem::Port(p) => collect_type_refs(&p.ty, out),
                 MItem::Typedef(td) => collect_typedef_refs(td, out),
-                MItem::Sig { ty, .. } | MItem::Reg { ty, .. } | MItem::Wire { ty, .. } => {
-                    collect_type_refs(ty, out)
+                MItem::Sig { ty, init, .. } | MItem::Reg { ty, init, .. } | MItem::Wire { ty, init, .. } => {
+                    collect_type_refs(ty, out);
+                    if let Some(e) = init {
+                        collect_expr_refs(e, out);
+                    }
                 }
                 MItem::Const { ty, value, .. } => {
                     if let Some(t) = ty {
@@ -573,8 +592,11 @@ fn collect_file_refs(file: &ast::MvFile, out: &mut Vec<String>) {
                     }
                 }
                 MItem::Func(f) => {
-                    for (_, ty, _, _) in &f.args {
+                    for (_, ty, _, def) in &f.args {
                         collect_type_refs(ty, out);
+                        if let Some(e) = def {
+                            collect_expr_refs(e, out);
+                        }
                     }
                     if let Some(t) = &f.ret {
                         collect_type_refs(t, out);
@@ -584,8 +606,11 @@ fn collect_file_refs(file: &ast::MvFile, out: &mut Vec<String>) {
                     }
                 }
                 MItem::Task(t) => {
-                    for (_, ty, _, _) in &t.args {
+                    for (_, ty, _, def) in &t.args {
                         collect_type_refs(ty, out);
+                        if let Some(e) = def {
+                            collect_expr_refs(e, out);
+                        }
                     }
                     for s in &t.body {
                         collect_stmt_type_refs(s, out);
@@ -623,8 +648,11 @@ fn collect_file_refs(file: &ast::MvFile, out: &mut Vec<String>) {
             collect_type_refs(ty, out);
         }
         for f in &c.funcs {
-            for (_, ty, _, _) in &f.args {
+            for (_, ty, _, def) in &f.args {
                 collect_type_refs(ty, out);
+                if let Some(e) = def {
+                    collect_expr_refs(e, out);
+                }
             }
             if let Some(t) = &f.ret {
                 collect_type_refs(t, out);
@@ -634,8 +662,11 @@ fn collect_file_refs(file: &ast::MvFile, out: &mut Vec<String>) {
             }
         }
         for t in &c.tasks {
-            for (_, ty, _, _) in &t.args {
+            for (_, ty, _, def) in &t.args {
                 collect_type_refs(ty, out);
+                if let Some(e) = def {
+                    collect_expr_refs(e, out);
+                }
             }
             for s in &t.body {
                 collect_stmt_type_refs(s, out);
@@ -643,8 +674,11 @@ fn collect_file_refs(file: &ast::MvFile, out: &mut Vec<String>) {
         }
     }
     for f in &file.funcs {
-        for (_, ty, _, _) in &f.args {
+        for (_, ty, _, def) in &f.args {
             collect_type_refs(ty, out);
+            if let Some(e) = def {
+                collect_expr_refs(e, out);
+            }
         }
         if let Some(t) = &f.ret {
             collect_type_refs(t, out);
@@ -654,8 +688,11 @@ fn collect_file_refs(file: &ast::MvFile, out: &mut Vec<String>) {
         }
     }
     for t in &file.tasks {
-        for (_, ty, _, _) in &t.args {
+        for (_, ty, _, def) in &t.args {
             collect_type_refs(ty, out);
+            if let Some(e) = def {
+                collect_expr_refs(e, out);
+            }
         }
         for s in &t.body {
             collect_stmt_type_refs(s, out);
@@ -668,8 +705,11 @@ fn collect_mitem_refs(item: &crate::ast::MItem, out: &mut Vec<String>) {
     match item {
         MItem::Port(p) => collect_type_refs(&p.ty, out),
         MItem::Typedef(td) => collect_typedef_refs(td, out),
-        MItem::Sig { ty, .. } | MItem::Reg { ty, .. } | MItem::Wire { ty, .. } => {
-            collect_type_refs(ty, out)
+        MItem::Sig { ty, init, .. } | MItem::Reg { ty, init, .. } | MItem::Wire { ty, init, .. } => {
+            collect_type_refs(ty, out);
+            if let Some(e) = init {
+                collect_expr_refs(e, out);
+            }
         }
         MItem::Const { ty, value, .. } => {
             if let Some(t) = ty {
@@ -701,8 +741,11 @@ fn collect_mitem_refs(item: &crate::ast::MItem, out: &mut Vec<String>) {
             }
         }
         MItem::Func(f) => {
-            for (_, ty, _, _) in &f.args {
+            for (_, ty, _, def) in &f.args {
                 collect_type_refs(ty, out);
+                if let Some(e) = def {
+                    collect_expr_refs(e, out);
+                }
             }
             if let Some(t) = &f.ret {
                 collect_type_refs(t, out);
@@ -712,8 +755,11 @@ fn collect_mitem_refs(item: &crate::ast::MItem, out: &mut Vec<String>) {
             }
         }
         MItem::Task(t) => {
-            for (_, ty, _, _) in &t.args {
+            for (_, ty, _, def) in &t.args {
                 collect_type_refs(ty, out);
+                if let Some(e) = def {
+                    collect_expr_refs(e, out);
+                }
             }
             for s in &t.body {
                 collect_stmt_type_refs(s, out);
@@ -773,7 +819,17 @@ fn collect_type_refs(ty: &crate::ast::MvType, out: &mut Vec<String>) {
             out.push(n.clone());
         }
         MvType::Signed(inner) => collect_type_refs(inner, out),
-        MvType::Array(inner, _) => collect_type_refs(inner, out),
+        // Review F77: bound dimensi/range adalah Expr — bisa memuat `pkg::N`.
+        MvType::Array(inner, dims) => {
+            collect_type_refs(inner, out);
+            for d in dims {
+                collect_expr_refs(d, out);
+            }
+        }
+        MvType::Logic(Some((hi, lo))) => {
+            collect_expr_refs(hi, out);
+            collect_expr_refs(lo, out);
+        }
         MvType::Queue(inner) => collect_type_refs(inner, out),
         _ => {}
     }
@@ -803,7 +859,12 @@ fn collect_expr_refs(e: &crate::ast::Expr, out: &mut Vec<String>) {
             collect_expr_refs(t, out);
             collect_expr_refs(f, out);
         }
-        Expr::Call(_, args, ..) => {
+        Expr::Call(name, args, ..) => {
+            // Review F77: `pkg::func(args)` di-parse sebagai Call bernama
+            // scoped — callee-nya referensi package.
+            if name.contains("::") {
+                out.push(name.clone());
+            }
             for a in args {
                 collect_expr_refs(a, out);
             }
@@ -1510,6 +1571,38 @@ interface bus_if {
             results[1].sv.contains("`include \"gdefs.svh\""),
             "m.sv: {}",
             results[1].sv
+        );
+    }
+
+    #[test]
+    fn f77r4_call_init_bound_defaultarg_walked() {
+        // Follow-up review putaran 2: referensi package di posisi ekspresi
+        // non-tipe — callee `q::f()`, init `= q::K`, bound `logic[q::W-1:0]`,
+        // default-arg `= q::K` — semuanya memicu include.
+        let items = vec![
+            MvItem::new(
+                "package q {\n const K = 2\n const W = 8\n}\nfunc f() -> int {\n return 1\n}\nmodule d1 {\n in clk : bit\n}\n",
+                "qdefs",
+            ),
+            MvItem::new(
+                "module m {\n in clk : bit\n out y : logic[q::W-1:0]\n sig s : logic[7:0] = q::K\n comb { y = q::f() + s }\n}\n",
+                "m",
+            ),
+            MvItem::new(
+                "module n {\n in clk : bit\n func h(x : int = q::K) -> int {\n return x\n }\n comb { }\n}\n",
+                "n",
+            ),
+        ];
+        let results = transpile_many_items(&items).expect("batch expr-refs");
+        assert!(
+            results[1].sv.contains("`include \"qdefs.svh\""),
+            "m.sv: {}",
+            results[1].sv
+        );
+        assert!(
+            results[2].sv.contains("`include \"qdefs.svh\""),
+            "n.sv: {}",
+            results[2].sv
         );
     }
 }
