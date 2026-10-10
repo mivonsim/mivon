@@ -633,6 +633,25 @@ fn collect_file_refs(file: &ast::MvFile, out: &mut Vec<String>) {
                         }
                     }
                 }
+                MItem::Bind { dims, params, conns, .. } => {
+                    // Target hierarkis (`dut`, `top.u_mem`) bukan referensi
+                    // definisi bersama — hanya koneksi/param yang di-walk.
+                    if let Some(d) = dims {
+                        collect_expr_refs(d, out);
+                    }
+                    for (_, e) in params {
+                        collect_expr_refs(e, out);
+                    }
+                    for c in conns {
+                        match c {
+                            crate::ast::Conn::Named { expr: Some(e), .. } => {
+                                collect_expr_refs(e, out)
+                            }
+                            crate::ast::Conn::Positional(e) => collect_expr_refs(e, out),
+                            _ => {}
+                        }
+                    }
+                }
                 MItem::Assign { lhs, rhs, .. } => {
                     collect_expr_refs(lhs, out);
                     collect_expr_refs(rhs, out);
@@ -772,6 +791,21 @@ fn collect_mitem_refs(item: &crate::ast::MItem, out: &mut Vec<String>) {
             }
         }
         MItem::Inst { dims, params, conns, .. } => {
+            if let Some(d) = dims {
+                collect_expr_refs(d, out);
+            }
+            for (_, e) in params {
+                collect_expr_refs(e, out);
+            }
+            for c in conns {
+                match c {
+                    crate::ast::Conn::Named { expr: Some(e), .. } => collect_expr_refs(e, out),
+                    crate::ast::Conn::Positional(e) => collect_expr_refs(e, out),
+                    _ => {}
+                }
+            }
+        }
+        MItem::Bind { dims, params, conns, .. } => {
             if let Some(d) = dims {
                 collect_expr_refs(d, out);
             }
@@ -1640,6 +1674,33 @@ interface bus_if {
         assert!(
             results[1].sv.contains("`include \"pdefs.svh\""),
             "m.sv: {}",
+            results[1].sv
+        );
+    }
+
+    #[test]
+    fn f78_bind_conns_walked_for_includes() {
+        // F78 + F77: koneksi `bind` dengan referensi scoped (`q::W`) ikut
+        // di-walk — memicu include pemiliknya.
+        let items = vec![
+            MvItem::new(
+                "package q {\n type W = logic[7:0]\n}\nmodule chk {\n in clk : bit\n in v : W\n}\nmodule d1 {\n in clk : bit\n}\n",
+                "qdefs",
+            ),
+            MvItem::new(
+                "module tb {\n use q::*\n sig clk : bit\n sig v : W\n inst chk u (.clk, .v)\n bind u chk ub (.clk, .v(v))\n}\n",
+                "tb",
+            ),
+        ];
+        let results = transpile_many_items(&items).expect("batch bind");
+        assert!(
+            results[1].sv.contains("bind u chk ub ("),
+            "bind: {}",
+            results[1].sv
+        );
+        assert!(
+            results[1].sv.contains("`include \"qdefs.svh\""),
+            "tb.sv: {}",
             results[1].sv
         );
     }

@@ -771,6 +771,27 @@ fifo #(.DEPTH(32)) u_fifo ( ... );
 
 Menulisnya dua kali pada satu instansiasi ditolak error posisi.
 
+### 6.7.1 Bind (F78)
+
+```mv
+// ikat checker/monitor ke instance DUT (LRM 1800 §23.11) — target dotted
+bind u_dut flag_monitor u_mon (.clk(clk), .flag(flag))
+bind top.u_dut flag_monitor u_mon2 (.clk, .flag)
+```
+
+Emisi 1:1 (`bind u_dut flag_monitor u_mon (...);`), termasuk parameter
+override dan bentuk arrayed. Module/param/port koneksi divalidasi sama
+seperti `inst` bila module target dikenali (E2001/E2007); target hierarkis
+sengaja tak divalidasi (urutan deklarasi tak tentu). Contoh:
+`examples/mv/bind_check.mv`.
+
+Catatan engine: `bind` body-module adalah verification-only passthrough —
+sama seperti input SV-nya, instance bind dimaterialisasi tool EDA
+(verilator bersih), bukan simulator mivon. Nama testbench hindari substring
+`_bind` (heuristik auto-top menganggapnya modul assertion-bind, penalti
+−500): contoh memakai `tb_mon`. `checker`/`endchecker` (LRM §17) reserved di
+`.mv` — tak bisa jadi identifier, karena emisinya ditolak parser SV.
+
 ### 6.8 Generate (`for` / `if` di level module)
 
 `for`/`if` di **badan module** (di luar blok logika) adalah generate:
@@ -1246,6 +1267,7 @@ Ringkasan mapping konstruk `.mv` → SV:
 | `always { }` | `always begin ... end` |
 | `initial { }` / `final { }` | `initial begin ... end` / `final begin ... end` |
 | `inst m u (...)` | `m (...);` — parameter `#(...)` selalu **sebelum** nama instance |
+| `bind t m u (...)` (F78) | `bind t m u (...);` — ikat checker ke target hierarkis (LRM 1800 §23.11) |
 | `for i in A..B` (module body) | `generate for (genvar i = A; i < B; i = i + 1) begin : gen_i` |
 | `for i in A..B step 2` (module body, F41) | `generate for (genvar i = A; i < B; i = i + 2) begin : gen_i` |
 | `use pkg::*` | `import pkg::*;` di **scope file**, sebelum deklarasi module (LRM 1800 §26.3) |
@@ -1629,6 +1651,7 @@ module tb_traffic {
 | **F75** ✅ | **`wire` + `assign` kontinu di `.mv`** — gap: kombinasional 1-baris wajib blok `comb`, net `wire` tak ada (LRM 1800 §6.5/§10.2). Kini `wire w : bit/logic` → net SV (`wire w;` / `wire [7:0] w;` — TANPA `bit`/`logic`, `wire bit` INVALID ditolak parser SV) + `assign y = expr` level module (termasuk generate) → `assign y = expr;`. Check: E2005 utk tipe non-net (`int`/`real`/`string`/`queue`), E2003 drive input (DUT saja, TB bebas), E2002 truncation, E2010 const | `mgen wire_assign.mv` → iverilog + verilator bersih; `run --top tb_wire` → `WIRE_ASSIGN_OK y=1 v=42`; 9 test baru (lexer, parse, codegen, check ×4, print roundtrip, e2e `test_mv_wire_assign`); contoh `examples/mv/wire_assign.mv` |
 | **F76** ✅ | **Varian net `wand`/`wor`/`tri`/`tri0`/`tri1`/`supply0`/`supply1` + alias `triand`/`trior`** — kelanjutan F75 (LRM 1800 §6.5): resolusi multi-driver (AND/OR). `NetKind` di AST, 9 keyword reserved, emisi prefix net (`wand wa;` / `wor [7:0] wo;`), print roundtrip (alias ternormalisasi). Check sama seperti `wire` | `run nets.mv --top tb_nets` → `NETS_OK and=0 or=1`; e2e `test_mv_net_kind_resolution` (`wand(1,0)=0`, `wor(1,0)=1`); iverilog bersih; verilator `--lint-only` menolak `wand`/`wor` (`UNSUPPORTED` — limit tool); contoh `examples/mv/nets.mv` |
 | **F77** ✅ | **`include` lintas-file otomatis di output `mgen` batch** — gap: file yang memakai definisi bersama file LAIN (`use pkg::*`, tipe port, interface) menghasilkan `.sv` dengan `import` menggantung — mandiri hanya bila user menyusun urutan file manual. Kini `transpile_many_items` menghitung referensi per file (walk `MvType::Named` + `use`) terhadap owner definisi (package/typedef/interface) dan meng-emit `` `include "<base>.svh" `` file pemilik SEBELUM include sendiri/`import`/module (di `.sv` maupun `.svh`). Tanpa cross-ref output byte-identik lama | `mgen multifile/` → `dut.sv`/`tb.sv` me-`include types.svh`; `sim dut.sv tb.sv --top tb_mem` → `TB_MF_OK`; verilator `--lint-only -I` bersih (iverilog menolak port interface — limit tool pre-existing); 3 test baru (`cross_file_include`, `no_include_without_cross_ref`, `interface_typedef_cross_ref`) |
+| **F78** ✅ | **`bind` checker ke DUT di `.mv`** — gap: tak ada cara mengikat monitor/verifikasi ke instance (LRM 1800 §23.11; engine sudah resolve `bind`, matrix ✅). Kini `bind <target> <module> <name> [#(params)] [(conns)]` (target dotted: `u_dut`, `top.u_mem`) → emisi 1:1 `bind t m u (...);` (termasuk generate). Check: module/param/port divalidasi seperti `inst` (E2001/E2002/E2007); target hierarkis sengaja dilewati (urutan deklarasi tak tentu). `checker`/`endchecker` (LRM §17) kini reserved di `.mv` (emisinya ditolak parser SV). Engine: bind body-module = verification-only passthrough (instance dimaterialisasi EDA, bukan mivon — sama seperti input SV) | `mgen bind_check.mv` → verilator bersih (iverilog tak dukung `bind` — limit tool); `run --top tb_mon` sim bersih, DUT `flag=1`; contoh `examples/mv/bind_check.mv`; e2e `test_mv_bind_emits_and_simulates_clean` |
 
 **Kriteria selesai F2:** `mivon mgen examples/mv/counter.mv` menghasilkan
 `counter.sv` yang bisa disimulasikan oleh `mivon counter.sv` tanpa error.

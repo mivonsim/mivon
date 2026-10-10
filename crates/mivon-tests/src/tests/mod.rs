@@ -1231,6 +1231,56 @@ module tb_nets {
 }
 
 #[test]
+fn test_mv_bind_emits_and_simulates_clean() {
+    // F78: `bind` di-emit 1:1 ke SV (LRM §23.11). Engine mivon memperlakukan
+    // bind body-module sebagai verification-only passthrough (sama seperti
+    // input SV-nya — instance bind dimaterialisasi tool EDA, bukan mivon),
+    // jadi sim desain harus berjalan bersih tanpa error.
+    // Demo: examples/mv/bind_check.mv.
+    let src = r#"
+module flag_monitor {
+    in clk : bit
+    in flag : bit
+    initial {
+        @(posedge clk)
+        #1
+        assert (flag == 1) $info("bind sees flag=1") else $error("bind fail")
+    }
+}
+module dut {
+    in clk : bit
+    out flag : bit
+    seq(clk) {
+        flag <= 1
+    }
+}
+module tb_mon {
+    sig clk : bit
+    sig flag : bit
+    inst dut u_dut (.clk, .flag)
+    bind u_dut flag_monitor u_mon (.clk(clk), .flag(flag))
+    initial {
+        clk = 0
+        forever #5 clk = ~clk
+    }
+    initial {
+        #30
+        $finish
+    }
+}
+"#;
+    let r = mivon_mv::transpile(src, "bind_check").expect("transpile .mv OK");
+    assert!(
+        r.sv.contains("bind u_dut flag_monitor u_mon ("),
+        "emit bind: {}",
+        r.sv
+    );
+    let sigs = simulate_signals(&r.sv, 60).unwrap();
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    assert_eq!(get("flag"), 1, "DUT berjalan normal (bind passthrough)");
+}
+
+#[test]
 fn test_mv_compound_more_ops() {
     // F36 coverage: operator compound lain (`%=` `>>=` `|=` `^=`) + decrement
     // (`--`) — memastikan semua token compound ter-lex & ter-emit benar.

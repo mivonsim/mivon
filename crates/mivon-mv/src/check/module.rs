@@ -400,7 +400,23 @@ fn check_module_item<'a>(
             conns,
             line,
             col,
+        }
+        | MItem::Bind {
+            target: _,
+            module,
+            name,
+            dims,
+            params,
+            conns,
+            line,
+            col,
+            ..
         } => {
+            // F78: target hierarkis `bind` (`dut`, `top.u_mem`) SENGAJA tidak
+            // divalidasi: urutan deklarasi instance tak tentu (bind bisa
+            // mendahului `inst` targetnya) sehingga E2001 rawan false
+            // positive. Module/param/port koneksi di bawah divalidasi penuh
+            // bila module-nya dikenali — sama seperti `inst`.
             if let Some(d) = dims {
                 check_expr(d, ctx, scope, 0)?;
             }

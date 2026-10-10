@@ -53,6 +53,12 @@ pub enum Tok {
     TriOr,
     Supply0,
     Supply1,
+    /// F78: `bind` — ikat checker/verifikasi ke target hierarkis (LRM §23.11).
+    Bind,
+    /// `checker`/`endchecker` (LRM §17) — reserved: bukan konstruk `.mv`,
+    /// dan tak boleh jadi identifier (emisinya ditolak parser SV).
+    Checker,
+    EndChecker,
     Const,
     Use,
     Seq,
@@ -225,6 +231,9 @@ fn keyword(s: &str) -> Option<Tok> {
         "trior" => Tok::TriOr,
         "supply0" => Tok::Supply0,
         "supply1" => Tok::Supply1,
+        "bind" => Tok::Bind,
+        "checker" => Tok::Checker,
+        "endchecker" => Tok::EndChecker,
         "const" => Tok::Const,
         "use" => Tok::Use,
         "seq" => Tok::Seq,
@@ -1013,6 +1022,7 @@ mod tests {
 
     #[test]
     fn lex_net_kind_keywords() {
+
         // F76: varian net (LRM §6.5) — reserved, bukan Ident.
         let t = toks("wand a wor b tri c tri0 d tri1 e triand f trior g supply0 h supply1 i");
         assert!(t.contains(&Tok::Wand), "{t:?}");
@@ -1024,6 +1034,25 @@ mod tests {
         assert!(t.contains(&Tok::TriOr), "{t:?}");
         assert!(t.contains(&Tok::Supply0), "{t:?}");
         assert!(t.contains(&Tok::Supply1), "{t:?}");
+    }
+
+    #[test]
+    fn lex_bind_keyword() {
+        // F78: `bind` (LRM §23.11) — reserved, bukan Ident.
+        let t = toks("bind u_dut fmon u_chk (.clk)");
+        assert!(t.contains(&Tok::Bind), "{t:?}");
+        assert!(!t.contains(&Tok::Ident("bind".into())), "{t:?}");
+    }
+
+    #[test]
+    fn lex_checker_reserved() {
+        // `checker`/`endchecker` (LRM §17) bukan konstruk `.mv` dan tak boleh
+        // jadi identifier — emisinya (`module checker`) ditolak parser SV.
+        let t = toks("checker endchecker");
+        assert!(t.contains(&Tok::Checker), "{t:?}");
+        assert!(t.contains(&Tok::EndChecker), "{t:?}");
+        let e = crate::parser::parse("module checker {\n in clk : bit\n}\n").unwrap_err();
+        assert!(e.msg.contains("identifier"), "msg: {}", e.msg);
     }
 }
 

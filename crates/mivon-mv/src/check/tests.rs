@@ -1100,3 +1100,19 @@ fn f76_all_net_kinds_ok() {
     let src = "module m { in a : bit\n wand wa : bit\n wor wo : logic[7:0]\n tri tr : bit\n tri0 t0 : bit\n tri1 t1 : bit\n supply0 s0 : bit\n supply1 s1 : bit\n assign wa = a\n assign tr = a }";
     check_src(src).expect("semua net kinds harus lolos");
 }
+
+#[test]
+fn f78_bind_ok_and_port_param_checked() {
+    // F78 sehat: bind ke module dikenal — koneksi/param divalidasi seperti inst.
+    let src = "module chk {\n in clk : bit\n in flag : bit\n}\nmodule tb {\n sig clk : bit\n sig flag : bit\n inst chk u (.clk, .flag)\n bind u chk u2 (.clk(clk), .flag)\n}";
+    check_src(src).expect("bind sehat harus lolos");
+    // port tak ada → E2001 (bila module target dikenali).
+    let e = check_src("module chk {\n in clk : bit\n}\nmodule tb {\n sig clk : bit\n bind u chk u2 (.nope(clk))\n}").unwrap_err();
+    assert!(e.msg.contains("E2001"), "msg: {}", e.msg);
+    // param tak ada → E2001.
+    let e2 = check_src("module chk #(W = 1) {\n in clk : bit\n}\nmodule tb {\n sig clk : bit\n bind u chk u2 #(.NOPE(1)) (.clk)\n}").unwrap_err();
+    assert!(e2.msg.contains("E2001"), "msg: {}", e2.msg);
+    // port ganda → E2007.
+    let e3 = check_src("module chk {\n in clk : bit\n}\nmodule tb {\n sig clk : bit\n bind u chk u2 (.clk, .clk(clk))\n}").unwrap_err();
+    assert!(e3.msg.contains("E2007"), "msg: {}", e3.msg);
+}

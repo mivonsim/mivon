@@ -643,6 +643,19 @@ pub enum MItem {
         line: usize,
         col: usize,
     },
+    /// F78: `bind target mod_name inst_name (...)` — ikat instance checker ke
+    /// scope target hierarkis (LRM 1800 §23.11, 1:1 ke SV `bind`). `target`
+    /// path dotted (`dut`, `top.u_mem`). Posisi (line, col) nama module.
+    Bind {
+        target: String,
+        module: String,
+        name: String,
+        dims: Option<Expr>,
+        params: Vec<(String, Expr)>,
+        conns: Vec<Conn>,
+        line: usize,
+        col: usize,
+    },
     /// `for i in 1..N { ... }` (generate) — optional `step` : `for i in 0..8 step 2`
     GenFor {
         var: String,

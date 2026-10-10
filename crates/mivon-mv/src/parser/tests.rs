@@ -960,3 +960,34 @@ module m {
         "net kinds + alias: {kinds:?}"
     );
 }
+
+#[test]
+fn parse_bind_with_dotted_target() {
+    // F78: `bind <target> <module> <name> [(conns)]` — target path dotted.
+    let src = r#"
+module tb {
+    sig clk : bit
+    sig flag : bit
+    inst dut u_dut (.clk, .flag)
+    bind u_dut fmon u_chk (.clk(clk), .flag)
+    bind top.u_dut fmon u_chk2 (.clk, .flag(flag))
+}
+"#;
+    let f = parse(src).expect("parse bind");
+    let binds: Vec<_> = f.modules[0]
+        .items
+        .iter()
+        .filter_map(|i| match i {
+            MItem::Bind { target, module, name, conns, .. } => {
+                Some((target.clone(), module.clone(), name.clone(), conns.len()))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(binds.len(), 2);
+    assert_eq!(binds[0].0, "u_dut");
+    assert_eq!(binds[0].1, "fmon");
+    assert_eq!(binds[0].2, "u_chk");
+    assert_eq!(binds[0].3, 2);
+    assert_eq!(binds[1].0, "top.u_dut", "target dotted");
+}

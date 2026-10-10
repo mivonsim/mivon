@@ -288,6 +288,18 @@ pub(crate) fn emit_module_kw(out: &mut String, m: &Module, kw: &str, iface_names
                 line(out, 0, "");
                 emit_inst(out, 1, module, name, dims, params, conns);
             }
+            MItem::Bind {
+                target,
+                module,
+                name,
+                dims,
+                params,
+                conns,
+                ..
+            } => {
+                line(out, 0, "");
+                emit_bind(out, 1, target, module, name, dims, params, conns);
+            }
             MItem::GenFor {
                 var,
                 from,
@@ -463,6 +475,17 @@ pub(crate) fn emit_module_item_at(
         } => {
             emit_inst(out, indent, module, name, dims, params, conns);
         }
+        MItem::Bind {
+            target,
+            module,
+            name,
+            dims,
+            params,
+            conns,
+            ..
+        } => {
+            emit_bind(out, indent, target, module, name, dims, params, conns);
+        }
         MItem::GenFor {
             var,
             from,
@@ -560,6 +583,44 @@ pub(crate) fn emit_inst(
         head.push_str(&format!(" #({})", ps.join(", ")));
     }
     head.push_str(&format!(" {name}{dims_s}"));
+    emit_inst_conns(out, indent, &head, conns);
+}
+
+/// F78: `bind <target> <module> [#(params)] <name>[dims] [(conns)];`
+/// (LRM 1800 §23.11). Head sama seperti `inst` dengan prefix target.
+pub(crate) fn emit_bind(
+    out: &mut String,
+    indent: usize,
+    target: &str,
+    module: &str,
+    name: &str,
+    dims: &Option<Expr>,
+    params: &[(String, Expr)],
+    conns: &[Conn],
+) {
+    let dims_s = dims
+        .as_ref()
+        .map(|d| format!("[{}]", emit_expr(d)))
+        .unwrap_or_default();
+    let mut head = format!("bind {target} {module}");
+    if !params.is_empty() {
+        let ps: Vec<String> = params
+            .iter()
+            .map(|(n, e)| {
+                if n.is_empty() {
+                    emit_expr(e)
+                } else {
+                    format!(".{n}({})", emit_expr(e))
+                }
+            })
+            .collect();
+        head.push_str(&format!(" #({})", ps.join(", ")));
+    }
+    head.push_str(&format!(" {name}{dims_s}"));
+    emit_inst_conns(out, indent, &head, conns);
+}
+
+fn emit_inst_conns(out: &mut String, indent: usize, head: &str, conns: &[Conn]) {
     if conns.is_empty() {
         line(out, indent, &format!("{head};"));
         return;

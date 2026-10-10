@@ -822,6 +822,48 @@ fn print_m_item(b: &mut StrB, indent: usize, item: &MItem) {
             }
             b.line(indent, &head);
         }
+        MItem::Bind {
+            target,
+            module,
+            name,
+            dims,
+            params,
+            conns,
+            ..
+        } => {
+            let d = dims
+                .as_ref()
+                .map(|e| format!("[{}]", print_expr(e)))
+                .unwrap_or_default();
+            let mut head = format!("bind {target} {module} {name}{d}");
+            if !params.is_empty() {
+                let ps: Vec<String> = params
+                    .iter()
+                    .map(|(n, v)| {
+                        if n.is_empty() {
+                            print_expr(v)
+                        } else {
+                            format!(".{n}({})", print_expr(v))
+                        }
+                    })
+                    .collect();
+                head.push_str(&format!(" #({})", ps.join(", ")));
+            }
+            if !conns.is_empty() {
+                let cs: Vec<String> = conns
+                    .iter()
+                    .map(|c| match c {
+                        Conn::Named { port, expr } => match expr {
+                            Some(e) => format!(".{port}({})", print_expr(e)),
+                            None => format!(".{port}"),
+                        },
+                        Conn::Positional(e) => print_expr(e),
+                    })
+                    .collect();
+                head.push_str(&format!(" ({})", cs.join(", ")));
+            }
+            b.line(indent, &head);
+        }
         MItem::GenFor {
             var,
             from,
@@ -1295,6 +1337,7 @@ module m {
 
     #[test]
     fn roundtrip_net_kinds() {
+
         // F76: print semua varian net re-parse + stabil (alias ternormalisasi
         // wand/wor — teks kedua stabil).
         let src = r#"
@@ -1315,5 +1358,25 @@ module m {
         assert_eq!(t1, t2, "stabil: {}", t1);
         assert!(t1.contains("wand wa : bit"), "wand: {t1}");
         assert!(t1.contains("wor wo : logic[7:0]"), "wor: {t1}");
+    }
+
+    #[test]
+    fn roundtrip_bind() {
+        // F78: print `bind` re-parse + stabil.
+        let src = r#"
+module tb {
+    sig clk : bit
+    sig flag : bit
+    inst dut u_dut (.clk, .flag)
+    bind u_dut fmon u_chk (.clk(clk), .flag)
+    bind top.u_dut fmon u_chk2 #(.W(2)) (.clk)
+}
+"#;
+        let f = parse(src).unwrap();
+        let t1 = print_file(&f);
+        let t2 = print_file(&parse(&t1).unwrap());
+        assert_eq!(t1, t2, "stabil: {}", t1);
+        assert!(t1.contains("bind u_dut fmon u_chk"), "bind: {t1}");
+        assert!(t1.contains("bind top.u_dut fmon u_chk2"), "dotted: {t1}");
     }
 }

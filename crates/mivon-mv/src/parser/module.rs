@@ -462,6 +462,7 @@ impl Parser {
                 Ok(MItem::Final(self.parse_stmt()?))
             }
             Tok::Inst => Ok(self.parse_inst()?),
+            Tok::Bind => Ok(self.parse_bind()?),
             Tok::For => {
                 // generate for — optional `step` (`for i in 0..8 step 2`)
                 self.advance();
@@ -598,6 +599,50 @@ impl Parser {
         // Catat posisi nama module utk error validasi koneksi port (F29).
         let (line, col) = self.pos_line();
         let module = self.expect_ident()?;
+        let (name, dims, params, conns) = self.parse_inst_tail()?;
+        Ok(MItem::Inst {
+            module,
+            name,
+            dims,
+            params,
+            conns,
+            line,
+            col,
+        })
+    }
+
+    /// F78: `bind <target> <module> <name> [#(params)] [(conns)]` — target
+    /// path dotted hierarkis (`dut`, `top.u_mem`), tail instansiasi sama
+    /// dengan `inst` (LRM 1800 §23.11).
+    pub(crate) fn parse_bind(&mut self) -> Result<MItem, MvError> {
+        self.expect(&Tok::Bind)?;
+        let (line, col) = self.pos_line();
+        let mut target = self.expect_ident()?;
+        while self.eat(&Tok::Dot) {
+            target.push('.');
+            target.push_str(&self.expect_ident()?);
+        }
+        let module = self.expect_ident()?;
+        let (name, dims, params, conns) = self.parse_inst_tail()?;
+        Ok(MItem::Bind {
+            target,
+            module,
+            name,
+            dims,
+            params,
+            conns,
+            line,
+            col,
+        })
+    }
+
+    /// Ekor instansiasi bersama `inst`/`bind`: `[#(params)] name [dims]
+    /// [#(params)] [(conns)]`. Override parameter boleh SEBELUM nama instance
+    /// (gaya SV) maupun SETELAH nama — keduanya diterima, dan keduanya
+    /// di-emit sebagai `#(...) name` di SV.
+    fn parse_inst_tail(
+        &mut self,
+    ) -> Result<(String, Option<Expr>, Vec<(String, Expr)>, Vec<Conn>), MvError> {
         // Override parameter boleh SEBELUM nama instance (gaya SV, yang juga
         // bentuk yang dipakai MIVON-HDL.md §6.7 `inst fifo #(.DEPTH(32)) u_fifo`)
         // maupun SETELAH nama (`inst fifo u_fifo #(.DEPTH(32))`) — keduanya
@@ -647,14 +692,6 @@ impl Parser {
                 self.eat(&Tok::Comma);
             }
         }
-        Ok(MItem::Inst {
-            module,
-            name,
-            dims,
-            params,
-            conns,
-            line,
-            col,
-        })
+        Ok((name, dims, params, conns))
     }
 }

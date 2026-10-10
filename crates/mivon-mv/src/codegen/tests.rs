@@ -1278,6 +1278,29 @@ module m {
     assert!(out2.sv.contains("wor b;"), "trior→wor: {}", out2.sv);
 }
 
+#[test]
+fn f78_bind_codegen() {
+    // F78: `bind <target> <module> [#(params)] <name> [(conns)];` (LRM §23.11).
+    let src = r#"
+module tb {
+    sig clk : bit
+    sig flag : bit
+    inst dut u_dut (.clk, .flag)
+    bind u_dut fmon u_chk (.clk(clk), .flag)
+}
+"#;
+    let out = generate(&parse(src).unwrap(), "tb");
+    assert!(
+        out.sv.contains("bind u_dut fmon u_chk ("),
+        "bind: {}",
+        out.sv
+    );
+    assert!(out.sv.contains(".clk  (clk)"), "koneksi: {}", out.sv);
+    // tanpa koneksi → nullary `;`
+    let out2 = generate(&parse("module m2 { bind u mon mu }").unwrap(), "m2");
+    assert!(out2.sv.contains("bind u mon mu;"), "nullary: {}", out2.sv);
+}
+
 // ── Type-check (E2010/E2011/E2012/E2013) dipindah ke `check/tests.rs` ──
 
 // Type-check tests (E2002-lewat-const, enum width, E2010/E2011/E2012/E2013,
