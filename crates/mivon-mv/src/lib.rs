@@ -486,6 +486,12 @@ fn collect_local_typedefs<'a>(items: &'a [crate::ast::MItem], out: &mut std::col
                 collect_local_typedefs(then, out);
                 collect_local_typedefs(els, out);
             }
+            MItem::GenCase { items, default, .. } => {
+                for (_, body) in items {
+                    collect_local_typedefs(body, out);
+                }
+                collect_local_typedefs(default, out);
+            }
             _ => {}
         }
     }
@@ -504,6 +510,12 @@ fn collect_used_pkgs_in_items<'a>(items: &'a [crate::ast::MItem], out: &mut std:
             MItem::GenIf { then, els, .. } => {
                 collect_used_pkgs_in_items(then, out);
                 collect_used_pkgs_in_items(els, out);
+            }
+            MItem::GenCase { items, default, .. } => {
+                for (_, body) in items {
+                    collect_used_pkgs_in_items(body, out);
+                }
+                collect_used_pkgs_in_items(default, out);
             }
             _ => {}
         }
@@ -588,6 +600,20 @@ fn collect_file_refs(file: &ast::MvFile, out: &mut Vec<String>) {
                 MItem::GenIf { cond, then, els } => {
                     collect_expr_refs(cond, out);
                     for it in then.iter().chain(els.iter()) {
+                        collect_mitem_refs(it, out);
+                    }
+                }
+                MItem::GenCase { expr, items, default, .. } => {
+                    collect_expr_refs(expr, out);
+                    for (labels, body) in items {
+                        for l in labels {
+                            collect_expr_refs(l, out);
+                        }
+                        for it in body {
+                            collect_mitem_refs(it, out);
+                        }
+                    }
+                    for it in default {
                         collect_mitem_refs(it, out);
                     }
                 }
@@ -762,6 +788,20 @@ fn collect_mitem_refs(item: &crate::ast::MItem, out: &mut Vec<String>) {
         MItem::GenIf { cond, then, els } => {
             collect_expr_refs(cond, out);
             for it in then.iter().chain(els.iter()) {
+                collect_mitem_refs(it, out);
+            }
+        }
+        MItem::GenCase { expr, items, default, .. } => {
+            collect_expr_refs(expr, out);
+            for (labels, body) in items {
+                for l in labels {
+                    collect_expr_refs(l, out);
+                }
+                for it in body {
+                    collect_mitem_refs(it, out);
+                }
+            }
+            for it in default {
                 collect_mitem_refs(it, out);
             }
         }

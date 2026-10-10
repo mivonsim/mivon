@@ -991,3 +991,41 @@ module tb {
     assert_eq!(binds[0].3, 2);
     assert_eq!(binds[1].0, "top.u_dut", "target dotted");
 }
+
+#[test]
+fn parse_gen_case() {
+    // F79: `case (e) { v: {...} default: {...} }` di level module = generate.
+    let src = r#"
+module m #(SEL = 1) {
+    in clk : bit
+    out y : logic[7:0]
+    case (SEL) {
+        0: {
+            comb { y = 1 }
+        }
+        1, 2: {
+            comb { y = 2 }
+        }
+        default: {
+            comb { y = 3 }
+        }
+    }
+    casez (SEL) {
+        3'b1??: {
+            comb { y = 4 }
+        }
+    }
+}
+"#;
+    let f = parse(src).expect("parse generate case");
+    let m = &f.modules[0];
+    let cases: Vec<_> = m.items.iter().filter_map(|i| match i {
+        MItem::GenCase { kind, items, default, .. } => Some((kind.clone(), items.len(), default.len())),
+        _ => None,
+    }).collect();
+    assert_eq!(cases.len(), 2);
+    assert_eq!(cases[0].0, "case");
+    assert_eq!(cases[0].1, 2, "dua branch nilai");
+    assert_eq!(cases[0].2, 1, "satu default");
+    assert_eq!(cases[1].0, "casez");
+}

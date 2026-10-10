@@ -463,6 +463,52 @@ impl Parser {
             }
             Tok::Inst => Ok(self.parse_inst()?),
             Tok::Bind => Ok(self.parse_bind()?),
+            Tok::Case | Tok::Casez | Tok::Casex => {
+                // F79: generate case — `case (e) { v: {...} default: {...} }`.
+                let kind = match self.peek() {
+                    Tok::Casez => "casez",
+                    Tok::Casex => "casex",
+                    _ => "case",
+                }
+                .to_string();
+                self.advance();
+                self.expect(&Tok::LParen)?;
+                let expr = self.parse_expr()?;
+                self.expect(&Tok::RParen)?;
+                self.expect(&Tok::LBrace)?;
+                let mut items = Vec::new();
+                let mut default = Vec::new();
+                let mut seen_default = false;
+                while !self.eat(&Tok::RBrace) {
+                    if self.eat(&Tok::Default) {
+                        if seen_default {
+                            let (l, c) = self.pos_line();
+                            return Err(MvError::new(
+                                l,
+                                c,
+                                "cabang 'default' ditulis dua kali dalam generate case".to_string(),
+                            ));
+                        }
+                        seen_default = true;
+                        self.expect(&Tok::Colon)?;
+                        default = self.parse_module_item_block()?;
+                    } else {
+                        let mut labels = vec![self.parse_expr()?];
+                        while self.eat(&Tok::Comma) {
+                            labels.push(self.parse_expr()?);
+                        }
+                        self.expect(&Tok::Colon)?;
+                        let body = self.parse_module_item_block()?;
+                        items.push((labels, body));
+                    }
+                }
+                Ok(MItem::GenCase {
+                    expr,
+                    items,
+                    default,
+                    kind,
+                })
+            }
             Tok::For => {
                 // generate for — optional `step` (`for i in 0..8 step 2`)
                 self.advance();

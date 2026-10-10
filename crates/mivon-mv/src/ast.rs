@@ -670,6 +670,14 @@ pub enum MItem {
         then: Vec<MItem>,
         els: Vec<MItem>,
     },
+    /// F79: `case (expr) { v: {...} default: {...} }` (generate, LRM 1800
+    /// §27.5). `kind` = "case"/"casez"/"casex".
+    GenCase {
+        expr: Expr,
+        items: Vec<(Vec<Expr>, Vec<MItem>)>,
+        default: Vec<MItem>,
+        kind: String,
+    },
     Func(MFunc),
     Task(MTask),
     /// `assert property ( … )` di LEVEL MODULE — concurrent assertion.

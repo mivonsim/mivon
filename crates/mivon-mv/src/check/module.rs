@@ -599,6 +599,24 @@ fn check_module_item<'a>(
             }
             Ok(())
         }
+        MItem::GenCase { expr, items, default, .. } => {
+            // F79: generate case — label konstan divalidasi sebagai ekspresi
+            // (E2001/E2005); konstness final ditegakkan elaborator SV.
+            check_expr(expr, ctx, scope, 0)?;
+            let mut inner = scope.clone();
+            for (labels, body) in items {
+                for l in labels {
+                    check_expr(l, ctx, scope, 0)?;
+                }
+                for it in body {
+                    check_module_item(it, ctx, &mut inner, is_tb)?;
+                }
+            }
+            for it in default {
+                check_module_item(it, ctx, &mut inner, is_tb)?;
+            }
+            Ok(())
+        }
         MItem::Func(f) => super::class::check_func(f, ctx, scope),
         MItem::Task(t) => super::class::check_task(t, ctx, scope),
     }

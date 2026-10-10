@@ -1281,6 +1281,44 @@ module tb_mon {
 }
 
 #[test]
+fn test_mv_gen_case_selects_branch() {
+    // F79: generate `case` memilih cabang sesuai parameter (SEL=1 → y=20).
+    // Demo: examples/mv/gen_case.mv.
+    let src = r#"
+module gc #(SEL = 1) {
+    in clk : bit
+    out y : logic[7:0]
+    case (SEL) {
+        0: {
+            comb { y = 10 }
+        }
+        1, 2: {
+            comb { y = 20 }
+        }
+        default: {
+            comb { y = 99 }
+        }
+    }
+}
+module tb_gc2 {
+    sig clk : bit
+    sig y : logic[7:0]
+    inst gc u (.clk, .y)
+    initial {
+        clk = 0
+        #1
+    }
+}
+"#;
+    let r = mivon_mv::transpile(src, "gen_case").expect("transpile .mv OK");
+    assert!(r.sv.contains("case (SEL)"), "emit case: {}", r.sv);
+    assert!(r.sv.contains("1, 2: begin : gen_case_1"), "multi-label: {}", r.sv);
+    let sigs = simulate_signals(&r.sv, 20).unwrap();
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    assert_eq!(get("y"), 20, "cabang SEL=1 (multi-label 1,2) terpilih");
+}
+
+#[test]
 fn test_mv_compound_more_ops() {
     // F36 coverage: operator compound lain (`%=` `>>=` `|=` `^=`) + decrement
     // (`--`) — memastikan semua token compound ter-lex & ter-emit benar.

@@ -345,6 +345,31 @@ pub(crate) fn emit_module_kw(out: &mut String, m: &Module, kw: &str, iface_names
                 }
                 line(out, 0, "endgenerate");
             }
+            MItem::GenCase { expr, items, default, kind } => {
+                // F79: generate case (LRM 1800 §27.5) — cabang ber-label unik.
+                line(out, 0, "");
+                line(out, 0, "generate");
+                line(out, 1, &format!("{kind} ({})", emit_expr(expr)));
+                for (labels_, body) in items {
+                    let lbl = labels.uniq("gen_case");
+                    let ls: Vec<String> = labels_.iter().map(emit_expr).collect();
+                    line(out, 1, &format!("{}: begin : {lbl}", ls.join(", ")));
+                    for item in body {
+                        emit_module_item_at(out, 2, item, iface_names, &mut labels);
+                    }
+                    line(out, 1, "end");
+                }
+                if !default.is_empty() {
+                    let lbl = labels.uniq("gen_case_else");
+                    line(out, 1, &format!("default: begin : {lbl}"));
+                    for item in default {
+                        emit_module_item_at(out, 2, item, iface_names, &mut labels);
+                    }
+                    line(out, 1, "end");
+                }
+                line(out, 1, "endcase");
+                line(out, 0, "endgenerate");
+            }
             MItem::Func(f) => emit_func(out, f),
             MItem::Task(t) => emit_task(out, t),
         }
@@ -509,6 +534,31 @@ pub(crate) fn emit_module_item_at(
                 emit_module_item_at(out, indent + 2, i, iface_names, labels);
             }
             line(out, indent + 1, "end");
+            line(out, indent, "endgenerate");
+        }
+        MItem::GenCase { expr, items, default, kind } => {
+            // F79: generate case (LRM 1800 §27.5) — tiap cabang dibungkus
+            // `begin : <label unik>` (label deterministik via GenLabels).
+            line(out, indent, "generate");
+            line(out, indent + 1, &format!("{kind} ({})", emit_expr(expr)));
+            for (labels_, body) in items {
+                let lbl = labels.uniq("gen_case");
+                let ls: Vec<String> = labels_.iter().map(emit_expr).collect();
+                line(out, indent + 1, &format!("{}: begin : {lbl}", ls.join(", ")));
+                for i in body {
+                    emit_module_item_at(out, indent + 2, i, iface_names, labels);
+                }
+                line(out, indent + 1, "end");
+            }
+            if !default.is_empty() {
+                let lbl = labels.uniq("gen_case_else");
+                line(out, indent + 1, &format!("default: begin : {lbl}"));
+                for i in default {
+                    emit_module_item_at(out, indent + 2, i, iface_names, labels);
+                }
+                line(out, indent + 1, "end");
+            }
+            line(out, indent + 1, "endcase");
             line(out, indent, "endgenerate");
         }
         MItem::GenIf { cond, then, els } => {

@@ -1116,3 +1116,13 @@ fn f78_bind_ok_and_port_param_checked() {
     let e3 = check_src("module chk {\n in clk : bit\n}\nmodule tb {\n sig clk : bit\n bind u chk u2 (.clk, .clk(clk))\n}").unwrap_err();
     assert!(e3.msg.contains("E2007"), "msg: {}", e3.msg);
 }
+
+#[test]
+fn f79_gen_case_ok_and_e2001() {
+    // F79 sehat: expr + label dikenal lolos.
+    let src = "module m #(SEL = 1) {\n in clk : bit\n out y : logic[7:0]\n case (SEL) {\n 0: { comb { y = 1 } }\n default: { comb { y = 2 } }\n }\n}";
+    check_src(src).expect("generate case sehat harus lolos");
+    // sinyal tak dikenal di expr → E2001.
+    let e = check_src("module m {\n in clk : bit\n out y : bit\n case (NOPE) {\n 0: { comb { y = 1 } }\n }\n}").unwrap_err();
+    assert!(e.msg.contains("E2001"), "msg: {}", e.msg);
+}

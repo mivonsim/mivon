@@ -1301,6 +1301,34 @@ module tb {
     assert!(out2.sv.contains("bind u mon mu;"), "nullary: {}", out2.sv);
 }
 
+#[test]
+fn f79_gen_case_codegen() {
+    // F79: generate case → `generate case (e) v: begin : gen_case ... endcase`.
+    let src = r#"
+module m #(SEL = 1) {
+    in clk : bit
+    out y : logic[7:0]
+    case (SEL) {
+        0: {
+            comb { y = 1 }
+        }
+        default: {
+            comb { y = 2 }
+        }
+    }
+}
+"#;
+    let out = generate(&parse(src).unwrap(), "m");
+    assert!(out.sv.contains("generate"), "generate: {}", out.sv);
+    assert!(out.sv.contains("case (SEL)"), "case: {}", out.sv);
+    assert!(out.sv.contains("0: begin : gen_case"), "label cabang: {}", out.sv);
+    assert!(out.sv.contains("default: begin : gen_case_else"), "default: {}", out.sv);
+    assert!(out.sv.contains("endcase"), "endcase: {}", out.sv);
+    // dua blok case → label unik deterministik
+    let out2 = generate(&parse("module n #(A = 0, B = 1) {\n in clk : bit\n case (A) {\n 0: { comb { } }\n }\n case (B) {\n 0: { comb { } }\n }\n}").unwrap(), "n");
+    assert!(out2.sv.contains("begin : gen_case_1"), "uniquifier: {}", out2.sv);
+}
+
 // ── Type-check (E2010/E2011/E2012/E2013) dipindah ke `check/tests.rs` ──
 
 // Type-check tests (E2002-lewat-const, enum width, E2010/E2011/E2012/E2013,

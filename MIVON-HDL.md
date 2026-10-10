@@ -841,6 +841,57 @@ if (N > 2) { comb { q[0] = 1'b0 } } else { comb { q[0] = 1'b1 } }
 // → begin : gen_cond  /  begin : gen_cond_else
 ```
 
+### 6.8.1 Generate case (F79)
+
+`case` di **badan module** memilih blok generate via parameter/konstanta
+(LRM 1800 §27.5) — mendukung multi-label (`,`) dan `default`, plus
+`casez`/`casex`:
+
+```mv
+module gc_demo #(SEL = 1) {
+    in clk : bit
+    out y : logic[7:0]
+    case (SEL) {
+        0: {
+            comb { y = 8'd10 }
+        }
+        1, 2: {
+            comb { y = 8'd20 }
+        }
+        default: {
+            comb { y = 8'd99 }
+        }
+    }
+}
+```
+
+Emisi (label cabang `gen_case`, `gen_case_1`, … / `gen_case_else` unik
+deterministik):
+
+```systemverilog
+generate
+    case (SEL)
+    0: begin : gen_case
+        always_comb begin
+            y = 8'd10;
+        end
+    end
+    1, 2: begin : gen_case_1
+        always_comb begin
+            y = 8'd20;
+        end
+    end
+    default: begin : gen_case_else
+        always_comb begin
+            y = 8'd99;
+        end
+    end
+    endcase
+endgenerate
+```
+
+Contoh: `examples/mv/gen_case.mv` (`GC_OK y=20`).
+
 ### 6.9 Function & Task
 
 ```mv
@@ -1269,6 +1320,7 @@ Ringkasan mapping konstruk `.mv` → SV:
 | `inst m u (...)` | `m (...);` — parameter `#(...)` selalu **sebelum** nama instance |
 | `bind t m u (...)` (F78) | `bind t m u (...);` — ikat checker ke target hierarkis (LRM 1800 §23.11) |
 | `for i in A..B` (module body) | `generate for (genvar i = A; i < B; i = i + 1) begin : gen_i` |
+| `case (e) { v: ... default: ... }` (module body, F79) | `generate case (e) v: begin : gen_case ... endcase` — multi-label + `casez`/`casex` |
 | `for i in A..B step 2` (module body, F41) | `generate for (genvar i = A; i < B; i = i + 2) begin : gen_i` |
 | `use pkg::*` | `import pkg::*;` di **scope file**, sebelum deklarasi module (LRM 1800 §26.3) |
 | `interface i { }` | `interface i; ... endinterface` (`.svh`) |
@@ -1652,6 +1704,7 @@ module tb_traffic {
 | **F76** ✅ | **Varian net `wand`/`wor`/`tri`/`tri0`/`tri1`/`supply0`/`supply1` + alias `triand`/`trior`** — kelanjutan F75 (LRM 1800 §6.5): resolusi multi-driver (AND/OR). `NetKind` di AST, 9 keyword reserved, emisi prefix net (`wand wa;` / `wor [7:0] wo;`), print roundtrip (alias ternormalisasi). Check sama seperti `wire` | `run nets.mv --top tb_nets` → `NETS_OK and=0 or=1`; e2e `test_mv_net_kind_resolution` (`wand(1,0)=0`, `wor(1,0)=1`); iverilog bersih; verilator `--lint-only` menolak `wand`/`wor` (`UNSUPPORTED` — limit tool); contoh `examples/mv/nets.mv` |
 | **F77** ✅ | **`include` lintas-file otomatis di output `mgen` batch** — gap: file yang memakai definisi bersama file LAIN (`use pkg::*`, tipe port, interface) menghasilkan `.sv` dengan `import` menggantung — mandiri hanya bila user menyusun urutan file manual. Kini `transpile_many_items` menghitung referensi per file (walk `MvType::Named` + `use`) terhadap owner definisi (package/typedef/interface) dan meng-emit `` `include "<base>.svh" `` file pemilik SEBELUM include sendiri/`import`/module (di `.sv` maupun `.svh`). Tanpa cross-ref output byte-identik lama | `mgen multifile/` → `dut.sv`/`tb.sv` me-`include types.svh`; `sim dut.sv tb.sv --top tb_mem` → `TB_MF_OK`; verilator `--lint-only -I` bersih (iverilog menolak port interface — limit tool pre-existing); 3 test baru (`cross_file_include`, `no_include_without_cross_ref`, `interface_typedef_cross_ref`) |
 | **F78** ✅ | **`bind` checker ke DUT di `.mv`** — gap: tak ada cara mengikat monitor/verifikasi ke instance (LRM 1800 §23.11; engine sudah resolve `bind`, matrix ✅). Kini `bind <target> <module> <name> [#(params)] [(conns)]` (target dotted: `u_dut`, `top.u_mem`) → emisi 1:1 `bind t m u (...);` (termasuk generate). Check: module/param/port divalidasi seperti `inst` (E2001/E2002/E2007); target hierarkis sengaja dilewati (urutan deklarasi tak tentu). `checker`/`endchecker` (LRM §17) kini reserved di `.mv` (emisinya ditolak parser SV). Engine: bind body-module = verification-only passthrough (instance dimaterialisasi EDA, bukan mivon — sama seperti input SV) | `mgen bind_check.mv` → verilator bersih (iverilog tak dukung `bind` — limit tool); `run --top tb_mon` sim bersih, DUT `flag=1`; contoh `examples/mv/bind_check.mv`; e2e `test_mv_bind_emits_and_simulates_clean` |
+| **F79** ✅ | **Generate `case` di `.mv`** — gap: seleksi blok generate hanya via `for`/`if` (engine sudah dukung `GenerateItem::Case`, LRM 1800 §27.5). Kini `case (e) { v: {...} a, b: {...} default: {...} }` (+ `casez`/`casex`) di level module → `generate case (e) v: begin : gen_case ... endcase` (label unik deterministik `gen_case[_N]`/`gen_case_else`, pola F60). Check E2001 expr/label; `default` ganda ditolak parse | `mgen gen_case.mv` → iverilog + verilator bersih; `run --top tb_gc` → `GC_OK y=20` (cabang multi-label `1, 2`); contoh `examples/mv/gen_case.mv`; e2e `test_mv_gen_case_selects_branch` |
 
 **Kriteria selesai F2:** `mivon mgen examples/mv/counter.mv` menghasilkan
 `counter.sv` yang bisa disimulasikan oleh `mivon counter.sv` tanpa error.

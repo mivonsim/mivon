@@ -902,6 +902,25 @@ fn print_m_item(b: &mut StrB, indent: usize, item: &MItem) {
                 b.line(indent, "}");
             }
         }
+        MItem::GenCase { expr, items, default, kind } => {
+            b.line(indent, &format!("{kind} ({}) {{", print_expr(expr)));
+            for (vals, body) in items {
+                let v: Vec<String> = vals.iter().map(print_expr).collect();
+                b.line(indent + 1, &format!("{}: {{", v.join(", ")));
+                for it in body {
+                    print_m_item(b, indent + 1, it);
+                }
+                b.line(indent + 1, "}");
+            }
+            if !default.is_empty() {
+                b.line(indent + 1, "default: {");
+                for it in default {
+                    print_m_item(b, indent + 1, it);
+                }
+                b.line(indent + 1, "}");
+            }
+            b.line(indent, "}");
+        }
         MItem::Func(f) => {
             let mut t = StrB::new();
             print_func_b(&mut t, f);
@@ -1378,5 +1397,32 @@ module tb {
         assert_eq!(t1, t2, "stabil: {}", t1);
         assert!(t1.contains("bind u_dut fmon u_chk"), "bind: {t1}");
         assert!(t1.contains("bind top.u_dut fmon u_chk2"), "dotted: {t1}");
+    }
+
+    #[test]
+    fn roundtrip_gen_case() {
+        // F79: print generate `case` re-parse + stabil.
+        let src = r#"
+module m #(SEL = 1) {
+    in clk : bit
+    out y : logic[7:0]
+    case (SEL) {
+        0: {
+            comb { y = 0 }
+        }
+        1, 2: {
+            comb { y = 1 }
+        }
+        default: {
+            comb { y = 2 }
+        }
+    }
+}
+"#;
+        let f = parse(src).unwrap();
+        let t1 = print_file(&f);
+        let t2 = print_file(&parse(&t1).unwrap());
+        assert_eq!(t1, t2, "stabil: {}", t1);
+        assert!(t1.contains("case (SEL) {"), "case: {t1}");
     }
 }

@@ -1,0 +1,36 @@
+// ─────────────────────────────────────────────────────────────
+// Contoh F79 — generate case (MIVON-HDL.md §6.8, LRM 1800 §27.5)
+//   * case di level module memilih BLOK generate via parameter
+//   * mendukung multi-label (1, 2:) dan default, casez/casex
+// Generate: mivon mgen gen_case.mv
+// Simulasi: mivon gen_case.mv --top tb_gc -T 30
+// ─────────────────────────────────────────────────────────────
+
+module gc_demo #(SEL = 1) {
+    in clk : bit
+    out y : logic[7:0]
+    case (SEL) {
+        0: {
+            comb { y = 8'd10 }
+        }
+        1, 2: {
+            comb { y = 8'd20 }
+        }
+        default: {
+            comb { y = 8'd99 }
+        }
+    }
+}
+
+module tb_gc {
+    sig clk : bit
+    sig y : logic[7:0]
+    inst gc_demo u (.clk, .y)
+    initial {
+        clk = 0
+        #1
+        assert (y == 20) $info("sel1 ok") else $error("sel1 fail")
+        $display("GC_OK y=%0d", y)
+        $finish
+    }
+}
