@@ -864,6 +864,33 @@ fn print_m_item(b: &mut StrB, indent: usize, item: &MItem) {
             }
             b.line(indent, &head);
         }
+        MItem::Covergroup(cg) => {
+            // F81: canonical `.mv` (roundtrip stabil): label eksplisit
+            // dipertahankan, auto-label dicetak ulang dari expr.
+            let ev = cg
+                .event
+                .as_ref()
+                .map(|(posedge, sig)| {
+                    format!(" @({} {sig})", if *posedge { "posedge" } else { "negedge" })
+                })
+                .unwrap_or_default();
+            b.line(indent, &format!("covergroup {}{ev} {{", cg.name));
+            for cp in &cg.points {
+                let lbl = cp
+                    .label
+                    .as_ref()
+                    .map(|l| format!("{l} : "))
+                    .unwrap_or_default();
+                b.line(indent + 1, &format!("coverpoint {lbl}{} {{", print_expr(&cp.expr)));
+                for bn in &cp.bins {
+                    let items: Vec<String> =
+                        bn.items.iter().map(print_inside_item).collect();
+                    b.line(indent + 2, &format!("bins {} = {{{}}}", bn.name, items.join(", ")));
+                }
+                b.line(indent + 1, "}");
+            }
+            b.line(indent, "}");
+        }
         MItem::GenFor {
             var,
             from,
@@ -1424,5 +1451,31 @@ module m #(SEL = 1) {
         let t2 = print_file(&parse(&t1).unwrap());
         assert_eq!(t1, t2, "stabil: {}", t1);
         assert!(t1.contains("case (SEL) {"), "case: {t1}");
+    }
+
+    #[test]
+    fn roundtrip_covergroup() {
+        // F81: print `covergroup` re-parse + stabil (auto-label ikut stabil
+        // karena dicetak ulang deterministik dari expr).
+        let src = r#"
+module tb {
+    sig clk : bit
+    sig x : logic[7:0]
+    covergroup cg @(posedge clk) {
+        coverpoint x {
+            bins lo = {0, [1:3]}
+        }
+        coverpoint cp : x + 1 {
+            bins hi = {4}
+        }
+    }
+}
+"#;
+        let f = parse(src).unwrap();
+        let t1 = print_file(&f);
+        let t2 = print_file(&parse(&t1).unwrap());
+        assert_eq!(t1, t2, "stabil: {}", t1);
+        assert!(t1.contains("coverpoint x {"), "auto-label: {t1}");
+        assert!(t1.contains("coverpoint cp : x + 1 {"), "label: {t1}");
     }
 }

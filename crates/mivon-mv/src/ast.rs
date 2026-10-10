@@ -563,6 +563,37 @@ pub struct MClass {
     pub col: usize,
 }
 
+/// F81: satu bin `bins a = {0, [1:3]}` — nilai/rentang dipakai ulang
+/// dari `InsideItem` (F70) karena bentuknya identik.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CoverBin {
+    pub name: String,
+    pub items: Vec<InsideItem>,
+    pub line: usize,
+    pub col: usize,
+}
+
+/// F81: `coverpoint x { bins ... }` (label eksplisit opsional).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Coverpoint {
+    /// None = auto-label dari ident expr (`x` → `x`); diteruskan eksplisit
+    /// bila expr kompleks.
+    pub label: Option<String>,
+    pub expr: Expr,
+    pub bins: Vec<CoverBin>,
+}
+
+/// F81: `covergroup cg [@(posedge clk)] { coverpoint ... }` (LRM §19).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Covergroup {
+    pub name: String,
+    /// (posedge?, signal) — None = tanpa event (sample() eksplisit).
+    pub event: Option<(bool, String)>,
+    pub points: Vec<Coverpoint>,
+    pub line: usize,
+    pub col: usize,
+}
+
 /// Item dalam module (badan `module { }`).
 #[derive(Debug, Clone, PartialEq)]
 pub enum MItem {
@@ -656,6 +687,8 @@ pub enum MItem {
         line: usize,
         col: usize,
     },
+    /// F81: `covergroup cg [@(posedge clk)] { ... }` — functional coverage.
+    Covergroup(Covergroup),
     /// `for i in 1..N { ... }` (generate) — optional `step` : `for i in 0..8 step 2`
     GenFor {
         var: String,

@@ -300,6 +300,10 @@ pub(crate) fn emit_module_kw(out: &mut String, m: &Module, kw: &str, iface_names
                 line(out, 0, "");
                 emit_bind(out, 1, target, module, name, dims, params, conns);
             }
+            MItem::Covergroup(cg) => {
+                line(out, 0, "");
+                emit_covergroup(out, 1, cg);
+            }
             MItem::GenFor {
                 var,
                 from,
@@ -500,6 +504,9 @@ pub(crate) fn emit_module_item_at(
         } => {
             emit_inst(out, indent, module, name, dims, params, conns);
         }
+        MItem::Covergroup(cg) => {
+            emit_covergroup(out, indent, cg);
+        }
         MItem::Bind {
             target,
             module,
@@ -668,6 +675,45 @@ pub(crate) fn emit_bind(
     }
     head.push_str(&format!(" {name}{dims_s}"));
     emit_inst_conns(out, indent, &head, conns);
+}
+
+/// F81: `covergroup cg [@(posedge clk)]; <label>: coverpoint <expr> {
+/// bins <n> = {v, [lo:hi]}; } endgroup` (LRM §19). Label coverpoint SELALU
+/// di-emit (parser SV melewatkan bentuk tak berlabel diam-diam): auto dari
+/// ident expr, atau label eksplisit untuk expr kompleks.
+pub(crate) fn emit_covergroup(out: &mut String, indent: usize, cg: &Covergroup) {
+    let mut head = format!("covergroup {}", cg.name);
+    if let Some((posedge, sig)) = &cg.event {
+        let edge = if *posedge { "posedge" } else { "negedge" };
+        head.push_str(&format!(" @({edge} {sig})"));
+    }
+    line(out, indent, &format!("{head};"));
+    for cp in &cg.points {
+        // Label wajib: auto-label = nama ident bila expr polos.
+        let label = match &cp.label {
+            Some(l) => l.clone(),
+            None => match &cp.expr {
+                Expr::Ident(n, ..) => n.clone(),
+                _ => format!("{}_cp", cg.name),
+            },
+        };
+        line(out, indent + 1, &format!("{label}: coverpoint {} {{", emit_expr(&cp.expr)));
+        for b in &cp.bins {
+            let items: Vec<String> = b
+                .items
+                .iter()
+                .map(|it| match it {
+                    crate::ast::InsideItem::Value(v) => emit_expr(v),
+                    crate::ast::InsideItem::Range(lo, hi) => {
+                        format!("[{}:{}]", emit_expr(lo), emit_expr(hi))
+                    }
+                })
+                .collect();
+            line(out, indent + 2, &format!("bins {} = {{{}}};", b.name, items.join(", ")));
+        }
+        line(out, indent + 1, "}");
+    }
+    line(out, indent, "endgroup");
 }
 
 fn emit_inst_conns(out: &mut String, indent: usize, head: &str, conns: &[Conn]) {

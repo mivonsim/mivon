@@ -1319,6 +1319,46 @@ module tb_gc2 {
 }
 
 #[test]
+fn test_mv_covergroup_samples_implicitly() {
+    // F81: covergroup .mv ter-sample otomatis tiap edge (tanpa sample()
+    // eksplisit) — functional coverage > 0. Demo: examples/mv/cover.mv.
+    let src = r#"
+module tb_cov {
+    sig clk : bit
+    sig x : logic[7:0]
+    covergroup cg @(posedge clk) {
+        coverpoint x {
+            bins lo = {0, 1}
+            bins hi = {[2:10]}
+        }
+    }
+    initial {
+        clk = 0
+        x = 0
+        #12
+        x = 5
+        repeat (10) @(posedge clk)
+        $finish
+    }
+    initial {
+        forever #5 clk = ~clk
+    }
+}
+"#;
+    let r = mivon_mv::transpile(src, "cover").expect("transpile .mv OK");
+    assert!(r.sv.contains("covergroup cg @(posedge clk);"), "emit: {}", r.sv);
+    let design = mivon_api::compile_str(&r.sv).expect("compile SV hasil generate");
+    let mut engine = mivon_simulator::simulator::SimulationEngine::new(design, 200);
+    engine.run().expect("sim harus jalan");
+    let stats = engine.coverage_stats();
+    let covered = stats.get("covergroup_covered").copied().unwrap_or(0.0);
+    assert!(
+        covered >= 1.0,
+        "implicit sampling harus hit ≥1 bin: {stats:?}"
+    );
+}
+
+#[test]
 fn test_mv_compound_more_ops() {
     // F36 coverage: operator compound lain (`%=` `>>=` `|=` `^=`) + decrement
     // (`--`) — memastikan semua token compound ter-lex & ter-emit benar.

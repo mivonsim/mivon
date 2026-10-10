@@ -55,6 +55,10 @@ pub enum Tok {
     Supply1,
     /// F78: `bind` — ikat checker/verifikasi ke target hierarkis (LRM §23.11).
     Bind,
+    /// F81: `covergroup`/`coverpoint`/`bins` — functional coverage (LRM §19).
+    Covergroup,
+    Coverpoint,
+    Bins,
     /// `checker`/`endchecker` (LRM §17) — reserved: bukan konstruk `.mv`,
     /// dan tak boleh jadi identifier (emisinya ditolak parser SV).
     Checker,
@@ -232,6 +236,9 @@ fn keyword(s: &str) -> Option<Tok> {
         "supply0" => Tok::Supply0,
         "supply1" => Tok::Supply1,
         "bind" => Tok::Bind,
+        "covergroup" => Tok::Covergroup,
+        "coverpoint" => Tok::Coverpoint,
+        "bins" => Tok::Bins,
         "checker" => Tok::Checker,
         "endchecker" => Tok::EndChecker,
         "const" => Tok::Const,
@@ -1042,6 +1049,15 @@ mod tests {
         let t = toks("bind u_dut fmon u_chk (.clk)");
         assert!(t.contains(&Tok::Bind), "{t:?}");
         assert!(!t.contains(&Tok::Ident("bind".into())), "{t:?}");
+    }
+
+    #[test]
+    fn lex_covergroup_keywords() {
+        // F81: `covergroup`/`coverpoint`/`bins` (LRM §19) — reserved.
+        let t = toks("covergroup cg @(posedge clk) { coverpoint x { bins a = {0} } }");
+        assert!(t.contains(&Tok::Covergroup), "{t:?}");
+        assert!(t.contains(&Tok::Coverpoint), "{t:?}");
+        assert!(t.contains(&Tok::Bins), "{t:?}");
     }
 
     #[test]

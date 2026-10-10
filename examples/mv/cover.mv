@@ -1,0 +1,29 @@
+// ─────────────────────────────────────────────────────────────
+// Contoh F81 — functional coverage (MIVON-HDL.md §7.4, LRM 1800 §19)
+//   * covergroup + coverpoint + bins (nilai & range)
+//   * implicit sampling tiap @(posedge clk) — tanpa sample() eksplisit
+// Generate: mivon mgen cover.mv
+// Coverage: mivon cov cover.mv --top tb_cvg -T 200
+// ─────────────────────────────────────────────────────────────
+
+module tb_cvg {
+    sig clk : bit
+    sig x : logic[7:0]
+    covergroup cg @(posedge clk) {
+        coverpoint x {
+            bins lo = {0, 1}
+            bins hi = {[2:10]}
+        }
+    }
+    initial {
+        clk = 0
+        x = 0
+        #12
+        x = 5
+        repeat (10) @(posedge clk)
+        $finish
+    }
+    initial {
+        forever #5 clk = ~clk
+    }
+}

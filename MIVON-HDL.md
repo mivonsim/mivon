@@ -1075,6 +1075,34 @@ program test_runner {
 
 Emisi: `program test_runner; ... endprogram`.
 
+### 7.4 Functional coverage (F81)
+
+```mv
+covergroup cg @(posedge clk) {
+    coverpoint x {
+        bins lo = {0, 1}
+        bins hi = {[2:10]}
+    }
+    coverpoint cp : x + 1 {
+        bins any = {0}
+    }
+}
+```
+
+Aturan (LRM 1800 §19):
+- `covergroup <nama> [@(posedge|negedge <sig>)]` di level module; tanpa
+  event = sampling via `sample()` eksplisit.
+- `coverpoint [label :] <expr> { bins ... }` — label SELALU di-emit di SV
+  (parser SV melewatkan coverpoint tak berlabel diam-diam): auto dari ident
+  expr (`x` → `x`), eksplisit untuk expr kompleks.
+- `bins <nama> = {v, [lo:hi], ...}` — nilai & rentang (bentuk `InsideItem`
+  F70); `{}` kosong diizinkan (diteruskan ke elaborator).
+- Check: sinyal event + expr coverpoint + isi bins dikenal (E2001, posisi
+  baris `covergroup`).
+- Engine mivon men-sample otomatis tiap edge (`covergroup_percent` > 0
+  tanpa `sample()`); tool EDA menolak `covergroup` (iverilog: tak dukung,
+  verilator: `UNSUPPORTED`) — limit tool, contoh `examples/mv/cover.mv`.
+
 ---
 
 ## 8. Class & UVM
@@ -1320,6 +1348,7 @@ Ringkasan mapping konstruk `.mv` → SV:
 | `initial { }` / `final { }` | `initial begin ... end` / `final begin ... end` |
 | `inst m u (...)` | `m (...);` — parameter `#(...)` selalu **sebelum** nama instance |
 | `bind t m u (...)` (F78) | `bind t m u (...);` — ikat checker ke target hierarkis (LRM 1800 §23.11) |
+| `covergroup cg [@(posedge clk)] { coverpoint [l :] e { bins n = {...} } }` (F81) | `covergroup cg ...; l: coverpoint e {...} endgroup` — functional coverage (LRM §19) |
 | `for i in A..B` (module body) | `generate for (genvar i = A; i < B; i = i + 1) begin : gen_i` |
 | `case (e) { v: ... default: ... }` (module body, F79) | `generate case (e) v: begin : gen_case ... endcase` — multi-label + `casez`/`casex` |
 | `for i in A..B step 2` (module body, F41) | `generate for (genvar i = A; i < B; i = i + 2) begin : gen_i` |
@@ -1707,6 +1736,7 @@ module tb_traffic {
 | **F78** ✅ | **`bind` checker ke DUT di `.mv`** — gap: tak ada cara mengikat monitor/verifikasi ke instance (LRM 1800 §23.11; engine sudah resolve `bind`, matrix ✅). Kini `bind <target> <module> <name> [#(params)] [(conns)]` (target dotted: `u_dut`, `top.u_mem`) → emisi 1:1 `bind t m u (...);` (termasuk generate). Check: module/param/port divalidasi seperti `inst` (E2001/E2002/E2007); target hierarkis sengaja dilewati (urutan deklarasi tak tentu). `checker`/`endchecker` (LRM §17) kini reserved di `.mv` (emisinya ditolak parser SV). Engine: bind body-module = verification-only passthrough (instance dimaterialisasi EDA, bukan mivon — sama seperti input SV) | `mgen bind_check.mv` → verilator bersih (iverilog tak dukung `bind` — limit tool); `run --top tb_mon` sim bersih, DUT `flag=1`; contoh `examples/mv/bind_check.mv`; e2e `test_mv_bind_emits_and_simulates_clean` |
 | **F79** ✅ | **Generate `case` di `.mv`** — gap: seleksi blok generate hanya via `for`/`if` (engine sudah dukung `GenerateItem::Case`, LRM 1800 §27.5). Kini `case (e) { v: {...} a, b: {...} default: {...} }` (+ `casez`/`casex`) di level module → `generate case (e) v: begin : gen_case ... endcase` (label unik deterministik `gen_case[_N]`/`gen_case_else`, pola F60). Check E2001 expr/label; `default` ganda ditolak parse | `mgen gen_case.mv` → iverilog + verilator bersih; `run --top tb_gc` → `GC_OK y=20` (cabang multi-label `1, 2`); contoh `examples/mv/gen_case.mv`; e2e `test_mv_gen_case_selects_branch` |
 | **F80** ✅ | **Tolak kondisi generate non-konstan (E2014)** — `if`/`case` generate dengan sinyal dikompilasi diam-diam (elaborator warning + ambil cabang pertama). Kini check menolak: kondisi harus ter-fold ke parameter/konstanta/literal (perbandingan, ternary, sized, `'0`/`'1`, member enum, konstanta package). `fold_const` diperluas serasi (Sized/Fill/comparison/logika/ternary — hanya menambah `Some`, tak ubah perilaku lama) | 2 test (`const_forms_ok` + `nonconst_is_e2014` berposisi); seluruh suite + contoh lama hijau (kondisinya memang konstan) |
+| **F81** ✅ | **Functional coverage `covergroup`/`coverpoint`/`bins` di `.mv`** — gap: tak ada cara menulis coverage fungsional (engine sudah dukung sampling implisit + bins + wildcard, LRM §19). Kini `covergroup cg [@(posedge clk)] { coverpoint [label :] expr { bins n = {v, [lo:hi]} } }` → emisi berlabel (`x: coverpoint x`, karena parser SV melewatkan tak-berlabel diam-diam) + `endgroup`. Check E2001 event/expr/bins; F77 walk mencakup referensi scoped. Cross/bins transisi/option via `@sv` | `cov cover.mv --top tb_cov` → Functional 100% (implicit, tanpa `sample()`); iverilog/verilator menolak `covergroup` (limit tool); contoh `examples/mv/cover.mv`; e2e `test_mv_covergroup_samples_implicitly` |
 
 **Kriteria selesai F2:** `mivon mgen examples/mv/counter.mv` menghasilkan
 `counter.sv` yang bisa disimulasikan oleh `mivon counter.sv` tanpa error.

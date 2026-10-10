@@ -678,6 +678,17 @@ fn collect_file_refs(file: &ast::MvFile, out: &mut Vec<String>) {
                         }
                     }
                 }
+                MItem::Covergroup(cg) => {
+                    // F81: coverpoint + bins bisa merujuk `pkg::ITEM`.
+                    for cp in &cg.points {
+                        collect_expr_refs(&cp.expr, out);
+                        for b in &cp.bins {
+                            for it in &b.items {
+                                collect_inside_item_refs(it, out);
+                            }
+                        }
+                    }
+                }
                 MItem::Assign { lhs, rhs, .. } => {
                     collect_expr_refs(lhs, out);
                     collect_expr_refs(rhs, out);
@@ -857,6 +868,16 @@ fn collect_mitem_refs(item: &crate::ast::MItem, out: &mut Vec<String>) {
                     crate::ast::Conn::Named { expr: Some(e), .. } => collect_expr_refs(e, out),
                     crate::ast::Conn::Positional(e) => collect_expr_refs(e, out),
                     _ => {}
+                }
+            }
+        }
+        MItem::Covergroup(cg) => {
+            for cp in &cg.points {
+                collect_expr_refs(&cp.expr, out);
+                for b in &cp.bins {
+                    for it in &b.items {
+                        collect_inside_item_refs(it, out);
+                    }
                 }
             }
         }
@@ -1738,6 +1759,28 @@ interface bus_if {
             "bind: {}",
             results[1].sv
         );
+        assert!(
+            results[1].sv.contains("`include \"qdefs.svh\""),
+            "tb.sv: {}",
+            results[1].sv
+        );
+    }
+
+    #[test]
+    fn f81_covergroup_scoped_refs_walked() {
+        // F81 + F77: coverpoint/bins dengan referensi scoped (`q::W`,
+        // `q::HI`) ikut di-walk — memicu include pemiliknya.
+        let items = vec![
+            MvItem::new(
+                "package q {\n type W = logic[7:0]\n const HI = 10\n}\nmodule d1 {\n in clk : bit\n}\n",
+                "qdefs",
+            ),
+            MvItem::new(
+                "module tb {\n use q::*\n sig clk : bit\n sig x : W\n covergroup cg @(posedge clk) {\n coverpoint x {\n bins hi = {q::HI}\n }\n }\n}\n",
+                "tb",
+            ),
+        ];
+        let results = transpile_many_items(&items).expect("batch covergroup");
         assert!(
             results[1].sv.contains("`include \"qdefs.svh\""),
             "tb.sv: {}",

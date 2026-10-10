@@ -993,6 +993,47 @@ module tb {
 }
 
 #[test]
+fn parse_covergroup() {
+    // F81: `covergroup cg [@(posedge clk)] { coverpoint [label :] expr {...} }`.
+    let src = r#"
+module tb {
+    sig clk : bit
+    sig x : logic[7:0]
+    covergroup cg @(posedge clk) {
+        coverpoint x {
+            bins lo = {0, 1}
+            bins hi = {1, [2:10]}
+        }
+        coverpoint cp : x + 1 {
+            bins any = {0}
+        }
+    }
+    covergroup noev {
+        coverpoint x {
+            bins a = {}
+        }
+    }
+}
+"#;
+    let f = parse(src).expect("parse covergroup");
+    let m = &f.modules[0];
+    let cgs: Vec<_> = m.items.iter().filter_map(|i| match i {
+        MItem::Covergroup(c) => Some(c),
+        _ => None,
+    }).collect();
+    assert_eq!(cgs.len(), 2);
+    assert_eq!(cgs[0].name, "cg");
+    assert_eq!(cgs[0].event, Some((true, "clk".to_string())));
+    assert_eq!(cgs[0].points.len(), 2);
+    assert_eq!(cgs[0].points[0].label, None, "auto-label");
+    assert_eq!(cgs[0].points[0].bins.len(), 2);
+    assert_eq!(cgs[0].points[0].bins[1].items.len(), 2, "nilai + range");
+    assert_eq!(cgs[0].points[1].label.as_deref(), Some("cp"), "label eksplisit");
+    assert_eq!(cgs[1].event, None, "tanpa event");
+    assert!(cgs[1].points[0].bins[0].items.is_empty(), "bins kosong");
+}
+
+#[test]
 fn parse_gen_case() {
     // F79: `case (e) { v: {...} default: {...} }` di level module = generate.
     let src = r#"

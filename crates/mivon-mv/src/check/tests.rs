@@ -1176,6 +1176,20 @@ fn f80r2_signal_shadows_enum_member() {
 }
 
 #[test]
+fn f81_covergroup_ok_and_e2001() {
+    // F81 sehat: event + coverpoint + bins dikenal lolos.
+    let src = "module tb {\n sig clk : bit\n sig x : logic[7:0]\n covergroup cg @(posedge clk) {\n coverpoint x {\n bins lo = {0, 1}\n bins hi = {[2:10]}\n }\n }\n}";
+    check_src(src).expect("covergroup sehat harus lolos");
+    // event tak dikenal → E2001 berposisi (baris covergroup).
+    let e = check_src("module tb {\n sig clk : bit\n covergroup cg @(posedge NOPE) {\n coverpoint clk {\n bins a = {1}\n }\n }\n}").unwrap_err();
+    assert!(e.msg.contains("E2001"), "msg: {}", e.msg);
+    assert!(e.line == 3, "posisi baris covergroup: {}:{}", e.line, e.col);
+    // coverpoint tak dikenal → E2001.
+    let e2 = check_src("module tb {\n sig clk : bit\n covergroup cg @(posedge clk) {\n coverpoint NOPE {\n bins a = {1}\n }\n }\n}").unwrap_err();
+    assert!(e2.msg.contains("E2001"), "msg: {}", e2.msg);
+}
+
+#[test]
 fn f80r3_instance_genvar_shadow_enum() {
     // Follow-up: instance juga NON-konstan — menutupi member enum &
     // konstanta package bernama sama.

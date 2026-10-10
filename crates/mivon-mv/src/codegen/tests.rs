@@ -1302,6 +1302,37 @@ module tb {
 }
 
 #[test]
+fn f81_covergroup_codegen() {
+    // F81: covergroup → SV berlabel (parser SV lewatkan tak-berlabel diam-diam).
+    let src = r#"
+module tb {
+    sig clk : bit
+    sig x : logic[7:0]
+    covergroup cg @(posedge clk) {
+        coverpoint x {
+            bins lo = {0, 1}
+        }
+        coverpoint cp : x + 1 {
+            bins hi = {[2:10]}
+        }
+    }
+}
+"#;
+    let out = generate(&parse(src).unwrap(), "tb");
+    assert!(out.sv.contains("covergroup cg @(posedge clk);"), "header: {}", out.sv);
+    assert!(out.sv.contains("x: coverpoint x {"), "auto-label: {}", out.sv);
+    assert!(out.sv.contains("cp: coverpoint x + 1 {"), "label eksplisit: {}", out.sv);
+    assert!(out.sv.contains("bins lo = {0, 1};"), "bins nilai: {}", out.sv);
+    assert!(out.sv.contains("bins hi = {[2:10]};"), "bins range: {}", out.sv);
+    assert!(out.sv.contains("endgroup"), "endgroup: {}", out.sv);
+    // negedge + tanpa event
+    let out2 = generate(&parse("module m2 {\n sig r : bit\n sig y : bit\n covergroup g @(negedge r) {\n coverpoint y {\n bins a = {1}\n }\n }\n}").unwrap(), "m2");
+    assert!(out2.sv.contains("covergroup g @(negedge r);"), "negedge: {}", out2.sv);
+    let out3 = generate(&parse("module m3 {\n sig y : bit\n covergroup g {\n coverpoint y {\n bins a = {1}\n }\n }\n}").unwrap(), "m3");
+    assert!(out3.sv.contains("covergroup g;"), "tanpa event: {}", out3.sv);
+}
+
+#[test]
 fn f79_gen_case_codegen() {
     // F79: generate case → `generate case (e) v: begin : gen_case ... endcase`.
     let src = r#"

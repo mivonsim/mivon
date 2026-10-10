@@ -315,6 +315,40 @@ fn check_module_item<'a>(
             }
             Ok(())
         }
+        MItem::Covergroup(cg) => {
+            // F81: event sampling + coverpoint + bins divalidasi E2001
+            // (sinyal/ekspresi dikenal). Nama covergroup didaftarkan agar
+            // bisa direferensikan (mis. `cg.sample()` di masa depan).
+            if let Some((_, sig)) = &cg.event {
+                if !scope.known(sig.as_str()) {
+                    return Err(err_at(
+                        cg.line,
+                        cg.col,
+                        "E2001",
+                        format!(
+                            "undefined signal '{}' (event covergroup '{}') — di '{}'",
+                            sig, cg.name, scope.env.mname
+                        ),
+                    ));
+                }
+            }
+            for cp in &cg.points {
+                check_expr(&cp.expr, ctx, scope, 0)?;
+                for b in &cp.bins {
+                    for it in &b.items {
+                        match it {
+                            crate::ast::InsideItem::Value(v) => check_expr(v, ctx, scope, 0)?,
+                            crate::ast::InsideItem::Range(lo, hi) => {
+                                check_expr(lo, ctx, scope, 0)?;
+                                check_expr(hi, ctx, scope, 0)?;
+                            }
+                        }
+                    }
+                }
+            }
+            scope.sigs.insert(cg.name.as_str());
+            Ok(())
+        }
         MItem::Assign { lhs, rhs, line, col } => {
             // Continuous assign: blocking semantik, bukan di seq.
             // Aturan sama seperti blocking di comb: E2003 (input port hanya

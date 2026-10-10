@@ -463,6 +463,7 @@ impl Parser {
             }
             Tok::Inst => Ok(self.parse_inst()?),
             Tok::Bind => Ok(self.parse_bind()?),
+            Tok::Covergroup => Ok(self.parse_covergroup()?),
             Tok::Case | Tok::Casez | Tok::Casex => {
                 // F79: generate case — `case (e) { v: {...} default: {...} }`.
                 let kind = match self.peek() {
@@ -749,5 +750,98 @@ impl Parser {
             }
         }
         Ok((name, dims, params, conns))
+    }
+
+    /// F81: `covergroup cg [@(posedge clk)] { coverpoint ... }` (LRM §19).
+    /// Event opsional; tiap coverpoint `coverpoint [label :] expr { bins }`.
+    pub(crate) fn parse_covergroup(&mut self) -> Result<MItem, MvError> {
+        self.expect(&Tok::Covergroup)?;
+        let (line, col) = self.pos_line();
+        let name = self.expect_ident()?;
+        // Event sampling opsional `@(posedge clk)` / `@(negedge rst)`.
+        let event = if self.eat(&Tok::At) {
+            self.expect(&Tok::LParen)?;
+            let posedge = match self.peek() {
+                Tok::PosEdge => {
+                    self.advance();
+                    true
+                }
+                Tok::NegEdge => {
+                    self.advance();
+                    false
+                }
+                _ => {
+                    let (l, c) = self.pos_line();
+                    return Err(MvError::new(
+                        l,
+                        c,
+                        "event covergroup harus `posedge`/`negedge` (mis. `@(posedge clk)`)".to_string(),
+                    ));
+                }
+            };
+            let sig = self.expect_ident()?;
+            self.expect(&Tok::RParen)?;
+            Some((posedge, sig))
+        } else {
+            None
+        };
+        self.expect(&Tok::LBrace)?;
+        let mut points = Vec::new();
+        while !self.eat(&Tok::RBrace) {
+            points.push(self.parse_coverpoint()?);
+        }
+        Ok(MItem::Covergroup(Covergroup {
+            name,
+            event,
+            points,
+            line,
+            col,
+        }))
+    }
+
+    /// F81: `coverpoint [label :] expr { bins a = {0, [1:3]} ... }`.
+    /// Tanpa label eksplisit, codegen memakai nama ident expr (`x` → `x`).
+    fn parse_coverpoint(&mut self) -> Result<Coverpoint, MvError> {
+        self.expect(&Tok::Coverpoint)?;
+        // Label eksplisit `cp : <expr>` — dideteksi sebagai Ident diikuti `:`.
+        // (Bentuk `x : ...` di sini BUKAN range select: tak ada base.)
+        let mut label: Option<String> = None;
+        // Simpan posisi untuk backtrack bila bukan pola label.
+        let save = self.pos;
+        if let Tok::Ident(s) = self.peek().clone() {
+            self.advance();
+            if self.eat(&Tok::Colon) {
+                label = Some(s);
+            } else {
+                self.pos = save;
+            }
+        }
+        let expr = self.parse_expr()?;
+        self.expect(&Tok::LBrace)?;
+        let mut bins = Vec::new();
+        while !self.eat(&Tok::RBrace) {
+            self.expect(&Tok::Bins)?;
+            let (bl, bc) = self.pos_line();
+            let bname = self.expect_ident()?;
+            self.expect(&Tok::BlockingAssign)?;
+            self.expect(&Tok::LBrace)?;
+            let mut items = Vec::new();
+            if !self.eat(&Tok::RBrace) {
+                loop {
+                    items.push(self.parse_inside_label()?);
+                    if !self.eat(&Tok::Comma) {
+                        break;
+                    }
+                }
+                self.expect(&Tok::RBrace)?;
+            }
+            bins.push(CoverBin {
+                name: bname,
+                items,
+                line: bl,
+                col: bc,
+            });
+        }
+        Ok(Coverpoint { label, expr, bins })
     }
 }
