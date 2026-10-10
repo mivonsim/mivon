@@ -2883,6 +2883,10 @@ impl Elaborator {
         // Sebelumnya hanya enum PACKAGE yang di-register → E2001 "signal
         // 'RUN' not found" untuk desain `.mv` hasil generate (dan SV murni).
         // Counter `last` di-reset per typedef (sama seperti enum package).
+        // Nilai dihitung di dalam fixpoint di bawah (bersama package) agar
+        // referensi-maju/mundur antar-typedef ikut resolve; member yang
+        // ekspresinya tak ter-evaluasi dilewati (bukan ditebak) dan
+        // dilaporkan pasca-fixpoint oleh verify_enum_members.
         let unit_enums: Vec<Vec<(Symbol, Option<Expr>)>> = self
             .design
             .unit_typedefs
@@ -2895,17 +2899,6 @@ impl Elaborator {
                 }
             })
             .collect();
-        for members in &unit_enums {
-            let mut last = 0i64;
-            for (member_name, member_expr) in members {
-                let val = match member_expr {
-                    Some(expr) => const_eval_with_params(expr, &ctx).unwrap_or(last),
-                    None => last,
-                };
-                ctx.entry(*member_name).or_insert(val);
-                last = val + 1;
-            }
-        }
         // Enum member constants dari package (plain + qualified, sequential).
         // Struktur per-typedef (Vec<Vec<…>>) — member enum tanpa nilai eksplisit
         // melanjutkan counter HANYA dalam typedef yang sama (standar SV).
@@ -2937,8 +2930,43 @@ impl Elaborator {
                 }
             })
             .collect();
+        // Cache param package-sendiri per package (plain name → nilai) dari
+        // skalar precompute — fallback forward-ref `enum {F = W}` ke param
+        // yang dideklarasikan belakangan (valid SV, elaborasi order-free).
+        // Dibangun sekali (nilai statis); dipakai hanya di jalur gagal.
+        let mut pkg_param_cache: HashMap<Symbol, Vec<(Symbol, i64)>> = HashMap::new();
+        for (k, v) in &self.pkg_const_scalars {
+            if let Some((pkg, rest)) = k.as_str().split_once("::") {
+                if !rest.contains([':', '.', '[']) {
+                    pkg_param_cache
+                        .entry(Symbol::intern(pkg))
+                        .or_default()
+                        .push((Symbol::intern(rest), *v));
+                }
+            }
+        }
         for _ in 0..64 {
             let mut changed = false;
+            // Enum $unit di dalam fixpoint (bukan sekali jalan) agar
+            // referensi ke package-const maupun antar-typedef resolve.
+            // GAGAL eval → lewati (jangan tebak `last`): percobaan ulang
+            // iterasi berikut; yang tersisa dilaporkan pasca-fixpoint.
+            for members in &unit_enums {
+                let mut last: Option<i64> = Some(0);
+                for (member_name, member_expr) in members {
+                    let val = match member_expr {
+                        Some(expr) => Self::eval_enum_member_value(expr, &ctx, None),
+                        None => last,
+                    };
+                    if let Some(v) = val {
+                        if !ctx.contains_key(member_name) {
+                            ctx.insert(*member_name, v);
+                            changed = true;
+                        }
+                    }
+                    last = val.map(|v| v.wrapping_add(1));
+                }
+            }
             // Qualified names untuk SEMUA package (agar scoped reference resolve)
             for (pkg_name, items) in &self.package_symbols {
                 for (name, item) in items {
@@ -2959,27 +2987,34 @@ impl Elaborator {
             }
             // Enum member constants di package (plain + qualified, sequential).
             // `last` di-reset per typedef enum (lihat komentar pkg_enums).
+            // GAGAL eval → lewati (jangan tebak): retry iterasi berikut.
+            // Fallback: overlay param package-sendiri (forward-ref valid ke
+            // param yang dideklarasikan belakangan) tanpa menimpa ctx.
             for (pkg_name, enums) in &pkg_enums {
+                let own: Option<&[(Symbol, i64)]> =
+                    pkg_param_cache.get(pkg_name).map(|v| v.as_slice());
                 for members in enums {
-                    let mut last = 0i64;
+                    let mut last: Option<i64> = Some(0);
                     for (member_name, member_expr) in members {
                         let val = match member_expr {
-                            Some(expr) => match const_eval_with_params(expr, &ctx) {
-                                Ok(v) => v,
-                                Err(_) => last,
-                            },
+                            Some(expr) => Self::eval_enum_member_value(expr, &ctx, own),
                             None => last,
                         };
-                        if !ctx.contains_key(member_name) {
-                            ctx.insert(*member_name, val);
-                            changed = true;
+                        if let Some(v) = val {
+                            if !ctx.contains_key(member_name) {
+                                ctx.insert(*member_name, v);
+                                changed = true;
+                            }
+                            let qualified =
+                                Symbol::intern(&format!("{}::{}", pkg_name, member_name));
+                            if let std::collections::hash_map::Entry::Vacant(e) =
+                                ctx.entry(qualified)
+                            {
+                                e.insert(v);
+                                changed = true;
+                            }
                         }
-                        let qualified = Symbol::intern(&format!("{}::{}", pkg_name, member_name));
-                        if let std::collections::hash_map::Entry::Vacant(e) = ctx.entry(qualified) {
-                            e.insert(val);
-                            changed = true;
-                        }
-                        last = val + 1;
+                        last = val.map(|v| v.wrapping_add(1));
                     }
                 }
             }
@@ -2993,6 +3028,22 @@ impl Elaborator {
             &self.pkg_const_arrays,
             &mut ctx,
         );
+        // Verifikasi: member enum eksplisit yang tetap tak ter-evaluasi
+        // setelah fixpoint (typo/unknown, bukan forward-ref) dilaporkan —
+        // sebelumnya ditebak diam-diam dari counter `last` (silent wrong).
+        self.verify_enum_members(&unit_enums, "lingkup $unit", &ctx, None);
+        for (pkg_name, enums) in &pkg_enums {
+            let own: Option<&[(Symbol, i64)]> =
+                pkg_param_cache.get(pkg_name).map(|v| v.as_slice());
+            for members in enums {
+                self.verify_enum_members(
+                    std::slice::from_ref(members),
+                    &format!("package '{pkg_name}'"),
+                    &ctx,
+                    own,
+                );
+            }
+        }
         self.pkg_param_ctx = ctx;
 
         // ── Context $unit imports (unit_imports) — sekali, untuk semua module ──
@@ -3220,22 +3271,25 @@ impl Elaborator {
         let tf = std::time::Instant::now();
         for _ in 0..64 {
             let mut changed = false;
-            // Enum member constants dari body module (sequential values)
+            // Enum member constants dari body module (sequential values).
+            // GAGAL eval → lewati (jangan tebak): retry iterasi berikut.
             for members in &module_enums {
-                let mut last = 0i64;
+                let mut last: Option<i64> = Some(0);
                 for (member_name, member_expr) in members {
                     let val = match member_expr {
                         Some(expr) => match const_eval_with_params(expr, &ctx) {
-                            Ok(v) => v,
-                            Err(_) => last,
+                            Ok(v) => Some(v),
+                            Err(_) => None,
                         },
                         None => last,
                     };
-                    if !ctx.contains_key(member_name) {
-                        ctx.insert(*member_name, val);
-                        changed = true;
+                    if let Some(v) = val {
+                        if !ctx.contains_key(member_name) {
+                            ctx.insert(*member_name, v);
+                            changed = true;
+                        }
                     }
-                    last = val + 1;
+                    last = val.map(|v| v.wrapping_add(1));
                 }
             }
             // Plain names untuk package yang di-import module
@@ -3263,6 +3317,14 @@ impl Elaborator {
                 module_enums.len()
             );
         }
+        // Verifikasi pasca-fixpoint (lihat build_pkg_param_ctx): nilai enum
+        // lokal yang tak ter-evaluasi dilaporkan, bukan ditebak.
+        self.verify_enum_members(
+            &module_enums,
+            &format!("module '{}'", module.name.as_str()),
+            &ctx,
+            None,
+        );
         // Merge konstanta package yang sudah dievaluasi penuh — hanya untuk
         // import set milik module ($unit sudah ada di unit_import_ctx).
         let tl = std::time::Instant::now();
@@ -3318,6 +3380,59 @@ impl Elaborator {
     /// Buat structured diagnostic untuk elaboration error dengan error code tepat.
     fn elab_diag(&self, code: DiagCode, message: impl Into<String>) -> SimError {
         self.elab_diag_at(code, message, 0, 0)
+    }
+
+    /// Evaluasi nilai eksplisit member enum: konteks global dulu, lalu
+    /// fallback overlay param-sendiri (forward-ref valid ke param yang
+    /// dideklarasikan belakangan) tanpa menimpa konteks global. Scope
+    /// sendiri menang atas global untuk nama sama (aturan LRM).
+    fn eval_enum_member_value(
+        expr: &Expr,
+        ctx: &HashMap<Symbol, i64>,
+        own_params: Option<&[(Symbol, i64)]>,
+    ) -> Option<i64> {
+        if let Ok(v) = const_eval_with_params(expr, ctx) {
+            return Some(v);
+        }
+        let params = own_params?;
+        let mut overlay = ctx.clone();
+        for (n, v) in params {
+            overlay.insert(*n, *v);
+        }
+        const_eval_with_params(expr, &overlay).ok()
+    }
+
+    /// Verifikasi pasca-fixpoint: member enum bernilai eksplisit yang tetap
+    /// tak ter-evaluasi (typo/unknown — bukan forward-ref yang sudah
+    /// konvergen) dilaporkan sebagai warning, bukan ditebak diam-diam dari
+    /// counter `last`. Satu warning per typedef (member gagal pertama).
+    fn verify_enum_members(
+        &self,
+        enums: &[Vec<(Symbol, Option<Expr>)>],
+        context: &str,
+        ctx: &HashMap<Symbol, i64>,
+        own_params: Option<&[(Symbol, i64)]>,
+    ) {
+        for members in enums {
+            let mut last: Option<i64> = Some(0);
+            for (member_name, member_expr) in members {
+                let val = match member_expr {
+                    Some(expr) => Self::eval_enum_member_value(expr, ctx, own_params),
+                    None => last,
+                };
+                if member_expr.is_some() && val.is_none() {
+                    self.elab_warn(
+                        DiagCode::ParamMismatch,
+                        format!(
+                            "nilai enum member '{member_name}' bukan ekspresi konstan ({context}) — \
+                             member dilewati; rujukan ke sana gagal E2001"
+                        ),
+                    );
+                    break;
+                }
+                last = val.map(|v| v.wrapping_add(1));
+            }
+        }
     }
 
     /// Tolak packed width di atas `MAX_PACKED_WIDTH` dgn diag bersih (E3012).
@@ -4712,27 +4827,54 @@ impl Elaborator {
                 }
             }
             for members in typedefs {
-                let mut last = 0i64;
+                // GAGAL eval → lewati (jangan tebak): retry iterasi berikut.
+                let mut last: Option<i64> = Some(0);
                 for (member_name, member_expr) in members {
                     let val = match member_expr {
-                        Some(expr) => match const_eval_with_params(&expr, &effective_params) {
-                            Ok(v) => v,
-                            Err(_) => last,
-                        },
+                        Some(expr) => Self::eval_enum_member_value(&expr, &effective_params, None),
                         None => last,
                     };
-                    if let std::collections::hash_map::Entry::Vacant(e) =
-                        effective_params.entry(member_name)
-                    {
-                        e.insert(val);
-                        changed = true;
+                    if let Some(v) = val {
+                        if let std::collections::hash_map::Entry::Vacant(e) =
+                            effective_params.entry(member_name)
+                        {
+                            e.insert(v);
+                            changed = true;
+                        }
                     }
-                    last = val + 1;
+                    last = val.map(|v| v.wrapping_add(1));
                 }
             }
             if !changed {
                 break;
             }
+        }
+        // Verifikasi pasca-fixpoint (lihat build_pkg_param_ctx): nilai enum
+        // lokal yang tak ter-evaluasi dilaporkan, bukan ditebak.
+        {
+            let mut verify_typedefs: Vec<Vec<(Symbol, Option<Expr>)>> = Vec::new();
+            for item in module.items.iter().chain(expanded_items.iter()) {
+                if let ModuleItem::Typedef(td) = item {
+                    if let DataType::EnumType { members, .. } = &td.dtype {
+                        verify_typedefs.push(members.clone());
+                    }
+                } else if let ModuleItem::Decl(d) = item {
+                    if let DataType::EnumType { members, .. } = &d.dtype {
+                        verify_typedefs.push(members.clone());
+                    }
+                }
+            }
+            for d in &module.decls {
+                if let DataType::EnumType { members, .. } = &d.dtype {
+                    verify_typedefs.push(members.clone());
+                }
+            }
+            self.verify_enum_members(
+                &verify_typedefs,
+                &format!("module '{}'", module.name.as_str()),
+                &effective_params,
+                None,
+            );
         }
         self.param_vals = effective_params.clone();
 

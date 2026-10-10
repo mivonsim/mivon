@@ -941,6 +941,8 @@ pub fn eval_package_constants(
             // Enum member constants package → scalar (qualified + plain-by-context).
             // Ini membuat `import pkg::*` bisa memakai nama member enum (mis.
             // `NumTotalCmdInfo`) sebagai konstanta integer dalam ekspresi parameter.
+            // GAGAL eval → lewati (jangan tebak `last`): warning + verifikasi
+            // dilakukan terpusat di build_pkg_param_ctx::verify_enum_members.
             for item in items.values() {
                 let PackageItem::Typedef(td) = item else {
                     continue;
@@ -948,7 +950,7 @@ pub fn eval_package_constants(
                 let crate::types::DataType::EnumType { members, .. } = &td.dtype else {
                     continue;
                 };
-                let mut last = 0i64;
+                let mut last: Option<i64> = Some(0);
                 for (mname, mexpr) in members {
                     let val = match mexpr {
                         Some(e) => {
@@ -959,18 +961,20 @@ pub fn eval_package_constants(
                                 structs: no_structs(),
                             };
                             match eval_expr(e, &ctx, Some(pkg_name.as_str())) {
-                                Ok(CVal::Scalar(v)) => v,
-                                _ => last,
+                                Ok(CVal::Scalar(v)) => Some(v),
+                                _ => None,
                             }
                         }
                         None => last,
                     };
-                    let q = Symbol::intern(&format!("{}::{}", pkg_name.as_str(), mname.as_str()));
-                    if let std::collections::hash_map::Entry::Vacant(e) = scalars.entry(q) {
-                        e.insert(val);
-                        changed = true;
+                    if let Some(v) = val {
+                        let q = Symbol::intern(&format!("{}::{}", pkg_name.as_str(), mname.as_str()));
+                        if let std::collections::hash_map::Entry::Vacant(e) = scalars.entry(q) {
+                            e.insert(v);
+                            changed = true;
+                        }
                     }
-                    last = val + 1;
+                    last = val.map(|v| v.wrapping_add(1));
                 }
             }
         }

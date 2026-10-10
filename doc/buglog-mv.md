@@ -293,6 +293,19 @@ bug di mivon utama (parser/elaborator/simulator). Status: ✅ fixed / ⏳ open.
     Release/Deassign (`engine/scheduler/block.rs`); `reg` tak tersentuh
     (tetap pegang forced, LRM §10.6.2).
 
+30. **Nilai enum eksplisit tak-ter-evaluasi ditebak diam-diam** —
+    `enum {A = TYPO_X, B}` mendaftarkan A=0/B=1 tanpa diagnostic
+    (`unwrap_or(last)` di 4 situs: $unit/package/module-enum +
+    precompute skalar package di `const_eval_ext.rs`); rujukan `s = A`
+    mensimulasikan 0 padahal A tak terdefinisi. Lebih parah: guard
+    `or_insert`/`contains_key` membekukan tebakan iterasi-1 sehingga
+    forward-ref valid pun terkunci salah. Ditemukan saat review F80
+    (divergensi vs `gen_const_value` .mv yang strict).
+    Fix: skip-on-failure + rantai `Option` di semua situs, enum $unit
+    masuk fixpoint (bukan sekali jalan), fallback overlay param
+    package-sendiri untuk forward-ref valid, warning `ParamMismatch`
+    pasca-fixpoint per typedef + E2001 jujur di use-site.
+
 ## ⏳ Open
 
 (tidak ada item open — semua bug historis sudah tertutup)

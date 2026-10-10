@@ -23943,3 +23943,82 @@ fn test_mv_reject_duplicate_case_label() {
     assert!(e.msg.contains("E2013"), "msg: {}", e.msg);
     assert!(e.line > 0, "error harus berposisi");
 }
+
+/// Elaborator: nilai enum eksplisit yang tak ter-evaluasi (typo/unknown)
+/// TIDAK boleh ditebak diam-diam dari counter — warning + member dilewati
+/// (rujukan ke sana gagal E2001). Forward-ref yang valid tetap resolve.
+#[test]
+fn test_enum_unknown_value_not_guessed() {
+    fn elaborate(
+        source: &str,
+    ) -> (
+        Result<mivon_ir::IrDesign, mivon_core::error::SimError>,
+        Vec<mivon_core::diagnostics::Diagnostic>,
+    ) {
+        let mut pp = mivon_parser::preprocessor::Preprocessor::new();
+        let preprocessed = pp.preprocess(source, None).unwrap();
+        let mut lexer = mivon_parser::lexer::Lexer::new(&preprocessed);
+        let mut tokens = Vec::new();
+        loop {
+            let (tok, line, col) = lexer.next_token();
+            if tok == mivon_parser::lexer::Token::Eof {
+                break;
+            }
+            tokens.push((tok, line, col));
+        }
+        let parser = mivon_parser::Parser::new(tokens, "<string>");
+        let mut parser = parser.with_source_lines(&preprocessed);
+        let design = parser.parse_design().unwrap();
+        let source_lines: Vec<String> = preprocessed.lines().map(|s| s.to_string()).collect();
+        let mut elaborator = mivon_elaboration::Elaborator::with_source(
+            design,
+            source_lines,
+            "<string>".to_string(),
+        );
+        let r = elaborator.elaborate(
+            None,
+            mivon_elaboration::elaborator::ElaborateMode::StrictSimulation,
+        );
+        let diags = elaborator.flush_diagnostics();
+        (r, diags)
+    }
+
+    // Typo: A ditebak 0 + B=1 diam-diam sebelum fix. Kini warning saat
+    // elaborasi + E2001 jujur di use-site (identik dengan ident tak dikenal).
+    let bad = r#"
+package p;
+typedef enum { A = TYPO_X, B } E;
+endpackage
+module top;
+  import p::*;
+  E s;
+  initial begin s = A; $display("%0d", s); $finish; end
+endmodule
+"#;
+    let (r, diags) = elaborate(bad);
+    assert!(r.is_err(), "rujukan ke member tak-terdefinisi harus gagal");
+    assert!(
+        diags.iter().any(|d| d.message.contains("'A'") && d.message.contains("konstan")),
+        "warning enum harus menyebut member: {:?}",
+        diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+    // Forward-ref valid tetap resolve tanpa warning.
+    let good = r#"
+package q;
+typedef enum { F = W2 } E2;
+parameter int W2 = 7;
+endpackage
+module top;
+  import q::*;
+  E2 s2 = F;
+  initial begin if (s2 !== 7) $error("fwd"); $finish; end
+endmodule
+"#;
+    let (r2, diags2) = elaborate(good);
+    assert!(r2.is_ok(), "forward-ref valid harus lolos: {diags2:?}");
+    assert!(
+        !diags2.iter().any(|d| d.message.contains("konstan")),
+        "tanpa warning palsu: {:?}",
+        diags2.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
