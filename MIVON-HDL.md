@@ -1102,6 +1102,8 @@ Aturan (LRM 1800 §19):
 - Engine mivon men-sample otomatis tiap edge (`covergroup_percent` > 0
   tanpa `sample()`); tool EDA menolak `covergroup` (iverilog: tak dukung,
   verilator: `UNSUPPORTED`) — limit tool, contoh `examples/mv/cover.mv`.
+- Migrasi: `covergroup`/`coverpoint`/`bins` kini reserved — tak bisa jadi
+  nama sinyal/identifier (seperti `cover`/`assert` sebelumnya).
 
 ---
 

@@ -1034,6 +1034,14 @@ module tb {
 }
 
 #[test]
+fn parse_coverpoint_complex_needs_label() {
+    // Review F81: expr kompleks tanpa label → error jelas (fallback `{cg}_cp`
+    // tabrakan bila >1 dalam satu group).
+    let e = parse("module tb {\n sig x : bit\n covergroup cg {\n coverpoint x + 1 {\n bins a = {0}\n }\n }\n}").unwrap_err();
+    assert!(e.msg.contains("label eksplisit"), "msg: {}", e.msg);
+}
+
+#[test]
 fn parse_gen_case() {
     // F79: `case (e) { v: {...} default: {...} }` di level module = generate.
     let src = r#"

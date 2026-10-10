@@ -802,6 +802,7 @@ impl Parser {
     /// F81: `coverpoint [label :] expr { bins a = {0, [1:3]} ... }`.
     /// Tanpa label eksplisit, codegen memakai nama ident expr (`x` → `x`).
     fn parse_coverpoint(&mut self) -> Result<Coverpoint, MvError> {
+        let (kw_line, kw_col) = self.pos_line();
         self.expect(&Tok::Coverpoint)?;
         // Label eksplisit `cp : <expr>` — dideteksi sebagai Ident diikuti `:`.
         // (Bentuk `x : ...` di sini BUKAN range select: tak ada base.)
@@ -818,6 +819,16 @@ impl Parser {
         }
         let expr = self.parse_expr()?;
         self.expect(&Tok::LBrace)?;
+        // Review F81: label auto hanya untuk ident polos — expr kompleks
+        // tanpa label akan di-emit `{cg}_cp` yang tabrakan bila >1. Tolak
+        // dini dengan pesan jelas (konsisten: SV butuh label valid).
+        if label.is_none() && !matches!(expr, Expr::Ident(..)) {
+            return Err(MvError::new(
+                kw_line,
+                kw_col,
+                "coverpoint dengan ekspresi kompleks butuh label eksplisit (mis. `coverpoint cp : x + 1 { ... }`)".to_string(),
+            ));
+        }
         let mut bins = Vec::new();
         while !self.eat(&Tok::RBrace) {
             self.expect(&Tok::Bins)?;
