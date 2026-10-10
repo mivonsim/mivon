@@ -488,4 +488,40 @@ endmodule
 
 ---
 
+## 9. Hasil Sweep `examples/mv/` (11 Okt 2026)
+
+Seluruh output `mgen` (36 file `.sv`) diuji terhadap iverilog `-g2012` dan
+verilator `--lint-only --timing`. **Nol bug emisi baru** — semua penolakan
+terpetakan ke limitasi tool yang sudah terdokumentasi di `MIVON-HDL.md`:
+
+**iverilog bersih (20 file):** `always_latch`, `case_qualifiers`, `compound`,
+`counter`, `disable_label`, `fib`, `force_release`, `fork_ctrl`,
+`forkjoin`, `for_step`, `func_local` (warning static-init saja),
+`gen_case` (warning sensivitas saja), `nets` (`wire`/`tri` OK),
+`param_counter`, `prefix_incdec`, `queue`, `traffic`, `type_param`,
+`wait_example`, `wire_assign`.
+
+**iverilog menolak (limit tool):** concurrent `assert`/`assume`/`cover
+property` (`assume_demo`, `cover_demo`, `escape_hatch`, `tb_counter`),
+`bind` (`bind_check`), `covergroup` (`cover`), `case inside`
+(`case_inside`), `unique if` (`unique_if`), named event `-> ev`
+(`dowhile` — eksekusi), interface port (`axi_interface`), array-assign
+(`array_lit`, `dsl_demo`, `multidim`), constraint class (`class_model`),
+named function args `.factor(3)` (`features_new`), constant bit-select
+`sorry` (`cast`), static-init warning (`func_local`).
+
+**verilator bersih (27 file)** termasuk `axi_interface`, `case_inside`,
+`unique_if`, `tb_counter`, `assume_demo`, `cover_demo`.
+
+**verilator menolak (limit tool):** `covergroup` + coverage event
+(`cover` — `UNSUPPORTED`), `wand`/`wor` (`nets` — `UNSUPPORTED`;
+`wire`/`tri*` lolos), `disable` lintas-branch (`disable_label` —
+non-standar, pakai `stop fork`), `-> ev` (`dowhile`/`dsl_demo` — Internal
+Error `V3Delayed`), rekursi `$unit`-function (`fib` — Internal Error
+`V3Scope`), `func_local` (Internal Error `V3Scope` + `IMPLICITSTATIC`
+warning). Warning benign: `WIDTHEXPAND` (`counter`), `CASEINCOMPLETE`
+(`traffic`), `IMPLICIT` bind-scope (`bind_check`).
+
+---
+
 *Panduan ini dibuat berdasarkan Mivon v0.2.9 dan Verilator 5.x (18 Juli 2026)*
