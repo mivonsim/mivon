@@ -339,7 +339,7 @@ fn generate_all(
 
 /// F77: indeks owner definisi bersama lintas-file.
 /// - `pkg_owner`: nama package → file pemilik.
-/// - `pkg_members`: nama package → nama typedef anggotanya (untukmembedakan
+/// - `pkg_members`: nama package → nama typedef anggotanya (untuk membedakan
 ///   `State` via `use traffic_pkg::*` dari typedef file-level bernama sama).
 /// - `filedef_owner`: typedef level file + interface → file pemilik (referensi
 ///   bare tanpa `use`). Anggota package SENGAJA tidak masuk sini.
@@ -404,6 +404,18 @@ fn cross_file_includes(
     }
     for ifc in &file.interfaces {
         own_filedefs.insert(ifc.name.as_str());
+    }
+    // Review F77: typedef LOKAL module juga milik file ini — referensi bare
+    // di module itu resolve lokal (check/module.rs), bukan ke file lain.
+    // Over-aproksimasi: nama lokal dianggap own untuk SEMUA module file ini
+    // (referensi ambigu antar-module file sama praktis tak terjadi; check
+    // menolak duplikat yang benar-benar bentrok).
+    for m in file.modules.iter().chain(file.programs.iter()) {
+        for item in &m.items {
+            if let crate::ast::MItem::Typedef(td) = item {
+                own_filedefs.insert(td_name(td));
+            }
+        }
     }
     // Package yang di-`use` file ini (termasuk di dalam generate).
     let mut used_pkgs: HashSet<&str> = HashSet::new();
@@ -494,10 +506,11 @@ fn collect_file_refs(file: &ast::MvFile, out: &mut Vec<String>) {
         for td in &p.typedefs {
             collect_typedef_refs(td, out);
         }
-        for (_, ty, _) in &p.consts {
+        for (_, ty, value) in &p.consts {
             if let Some(t) = ty {
                 collect_type_refs(t, out);
             }
+            collect_expr_refs(value, out);
         }
     }
     for ifc in &file.interfaces {
@@ -519,6 +532,9 @@ fn collect_file_refs(file: &ast::MvFile, out: &mut Vec<String>) {
             if let Some(t) = &param.type_default {
                 collect_type_refs(t, out);
             }
+            if let Some(d) = &param.default {
+                collect_expr_refs(d, out);
+            }
         }
         for item in &m.items {
             match item {
@@ -527,10 +543,11 @@ fn collect_file_refs(file: &ast::MvFile, out: &mut Vec<String>) {
                 MItem::Sig { ty, .. } | MItem::Reg { ty, .. } | MItem::Wire { ty, .. } => {
                     collect_type_refs(ty, out)
                 }
-                MItem::Const { ty, .. } => {
+                MItem::Const { ty, value, .. } => {
                     if let Some(t) = ty {
                         collect_type_refs(t, out);
                     }
+                    collect_expr_refs(value, out);
                 }
                 MItem::Use { pkg, .. } => out.push(pkg.clone()),
                 MItem::Seq(_, body)
@@ -539,12 +556,18 @@ fn collect_file_refs(file: &ast::MvFile, out: &mut Vec<String>) {
                 | MItem::Latch(body)
                 | MItem::Initial(body)
                 | MItem::Final(body) => collect_stmt_type_refs(body, out),
-                MItem::GenFor { body, .. } => {
+                MItem::GenFor { from, to, step, body, .. } => {
+                    collect_expr_refs(from, out);
+                    collect_expr_refs(to, out);
+                    if let Some(st) = step {
+                        collect_expr_refs(st, out);
+                    }
                     for it in body {
                         collect_mitem_refs(it, out);
                     }
                 }
-                MItem::GenIf { then, els, .. } => {
+                MItem::GenIf { cond, then, els } => {
+                    collect_expr_refs(cond, out);
                     for it in then.iter().chain(els.iter()) {
                         collect_mitem_refs(it, out);
                     }
@@ -568,9 +591,28 @@ fn collect_file_refs(file: &ast::MvFile, out: &mut Vec<String>) {
                         collect_stmt_type_refs(s, out);
                     }
                 }
-                MItem::Inst { .. }
-                | MItem::Assign { .. }
-                | MItem::AssertProperty(_)
+                MItem::Inst { dims, params, conns, .. } => {
+                    if let Some(d) = dims {
+                        collect_expr_refs(d, out);
+                    }
+                    for (_, e) in params {
+                        collect_expr_refs(e, out);
+                    }
+                    for c in conns {
+                        match c {
+                            crate::ast::Conn::Named { expr: Some(e), .. } => {
+                                collect_expr_refs(e, out)
+                            }
+                            crate::ast::Conn::Positional(e) => collect_expr_refs(e, out),
+                            _ => {}
+                        }
+                    }
+                }
+                MItem::Assign { lhs, rhs, .. } => {
+                    collect_expr_refs(lhs, out);
+                    collect_expr_refs(rhs, out);
+                }
+                MItem::AssertProperty(_)
                 | MItem::AssumeProperty(_)
                 | MItem::CoverProperty(_) => {}
             }
@@ -587,10 +629,16 @@ fn collect_file_refs(file: &ast::MvFile, out: &mut Vec<String>) {
             if let Some(t) = &f.ret {
                 collect_type_refs(t, out);
             }
+            for s in &f.body {
+                collect_stmt_type_refs(s, out);
+            }
         }
         for t in &c.tasks {
             for (_, ty, _, _) in &t.args {
                 collect_type_refs(ty, out);
+            }
+            for s in &t.body {
+                collect_stmt_type_refs(s, out);
             }
         }
     }
@@ -601,10 +649,16 @@ fn collect_file_refs(file: &ast::MvFile, out: &mut Vec<String>) {
         if let Some(t) = &f.ret {
             collect_type_refs(t, out);
         }
+        for s in &f.body {
+            collect_stmt_type_refs(s, out);
+        }
     }
     for t in &file.tasks {
         for (_, ty, _, _) in &t.args {
             collect_type_refs(ty, out);
+        }
+        for s in &t.body {
+            collect_stmt_type_refs(s, out);
         }
     }
 }
@@ -617,10 +671,11 @@ fn collect_mitem_refs(item: &crate::ast::MItem, out: &mut Vec<String>) {
         MItem::Sig { ty, .. } | MItem::Reg { ty, .. } | MItem::Wire { ty, .. } => {
             collect_type_refs(ty, out)
         }
-        MItem::Const { ty, .. } => {
+        MItem::Const { ty, value, .. } => {
             if let Some(t) = ty {
                 collect_type_refs(t, out);
             }
+            collect_expr_refs(value, out);
         }
         MItem::Use { pkg, .. } => out.push(pkg.clone()),
         MItem::Seq(_, body)
@@ -629,12 +684,18 @@ fn collect_mitem_refs(item: &crate::ast::MItem, out: &mut Vec<String>) {
         | MItem::Latch(body)
         | MItem::Initial(body)
         | MItem::Final(body) => collect_stmt_type_refs(body, out),
-        MItem::GenFor { body, .. } => {
+        MItem::GenFor { from, to, step, body, .. } => {
+            collect_expr_refs(from, out);
+            collect_expr_refs(to, out);
+            if let Some(st) = step {
+                collect_expr_refs(st, out);
+            }
             for it in body {
                 collect_mitem_refs(it, out);
             }
         }
-        MItem::GenIf { then, els, .. } => {
+        MItem::GenIf { cond, then, els } => {
+            collect_expr_refs(cond, out);
             for it in then.iter().chain(els.iter()) {
                 collect_mitem_refs(it, out);
             }
@@ -646,15 +707,38 @@ fn collect_mitem_refs(item: &crate::ast::MItem, out: &mut Vec<String>) {
             if let Some(t) = &f.ret {
                 collect_type_refs(t, out);
             }
+            for s in &f.body {
+                collect_stmt_type_refs(s, out);
+            }
         }
         MItem::Task(t) => {
             for (_, ty, _, _) in &t.args {
                 collect_type_refs(ty, out);
             }
+            for s in &t.body {
+                collect_stmt_type_refs(s, out);
+            }
         }
-        MItem::Inst { .. }
-        | MItem::Assign { .. }
-        | MItem::AssertProperty(_)
+        MItem::Inst { dims, params, conns, .. } => {
+            if let Some(d) = dims {
+                collect_expr_refs(d, out);
+            }
+            for (_, e) in params {
+                collect_expr_refs(e, out);
+            }
+            for c in conns {
+                match c {
+                    crate::ast::Conn::Named { expr: Some(e), .. } => collect_expr_refs(e, out),
+                    crate::ast::Conn::Positional(e) => collect_expr_refs(e, out),
+                    _ => {}
+                }
+            }
+        }
+        MItem::Assign { lhs, rhs, .. } => {
+            collect_expr_refs(lhs, out);
+            collect_expr_refs(rhs, out);
+        }
+        MItem::AssertProperty(_)
         | MItem::AssumeProperty(_)
         | MItem::CoverProperty(_) => {}
     }
@@ -669,7 +753,16 @@ fn collect_typedef_refs(td: &crate::ast::Typedef, out: &mut Vec<String>) {
                 collect_type_refs(&f.ty, out);
             }
         }
-        Typedef::Enum { .. } => {}
+        Typedef::Enum { width, members, .. } => {
+            if let Some(w) = width {
+                collect_expr_refs(w, out);
+            }
+            for m in members {
+                if let Some(v) = &m.value {
+                    collect_expr_refs(v, out);
+                }
+            }
+        }
     }
 }
 
@@ -686,6 +779,109 @@ fn collect_type_refs(ty: &crate::ast::MvType, out: &mut Vec<String>) {
     }
 }
 
+/// F77 follow-up: kumpulkan referensi package dari EKSPRESI — `pkg::item`
+/// sebagai nilai (`y = other_pkg::RED`, `w = p::MAX + 1`) valid tanpa `use`
+/// (check E2001 hanya menuntut package-nya dikenal) sehingga walk tipe saja
+/// miss. Bentuk `Named` ident tanpa scope SENGAJA diabaikan: bisa sinyal
+/// lokal (false include). Cast `T'(x)` membawa referensi tipe di `ty`.
+fn collect_expr_refs(e: &crate::ast::Expr, out: &mut Vec<String>) {
+    use crate::ast::{Expr, InsideItem};
+    match e {
+        Expr::Scoped(p, i, ..) => out.push(format!("{p}::{i}")),
+        Expr::Cast { ty, expr, .. } => {
+            collect_type_refs(ty, out);
+            collect_expr_refs(expr, out);
+        }
+        Expr::Unary(_, inner) | Expr::Paren(inner) => collect_expr_refs(inner, out),
+        Expr::IncDec { expr, .. } => collect_expr_refs(expr, out),
+        Expr::Binary(_, l, r) => {
+            collect_expr_refs(l, out);
+            collect_expr_refs(r, out);
+        }
+        Expr::Ternary(c, t, f) => {
+            collect_expr_refs(c, out);
+            collect_expr_refs(t, out);
+            collect_expr_refs(f, out);
+        }
+        Expr::Call(_, args, ..) => {
+            for a in args {
+                collect_expr_refs(a, out);
+            }
+        }
+        Expr::NamedArg { expr, .. } => collect_expr_refs(expr, out),
+        Expr::MethodCall { obj, args, .. } => {
+            collect_expr_refs(obj, out);
+            for a in args {
+                collect_expr_refs(a, out);
+            }
+        }
+        Expr::Member(o, ..) | Expr::Index(o, _) => {
+            // Member/Index base bisa Scoped (`pkg::arr[i]`); index di-walk.
+            collect_expr_refs(o, out);
+            if let Expr::Index(_, i) = e {
+                collect_expr_refs(i, out);
+            }
+        }
+        Expr::Range(o, hi, lo) => {
+            collect_expr_refs(o, out);
+            collect_expr_refs(hi, out);
+            collect_expr_refs(lo, out);
+        }
+        Expr::PartSelect { base, from, width, .. } => {
+            collect_expr_refs(base, out);
+            collect_expr_refs(from, out);
+            collect_expr_refs(width, out);
+        }
+        Expr::Concat(parts) | Expr::ArrayLit(parts) => {
+            for p in parts {
+                collect_expr_refs(p, out);
+            }
+        }
+        Expr::Replicate(n, inner) => {
+            collect_expr_refs(n, out);
+            collect_expr_refs(inner, out);
+        }
+        Expr::Inside { expr, items } => {
+            collect_expr_refs(expr, out);
+            for it in items {
+                match it {
+                    InsideItem::Value(v) => collect_expr_refs(v, out),
+                    InsideItem::Range(lo, hi) => {
+                        collect_expr_refs(lo, out);
+                        collect_expr_refs(hi, out);
+                    }
+                }
+            }
+        }
+        Expr::Dist { expr, items } => {
+            collect_expr_refs(expr, out);
+            for it in items {
+                collect_dist_item_refs(it, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_dist_item_refs(it: &crate::ast::DistItem, out: &mut Vec<String>) {
+    collect_expr_refs(&it.value, out);
+    if let Some((lo, hi)) = &it.range {
+        collect_expr_refs(lo, out);
+        collect_expr_refs(hi, out);
+    }
+    collect_expr_refs(&it.weight, out);
+}
+
+fn collect_inside_item_refs(it: &crate::ast::InsideItem, out: &mut Vec<String>) {
+    match it {
+        crate::ast::InsideItem::Value(v) => collect_expr_refs(v, out),
+        crate::ast::InsideItem::Range(lo, hi) => {
+            collect_expr_refs(lo, out);
+            collect_expr_refs(hi, out);
+        }
+    }
+}
+
 fn collect_stmt_type_refs(s: &crate::ast::Stmt, out: &mut Vec<String>) {
     use crate::ast::Stmt;
     match s {
@@ -699,38 +895,106 @@ fn collect_stmt_type_refs(s: &crate::ast::Stmt, out: &mut Vec<String>) {
                 collect_stmt_type_refs(x, out);
             }
         }
-        Stmt::VarDecl { ty, .. } => collect_type_refs(ty, out),
-        Stmt::If { then, els, .. } => {
+        Stmt::Assign { lhs, rhs, .. } | Stmt::CompoundAssign { lhs, rhs, .. } => {
+            collect_expr_refs(lhs, out);
+            collect_expr_refs(rhs, out);
+        }
+        Stmt::IncDec { lhs, .. } => collect_expr_refs(lhs, out),
+        Stmt::VarDecl { ty, init, .. } => {
+            collect_type_refs(ty, out);
+            if let Some(e) = init {
+                collect_expr_refs(e, out);
+            }
+        }
+        Stmt::If { cond, then, els, .. } => {
+            collect_expr_refs(cond, out);
             collect_stmt_type_refs(then, out);
             if let Some(e) = els {
                 collect_stmt_type_refs(e, out);
             }
         }
-        Stmt::Case { items, default, .. } => {
-            for (_, b) in items {
+        Stmt::Case { expr, items, default, .. } => {
+            collect_expr_refs(expr, out);
+            for (vals, b) in items {
+                for v in vals {
+                    collect_expr_refs(v, out);
+                }
                 collect_stmt_type_refs(b, out);
             }
             if let Some(d) = default {
                 collect_stmt_type_refs(d, out);
             }
         }
-        Stmt::CaseInside { items, default, .. } => {
-            for (_, b) in items {
+        Stmt::CaseInside { expr, items, default, .. } => {
+            collect_expr_refs(expr, out);
+            for (vals, b) in items {
+                for v in vals {
+                    collect_inside_item_refs(v, out);
+                }
                 collect_stmt_type_refs(b, out);
             }
             if let Some(d) = default {
                 collect_stmt_type_refs(d, out);
             }
         }
-        Stmt::For { body, .. }
-        | Stmt::While { body, .. }
-        | Stmt::DoWhile { body, .. }
-        | Stmt::Repeat { body, .. }
-        | Stmt::Forever(body)
-        | Stmt::Wait { body, .. }
-        | Stmt::Event { body: Some(body), .. }
-        | Stmt::Delay { body, .. }
-        | Stmt::Foreach { body, .. } => collect_stmt_type_refs(body, out),
+        Stmt::For { from, to, step, body, .. } => {
+            collect_expr_refs(from, out);
+            collect_expr_refs(to, out);
+            if let Some(st) = step {
+                collect_expr_refs(st, out);
+            }
+            collect_stmt_type_refs(body, out);
+        }
+        Stmt::While { cond, body, .. } | Stmt::DoWhile { cond, body, .. } => {
+            collect_expr_refs(cond, out);
+            collect_stmt_type_refs(body, out);
+        }
+        Stmt::Repeat { count, body, .. } => {
+            collect_expr_refs(count, out);
+            collect_stmt_type_refs(body, out);
+        }
+        Stmt::Forever(body) => collect_stmt_type_refs(body, out),
+        Stmt::Wait { cond, body, .. } => {
+            collect_expr_refs(cond, out);
+            collect_stmt_type_refs(body, out);
+        }
+        Stmt::Event { expr, body, .. } => {
+            collect_expr_refs(expr, out);
+            if let Some(b) = body {
+                collect_stmt_type_refs(b, out);
+            }
+        }
+        Stmt::EventTrigger(e) | Stmt::ExprStmt(e) => collect_expr_refs(e, out),
+        Stmt::Delay { amt, body, .. } => {
+            collect_expr_refs(amt, out);
+            collect_stmt_type_refs(body, out);
+        }
+        Stmt::Foreach { body, .. } => collect_stmt_type_refs(body, out),
+        Stmt::Return(v, ..) => {
+            if let Some(e) = v {
+                collect_expr_refs(e, out);
+            }
+        }
+        Stmt::Assert { cond, pass, fail } | Stmt::Assume { cond, pass, fail } => {
+            collect_expr_refs(cond, out);
+            if let Some(p) = pass {
+                collect_stmt_type_refs(p, out);
+            }
+            if let Some(f) = fail {
+                collect_stmt_type_refs(f, out);
+            }
+        }
+        Stmt::Cover { cond, pass } => {
+            collect_expr_refs(cond, out);
+            if let Some(p) = pass {
+                collect_stmt_type_refs(p, out);
+            }
+        }
+        Stmt::Force { lhs, rhs, .. } => {
+            collect_expr_refs(lhs, out);
+            collect_expr_refs(rhs, out);
+        }
+        Stmt::Release { target } => collect_expr_refs(target, out),
         _ => {}
     }
 }
@@ -1181,6 +1445,70 @@ interface bus_if {
         assert!(
             results[1].sv.contains("`include \"defs.svh\""),
             "dut.sv: {}",
+            results[1].sv
+        );
+    }
+
+    #[test]
+    fn f77r1_scoped_expr_value_triggers_include() {
+        // Follow-up review: `other_pkg::RED` sebagai NILAI (bukan tipe) valid
+        // tanpa `use` (check E2001 hanya menuntut package dikenal) — walk
+        // ekspresi wajib memicunya, bukan hanya walk tipe.
+        let items = vec![
+            MvItem::new(
+                "package epkg {\n enum E { RED, GREEN }\n}\nmodule d1 {\n in clk : bit\n}\n",
+                "edefs",
+            ),
+            MvItem::new(
+                "module user {\n in clk : bit\n out y : bit\n sig s : bit\n comb { s = epkg::RED == 1 }\n assign y = s\n}\n",
+                "user",
+            ),
+        ];
+        let results = transpile_many_items(&items).expect("batch scoped-expr");
+        assert!(
+            results[1].sv.contains("`include \"edefs.svh\""),
+            "user.sv: {}",
+            results[1].sv
+        );
+    }
+
+    #[test]
+    fn f77r2_local_typedef_shadows_external() {
+        // Follow-up review: typedef LOKAL module menang atas nama file-level
+        // file lain — tidak ada include palsu.
+        let items = vec![
+            MvItem::new("type State = logic[1:0]\nmodule d1 {\n in clk : bit\n}\n", "ext"),
+            MvItem::new(
+                "module m {\n type State = logic[3:0]\n in clk : bit\n out s : State\n comb { s = 0 }\n}\n",
+                "m",
+            ),
+        ];
+        let results = transpile_many_items(&items).expect("batch local-shadow");
+        assert!(
+            !results[1].sv.contains("`include \"ext.svh\""),
+            "typedef lokal menang, tanpa include: {}",
+            results[1].sv
+        );
+    }
+
+    #[test]
+    fn f77r3_func_body_in_generate_walked() {
+        // Follow-up review: body func/task DI DALAM generate ikut di-walk —
+        // referensi scoped di sana memicu include.
+        let items = vec![
+            MvItem::new(
+                "package gp {\n const K = 3\n}\nmodule d1 {\n in clk : bit\n}\n",
+                "gdefs",
+            ),
+            MvItem::new(
+                "module m {\n in clk : bit\n for i in 0..2 {\n func h() -> int {\n var v : int = gp::K\n return v\n }\n }\n}\n",
+                "m",
+            ),
+        ];
+        let results = transpile_many_items(&items).expect("batch gen-func");
+        assert!(
+            results[1].sv.contains("`include \"gdefs.svh\""),
+            "m.sv: {}",
             results[1].sv
         );
     }
