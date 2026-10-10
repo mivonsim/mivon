@@ -1184,6 +1184,6 @@ fn f80r3_instance_genvar_shadow_enum() {
     assert!(e.msg.contains("E2014"), "instance menutupi enum: {}", e.msg);
     // Genvar tersubstitusi per iterasi oleh elaborator → kondisi generate
     // bersarang yang merujuknya dilewati E2014 (bukan false-positive).
-    let src2 = "module m #(N = 2) {\n in clk : bit\n out y : logic[7:0]\n for i in 0..N {\n if (i < N) {\n comb { y = i }\n }\n }\n}";
+    let src2 = "module m #(N = 2) {\n in clk : bit\n out y : logic[7:0]\n for i in 0..N {\n if (i < N) {\n comb { y = i }\n }\n if ((i > 10) ? i : 0) {\n comb { y = 0 }\n }\n }\n}";
     check_src(src2).expect("genvar bersarang harus lolos E2014");
 }

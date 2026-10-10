@@ -600,6 +600,7 @@ fn check_module_item<'a>(
             let mut inner = scope.clone();
             inner.sigs.insert(var.as_str());
             inner.genvars.insert(var.as_str());
+            inner.nonconsts.insert(var.as_str());
             for it in body {
                 check_module_item(it, ctx, &mut inner, is_tb)?;
             }

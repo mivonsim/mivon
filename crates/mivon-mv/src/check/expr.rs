@@ -1171,9 +1171,11 @@ pub(crate) fn expr_uses(e: &Expr, name: &str) -> bool {
         | Expr::IncDec { expr: inner, .. }
         | Expr::NamedArg { expr: inner, .. } => expr_uses(inner, name),
         Expr::Binary(_, l, r)
-        | Expr::Ternary(l, r, _)
         | Expr::Index(l, r)
         | Expr::Replicate(l, r) => expr_uses(l, name) || expr_uses(r, name),
+        Expr::Ternary(c, t, f) => {
+            expr_uses(c, name) || expr_uses(t, name) || expr_uses(f, name)
+        }
         Expr::Concat(parts) | Expr::ArrayLit(parts) => {
             parts.iter().any(|p| expr_uses(p, name))
         }
