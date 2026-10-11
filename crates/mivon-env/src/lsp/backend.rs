@@ -804,6 +804,9 @@ impl LspBackend {
         let (def_line, _, _) = Self::find_definition(source, line, character)?;
         let decl_text = source.lines().nth(def_line as usize)?.trim().to_string();
 
+        // LSP-06 tahap 2a: doc comment `//` tepat di atas definisi.
+        let doc = Self::doc_comment_above(source, def_line);
+
         // Tebak kind dari keyword di baris definisi.
         let toks = Self::line_tokens(&decl_text);
         let kind = toks
@@ -822,8 +825,42 @@ impl LspBackend {
             .unwrap_or_else(|| "declaration".into());
 
         Some(format!(
-            "**{kind}** `{word}`\n\n```systemverilog\n{decl_text}\n```"
+            "**{kind}** `{word}`\n\n```systemverilog\n{decl_text}\n```{}",
+            doc.map(|d| format!("\n\n{d}")).unwrap_or_default()
         ))
+    }
+
+    /// LSP-06 tahap 2a: kumpulkan baris komentar `//` berurutan tepat di
+    /// atas baris definisi (lewati baris kosong). Return teks tanpa `//`.
+    pub(crate) fn doc_comment_above(source: &str, def_line: u32) -> Option<String> {
+        let lines: Vec<&str> = source.lines().collect();
+        let mut out: Vec<String> = Vec::new();
+        let mut i = def_line.checked_sub(1)? as usize;
+        loop {
+            let Some(l) = lines.get(i) else { break };
+            let t = l.trim();
+            if t.is_empty() {
+                if i == 0 {
+                    break;
+                }
+                i -= 1;
+                continue;
+            }
+            if let Some(c) = t.strip_prefix("//") {
+                out.push(c.trim().to_string());
+            } else {
+                break;
+            }
+            if i == 0 {
+                break;
+            }
+            i -= 1;
+        }
+        if out.is_empty() {
+            return None;
+        }
+        out.reverse();
+        Some(out.join("\n"))
     }
 
     /// Document symbol core (murni, bisa diuji) — LSP-12 tahap 1:
@@ -3155,6 +3192,18 @@ endmodule
 
         // Bukan identifier → None.
         assert!(LspBackend::hover_info(SAMPLE, 7, 0).is_none());
+    }
+
+    #[test]
+    fn test_hover_doc_comment() {
+        // Doc comment `//` di atas definisi muncul di hover.
+        let src = "// Counter utama.\n// Hitung naik.\nmodule counter;\nendmodule\n";
+        let doc = LspBackend::doc_comment_above(src, 2).expect("doc ketemu");
+        assert!(doc.contains("Counter utama"), "{doc}");
+        assert!(doc.contains("Hitung naik"), "{doc}");
+        assert!(LspBackend::doc_comment_above(src, 3).is_none());
+        let info = LspBackend::hover_info(src, 2, 8).expect("hover modul");
+        assert!(info.contains("Counter utama"), "{info}");
     }
 
     #[test]

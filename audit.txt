@@ -1874,13 +1874,14 @@ LSP-05: ⚠️ IN PROGRESS (ROUND 95) — rename tahap 1:
          ([A-Za-z_][A-Za-z0-9_$]*), hasilkan edit semua kemunculan
          (via find_references → word-boundary aman). MASIH OPEN:
          cross-file rename, prepare_rename handler.
-LSP-06: ⚠️ IN PROGRESS (ROUND 95) — hover tahap 1:
+LSP-06: ⚠️ IN PROGRESS (ROUND 95/113) — hover tahap 1+2a:
          backend.rs — capability hover_provider + handler hover;
          core murni hover_info(): markdown **kind** `name` + snippet
          baris deklarasi (kind dari keyword definisi: module/interface/
          port input/output/inout/parameter/function/task, fallback
-         "declaration"). MASIH OPEN: dokumentasi kaya (port direction +
-         range), doc comment extraction.
+         "declaration"). Tahap 2a (ROUND 113): doc_comment_above —
+         komentar `//` berurutan di atas definisi masuk hover.
+         MASIH OPEN: dokumentasi kaya (port direction + range).
 LSP-07: ⚠️ IN PROGRESS (ROUND 109) — semantic tokens tahap 1:
          backend.rs — capability SemanticTokensOptions dengan legend
          8 tipe (namespace/type/class/interface/function/variable/
@@ -5088,6 +5089,23 @@ Test (+1): test_connectivity_seq_nba (comb=false, seq=true 1 hop
 📊 VERIFIKASI ROUND 112:
    - cargo test -p mivon-formal --features formal connectivity: 2 passed (+1)
    - Review subagent putaran 2: APPROVE (setelah fix blocking).
+
+═══ ROUND 113 — LSP-06 hover tahap 2a (doc comment) ═══
+
+Kerja bertahap LSP-06 — tahap 2a selesai; item tetap ⚠️ IN PROGRESS
+(port direction + range masih open).
+
+✅ DOC COMMENT (crates/mivon-env/src/lsp/backend.rs):
+   - doc_comment_above(source, def_line): scan mundur komentar `//`
+     berurutan (lewati kosong, berhenti di kode), strip `//`, join.
+   - hover_info: append doc opsional (output lama identik bila None).
+
+Test (+1): test_hover_doc_comment (multi-baris, stop-di-kode,
+integrasi hover).
+
+📊 VERIFIKASI ROUND 113:
+   - cargo test -p mivon-env --lib --features lsp lsp: 42 passed (+1)
+   - Review subagent: APPROVE.
 
 ========================================
 END OF AUDIT REPORT
