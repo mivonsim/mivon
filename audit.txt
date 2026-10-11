@@ -1840,7 +1840,7 @@ FORMAL-16: ✅ Cover property formal analysis (ROUND 85b) — FORMAL-16:
 4.9 LSP/IDE GAPS
 
 LSP-01: ✅ LSP server MVP (tower-lsp 0.20, --lsp flag, publishDiagnostics via parser)
-LSP-02: ⚠️ IN PROGRESS (ROUND 100/111) — autocomplete tahap 1+2a:
+LSP-02: ✅ FIXED (ROUND 100/111/115/118) — autocomplete lengkap:
          backend.rs — capability CompletionOptions + handler completion;
          core murni compute_completions(): prefix identifier di kursor →
          kandidat simbol dokumen (via outline: module/port/signal/param/
@@ -1848,13 +1848,12 @@ LSP-02: ⚠️ IN PROGRESS (ROUND 100/111) — autocomplete tahap 1+2a:
          Kind mapping ke CompletionItemKind. Test 1 unit (prefix "cou"
          → module; prefix "en" → enable VARIABLE + end/endcase KEYWORD;
          prefix kosong → kosong). Tahap 2a (ROUND 111):
-         snippet_for_keyword (13 blok: module/interface/package/function/
-         task/begin/fork/case/if/always_ff/always_comb/for/foreach,
-         placeholder $1/$0) + handler isi insert_text SNIPPET.
-         Tahap 2b (ROUND 115): completion_context (port/param/code) +
-         ranking tipe dulu di port/param (simbol tetap rank 0,
-         code identik alfabet).
-         MASIH OPEN: resolve detail/dokumentasi.
+         snippet_for_keyword (13 blok, placeholder $1/$0) + handler isi
+         insert_text SNIPPET. Tahap 2b (ROUND 115): completion_context
+         (port/param/code) + ranking tipe dulu (simbol rank 0).
+         Tahap 2c (ROUND 118): completion_detail per kind (+snippet) di
+         handler + resolve_detail fallback di resolve (dokumentasi via
+         LSP-17 sudah ada).
 LSP-03: ⚠️ IN PROGRESS (ROUND 93) — go-to-definition tahap 1:
          crates/maria-env/src/lsp/backend.rs — goto_definition handler
          (capability definition_provider), cache dokumen terbuka
@@ -5191,6 +5190,25 @@ Moore-murni, sort, state-excluded, report).
 📊 VERIFIKASI ROUND 117:
    - cargo test -p mivon-synth fsm: 6 passed (+1)
    - Review subagent putaran 2: APPROVE.
+
+═══ ROUND 118 — LSP-02 tahap 2c (detail resolve, ITEM SELESAI) ═══
+
+✅ DETAIL (crates/mivon-env/src/lsp/backend.rs):
+   - completion_detail(kind, snippet): module/function/class/
+     interface/keyword/signal/parameter (+`· snippet`).
+   - Handler completion isi detail langsung; resolve_detail fallback
+     (pertahankan bila ada) dipakai resolve.
+   - Review putaran 1 REQUEST CHANGES (coverage kind + fallback
+     tanpa test) → ekstrak helper murni + test semua kind.
+
+Test (+1): test_completion_detail (7 kind + snippet + 4 fallback).
+
+LSP-02 kini ✅ FIXED (snippet + context-aware + detail/dokumentasi
+tertutup semua).
+
+📊 VERIFIKASI ROUND 118:
+   - cargo test -p mivon-env --lib --features lsp lsp: 46 passed (+1)
+   - Review subagent putaran 2: APPROVE (verifikasi ulang).
 
 ========================================
 END OF AUDIT REPORT

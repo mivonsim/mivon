@@ -1266,6 +1266,40 @@ impl LspBackend {
         })
     }
 
+    /// LSP-02 tahap 2c: label detail singkat per kind (ditampilkan di
+    /// samping kandidat). `has_snippet` menandai kandidat blok snippet.
+    pub(crate) fn completion_detail(kind: CompletionItemKind, has_snippet: bool) -> Option<String> {
+        let base = match kind {
+            CompletionItemKind::MODULE => "module",
+            CompletionItemKind::FUNCTION => "function",
+            CompletionItemKind::CLASS => "class",
+            CompletionItemKind::INTERFACE => "interface",
+            CompletionItemKind::KEYWORD => "keyword",
+            CompletionItemKind::VARIABLE => "signal",
+            CompletionItemKind::CONSTANT => "parameter",
+            _ => return None,
+        };
+        Some(if has_snippet {
+            format!("{base} · snippet")
+        } else {
+            base.to_string()
+        })
+    }
+
+    /// LSP-02 tahap 2c: fallback detail saat resolve — pertahankan bila
+    /// sudah ada, isi via completion_detail bila kosong.
+    pub(crate) fn resolve_detail(
+        existing: Option<String>,
+        kind: Option<CompletionItemKind>,
+        format: Option<InsertTextFormat>,
+    ) -> Option<String> {
+        if existing.is_some() {
+            return existing;
+        }
+        let k = kind?;
+        Self::completion_detail(k, format == Some(InsertTextFormat::SNIPPET))
+    }
+
     /// LSP-02 tahap 2b: konteks baris kursor — "port" (deklarasi
     /// arah), "param" (daftar `#(...)` / parameter), atau "code".
     pub(crate) fn completion_context(line_text: &str) -> &'static str {
@@ -1961,9 +1995,12 @@ impl LanguageServer for LspBackend {
             .into_iter()
             .map(|(label, kind)| {
                 let snippet = Self::snippet_for_keyword(&label);
+                let lsp_kind = DocSymbol::completion_kind(kind);
+                let detail = Self::completion_detail(lsp_kind, snippet.is_some());
                 CompletionItem {
                     label,
-                    kind: Some(DocSymbol::completion_kind(kind)),
+                    kind: Some(lsp_kind),
+                    detail,
                     insert_text: snippet.map(|s| s.to_string()),
                     insert_text_format: snippet.map(|_| InsertTextFormat::SNIPPET),
                     ..Default::default()
@@ -1978,6 +2015,8 @@ impl LanguageServer for LspBackend {
 
     /// LSP-17: Completion resolve — add documentation/detail to a completion item.
     async fn completion_resolve(&self, mut item: CompletionItem) -> JsonRpcResult<CompletionItem> {
+        // LSP-02 tahap 2c: isi detail bila handler lama (atau klien) belum ada.
+        item.detail = Self::resolve_detail(item.detail, item.kind, item.insert_text_format);
         // Add documentation based on kind.
         let doc =
             match item.kind {
@@ -3917,6 +3956,51 @@ endmodule
             "empty in: '{}', out: '{}'",
             "",
             formatted
+        );
+    }
+
+    #[test]
+    fn test_completion_detail() {
+        use lsp_types::{CompletionItemKind, InsertTextFormat};
+        for (kind, want) in [
+            (CompletionItemKind::MODULE, "module"),
+            (CompletionItemKind::FUNCTION, "function"),
+            (CompletionItemKind::CLASS, "class"),
+            (CompletionItemKind::INTERFACE, "interface"),
+            (CompletionItemKind::KEYWORD, "keyword"),
+            (CompletionItemKind::VARIABLE, "signal"),
+            (CompletionItemKind::CONSTANT, "parameter"),
+        ] {
+            assert_eq!(
+                LspBackend::completion_detail(kind, false).as_deref(),
+                Some(want),
+                "{kind:?}"
+            );
+        }
+        assert_eq!(
+            LspBackend::completion_detail(CompletionItemKind::KEYWORD, true).as_deref(),
+            Some("keyword · snippet")
+        );
+        assert!(LspBackend::completion_detail(CompletionItemKind::TEXT, false).is_none());
+        // Fallback resolve: kosong terisi, ada dipertahankan, tanpa kind tetap None.
+        assert_eq!(
+            LspBackend::resolve_detail(None, Some(CompletionItemKind::MODULE), None).as_deref(),
+            Some("module")
+        );
+        assert_eq!(
+            LspBackend::resolve_detail(Some("keep".into()), Some(CompletionItemKind::MODULE), None)
+                .as_deref(),
+            Some("keep")
+        );
+        assert!(LspBackend::resolve_detail(None, None, None).is_none());
+        assert_eq!(
+            LspBackend::resolve_detail(
+                None,
+                Some(CompletionItemKind::KEYWORD),
+                Some(InsertTextFormat::SNIPPET)
+            )
+            .as_deref(),
+            Some("keyword · snippet")
         );
     }
 
