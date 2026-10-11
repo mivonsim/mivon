@@ -334,7 +334,10 @@ bug di mivon utama (parser/elaborator/simulator). Status: ✅ fixed / ⏳ open.
     `unwrap_or`. Fix: `compute_expr_width` + `sized_width`. Follow-up
     review: arm `$bits` const-eval mengembalikan NILAI arg (bukan lebar —
     `$bits('b101)` ter-fold 5!); kini memakai `sized_width`, `Err` bila
-    tak terhitung.
+    tak terhitung. Batasan sadar: `$size` disamakan `$bits` di jalur const
+    (runtime sudah bedakan benar: `$size` = elemen, `$bits` = total bit);
+    `$left`/`$right`/`$low`/`$high` full-evaluator masih kembalikan nilai
+    arg — butuh info tipe array yang tak tersedia di const-eval.
 
 ## ⏳ Open
 
