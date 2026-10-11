@@ -24216,6 +24216,24 @@ endmodule
     assert!(r3.is_ok(), "bentuk konstan harus lolos: {diags3:?}");
 }
 
+/// Literal unsized berbasis (`'b101`, `'hFF`) lebarnya minimal 32 bit
+/// (LRM §5.7.1) — bukan 1. Diferensial vs iverilog (`$bits('b101)` = 32).
+#[test]
+fn test_unsized_based_literal_width_32() {
+    let src = r#"
+module top;
+  initial begin
+    if ($bits('b101) !== 32) $fatal(1, "b101");
+    if ($bits('hFF) !== 32) $fatal(1, "hFF");
+    if ($bits(8'hFF) !== 8) $fatal(1, "sized");
+    $finish;
+  end
+endmodule
+"#;
+    // $fatal pada mismatch → Err; lolos berarti semua cocok iverilog.
+    mivon_api::simulate_signals(src, 10).expect("lebar literal unsized harus 32/32/8");
+}
+
 /// Width part-select LHS dinamis tak terwakili di IR statis — warning
 /// eksplisit (bukan tebak 1 diam-diam). Rvalue dinamis tetap didukung penuh.
 #[test]

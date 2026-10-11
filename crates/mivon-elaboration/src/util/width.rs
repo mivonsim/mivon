@@ -48,9 +48,12 @@ pub fn compute_expr_width(
             }
         }
         Expr::Value(v) => match v {
-            Value::Binary { width, .. } => Ok(width.unwrap_or(1)),
-            Value::Hex { width, .. } => Ok(width.unwrap_or(1)),
-            Value::Octal { width, .. } => Ok(width.unwrap_or(1)),
+            // Literal unsized BERBASIS (`'b101`, `'hFF`) lebarnya minimal 32
+            // bit seperti desimal unsized (LRM §5.7.1; iverilog: $bits('b101)
+            // = 32) — bukan 1 seperti sebelumnya (bug: sizing salah).
+            Value::Binary { width, .. } => Ok(width.unwrap_or(32)),
+            Value::Hex { width, .. } => Ok(width.unwrap_or(32)),
+            Value::Octal { width, .. } => Ok(width.unwrap_or(32)),
             Value::Decimal(_) => Ok(32),
             Value::Real(_) => Ok(64),
         },
