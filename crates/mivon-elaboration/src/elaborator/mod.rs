@@ -6375,10 +6375,23 @@ impl Elaborator {
                                         || format!("override parameter '{pname}'"),
                                         |n| format!("override parameter positional #{n}"),
                                     );
+                                    // Posisi type-param (`#(.T(Nope))`) yang tak
+                                    // me-resolve sebagai nilai maupun tipe:
+                                    // pesannya menyebut alternatif tipe.
+                                    let is_type_param = target_module.is_some_and(|tm| {
+                                        tm.params.iter().any(|p| {
+                                            p.is_type_param && p.name == *pname
+                                        })
+                                    });
+                                    let expect = if is_type_param {
+                                        "bukan ekspresi konstan maupun nama tipe yang dikenal"
+                                    } else {
+                                        "bukan ekspresi konstan"
+                                    };
                                     return Err(self.elab_diag_at(
                                         DiagCode::ParamMismatch,
                                         format!(
-                                            "{what} bukan ekspresi konstan \
+                                            "{what} {expect} \
                                              pada instance '{}' — nilai parameter harus dapat \
                                              dievaluasi saat elaborasi ({e})",
                                             inst.instance_name.as_str()

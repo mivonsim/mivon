@@ -24110,6 +24110,23 @@ endmodule
         msgs.iter().any(|m| m.contains("konstan") && m.contains("'W'") && m.contains("'u'")),
         "diagnostic harus menyebut param + instance: {msgs:?}"
     );
+    // Posisi type-param tak dikenal: pesan menyebut alternatif tipe.
+    let bad_tp = r#"
+module sub #(parameter type T = logic[7:0]);
+  T r;
+  initial begin r = 0; $finish; end
+endmodule
+module top;
+  sub #(.T(NopeUnknown)) u ();
+endmodule
+"#;
+    let (r_tp, diags_tp) = elaborate(bad_tp);
+    assert!(r_tp.is_err(), "type tak dikenal harus gagal");
+    let msgs_tp: Vec<&str> = diags_tp.iter().map(|d| d.message.as_ref()).collect();
+    assert!(
+        msgs_tp.iter().any(|m| m.contains("nama tipe")),
+        "pesan type-param: {msgs_tp:?}"
+    );
     // Override konstan (param lain) tetap sah.
     let ok = r#"
 module sub #(W = 4);
