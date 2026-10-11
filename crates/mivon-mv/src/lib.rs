@@ -689,6 +689,9 @@ fn collect_file_refs(file: &ast::MvFile, out: &mut Vec<String>) {
                         }
                     }
                 }
+                MItem::Specify(spec) => {
+                    collect_specify_refs(spec, out);
+                }
                 MItem::Assign { lhs, rhs, .. } => {
                     collect_expr_refs(lhs, out);
                     collect_expr_refs(rhs, out);
@@ -881,6 +884,9 @@ fn collect_mitem_refs(item: &crate::ast::MItem, out: &mut Vec<String>) {
                 }
             }
         }
+        MItem::Specify(spec) => {
+            collect_specify_refs(spec, out);
+        }
         MItem::Assign { lhs, rhs, .. } => {
             collect_expr_refs(lhs, out);
             collect_expr_refs(rhs, out);
@@ -1032,6 +1038,30 @@ fn collect_dist_item_refs(it: &crate::ast::DistItem, out: &mut Vec<String>) {
         collect_expr_refs(hi, out);
     }
     collect_expr_refs(&it.weight, out);
+}
+
+/// F82: limit + data specify bisa merujuk `pkg::ITEM`.
+/// Clock `pkg::CLK` juga referensi package bila mengandung `::`.
+fn collect_specify_refs(spec: &crate::ast::Specify, out: &mut Vec<String>) {
+    for it in &spec.items {
+        match it {
+            crate::ast::SpecifyItem::Specparam { value, .. } => collect_expr_refs(value, out),
+            crate::ast::SpecifyItem::Setup { data, clock, limit, .. } => {
+                collect_expr_refs(data, out);
+                collect_expr_refs(limit, out);
+                if clock.contains("::") {
+                    out.push(clock.clone());
+                }
+            }
+            crate::ast::SpecifyItem::Hold { clock, data, limit, .. } => {
+                collect_expr_refs(data, out);
+                collect_expr_refs(limit, out);
+                if clock.contains("::") {
+                    out.push(clock.clone());
+                }
+            }
+        }
+    }
 }
 
 fn collect_inside_item_refs(it: &crate::ast::InsideItem, out: &mut Vec<String>) {

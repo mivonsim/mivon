@@ -891,6 +891,41 @@ fn print_m_item(b: &mut StrB, indent: usize, item: &MItem) {
             }
             b.line(indent, "}");
         }
+        MItem::Specify(spec) => {
+            b.line(indent, "specify {");
+            for it in &spec.items {
+                match it {
+                    SpecifyItem::Specparam { name, value, .. } => {
+                        b.line(indent + 1, &format!("specparam {name} = {}", print_expr(value)));
+                    }
+                    SpecifyItem::Setup { data, posedge, clock, limit, .. } => {
+                        let edge = if *posedge { "posedge" } else { "negedge" };
+                        b.line(
+                            indent + 1,
+                            &format!(
+                                "setup({}, {edge} {}, {})",
+                                print_expr(data),
+                                clock,
+                                print_expr(limit)
+                            ),
+                        );
+                    }
+                    SpecifyItem::Hold { posedge, clock, data, limit, .. } => {
+                        let edge = if *posedge { "posedge" } else { "negedge" };
+                        b.line(
+                            indent + 1,
+                            &format!(
+                                "hold({edge} {}, {}, {})",
+                                clock,
+                                print_expr(data),
+                                print_expr(limit)
+                            ),
+                        );
+                    }
+                }
+            }
+            b.line(indent, "}");
+        }
         MItem::GenFor {
             var,
             from,

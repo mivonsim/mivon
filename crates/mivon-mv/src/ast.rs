@@ -594,6 +594,45 @@ pub struct Covergroup {
     pub col: usize,
 }
 
+/// F82: satu item timing-check `specify` (LRM §30): `specparam TSU = 1`,
+/// `setup(d, posedge clk, TSU)`, `hold(posedge clk, d, 0)`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SpecifyItem {
+    Specparam {
+        name: String,
+        value: Expr,
+        line: usize,
+        col: usize,
+    },
+    /// `setup(data, posedge|negedge ref, limit)` — arg order SV `$setup`.
+    Setup {
+        data: Expr,
+        posedge: bool,
+        clock: String,
+        limit: Expr,
+        line: usize,
+        col: usize,
+    },
+    /// `hold(posedge|negedge ref, data, limit)` — arg order SV `$hold`.
+    Hold {
+        posedge: bool,
+        clock: String,
+        data: Expr,
+        limit: Expr,
+        line: usize,
+        col: usize,
+    },
+}
+
+/// F82: `specify { specparam/setup/hold }` (LRM §30) — timing checks yang
+/// dieksekusi engine (`check_timing_constraints`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Specify {
+    pub items: Vec<SpecifyItem>,
+    pub line: usize,
+    pub col: usize,
+}
+
 /// Item dalam module (badan `module { }`).
 #[derive(Debug, Clone, PartialEq)]
 pub enum MItem {
@@ -689,6 +728,8 @@ pub enum MItem {
     },
     /// F81: `covergroup cg [@(posedge clk)] { ... }` — functional coverage.
     Covergroup(Covergroup),
+    /// F82: `specify { specparam/setup/hold }` — timing checks (LRM §30).
+    Specify(Specify),
     /// `for i in 1..N { ... }` (generate) — optional `step` : `for i in 0..8 step 2`
     GenFor {
         var: String,

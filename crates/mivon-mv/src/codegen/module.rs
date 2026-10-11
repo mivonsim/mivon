@@ -304,6 +304,10 @@ pub(crate) fn emit_module_kw(out: &mut String, m: &Module, kw: &str, iface_names
                 line(out, 0, "");
                 emit_covergroup(out, 1, cg);
             }
+            MItem::Specify(spec) => {
+                line(out, 0, "");
+                emit_specify(out, 1, spec);
+            }
             MItem::GenFor {
                 var,
                 from,
@@ -506,6 +510,9 @@ pub(crate) fn emit_module_item_at(
         }
         MItem::Covergroup(cg) => {
             emit_covergroup(out, indent, cg);
+        }
+        MItem::Specify(spec) => {
+            emit_specify(out, indent, spec);
         }
         MItem::Bind {
             target,
@@ -714,6 +721,46 @@ pub(crate) fn emit_covergroup(out: &mut String, indent: usize, cg: &Covergroup) 
         line(out, indent + 1, "}");
     }
     line(out, indent, "endgroup");
+}
+
+/// F82: `specify specparam X = v; $setup(d, posedge clk, lim);
+/// $hold(posedge clk, d, lim); endspecify` (LRM §30).
+pub(crate) fn emit_specify(out: &mut String, indent: usize, spec: &Specify) {
+    line(out, indent, "specify");
+    for it in &spec.items {
+        match it {
+            SpecifyItem::Specparam { name, value, .. } => {
+                line(out, indent + 1, &format!("specparam {name} = {};", emit_expr(value)));
+            }
+            SpecifyItem::Setup { data, posedge, clock, limit, .. } => {
+                let edge = if *posedge { "posedge" } else { "negedge" };
+                line(
+                    out,
+                    indent + 1,
+                    &format!(
+                        "$setup({}, {edge} {}, {});",
+                        emit_expr(data),
+                        clock,
+                        emit_expr(limit)
+                    ),
+                );
+            }
+            SpecifyItem::Hold { posedge, clock, data, limit, .. } => {
+                let edge = if *posedge { "posedge" } else { "negedge" };
+                line(
+                    out,
+                    indent + 1,
+                    &format!(
+                        "$hold({edge} {}, {}, {});",
+                        clock,
+                        emit_expr(data),
+                        emit_expr(limit)
+                    ),
+                );
+            }
+        }
+    }
+    line(out, indent, "endspecify");
 }
 
 fn emit_inst_conns(out: &mut String, indent: usize, head: &str, conns: &[Conn]) {

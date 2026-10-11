@@ -259,6 +259,18 @@ fn is_wireable(ty: &MvType) -> bool {
     }
 }
 
+/// F82: clock `specify` boleh path `iface.clk` / `pkg::CLK`.
+/// Dikenal bila path penuh dikenal ATAU salah satu segmennya dikenal.
+fn spec_clock_known(scope: &Scope, clock: &str) -> bool {
+    if scope.known(clock) {
+        return true;
+    }
+    clock
+        .split(|c| c == ':' || c == '.')
+        .filter(|s| !s.is_empty())
+        .any(|seg| scope.known(seg))
+}
+
 /// Item module (termasuk di dalam blok generate).
 fn check_module_item<'a>(
     item: &'a MItem,
@@ -347,6 +359,73 @@ fn check_module_item<'a>(
                 }
             }
             scope.sigs.insert(cg.name.as_str());
+            Ok(())
+        }
+        MItem::Specify(spec) => {
+            // F82: specparam terdaftar (bisa dipakai di limit); setup/hold
+            // data+clock dikenal (E2001). Tanpa E2002 (limit numerik bebas).
+            // Pre-pass: daftarkan SEMUA specparam dulu agar forward-ref
+            // `setup(..., TSU)` + `specparam TSU = 1` di bawahnya lolos.
+            let mut fresh: Vec<&str> = Vec::new();
+            for it in &spec.items {
+                if let SpecifyItem::Specparam { name, value, .. } = it {
+                    check_expr(value, ctx, scope, 0)?;
+                    if !scope.known(name.as_str()) {
+                        scope.sigs.insert(name.as_str());
+                        scope.nonconsts.insert(name.as_str());
+                        fresh.push(name.as_str());
+                    }
+                }
+            }
+            for it in &spec.items {
+                match it {
+                    SpecifyItem::Specparam { .. } => {}
+                    SpecifyItem::Setup { data, clock, limit, line, col, .. } => {
+                        check_expr(data, ctx, scope, 0)?;
+                        if !spec_clock_known(scope, clock) {
+                            // Cleanup sebelum return agar scope pemanggil utuh.
+                            for n in &fresh {
+                                scope.sigs.remove(n);
+                                scope.nonconsts.remove(n);
+                            }
+                            return Err(err_at(
+                                *line,
+                                *col,
+                                "E2001",
+                                format!(
+                                    "undefined signal '{clock}' (clock setup) — di '{}'",
+                                    scope.env.mname
+                                ),
+                            ));
+                        }
+                        check_expr(limit, ctx, scope, 0)?;
+                    }
+                    SpecifyItem::Hold { clock, data, limit, line, col, .. } => {
+                        if !spec_clock_known(scope, clock) {
+                            for n in &fresh {
+                                scope.sigs.remove(n);
+                                scope.nonconsts.remove(n);
+                            }
+                            return Err(err_at(
+                                *line,
+                                *col,
+                                "E2001",
+                                format!(
+                                    "undefined signal '{clock}' (clock hold) — di '{}'",
+                                    scope.env.mname
+                                ),
+                            ));
+                        }
+                        check_expr(data, ctx, scope, 0)?;
+                        check_expr(limit, ctx, scope, 0)?;
+                    }
+                }
+            }
+            // Specparam lokal specify — jangan bocor ke item sesudahnya.
+            for n in &fresh {
+                scope.sigs.remove(n);
+                scope.nonconsts.remove(n);
+            }
             Ok(())
         }
         MItem::Assign { lhs, rhs, line, col } => {

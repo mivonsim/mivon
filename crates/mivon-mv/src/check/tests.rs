@@ -1201,3 +1201,14 @@ fn f80r3_instance_genvar_shadow_enum() {
     let src2 = "module m #(N = 2) {\n in clk : bit\n out y : logic[7:0]\n for i in 0..N {\n if (i < N) {\n comb { y = i }\n }\n if ((i > 10) ? i : 0) {\n comb { y = 0 }\n }\n }\n}";
     check_src(src2).expect("genvar bersarang harus lolos E2014");
 }
+
+#[test]
+fn f82_specify_forward_ref_and_pos() {
+    // Forward-ref: specparam di bawah setup tetap lolos.
+    let ok = "module m {\n in clk : bit\n sig d : bit\n specify {\n setup(d, posedge clk, TSU)\n specparam TSU = 1\n }\n}";
+    check_src(ok).expect("forward-ref specparam harus lolos");
+    // Clock tak dikenal → E2001 berposisi di baris setup (bukan kepala specify).
+    let e = check_src("module m {\n in clk : bit\n sig d : bit\n specify {\n setup(d, posedge NOPE, 1)\n }\n}").unwrap_err();
+    assert!(e.msg.contains("E2001"), "msg: {}", e.msg);
+    assert!(e.line == 5, "posisi baris setup: {}:{}", e.line, e.col);
+}

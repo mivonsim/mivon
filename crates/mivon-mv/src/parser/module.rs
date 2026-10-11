@@ -5,6 +5,7 @@ use super::Parser;
 use crate::ast::*;
 use crate::lexer::Tok;
 use crate::MvError;
+use std::collections::HashSet;
 
 impl Parser {
     // ── Interface (MIVON-HDL.md §6.10) ──
@@ -464,6 +465,10 @@ impl Parser {
             Tok::Inst => Ok(self.parse_inst()?),
             Tok::Bind => Ok(self.parse_bind()?),
             Tok::Covergroup => Ok(self.parse_covergroup()?),
+            // F82: `specify { ... }` — keyword kontekstual (Ident biasa di
+            // luar blok ini, jadi bukan reserved word; tanpa ini jatuh ke
+            // error "item module tidak dikenal").
+            Tok::Ident(s) if s == "specify" => Ok(self.parse_specify()?),
             Tok::Case | Tok::Casez | Tok::Casex => {
                 // F79: generate case — `case (e) { v: {...} default: {...} }`.
                 let kind = match self.peek() {
@@ -854,5 +859,116 @@ impl Parser {
             });
         }
         Ok(Coverpoint { label, expr, bins })
+    }
+
+    /// F82: `specify { specparam X = v setup(d, posedge clk, lim)
+    /// hold(posedge clk, d, lim) }` (LRM §30). `specify`/`specparam`/
+    /// `setup`/`hold` kontekstual (Ident) — bukan reserved word.
+    pub(crate) fn parse_specify(&mut self) -> Result<MItem, MvError> {
+        let (line, col) = self.pos_line();
+        self.advance(); // 'specify'
+        self.expect(&Tok::LBrace)?;
+        let mut items = Vec::new();
+        let mut seen_spec: HashSet<String> = HashSet::new();
+        while !self.eat(&Tok::RBrace) {
+            match self.peek().clone() {
+                Tok::Eof => {
+                    let (l, c) = self.pos_line();
+                    return Err(MvError::new(
+                        l,
+                        c,
+                        "specify tidak ditutup dengan '}'".to_string(),
+                    ));
+                }
+                Tok::Ident(s) if s == "specparam" => {
+                    self.advance();
+                    let (l, c) = self.pos_line();
+                    let name = self.expect_ident()?;
+                    if !seen_spec.insert(name.clone()) {
+                        return Err(MvError::new(
+                            l,
+                            c,
+                            format!("specparam '{name}' ditulis dua kali dalam specify"),
+                        ));
+                    }
+                    self.expect(&Tok::BlockingAssign)?;
+                    let value = self.parse_expr()?;
+                    items.push(SpecifyItem::Specparam { name, value, line: l, col: c });
+                }
+                Tok::Ident(s) if s == "setup" => {
+                    let (l, c) = self.pos_line();
+                    self.advance();
+                    self.expect(&Tok::LParen)?;
+                    let data = self.parse_expr()?;
+                    self.expect(&Tok::Comma)?;
+                    let (posedge, clock) = self.parse_spec_edge()?;
+                    self.expect(&Tok::Comma)?;
+                    let limit = self.parse_expr()?;
+                    self.expect(&Tok::RParen)?;
+                    items.push(SpecifyItem::Setup { data, posedge, clock, limit, line: l, col: c });
+                }
+                Tok::Ident(s) if s == "hold" => {
+                    let (l, c) = self.pos_line();
+                    self.advance();
+                    self.expect(&Tok::LParen)?;
+                    let (posedge, clock) = self.parse_spec_edge()?;
+                    self.expect(&Tok::Comma)?;
+                    let data = self.parse_expr()?;
+                    self.expect(&Tok::Comma)?;
+                    let limit = self.parse_expr()?;
+                    self.expect(&Tok::RParen)?;
+                    items.push(SpecifyItem::Hold { posedge, clock, data, limit, line: l, col: c });
+                }
+                _ => {
+                    let (l, c) = self.pos_line();
+                    return Err(MvError::new(
+                        l,
+                        c,
+                        "isi specify hanya `specparam`/`setup`/`hold`".to_string(),
+                    ));
+                }
+            }
+        }
+        Ok(MItem::Specify(Specify { items, line, col }))
+    }
+
+    /// Edge `posedge clk` / `negedge rst` di dalam `setup`/`hold`.
+    /// Clock boleh path hierarkis `iface.clk` atau scope `pkg::CLK`.
+    fn parse_spec_edge(&mut self) -> Result<(bool, String), MvError> {
+        let posedge = match self.peek() {
+            Tok::PosEdge => {
+                self.advance();
+                true
+            }
+            Tok::NegEdge => {
+                self.advance();
+                false
+            }
+            _ => {
+                let (l, c) = self.pos_line();
+                return Err(MvError::new(
+                    l,
+                    c,
+                    "event timing-check harus `posedge`/`negedge` (mis. `posedge clk`)".to_string(),
+                ));
+            }
+        };
+        let mut clock = self.expect_ident()?;
+        loop {
+            match self.peek() {
+                Tok::Scope => {
+                    self.advance();
+                    clock.push_str("::");
+                    clock.push_str(&self.expect_ident()?);
+                }
+                Tok::Dot => {
+                    self.advance();
+                    clock.push('.');
+                    clock.push_str(&self.expect_ident()?);
+                }
+                _ => break,
+            }
+        }
+        Ok((posedge, clock))
     }
 }
