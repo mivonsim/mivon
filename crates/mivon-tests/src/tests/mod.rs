@@ -23997,6 +23997,11 @@ endmodule
 "#;
     let (r, diags) = elaborate(bad);
     assert!(r.is_err(), "rujukan ke member tak-terdefinisi harus gagal");
+    let err = format!("{:?}", r.unwrap_err());
+    assert!(
+        err.contains("E2001") || err.contains("UndefinedSignal"),
+        "error use-site harus E2001: {err}"
+    );
     let warns: Vec<_> = diags
         .iter()
         .filter(|d| d.message.contains("konstan"))
