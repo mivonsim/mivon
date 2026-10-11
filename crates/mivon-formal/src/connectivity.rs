@@ -1,12 +1,14 @@
-//! Connectivity Checking — FORMAL-13 (tahap 1).
+//! Connectivity Checking — FORMAL-13 (tahap 1 + 2a).
 //!
 //! Analisis statis jalur koneksi combinational antar sinyal:
 //! bangun graf dependensi (rhs → lhs) dari semua assignment proses
 //! Combinational/CombReactive + Initial, lalu BFS dari sumber ke tujuan.
 //!
-//! MVP scope: jalur combinational murni (stateless). Jalur melalui
-//! register/NBA (sequential dependency lintas cycle) belum dimodelkan —
-//! terdokumentasi sebagai keterbatasan.
+//! Tahap 2a: jalur sequential — `check_connectivity_including_seq`
+//! juga memodelkan NonBlockingAssign proses Sequential sebagai edge
+//! 1-hop lintas 1 cycle (dokumentasi eksplisit, bukan klaim setara
+//! kombinational). API lama `check_connectivity` tetap murni
+//! kombinational (tanpa ubah perilaku).
 
 use mivon_ir::*;
 
@@ -26,30 +28,46 @@ pub struct ConnectivityResult {
 }
 
 /// Kumpulkan semua pasangan (lhs_id, rhs_expr) dari proses yang relevan.
-fn collect_assignments(processes: &[Process]) -> Vec<(usize, IrExpr)> {
-    fn walk(stmts: &[IrStmt], out: &mut Vec<(usize, IrExpr)>) {
+/// `include_seq`: ikutkan NonBlockingAssign proses Sequential (edge
+/// lintas 1 cycle, tahap 2a). BlockingAssign Sequential TIDAK diikutkan
+/// (pola jarang, hindari false positive).
+fn collect_assignments(processes: &[Process], include_seq: bool) -> Vec<(usize, IrExpr)> {
+    fn walk(stmts: &[IrStmt], include_seq: bool, is_seq: bool, out: &mut Vec<(usize, IrExpr)>) {
         for stmt in stmts {
             match stmt {
                 IrStmt::BlockingAssign {
                     lhs: IrLValue::Signal(id, _),
                     rhs,
                     ..
-                } => out.push((*id, rhs.clone())),
-                IrStmt::Block { stmts: inner } => walk(inner, out),
-                IrStmt::NamedBlock { stmts: inner, .. } => walk(inner, out),
+                } => {
+                    if !is_seq {
+                        out.push((*id, rhs.clone()));
+                    }
+                }
+                IrStmt::NonBlockingAssign {
+                    lhs: IrLValue::Signal(id, _),
+                    rhs,
+                    ..
+                } => {
+                    if include_seq && is_seq {
+                        out.push((*id, rhs.clone()));
+                    }
+                }
+                IrStmt::Block { stmts: inner } => walk(inner, include_seq, is_seq, out),
+                IrStmt::NamedBlock { stmts: inner, .. } => walk(inner, include_seq, is_seq, out),
                 IrStmt::If {
                     true_branch,
                     false_branch,
                     ..
                 } => {
-                    walk(true_branch, out);
-                    walk(false_branch, out);
+                    walk(true_branch, include_seq, is_seq, out);
+                    walk(false_branch, include_seq, is_seq, out);
                 }
                 IrStmt::Case { items, default, .. } => {
                     for item in items {
-                        walk(&item.body, out);
+                        walk(&item.body, include_seq, is_seq, out);
                     }
-                    walk(default, out);
+                    walk(default, include_seq, is_seq, out);
                 }
                 _ => {}
             }
@@ -61,7 +79,8 @@ fn collect_assignments(processes: &[Process]) -> Vec<(usize, IrExpr)> {
         match process {
             Process::Combinational { body, .. }
             | Process::CombReactive { body, .. }
-            | Process::Initial { name: _, body } => walk(body, &mut out),
+            | Process::Initial { name: _, body } => walk(body, include_seq, false, &mut out),
+            Process::Sequential { body, .. } if include_seq => walk(body, include_seq, true, &mut out),
             _ => {}
         }
     }
@@ -104,6 +123,24 @@ pub fn check_connectivity(
     design: &IrDesign,
     pairs: &[(String, String)],
 ) -> Vec<ConnectivityResult> {
+    check_connectivity_inner(design, pairs, false)
+}
+
+/// Tahap 2a: sama tapi ikutkan edge NBA Sequential (lintas 1 cycle).
+/// Jalur yang lewat register tetap 1 hop per assignment — panggil
+/// hanya bila analisis sequential memang diinginkan.
+pub fn check_connectivity_including_seq(
+    design: &IrDesign,
+    pairs: &[(String, String)],
+) -> Vec<ConnectivityResult> {
+    check_connectivity_inner(design, pairs, true)
+}
+
+fn check_connectivity_inner(
+    design: &IrDesign,
+    pairs: &[(String, String)],
+    include_seq: bool,
+) -> Vec<ConnectivityResult> {
     let n = design.top.signals.len();
     let name_of = |id: usize| -> String {
         design
@@ -117,7 +154,7 @@ pub fn check_connectivity(
     // Adjacency: lhs <- daftar sinyal sumber rhs. Simpan juga hop untuk
     // rekonstruksi jalur (BFS dari src maju mengikuti edge rhs→lhs).
     let mut adj: Vec<Vec<(usize, usize)>> = vec![Vec::new(); n]; // (dst_id, assign_idx)
-    let assigns = collect_assignments(&design.top.processes);
+    let assigns = collect_assignments(&design.top.processes, include_seq);
     for (ai, (lhs, rhs)) in assigns.iter().enumerate() {
         if *lhs >= n {
             continue;

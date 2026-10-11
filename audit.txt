@@ -1798,14 +1798,17 @@ FORMAL-10: ⚠️ IN PROGRESS (ROUND 92) — assume-guarantee tahap 1:
            assume-guarantee antar module, proof obligations per component.
 FORMAL-11:[] No equivalence checking combinational (Critical)
 FORMAL-12:[] No equivalence checking sequential (Critical)
-FORMAL-13: ⚠️ IN PROGRESS (ROUND 102) — connectivity checking tahap 1:
+FORMAL-13: ⚠️ IN PROGRESS (ROUND 102/112) — connectivity checking tahap 1+2a:
          crates/maria-formal/src/connectivity.rs — analisis statis jalur
          kombinational: graf dependensi (rhs → lhs) dari assignment proses
          Comb/CombReactive/Initial, BFS dari src, rekonstruksi jalur
          terpendek (nama sinyal + jumlah hop). CLI --formal-connect
          src,dst (repeatable) di run_formal; error sinyal tak dikenal
-         jadi CI gate. MASIH OPEN: dependensi sequential/NBA lintas
-         cycle, connectivity lintas instance/hierarki.
+         jadi CI gate. Tahap 2a (ROUND 112):
+         check_connectivity_including_seq — ikutkan NBA Sequential
+         sebagai edge 1-hop lintas cycle; BlockingAssign Sequential
+         dikecualikan; API lama tetap murni kombinational.
+         MASIH OPEN: connectivity lintas instance/hierarki.
 FORMAL-14: ✅ X-propagation formal analysis (ROUND 85b) —
          crates/maria-formal/src/xprop.rs (BARU):
          - Ternary enum: Zero/One/Unknown domains.
@@ -5065,6 +5068,26 @@ always_ff→posedge, endmodule/counter→None).
 📊 VERIFIKASI ROUND 111:
    - cargo test -p mivon-env --lib --features lsp lsp: 41 passed (+1)
    - Review subagent: APPROVE.
+
+═══ ROUND 112 — FORMAL-13 connectivity tahap 2a (edge sequential NBA) ═══
+
+Kerja bertahap FORMAL-13 — tahap 2a selesai; item tetap ⚠️ IN PROGRESS
+(lintas instance/hierarki masih open).
+
+✅ EDGE SEQUENTIAL (crates/mivon-formal/src/connectivity.rs):
+   - collect_assignments(processes, include_seq, is_seq): Blocking
+     hanya bila !is_seq; NBA hanya bila include_seq && is_seq.
+   - API baru check_connectivity_including_seq (edge NBA Sequential
+     1-hop lintas cycle); API lama delegate false (perilaku identik).
+   - Review putaran 1 menemukan Blocking seq ikut (doc vs kode) →
+     diperbaiki + assert blocking diabaikan.
+
+Test (+1): test_connectivity_seq_nba (comb=false, seq=true 1 hop
+[d,q], blocking seq=false).
+
+📊 VERIFIKASI ROUND 112:
+   - cargo test -p mivon-formal --features formal connectivity: 2 passed (+1)
+   - Review subagent putaran 2: APPROVE (setelah fix blocking).
 
 ========================================
 END OF AUDIT REPORT

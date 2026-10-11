@@ -1008,6 +1008,71 @@ mod tests {
     }
 
     #[test]
+    fn test_connectivity_seq_nba() {
+        // FORMAL-13 tahap 2a: NBA Sequential `q <= d` hanya terlihat
+        // via including_seq (1 hop lintas cycle), bukan kombinational.
+        use crate::connectivity::{check_connectivity, check_connectivity_including_seq};
+        let body = vec![IrStmt::NonBlockingAssign {
+            lhs: IrLValue::Signal(1, 1),
+            rhs: IrExpr::Signal(0, 0),
+            delay: None,
+        }];
+        let design = IrDesign {
+            top: IrModule {
+                name: Symbol::from("t"),
+                signals: vec![
+                    SignalInfo { name: Symbol::from("d"), width: 1, ..Default::default() },
+                    SignalInfo { name: Symbol::from("q"), width: 1, ..Default::default() },
+                ],
+                inputs: vec![],
+                outputs: vec![],
+                inouts: vec![],
+                processes: vec![Process::Sequential {
+                    name: Symbol::from("seq"),
+                    clock: ClockEdge::PosEdge(0),
+                    reset: None,
+                    body,
+                    iff: None,
+                }],
+                sub_instances: vec![],
+            },
+            modules: HashMap::new(),
+            classes: HashMap::new(),
+            covergroups: vec![],
+            dpi_imports: vec![],
+            hier_signal_map: HashMap::new(),
+            udp_defs: vec![],
+            specify_items: vec![],
+            timescale: None,
+            source_file: None,
+            source_lines: None,
+            module_functions: HashMap::new(),
+            pkg_scoped_consts: HashMap::new(),
+            coverage_exclusions: Vec::new(),
+            stmt_lines: HashMap::new(),
+            net_aliases: HashMap::new(),
+        };
+        let pairs = vec![("d".to_string(), "q".to_string())];
+        let comb = check_connectivity(&design, &pairs);
+        assert!(!comb[0].connected, "kombinational harus abaikan NBA");
+        let seq = check_connectivity_including_seq(&design, &pairs);
+        assert!(seq[0].connected);
+        assert_eq!(seq[0].path_len, Some(1));
+        assert_eq!(seq[0].path, vec!["d", "q"]);
+        // BlockingAssign di Sequential tetap diabaikan (hindari false positive).
+        let mut design_b = design.clone();
+        if let Process::Sequential { body, .. } = &mut design_b.top.processes[0] {
+            body[0] = IrStmt::BlockingAssign {
+                lhs: IrLValue::Signal(1, 1),
+                rhs: IrExpr::Signal(0, 0),
+                delay: None,
+            };
+        }
+        let seq_b = check_connectivity_including_seq(&design_b, &pairs);
+        assert!(!seq_b[0].connected, "blocking sequential harus diabaikan");
+    }
+
+    #[test]
     fn test_z3_bvadd_simple() {
         // Minimal Z3 test: a=0, b=a+1. Assert b < 0 (should be unsat).
         // Then assert b = 1 (should be sat).
