@@ -24218,20 +24218,31 @@ endmodule
 
 /// Literal unsized berbasis (`'b101`, `'hFF`) lebarnya minimal 32 bit
 /// (LRM §5.7.1) — bukan 1. Diferensial vs iverilog (`$bits('b101)` = 32).
+/// Via KONTEKS KONSTAN (localparam) agar jalur const-eval yang diuji —
+/// jalur runtime `$bits` memang sudah benar sebelumnya.
 #[test]
 fn test_unsized_based_literal_width_32() {
     let src = r#"
 module top;
+  localparam int WB = $bits('b101);
+  localparam int WH = $bits('hFF);
+  localparam int W8 = $bits(8'hFF);
+  logic [31:0] wb;
+  logic [31:0] wh;
+  logic [31:0] w8;
   initial begin
-    if ($bits('b101) !== 32) $fatal(1, "b101");
-    if ($bits('hFF) !== 32) $fatal(1, "hFF");
-    if ($bits(8'hFF) !== 8) $fatal(1, "sized");
+    wb = WB;
+    wh = WH;
+    w8 = W8;
     $finish;
   end
 endmodule
 "#;
-    // $fatal pada mismatch → Err; lolos berarti semua cocok iverilog.
-    mivon_api::simulate_signals(src, 10).expect("lebar literal unsized harus 32/32/8");
+    let sigs = mivon_api::simulate_signals(src, 10).unwrap();
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    assert_eq!(get("wb"), 32, "$bits('b101) harus 32 (iverilog sama)");
+    assert_eq!(get("wh"), 32, "$bits('hFF) harus 32");
+    assert_eq!(get("w8"), 8, "$bits(8'hFF) tetap 8");
 }
 
 /// Width part-select LHS dinamis tak terwakili di IR statis — warning

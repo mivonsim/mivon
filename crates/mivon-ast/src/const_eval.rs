@@ -211,13 +211,13 @@ pub fn sized_width(e: &Expr) -> Option<u64> {
             Some(n.saturating_mul(sized_width(expr)?))
         }
         Expr::Value(Value::Binary { bits, width, .. }) => {
-            Some(width.map(|w| w as u64).unwrap_or(bits.len() as u64))
+            Some(width.map(|w| w as u64).unwrap_or((bits.len() as u64).max(32)))
         }
         Expr::Value(Value::Hex { bits, width, .. }) => {
-            Some(width.map(|w| w as u64).unwrap_or(bits.len() as u64 * 4))
+            Some(width.map(|w| w as u64).unwrap_or((bits.len() as u64 * 4).max(32)))
         }
         Expr::Value(Value::Octal { bits, width, .. }) => {
-            Some(width.map(|w| w as u64).unwrap_or(bits.len() as u64 * 3))
+            Some(width.map(|w| w as u64).unwrap_or((bits.len() as u64 * 3).max(32)))
         }
         // Self-determined width (IEEE 1800 §11.8.1):
         // - `!x` & semua reduction → 1 bit.
@@ -1195,8 +1195,12 @@ pub fn const_eval_with_params(
             Ok(if w % b != 0 { w / b + 1 } else { w / b })
         }
         Expr::FuncCall { name, args, .. } if name == "$bits" || name == "$size" => {
+            // $bits = LEBAR argumen (bukan nilainya!) — sebelumnya mengembalikan
+            // const_eval(arg) sehingga `$bits('b101)` ter-fold 5 (salah; harus 32).
             if let Some(arg) = args.first() {
-                const_eval_with_params(arg, param_vals)
+                sized_width(arg)
+                    .map(|w| w as i64)
+                    .ok_or_else(|| "$bits argument width not computable".to_string())
             } else {
                 Ok(0)
             }

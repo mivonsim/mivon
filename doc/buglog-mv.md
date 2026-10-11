@@ -331,7 +331,10 @@ bug di mivon utama (parser/elaborator/simulator). Status: ✅ fixed / ⏳ open.
 34. **Lebar literal unsized berbasis = 1 (harus ≥32)** — `$bits('b101)`
     menghasilkan 1, padahal LRM §5.7.1 + iverilog = 32 (sama seperti
     desimal unsized yang sudah 32). Ditemukan saat audit sisa katalog
-    `unwrap_or`. Fix satu baris (`unwrap_or(1)` → `unwrap_or(32)`).
+    `unwrap_or`. Fix: `compute_expr_width` + `sized_width`. Follow-up
+    review: arm `$bits` const-eval mengembalikan NILAI arg (bukan lebar —
+    `$bits('b101)` ter-fold 5!); kini memakai `sized_width`, `Err` bila
+    tak terhitung.
 
 ## ⏳ Open
 
