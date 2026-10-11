@@ -24124,7 +24124,7 @@ endmodule
     assert!(r_tp.is_err(), "type tak dikenal harus gagal");
     let msgs_tp: Vec<&str> = diags_tp.iter().map(|d| d.message.as_ref()).collect();
     assert!(
-        msgs_tp.iter().any(|m| m.contains("nama tipe")),
+        msgs_tp.iter().any(|m| m.contains("nama tipe") && m.contains("'T'") && m.contains("'u'") && m.contains("konstan")),
         "pesan type-param: {msgs_tp:?}"
     );
     // Override konstan (param lain) tetap sah.
