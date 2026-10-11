@@ -24055,3 +24055,72 @@ endmodule
     let s3 = sigs3.iter().find(|(n, _)| n == "s3").unwrap().1.to_u64();
     assert_eq!(s3, 1, "param package (1) menang atas global (3), bukan sebaliknya");
 }
+
+/// Override parameter instance dengan ekspresi NON-konstan (sinyal) adalah
+/// ilegal LRM — error ParamMismatch di titik override, bukan tebak 0.
+#[test]
+fn test_param_override_nonconst_is_error() {
+    fn elaborate(
+        source: &str,
+    ) -> (
+        Result<mivon_ir::IrDesign, mivon_core::error::SimError>,
+        Vec<mivon_core::diagnostics::Diagnostic>,
+    ) {
+        let mut pp = mivon_parser::preprocessor::Preprocessor::new();
+        let preprocessed = pp.preprocess(source, None).unwrap();
+        let mut lexer = mivon_parser::lexer::Lexer::new(&preprocessed);
+        let mut tokens = Vec::new();
+        loop {
+            let (tok, line, col) = lexer.next_token();
+            if tok == mivon_parser::lexer::Token::Eof {
+                break;
+            }
+            tokens.push((tok, line, col));
+        }
+        let parser = mivon_parser::Parser::new(tokens, "<string>");
+        let mut parser = parser.with_source_lines(&preprocessed);
+        let design = parser.parse_design().unwrap();
+        let source_lines: Vec<String> = preprocessed.lines().map(|s| s.to_string()).collect();
+        let mut elaborator = mivon_elaboration::Elaborator::with_source(
+            design,
+            source_lines,
+            "<string>".to_string(),
+        );
+        let r = elaborator.elaborate(
+            None,
+            mivon_elaboration::elaborator::ElaborateMode::StrictSimulation,
+        );
+        let diags = elaborator.flush_diagnostics();
+        (r, diags)
+    }
+    let src = r#"
+module sub #(W = 4);
+  logic [W-1:0] q;
+  initial begin q = 0; $finish; end
+endmodule
+module top;
+  logic dyn_w;
+  sub #(.W(dyn_w)) u (.q());
+endmodule
+"#;
+    let (r, diags) = elaborate(src);
+    assert!(r.is_err(), "override non-konstan harus gagal");
+    let msgs: Vec<&str> = diags.iter().map(|d| d.message.as_ref()).collect();
+    assert!(
+        msgs.iter().any(|m| m.contains("konstan")),
+        "diagnostic harus menyebut akar masalah: {msgs:?}"
+    );
+    // Override konstan (param lain) tetap sah.
+    let ok = r#"
+module sub #(W = 4);
+  logic [W-1:0] q;
+  initial begin q = 0; $finish; end
+endmodule
+module top;
+  localparam int K = 8;
+  sub #(.W(K)) u (.q());
+endmodule
+"#;
+    let (r2, diags2) = elaborate(ok);
+    assert!(r2.is_ok(), "override param-dengan-param harus lolos: {diags2:?}");
+}

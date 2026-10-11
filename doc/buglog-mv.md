@@ -306,6 +306,13 @@ bug di mivon utama (parser/elaborator/simulator). Status: ✅ fixed / ⏳ open.
     package-sendiri untuk forward-ref valid, warning `ParamMismatch`
     pasca-fixpoint per typedef + E2001 jujur di use-site.
 
+31. **Override parameter instance non-konstan ditebak 0** —
+    `#(.W(dyn_w))` (sinyal sebagai override) ilegal LRM namun lolos
+    diam-diam dengan W=0 (`unwrap_or(0)`). Fix: error `ParamMismatch`
+    berposisi di titik override. Situs `param_util.rs` (fallback 1/0
+    untuk default hilang/tak-ter-evaluasi) SENGAJA dibiarkan: heuristik
+    keep-going terdokumentasi untuk desain nyata (OpenTitan).
+
 ## ⏳ Open
 
 (tidak ada item open — semua bug historis sudah tertutup)

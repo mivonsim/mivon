@@ -6358,10 +6358,29 @@ impl Elaborator {
                                 PortConnection::Unconnected { .. } => {}
                             }
                         }
-                        // Resolve parameter overrides to integer values
+                        // Resolve parameter overrides to integer values.
+                        // Override BUKAN ekspresi konstan (mis. sinyal) adalah
+                        // ilegal LRM — error di titik override (bukan tebak 0
+                        // diam-diam seperti sebelumnya).
                         let mut param_map = HashMap::new();
                         for (pname, pexpr) in &inst.param_assigns {
-                            let val = const_eval_with_params(pexpr, &effective_params).unwrap_or(0);
+                            let val = match const_eval_with_params(pexpr, &effective_params) {
+                                Ok(v) => v,
+                                Err(_) => {
+                                    let (l, c) = expr_location(pexpr);
+                                    return Err(self.elab_diag_at(
+                                        DiagCode::ParamMismatch,
+                                        format!(
+                                            "override parameter '{pname}' bukan ekspresi konstan \
+                                             pada instance '{}' — nilai parameter harus dapat \
+                                             dievaluasi saat elaborasi",
+                                            inst.instance_name.as_str()
+                                        ),
+                                        l,
+                                        c,
+                                    ));
+                                }
+                            };
                             param_map.insert(*pname, val);
                             // Override STRUCT package (`Info = PartInfoDefault`,
                             // `Info = PartInfo[k]`): `const_eval_with_params`
