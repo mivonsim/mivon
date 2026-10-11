@@ -40,6 +40,23 @@ pub struct FsmInfo {
     pub states: Vec<u64>,
     /// Transisi antar state.
     pub transitions: Vec<FsmTransition>,
+    /// Output FSM terklasifikasi (COMP-11 tahap 2b).
+    pub outputs: Vec<FsmOutput>,
+}
+
+/// Klasifikasi output FSM: Mealy (kombinational dari input — RHS
+/// merujuk sinyal selain state reg) vs Moore (hanya state/konstanta).
+#[derive(Debug, Clone, PartialEq)]
+pub enum FsmOutputKind {
+    Mealy,
+    Moore,
+}
+
+/// Satu output FSM + klasifikasinya.
+#[derive(Debug, Clone)]
+pub struct FsmOutput {
+    pub signal: String,
+    pub kind: FsmOutputKind,
 }
 
 /// Evaluasi sederhana ekspresi konstanta → u64 (MVP):
@@ -140,6 +157,165 @@ fn has_nba_write_to(stmts: &[IrStmt], sig_id: usize) -> bool {
     false
 }
 
+/// Kumpulkan id sinyal yang dirujuk sebuah ekspresi RHS.
+fn collect_rhs_signals(expr: &IrExpr, out: &mut Vec<usize>) {
+    match expr {
+        IrExpr::Signal(id, _) | IrExpr::RangeSelect(id, ..) | IrExpr::BitSelect(id, ..) => {
+            out.push(*id)
+        }
+        IrExpr::ArrayIndex { sig_id, index, .. } => {
+            out.push(*sig_id);
+            collect_rhs_signals(index, out);
+        }
+        IrExpr::ExprRangeSelect(b, ..)
+        | IrExpr::ExprBitSelect(b, ..)
+        | IrExpr::UnaryOp(_, b)
+        | IrExpr::Signed(b)
+        | IrExpr::Cast { expr: b, .. }
+        | IrExpr::MemberAccess { obj: b, .. }
+        | IrExpr::Replicate(_, b) => collect_rhs_signals(b, out),
+        IrExpr::ExprPartSelect(a, b, c) | IrExpr::Cond(a, b, c) => {
+            collect_rhs_signals(a, out);
+            collect_rhs_signals(b, out);
+            collect_rhs_signals(c, out);
+        }
+        IrExpr::BinaryOp(_, l, r) => {
+            collect_rhs_signals(l, out);
+            collect_rhs_signals(r, out);
+        }
+        IrExpr::Concat(parts) => {
+            for p in parts {
+                collect_rhs_signals(p, out);
+            }
+        }
+        IrExpr::SysFunc { args, .. } | IrExpr::DpiCall { args, .. } | IrExpr::NewCall { args, .. } => {
+            for a in args {
+                collect_rhs_signals(a, out);
+            }
+        }
+        IrExpr::MethodCall { obj, args, with_clause, .. } => {
+            collect_rhs_signals(obj, out);
+            for a in args {
+                collect_rhs_signals(a, out);
+            }
+            if let Some(w) = with_clause {
+                collect_rhs_signals(w, out);
+            }
+        }
+        IrExpr::Inside { expr, list } => {
+            collect_rhs_signals(expr, out);
+            for e in list {
+                collect_rhs_signals(e, out);
+            }
+        }
+        IrExpr::InsideRange { expr, lo, hi } => {
+            collect_rhs_signals(expr, out);
+            collect_rhs_signals(lo, out);
+            collect_rhs_signals(hi, out);
+        }
+        IrExpr::StreamingConcat { slices, .. } => {
+            for s in slices {
+                collect_rhs_signals(s, out);
+            }
+        }
+        IrExpr::Dist { expr, .. } => collect_rhs_signals(expr, out),
+        IrExpr::UdpLookup { args, .. } | IrExpr::FuncCall { args, .. } => {
+            for a in args {
+                collect_rhs_signals(a, out);
+            }
+        }
+        IrExpr::IncDec { read, lv, .. } => {
+            collect_rhs_signals(read, out);
+            lvalue_index_signals(lv, out);
+        }
+        _ => {}
+    }
+}
+
+/// Id sinyal target sebuah lvalue (None utk HierRef/HierRefIndex yang
+/// belum ter-resolve — dilewati konservatif).
+fn lvalue_sig_id(lv: &IrLValue) -> Option<usize> {
+    match lv {
+        IrLValue::Signal(id, _)
+        | IrLValue::RangeSelect(id, ..)
+        | IrLValue::BitSelect(id, ..)
+        | IrLValue::ArrayIndex { sig_id: id, .. }
+        | IrLValue::ArrayRangeSelect { sig_id: id, .. }
+        | IrLValue::ArrayBitSelect { sig_id: id, .. }
+        | IrLValue::ExprPartSelect { sig_id: id, .. }
+        | IrLValue::ObjectField { sig_id: id, .. } => Some(*id),
+        IrLValue::HierRef(_) | IrLValue::HierRefIndex { .. } => None,
+        IrLValue::Concat(_) => None,
+    }
+}
+
+/// Kumpulkan sinyal dari ekspresi index/base dalam lvalue
+/// (`arr[i]`, `sig[base +: w]`) — pengaruh input di index dianggap
+/// dependensi Mealy (konservatif).
+fn lvalue_index_signals(lv: &IrLValue, out: &mut Vec<usize>) {
+    match lv {
+        IrLValue::ArrayIndex { index, .. }
+        | IrLValue::ArrayRangeSelect { index, .. }
+        | IrLValue::HierRefIndex { index, .. } => collect_rhs_signals(index, out),
+        IrLValue::ArrayBitSelect { index, bit, .. } => {
+            collect_rhs_signals(index, out);
+            collect_rhs_signals(bit, out);
+        }
+        IrLValue::ExprPartSelect { base, .. } => collect_rhs_signals(base, out),
+        IrLValue::Concat(parts) => {
+            for p in parts {
+                lvalue_index_signals(p, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Kumpulkan semua write (Blocking + NBA) ke sinyal dalam statement —
+/// dipakai klasifikasi output Mealy/Moore (tahap 2b). LHS non-Signal
+/// (RangeSelect/BitSelect/ArrayIndex/Concat) di-resolve ke id target;
+/// HierRef dilewati konservatif. Batasan: tidak turun ke For/While/
+/// Repeat/Foreach/Delay/Force; kondisi `If` tidak dihitung dependensi
+/// (klasifikasi RHS-only).
+fn collect_writes(stmts: &[IrStmt], out: &mut Vec<(usize, IrExpr, Vec<usize>)>) {
+    fn push_lv(lv: &IrLValue, rhs: &IrExpr, out: &mut Vec<(usize, IrExpr, Vec<usize>)>) {
+        match lv {
+            IrLValue::Concat(parts) => {
+                for p in parts {
+                    push_lv(p, rhs, out);
+                }
+            }
+            _ => {
+                if let Some(id) = lvalue_sig_id(lv) {
+                    let mut idx = Vec::new();
+                    lvalue_index_signals(lv, &mut idx);
+                    out.push((id, rhs.clone(), idx));
+                }
+            }
+        }
+    }
+    for stmt in stmts {
+        match stmt {
+            IrStmt::BlockingAssign { lhs, rhs, .. }
+            | IrStmt::NonBlockingAssign { lhs, rhs, .. } => push_lv(lhs, rhs, out),
+            IrStmt::Block { stmts: inner } | IrStmt::NamedBlock { stmts: inner, .. } => {
+                collect_writes(inner, out)
+            }
+            IrStmt::Case { items, default, .. } => {
+                for item in items {
+                    collect_writes(&item.body, out);
+                }
+                collect_writes(default, out);
+            }
+            IrStmt::If { true_branch, false_branch, .. } => {
+                collect_writes(true_branch, out);
+                collect_writes(false_branch, out);
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Ekstraksi FSM utama: pindai semua proses Sequential pada top module.
 pub fn extract_fsms(design: &IrDesign) -> Vec<FsmInfo> {
     let mut fsms = Vec::new();
@@ -181,6 +357,7 @@ pub fn extract_fsms(design: &IrDesign) -> Vec<FsmInfo> {
                 state_width: sig_info.width,
                 states: Vec::new(),
                 transitions: Vec::new(),
+                outputs: Vec::new(),
             };
 
             let push_state = |states: &mut Vec<u64>, v: u64| {
@@ -236,6 +413,39 @@ pub fn extract_fsms(design: &IrDesign) -> Vec<FsmInfo> {
             }
 
             info.states.sort_unstable();
+            // COMP-11 tahap 2b: klasifikasi output — write selain state reg
+            // di dalam case (items + default). RHS merujuk sinyal selain
+            // state → Mealy; hanya state/konstanta → Moore. Mealy menang
+            // bila satu output ditulis di beberapa item berbeda jenis.
+            {
+                let mut writes: Vec<(usize, IrExpr, Vec<usize>)> = Vec::new();
+                for item in items {
+                    collect_writes(&item.body, &mut writes);
+                }
+                collect_writes(default, &mut writes);
+                for (id, rhs, idx_deps) in &writes {
+                    if *id == *sig_id {
+                        continue;
+                    }
+                    let mut deps = idx_deps.clone();
+                    collect_rhs_signals(rhs, &mut deps);
+                    let mealy = deps.iter().any(|d| *d != *sig_id);
+                    let name = design.top.signals.get(*id).map(|s| s.name.to_string());
+                    let Some(name) = name else { continue };
+                    match info.outputs.iter_mut().find(|o| o.signal == name) {
+                        Some(o) => {
+                            if mealy {
+                                o.kind = FsmOutputKind::Mealy;
+                            }
+                        }
+                        None => info.outputs.push(FsmOutput {
+                            signal: name,
+                            kind: if mealy { FsmOutputKind::Mealy } else { FsmOutputKind::Moore },
+                        }),
+                    }
+                }
+                info.outputs.sort_by(|a, b| a.signal.cmp(&b.signal));
+            }
             if !info.transitions.is_empty() {
                 fsms.push(info);
             }
@@ -316,6 +526,21 @@ pub fn render_fsm_report(fsms: &[FsmInfo]) -> String {
                 "    encoding: {}\n",
                 enc.iter()
                     .map(|(o, n)| format!("{o}->{n}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        if !f.outputs.is_empty() {
+            out.push_str(&format!(
+                "    outputs ({}): {}\n",
+                f.outputs.len(),
+                f.outputs
+                    .iter()
+                    .map(|o| format!(
+                        "{}({})",
+                        o.signal,
+                        if o.kind == FsmOutputKind::Mealy { "Mealy" } else { "Moore" }
+                    ))
                     .collect::<Vec<_>>()
                     .join(", ")
             ));
@@ -473,6 +698,7 @@ mod tests {
                 FsmTransition { from: Some(1), to: 2 },
                 FsmTransition { from: Some(2), to: 5 },
             ],
+            outputs: vec![],
         };
         assert_eq!(minimized_states(&f), vec![0, 1, 2, 5]);
         assert_eq!(
@@ -482,5 +708,87 @@ mod tests {
         let report = render_fsm_report(&[f]);
         assert!(report.contains("minimized (4): 0, 1, 2, 5"));
         assert!(report.contains("encoding: 0->0, 1->1, 2->2, 5->3"));
+    }
+
+    #[test]
+    fn test_fsm_mealy_moore_outputs() {
+        // state=0, out_moore <= 0 (konstanta → Moore),
+        // out_mealy <= inp (input → Mealy). Design: state(0), inp(1),
+        // out_moore(2), out_mealy(3). Item kedua upgrade out_moore ke
+        // Mealy (menang) via BitSelect + FuncCall; write state dikecualikan.
+        let item = |moore_rhs: IrExpr, mealy_from: usize, with_const: bool| IrCaseItem {
+            labels: vec![IrExpr::Const(LogicVec::from_u64(0, 2))],
+            body: {
+                let mut b = vec![
+                    IrStmt::NonBlockingAssign {
+                        lhs: IrLValue::Signal(0, 2),
+                        rhs: IrExpr::Const(LogicVec::from_u64(1, 2)),
+                        delay: None,
+                    },
+                    IrStmt::BlockingAssign {
+                        lhs: IrLValue::Signal(2, 1),
+                        rhs: moore_rhs,
+                        delay: None,
+                    },
+                    IrStmt::BlockingAssign {
+                        lhs: IrLValue::Signal(3, 1),
+                        rhs: IrExpr::Signal(mealy_from, 0),
+                        delay: None,
+                    },
+                ];
+                if with_const {
+                    b.push(IrStmt::BlockingAssign {
+                        lhs: IrLValue::Signal(4, 1),
+                        rhs: IrExpr::Const(LogicVec::from_u64(1, 1)),
+                        delay: None,
+                    });
+                }
+                b
+            },
+        };
+        let const0 = IrExpr::Const(LogicVec::from_u64(0, 1));
+        let upgrade = IrExpr::FuncCall {
+            func_name: Symbol::from("f"),
+            args: vec![IrExpr::BitSelect(1, 0)],
+        };
+        let mut design = IrDesign::default();
+        design.top.name = Symbol::from("fsm_mo");
+        design.top.signals = vec![
+            SignalInfo { name: Symbol::from("state"), width: 2, ..Default::default() },
+            SignalInfo { name: Symbol::from("inp"), width: 1, ..Default::default() },
+            SignalInfo { name: Symbol::from("out_moore"), width: 1, ..Default::default() },
+            SignalInfo { name: Symbol::from("out_mealy"), width: 1, ..Default::default() },
+            SignalInfo { name: Symbol::from("out_const"), width: 1, ..Default::default() },
+        ];
+        design.top.processes = vec![Process::Sequential {
+            name: Symbol::from("sm"),
+            clock: ClockEdge::PosEdge(1),
+            reset: None,
+            body: vec![IrStmt::Case {
+                case_type: CaseType::Normal,
+                expr: IrExpr::Signal(0, 0),
+                items: vec![item(const0, 1, true), item(upgrade, 1, false)],
+                default: vec![],
+            }],
+            iff: None,
+        }];
+        let fsms = extract_fsms(&design);
+        assert_eq!(fsms.len(), 1, "{fsms:?}");
+        let f = &fsms[0];
+        // out_moore ditulis Moore di item 1 lalu Mealy (FuncCall atas inp)
+        // di item 2 → Mealy menang.
+        let moore = f.outputs.iter().find(|o| o.signal == "out_moore").expect("moore ada");
+        assert_eq!(moore.kind, FsmOutputKind::Mealy);
+        let mealy = f.outputs.iter().find(|o| o.signal == "out_mealy").expect("mealy ada");
+        assert_eq!(mealy.kind, FsmOutputKind::Mealy);
+        // State reg bukan output; urutan sort by nama.
+        assert!(!f.outputs.iter().any(|o| o.signal == "state"));
+        let names: Vec<&str> = f.outputs.iter().map(|o| o.signal.as_str()).collect();
+        assert_eq!(names, vec!["out_const", "out_mealy", "out_moore"], "{names:?}");
+        let oc = f.outputs.iter().find(|o| o.signal == "out_const").expect("const ada");
+        assert_eq!(oc.kind, FsmOutputKind::Moore);
+        let report = render_fsm_report(&[f.clone()]);
+        assert!(report.contains("out_moore(Mealy)"), "{report}");
+        assert!(report.contains("out_mealy(Mealy)"), "{report}");
     }
 }

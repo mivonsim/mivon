@@ -1108,7 +1108,7 @@ COMP-10: ✅ Gate-level optimization lint (ROUND 91) — mlint --gate-opt:
          find_gate_opt_patterns() + find_redundant_assigns() deteksi
          sinyal yang ditulis >1x di scope sama (redundant assignment).
          CLI flag --gate-opt + LintArgs + dispatch.
-COMP-11: ⚠️ IN PROGRESS (ROUND 105/110) — FSM extraction tahap 1+2a:
+COMP-11: ⚠️ IN PROGRESS (ROUND 105/110/117) — FSM extraction tahap 1+2a+2b:
          crates/maria-synth/src/fsm.rs (BARU) — deteksi & ekstraksi FSM
          dari proses Sequential: state register = selector `case` yang
          juga ditulis NBA di proses yang sama; transisi dari label case
@@ -1119,7 +1119,11 @@ COMP-11: ⚠️ IN PROGRESS (ROUND 105/110) — FSM extraction tahap 1+2a:
          minimized_states (buang isolated) + compact_encoding 0..N-1 +
          report baris minimized/encoding (hanya bila beda) + wiring CLI
          `synth --fsm-report` (sudah ada) + 1 test isolated.
-         MASIH OPEN: output Mealy/Moore, lintas-always FSM.
+         Tahap 2b (ROUND 117): output Mealy/Moore — write selain state
+         di case (Blocking+NBA, LHS select/array/concat di-resolve,
+         HierRef skip) → RHS selain state = Mealy (menang), else Moore;
+         report baris outputs. Batasan: For/loop & If.cond tak dihitung.
+         MASIH OPEN: lintas-always FSM.
 COMP-12: ✅ Case analysis parallel_case/full_case (ROUND 85) — mlint
          new check --case-analysis: deteksi case/unique/priority tanpa default
          (warning potensi latch atau nilai tak terdefinisi). LintArgs +
@@ -5168,6 +5172,25 @@ kosong → None, line 999 → None).
 📊 VERIFIKASI ROUND 116:
    - cargo test -p mivon-env --lib --features lsp lsp: 45 passed (+1)
    - Review subagent: APPROVE.
+
+═══ ROUND 117 — COMP-11 tahap 2b (output Mealy/Moore) ═══
+
+✅ MEALY/MOORE (crates/mivon-synth/src/fsm.rs):
+   - FsmOutputKind {Mealy, Moore} + FsmOutput + FsmInfo.outputs.
+   - collect_rhs_signals lengkap (StreamingConcat/FuncCall/UdpLookup/
+     Dist/IncDec + index lvalue); collect_writes resolve LHS select/
+     array/concat (+index deps konservatif), HierRef skip.
+   - Klasifikasi: RHS selain state → Mealy (menang), else Moore;
+     sort by nama; report baris outputs (guard non-empty).
+   - Review putaran 1 REQUEST CHANGES (varian + LHS + test) →
+     diperbaiki semua.
+
+Test (+1): test_fsm_mealy_moore_outputs (Mealy-menang via FuncCall,
+Moore-murni, sort, state-excluded, report).
+
+📊 VERIFIKASI ROUND 117:
+   - cargo test -p mivon-synth fsm: 6 passed (+1)
+   - Review subagent putaran 2: APPROVE.
 
 ========================================
 END OF AUDIT REPORT
