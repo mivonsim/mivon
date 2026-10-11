@@ -319,6 +319,12 @@ bug di mivon utama (parser/elaborator/simulator). Status: ✅ fixed / ⏳ open.
     berposisi (jalur `expand_all_generates` menurunkannya jadi warning +
     blok di-skip, sesuai kebijakan anti-cascade).
 
+33. **Count replikasi non-konstan ditebak 1** — `{n{...}}` dengan `n` sinyal
+    melebarkan salah diam-diam (count selalu statis di IR, konsisten dengan
+    `RangeSelect` yang sudah error). Fix: error eksplisit. Part-select
+    dinamis SENGAJA tak disentuh (runtime `ExprPartSelect` mendukung lebar
+    dinamis — superset deliberate).
+
 ## ⏳ Open
 
 (tidak ada item open — semua bug historis sudah tertutup)

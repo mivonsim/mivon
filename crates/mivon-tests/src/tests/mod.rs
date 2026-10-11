@@ -24142,6 +24142,80 @@ endmodule
     assert!(r2.is_ok(), "override param-dengan-param harus lolos: {diags2:?}");
 }
 
+/// Lebar replikasi non-konstan ilegal LRM — error eksplisit (count selalu
+/// statis di IR, tak ada jalur runtime dinamis). Part-select dinamis
+/// SENGAJA tak disentuh (runtime IrExpr::ExprPartSelect mendukungnya).
+#[test]
+fn test_dynamic_replicate_width_is_error() {
+    fn elaborate(
+        source: &str,
+    ) -> (
+        Result<mivon_ir::IrDesign, mivon_core::error::SimError>,
+        Vec<mivon_core::diagnostics::Diagnostic>,
+    ) {
+        let mut pp = mivon_parser::preprocessor::Preprocessor::new();
+        let preprocessed = pp.preprocess(source, None).unwrap();
+        let mut lexer = mivon_parser::lexer::Lexer::new(&preprocessed);
+        let mut tokens = Vec::new();
+        loop {
+            let (tok, line, col) = lexer.next_token();
+            if tok == mivon_parser::lexer::Token::Eof {
+                break;
+            }
+            tokens.push((tok, line, col));
+        }
+        let parser = mivon_parser::Parser::new(tokens, "<string>");
+        let mut parser = parser.with_source_lines(&preprocessed);
+        let design = parser.parse_design().unwrap();
+        let source_lines: Vec<String> = preprocessed.lines().map(|s| s.to_string()).collect();
+        let mut elaborator = mivon_elaboration::Elaborator::with_source(
+            design,
+            source_lines,
+            "<string>".to_string(),
+        );
+        let r = elaborator.elaborate(
+            None,
+            mivon_elaboration::elaborator::ElaborateMode::StrictSimulation,
+        );
+        let diags = elaborator.flush_diagnostics();
+        (r, diags)
+    }
+    // Count replikasi dari sinyal.
+    let rep = r#"
+module top;
+  logic [7:0] y;
+  logic n;
+  initial begin y = {n{1'b1}}; $finish; end
+endmodule
+"#;
+    let (r, _) = elaborate(rep);
+    assert!(r.is_err(), "replikasi dinamis harus gagal");
+    // Lebar part-select dari sinyal didukung runtime (superset dinamis) —
+    // hanya replikasi yang wajib statis (count selalu ter-resolve di IR).
+    let ps = r#"
+module top;
+  logic [15:0] a;
+  logic [7:0] y;
+  logic [3:0] idx;
+  initial begin y = a[idx +: 8]; $finish; end
+endmodule
+"#;
+    let (r2, diags2) = elaborate(ps);
+    assert!(r2.is_ok(), "part-select dinamis didukung runtime: {diags2:?}");
+    // Kontrol: keduanya konstan tetap sah.
+    let ok = r#"
+module top;
+  logic [15:0] a;
+  logic [15:0] y;
+  localparam int N = 2;
+  localparam int W = 8;
+  initial begin y = {N{a[0 +: W]}}; $finish; end
+endmodule
+"#;
+    let (r3, diags3) = elaborate(ok);
+    assert!(r3.is_ok(), "bentuk konstan harus lolos: {diags3:?}");
+}
+
 /// Step generate-for non-konstan (sinyal) ilegal LRM — warning eksplisit +
 /// blok di-skip (bukan iterasi step-1 diam-diam).
 #[test]

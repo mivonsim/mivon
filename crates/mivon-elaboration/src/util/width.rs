@@ -192,7 +192,11 @@ pub fn compute_expr_width(
             Ok(total)
         }
         Expr::Replicate { count, expr: inner } => {
-            let c = const_eval_with_params(count, param_vals).unwrap_or(1) as usize;
+            // Jumlah replikasi WAJIB konstan (LRM) — tebak 1 diam-diam
+            // menghasilkan lebar salah (pola buglog #32).
+            let c = const_eval_with_params(count, param_vals).map_err(|_| {
+                "replication count not computable at compile time".to_string()
+            })? as usize;
             let w = compute_expr_width(inner, signal_map, signals, param_vals, package_symbols)?;
             Ok(c.saturating_mul(w))
         }
@@ -235,6 +239,10 @@ pub fn compute_expr_width(
             Ok(1)
         }
         Expr::PartSelect { width, .. } => {
+            // Lebar DINAMIS didukung runtime (IrExpr::ExprPartSelect evaluasi
+            // width saat jalan, LRM §11.5.1) — fallback 1 dipertahankan agar
+            // sizing statis tak gagal total. Beda dengan Replicate yang
+            // count-nya selalu statis di IR.
             Ok(const_eval_with_params(width, param_vals).unwrap_or(1) as usize)
         }
         Expr::MemberAccess { obj, field } => {
