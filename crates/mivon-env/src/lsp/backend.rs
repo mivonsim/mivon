@@ -20,7 +20,7 @@ use lsp_types::{
     LinkedEditingRanges, Location, MarkedString, OneOf, Position, PublishDiagnosticsParams, Range,
     ReferenceParams, RenameOptions, RenameParams, SelectionRange, SelectionRangeParams, SemanticToken,
     SemanticTokens, SemanticTokensLegend, SemanticTokensOptions, SemanticTokensParams,
-    SemanticTokensResult, ServerCapabilities, ServerInfo, SymbolInformation, SymbolKind,
+    SemanticTokensRangeParams, SemanticTokensRangeResult, SemanticTokensResult, ServerCapabilities, ServerInfo, SymbolInformation, SymbolKind,
     TextDocumentPositionParams, TextDocumentSyncCapability, TextDocumentSyncKind, Url,
     WorkspaceEdit, WorkspaceSymbolParams, PrepareRenameResponse,
 };
@@ -1511,6 +1511,13 @@ impl LspBackend {
     ///         3=interface, 4=function, 5=variable,
     ///         6=constant(param), 7=keyword.
     pub(crate) fn compute_semantic_tokens(source: &str) -> Vec<SemanticToken> {
+        Self::encode_semantic_tokens(&Self::semantic_raw_tokens(source))
+    }
+
+    /// LSP-07 tahap 2b: token mentah absolut (line, col, len, legend_idx)
+    /// sebelum delta-encoding — dipakai full & range agar filter baris
+    /// benar (filter SESUDAH encode akan merusak delta).
+    pub(crate) fn semantic_raw_tokens(source: &str) -> Vec<(u32, u32, u32, u32)> {
         // Kumpulkan definisi dari outline → (line, col, len, legend_idx).
         let syms = Self::document_symbols(source);
         let mut raw: Vec<(u32, u32, u32, u32)> = Vec::new();
@@ -1581,12 +1588,16 @@ impl LspBackend {
 
         // Urutkan by (line, col).
         raw.sort_by_key(|&(l, c, _, _)| (l, c));
+        raw
+    }
 
+    /// LSP-07 tahap 2b: delta-encoding LSP dari token mentah absolut.
+    pub(crate) fn encode_semantic_tokens(raw: &[(u32, u32, u32, u32)]) -> Vec<SemanticToken> {
         // Konversi ke delta encoding LSP.
         let mut out: Vec<SemanticToken> = Vec::with_capacity(raw.len());
         let mut prev_line = 0u32;
         let mut prev_col = 0u32;
-        for &(l, c, len, typ) in &raw {
+        for &(l, c, len, typ) in raw {
             let dl = l - prev_line;
             let ds = if l == prev_line { c - prev_col } else { c };
             out.push(SemanticToken {
@@ -1600,6 +1611,24 @@ impl LspBackend {
             prev_col = c;
         }
         out
+    }
+
+    /// LSP-07 tahap 2b: token semantik untuk rentang baris inklusif
+    /// [start_line, end_line] — filter SEBELUM encode agar delta valid.
+    /// `start > end` → kosong.
+    pub(crate) fn semantic_tokens_in_range(
+        source: &str,
+        start_line: u32,
+        end_line: u32,
+    ) -> Vec<SemanticToken> {
+        if start_line > end_line {
+            return Vec::new();
+        }
+        let raw: Vec<(u32, u32, u32, u32)> = Self::semantic_raw_tokens(source)
+            .into_iter()
+            .filter(|(l, _, _, _)| *l >= start_line && *l <= end_line)
+            .collect();
+        Self::encode_semantic_tokens(&raw)
     }
 
     /// Find-references core (murni, bisa diuji) — LSP-04 tahap 1:
@@ -1695,7 +1724,7 @@ impl LanguageServer for LspBackend {
                                 ],
                                 token_modifiers: vec![],
                             },
-                            range: None,
+                            range: Some(true),
                             full: Some(lsp_types::SemanticTokensFullOptions::Bool(true)),
                         },
                     ),
@@ -2208,6 +2237,23 @@ impl LanguageServer for LspBackend {
         };
         let tokens = Self::compute_semantic_tokens(&text);
         Ok(Some(SemanticTokensResult::Tokens(SemanticTokens {
+            result_id: None,
+            data: tokens,
+        })))
+    }
+
+    /// Semantic tokens range (LSP-07 tahap 2b).
+    async fn semantic_tokens_range(
+        &self,
+        params: SemanticTokensRangeParams,
+    ) -> JsonRpcResult<Option<SemanticTokensRangeResult>> {
+        let uri = &params.text_document.uri;
+        let Some(text) = self.document_text(uri) else {
+            return Ok(None);
+        };
+        let tokens =
+            Self::semantic_tokens_in_range(&text, params.range.start.line, params.range.end.line);
+        Ok(Some(SemanticTokensRangeResult::Tokens(SemanticTokens {
             result_id: None,
             data: tokens,
         })))
@@ -3651,6 +3697,29 @@ endmodule
             "keyword: {:?}",
             toks
         );
+    }
+
+    #[test]
+    fn test_semantic_tokens_range() {
+        let src = "module counter;\n  logic clk;\n  assign a = b;\nendmodule\n";
+        let full = LspBackend::compute_semantic_tokens(src);
+        // Range baris 0..0 = subset tak-kosong dari full, tanpa token baris 3.
+        let r0 = LspBackend::semantic_tokens_in_range(src, 0, 0);
+        assert!(!r0.is_empty() && r0.len() < full.len(), "{r0:?} vs {full:?}");
+        assert!(r0.iter().any(|t| t.delta_line == 0 && t.token_type == 0));
+        // Delta rebase: token pertama range selalu delta_line 0.
+        assert_eq!(r0[0].delta_line, 0);
+        // Range terbalik / di luar dokumen → kosong.
+        assert!(LspBackend::semantic_tokens_in_range(src, 2, 1).is_empty());
+        assert!(LspBackend::semantic_tokens_in_range(src, 9, 12).is_empty());
+        // Range non-nol: decode delta → absolut tetap dalam [1,1].
+        let r1 = LspBackend::semantic_tokens_in_range(src, 1, 1);
+        assert!(!r1.is_empty(), "{r1:?}");
+        let mut line = 0u32;
+        for t in &r1 {
+            line += t.delta_line;
+            assert_eq!(line, 1, "{r1:?}");
+        }
     }
 
     #[test]

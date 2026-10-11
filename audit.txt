@@ -1889,14 +1889,16 @@ LSP-06: ⚠️ IN PROGRESS (ROUND 95/113) — hover tahap 1+2a:
          "declaration"). Tahap 2a (ROUND 113): doc_comment_above —
          komentar `//` berurutan di atas definisi masuk hover.
          MASIH OPEN: dokumentasi kaya (port direction + range).
-LSP-07: ⚠️ IN PROGRESS (ROUND 109) — semantic tokens tahap 1:
+LSP-07: ⚠️ IN PROGRESS (ROUND 109/119) — semantic tokens tahap 1+2b:
          backend.rs — capability SemanticTokensOptions dengan legend
          8 tipe (namespace/type/class/interface/function/variable/
          parameter/keyword); handler semantic_tokens_full; core murni
          compute_semantic_tokens(): flatten outline → definisi sebagai
          token + keyword SV scan per baris, delta-encoded LSP format.
          Test 1 unit (module type=0, variable type=5, keyword type=7).
-         MASIH OPEN: range request, delta update, modifier bitset.
+         Tahap 2b (ROUND 119): refactor raw+encode; range request
+         (capability + handler semantic_tokens_range, filter sebelum
+         encode). MASIH OPEN: delta update, modifier bitset.
 LSP-08: ✅ Code lens (ROUND 90) — code_lens handler di LSP backend. compute_code_lens
            menampilkan: (1) di atas setiap module: jumlah test functions ("N tests"),
            (2) di atas setiap function/task: reference count ("N references").
@@ -5209,6 +5211,22 @@ tertutup semua).
 📊 VERIFIKASI ROUND 118:
    - cargo test -p mivon-env --lib --features lsp lsp: 46 passed (+1)
    - Review subagent putaran 2: APPROVE (verifikasi ulang).
+
+═══ ROUND 119 — LSP-07 range request (tahap 2b) ═══
+
+✅ RANGE (crates/mivon-env/src/lsp/backend.rs):
+   - Refactor: semantic_raw_tokens (absolut) + encode_semantic_tokens;
+     compute_semantic_tokens = komposisi (output identik).
+   - semantic_tokens_in_range(start,end): filter absolut lalu encode
+     (delta rebase valid); start>end → kosong.
+   - Capability range=true + handler semantic_tokens_range.
+
+Test (+1): test_semantic_tokens_range (subset, rebase 0, terbalik,
+OOB, decode absolut range 1..1).
+
+📊 VERIFIKASI ROUND 119:
+   - cargo test -p mivon-env --lib --features lsp lsp: 47 passed (+1)
+   - Review subagent: APPROVE.
 
 ========================================
 END OF AUDIT REPORT
