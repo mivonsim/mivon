@@ -274,22 +274,36 @@ pub fn expand_all_generates(
 }
 
 /// Ekstrak nilai step dari statement update generate for loop.
-pub fn extract_generate_step(step: &Option<Stmt>, param_vals: &HashMap<Symbol, i64>) -> i64 {
+/// Step TAK DIKETAHUI (mis. `i += s` dengan `s` sinyal) adalah ilegal LRM —
+/// error (bukan tebak 1 diam-diam seperti sebelumnya). Tanpa statement
+/// update atau bentuk non-Add/Sub (mis. `i++`) tetap default 1.
+pub fn extract_generate_step(
+    step: &Option<Stmt>,
+    param_vals: &HashMap<Symbol, i64>,
+) -> Result<i64, ElabError> {
     let Some(Stmt::BlockingAssign { rhs, .. }) = step else {
-        return 1;
+        return Ok(1);
     };
     match rhs {
         Expr::BinaryOp {
             op: BinaryOp::Add,
-            lhs: _,
             rhs,
-        } => const_eval_with_params(rhs, param_vals).unwrap_or(1),
+            ..
+        } => const_eval_with_params(rhs, param_vals).map_err(|e| {
+            let (l, c) = expr_location(rhs);
+            ElabError::new(format!("generate for step eval failed: {}", e), l, c)
+        }),
         Expr::BinaryOp {
             op: BinaryOp::Sub,
-            lhs: _,
             rhs,
-        } => -const_eval_with_params(rhs, param_vals).unwrap_or(1),
-        _ => 1,
+            ..
+        } => const_eval_with_params(rhs, param_vals)
+            .map(|v| v.wrapping_neg())
+            .map_err(|e| {
+                let (l, c) = expr_location(rhs);
+                ElabError::new(format!("generate for step eval failed: {}", e), l, c)
+            }),
+        _ => Ok(1),
     }
 }
 
@@ -574,7 +588,7 @@ pub fn expand_generate_block(
                     }
                     None => 0,
                 };
-                let step_val = extract_generate_step(step, param_vals);
+                let step_val = extract_generate_step(step, param_vals)?;
                 let max_iter = MAX_GENERATED_ITEMS / body_items.len().max(1);
                 if step_val > 0 {
                     let mut cur = start_val;

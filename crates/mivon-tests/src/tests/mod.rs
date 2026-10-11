@@ -24141,3 +24141,77 @@ endmodule
     let (r2, diags2) = elaborate(ok);
     assert!(r2.is_ok(), "override param-dengan-param harus lolos: {diags2:?}");
 }
+
+/// Step generate-for non-konstan (sinyal) ilegal LRM — warning eksplisit +
+/// blok di-skip (bukan iterasi step-1 diam-diam).
+#[test]
+fn test_generate_for_step_nonconst_warns() {
+    fn elaborate(
+        source: &str,
+    ) -> (
+        Result<mivon_ir::IrDesign, mivon_core::error::SimError>,
+        Vec<mivon_core::diagnostics::Diagnostic>,
+    ) {
+        let mut pp = mivon_parser::preprocessor::Preprocessor::new();
+        let preprocessed = pp.preprocess(source, None).unwrap();
+        let mut lexer = mivon_parser::lexer::Lexer::new(&preprocessed);
+        let mut tokens = Vec::new();
+        loop {
+            let (tok, line, col) = lexer.next_token();
+            if tok == mivon_parser::lexer::Token::Eof {
+                break;
+            }
+            tokens.push((tok, line, col));
+        }
+        let parser = mivon_parser::Parser::new(tokens, "<string>");
+        let mut parser = parser.with_source_lines(&preprocessed);
+        let design = parser.parse_design().unwrap();
+        let source_lines: Vec<String> = preprocessed.lines().map(|s| s.to_string()).collect();
+        let mut elaborator = mivon_elaboration::Elaborator::with_source(
+            design,
+            source_lines,
+            "<string>".to_string(),
+        );
+        let r = elaborator.elaborate(
+            None,
+            mivon_elaboration::elaborator::ElaborateMode::StrictSimulation,
+        );
+        let diags = elaborator.flush_diagnostics();
+        (r, diags)
+    }
+    let src = r#"
+module top;
+  logic s;
+  genvar i;
+  generate
+    for (i = 0; i < 4; i = i + s) begin : g
+      wire w;
+    end
+  endgenerate
+  initial begin s = 0; $finish; end
+endmodule
+"#;
+    let (r, diags) = elaborate(src);
+    // Jalur expand_all_generates menurunkan error ekspansi menjadi warning +
+    // blok di-skip (kebijakan anti-cascade): asersi warning eksplisitnya.
+    assert!(r.is_ok(), "elaborate lanjut: {diags:?}");
+    let msgs: Vec<&str> = diags.iter().map(|d| d.message.as_ref()).collect();
+    assert!(
+        msgs.iter().any(|m| m.contains("step eval failed")),
+        "warning step harus eksplisit (bukan iterasi step-1 diam-diam): {msgs:?}"
+    );
+    // Step konstan tetap sah.
+    let ok = r#"
+module top;
+  genvar i;
+  generate
+    for (i = 0; i < 8; i = i + 2) begin : g
+      wire w;
+    end
+  endgenerate
+  initial begin $finish; end
+endmodule
+"#;
+    let (r2, diags2) = elaborate(ok);
+    assert!(r2.is_ok(), "step konstan harus lolos: {diags2:?}");
+}

@@ -313,6 +313,12 @@ bug di mivon utama (parser/elaborator/simulator). Status: ✅ fixed / ⏳ open.
     untuk default hilang/tak-ter-evaluasi) SENGAJA dibiarkan: heuristik
     keep-going terdokumentasi untuk desain nyata (OpenTitan).
 
+32. **Step generate-for non-konstan ditebak 1** — `for (i=0; i<N; i+=s)`
+    dengan `s` sinyal mengembang dengan step 1 diam-diam (hardware salah).
+    Fix: `extract_generate_step` return `Result` + error `step eval failed`
+    berposisi (jalur `expand_all_generates` menurunkannya jadi warning +
+    blok di-skip, sesuai kebijakan anti-cascade).
+
 ## ⏳ Open
 
 (tidak ada item open — semua bug historis sudah tertutup)
