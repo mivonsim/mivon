@@ -1833,15 +1833,19 @@ FORMAL-16: ✅ Cover property formal analysis (ROUND 85b) — FORMAL-16:
 4.9 LSP/IDE GAPS
 
 LSP-01: ✅ LSP server MVP (tower-lsp 0.20, --lsp flag, publishDiagnostics via parser)
-LSP-02: ⚠️ IN PROGRESS (ROUND 100) — autocomplete tahap 1:
+LSP-02: ⚠️ IN PROGRESS (ROUND 100/111) — autocomplete tahap 1+2a:
          backend.rs — capability CompletionOptions + handler completion;
          core murni compute_completions(): prefix identifier di kursor →
          kandidat simbol dokumen (via outline: module/port/signal/param/
          function) + ~70 keyword SystemVerilog, dedup + sorted.
          Kind mapping ke CompletionItemKind. Test 1 unit (prefix "cou"
          → module; prefix "en" → enable VARIABLE + end/endcase KEYWORD;
-         prefix kosong → kosong). MASIH OPEN: snippet, context-aware
-         (port vs statement), resolve detail/dokumentasi.
+         prefix kosong → kosong). Tahap 2a (ROUND 111):
+         snippet_for_keyword (13 blok: module/interface/package/function/
+         task/begin/fork/case/if/always_ff/always_comb/for/foreach,
+         placeholder $1/$0) + handler isi insert_text SNIPPET.
+         MASIH OPEN: context-aware (port vs statement), resolve
+         detail/dokumentasi.
 LSP-03: ⚠️ IN PROGRESS (ROUND 93) — go-to-definition tahap 1:
          crates/maria-env/src/lsp/backend.rs — goto_definition handler
          (capability definition_provider), cache dokumen terbuka
@@ -5042,6 +5046,24 @@ report berisi minimized + encoding).
 
 📊 VERIFIKASI ROUND 110:
    - cargo test -p mivon-synth fsm: 5 passed, 0 failed (+1)
+   - Review subagent: APPROVE.
+
+═══ ROUND 111 — LSP-02 autocomplete tahap 2a (snippet blok) ═══
+
+Kerja bertahap LSP-02 — tahap 2a selesai; item tetap ⚠️ IN PROGRESS
+(context-aware, resolve detail masih open).
+
+✅ SNIPPET BLOK (crates/mivon-env/src/lsp/backend.rs):
+   - snippet_for_keyword(kw): 13 keyword struktural → body snippet
+     LSP ($1 tab stop, $0 akhir); non-blok → None.
+   - Handler completion: label/kind utuh, tambah insert_text +
+     insert_text_format SNIPPET bila ada.
+
+Test (+1): test_snippet_for_keyword (module→endmodule+$1,
+always_ff→posedge, endmodule/counter→None).
+
+📊 VERIFIKASI ROUND 111:
+   - cargo test -p mivon-env --lib --features lsp lsp: 41 passed (+1)
    - Review subagent: APPROVE.
 
 ========================================

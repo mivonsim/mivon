@@ -16,7 +16,7 @@ use lsp_types::{
     Command as LspCommand, CompletionItem, CompletionItemKind, CompletionParams,
     CompletionResponse, Diagnostic, DiagnosticSeverity, DocumentSymbol, FoldingRange,
     FoldingRangeKind, FoldingRangeParams, GotoDefinitionParams, GotoDefinitionResponse, Hover,
-    HoverContents, InitializeParams, InitializeResult, LanguageString, LinkedEditingRangeParams,
+    HoverContents, InitializeParams, InitializeResult, InsertTextFormat, LanguageString, LinkedEditingRangeParams,
     LinkedEditingRanges, Location, MarkedString, OneOf, Position, PublishDiagnosticsParams, Range,
     ReferenceParams, RenameParams, SelectionRange, SelectionRangeParams, SemanticToken,
     SemanticTokens, SemanticTokensLegend, SemanticTokensOptions, SemanticTokensParams,
@@ -1142,6 +1142,27 @@ impl LspBackend {
         out
     }
 
+    /// LSP-02 tahap 2a: snippet blok untuk keyword struktural.
+    /// Return body snippet LSP (`$1` = tab stop pertama) atau None.
+    pub(crate) fn snippet_for_keyword(kw: &str) -> Option<&'static str> {
+        Some(match kw {
+            "module" => "module $1;\n\t$0\nendmodule",
+            "interface" => "interface $1;\n\t$0\nendinterface",
+            "package" => "package $1;\n\t$0\nendpackage",
+            "function" => "function $1;\n\t$0\nendfunction",
+            "task" => "task $1;\n\t$0\nendtask",
+            "begin" => "begin\n\t$0\nend",
+            "fork" => "fork\n\t$0\njoin",
+            "case" => "case ($1)\n\tdefault: $0\nendcase",
+            "if" => "if ($1) begin\n\t$0\nend",
+            "always_ff" => "always_ff @(posedge $1) begin\n\t$0\nend",
+            "always_comb" => "always_comb begin\n\t$0\nend",
+            "for" => "for ($1) begin\n\t$0\nend",
+            "foreach" => "foreach ($1) begin\n\t$0\nend",
+            _ => return None,
+        })
+    }
+
     /// Autocomplete core (murni, bisa diuji) — LSP-02 tahap 1:
     /// kandidat = simbol dokumen (module/port/signal/param/function via
     /// outline) + keyword SystemVerilog umum, difilter prefix identifier
@@ -1761,10 +1782,15 @@ impl LanguageServer for LspBackend {
         };
         let items: Vec<CompletionItem> = Self::compute_completions(&text, pos.line, pos.character)
             .into_iter()
-            .map(|(label, kind)| CompletionItem {
-                label,
-                kind: Some(DocSymbol::completion_kind(kind)),
-                ..Default::default()
+            .map(|(label, kind)| {
+                let snippet = Self::snippet_for_keyword(&label);
+                CompletionItem {
+                    label,
+                    kind: Some(DocSymbol::completion_kind(kind)),
+                    insert_text: snippet.map(|s| s.to_string()),
+                    insert_text_format: snippet.map(|_| InsertTextFormat::SNIPPET),
+                    ..Default::default()
+                }
             })
             .collect();
         if items.is_empty() {
@@ -3284,6 +3310,16 @@ endmodule
 
         // Prefix kosong (kursor setelah spasi) → tidak ada kandidat (MVP).
         assert!(LspBackend::compute_completions(SAMPLE, 7, 0).is_empty());
+    }
+
+    #[test]
+    fn test_snippet_for_keyword() {
+        let s = LspBackend::snippet_for_keyword("module").expect("module punya snippet");
+        assert!(s.contains("endmodule"), "{s}");
+        assert!(s.contains("$1"), "{s}");
+        assert!(LspBackend::snippet_for_keyword("always_ff").unwrap().contains("posedge"));
+        assert!(LspBackend::snippet_for_keyword("endmodule").is_none());
+        assert!(LspBackend::snippet_for_keyword("counter").is_none());
     }
 
     #[test]
