@@ -1938,13 +1938,16 @@ LSP-14: ⚠️ Type hierarchy — PARTIAL (ROUND 91)
          SystemVerilog tidak punya inheritance tree exposed via LSP. Dasar
          class extends chains bisa ditelusuri via document_symbols. Status:
          masih open untuk implementasi penuh.
-LSP-15: ⚠️ IN PROGRESS (ROUND 98) — folding range tahap 1:
+LSP-15: ⚠️ IN PROGRESS (ROUND 98/114) — folding range tahap 1+2a:
          backend.rs — capability folding_range_provider + handler
          folding_range; core murni compute_folding_ranges(): stack
          pairing untuk scope utama (module/interface/package/program/
          class/checker/function/task/generate) + begin...end dan
          case...endcase (urutan close-before-open utk baris `end else
-         begin`). MASIH OPEN: komentar block fold, region import.
+         begin`). Tahap 2a (ROUND 114): comment_folding_ranges —
+         blok `/* */` multi-baris + marker `// #region/#endregion`
+         (alias tanpa `#`, batas kata, unclosed aman).
+         MASIH OPEN: import region khusus.
 LSP-16: ✅ Signature help (ROUND 90) — signature_help handler di LSP backend.
            Trigger character: '('. find_function_signature scan text untuk
            function/task declaration → extract label + param list. Active parameter
@@ -5106,6 +5109,29 @@ integrasi hover).
 📊 VERIFIKASI ROUND 113:
    - cargo test -p mivon-env --lib --features lsp lsp: 42 passed (+1)
    - Review subagent: APPROVE.
+
+═══ ROUND 114 — LSP-15 folding tahap 2a (block comment + region) ═══
+
+Kerja bertahap LSP-15 — tahap 2a selesai; item tetap ⚠️ IN PROGRESS
+(import region khusus masih open).
+
+✅ COMMENT/REGION FOLD (crates/mivon-env/src/lsp/backend.rs):
+   - comment_folding_ranges(source): blok `/*` tanpa `*/` sebaris →
+     tutup di baris `*/` pertama; single-line diabaikan; unclosed aman.
+   - Region `// #region/#endregion` (alias tanpa `#`, match kata
+     pertama + batas kata; `// regional` bukan marker; komentar garis
+     lain di-skip deteksi blok).
+   - compute_folding_ranges extend hasil helper + sort/dedup.
+
+Test (+1): test_folding_comment_region (blok 0..2, region 4..6,
+module utuh, single-line/unclosed/alias/regional-negatif).
+
+Review putaran 1 REQUEST CHANGES (batas kata, guard //, test
+diperkuat) → diperbaiki, lolos.
+
+📊 VERIFIKASI ROUND 114:
+   - cargo test -p mivon-env --lib --features lsp folding: 2 passed (+1)
+   - Full lsp: 43 passed.
 
 ========================================
 END OF AUDIT REPORT

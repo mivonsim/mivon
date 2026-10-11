@@ -1174,8 +1174,60 @@ impl LspBackend {
             }
         }
 
+        // LSP-15 tahap 2a: fold blok komentar `/* ... */` multi-baris +
+        // region `// #region` / `// #endregion` (alias tanpa `#`).
+        out.extend(Self::comment_folding_ranges(source));
+
         out.sort_by_key(|(s, e)| (*s, *e));
         out.dedup();
+        out
+    }
+
+    /// LSP-15 tahap 2a: rentang fold komentar blok & region marker.
+    /// Murni, tanpa sentuh stack scope utama.
+    pub(crate) fn comment_folding_ranges(source: &str) -> Vec<(u32, u32)> {
+        let mut out: Vec<(u32, u32)> = Vec::new();
+        let lines: Vec<&str> = source.lines().collect();
+        let mut block_start: Option<u32> = None;
+        let mut region_stack: Vec<u32> = Vec::new();
+        for (idx, line) in lines.iter().enumerate() {
+            let t = line.trim_start();
+            // Region marker: `// #region` / `// region` (alias tanpa `#`).
+            // Kata pertama setelah `//` harus tepat keyword (batas kata —
+            // `// regional` bukan marker).
+            if let Some(c) = t.strip_prefix("//") {
+                let first = c
+                    .trim_start()
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or("")
+                    .trim_end_matches(':')
+                    .to_lowercase();
+                if first == "#endregion" || first == "endregion" {
+                    if let Some(s) = region_stack.pop() {
+                        out.push((s, idx as u32));
+                    }
+                    continue;
+                }
+                if first == "#region" || first == "region" {
+                    region_stack.push(idx as u32);
+                    continue;
+                }
+                // Komentar garis lain: bukan marker DAN bukan blok.
+                continue;
+            }
+            // Blok komentar /* ... */.
+            if block_start.is_none() {
+                if let Some(open) = line.find("/*") {
+                    let rest = &line[open + 2..];
+                    if !rest.contains("*/") {
+                        block_start = Some(idx as u32);
+                    }
+                }
+            } else if line.contains("*/") {
+                out.push((block_start.take().unwrap(), idx as u32));
+            }
+        }
         out
     }
 
@@ -3302,6 +3354,35 @@ endmodule
         endmodule\n";
         let f3 = LspBackend::compute_folding_ranges(nested);
         assert_eq!(f3.len(), 3, "{:?}", f3); // if-begin, else-begin, module
+    }
+
+    #[test]
+    fn test_folding_comment_region() {
+        // Blok komentar /* */ multi-baris + marker #region terlipat.
+        let src = "/* lisensi\nspdx\n*/\nmodule m;\n// #region ports\ninput clk;\n// #endregion\nendmodule\n";
+        let f = LspBackend::compute_folding_ranges(src);
+        assert!(f.contains(&(0, 2)), "blok komentar 0..2: {f:?}");
+        assert!(f.contains(&(4, 6)), "region 4..6: {f:?}");
+        assert!(f.contains(&(3, 7)), "module tetap: {f:?}");
+        // Single-line /* */ tidak jadi fold (tolak semua start==0).
+        let single = "/* satu */\nmodule m;\nendmodule\n";
+        let fs = LspBackend::compute_folding_ranges(single);
+        assert!(!fs.iter().any(|(s, _)| *s == 0), "{fs:?}");
+        // Unclosed /* dan unclosed region: tidak panic, tidak emit.
+        let unclosed = "/* buka\nmodule m;\nendmodule\n";
+        let fu = LspBackend::compute_folding_ranges(unclosed);
+        assert!(!fu.iter().any(|(s, _)| *s == 0), "{fu:?}");
+        let unreg = "// #region x\nmodule m;\nendmodule\n";
+        assert!(!LspBackend::compute_folding_ranges(unreg)
+            .iter()
+            .any(|(s, e)| (*s, *e) == (0, 2)), "{unreg}");
+        // Alias tanpa `#` + `// regional` bukan marker.
+        let alias = "// region io\ninput clk;\n// endregion\n";
+        let fa = LspBackend::compute_folding_ranges(alias);
+        assert!(fa.contains(&(0, 2)), "{fa:?}");
+        let notreg = "// regional bus\nmodule m;\n// #endregion\nendmodule\n";
+        let fnr = LspBackend::compute_folding_ranges(notreg);
+        assert!(!fnr.iter().any(|(s, e)| *e == 2 && *s == 0), "{fnr:?}");
     }
 
     #[test]
