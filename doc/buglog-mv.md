@@ -323,7 +323,10 @@ bug di mivon utama (parser/elaborator/simulator). Status: ✅ fixed / ⏳ open.
     melebarkan salah diam-diam (count selalu statis di IR, konsisten dengan
     `RangeSelect` yang sudah error). Fix: error eksplisit. Part-select
     dinamis SENGAJA tak disentuh (runtime `ExprPartSelect` mendukung lebar
-    dinamis — superset deliberate).
+    dinamis — superset deliberate). Follow-up: error di jalur implicit-net
+    mematikan desain fuzz yang sebelumnya jalan → di sana warning +
+    fallback 1 (jalur sudah degraded); width LHS dinamis (IR statis) juga
+    warning `NotImplemented` + fallback.
 
 ## ⏳ Open
 
