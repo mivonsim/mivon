@@ -409,10 +409,14 @@ fn eval_func(
             let Some(arg) = args.first() else {
                 return Err("$bits needs 1 arg".to_string());
             };
-            // Prioritas: konstanta biasa (skalar/array) → evaluasi ekspresi.
-            if let Ok(v) = eval_expr(arg, ctx, cur_pkg) {
-                return Ok(v);
+            // $bits = LEBAR argumen (bukan nilainya!) — sinkron dengan arm
+            // $bits di const_eval_with_params (lihat buglog #34).
+            if let Some(w) = sized_width(arg) {
+                return Ok(CVal::Scalar(w as i64));
             }
+            // Prioritas lama (konstanta biasa → evaluasi ekspresi) sudah
+            // tercakup sized_width untuk literal; typedef ditangani di bawah.
+            // Jangan fallback ke nilai arg (salah: `$bits('b101)` = 5).
             // `$bits(typedef)` — argumen adalah nama tipe (ident atau
             // `pkg::type`). Hitung lebar typedef dari package_symbols,
             // termasuk nested struct/typedef dan range eksplisit.

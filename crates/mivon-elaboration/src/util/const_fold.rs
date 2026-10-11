@@ -74,11 +74,12 @@ pub fn try_fold_const_at_width(
     if contains_xz_literal(expr) {
         return None;
     }
-    // System function ($bits/$size/$clog2/…) BUKAN konstanta nilai-argumen:
-    // `const_eval_with_params($bits(X)` mengembalikan NILAI X (mis. 220),
+    // System function ($clog2/…) BUKAN konstanta nilai-argumen:
+    // `const_eval_with_params($clog2(X)` mengembalikan NILAI X (mis. 220),
     // bukan jumlah bit — memakai nilai itu sebagai hasil fold merusak semantik
     // (regresi `$bits(COEFFS)` = 220 padahal 128). Biarkan arm SysFunc di
-    // elaborate_expr yang menangani dengan benar.
+    // elaborate_expr yang menangani dengan benar. (`$bits`/`$size` kini
+    // mengembalikan LEBAR via sized_width — buglog #34.)
     if contains_sysfunc(expr) {
         return None;
     }
