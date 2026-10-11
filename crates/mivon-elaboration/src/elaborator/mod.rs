@@ -6366,14 +6366,21 @@ impl Elaborator {
                         for (pname, pexpr) in &inst.param_assigns {
                             let val = match const_eval_with_params(pexpr, &effective_params) {
                                 Ok(v) => v,
-                                Err(_) => {
+                                Err(e) => {
                                     let (l, c) = expr_location(pexpr);
+                                    // Override positional disimpan parser sebagai
+                                    // `__paramN` — tampilkan sebagai indeks agar
+                                    // terbaca (`positional #3`), bukan nama semu.
+                                    let what = pname.as_str().strip_prefix("__param").map_or_else(
+                                        || format!("override parameter '{pname}'"),
+                                        |n| format!("override parameter positional #{n}"),
+                                    );
                                     return Err(self.elab_diag_at(
                                         DiagCode::ParamMismatch,
                                         format!(
-                                            "override parameter '{pname}' bukan ekspresi konstan \
+                                            "{what} bukan ekspresi konstan \
                                              pada instance '{}' — nilai parameter harus dapat \
-                                             dievaluasi saat elaborasi",
+                                             dievaluasi saat elaborasi ({e})",
                                             inst.instance_name.as_str()
                                         ),
                                         l,

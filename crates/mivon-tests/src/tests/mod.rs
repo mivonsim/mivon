@@ -24107,8 +24107,8 @@ endmodule
     assert!(r.is_err(), "override non-konstan harus gagal");
     let msgs: Vec<&str> = diags.iter().map(|d| d.message.as_ref()).collect();
     assert!(
-        msgs.iter().any(|m| m.contains("konstan")),
-        "diagnostic harus menyebut akar masalah: {msgs:?}"
+        msgs.iter().any(|m| m.contains("konstan") && m.contains("'W'") && m.contains("'u'")),
+        "diagnostic harus menyebut param + instance: {msgs:?}"
     );
     // Override konstan (param lain) tetap sah.
     let ok = r#"
