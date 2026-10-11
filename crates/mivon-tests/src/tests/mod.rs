@@ -24031,4 +24031,22 @@ endmodule
         "tanpa warning palsu: {:?}",
         diags2.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
+    // Shadowing LRM: param package-sendiri menang atas nama global sama.
+    let shadow = r#"
+parameter int W = 3;
+package sp;
+parameter int W = 1;
+typedef enum { G = W } E3;
+endpackage
+module top;
+  import sp::*;
+  E3 s3;
+  initial begin #1; s3 = G; #1; $finish; end
+endmodule
+"#;
+    let (r3, diags3) = elaborate(shadow);
+    assert!(r3.is_ok(), "shadowing harus lolos: {diags3:?}");
+    let sigs3 = mivon_api::simulate_signals(shadow, 10).unwrap();
+    let s3 = sigs3.iter().find(|(n, _)| n == "s3").unwrap().1.to_u64();
+    assert_eq!(s3, 1, "param package (1) menang atas global (3), bukan sebaliknya");
 }

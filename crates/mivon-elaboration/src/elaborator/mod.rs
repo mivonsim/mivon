@@ -3321,14 +3321,10 @@ impl Elaborator {
                 module_enums.len()
             );
         }
-        // Verifikasi pasca-fixpoint (lihat build_pkg_param_ctx): nilai enum
-        // lokal yang tak ter-evaluasi dilaporkan, bukan ditebak.
-        self.verify_enum_members(
-            &module_enums,
-            &format!("module '{}'", module.name.as_str()),
-            &ctx,
-            None,
-        );
+        // Verifikasi di sini SENGAJA dilewati: enum lokal module diverifikasi
+        // sekali di elaborate_module_with_params (ctx effective_params lebih
+        // lengkap: parameter module + generate). Verifikasi ganda = warning
+        // duplikat untuk typedef yang sama.
         // Merge konstanta package yang sudah dievaluasi penuh — hanya untuk
         // import set milik module ($unit sudah ada di unit_import_ctx).
         let tl = std::time::Instant::now();
