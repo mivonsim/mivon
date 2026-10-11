@@ -2866,6 +2866,18 @@ impl Elaborator {
                             Ok(w) => (w.max(1)) as usize,
                             Err(_) => {
                                 let _ = self.elaborate_expr(width, signal_map, signals);
+                                // IrLValue::ExprPartSelect.width statis (tak ada
+                                // varian dinamis seperti rvalue) — width sinyal
+                                // hanya bisa ditebak 1. Warning eksplisit agar
+                                // tak silent-wrong (pola buglog #33).
+                                let (wl, wc) = expr_location(width);
+                                self.elab_warn_at(
+                                    DiagCode::NotImplemented,
+                                    "lebar part-select pada lvalue tidak konstan — \
+                                     dipakai 1 (tulis IR tak mendukung width dinamis)",
+                                    wl,
+                                    wc,
+                                );
                                 compute_expr_width(
                                     width,
                                     signal_map,

@@ -5885,17 +5885,31 @@ impl Elaborator {
                         if signal_map.contains_key(&name) {
                             continue;
                         }
+                        // Lebar dari rhs; bila tak dapat ditentukan (mis.
+                        // replikasi dinamis) warning + fallback 1 — implicit
+                        // net sendiri sudah degraded (ident tak dideklarasikan)
+                        // sehingga error di sini mematikan desain yang
+                        // sebelumnya jalan dengan warning (pola buglog #33).
                         let width = if matches!(&assign.lhs, Expr::Ident { name: ln, .. } if *ln == name)
                         {
-                            super::util::width::compute_expr_width(
+                            match super::util::width::compute_expr_width(
                                 &assign.rhs,
                                 &signal_map,
                                 &signals,
                                 &self.param_vals,
                                 &self.package_symbols,
-                            )
-                            .unwrap_or(1)
-                            .max(1)
+                            ) {
+                                Ok(w) => w.max(1),
+                                Err(e) => {
+                                    self.elab_warn_at(
+                                        DiagCode::WidthMismatchWarning,
+                                        format!("lebar implicit net '{name}' tak dapat ditentukan ({e}) — dipakai 1"),
+                                        line,
+                                        col,
+                                    );
+                                    1
+                                }
+                            }
                         } else {
                             1
                         };

@@ -24216,6 +24216,60 @@ endmodule
     assert!(r3.is_ok(), "bentuk konstan harus lolos: {diags3:?}");
 }
 
+/// Width part-select LHS dinamis tak terwakili di IR statis — warning
+/// eksplisit (bukan tebak 1 diam-diam). Rvalue dinamis tetap didukung penuh.
+#[test]
+fn test_dynamic_partselect_lvalue_width_warns() {
+    fn elaborate(
+        source: &str,
+    ) -> (
+        Result<mivon_ir::IrDesign, mivon_core::error::SimError>,
+        Vec<mivon_core::diagnostics::Diagnostic>,
+    ) {
+        let mut pp = mivon_parser::preprocessor::Preprocessor::new();
+        let preprocessed = pp.preprocess(source, None).unwrap();
+        let mut lexer = mivon_parser::lexer::Lexer::new(&preprocessed);
+        let mut tokens = Vec::new();
+        loop {
+            let (tok, line, col) = lexer.next_token();
+            if tok == mivon_parser::lexer::Token::Eof {
+                break;
+            }
+            tokens.push((tok, line, col));
+        }
+        let parser = mivon_parser::Parser::new(tokens, "<string>");
+        let mut parser = parser.with_source_lines(&preprocessed);
+        let design = parser.parse_design().unwrap();
+        let source_lines: Vec<String> = preprocessed.lines().map(|s| s.to_string()).collect();
+        let mut elaborator = mivon_elaboration::Elaborator::with_source(
+            design,
+            source_lines,
+            "<string>".to_string(),
+        );
+        let r = elaborator.elaborate(
+            None,
+            mivon_elaboration::elaborator::ElaborateMode::StrictSimulation,
+        );
+        let diags = elaborator.flush_diagnostics();
+        (r, diags)
+    }
+    let src = r#"
+module top;
+  logic [15:0] a;
+  logic [15:0] y;
+  logic [3:0] w;
+  initial begin y[0 +: w] = 8'hFF; $finish; end
+endmodule
+"#;
+    let (r, diags) = elaborate(src);
+    assert!(r.is_ok(), "elaborate lanjut terdegradasi: {diags:?}");
+    let msgs: Vec<&str> = diags.iter().map(|d| d.message.as_ref()).collect();
+    assert!(
+        msgs.iter().any(|m| m.contains("tidak konstan")),
+        "warning width harus eksplisit: {msgs:?}"
+    );
+}
+
 /// Step generate-for non-konstan (sinyal) ilegal LRM — warning eksplisit +
 /// blok di-skip (bukan iterasi step-1 diam-diam).
 #[test]
