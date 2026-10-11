@@ -18,10 +18,11 @@ use lsp_types::{
     FoldingRangeKind, FoldingRangeParams, GotoDefinitionParams, GotoDefinitionResponse, Hover,
     HoverContents, InitializeParams, InitializeResult, InsertTextFormat, LanguageString, LinkedEditingRangeParams,
     LinkedEditingRanges, Location, MarkedString, OneOf, Position, PublishDiagnosticsParams, Range,
-    ReferenceParams, RenameParams, SelectionRange, SelectionRangeParams, SemanticToken,
+    ReferenceParams, RenameOptions, RenameParams, SelectionRange, SelectionRangeParams, SemanticToken,
     SemanticTokens, SemanticTokensLegend, SemanticTokensOptions, SemanticTokensParams,
     SemanticTokensResult, ServerCapabilities, ServerInfo, SymbolInformation, SymbolKind,
-    TextDocumentSyncCapability, TextDocumentSyncKind, Url, WorkspaceEdit, WorkspaceSymbolParams,
+    TextDocumentPositionParams, TextDocumentSyncCapability, TextDocumentSyncKind, Url,
+    WorkspaceEdit, WorkspaceSymbolParams, PrepareRenameResponse,
 };
 use mivon_parser::lexer::Lexer;
 use mivon_parser::preprocessor::Preprocessor;
@@ -767,6 +768,19 @@ impl LspBackend {
     /// (range) untuk SEMUA kemunculan identifier di dokumen. Return
     /// Err dengan pesan jelas bila kursor bukan identifier atau nama
     /// baru tidak valid.
+    /// LSP-05 tahap 2a: validasi awal rename — kembalikan
+    /// (line, start_col, end_col) kata di kursor, atau None bila
+    /// kursor tidak di atas identifier.
+    pub(crate) fn prepare_rename_range(
+        source: &str,
+        line: u32,
+        character: u32,
+    ) -> Option<(u32, u32, u32)> {
+        let line_text = source.lines().nth(line as usize)?;
+        let (_, s, e) = Self::word_at_position(line_text, character)?;
+        Some((line, s, e))
+    }
+
     pub(crate) fn compute_rename_edits(
         source: &str,
         line: u32,
@@ -1616,7 +1630,10 @@ impl LanguageServer for LspBackend {
                 )),
                 definition_provider: Some(OneOf::Left(true)),
                 references_provider: Some(OneOf::Left(true)),
-                rename_provider: Some(OneOf::Left(true)),
+                rename_provider: Some(OneOf::Right(RenameOptions {
+                    prepare_provider: Some(true),
+                    work_done_progress_options: Default::default(),
+                })),
                 hover_provider: Some(lsp_types::HoverProviderCapability::Simple(true)),
                 document_symbol_provider: Some(OneOf::Left(true)),
                 workspace_symbol_provider: Some(OneOf::Left(true)),
@@ -1819,6 +1836,39 @@ impl LanguageServer for LspBackend {
             return Ok(None);
         }
         Ok(Some(refs))
+    }
+
+    /// LSP-05 tahap 2a: prepare_rename — validasi kursor + kembalikan
+    /// range kata dan placeholder (nama saat ini).
+    async fn prepare_rename(
+        &self,
+        params: TextDocumentPositionParams,
+    ) -> JsonRpcResult<Option<PrepareRenameResponse>> {
+        let uri = &params.text_document.uri;
+        let pos = params.position;
+        let Some(text) = self.document_text(uri) else {
+            return Ok(None);
+        };
+        let Some((line, s, e)) = Self::prepare_rename_range(&text, pos.line, pos.character)
+        else {
+            return Ok(None);
+        };
+        let placeholder = text
+            .lines()
+            .nth(line as usize)
+            .map(|l| {
+                let a = (s as usize).min(l.len());
+                let b = (e as usize).min(l.len());
+                l[a..b].to_string()
+            })
+            .unwrap_or_default();
+        Ok(Some(PrepareRenameResponse::RangeWithPlaceholder {
+            range: Range {
+                start: Position { line, character: s },
+                end: Position { line, character: e },
+            },
+            placeholder,
+        }))
     }
 
     /// Rename (LSP-05 tahap 1): rename identifier di seluruh dokumen.
@@ -3253,6 +3303,24 @@ endmodule
             edits_cnt
         );
         assert!(edits_cnt.iter().all(|(l, _, _)| *l >= cnt_decl));
+    }
+
+    #[test]
+    fn test_prepare_rename_range() {
+        // Di atas identifier → range kata; di luar → None.
+        let use_line = line_of("else if (enable)");
+        let col = SAMPLE
+            .lines()
+            .nth(use_line as usize)
+            .unwrap()
+            .find("enable")
+            .unwrap() as u32;
+        let (l, s, e) = LspBackend::prepare_rename_range(SAMPLE, use_line, col)
+            .expect("range ketemu");
+        assert_eq!(l, use_line);
+        assert_eq!(&SAMPLE.lines().nth(l as usize).unwrap()[s as usize..e as usize], "enable");
+        assert!(LspBackend::prepare_rename_range(SAMPLE, 7, 0).is_none());
+        assert!(LspBackend::prepare_rename_range(SAMPLE, 999, 0).is_none());
     }
 
     #[test]

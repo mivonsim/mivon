@@ -1870,12 +1870,14 @@ LSP-04: ⚠️ IN PROGRESS (ROUND 94) — find-references tahap 1:
          word-boundary dijamin tokenizer. Test 2 unit (clk 5 lokusi
          lintas module, enable 2, word boundary count vs counter;
          empty/miss). MASIH OPEN: cross-file index, rename (LSP-05).
-LSP-05: ⚠️ IN PROGRESS (ROUND 95) — rename tahap 1:
+LSP-05: ⚠️ IN PROGRESS (ROUND 95/116) — rename tahap 1+2a:
          backend.rs — capability rename_provider + handler rename;
          core murni compute_rename_edits(): validasi identifier baru
          ([A-Za-z_][A-Za-z0-9_$]*), hasilkan edit semua kemunculan
-         (via find_references → word-boundary aman). MASIH OPEN:
-         cross-file rename, prepare_rename handler.
+         (via find_references → word-boundary aman). Tahap 2a
+         (ROUND 116): prepare_rename handler (capability RenameOptions
+         prepare_provider) + core prepare_rename_range + placeholder.
+         MASIH OPEN: cross-file rename.
 LSP-06: ⚠️ IN PROGRESS (ROUND 95/113) — hover tahap 1+2a:
          backend.rs — capability hover_provider + handler hover;
          core murni hover_info(): markdown **kind** `name` + snippet
@@ -5149,6 +5151,22 @@ inputs batas kata + ranking relatif logic vs localparam port/code).
 
 📊 VERIFIKASI ROUND 115:
    - cargo test -p mivon-env --lib --features lsp lsp: 44 passed (+1)
+   - Review subagent: APPROVE.
+
+═══ ROUND 116 — LSP-05 prepare_rename (tahap 2a) ═══
+
+✅ PREPARE RENAME (crates/mivon-env/src/lsp/backend.rs):
+   - Core murni prepare_rename_range(source, line, char): range kata
+     via word_at_position (OOB → None).
+   - Handler prepare_rename → PrepareRenameResponse::RangeWithPlaceholder
+     (range + placeholder nama kini); None bila dok hilang/bukan ident.
+   - Capability rename_provider → RenameOptions prepare_provider=true.
+
+Test (+1): test_prepare_rename_range (enable slice pas, baris
+kosong → None, line 999 → None).
+
+📊 VERIFIKASI ROUND 116:
+   - cargo test -p mivon-env --lib --features lsp lsp: 45 passed (+1)
    - Review subagent: APPROVE.
 
 ========================================
