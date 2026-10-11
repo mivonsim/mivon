@@ -8,8 +8,11 @@
 //!      saat ini), cari NBA-write konstanta ke state register di body
 //!      item (state berikutnya).
 //!
-//! Tahapan lanjutan (belum): minimisasi/renumbering encoding, deteksi
-//! output Mealy/Moore, lintas-always FSM, integrasi laporan synth CLI.
+//! Tahapan lanjutan (belum): deteksi output Mealy/Moore,
+//! lintas-always FSM.
+//!
+//! Tahap 2a (selesai): minimisasi ringan — buang state terisolasi
+//! (tanpa transisi masuk/keluar) + encoding padat 0..N-1 untuk report.
 //!
 //! Catatan penamaan: fungsi/struct di modul ini memakai awalan `Fsm`
 //! agar tidak tertukar dengan tipe netlist lain.
@@ -242,6 +245,33 @@ pub fn extract_fsms(design: &IrDesign) -> Vec<FsmInfo> {
     fsms
 }
 
+/// COMP-11 tahap 2a: state terpakai = muncul di ≥1 transisi
+/// (sebagai `from` atau `to`). State terisolasi dibuang.
+pub fn minimized_states(fsm: &FsmInfo) -> Vec<u64> {
+    let mut out: Vec<u64> = fsm
+        .states
+        .iter()
+        .copied()
+        .filter(|s| {
+            fsm.transitions
+                .iter()
+                .any(|t| t.from == Some(*s) || t.to == *s)
+        })
+        .collect();
+    out.sort_unstable();
+    out
+}
+
+/// COMP-11 tahap 2a: encoding padat old → 0..N-1 berdasar urutan
+/// `minimized_states`.
+pub fn compact_encoding(fsm: &FsmInfo) -> Vec<(u64, u64)> {
+    minimized_states(fsm)
+        .into_iter()
+        .enumerate()
+        .map(|(i, s)| (s, i as u64))
+        .collect()
+}
+
 /// Render laporan FSM ke teks (COMP-11 tahap 2) — dipakai synth CLI.
 pub fn render_fsm_report(fsms: &[FsmInfo]) -> String {
     let mut out = String::new();
@@ -268,6 +298,27 @@ pub fn render_fsm_report(fsms: &[FsmInfo]) -> String {
                 None => "*".to_string(),
             };
             out.push_str(&format!("      {} → {}\n", from, t.to));
+        }
+        let mini = minimized_states(f);
+        if mini.len() != f.states.len() {
+            out.push_str(&format!(
+                "    minimized ({}): {}\n",
+                mini.len(),
+                mini.iter()
+                    .map(|v| v.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        let enc = compact_encoding(f);
+        if enc.iter().any(|(o, n)| o != n) {
+            out.push_str(&format!(
+                "    encoding: {}\n",
+                enc.iter()
+                    .map(|(o, n)| format!("{o}->{n}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
         }
     }
     out.push_str(&format!("  total: {} FSM\n", fsms.len()));
@@ -406,5 +457,30 @@ mod tests {
             }
         }
         assert!(extract_fsms(&design).is_empty());
+    }
+
+    #[test]
+    fn test_fsm_minimize_drops_isolated() {
+        // State 9 terisolasi (ada di daftar tapi tanpa transisi) dibuang;
+        // encoding padat memetakan 0/1/2 → 0/1/2 dan 5 → 3.
+        let f = FsmInfo {
+            process_name: "p".to_string(),
+            state_signal: "s".to_string(),
+            state_width: 3,
+            states: vec![0, 1, 2, 5, 9],
+            transitions: vec![
+                FsmTransition { from: Some(0), to: 1 },
+                FsmTransition { from: Some(1), to: 2 },
+                FsmTransition { from: Some(2), to: 5 },
+            ],
+        };
+        assert_eq!(minimized_states(&f), vec![0, 1, 2, 5]);
+        assert_eq!(
+            compact_encoding(&f),
+            vec![(0, 0), (1, 1), (2, 2), (5, 3)]
+        );
+        let report = render_fsm_report(&[f]);
+        assert!(report.contains("minimized (4): 0, 1, 2, 5"));
+        assert!(report.contains("encoding: 0->0, 1->1, 2->2, 5->3"));
     }
 }
