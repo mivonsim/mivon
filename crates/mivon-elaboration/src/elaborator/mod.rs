@@ -2988,16 +2988,19 @@ impl Elaborator {
             // Enum member constants di package (plain + qualified, sequential).
             // `last` di-reset per typedef enum (lihat komentar pkg_enums).
             // GAGAL eval → lewati (jangan tebak): retry iterasi berikut.
-            // Fallback: overlay param package-sendiri (forward-ref valid ke
-            // param yang dideklarasikan belakangan) tanpa menimpa ctx.
+            // Overlay param package-sendiri (scope LRM menang atas global):
+            // dibangun sekali per package per iterasi.
             for (pkg_name, enums) in &pkg_enums {
                 let own: Option<&[(Symbol, i64)]> =
                     pkg_param_cache.get(pkg_name).map(|v| v.as_slice());
+                let overlay = Self::package_overlay(&ctx, own);
                 for members in enums {
                     let mut last: Option<i64> = Some(0);
                     for (member_name, member_expr) in members {
                         let val = match member_expr {
-                            Some(expr) => Self::eval_enum_member_value(expr, &ctx, own),
+                            Some(expr) => {
+                                Self::eval_enum_member_value(expr, &ctx, overlay.as_ref())
+                            }
                             None => last,
                         };
                         if let Some(v) = val {
@@ -3035,12 +3038,13 @@ impl Elaborator {
         for (pkg_name, enums) in &pkg_enums {
             let own: Option<&[(Symbol, i64)]> =
                 pkg_param_cache.get(pkg_name).map(|v| v.as_slice());
+            let overlay = Self::package_overlay(&ctx, own);
             for members in enums {
                 self.verify_enum_members(
                     std::slice::from_ref(members),
                     &format!("package '{pkg_name}'"),
                     &ctx,
-                    own,
+                    overlay.as_ref(),
                 );
             }
         }
@@ -3382,45 +3386,58 @@ impl Elaborator {
         self.elab_diag_at(code, message, 0, 0)
     }
 
-    /// Evaluasi nilai eksplisit member enum: konteks global dulu, lalu
-    /// fallback overlay param-sendiri (forward-ref valid ke param yang
-    /// dideklarasikan belakangan) tanpa menimpa konteks global. Scope
-    /// sendiri menang atas global untuk nama sama (aturan LRM).
+    /// Evaluasi nilai eksplisit member enum: overlay param-sendiri DULU
+    /// (scope LRM menang atas global untuk nama sama), lalu konteks global.
+    /// Overlay (`None` = tanpa param sendiri) dibangun malas oleh pemanggil
+    /// agar tak clone map besar sia-sia.
     fn eval_enum_member_value(
         expr: &Expr,
         ctx: &HashMap<Symbol, i64>,
-        own_params: Option<&[(Symbol, i64)]>,
+        overlay: Option<&HashMap<Symbol, i64>>,
     ) -> Option<i64> {
-        if let Ok(v) = const_eval_with_params(expr, ctx) {
-            return Some(v);
+        if let Some(o) = overlay {
+            if let Ok(v) = const_eval_with_params(expr, o) {
+                return Some(v);
+            }
         }
-        let params = own_params?;
+        const_eval_with_params(expr, ctx).ok()
+    }
+
+    /// Overlay param-sendiri untuk satu package: global + param package
+    /// (menang). `None` bila package tak punya param ter-cache (tak perlu).
+    fn package_overlay(
+        ctx: &HashMap<Symbol, i64>,
+        own: Option<&[(Symbol, i64)]>,
+    ) -> Option<HashMap<Symbol, i64>> {
+        let params = own.filter(|p| !p.is_empty())?;
         let mut overlay = ctx.clone();
         for (n, v) in params {
             overlay.insert(*n, *v);
         }
-        const_eval_with_params(expr, &overlay).ok()
+        Some(overlay)
     }
 
     /// Verifikasi pasca-fixpoint: member enum bernilai eksplisit yang tetap
     /// tak ter-evaluasi (typo/unknown — bukan forward-ref yang sudah
     /// konvergen) dilaporkan sebagai warning, bukan ditebak diam-diam dari
-    /// counter `last`. Satu warning per typedef (member gagal pertama).
+    /// counter `last`. Satu warning per typedef (member gagal pertama);
+    /// nama yang sudah di-warning dilewati (scan ganda items+decls).
     fn verify_enum_members(
         &self,
         enums: &[Vec<(Symbol, Option<Expr>)>],
         context: &str,
         ctx: &HashMap<Symbol, i64>,
-        own_params: Option<&[(Symbol, i64)]>,
+        overlay: Option<&HashMap<Symbol, i64>>,
     ) {
+        let mut warned: std::collections::HashSet<Symbol> = std::collections::HashSet::new();
         for members in enums {
             let mut last: Option<i64> = Some(0);
             for (member_name, member_expr) in members {
                 let val = match member_expr {
-                    Some(expr) => Self::eval_enum_member_value(expr, ctx, own_params),
+                    Some(expr) => Self::eval_enum_member_value(expr, ctx, overlay),
                     None => last,
                 };
-                if member_expr.is_some() && val.is_none() {
+                if member_expr.is_some() && val.is_none() && warned.insert(*member_name) {
                     self.elab_warn(
                         DiagCode::ParamMismatch,
                         format!(

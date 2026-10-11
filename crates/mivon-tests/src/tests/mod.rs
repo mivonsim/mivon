@@ -23997,8 +23997,18 @@ endmodule
 "#;
     let (r, diags) = elaborate(bad);
     assert!(r.is_err(), "rujukan ke member tak-terdefinisi harus gagal");
+    let warns: Vec<_> = diags
+        .iter()
+        .filter(|d| d.message.contains("konstan"))
+        .collect();
+    assert_eq!(
+        warns.len(),
+        1,
+        "tepat satu warning (tak spam/duplikat): {:?}",
+        diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
     assert!(
-        diags.iter().any(|d| d.message.contains("'A'") && d.message.contains("konstan")),
+        warns[0].message.contains("'A'"),
         "warning enum harus menyebut member: {:?}",
         diags.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
