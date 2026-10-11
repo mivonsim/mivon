@@ -1252,6 +1252,24 @@ impl LspBackend {
         })
     }
 
+    /// LSP-02 tahap 2b: konteks baris kursor — "port" (deklarasi
+    /// arah), "param" (daftar `#(...)` / parameter), atau "code".
+    pub(crate) fn completion_context(line_text: &str) -> &'static str {
+        let t = line_text.trim_start().to_lowercase();
+        let first: &str = t
+            .split_whitespace()
+            .next()
+            .unwrap_or("")
+            .trim_end_matches(|c| c == ':' || c == ';' || c == ',');
+        if matches!(first, "input" | "output" | "inout") {
+            return "port";
+        }
+        if t.contains("#(") || matches!(first, "parameter" | "localparam") {
+            return "param";
+        }
+        "code"
+    }
+
     /// Autocomplete core (murni, bisa diuji) — LSP-02 tahap 1:
     /// kandidat = simbol dokumen (module/port/signal/param/function via
     /// outline) + keyword SystemVerilog umum, difilter prefix identifier
@@ -1384,7 +1402,27 @@ impl LspBackend {
                 out.push(((*kw).to_string(), DocSymbol::KIND_KEYWORD));
             }
         }
-        out.sort_by(|a, b| a.0.cmp(&b.0));
+        // LSP-02 tahap 2b: ranking context-aware — di konteks port/param,
+        // keyword tipe didahulukan (simbol tetap rank 0 agar nama interface
+        // / tipe user tidak tenggelam).
+        const TYPES: &[&str] = &[
+            "logic", "bit", "reg", "wire", "int", "integer", "byte", "shortint", "longint",
+            "string", "signed", "unsigned",
+        ];
+        let ctx = Self::completion_context(line_text);
+        let rank = |name: &str, kind: u8| -> u8 {
+            if kind != DocSymbol::KIND_KEYWORD || ctx == "code" {
+                return 0;
+            }
+            if TYPES.contains(&name) {
+                return 0;
+            }
+            if ctx == "param" && (name == "parameter" || name == "localparam") {
+                return 0;
+            }
+            1
+        };
+        out.sort_by(|a, b| rank(&a.0, a.1).cmp(&rank(&b.0, b.1)).then(a.0.cmp(&b.0)));
         out
     }
 
@@ -3450,6 +3488,37 @@ endmodule
         assert!(LspBackend::snippet_for_keyword("always_ff").unwrap().contains("posedge"));
         assert!(LspBackend::snippet_for_keyword("endmodule").is_none());
         assert!(LspBackend::snippet_for_keyword("counter").is_none());
+    }
+
+    #[test]
+    fn test_completion_context_rank() {
+        // Deteksi konteks baris.
+        assert_eq!(LspBackend::completion_context("input l"), "port");
+        assert_eq!(LspBackend::completion_context("  output logic o"), "port");
+        assert_eq!(LspBackend::completion_context("#(parameter l"), "param");
+        assert_eq!(LspBackend::completion_context("  logic clk;"), "code");
+        assert_eq!(LspBackend::completion_context("INPUT l"), "port");
+        assert_eq!(LspBackend::completion_context("inputs x;"), "code");
+        // Prefix "l": port → tipe dulu (logic), code → alfabet (localparam).
+        // Catatan: outline juga menemukan simbol parsial "l" (rank 0) —
+        // assert ranking relatif antar keyword, bukan posisi absolut.
+        let port_src = "module m;\ninput l";
+        let pc = LspBackend::compute_completions(port_src, 1, 7);
+        let names: Vec<&str> = pc.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(names.contains(&"logic"), "{names:?}");
+        let (li, pi) = (
+            names.iter().position(|n| *n == "logic").unwrap(),
+            names.iter().position(|n| *n == "localparam").unwrap(),
+        );
+        assert!(li < pi, "port: logic sebelum localparam: {names:?}");
+        let code_src = "module m;\n  l";
+        let cc = LspBackend::compute_completions(code_src, 1, 3);
+        let cnames: Vec<&str> = cc.iter().map(|(n, _)| n.as_str()).collect();
+        let (cli, cpi) = (
+            cnames.iter().position(|n| *n == "logic").unwrap(),
+            cnames.iter().position(|n| *n == "localparam").unwrap(),
+        );
+        assert!(cpi < cli, "code: alfabet localparam sebelum logic: {cnames:?}");
     }
 
     #[test]

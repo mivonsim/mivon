@@ -1847,8 +1847,10 @@ LSP-02: ⚠️ IN PROGRESS (ROUND 100/111) — autocomplete tahap 1+2a:
          snippet_for_keyword (13 blok: module/interface/package/function/
          task/begin/fork/case/if/always_ff/always_comb/for/foreach,
          placeholder $1/$0) + handler isi insert_text SNIPPET.
-         MASIH OPEN: context-aware (port vs statement), resolve
-         detail/dokumentasi.
+         Tahap 2b (ROUND 115): completion_context (port/param/code) +
+         ranking tipe dulu di port/param (simbol tetap rank 0,
+         code identik alfabet).
+         MASIH OPEN: resolve detail/dokumentasi.
 LSP-03: ⚠️ IN PROGRESS (ROUND 93) — go-to-definition tahap 1:
          crates/maria-env/src/lsp/backend.rs — goto_definition handler
          (capability definition_provider), cache dokumen terbuka
@@ -5132,6 +5134,22 @@ diperkuat) → diperbaiki, lolos.
 📊 VERIFIKASI ROUND 114:
    - cargo test -p mivon-env --lib --features lsp folding: 2 passed (+1)
    - Full lsp: 43 passed.
+
+═══ ROUND 115 — LSP-02 tahap 2b (context-aware ranking) ═══
+
+✅ CONTEXT RANKING (crates/mivon-env/src/lsp/backend.rs):
+   - completion_context(line): "port" (input/output/inout, batas
+     kata, case-insensitive) / "param" (`#(`/parameter) / "code".
+   - compute_completions: keyword tipe rank 0 di port/param
+     (parameter/localparam rank 0 di param); simbol selalu 0;
+     code semua 0 = alfabet identik lama.
+
+Test (+1): test_completion_context_rank (4 deteksi + INPUT/
+inputs batas kata + ranking relatif logic vs localparam port/code).
+
+📊 VERIFIKASI ROUND 115:
+   - cargo test -p mivon-env --lib --features lsp lsp: 44 passed (+1)
+   - Review subagent: APPROVE.
 
 ========================================
 END OF AUDIT REPORT
