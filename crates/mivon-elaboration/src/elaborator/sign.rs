@@ -11,6 +11,8 @@ use mivon_ast::*;
 use mivon_core::intern::Symbol;
 use mivon_ir::*;
 
+use super::Elaborator;
+
 /// Signedness AST-expr dalam konteks param default (mirror const_eval: desimal
 /// unsized signed; literal sized ber-suffix `s` signed; unary ±/~ mewarisi).
 pub(crate) fn elab_expr_is_signed(e: &Expr) -> bool {
@@ -160,9 +162,40 @@ pub(crate) fn expr_refs_signed_param(expr: &Expr, signed_params: &HashSet<Symbol
     }
 }
 
+impl Elaborator {
+    /// Nama param bertipe SIGNED di module (header + body + $unit) — pindah
+    /// dari mod.rs (Arsitektur-06). Dipakai resolve `Expr::Ident(parameter)`
+    /// dan evaluasi kondisi generate-if.
+    pub(crate) fn module_param_signed_set(
+        &self,
+        module: &Module,
+    ) -> std::collections::HashSet<Symbol> {
+        let mut set = std::collections::HashSet::new();
+        for p in &module.params {
+            if param_decl_is_signed(p) {
+                set.insert(p.name);
+            }
+        }
+        for item in &module.items {
+            if let ModuleItem::Param(p) = item {
+                if param_decl_is_signed(p) {
+                    set.insert(p.name);
+                }
+            }
+        }
+        for p in &self.design.unit_params {
+            if param_decl_is_signed(p) {
+                set.insert(p.name);
+            }
+        }
+        set
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mivon_ast::types::{Design, Module};
 
     #[test]
     fn test_refs_signed_param_ident() {
@@ -181,5 +214,39 @@ mod tests {
         assert!(expr_refs_signed_param(&hit, &set));
         assert!(!expr_refs_signed_param(&miss, &set));
         assert!(!expr_refs_signed_param(&hit, &HashSet::new()));
+    }
+
+    #[test]
+    fn test_module_param_signed_set() {
+        use mivon_ast::types::{DataType, ParamDecl};
+        let mk = |name: &str, ty: DataType| ParamDecl {
+            name: Symbol::intern(name),
+            dtype: Some(ty),
+            range: None,
+            default: None,
+            is_localparam: false,
+            is_type_param: false,
+            type_default: None,
+        };
+        let m = Module {
+            name: Symbol::intern("m"),
+            ports: vec![],
+            params: vec![mk("A", DataType::Int)],
+            decls: vec![],
+            items: vec![],
+            timescale: None,
+        };
+        let e = Elaborator::with_source(Design::default(), vec![], String::new());
+        let set = e.module_param_signed_set(&m);
+        assert!(set.contains(&Symbol::intern("A")));
+        // Bit unsigned tidak masuk; body param int masuk.
+        let m2 = Module {
+            params: vec![mk("B", DataType::Bit)],
+            items: vec![ModuleItem::Param(mk("C", DataType::Int))],
+            ..m
+        };
+        let set2 = e.module_param_signed_set(&m2);
+        assert!(!set2.contains(&Symbol::intern("B")));
+        assert!(set2.contains(&Symbol::intern("C")));
     }
 }

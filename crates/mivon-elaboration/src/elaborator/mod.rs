@@ -162,43 +162,6 @@ fn net_expr_signal_id(expr: &mivon_ast::Expr, map: &HashMap<Symbol, SignalId>) -
     }
 }
 
-fn collect_instance_names(items: &[ModuleItem], out: &mut Vec<Symbol>) {
-    for item in items {
-        match item {
-            ModuleItem::Instance(inst) => out.push(inst.module_name),
-            ModuleItem::Generate(gen) => {
-                for gi in &gen.items {
-                    match gi {
-                        GenerateItem::If {
-                            true_items,
-                            false_items,
-                            ..
-                        } => {
-                            collect_instance_names(true_items, out);
-                            collect_instance_names(false_items, out);
-                        }
-                        GenerateItem::For { body_items, .. } => {
-                            collect_instance_names(body_items, out);
-                        }
-                        GenerateItem::Case { items, default, .. } => {
-                            for ci in items {
-                                collect_instance_names(&ci.body, out);
-                            }
-                            if let Some(d) = default {
-                                collect_instance_names(d, out);
-                            }
-                        }
-                        GenerateItem::Items(items) => {
-                            collect_instance_names(items, out);
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ElaborateMode {
     StrictSimulation,
@@ -414,7 +377,7 @@ impl Elaborator {
             let mut instantiated: HashSet<Symbol> = HashSet::new();
             for m in &self.design.modules {
                 let mut insts = Vec::new();
-                collect_instance_names(&m.items, &mut insts);
+                topo::collect_instance_names(&m.items, &mut insts);
                 for mn in insts {
                     instantiated.insert(mn);
                 }
@@ -433,7 +396,7 @@ impl Elaborator {
         while let Some(name) = queue.pop_front() {
             if let Some(module) = module_map.get(&name) {
                 let mut insts = Vec::new();
-                collect_instance_names(&module.items, &mut insts);
+                topo::collect_instance_names(&module.items, &mut insts);
                 for mn in insts {
                     if all_names.contains(&mn) && !reachable.contains(&mn) {
                         reachable.insert(mn);
@@ -759,7 +722,7 @@ impl Elaborator {
                 let mut best_missing = usize::MAX;
                 for &idx in idxs {
                     let mut insts: Vec<Symbol> = Vec::new();
-                    collect_instance_names(&self.design.modules[idx].items, &mut insts);
+                    topo::collect_instance_names(&self.design.modules[idx].items, &mut insts);
                     let missing = insts.iter().filter(|n| !all_names.contains(*n)).count();
                     // missing lebih kecil menang; tie (<=) → definisi terakhir
                     // (deterministik, konsisten urutan filelist).
@@ -1189,7 +1152,7 @@ impl Elaborator {
                 let mut instantiated: HashSet<Symbol> = HashSet::new();
                 for m in &self.design.modules {
                     let mut insts = Vec::new();
-                    collect_instance_names(&m.items, &mut insts);
+                    topo::collect_instance_names(&m.items, &mut insts);
                     for mn in insts {
                         instantiated.insert(mn);
                     }
@@ -1208,7 +1171,7 @@ impl Elaborator {
             while let Some(name) = queue.pop_front() {
                 if let Some(module) = module_map.get(&name) {
                     let mut insts = Vec::new();
-                    collect_instance_names(&module.items, &mut insts);
+                    topo::collect_instance_names(&module.items, &mut insts);
                     for mn in insts {
                         if all_names.contains(&mn) && !reachable.contains(&mn) {
                             reachable.insert(mn);
@@ -1497,7 +1460,7 @@ impl Elaborator {
                     continue;
                 }
                 let mut insts = Vec::new();
-                collect_instance_names(&m.items, &mut insts);
+                topo::collect_instance_names(&m.items, &mut insts);
                 for mn in insts {
                     s.insert(mn);
                 }
@@ -2386,30 +2349,6 @@ impl Elaborator {
 }
 
 impl Elaborator {
-    /// Nama param bertipe SIGNED di module (header + body + $unit). Dipakai
-    /// resolve `Expr::Ident(parameter)` dan evaluasi kondisi generate-if.
-    fn module_param_signed_set(&self, module: &Module) -> std::collections::HashSet<Symbol> {
-        let mut set = std::collections::HashSet::new();
-        for p in &module.params {
-            if sign::param_decl_is_signed(p) {
-                set.insert(p.name);
-            }
-        }
-        for item in &module.items {
-            if let ModuleItem::Param(p) = item {
-                if sign::param_decl_is_signed(p) {
-                    set.insert(p.name);
-                }
-            }
-        }
-        for p in &self.design.unit_params {
-            if sign::param_decl_is_signed(p) {
-                set.insert(p.name);
-            }
-        }
-        set
-    }
-
     fn elaborate_module(
         &mut self,
         module: &Module,

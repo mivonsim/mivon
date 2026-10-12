@@ -89,6 +89,47 @@ pub(crate) fn module_cone_size(start: Symbol, graph: &HashMap<Symbol, Vec<Symbol
     seen.len()
 }
 
+/// Kumpulkan nama module yang di-instansiasi dari daftar ModuleItem,
+/// MENURUNI blok generate — pindah dari mod.rs (Arsitektur-06).
+/// (Beda bentuk AST dari `collect_inst_names`: `ModuleItem::Generate`
+/// membawa `gen.items` langsung.) Dipakai reachability analysis dari top.
+pub(crate) fn collect_instance_names(items: &[ModuleItem], out: &mut Vec<Symbol>) {
+    for item in items {
+        match item {
+            ModuleItem::Instance(inst) => out.push(inst.module_name),
+            ModuleItem::Generate(gen) => {
+                for gi in &gen.items {
+                    match gi {
+                        GenerateItem::If {
+                            true_items,
+                            false_items,
+                            ..
+                        } => {
+                            collect_instance_names(true_items, out);
+                            collect_instance_names(false_items, out);
+                        }
+                        GenerateItem::For { body_items, .. } => {
+                            collect_instance_names(body_items, out);
+                        }
+                        GenerateItem::Case { items, default, .. } => {
+                            for ci in items {
+                                collect_instance_names(&ci.body, out);
+                            }
+                            if let Some(d) = default {
+                                collect_instance_names(d, out);
+                            }
+                        }
+                        GenerateItem::Items(items) => {
+                            collect_instance_names(items, out);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Skor kandidat top untuk auto resolution: ukuran cone (transitive module
 /// count) sebagai bobot DOMINAN (×20) + sinyal nama sebagai tie-breaker.
 /// Preferensi simulasi (`verilator`/`_sim`/`tb`) dan `chip`; penalti wrapper
