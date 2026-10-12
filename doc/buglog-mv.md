@@ -409,7 +409,21 @@ bug di mivon utama (parser/elaborator/simulator). Status: ✅ fixed / ⏳ open.
       `test_mv_array_method_with_clause_end_to_end`.
     - Sisa caveat (keterbatasan, bukan bug): chained method pada hasil
       temporer (`q.unique().size()`) belum didukung — simpan ke queue dulu
-      (`r = q.unique(); r.size()`); iverilog tak dukung `with` clause.
+      (`r = q.unique(); r.size()`); akses member/index pada `item`
+      (`with (item.x)`) belum didukung; iverilog tak dukung `with` clause.
+    - **Follow-up auto-review F41:**
+      - `min`/`max` (§7.12.1) dulu mengembalikan **nilai kunci** clause,
+        bukan elemen — `q.min with (100-item)` salah. Kini mengembalikan
+        elemen pemenang. Test: `test_array_method_minmax_key_and_find_last`.
+      - `find_last`/`find_last_index` dulu mengembalikan SEMUA kecocokan
+        (terbalik), bukan satu terakhir — kini `break` setelah kecocokan
+        pertama saat men-scan mundur.
+      - `unique_index` dibuang dari daftar `is_array_with_method` (runtime
+        belum mengimplementasikannya — jangan overclaim).
+      - Referensi §7.12.3 pada `unique` dikoreksi ke §7.12.1.
+      - mivon-mv: walker sekunder (`hazard.rs` ×3, `check/expr.rs`
+        `expr_uses`, `lib.rs` `collect_expr_refs`) kini menelusuri
+        `with_clause` (sebelumnya di-skip lewat `..`).
 
 ## ⏳ Open
 

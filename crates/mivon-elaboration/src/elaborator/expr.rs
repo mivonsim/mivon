@@ -863,7 +863,6 @@ impl Elaborator {
                 | "min"
                 | "max"
                 | "unique"
-                | "unique_index"
                 | "sort"
                 | "rsort"
         )

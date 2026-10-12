@@ -1226,8 +1226,12 @@ pub(crate) fn expr_uses(e: &Expr, name: &str) -> bool {
         }
         Expr::Call(_, args, ..) => args.iter().any(|a| expr_uses(a, name)),
         Expr::SysFunc(_, args, ..) => args.as_ref().map(|a| a.iter().any(|a| expr_uses(a, name))).unwrap_or(false),
-        Expr::MethodCall { obj, args, .. } => {
-            expr_uses(obj, name) || args.iter().any(|a| expr_uses(a, name))
+        Expr::MethodCall { obj, args, with_clause, .. } => {
+            expr_uses(obj, name)
+                || args.iter().any(|a| expr_uses(a, name))
+                || with_clause
+                    .as_ref()
+                    .is_some_and(|wc| expr_uses(wc, name))
         }
         Expr::Member(o, f, ..) => expr_uses(o, name) || f == name,
         Expr::Range(o, hi, lo) => {

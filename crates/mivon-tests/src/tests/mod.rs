@@ -1102,6 +1102,46 @@ endmodule
     assert_eq!(get("u"), 3, "unique 1,1,2,3,3 → 1,2,3");
 }
 
+/// Review F41: `min`/`max` mengembalikan **elemen** (bukan nilai kunci
+/// `with`), dan `find_last`/`find_last_index` mengembalikan **hanya satu**
+/// kecocokan terakhir (LRM 1800 §7.12.1).
+#[test]
+fn test_array_method_minmax_key_and_find_last() {
+    let source = r#"
+module tb_mm;
+    int q[$];
+    int r[$];
+    int iq[$];
+    int mn, mx, mnk, mxk, rn, rv, ni, nv;
+    initial begin
+        q = '{1, 100, 50};
+        mn  = q.min();
+        mx  = q.max();
+        mnk = q.min with (100 - item);
+        mxk = q.max with (100 - item);
+        q = '{1, 5, 2, 5, 3};
+        r  = q.find_last with (item == 5);
+        rn = r.size();
+        rv = r[0];
+        iq = q.find_last_index with (item == 5);
+        ni = iq.size();
+        nv = iq[0];
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 5).unwrap();
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    assert_eq!(get("mn"), 1, "min tanpa clause = elemen minimum");
+    assert_eq!(get("mx"), 100, "max tanpa clause = elemen maksimum");
+    assert_eq!(get("mnk"), 100, "min with (100-item) -> ELEMEN dgn kunci min");
+    assert_eq!(get("mxk"), 1, "max with (100-item) -> ELEMEN dgn kunci max");
+    assert_eq!(get("rn"), 1, "find_last -> tepat 1 elemen");
+    assert_eq!(get("rv"), 5, "find_last -> nilai 5");
+    assert_eq!(get("ni"), 1, "find_last_index -> tepat 1 indeks");
+    assert_eq!(get("nv"), 3, "find_last_index -> indeks 3");
+}
+
 #[test]
 fn test_mv_fork_join_modes() {
     // F39: `fork { ... } { ... } join / join_any / join_none` di-transpile

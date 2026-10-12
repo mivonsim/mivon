@@ -295,18 +295,21 @@ Aturan:
   queue/dynamic array didukung penuh (LRM 1800 §7.12): locator `find`/
   `find_first`/`find_last`/`find_index`/`find_first_index`/`find_last_index`,
   reduction `sum`/`product`/`and`/`or`/`xor`, ordering `min`/`max`/`sort`/
-  `rsort`/`reverse`/`shuffle`, dan `unique`/`unique_index`. Klausa
-  `with (expr)` boleh **tanpa kurung argumen** (`q.find with (item > 3)`,
-  bentuk LRM) maupun dengan (`q.find() with (...)`); iterator implisit
-  **`item`** di-bind per elemen. Untuk reduction/ordering nilai clause dipakai
-  sebagai kunci/nilai (`q.sum with (item * 2)`, `q.sort with (item.x)`), untuk
-  locator sebagai kondisi boolean. `unique` **mengembalikan queue baru**
-  (tidak mengubah sumber, §7.12.3). Method bernama keyword (`unique`/`and`/
-  `or`/`xor`) boleh dipanggil setelah `.` (`q.unique()`, `q.and()`). Contoh:
-  `examples/mv/array_methods.mv`.
-  - **Caveat**: chained method pada hasil temporer (`q.unique().size()`) belum
-    didukung — simpan dulu ke queue (`r = q.unique(); r.size()`). iverilog tak
-    mendukung `with` clause (limit tool); verilator & `mivon sim` OK.
+  `rsort`/`reverse`/`shuffle`, dan `unique`. Klausa `with (expr)` boleh
+  **tanpa kurung argumen** (`q.find with (item > 3)`, bentuk LRM) maupun
+  dengan (`q.find() with (...)`); iterator implisit **`item`** di-bind per
+  elemen. Untuk reduction/ordering nilai clause dipakai sebagai kunci/nilai
+  (`q.sum with (item * 2)`, `q.sort with (item)`); `min`/`max` mengembalikan
+  **elemen** yang kuncinya minimum/maksimum (§7.12.1), bukan nilai kunci.
+  Locator memakai clause sebagai kondisi boolean. `unique` **mengembalikan
+  queue baru** (tidak mengubah sumber, §7.12.1). Method bernama keyword
+  (`unique`/`and`/`or`/`xor`) boleh dipanggil setelah `.` (`q.unique()`,
+  `q.and()`). Contoh: `examples/mv/array_methods.mv`.
+  - **Caveat**: (a) chained method pada hasil temporer (`q.unique().size()`)
+    belum didukung — simpan dulu ke queue (`r = q.unique(); r.size()`);
+    (b) akses member/index pada `item` (`with (item.x)`) belum didukung —
+    clause hanya boleh memakai `item` utuh; iverilog tak mendukung `with`
+    clause (limit tool); verilator & `mivon sim` OK.
 - **Rangkuman emisi cast** (codegen): `logic[M:N]'(x)` → `W'(x)`
   (width cast), `Q'(x)` dengan `Q` typedef queue → `'{ x }`, selain itu
   `T'(x)` static cast apa adanya (termasuk typedef non-queue & tipe dasar).

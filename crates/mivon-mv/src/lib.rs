@@ -1054,10 +1054,13 @@ fn collect_expr_refs(e: &crate::ast::Expr, out: &mut Vec<String>) {
             }
         }
         Expr::NamedArg { expr, .. } => collect_expr_refs(expr, out),
-        Expr::MethodCall { obj, args, .. } => {
+        Expr::MethodCall { obj, args, with_clause, .. } => {
             collect_expr_refs(obj, out);
             for a in args {
                 collect_expr_refs(a, out);
+            }
+            if let Some(wc) = with_clause {
+                collect_expr_refs(wc, out);
             }
         }
         Expr::Member(o, ..) | Expr::Index(o, _) => {

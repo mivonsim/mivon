@@ -812,12 +812,15 @@ impl SimulationEngine {
                 }
             }
             // --- Ordering methods ---
+            // LRM 1800 §7.12.1: `min`/`max` mengembalikan ELEMEN yang
+            // kunci-nya (`with (item…)`, default = elemen itu sendiri)
+            // minimum/maksimum — BUKAN nilai kuncinya.
             "min" => {
                 let lv = self.state.read_signal(sig_id).clone();
                 let elem_width = sig.elem_width;
                 if elem_width > 0 && lv.width >= elem_width {
                     let count = lv.width / elem_width;
-                    let mut min_val = u64::MAX;
+                    let mut best: Option<(u64, LogicVec)> = None;
                     for i in 0..count {
                         let mut bits = Vec::with_capacity(elem_width);
                         for j in 0..elem_width {
@@ -827,12 +830,12 @@ impl SimulationEngine {
                             width: elem_width,
                             bits,
                         };
-                        let v = self.eval_with_value(with_clause, &elem)?.to_u64();
-                        if v < min_val {
-                            min_val = v;
+                        let key = self.eval_with_value(with_clause, &elem)?.to_u64();
+                        if best.as_ref().is_none_or(|(k, _)| key < *k) {
+                            best = Some((key, elem));
                         }
                     }
-                    Ok(LogicVec::from_u64(min_val, elem_width))
+                    Ok(best.map(|(_, e)| e).unwrap_or_else(|| LogicVec::new(1)))
                 } else {
                     Ok(LogicVec::new(1))
                 }
@@ -842,7 +845,7 @@ impl SimulationEngine {
                 let elem_width = sig.elem_width;
                 if elem_width > 0 && lv.width >= elem_width {
                     let count = lv.width / elem_width;
-                    let mut max_val: u64 = 0;
+                    let mut best: Option<(u64, LogicVec)> = None;
                     for i in 0..count {
                         let mut bits = Vec::with_capacity(elem_width);
                         for j in 0..elem_width {
@@ -852,12 +855,12 @@ impl SimulationEngine {
                             width: elem_width,
                             bits,
                         };
-                        let v = self.eval_with_value(with_clause, &elem)?.to_u64();
-                        if v > max_val {
-                            max_val = v;
+                        let key = self.eval_with_value(with_clause, &elem)?.to_u64();
+                        if best.as_ref().is_none_or(|(k, _)| key > *k) {
+                            best = Some((key, elem));
                         }
                     }
-                    Ok(LogicVec::from_u64(max_val, elem_width))
+                    Ok(best.map(|(_, e)| e).unwrap_or_else(|| LogicVec::new(1)))
                 } else {
                     Ok(LogicVec::new(1))
                 }
@@ -890,7 +893,7 @@ impl SimulationEngine {
                         width: new_bits.len(),
                         bits: new_bits,
                     };
-                    // LRM 1800 §7.12.3: `unique` MENGEMBALIKAN queue baru dan
+                    // LRM 1800 §7.12.1: `unique` MENGEMBALIKAN queue baru dan
                     // TIDAK mengubah array sumber (beda dgn `sort`/`reverse`
                     // yang in-place). Dulu write_signal(sig_id,..) + return
                     // kosong → `q.unique().size()` gagal (RT0001).
@@ -918,7 +921,10 @@ impl SimulationEngine {
                                     bits,
                                 };
                                 if self.check_with_clause(with_clause, &elem)? {
+                                    // §7.12.1: `find_last` mengembalikan
+                                    // elemen TERAKHIR yang cocok (bukan semua).
                                     result_elems.push(elem);
+                                    break;
                                 }
                             }
                         } else {
@@ -991,7 +997,10 @@ impl SimulationEngine {
                                     bits,
                                 };
                                 if self.check_with_clause(with_clause, &elem)? {
+                                    // §7.12.1: `find_last_index` mengembalikan
+                                    // indeks TERAKHIR yang cocok.
                                     indices.push(i as u64);
+                                    break;
                                 }
                             }
                         } else {

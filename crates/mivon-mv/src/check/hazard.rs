@@ -103,10 +103,13 @@ fn reads_paths(e: &Expr, out: &mut Vec<String>) {
             }
         }
         Expr::NamedArg { expr, .. } => reads_paths(expr, out),
-        Expr::MethodCall { obj, args, .. } => {
+        Expr::MethodCall { obj, args, with_clause, .. } => {
             reads_paths(obj, out);
             for a in args {
                 reads_paths(a, out);
+            }
+            if let Some(wc) = with_clause {
+                reads_paths(wc, out);
             }
         }
         Expr::Concat(ps) | Expr::ArrayLit(ps) => {
@@ -201,10 +204,13 @@ fn reads_expr(e: &Expr, out: &mut Vec<String>) {
             }
         }
         Expr::NamedArg { expr, .. } => reads_expr(expr, out),
-        Expr::MethodCall { obj, args, .. } => {
+        Expr::MethodCall { obj, args, with_clause, .. } => {
             reads_expr(obj, out);
             for a in args {
                 reads_expr(a, out);
+            }
+            if let Some(wc) = with_clause {
+                reads_expr(wc, out);
             }
         }
         Expr::Concat(ps) | Expr::ArrayLit(ps) => {
@@ -363,10 +369,13 @@ fn drivers_expr(e: &Expr, out: &mut Vec<(String, usize, usize)>) {
             }
         }
         Expr::NamedArg { expr, .. } => drivers_expr(expr, out),
-        Expr::MethodCall { obj, args, .. } => {
+        Expr::MethodCall { obj, args, with_clause, .. } => {
             drivers_expr(obj, out);
             for a in args {
                 drivers_expr(a, out);
+            }
+            if let Some(wc) = with_clause {
+                drivers_expr(wc, out);
             }
         }
         Expr::Member(o, ..) => drivers_expr(o, out),
