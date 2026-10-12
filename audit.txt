@@ -213,6 +213,8 @@ Arsitektur-06: ⚠️ Elaborator monolithic — PARTIAL (ROUND 80)
 - topo.rs (BARU ROUND 130, ~190 baris): 4 fn instance-graph/top
   (collect_inst_names, build_inst_graph, module_cone_size,
   score_auto_top) pindah verbatim; 2 call site jadi topo::.
+  ROUND 131: + compute_module_checksum + compute_topo_order (tanpa
+  self → free fn) + header yatim dibersihkan.
   Masih perlu: type resolution, param resolution, topo order, diagnostic
   helpers bisa dipisah lebih lanjut.
   Severity: High
@@ -5425,6 +5427,19 @@ workspace penuh (0 fail).
 📊 VERIFIKASI ROUND 130:
    - cargo test --workspace: 0 fail
    - Review subagent: APPROVE.
+
+═══ ROUND 131 — Arsitektur-06 topo checksum/order pindah ═══
+
+✅ PINDAH (topo.rs): compute_module_checksum + compute_topo_order
+   (body tanpa self → free fn); header yatim dibersihkan.
+   Review REQUEST CHANGES (header yatim) → dibersihkan.
+
+Test (+2): topo child-first+siklus, checksum stabil/nama-sensitif
++ guard workspace penuh (0 fail).
+
+📊 VERIFIKASI ROUND 131:
+   - cargo test --workspace: 0 fail
+   - Review subagent putaran 2: APPROVE (verifikasi ulang).
 
 ========================================
 END OF AUDIT REPORT

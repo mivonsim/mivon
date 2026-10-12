@@ -1358,12 +1358,12 @@ impl Elaborator {
         // Phase A: Compute structural checksums from design.modules directly (no clone needed)
         let mut struct_sigs: HashMap<Symbol, u64> = HashMap::new();
         for module in &self.design.modules {
-            let sig = self.compute_module_checksum(module);
+            let sig = topo::compute_module_checksum(module);
             struct_sigs.insert(module.name, sig);
         }
 
         // Phase B: Compute topological order from design.modules directly
-        let topo_order = self.compute_topo_order(&self.design.modules, &module_names);
+        let topo_order = topo::compute_topo_order(&self.design.modules, &module_names);
 
         // Phase C: Clone modules for elaboration (avoids borrow conflict with &mut self)
         let modules_snapshot: Vec<Module> = self.design.modules.clone();
@@ -2365,125 +2365,6 @@ impl Elaborator {
             stmt_lines: self.stmt_lines.take(),
             net_aliases,
         })
-    }
-
-    // ── Module signature computation (for incremental caching) ──
-
-    /// Compute a structural checksum for a module AST.
-    /// Uses Debug formatting of the entire module to capture ALL content:
-    /// ports, params, decls, always/initial/assign bodies, function bodies, etc.
-    /// Dependency instance names are also included for topological signature combining.
-    fn compute_module_checksum(&self, module: &Module) -> u64 {
-        use mivon_core::checksum::{combine_checksum, compute_checksum, compute_str_checksum};
-
-        // Hash structural fields instead of Debug-formatting the entire AST
-        let mut h = compute_str_checksum(module.name.as_str());
-        h = combine_checksum(
-            h,
-            compute_checksum(&(module.ports.len() as u64).to_le_bytes()),
-        );
-        for port in &module.ports {
-            h = combine_checksum(h, compute_str_checksum(port.name.as_str()));
-            h = combine_checksum(h, compute_checksum(&[(port.direction as u8)]));
-        }
-        for param in &module.params {
-            h = combine_checksum(h, compute_str_checksum(param.name.as_str()));
-        }
-        for item in &module.items {
-            match item {
-                ModuleItem::Instance(inst) => {
-                    h = combine_checksum(h, compute_str_checksum(inst.module_name.as_str()));
-                    h = combine_checksum(
-                        h,
-                        compute_checksum(&(inst.port_conns.len() as u64).to_le_bytes()),
-                    );
-                }
-                ModuleItem::Param(p) => {
-                    h = combine_checksum(h, compute_str_checksum(p.name.as_str()));
-                }
-                ModuleItem::Decl(d) => {
-                    for v in &d.names {
-                        h = combine_checksum(h, compute_str_checksum(v.name.as_str()));
-                    }
-                }
-                ModuleItem::Func(f) => {
-                    h = combine_checksum(h, compute_str_checksum(f.name.as_str()));
-                }
-                ModuleItem::Generate(g) => {
-                    h = combine_checksum(
-                        h,
-                        compute_checksum(&(g.items.len() as u64).to_le_bytes()),
-                    );
-                }
-                ModuleItem::Import { package, item } => {
-                    h = combine_checksum(h, compute_str_checksum(package.as_str()));
-                    h = combine_checksum(h, compute_str_checksum(item.as_str()));
-                }
-                _ => {}
-            }
-        }
-        h
-    }
-
-    /// Compute topological order of modules so children (instantiated) come before parents.
-    /// Uses Kahn's algorithm.
-    fn compute_topo_order(&self, modules: &[Module], module_names: &[Symbol]) -> Vec<Symbol> {
-        use std::collections::{HashMap, HashSet, VecDeque};
-
-        let name_set: HashSet<Symbol> = module_names.iter().copied().collect();
-        let mut in_degree: HashMap<Symbol, usize> = HashMap::new();
-        let mut dependents: HashMap<Symbol, Vec<Symbol>> = HashMap::new(); // child → [parents]
-
-        for module in modules {
-            in_degree.entry(module.name).or_insert(0);
-            for item in &module.items {
-                if let ModuleItem::Instance(inst) = item {
-                    if name_set.contains(&inst.module_name) {
-                        // parent depends on child (child must be elaborated first)
-                        dependents
-                            .entry(inst.module_name)
-                            .or_default()
-                            .push(module.name);
-                        *in_degree.entry(module.name).or_insert(0) += 1;
-                    }
-                }
-            }
-        }
-
-        // Kahn: start with modules that have no dependencies (in_degree == 0)
-        let mut queue: VecDeque<Symbol> = VecDeque::new();
-        for (&name, &deg) in &in_degree {
-            if deg == 0 {
-                queue.push_back(name);
-            }
-        }
-
-        let mut order = Vec::new();
-        let mut order_set: HashSet<Symbol> = HashSet::new();
-        while let Some(name) = queue.pop_front() {
-            order.push(name);
-            order_set.insert(name);
-            if let Some(children) = dependents.get(&name) {
-                for &parent in children {
-                    if let Some(deg) = in_degree.get_mut(&parent) {
-                        *deg -= 1;
-                        if *deg == 0 {
-                            queue.push_back(parent);
-                        }
-                    }
-                }
-            }
-        }
-
-        // Handle cycles: add remaining modules not in order
-        for module in modules {
-            if !order_set.contains(&module.name) {
-                order.push(module.name);
-                order_set.insert(module.name);
-            }
-        }
-
-        order
     }
 
     fn resolve_param_values(
