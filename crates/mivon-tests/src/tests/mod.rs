@@ -1144,23 +1144,30 @@ endmodule
 
 /// Bug #37: rantai ekspresi panjang (`&&`/`||` ≥8 operan) menabrak stack
 /// thread test 2 MiB karena setiap level rekursi `evaluate_expr_impl`
-/// memakai frame ~184 KB (arm `SysFunc` raksasa menumpuk temporari antar
-/// arm di build debug). Fix: arm `SysFunc` dipecah ke method
-/// `#[inline(never)] eval_sysfunc` sehingga frame `evaluate_expr_impl`
-/// kembali kecil. Test ini memakai `simulate_signals` (evaluator rekursif,
-/// `use_packed_eval=false`) di thread test default — pra-fix 8 operan
-/// sudah `SIGABRT` stack overflow; pasca-fix 8 dan 12 operan benar.
+/// memakai frame ~184 KB (match raksasa menumpuk temporari antar arm di
+/// build debug). Fix decisif: `evaluate_expr_impl` dibuat tipis — tulang
+/// belakang rekursif `BinaryOp`/`UnaryOp` ditangani lewat helper
+/// `#[inline(never)] eval_binary_op`/`eval_unary_op`, sisanya didelegasikan
+/// ke `evaluate_expr_deep` (match raksasa) yang TIDAK lagi dialokasikan per
+/// level rekursi. Test ini memakai `simulate_signals` (evaluator rekursif,
+/// `use_packed_eval=false`) di thread test default — pra-fix 8 operan sudah
+/// `SIGABRT` stack overflow; pasca-fix 8/12/16 operan benar. (Rantai lebih
+/// panjang, mis. 32 operan, masih menabrak limit deep-recursion BERBEDA di
+/// elaborator — `const_eval_with_params`/`elaborate_expr`; lihat buglog #38.)
 #[test]
 fn test_deep_boolean_chain_no_stack_overflow() {
     let source = r#"
 module tb_deepchain;
     int a, b, c, d, e, f, g, h, i, j;
-    int ok8, ok12, or12, neg8;
+    int ok8, ok12, ok16, or12, neg8;
     initial begin
         a=1; b=2; c=3; d=4; e=5; f=6; g=7; h=8; i=9; j=10;
         ok8  = (a==1) && (b==2) && (c==3) && (d==4) && (e==5) && (f==6) && (g==7) && (h==8);
         ok12 = (a==1) && (b==2) && (c==3) && (d==4) && (e==5) && (f==6)
              && (g==7) && (h==8) && (i==9) && (j==10) && (a<b) && (b<c);
+        ok16 = (a==1) && (b==2) && (c==3) && (d==4) && (e==5) && (f==6)
+             && (g==7) && (h==8) && (i==9) && (j==10)
+             && (a<2) && (b<3) && (c<4) && (d<5) && (e<6) && (f<7);
         or12 = (a==9) || (b==9) || (c==9) || (d==9) || (e==9) || (f==9)
              || (g==9) || (h==9) || (i==9) || (j==10) || (a>b) || (b>c);
         neg8 = (a==2) && (b==2) && (c==3) && (d==4) && (e==5) && (f==6) && (g==7) && (h==8);
@@ -1172,6 +1179,7 @@ endmodule
     let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
     assert_eq!(get("ok8"), 1, "8 operan && semua benar → 1");
     assert_eq!(get("ok12"), 1, "12 operan && semua benar → 1");
+    assert_eq!(get("ok16"), 1, "16 operan && semua benar → 1 (headroom)");
     assert_eq!(get("or12"), 1, "12 operan || (j==10 benar) → 1");
     assert_eq!(get("neg8"), 0, "8 operan && (a==2 salah) → 0");
 }

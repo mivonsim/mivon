@@ -433,21 +433,59 @@ bug di mivon utama (parser/elaborator/simulator). Status: ✅ fixed / ⏳ open.
     tak berbagi slot stack di build debug). Kedalaman aman ≈ 7 kondisi; 8 kondisi
     → `SIGABRT`. Bukan bug semantik (nilai benar bila stack cukup): CLI
     `mivon sim` (main thread 8 MiB) & packed eval tidak terpengaruh.
-    - **Fix:** arm `SysFunc` (≈1320 baris, `match name.as_str() { ... }`) dipecah
-      ke method baru `#[inline(never)] fn eval_sysfunc(&mut self, name, args,
-      line, col)` di `engine/eval/expr.rs`. Body identik (dipindah apa adanya,
-      hanya `self.set_cur_src_pos(*line, *col)` → `(line, col)`), arm kini jadi
-      satu baris delegasi `=> self.eval_sysfunc(name, args, *line, *col),`.
-      Frame `evaluate_expr_impl` yang dipakai tiap level rekursi menyusut
-      drastis (locals raksasa `SysFunc` pindah ke frame helper yang dipanggil
-      sekali, bukan per level).
+    - **Fix (dua bagian; keduanya perlu):**
+      1. **Dispatcher rekursif (DECISIVE).** `evaluate_expr_impl` lama (match
+         raksasa ~2400 baris) di-rename jadi `evaluate_expr_deep`; lahir
+         `evaluate_expr_impl` baru yang **tipis**: tulang belakang rekursif
+         `BinaryOp`/`UnaryOp` ditangani di situ lewat helper
+         `#[inline(never)] fn eval_binary_op` / `fn eval_unary_op`, sisanya
+         didelegasikan ke `evaluate_expr_deep`. Karena `evaluate_expr_impl`
+         (yang dipanggil tiap level rekursi) kini ber-frame kecil, rantai
+         `&&`/`||` panjang **tidak lagi** mengalokasikan frame
+         `evaluate_expr_deep` (~184 KB) per level rekursi.
+      2. **Pecah arm `SysFunc`** (≈1320 baris, `match name.as_str() { ... }`)
+         ke method `#[inline(never)] fn eval_sysfunc(&mut self, name, args,
+         line, col)` — memangkas frame `evaluate_expr_deep` itu sendiri
+         (bermanfaat utk pola rekursi LAIN yang masih menembus
+         `evaluate_expr_deep`, mis. sysfunc bersarang / method bersarang).
+         Body dipindah apa adanya (hanya `self.set_cur_src_pos(*line, *col)`
+         → `(line, col)`).
+    - **Bukti bagian (1) WAJIB:** dengan HANYA pemecahan `SysFunc` (bagian 2,
+      tanpa dispatcher), rantai **8 operan MASIH `SIGABRT` stack overflow** di
+      thread test 2 MiB — dispatcher (bagian 1) yang membuat test lulus. Pada
+      helper, `lhs`/`rhs` kini `&IrExpr` (bukan `&Box<IrExpr>`) sehingga
+      `lhs.as_ref()` → `lhs`.
     - Verifikasi: `examples/mv/logic_chain.mv` (rantai `&&`/`||` 16 operan) —
-      test `test_mv_long_logic_chain_no_stack_overflow`. Dibuktikan GAGAL
-      (SIGABRT stack overflow) pada `expr.rs` pra-fix, LULUS pasca-fix.
+      test `test_mv_long_logic_chain_no_stack_overflow`; plus
+      `test_deep_boolean_chain_no_stack_overflow` (8/12/16 operan via
+      `simulate_signals`). Keduanya LULUS pasca-fix.
     - Catatan: fix ini TIDAK mengubah semantik apa pun — seluruh 281 test
-      `mivon-mv` + suite `mivon-tests` hijau.
+      `mivon-mv` + suite `mivon-tests` (1092) hijau.
 
 ## ⏳ Open
 
-_(Tidak ada item open. Caveat chained method temporer & iverilog `with`
-tercatat di #36 sbg keterbatasan tool/desain, bukan bug.)_
+38. **Deep-recursion limit di ELABORATOR (bukan evaluator) — rantai ekspresi
+    ≥~17 operan → stack overflow saat ELABORASI.** Ditemukan saat memperluas
+    test #37: rantai `&&` 32 operan (semua operand sinyal, bukan konstanta)
+    masih `SIGABRT` di thread test 2 MiB, tapi gdb menunjukkan overflow BUKAN
+    di `evaluate_expr_impl` melainkan di:
+    `mivon_ast::const_eval::const_eval_with_params` (`const_eval.rs:528`,
+    arm `LogicalAnd`) → `mivon_elaboration::util::const_fold::try_fold_const_*`
+    → `Elaborator::elaborate_expr` (`elaborator/expr.rs:666`). Dua match
+    raksasa (`const_eval_with_params` + `elaborate_expr`) ber-rekursi atas
+    seluruh pohon; meski ekspresi TIDAK konstan (semua sinyal), const-fold
+    tetap menelusuri sampai dasar sebelum gagal → frame bertumpuk.
+    - Batas terukur: 16 operan LULUS, 32 GAGAL (elaborasi) → aman ~16,
+      gagal ≤32. Fix #37 (evaluator) menaikkan batas evaluator di atas batas
+      elaborator, jadi yang tersisa murni masalah elaborator/const-fold.
+    - **Fix yang disarankan (belum dikerjakan — HIGH risk, core elaborator):**
+      (a) depth-guard di `const_eval_with_params` (bail → `Err` "not constant"
+      saat kedalaman > N) supaya ekspresi non-konstan tak menelusuri dalam;
+      atau (b) pecah `const_eval_with_params`/`elaborate_expr` jadi helper
+      per-arm `#[inline(never)]` (pola fix #37); atau (c) deteksi cepat
+      "mengandung sinyal" sebelum const-fold. Test regresi:
+      `test_deep_boolean_chain_no_stack_overflow` diperluas ke 32 operan
+      begitu fix mendarat.
+
+_(Caveat chained method temporer & iverilog `with` tercatat di #36 sbg
+keterbatasan tool/desain, bukan bug.)_
