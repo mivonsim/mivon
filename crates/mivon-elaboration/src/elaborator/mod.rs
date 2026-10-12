@@ -322,6 +322,10 @@ pub struct Elaborator {
     /// (4002 module × 4002 insert = 16M hash insert ≈ 62% total instruction
     /// elaborate di desain besar — confirmed callgrind demo3200 4.8G instr).
     pub module_idx: HashMap<Symbol, usize>,
+    /// Named sequence declarations: name → (args, SvaSeqExpr)
+    pub sequence_decls: HashMap<Symbol, (Vec<ParamDecl>, SvaSeqExpr)>,
+    /// Named property declarations: name → (args, SvaPropExpr)
+    pub property_decls: HashMap<Symbol, (Vec<ParamDecl>, SvaPropExpr)>,
 }
 
 impl Elaborator {
@@ -641,7 +645,33 @@ impl Elaborator {
             dbg_apply_n: std::cell::Cell::new(0),
             dpi_import_names,
             module_idx: HashMap::new(),
+            sequence_decls: HashMap::new(),
+            property_decls: HashMap::new(),
         }
+    }
+
+    /// F85 (WIP): daftarkan deklarasi SVA `sequence` sebagai AST. Elaborasi
+    /// ekspresi temporal ke IR belum diimplementasikan — deklarasi cukup
+    /// disimpan agar build utuh; assertion temporal tetap di-skip (lihat
+    /// `ModuleItem::PropertyAssert`).
+    pub(crate) fn elaborate_sva_seq_expr(
+        &self,
+        expr: &SvaSeqExpr,
+        _signal_map: &HashMap<Symbol, SignalId>,
+        _signals: &[SignalInfo],
+    ) -> Result<SvaSeqExpr, SimError> {
+        Ok(expr.clone())
+    }
+
+    /// F85 (WIP): daftarkan deklarasi SVA `property` sebagai AST (lihat
+    /// `elaborate_sva_seq_expr`).
+    pub(crate) fn elaborate_sva_prop_expr(
+        &self,
+        expr: &SvaPropExpr,
+        _signal_map: &HashMap<Symbol, SignalId>,
+        _signals: &[SignalInfo],
+    ) -> Result<SvaPropExpr, SimError> {
+        Ok(expr.clone())
     }
 
     pub fn elaborate(
@@ -5347,6 +5377,16 @@ impl Elaborator {
                         };
                         processes.push(process);
                     }
+                }
+                ModuleItem::SequenceDecl { name, args, expr, .. } => {
+                    // Register sequence declaration for reference in assertions
+                    let seq_ir = self.elaborate_sva_seq_expr(expr, &signal_map, &signals)?;
+                    self.sequence_decls.insert(*name, (args.clone(), seq_ir));
+                }
+                ModuleItem::PropertyDecl { name, args, expr, .. } => {
+                    // Register property declaration for reference in assertions
+                    let prop_ir = self.elaborate_sva_prop_expr(expr, &signal_map, &signals)?;
+                    self.property_decls.insert(*name, (args.clone(), prop_ir));
                 }
                 _ => {}
             }

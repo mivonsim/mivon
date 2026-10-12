@@ -1028,7 +1028,9 @@ pub fn substitute_genvar_in_module_item(item: &mut ModuleItem, var_name: &str, v
         | ModuleItem::Nettype(_)
         | ModuleItem::PropertyAssert(_)
         | ModuleItem::Checker(_)
-        | ModuleItem::Class(_) => {}
+        | ModuleItem::Class(_)
+        | ModuleItem::SequenceDecl { .. }
+        | ModuleItem::PropertyDecl { .. } => {}
     }
 }
 
