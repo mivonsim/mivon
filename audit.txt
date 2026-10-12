@@ -206,6 +206,10 @@ Arsitektur-06: ⚠️ Elaborator monolithic — PARTIAL (ROUND 80)
 - sign.rs (BARU ROUND 128, ~200 baris): 4 helper signedness
   (elab_expr_is_signed, param_decl_is_signed, const_or_signed,
   expr_refs_signed_param) pindah verbatim; mod.rs 7059 → 6912 (-147).
+- diag.rs (BARU ROUND 129, ~330 baris): 8 method diagnostic
+  (elab_diag/at, elab_warn/at, find_name/literal_in_source,
+  resolve_source_location, check_packed_width) + MAX_PACKED_WIDTH
+  pindah verbatim (pub(crate)); call site tak berubah.
   Masih perlu: type resolution, param resolution, topo order, diagnostic
   helpers bisa dipisah lebih lanjut.
   Severity: High
@@ -5389,6 +5393,20 @@ Test (+1): sign::tests::test_refs_signed_param_ident + guard
 workspace penuh (48 suite ok, 0 fail) + 29 signed integration.
 
 📊 VERIFIKASI ROUND 128:
+   - cargo test --workspace: 48 suite ok, 0 fail
+   - Review subagent: APPROVE.
+
+═══ ROUND 129 — Arsitektur-06 diag.rs extract ═══
+
+✅ EXTRACT (crates/mivon-elaboration/src/elaborator/diag.rs BARU):
+   - 8 method diagnostic + MAX_PACKED_WIDTH pindah verbatim
+     (pub(crate)); call site ~75 titik tak berubah.
+   - Review: APPROVE.
+
+Test (+1): diag::tests::test_find_name_token_boundary + guard
+workspace penuh (48 suite ok, 0 fail).
+
+📊 VERIFIKASI ROUND 129:
    - cargo test --workspace: 48 suite ok, 0 fail
    - Review subagent: APPROVE.
 
