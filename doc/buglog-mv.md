@@ -341,4 +341,12 @@ bug di mivon utama (parser/elaborator/simulator). Status: ✅ fixed / ⏳ open.
 
 ## ⏳ Open
 
-(tidak ada item open — semua bug historis sudah tertutup)
+1. **Simulator utama mivon tak dukung tipe queue** — `type Q = logic[7:0][$];
+   sig q : Q` + `q.push_back(...)` berjalan tanpa crash tapi elemen terbaca
+   X (storage queue tak diimplementasikan di signal model engine; F40 belum
+   di-wire ke simulator). Dampak: e2e queue (`cast_queue.mv`) lolos **verilator**
+   tapi `mivon sim` membaca X. Workaround: verifikasi queue via `mgen` →
+   `verilator`/`iverilog` (cast `'{ x }` valid di kedua tool; iverilog tak
+   dukung queue sbg port module — batasi ke variabel lokal TB). Mirip pola
+   buglog historis F54 (associative array awalnya juga tak berfungsi di
+   simulator). Di-lacak di MIVON-HDL.md §4.6.

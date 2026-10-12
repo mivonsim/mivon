@@ -113,6 +113,51 @@ impl Parser {
     pub(crate) fn is_ident(&self, s: &str) -> bool {
         matches!(self.peek(), Tok::Ident(x) if x == s)
     }
+
+    /// Lookahead F33: apakah `Ident [ ... ]` (boleh multi-dimensi, termasuk
+    /// `[$]`) diikuti `'(` → cast ber-dimensi (`logic[7:0]'(x)` /
+    /// `logic[7:0][$]'(x)` / `Word16[N]'(x)`). Digunakan supaya cast target
+    /// boleh punya range / dimensi unpacked / queue (full support LRM §6.24).
+    ///
+    /// `self.pos` menunjuk ke `Ident`. Mengembalikan `true` bila token tepat
+    /// setelah kurung siku penutup TERLUAR (grup terakhir) adalah
+    /// `Tok::Quote`. Grup bracket berantai (`T[N][M]`) ditelusuri sampai
+    /// grup terakhir.
+    pub(crate) fn ident_followed_by_cast(&self) -> bool {
+        if self.peek_at(1) != &Tok::LBrack {
+            return false;
+        }
+        let mut i = self.pos + 1; // posisi '[' pembuka grup pertama
+        loop {
+            if self.toks.get(i).map(|t| t.0 != Tok::LBrack).unwrap_or(true) {
+                return false;
+            }
+            // telusuri sampai ']' penutup grup ini (tangani nested).
+            let mut depth: i32 = 0;
+            while i < self.toks.len() {
+                match &self.toks[i].0 {
+                    Tok::LBrack => depth += 1,
+                    Tok::RBrack => {
+                        depth -= 1;
+                        if depth == 0 {
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+                i += 1;
+            }
+            // sesudah ']' terluar grup ini:
+            match self.toks.get(i + 1).map(|t| &t.0) {
+                Some(Tok::LBrack) => {
+                    i += 1; // grup dimensi lanjutan → lanjut telusuri
+                    continue;
+                }
+                Some(Tok::Quote) => return true,
+                _ => return false,
+            }
+        }
+    }
     pub(crate) fn expect_ident_kw(&mut self, s: &str) -> Result<(), MvError> {
         if self.is_ident(s) {
             self.advance();

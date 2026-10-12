@@ -282,23 +282,40 @@ pub(crate) fn check_expr<'a>(
             }
         }
         // F33: type cast `T'(x)` — tipe target harus dikenal (E2005).
+        // Full support LRM 1800 §6.24 untuk tipe dasar / typedef / ranged /
+        // parameter-width. Cast ber-range (`logic[7:0]'(x)`) di-emit sebagai
+        // **width cast** `8'(x)` (SV valid, di semua tool) — `logic[M:N]'(x)`
+        // itu SENDIRI tidak didukung tool EDA mana pun. Cast inline ke ARRAY
+        // (`T[N]'(x)`) / QUEUE (`T[$]'(x)`) BUKAN SV valid → tetap ditolak;
+        // untuk queue pakai typedef (`type Q = ...[$]; Q'(x)`).
         Expr::Cast {
             ty,
             expr,
             line,
             col,
         } => {
-            // F33 fix review: cast target tidak boleh punya range/array.
-            if matches!(
-                ty.as_ref(),
-                MvType::Logic(Some(_)) | MvType::Array(_, _) | MvType::Queue(_)
-            ) {
+            // Inline array / queue cast → bukan SV valid (LRM tak mengizinkan
+            // cast ke tipe ber-dimensi / dynamic array secara inline).
+            if matches!(ty.as_ref(), MvType::Array(_, _) | MvType::Queue(_)) {
                 return Err(err_at(
                     *line,
                     *col,
                     "E2005",
-                    "cast target tidak boleh punya range/array — pakai tipe sederhana (mis. `Word16'(x)`)",
+                    "cast target array/queue inline tidak valid di SV — pakai typedef (mis. `type Q = logic[7:0][$]; Q'(x)`)",
                 ));
+            }
+            // Ranged cast harus ber-batas literal (`logic[7:0]'(x)`) supaya
+            // di-emit width cast `8'(x)`. Untuk lebar parameter pakai
+            // `WIDTH'(x)`.
+            if let MvType::Logic(Some((a, b))) = ty.as_ref() {
+                if !(is_literal_int(a) && is_literal_int(b)) {
+                    return Err(err_at(
+                        *line,
+                        *col,
+                        "E2005",
+                        "cast target ber-range harus ber-batas literal (mis. `logic[7:0]'(x)`); untuk lebar parameter pakai `WIDTH'(x)`",
+                    ));
+                }
             }
             // Size cast via parameter (`WIDTH'(x)`) — lebar = nilai param.
             if let MvType::Named(n, ..) = ty.as_ref() {
@@ -342,7 +359,7 @@ pub(crate) fn check_expr<'a>(
                 }
             }
         }
-        Expr::SysFunc(name, args, l, c) => {
+        Expr::SysFunc(_name, args, _l, _c) => {
             if let Some(a) = args {
                 for arg in a {
                     check_expr(arg, ctx, scope, depth + 1)?;
@@ -947,6 +964,18 @@ pub(crate) fn bit_len(v: i64) -> i64 {
 }
 
 /// Const-fold ekspresi integer sederhana. `Ident` hanya dari parameter.
+/// Apakah ekspresi adalah integer literal (mentah atau ber-parenthesized)?
+/// Dipakai validasi cast ber-range — batas range harus literal agar bisa
+/// di-emit sebagai width cast `N'(x)` (SV valid).
+pub(crate) fn is_literal_int(e: &Expr) -> bool {
+    match e {
+        Expr::Int(_) => true,
+        Expr::Sized(_, _, _, _, _) => true,
+        Expr::Paren(i) => is_literal_int(i),
+        _ => false,
+    }
+}
+
 pub(crate) fn fold_const(e: &Expr, params: &Params, depth: usize) -> Option<i64> {
     if depth > 8 {
         return None;

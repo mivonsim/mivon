@@ -856,15 +856,35 @@ fn f33_review_size_cast_via_param_ok() {
     check_src(src).expect("size cast via parameter harus lolos");
 }
 
+// F33: cast ke tipe ber-range kini lolos (full support LRM 1800 §6.24).
 #[test]
-fn f33_review_cast_ranged_target_err() {
+fn f33_cast_ranged_target_ok() {
     let src = "module m {\n    in  a : logic[7:0]\n    out q : logic[7:0]\n    comb {\n        q = logic[7:0]'(a)\n    }\n}\n";
+    check_src(src).expect("cast ke tipe ber-range harus lolos");
+}
+
+// F33: cast ke queue via typedef `Q'(x)` (dynamic array) lolos — inline
+// `logic[7:0][$]'(x)` bukan SV valid, jadi pakai typedef (lihat §4.6).
+#[test]
+fn f33_cast_queue_target_ok() {
+    let src = "type Q = logic[7:0][$]\nmodule m {\n    in  a : logic[7:0]\n    out q : Q\n    comb {\n        q = Q'(a)\n    }\n}\n";
+    check_src(src).expect("cast ke queue via typedef harus lolos");
+}
+
+// F33: inline array/queue cast bukan SV valid → tetap ditolak dengan pesan jelas.
+#[test]
+fn f33_cast_inline_array_queue_err() {
+    let src = "module m {\n    in  a : logic[7:0]\n    out q : logic[7:0][$]\n    comb {\n        q = logic[7:0][$]'(a)\n    }\n}\n";
     let e = check_src(src).unwrap_err();
-    assert!(
-        e.msg.contains("tidak boleh punya range") || e.msg.contains("ekspresi tidak valid"),
-        "msg: {}",
-        e.msg
-    );
+    assert!(e.msg.contains("E2005"), "msg: {}", e.msg);
+}
+
+// F33: ranged cast ber-batas non-literal → ditolak (pakai `WIDTH'(x)`).
+#[test]
+fn f33_cast_ranged_nonliteral_err() {
+    let src = "module m #(WIDTH = 8) {\n    in  a : logic[7:0]\n    out r : logic[7:0]\n    comb {\n        r = logic[WIDTH-1:0]'(a)\n    }\n}\n";
+    let e = check_src(src).unwrap_err();
+    assert!(e.msg.contains("E2005"), "msg: {}", e.msg);
 }
 
 // ── F45: wait fork / disable fork ──

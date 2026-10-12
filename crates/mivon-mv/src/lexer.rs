@@ -995,10 +995,6 @@ fn peek2(chars: &[char], i: usize, c: char) -> bool {
     i + 2 < chars.len() && chars[i + 2] == c
 }
 
-fn peek3(chars: &[char], i: usize, c: char) -> bool {
-    i + 3 < chars.len() && chars[i + 3] == c
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

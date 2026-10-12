@@ -256,7 +256,31 @@ Aturan:
   menghasilkan elemen 8-bit.
 - Queue kosong by-design: tak dianggap "uninitialized register" (WR0014
   dikecualikan); diisi via method, bukan assignment langsung.
-- Cast ke queue (`q'(x)`) ditolak — pakai tipe sederhana.
+- **Cast ke tipe ber-range** didukung penuh (LRM 1800 §6.24): `logic[7:0]'(x)`
+  di-emit sebagai **width cast** `8'(x)` (SV valid di semua tool — bentuk
+  `logic[M:N]'(x)` sendiri tidak didukung tool EDA). Batas range harus
+  literal; untuk lebar parameter pakai `WIDTH'(x)`. Lihat §6.6.
+- **Cast ke queue** didukung penuh (LRM 1800 §6.24) via **typedef** +
+  **assignment pattern** portabel:
+  `type Q = logic[7:0][$];` lalu `q = Q'(x)` di-emit sebagai assignment
+  pattern **`'{ x }`** (bukan static cast `Q'(x)`). Alasan: `Q'(x)` (static
+  cast ke tipe queue) **ditolak verilator** (`UNSUPPORTED`), dan `Q'{x}`
+  (typed assignment pattern) **ditolak iverilog** — hanya `'{ x }` (untyped
+  assignment pattern) valid di **kedua** tool EDA. Cast inline
+  `logic[7:0][$]'(x)` bukan SV valid → tetap ditolak **E2005** (pakai
+  typedef). Hasil: queue 1-elemen (`'{ x }` → 1 elemen = `x`).
+  - **Caveat iverilog**: iverilog **tidak mendukung queue sebagai port
+    module** (`Port q ... with type queue is not supported`) — batasi queue
+    ke variabel lokal di TB, atau gunakan verilator untuk modul ber-port
+    queue. Ini keterbatasan iverilog, bukan bug generasi (SV hasil LRM-valid
+    & lolos verilator).
+  - **Caveat simulator utama mivon**: engine SV mivon (`mivon sim`) belum
+    mendukung tipe queue secara penuh — verifikasi queue portabel via
+    **verilator** (`mgen` → `verilator`). Lihat buglog-mv (gap simulator
+    queue).
+- **Rangkuman emisi cast** (codegen): `logic[M:N]'(x)` → `W'(x)`
+  (width cast), `Q'(x)` dengan `Q` typedef queue → `'{ x }`, selain itu
+  `T'(x)` static cast apa adanya (termasuk typedef non-queue & tipe dasar).
 
 ---
 

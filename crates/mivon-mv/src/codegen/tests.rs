@@ -684,6 +684,29 @@ fn codegen_cast() {
     assert!(out.sv.contains("b = logic'(a[0]);"), "sv: {}", out.sv);
 }
 
+// F33: ranged cast `logic[7:0]'(x)` → emit width cast `8'(x)` (SV valid;
+// `logic[7:0]'(x)` sendiri tidak didukung tool EDA).
+#[test]
+fn codegen_cast_ranged_and_queue() {
+    let src = "type Q = logic[7:0][$]\nmodule m {\n    in  a : logic[7:0]\n    out q : Q\n    out r : logic[7:0]\n    comb {\n        r = logic[7:0]'(a)\n        q = Q'(a)\n    }\n}\n";
+    let out = generate(&parse(src).unwrap(), "m");
+    assert!(out.sv.contains("r = 8'(a);"), "sv: {}", out.sv);
+    assert!(out.sv.contains("q = '{ a };"), "sv: {}", out.sv);
+}
+
+// F40: typedef ke queue `type Q = logic[7:0][$]` → `typedef logic [7:0] Q [$];`
+// (dimensi `[$]` SETELAH nama — `logic [7:0] [$] Q;` bukan grammar SV).
+#[test]
+fn codegen_typedef_queue() {
+    let src = "type Q = logic[7:0][$]\nmodule m {\n    out q : Q\n}\n";
+    let out = generate(&parse(src).unwrap(), "m");
+    assert!(
+        out.svh.contains("typedef logic [7:0] Q [$];"),
+        "svh: {}",
+        out.svh
+    );
+}
+
 #[test]
 fn codegen_typedef_local_module() {
     // typedef lokal module: `type X` / `enum E` di badan module → emit

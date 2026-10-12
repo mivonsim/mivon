@@ -444,11 +444,15 @@ impl Parser {
             }
             Tok::Ident(s) => {
                 let (l, c) = self.pos_line();
-                // F33: type cast `T'(expr)` / `logic'(x)` / `Word16'(x)` /
-                // `pkg::T'(x)` — ident (tipe) diikuti Quote. parse_base_type
-                // menangani tipe dasar, user-defined, dan scoped `pkg::T`.
-                if self.peek_at(1) == &Tok::Quote {
-                    let ty = self.parse_base_type()?;
+                // F33: type cast `T'(expr)` / `logic'(x)` / `logic[7:0]'(x)` /
+                // `logic[7:0][$]'(x)` / `Word16[N]'(x)` / `pkg::T'(x)`.
+                // parse_type (bukan parse_base_type) dipakai supaya target
+                // cast boleh punya range, dimensi unpacked, DAN queue
+                // (`T[$]`) — full support LRM 1800 §6.24 (cast ke tipe apa
+                // pun, termasuk dynamic array / queue).
+                let is_cast = self.peek_at(1) == &Tok::Quote || self.ident_followed_by_cast();
+                if is_cast {
+                    let ty = self.parse_type()?;
                     self.expect(&Tok::Quote)?;
                     self.expect(&Tok::LParen)?;
                     let e = self.parse_expr()?;

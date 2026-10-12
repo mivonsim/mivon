@@ -10,6 +10,8 @@
 //! - `tests.rs` — unit test
 
 use crate::ast::*;
+use std::cell::RefCell;
+use std::collections::HashMap;
 
 pub mod defs;
 pub mod expr;
@@ -18,6 +20,53 @@ pub mod stmt;
 
 #[cfg(test)]
 mod tests;
+
+// ── Resolusi typedef untuk codegen cast ─────────────────────────────────────
+//
+// `T'(x)` di MV bisa menargetkan typedef yang MEMRESOLUSI ke QUEUE
+// (`type Q = logic[7:0][$]`). Static cast `Q'(x)` ke tipe queue TIDAK didukung
+// verilator (UNSUPPORTED) dan bentuk inline `logic[7:0][$]'(x)` bukan SV valid
+// — keduanya ditolak E2005 di check. Untuk queue typedef kita emit assignment
+// pattern `'{ x }` yang valid di verilator DAN iverilog.
+//
+// Map nama typedef → tipe ter-resolusi disimpan di thread-local agar
+// `emit_expr` (Cast arm) bisa melihatnya tanpa meneruskan map ke ~120 call
+// site. Aman: per-thread (cargo test jalan paralel per-thread), dan tiap
+// pemanggilan `generate_*` menimpa nilai sebelumnya sebelum emisi.
+thread_local! {
+    static TYPE_MAP: RefCell<Option<HashMap<String, MvType>>> = RefCell::new(None);
+}
+
+/// Bangun map nama typedef (alias) → tipe ter-resolusi dari `file.typedefs`.
+/// Alias berantai (`type Q2 = Q`) diselesaikan satu level.
+fn build_typedef_map(file: &MvFile) -> HashMap<String, MvType> {
+    let mut raw: HashMap<String, MvType> = HashMap::new();
+    for td in &file.typedefs {
+        if let Typedef::Alias { name, ty, .. } = td {
+            raw.insert(name.clone(), ty.clone());
+        }
+    }
+    let mut map = raw.clone();
+    for (k, v) in &raw {
+        if let MvType::Named(n, ..) = v {
+            if let Some(r) = raw.get(n) {
+                map.insert(k.clone(), r.clone());
+            }
+        }
+    }
+    map
+}
+
+/// Apakah `name` adalah typedef yang memresolusi ke QUEUE? Dipakai Cast arm
+/// `emit_expr` untuk memilih emit `'{ x }` vs `name'(x)`.
+pub(crate) fn is_queue_typedef(name: &str) -> bool {
+    TYPE_MAP.with(|m| {
+        m.borrow()
+            .as_ref()
+            .and_then(|map| map.get(name))
+            .map_or(false, |t| matches!(t, MvType::Queue(_)))
+    })
+}
 
 /// Hasil codegen: (sv, svh).
 #[derive(Debug, Clone)]
@@ -81,6 +130,8 @@ pub fn generate_src_ext_opts(
     src_ext: &str,
     opts: &GenOpts,
 ) -> GenOutput {
+    // Siapkan map typedef (queue resolution) untuk Cast arm di emit_expr.
+    TYPE_MAP.with(|m| *m.borrow_mut() = Some(build_typedef_map(file)));
     let header = header(base, src_ext);
     let svh = generate_svh_opts(file, base, &header, opts);
     let sv = generate_sv_opts(file, base, &header, iface_names, opts);

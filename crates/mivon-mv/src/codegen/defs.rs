@@ -82,19 +82,27 @@ pub(crate) fn emit_package(out: &mut String, indent: usize, pkg: &Package) {
 pub(crate) fn emit_typedef(out: &mut String, indent: usize, td: &Typedef) {
     match td {
         Typedef::Alias { name, ty, .. } => {
-            // For typedef, array dims go AFTER name (SV unpacked array syntax):
-            // `type A = logic[8][4]` → `typedef logic [7:0] A [0:3];`
-            // Use emit_signal_decl_multi logic with single name.
+            // For typedef, unpacked dims go AFTER name (SV unpacked array /
+            // queue syntax): `type A = logic[8][4]` →
+            // `typedef logic [7:0] A [0:3];`, `type Q = logic[8][$]` →
+            // `typedef logic [7:0] Q [$];`.
             let mut dims: Vec<&Expr> = Vec::new();
             let mut elem = ty;
             while let MvType::Array(inner, ds) = elem {
                 dims.extend(ds.iter());
                 elem = inner;
             }
+            // Peel queue (`T[$]`) — unpacked dim `[$]` juga setelah nama.
+            let is_queue = if let MvType::Queue(inner) = elem {
+                elem = inner;
+                true
+            } else {
+                false
+            };
             // dims collected from outermost to innermost; reverse for SV order
             // (first array dim in source = first dim after name in SV).
             dims.reverse();
-            if dims.is_empty() {
+            if dims.is_empty() && !is_queue {
                 line(out, indent, &format!("typedef {} {name};", emit_type(ty)));
             } else {
                 let ty_s = super::expr::emit_type(elem);
@@ -105,6 +113,9 @@ pub(crate) fn emit_typedef(out: &mut String, indent: usize, td: &Typedef) {
                         other => format!("{} - 1", super::expr::emit_expr(other)),
                     };
                     dim_s.push_str(&format!(" [0:{n}]"));
+                }
+                if is_queue {
+                    dim_s.push_str(" [$]");
                 }
                 line(out, indent, &format!("typedef {ty_s} {name}{dim_s};"));
             }

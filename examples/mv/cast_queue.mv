@@ -1,0 +1,42 @@
+// ─────────────────────────────────────────────────────────────
+// Demo F33 — full support cast target: ranged + queue (MIVON-HDL.md §4.6)
+//   * `logic[7:0]'(a)` — cast ke tipe ber-range → emit width cast `8'(a)`
+//     (SV valid di semua tool EDA; `logic[M:N]'(x)` sendiri tidak didukung).
+//   * `type Q = logic[7:0][$]; Q'(a)` — cast ke QUEUE via typedef
+//     (inline `logic[7:0][$]'(x)` bukan SV valid → ditolak E2005).
+// Transpile: mivon mgen cast_queue.mv
+// Simulasi:  mivon sim cast_queue.mv --top tb_castq -T 100
+//            (atau tool EDA: verilator/iverilog terhadap hasil mgen)
+// ─────────────────────────────────────────────────────────────
+
+type Q = logic[7:0][$]
+
+module cast_dut {
+    in  a : logic[7:0]
+    out r : logic[7:0]
+    out q : Q
+
+    comb {
+        r = logic[7:0]'(a)
+        q = Q'(a)
+    }
+}
+
+module tb_castq {
+    sig a : logic[7:0]
+    sig r : logic[7:0]
+    sig q : Q
+
+    inst cast_dut u (.a, .r, .q)
+
+    initial {
+        a = 8'hA5
+        #10
+        if (r == 8'hA5 && q.size() == 1 && q[0] == 8'hA5) {
+            $display("TB_CASTQ_OK r=%0h q0=%0h", r, q[0])
+        } else {
+            $display("TB_CASTQ_BROKEN r=%0h qs=%0d q0=%0h", r, q.size(), q[0])
+        }
+        $finish
+    }
+}

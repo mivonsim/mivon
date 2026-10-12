@@ -2,6 +2,17 @@
 //! 1 file = 1 tanggung jawab.
 
 use crate::ast::*;
+use crate::codegen::is_queue_typedef;
+
+/// Nilai integer literal (mentah / ber-parenthesized) — dipakai menghitung
+/// lebar width cast dari range `logic[M:N]`.
+fn literal_int_value(e: &Expr) -> Option<i64> {
+    match e {
+        Expr::Int(v) => Some(*v),
+        Expr::Paren(i) => literal_int_value(i),
+        _ => None,
+    }
+}
 
 /// Emit tipe SV.
 pub(crate) fn emit_type(t: &MvType) -> String {
@@ -59,7 +70,25 @@ pub(crate) fn emit_expr(e: &Expr) -> String {
         Expr::Str(s) => format!("\"{}\"", s),
         Expr::Ident(s, ..) => s.clone(),
         Expr::Scoped(p, i, ..) => format!("{p}::{i}"),
-        Expr::Cast { ty, expr, .. } => format!("{}'({})", emit_type(ty), emit_expr(expr)),
+        Expr::Cast { ty, expr, .. } => match ty.as_ref() {
+            // F33: ranged logic cast `logic[M:N]'(x)` → width cast `W'(x)`
+            // (SV valid di semua tool; `logic[M:N]'(x)` sendiri tidak
+            // didukung tool EDA). W = |M-N|+1.
+            MvType::Logic(Some((a, b))) => {
+                let av = literal_int_value(a).unwrap_or(0);
+                let bv = literal_int_value(b).unwrap_or(0);
+                let w = (av - bv).abs() + 1;
+                format!("{}'({})", w, emit_expr(expr))
+            }
+            // Cast ke typedef yang memresolusi ke QUEUE → assignment pattern
+            // `'{ x }` (valid di verilator DAN iverilog; static cast `Q'(x)`
+            // ke queue ditolak verilator, inline `logic[7:0][$]'(x)` bukan
+            // SV valid → keduanya E2005 di check).
+            MvType::Named(n, ..) if is_queue_typedef(n) => {
+                format!("'{{ {} }}", emit_expr(expr))
+            }
+            _ => format!("{}'({})", emit_type(ty), emit_expr(expr)),
+        },
         Expr::Unary(op, inner) => {
             if op == "posedge" || op == "negedge" {
                 format!("{op} {}", emit_expr(inner))
