@@ -678,6 +678,56 @@ pub struct DpiArg {
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum SvaSeqExpr {
+    /// Boolean expression (base sequence)
+    Expr(Expr),
+    /// Delay: `seq1 ##N seq2` atau `seq1 ##[M:N] seq2`
+    Delay { left: Box<SvaSeqExpr>, right: Box<SvaSeqExpr>, min: Expr, max: Option<Expr> },
+    /// Repeat: `[*N]` atau `[*M:N]`
+    Repeat { expr: Box<SvaSeqExpr>, min: Expr, max: Option<Expr> },
+    /// Overlapping implication: `seq1 |-> seq2`
+    Implies { left: Box<SvaSeqExpr>, right: Box<SvaSeqExpr> },
+    /// Non-overlapping implication: `seq1 |=> seq2`
+    NextImplies { left: Box<SvaSeqExpr>, right: Box<SvaSeqExpr> },
+    /// Or: `seq1 or seq2`
+    Or { left: Box<SvaSeqExpr>, right: Box<SvaSeqExpr> },
+    /// And: `seq1 and seq2`
+    And { left: Box<SvaSeqExpr>, right: Box<SvaSeqExpr> },
+    /// Intersect: `seq1 intersect seq2`
+    Intersect { left: Box<SvaSeqExpr>, right: Box<SvaSeqExpr> },
+    /// First match: `first_match(seq)`
+    FirstMatch { expr: Box<SvaSeqExpr> },
+    /// Throughout: `seq1 throughout seq2`
+    Throughout { left: Box<SvaSeqExpr>, right: Box<SvaSeqExpr> },
+    /// Within: `seq1 within seq2`
+    Within { left: Box<SvaSeqExpr>, right: Box<SvaSeqExpr> },
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum SvaPropExpr {
+    /// Sequence as property (strong property)
+    Seq(Box<SvaSeqExpr>),
+    /// Always: `always seq`
+    Always { expr: Box<SvaSeqExpr> },
+    /// Never: `never seq`
+    Never { expr: Box<SvaSeqExpr> },
+    /// Eventually: `eventually seq` / `s_eventually seq`
+    Eventually { expr: Box<SvaSeqExpr>, strong: bool },
+    /// Nexttime: `nexttime seq` / `s_nexttime seq`
+    Nexttime { expr: Box<SvaSeqExpr>, strong: bool },
+    /// Implication as property: `seq |-> prop`
+    Implies { seq: Box<SvaSeqExpr>, prop: Box<SvaPropExpr> },
+    /// Non-overlapping implication as property: `seq |=> prop`
+    NextImplies { seq: Box<SvaSeqExpr>, prop: Box<SvaPropExpr> },
+    /// Iff: `iff (cond) prop`
+    Iff { cond: Expr, prop: Box<SvaPropExpr> },
+    /// Disable iff: `disable iff (cond) prop`
+    DisableIff { cond: Expr, prop: Box<SvaPropExpr> },
+    /// Property name reference: `property_name`
+    Name(Symbol),
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum ModuleItem {
     Always(AlwaysBlock),
     Initial(InitialBlock),
@@ -719,6 +769,22 @@ pub enum ModuleItem {
     Nettype(NettypeDecl),
     /// Class declaration (IEEE 1800-2017 §8)
     Class(ClassDecl),
+    /// SVA Sequence declaration: `sequence name (args) = expr;`
+    SequenceDecl {
+        name: Symbol,
+        args: Vec<ParamDecl>,
+        expr: Box<SvaSeqExpr>,
+        line: usize,
+        col: usize,
+    },
+    /// SVA Property declaration: `property name (args) = expr;`
+    PropertyDecl {
+        name: Symbol,
+        args: Vec<ParamDecl>,
+        expr: Box<SvaPropExpr>,
+        line: usize,
+        col: usize,
+    },
     /// LANG-04/11/12/13: concurrent assertion property module-level —
     /// `assert/assume/cover/restrict property (@(posedge clk) expr)` bentuk
     /// BOOLEAN (tanpa operator temporal `##`/`|->`/`[*]`). Disimpan sebagai

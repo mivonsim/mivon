@@ -98,7 +98,7 @@ module tb_sva_demo;
         repeat (3) @(posedge clk) ack = 1;
         repeat (2) @(posedge clk) req = 0;
         ack = 0;
-        repeat (2) @(posedge clk) repeat (10) @(posedge clk) $finish;
+        repeat (2) @(posedge clk) { repeat (10) @(posedge clk) $finish; }
     end
 
     // ── initial ──
@@ -106,3 +106,4 @@ module tb_sva_demo;
         forever #5 clk = ~clk;
     end
 endmodule
+
