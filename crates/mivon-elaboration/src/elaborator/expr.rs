@@ -169,7 +169,7 @@ impl Elaborator {
                 }
                 // Check if this ident is a parameter (from param_vals or effective_params)
                 if let Some(&val) = self.param_vals.get(name) {
-                    return Ok(super::const_or_signed(
+                    return Ok(super::sign::const_or_signed(
                         LogicVec::from_u64(val as u64, 64),
                         self.param_is_signed.contains(name),
                     ));
@@ -230,8 +230,8 @@ impl Elaborator {
                                     {
                                         // Signed bila tipe param signed (sama
                                         // dgn jalur plain param di atas).
-                                        let psign = super::param_decl_is_signed(p);
-                                        return Ok(super::const_or_signed(
+                                        let psign = super::sign::param_decl_is_signed(p);
+                                        return Ok(super::sign::const_or_signed(
                                             LogicVec::from_u64(val as u64, 64),
                                             psign,
                                         ));

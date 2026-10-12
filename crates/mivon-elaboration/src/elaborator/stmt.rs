@@ -643,7 +643,7 @@ impl Elaborator {
         // Jangan fold RHS yang mereferensikan param SIGNED: try_fold_const_at_width
         // → const_eval memperlakukan Ident sbg unsigned, sehingga `lt = (N < 0)`
         // (N=localparam int -2) salah ter-fold jadi 0 (probe test_edge_signed_param_negative).
-        if super::expr_refs_signed_param(rhs_ast, &self.param_is_signed) {
+        if super::sign::expr_refs_signed_param(rhs_ast, &self.param_is_signed) {
             propagate_context_width(ir_rhs, lhs_w, signals);
             return;
         }
@@ -1100,7 +1100,7 @@ impl Elaborator {
                 // sehingga `PD < 0` (PD = localparam int -2) salah ter-fold
                 // jadi false; biarkan runtime mengevaluasi dgn IrExpr::Signed
                 // (probe p12f/p12g — signedness hilang).
-                let can_fold = !super::expr_refs_signed_param(cond, &self.param_is_signed);
+                let can_fold = !super::sign::expr_refs_signed_param(cond, &self.param_is_signed);
                 if can_fold {
                     if let Ok(val) = const_eval_with_params(cond, &self.param_vals) {
                         if val != 0 {
