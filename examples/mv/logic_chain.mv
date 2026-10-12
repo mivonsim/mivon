@@ -1,0 +1,38 @@
+// Demo rantai logika panjang — regresi bug #37.
+//
+// Rantai `&&`/`||` dengan >=8 operan membentuk ekspresi bersarang yang
+// dievaluasi secara REKURSIF oleh engine. Sebelum fix, frame
+// `evaluate_expr_impl` ~184 KB/level (arm `SysFunc` raksasa menumpuk di
+// frame yang sama) sehingga 8 operan pun menabrak stack thread test 2 MiB.
+// Setelah arm `SysFunc` dipecah ke method `#[inline(never)]` `eval_sysfunc`,
+// rantai panjang berjalan tanpa stack overflow.
+module tb_chain {
+    sig a, b, c, d, e, f, g, h : bit
+    sig i, j, k, l, m, n, o, p : bit
+    sig y_and, y_or : bit
+
+    initial {
+        a = 1
+        b = 1
+        c = 1
+        d = 1
+        e = 1
+        f = 1
+        g = 1
+        h = 1
+        i = 0
+        j = 1
+        k = 1
+        l = 1
+        m = 1
+        n = 1
+        o = 1
+        p = 1
+
+        y_and = a && b && c && d && e && f && g && h && i && j && k && l && m && n && o && p
+        y_or  = a || b || c || d || e || f || g || h || i || j || k || l || m || n || o || p
+
+        $display("CHAIN_OK and=%0d or=%0d", y_and, y_or)
+        $finish
+    }
+}

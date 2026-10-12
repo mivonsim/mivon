@@ -1142,6 +1142,40 @@ endmodule
     assert_eq!(get("nv"), 3, "find_last_index -> indeks 3");
 }
 
+/// Bug #37: rantai ekspresi panjang (`&&`/`||` ≥8 operan) menabrak stack
+/// thread test 2 MiB karena setiap level rekursi `evaluate_expr_impl`
+/// memakai frame ~184 KB (arm `SysFunc` raksasa menumpuk temporari antar
+/// arm di build debug). Fix: arm `SysFunc` dipecah ke method
+/// `#[inline(never)] eval_sysfunc` sehingga frame `evaluate_expr_impl`
+/// kembali kecil. Test ini memakai `simulate_signals` (evaluator rekursif,
+/// `use_packed_eval=false`) di thread test default — pra-fix 8 operan
+/// sudah `SIGABRT` stack overflow; pasca-fix 8 dan 12 operan benar.
+#[test]
+fn test_deep_boolean_chain_no_stack_overflow() {
+    let source = r#"
+module tb_deepchain;
+    int a, b, c, d, e, f, g, h, i, j;
+    int ok8, ok12, or12, neg8;
+    initial begin
+        a=1; b=2; c=3; d=4; e=5; f=6; g=7; h=8; i=9; j=10;
+        ok8  = (a==1) && (b==2) && (c==3) && (d==4) && (e==5) && (f==6) && (g==7) && (h==8);
+        ok12 = (a==1) && (b==2) && (c==3) && (d==4) && (e==5) && (f==6)
+             && (g==7) && (h==8) && (i==9) && (j==10) && (a<b) && (b<c);
+        or12 = (a==9) || (b==9) || (c==9) || (d==9) || (e==9) || (f==9)
+             || (g==9) || (h==9) || (i==9) || (j==10) || (a>b) || (b>c);
+        neg8 = (a==2) && (b==2) && (c==3) && (d==4) && (e==5) && (f==6) && (g==7) && (h==8);
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 5).unwrap();
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    assert_eq!(get("ok8"), 1, "8 operan && semua benar → 1");
+    assert_eq!(get("ok12"), 1, "12 operan && semua benar → 1");
+    assert_eq!(get("or12"), 1, "12 operan || (j==10 benar) → 1");
+    assert_eq!(get("neg8"), 0, "8 operan && (a==2 salah) → 0");
+}
+
 #[test]
 fn test_mv_fork_join_modes() {
     // F39: `fork { ... } { ... } join / join_any / join_none` di-transpile
@@ -23967,6 +24001,22 @@ fn test_mv_array_method_with_clause_end_to_end() {
     assert_eq!(get("s4"), 5, "sort with (item) → elemen 4");
     assert_eq!(get("un"), 3, "unique");
     assert_eq!(get("ok"), 1, "semua lolos (ARR_OK)");
+}
+
+/// Regresi bug #37: rantai `&&`/`||` panjang (16 operan) TIDAK boleh
+/// stack-overflow pada jalur evaluator rekursif (`simulate_signals` →
+/// `EngineFlags::default()`, `use_packed_eval=false`). Sebelum fix, frame
+/// `evaluate_expr_impl` ~184 KB/level (arm `SysFunc` raksasa menumpuk di
+/// frame yang sama) → `SIGABRT` pada 8 operan di thread test 2 MiB. Kini arm
+/// itu dipindah ke method `#[inline(never)]` `eval_sysfunc`.
+#[test]
+fn test_mv_long_logic_chain_no_stack_overflow() {
+    let src = include_str!("../../../../examples/mv/logic_chain.mv");
+    let r = mivon_mv::transpile(src, "logic_chain").expect("transpile .mv OK");
+    let sigs = simulate_signals(&r.sv, 10).expect("rantai && panjang harus jalan");
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    assert_eq!(get("y_and"), 0, "i=0 → AND rantai = 0");
+    assert_eq!(get("y_or"), 1, "a=1 → OR rantai = 1");
 }
 
 // ── LRM 1800 §7.3 — dimensi unpacked harus SETELAH nama variabel ──────

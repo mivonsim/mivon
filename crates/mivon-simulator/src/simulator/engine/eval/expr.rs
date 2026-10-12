@@ -204,7 +204,1545 @@ impl SimulationEngine {
         result
     }
 
+    /// Evaluasi `$`-system-function. Dipecah dari `evaluate_expr_impl`
+    /// (bug #37): arm `SysFunc` yang sangat besar membuat frame fungsi
+    /// rekursif menumpuk ~184 KB/level, sehingga rantai ekspresi panjang
+    /// (mis. `&&` ≥8 operan) menabrak stack thread test 2 MiB. Dengan
+    /// memindahkan body ke method `#[inline(never)]` ini, frame
+    /// `evaluate_expr_impl` kembali kecil.
+    #[inline(never)]
+    fn eval_sysfunc(
+        &mut self,
+        name: &Symbol,
+        args: &[IrExpr],
+        line: usize,
+        col: usize,
+    ) -> Result<LogicVec, SimError> {
+            // F20: catat posisi sysfunc agar warning runtime punya lokasi.
+            self.set_cur_src_pos(line, col);
+            match name.as_str() {
+                "$random" => {
+                    self.rand_call_count += 1;
+                    // If seed argument provided, reseed RNG for reproducibility
+                    if let Some(seed_arg) = args.first() {
+                        if let Ok(seed_val) = self.evaluate_expr(seed_arg) {
+                            let seed = seed_val.to_u64();
+                            self.rng = rand::rngs::StdRng::seed_from_u64(seed);
+                            self.rand_seed = seed;
+                        }
+                    }
+                    let val: i32 = self.rng.gen();
+                    Ok(LogicVec::from_u64(val as u64, 32))
+                }
+                "$urandom" => {
+                    self.rand_call_count += 1;
+                    let val: u32 = self.rng.gen();
+                    Ok(LogicVec::from_u64(val as u64, 32))
+                }
+                "$urandom_range" => {
+                    self.rand_call_count += 1;
+                    let args_eval: Vec<LogicVec> = args
+                        .iter()
+                        .map(|a| self.evaluate_expr(a))
+                        .collect::<Result<_, _>>()?;
+                    let maxval = args_eval.first().map(|v| v.to_u64()).unwrap_or(0);
+                    let minval = args_eval.get(1).map(|v| v.to_u64()).unwrap_or(0);
+                    if maxval <= minval {
+                        Ok(LogicVec::from_u64(minval, 32))
+                    } else {
+                        let range = maxval - minval + 1;
+                        let val: u64 = if range <= 1 {
+                            minval
+                        } else {
+                            minval + (self.rng.gen::<u64>() % range)
+                        };
+                        Ok(LogicVec::from_u64(val, 32))
+                    }
+                }
+                "$urandom_seed" => {
+                    let prev_seed = self.rand_seed;
+                    let seed = args
+                        .first()
+                        .map(|a| self.evaluate_expr(a).unwrap_or(LogicVec::from_u64(0, 32)))
+                        .unwrap_or(LogicVec::from_u64(0, 32))
+                        .to_u64();
+                    self.rng = rand::rngs::StdRng::seed_from_u64(seed);
+                    self.rand_seed = seed;
+                    self.rand_call_count += 1;
+                    Ok(LogicVec::from_u64(prev_seed, 64))
+                }
+                "$srandom" => {
+                    let prev_seed = self.rand_seed;
+                    if let Some(seed_arg) = args.first() {
+                        if let Ok(seed_val) = self.evaluate_expr(seed_arg) {
+                            let seed = seed_val.to_u64();
+                            self.rng = rand::rngs::StdRng::seed_from_u64(seed);
+                            self.rand_seed = seed;
+                        }
+                    }
+                    Ok(LogicVec::from_u64(prev_seed, 64))
+                }
+                "$get_randcount" => Ok(LogicVec::from_u64(self.rand_call_count, 32)),
+                "$get_randstate" => Ok(LogicVec::from_u64(self.rand_seed, 64)),
+                "$signed" => {
+                    if let Some(arg) = args.first() {
+                        let val = self.evaluate_expr(arg)?;
+                        // Sign-extend: copy the MSB to all higher bits
+                        if val.width > 0 {
+                            let msb = val.bits.last().copied().unwrap_or(LogicVal::Zero);
+                            let new_width = val.width.max(1);
+                            let mut bits = val.bits.clone();
+                            bits.resize(new_width, msb);
+                            Ok(LogicVec {
+                                width: new_width,
+                                bits,
+                            })
+                        } else {
+                            Ok(val)
+                        }
+                    } else {
+                        Err(self.diag_error(
+                            mivon_core::diagnostics::DiagCode::DpiError,
+                            "$signed expects 1 argument",
+                        ))
+                    }
+                }
+                "$unsigned" => {
+                    if let Some(arg) = args.first() {
+                        let val = self.evaluate_expr(arg)?;
+                        // Unsigned: zero-extend (already the default)
+                        Ok(val)
+                    } else {
+                        Err(self.diag_error(
+                            mivon_core::diagnostics::DiagCode::DpiError,
+                            "$unsigned expects 1 argument",
+                        ))
+                    }
+                }
+                "$countones" => {
+                    if let Some(arg) = args.first() {
+                        let val = self.evaluate_expr(arg)?;
+                        let count =
+                            val.bits.iter().filter(|b| **b == LogicVal::One).count() as u64;
+                        Ok(LogicVec::from_u64(count, 32))
+                    } else {
+                        Err(self.diag_error(
+                            mivon_core::diagnostics::DiagCode::DpiError,
+                            "$countones expects 1 argument",
+                        ))
+                    }
+                }
+                "$onehot" => {
+                    if let Some(arg) = args.first() {
+                        let val = self.evaluate_expr(arg)?;
+                        let ones = val.bits.iter().filter(|b| **b == LogicVal::One).count();
+                        let is_onehot = ones == 1;
+                        Ok(LogicVec::from_u64(if is_onehot { 1 } else { 0 }, 1))
+                    } else {
+                        Err(self.diag_error(
+                            mivon_core::diagnostics::DiagCode::DpiError,
+                            "$onehot expects 1 argument",
+                        ))
+                    }
+                }
+                "$isunknown" => {
+                    if let Some(arg) = args.first() {
+                        let val = self.evaluate_expr(arg)?;
+                        let has_x_or_z = val
+                            .bits
+                            .iter()
+                            .any(|b| *b == LogicVal::X || *b == LogicVal::Z);
+                        Ok(LogicVec::from_u64(if has_x_or_z { 1 } else { 0 }, 1))
+                    } else {
+                        Err(self.diag_error(
+                            mivon_core::diagnostics::DiagCode::DpiError,
+                            "$isunknown expects 1 argument",
+                        ))
+                    }
+                }
+                "$countbits" => {
+                    if let Some(arg) = args.first() {
+                        let val = self.evaluate_expr(arg)?;
+                        // $countbits counts non-zero bits (1, X, Z)
+                        let count =
+                            val.bits.iter().filter(|b| **b != LogicVal::Zero).count() as u64;
+                        Ok(LogicVec::from_u64(count, 32))
+                    } else {
+                        Err(self.diag_error(
+                            mivon_core::diagnostics::DiagCode::DpiError,
+                            "$countbits expects 1 argument",
+                        ))
+                    }
+                }
+                "$dimensions" => {
+                    if let Some(arg) = args.first() {
+                        // $dimensions - for runtime, try to get array dimensions from signal info
+                        // If it's a signal reference, we can check the signal info from design
+                        if let IrExpr::Signal(sig_id, _) = arg {
+                            if *sig_id < self.design.top.signals.len() {
+                                let sig_info = &self.design.top.signals[*sig_id];
+                                let packed_dims = sig_info.packed_dims.len();
+                                let unpacked_dims = sig_info.array_dims.len();
+                                let dims = packed_dims + unpacked_dims;
+                                Ok(LogicVec::from_u64(dims as u64, 32))
+                            } else {
+                                Ok(LogicVec::from_u64(0, 32))
+                            }
+                        } else {
+                            // For non-signal expressions, evaluate and return 0 as fallback
+                            let _val = self.evaluate_expr(arg)?;
+                            Ok(LogicVec::from_u64(0, 32))
+                        }
+                    } else {
+                        Err(self.diag_error(
+                            mivon_core::diagnostics::DiagCode::DpiError,
+                            "$dimensions expects 1 argument",
+                        ))
+                    }
+                }
+                "$onehot0" => {
+                    if let Some(arg) = args.first() {
+                        let val = self.evaluate_expr(arg)?;
+                        let ones = val.bits.iter().filter(|b| **b == LogicVal::One).count();
+                        Ok(LogicVec::from_u64(if ones <= 1 { 1 } else { 0 }, 1))
+                    } else {
+                        Err(self.diag_error(
+                            mivon_core::diagnostics::DiagCode::DpiError,
+                            "$onehot0 expects 1 argument",
+                        ))
+                    }
+                }
+                // Fungsi matematika real LRM 1800 §20.8: argumen real
+                // (atau integer → konversi) → hasil real (bit-pattern
+                // f64 64-bit, sama seperti `$itor`). Sebelumnya tak
+                // dikenal → 0 + warning RT9003 (mis. `$sqrt(2.0)` = 0).
+                "$ln" | "$log10" | "$exp" | "$sqrt" | "$floor" | "$ceil" | "$round"
+                | "$sin" | "$cos" | "$tan" | "$asin" | "$acos" | "$atan" | "$sinh"
+                | "$cosh" | "$tanh" | "$asinh" | "$acosh" | "$atanh" => {
+                    if let Some(arg) = args.first() {
+                        let x = self.eval_sysfunc_real_arg(arg)?;
+                        let r = match name.as_str() {
+                            "$ln" => x.ln(),
+                            "$log10" => x.log10(),
+                            "$exp" => x.exp(),
+                            "$sqrt" => x.sqrt(),
+                            "$floor" => x.floor(),
+                            "$ceil" => x.ceil(),
+                            "$round" => x.round(),
+                            "$sin" => x.sin(),
+                            "$cos" => x.cos(),
+                            "$tan" => x.tan(),
+                            "$asin" => x.asin(),
+                            "$acos" => x.acos(),
+                            "$atan" => x.atan(),
+                            "$sinh" => x.sinh(),
+                            "$cosh" => x.cosh(),
+                            "$tanh" => x.tanh(),
+                            "$asinh" => x.asinh(),
+                            "$acosh" => x.acosh(),
+                            _ => x.atanh(),
+                        };
+                        Ok(LogicVec::from_u64(r.to_bits(), 64))
+                    } else {
+                        Err(self.diag_error(
+                            mivon_core::diagnostics::DiagCode::DpiError,
+                            "real math function expects 1 argument",
+                        ))
+                    }
+                }
+                "$pow" | "$atan2" | "$hypot" => {
+                    if args.len() >= 2 {
+                        let x = self.eval_sysfunc_real_arg(&args[0])?;
+                        let y = self.eval_sysfunc_real_arg(&args[1])?;
+                        let r = match name.as_str() {
+                            "$pow" => x.powf(y),
+                            "$atan2" => x.atan2(y),
+                            _ => x.hypot(y),
+                        };
+                        Ok(LogicVec::from_u64(r.to_bits(), 64))
+                    } else {
+                        Err(self.diag_error(
+                            mivon_core::diagnostics::DiagCode::DpiError,
+                            "real math function expects 2 arguments",
+                        ))
+                    }
+                }
+                "$cast" => {
+                    if args.len() >= 2 {
+                        // $cast(dest, src) - dynamic cast for class handles or type cast
+                        // First argument is destination (lvalue), second is source
+                        // For class handles: check if src object class is same or subclass of dest class
+                        // For type cast: just assign and return success
+
+                        // Evaluate source first (returns object ID for class handles)
+                        let src_val = self.evaluate_expr(&args[1])?;
+
+                        // Check if destination is a class handle signal
+                        let dest_arg = &args[0];
+                        let mut success = 1u64;
+
+                        // If dest is a signal, check its SignalInfo for class_name
+                        if let IrExpr::Signal(sig_id, _) = dest_arg {
+                            if *sig_id < self.design.top.signals.len() {
+                                let sig_info = &self.design.top.signals[*sig_id];
+                                if let Some(dest_class_name) = sig_info.class_name {
+                                    // Destination signal is a class handle - check class hierarchy
+                                    // Source value is the object ID to cast from
+                                    let src_obj_id = src_val.to_u64();
+
+                                    if src_obj_id == 0 {
+                                        // Casting null to class handle - always succeeds, sets to null
+                                        self.state.write_signal(
+                                            *sig_id,
+                                            LogicVec::from_u64(0, sig_info.width),
+                                        );
+                                    } else if src_obj_id < self.state.objects.len() as u64 {
+                                        let src_obj = &self.state.objects[src_obj_id as usize];
+                                        if !src_obj.class_name.is_empty() {
+                                            // Check if src_obj.class_name is same as or subclass of dest_class_name
+                                            let src_class = src_obj.class_name;
+                                            success = if self
+                                                .is_subclass_or_same(src_class, dest_class_name)
+                                            {
+                                                1
+                                            } else {
+                                                0
+                                            };
+                                            if success == 1 {
+                                                // Perform the cast - write source object ID to destination
+                                                self.state.write_signal(
+                                                    *sig_id,
+                                                    LogicVec::from_u64(
+                                                        src_obj_id,
+                                                        sig_info.width,
+                                                    ),
+                                                );
+                                            } else {
+                                                // Cast failed - write null (0)
+                                                self.state.write_signal(
+                                                    *sig_id,
+                                                    LogicVec::from_u64(0, sig_info.width),
+                                                );
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    // Destination is not a class handle - simple type cast, always succeeds
+                                    // Just assign the value (truncate/extend as needed)
+                                    let dest_width = sig_info.width;
+                                    let assigned = src_val.resize(dest_width);
+                                    self.state.write_signal(*sig_id, assigned);
+                                }
+                            }
+                        } else {
+                            // Other destination types (e.g., HierRef, etc.) - simple assignment
+                            // For now, just evaluate and return success
+                            success = 1;
+                        }
+
+                        Ok(LogicVec::from_u64(success, 1))
+                    } else {
+                        Err(self.diag_error(
+                            mivon_core::diagnostics::DiagCode::DpiError,
+                            "$cast requires two arguments",
+                        ))
+                    }
+                }
+                "$typename" => {
+                    if let Some(arg) = args.first() {
+                        // $typename returns type name as string in 8-bit per char format
+                        // For now, we evaluate the argument to get its type info
+                        // The type name was already resolved during elaboration and stored as Const string
+                        let val = self.evaluate_expr(arg)?;
+                        Ok(val)
+                    } else {
+                        Err(self.diag_error(
+                            mivon_core::diagnostics::DiagCode::DpiError,
+                            "$typename expects 1 argument",
+                        ))
+                    }
+                }
+                "$fopen" => {
+                    let fname = args.first().and_then(|a| {
+                        if let IrExpr::String(s) = a {
+                            Some(s.clone())
+                        } else {
+                            None
+                        }
+                    });
+                    if let Some(fname) = fname {
+                        let mode = args.get(1).and_then(|a| {
+                            if let IrExpr::String(s) = a {
+                                Some(s.as_str())
+                            } else {
+                                None
+                            }
+                        });
+                        let open_result = match mode {
+                            Some("r") | Some("rb") => std::fs::File::open(&fname),
+                            _ => std::fs::OpenOptions::new()
+                                .read(true)
+                                .write(true)
+                                .create(true)
+                                .truncate(true)
+                                .open(&fname),
+                        };
+                        match open_result {
+                            Ok(f) => {
+                                let handle = self.next_file_handle;
+                                self.next_file_handle += 1;
+                                self.file_handles.insert(handle, f);
+                                self.file_read_pos.insert(handle, 0);
+                                Ok(LogicVec::from_u64(handle as u64, 32))
+                            }
+                            Err(_) => Ok(LogicVec::from_u64(0, 32)),
+                        }
+                    } else {
+                        Ok(LogicVec::from_u64(0, 32))
+                    }
+                }
+                "$fdisplay" => {
+                    let handle = args
+                        .first()
+                        .and_then(|a| self.evaluate_expr(a).ok().map(|v| v.to_u64() as u32));
+                    if let Some(h) = handle {
+                        let msg = self.format_display(&args[1..]);
+                        if let Some(f) = self.file_handles.get_mut(&h) {
+                            let _ = write!(f, "{}", msg);
+                        }
+                    }
+                    Ok(LogicVec::from_u64(0, 1))
+                }
+                "$fread" => {
+                    let target = args.first().and_then(|a| {
+                        if let IrExpr::Signal(id, _) = a {
+                            Some(*id)
+                        } else {
+                            None
+                        }
+                    });
+                    let src = args.get(1);
+                    let data = if let Some(IrExpr::String(fname)) = src {
+                        std::fs::read(fname).ok()
+                    } else if let Some(arg) = src {
+                        let handle = self
+                            .evaluate_expr(arg)
+                            .ok()
+                            .map(|v| v.to_u64() as u32)
+                            .unwrap_or(0);
+                        if handle > 0 {
+                            use std::io::Read;
+                            self.file_handles.get_mut(&handle).and_then(|f| {
+                                let mut buf = Vec::new();
+                                f.read_to_end(&mut buf).ok().map(|_| buf)
+                            })
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+                    if let (Some(sid), Some(bytes)) = (target, data) {
+                        let mut bits = Vec::with_capacity(bytes.len() * 8);
+                        for byte in bytes {
+                            for i in 0..8 {
+                                bits.push(if (byte >> i) & 1 == 1 {
+                                    LogicVal::One
+                                } else {
+                                    LogicVal::Zero
+                                });
+                            }
+                        }
+                        self.state.write_signal(
+                            sid,
+                            LogicVec {
+                                width: bits.len(),
+                                bits,
+                            },
+                        );
+                    }
+                    Ok(LogicVec::from_u64(0, 1))
+                }
+                "$fclose" => {
+                    let handle = args
+                        .first()
+                        .and_then(|a| self.evaluate_expr(a).ok().map(|v| v.to_u64() as u32));
+                    if let Some(h) = handle {
+                        self.file_handles.remove(&h);
+                        self.file_read_pos.remove(&h);
+                    }
+                    Ok(LogicVec::from_u64(0, 1))
+                }
+                "$fflush" => {
+                    let handle = args
+                        .first()
+                        .and_then(|a| self.evaluate_expr(a).ok().map(|v| v.to_u64() as u32));
+                    if let Some(h) = handle {
+                        if let Some(f) = self.file_handles.get_mut(&h) {
+                            use std::io::Write;
+                            let _ = f.flush();
+                        }
+                    }
+                    Ok(LogicVec::from_u64(0, 1))
+                }
+                "$fseek" => {
+                    let handle = args
+                        .first()
+                        .and_then(|a| self.evaluate_expr(a).ok().map(|v| v.to_u64() as u32));
+                    let offset = args
+                        .get(1)
+                        .and_then(|a| self.evaluate_expr(a).ok().map(|v| v.to_u64() as i64));
+                    let op = args
+                        .get(2)
+                        .and_then(|a| self.evaluate_expr(a).ok().map(|v| v.to_u64()));
+                    if let (Some(h), Some(off)) = (handle, offset) {
+                        if let Some(f) = self.file_handles.get_mut(&h) {
+                            use std::io::{Seek, SeekFrom};
+                            let seek_from = match op {
+                                Some(1) => SeekFrom::Current(off),
+                                Some(2) => SeekFrom::End(off),
+                                _ => SeekFrom::Start(off as u64),
+                            };
+                            let _ = f.seek(seek_from);
+                            if let Ok(pos) = f.stream_position() {
+                                self.file_read_pos.insert(h, pos);
+                            }
+                        }
+                    }
+                    Ok(LogicVec::from_u64(0, 1))
+                }
+                "$ftell" => {
+                    let handle = args
+                        .first()
+                        .and_then(|a| self.evaluate_expr(a).ok().map(|v| v.to_u64() as u32));
+                    if let Some(h) = handle {
+                        if let Some(f) = self.file_handles.get_mut(&h) {
+                            use std::io::Seek;
+                            let pos = f.stream_position().unwrap_or(0);
+                            return Ok(LogicVec::from_u64(pos, 32));
+                        }
+                    }
+                    Ok(LogicVec::from_u64(0, 32))
+                }
+                "$feof" => {
+                    let handle = args
+                        .first()
+                        .and_then(|a| self.evaluate_expr(a).ok().map(|v| v.to_u64() as u32));
+                    if let Some(h) = handle {
+                        if let Some(f) = self.file_handles.get_mut(&h) {
+                            use std::io::{Read, Seek};
+                            let pos = f.stream_position().unwrap_or(0);
+                            let mut byte = [0u8; 1];
+                            let n = f.read(&mut byte).unwrap_or(0);
+                            f.seek(std::io::SeekFrom::Start(pos)).ok();
+                            return Ok(LogicVec::from_u64(if n == 0 { 1 } else { 0 }, 1));
+                        }
+                    }
+                    Ok(LogicVec::from_u64(1, 1))
+                }
+                "$rewind" => {
+                    // $rewind(fd) — rewind file to beginning (same as $fseek(fd, 0, 0))
+                    let handle = args
+                        .first()
+                        .and_then(|a| self.evaluate_expr(a).ok().map(|v| v.to_u64() as u32));
+                    if let Some(h) = handle {
+                        if let Some(f) = self.file_handles.get_mut(&h) {
+                            use std::io::{Seek, SeekFrom};
+                            let _ = f.seek(SeekFrom::Start(0));
+                            self.file_read_pos.insert(h, 0);
+                            self.file_ungetc_buf.remove(&h);
+                        }
+                    }
+                    Ok(LogicVec::from_u64(0, 1))
+                }
+                "$fgets" => {
+                    // $fgets(str_var, fd) — read a line from file handle into string var
+                    let str_arg = args.first();
+                    let handle = args
+                        .get(1)
+                        .and_then(|a| self.evaluate_expr(a).ok().map(|v| v.to_u64() as u32));
+                    if let Some(h) = handle {
+                        if let Some(f) = self.file_handles.get_mut(&h) {
+                            use std::io::{BufRead, BufReader};
+                            let mut reader = BufReader::new(f.by_ref());
+                            let mut line = String::new();
+                            let bytes = reader.read_line(&mut line).unwrap_or(0);
+                            if bytes > 0 {
+                                // Trim trailing newline for Verilog string compatibility
+                                if line.ends_with('\n') {
+                                    line.pop();
+                                }
+                                if line.ends_with('\r') {
+                                    line.pop();
+                                }
+                                // Convert string to LogicVec
+                                let mut bits = Vec::with_capacity(line.len() * 8);
+                                for c in line.chars() {
+                                    let byte = c as u8;
+                                    for i in 0..8 {
+                                        bits.push(if (byte >> i) & 1 == 1 {
+                                            LogicVal::One
+                                        } else {
+                                            LogicVal::Zero
+                                        });
+                                    }
+                                }
+                                // Write into the string variable
+                                if let Some(IrExpr::Signal(sid, _)) = str_arg {
+                                    self.state.write_signal(
+                                        *sid,
+                                        LogicVec {
+                                            width: bits.len(),
+                                            bits,
+                                        },
+                                    );
+                                }
+                                return Ok(LogicVec::from_u64(bytes as u64, 32));
+                            }
+                        }
+                    }
+                    Ok(LogicVec::from_u64(0, 32))
+                }
+                "$fgetc" => {
+                    // $fgetc(fd) — read a single character from file handle
+                    let handle = args
+                        .first()
+                        .and_then(|a| self.evaluate_expr(a).ok().map(|v| v.to_u64() as u32));
+                    if let Some(h) = handle {
+                        // Check ungetc buffer first
+                        if let Some(buf) = self.file_ungetc_buf.get_mut(&h) {
+                            if let Some(byte) = buf.pop() {
+                                return Ok(LogicVec::from_u64(byte as u64, 32));
+                            }
+                        }
+                        if let Some(f) = self.file_handles.get_mut(&h) {
+                            use std::io::Read;
+                            let mut byte = [0u8; 1];
+                            let bytes = f.read(&mut byte).unwrap_or(0);
+                            if bytes > 0 {
+                                return Ok(LogicVec::from_u64(byte[0] as u64, 32));
+                            }
+                        }
+                    }
+                    Ok(LogicVec::from_u64(!0u64, 32)) // EOF: returns 32'hFFFFFFFF
+                }
+                "$ungetc" => {
+                    // $ungetc(char, fd) — push back a character to file handle
+                    let char_val = args
+                        .first()
+                        .and_then(|a| self.evaluate_expr(a).ok().map(|v| v.to_u64() as u8));
+                    let handle = args
+                        .get(1)
+                        .and_then(|a| self.evaluate_expr(a).ok().map(|v| v.to_u64() as u32));
+                    if let (Some(c), Some(h)) = (char_val, handle) {
+                        self.file_ungetc_buf.entry(h).or_default().push(c);
+                    }
+                    Ok(LogicVec::from_u64(0, 1))
+                }
+                "$fscanf" => {
+                    let handle = args
+                        .first()
+                        .and_then(|a| self.evaluate_expr(a).ok().map(|v| v.to_u64() as u32));
+                    if let Some(h) = handle {
+                        if let Some(f) = self.file_handles.get_mut(&h) {
+                            use std::io::{Read, Seek};
+                            let read_pos = self.file_read_pos.entry(h).or_insert(0);
+                            f.seek(std::io::SeekFrom::Start(*read_pos)).ok();
+                            let mut content = String::new();
+                            let _bytes_read = f.read_to_string(&mut content).unwrap_or(0);
+                            *read_pos = f.stream_position().unwrap_or(0);
+                            let fmt = args.get(1).and_then(|a| {
+                                if let IrExpr::String(s) = a {
+                                    Some(s.clone())
+                                } else {
+                                    None
+                                }
+                            });
+                            if let Some(ref fmt_str) = fmt {
+                                let tokens: Vec<&str> = content.split_whitespace().collect();
+                                let mut ti = 0;
+                                let mut ai = 0;
+                                let mut chars = fmt_str.chars().peekable();
+                                while let Some(c) = chars.next() {
+                                    if c == '%' {
+                                        if let Some(spec) = chars.next() {
+                                            if spec == 'd' || spec == 'h' || spec == 'b' {
+                                                if let Some(tok) = tokens.get(ti) {
+                                                    if let Ok(val) = if spec == 'h' {
+                                                        i64::from_str_radix(tok, 16)
+                                                    } else if spec == 'b' {
+                                                        i64::from_str_radix(tok, 2)
+                                                    } else {
+                                                        tok.parse::<i64>()
+                                                    } {
+                                                        let out_idx = 2 + ai;
+                                                        if let Some(IrExpr::Signal(sid, _)) =
+                                                            args.get(out_idx)
+                                                        {
+                                                            self.state.write_signal(
+                                                                *sid,
+                                                                LogicVec::from_u64(
+                                                                    val as u64, 32,
+                                                                ),
+                                                            );
+                                                        }
+                                                        ai += 1;
+                                                    }
+                                                }
+                                                ti += 1;
+                                            }
+                                        }
+                                    }
+                                }
+                                // $fscanf returns number of items matched (or EOF)
+                                return Ok(LogicVec::from_u64(ai as u64, 32));
+                            }
+                        }
+                    }
+                    Ok(LogicVec::from_u64(0, 32))
+                }
+                "$sformatf" => {
+                    if args.is_empty() {
+                        return Ok(LogicVec::new(0));
+                    }
+                    let msg = self.format_display(args);
+                    let mut bits = Vec::with_capacity(msg.len() * 8);
+                    for c in msg.chars() {
+                        let byte = c as u8;
+                        for i in 0..8 {
+                            bits.push(if (byte >> i) & 1 == 1 {
+                                LogicVal::One
+                            } else {
+                                LogicVal::Zero
+                            });
+                        }
+                    }
+                    Ok(LogicVec {
+                        width: bits.len(),
+                        bits,
+                    })
+                }
+                "$clog2" => {
+                    if let Some(arg) = args.first() {
+                        let val = self.evaluate_expr(arg)?;
+                        let n = val.to_u64();
+                        if n <= 1 {
+                            Ok(LogicVec::from_u64(0, 32))
+                        } else {
+                            let bits = (64 - n.leading_zeros()) as u64;
+                            if n.is_power_of_two() {
+                                Ok(LogicVec::from_u64(bits - 1, 32))
+                            } else {
+                                Ok(LogicVec::from_u64(bits, 32))
+                            }
+                        }
+                    } else {
+                        Ok(LogicVec::from_u64(0, 32))
+                    }
+                }
+                "$time" => Ok(LogicVec::from_u64(self.state.time, 64)),
+                // $stime = waktu simulasi 32-bit (IEEE 1800 §20.17); $time
+                // 64-bit. Sebelumnya $stime tak dikenal → 0 (probe x01).
+                "$stime" => Ok(LogicVec::from_u64(self.state.time & 0xFFFF_FFFF, 32)),
+                "$realtime" => {
+                    let t = self.state.time as f64;
+                    Ok(LogicVec::from_u64(t.to_bits(), 64))
+                }
+                "process::self" => {
+                    let pid = self.current_process_id.unwrap_or(0);
+                    if pid == 0 {
+                        let pid = self.state.alloc_object("__process".into());
+                        self.process_map.insert(
+                            pid,
+                            ProcessInfo {
+                                status: ProcessStatus::Running,
+                                await_continuations: Vec::new(),
+                            },
+                        );
+                        self.current_process_id = Some(pid);
+                    }
+                    Ok(LogicVec::from_u64(
+                        self.current_process_id.unwrap_or(0) as u64,
+                        64,
+                    ))
+                }
+                "run_test" => {
+                    // F18: run_test("name") — buat objek test & jalankan
+                    // fase UVM. No-op bila execute_phases (auto-detect di
+                    // run()) sudah menjalankan fase (guard uvm_phases_started
+                    // di run_uvm_test).
+                    let arg_vals: Vec<LogicVec> = args
+                        .iter()
+                        .map(|a| self.evaluate_expr(a))
+                        .collect::<Result<_, _>>()?;
+                    let test_name =
+                        arg_vals.first().map(logicvec_to_string).unwrap_or_default();
+                    self.run_uvm_test(&test_name)?;
+                    Ok(LogicVec::from_u64(1, 1))
+                }
+                "uvm_test_top" => {
+                    // F18: handle global root test UVM — obj id dari
+                    // run_test/execute_phases; 0 (null) bila tidak ada.
+                    Ok(LogicVec::from_u64(
+                        self.root_test_obj_id.unwrap_or(0) as u64,
+                        64,
+                    ))
+                }
+                "uvm_root::get" => {
+                    // VERIF-04: singleton uvm_root — semua get() → obj id
+                    // sama (pola sama dengan uvm_cmdline_processor::get).
+                    let obj_id = match self.uvm_root_id {
+                        Some(id) => id,
+                        None => {
+                            let id = self.state.alloc_object(Symbol::intern("uvm_root"));
+                            self.uvm_root_id = Some(id);
+                            id
+                        }
+                    };
+                    Ok(LogicVec::from_u64(obj_id as u64, 64))
+                }
+                "uvm_root::get_top" => {
+                    // VERIF-04: komponen top (uvm_test_top) — obj id dari
+                    // run_test/execute_phases; 0 (null) bila tidak ada.
+                    Ok(LogicVec::from_u64(
+                        self.root_test_obj_id.unwrap_or(0) as u64,
+                        64,
+                    ))
+                }
+                "uvm_root::run_test" => {
+                    // VERIF-04: varian class-method run_test("name") —
+                    // sama dgn bare run_test (F18).
+                    let arg_vals: Vec<LogicVec> = args
+                        .iter()
+                        .map(|a| self.evaluate_expr(a))
+                        .collect::<Result<_, _>>()?;
+                    let test_name =
+                        arg_vals.first().map(logicvec_to_string).unwrap_or_default();
+                    self.run_uvm_test(&test_name)?;
+                    Ok(LogicVec::from_u64(1, 1))
+                }
+                "uvm_tr_database::get_db" => {
+                    // VERIF-18: singleton uvm_tr_database — semua get_db()
+                    // → obj id sama (pola sama dgn uvm_root::get).
+                    let obj_id = match self.uvm_tr_db_id {
+                        Some(id) => id,
+                        None => {
+                            let id = self.state.alloc_object(Symbol::intern("uvm_tr_database"));
+                            self.uvm_tr_db_id = Some(id);
+                            id
+                        }
+                    };
+                    Ok(LogicVec::from_u64(obj_id as u64, 64))
+                }
+                "uvm_tr_database::get_stream" => {
+                    // VERIF-18: get_stream(name) — stream obj id (create/
+                    // reuse), pola sama dgn method dispatch.
+                    let arg_vals: Vec<LogicVec> = args
+                        .iter()
+                        .map(|a| self.evaluate_expr(a))
+                        .collect::<Result<_, _>>()?;
+                    let stream_name =
+                        arg_vals.first().map(logicvec_to_string).unwrap_or_default();
+                    let id = self.tr_stream_get(&stream_name);
+                    Ok(LogicVec::from_u64(id as u64, 64))
+                }
+                "uvm_tr_database::get_tr_count" => {
+                    // VERIF-18: jumlah record transaksi (semua stream).
+                    Ok(LogicVec::from_u64(self.tr_records.len() as u64, 64))
+                }
+                "uvm_tr_database::set_stream" => {
+                    // VERIF-18: set_stream(name) — stream default db.
+                    let arg_vals: Vec<LogicVec> = args
+                        .iter()
+                        .map(|a| self.evaluate_expr(a))
+                        .collect::<Result<_, _>>()?;
+                    let stream_name =
+                        arg_vals.first().map(logicvec_to_string).unwrap_or_default();
+                    self.tr_stream_get(&stream_name);
+                    self.tr_db_default_stream = Some(stream_name);
+                    Ok(LogicVec::from_u64(0, 64))
+                }
+                "uvm_config_db::set" => {
+                    let arg_vals: Vec<LogicVec> = args
+                        .iter()
+                        .map(|a| self.evaluate_expr(a))
+                        .collect::<Result<_, _>>()?;
+                    let inst_name = if arg_vals.len() > 1 {
+                        logicvec_to_string(&arg_vals[1])
+                    } else {
+                        String::new()
+                    };
+                    let field_name = if arg_vals.len() > 2 {
+                        logicvec_to_string(&arg_vals[2])
+                    } else {
+                        String::new()
+                    };
+                    let value = if arg_vals.len() > 3 {
+                        arg_vals[3].clone()
+                    } else {
+                        LogicVec::new(1)
+                    };
+                    self.uvm_config_db_data
+                        .insert((inst_name.clone(), field_name.clone()), value);
+                    // VERIF-06: wait_modified ter-blokir menunggu key ini.
+                    self.config_db_release_waiters(&inst_name, &field_name)?;
+                    Ok(LogicVec::from_u64(1, 1))
+                }
+                // VERIF-06: exists(inst, field) → 1/0 (non-blocking).
+                "uvm_config_db::exists" => {
+                    let arg_vals: Vec<LogicVec> = args
+                        .iter()
+                        .map(|a| self.evaluate_expr(a))
+                        .collect::<Result<_, _>>()?;
+                    let mut inst_name = if arg_vals.len() > 1 {
+                        logicvec_to_string(&arg_vals[1])
+                    } else {
+                        String::new()
+                    };
+                    let field_name = if arg_vals.len() > 2 {
+                        logicvec_to_string(&arg_vals[2])
+                    } else {
+                        String::new()
+                    };
+                    if inst_name.is_empty() {
+                        if let Some(oid) = self.current_this {
+                            inst_name = self.uvm_object_full_path(oid);
+                        }
+                    }
+                    Ok(LogicVec::from_u64(
+                        if self.config_db_exists(&inst_name, &field_name) {
+                            1
+                        } else {
+                            0
+                        },
+                        1,
+                    ))
+                }
+                // VERIF-06: wait_modified — kondisi terkini (blocking
+                // di-intercept block.rs; di sini query saja).
+                "uvm_config_db::wait_modified" => {
+                    let arg_vals: Vec<LogicVec> = args
+                        .iter()
+                        .map(|a| self.evaluate_expr(a))
+                        .collect::<Result<_, _>>()?;
+                    let inst_name = if arg_vals.len() > 1 {
+                        logicvec_to_string(&arg_vals[1])
+                    } else {
+                        String::new()
+                    };
+                    let field_name = if arg_vals.len() > 2 {
+                        logicvec_to_string(&arg_vals[2])
+                    } else {
+                        String::new()
+                    };
+                    Ok(LogicVec::from_u64(
+                        if self.config_db_exists(&inst_name, &field_name) {
+                            1
+                        } else {
+                            0
+                        },
+                        1,
+                    ))
+                }
+                "uvm_config_db::get" => {
+                    let arg_vals: Vec<LogicVec> = args
+                        .iter()
+                        .map(|a| self.evaluate_expr(a))
+                        .collect::<Result<_, _>>()?;
+                    let mut inst_name = if arg_vals.len() > 1 {
+                        logicvec_to_string(&arg_vals[1])
+                    } else {
+                        String::new()
+                    };
+                    let field_name = if arg_vals.len() > 2 {
+                        logicvec_to_string(&arg_vals[2])
+                    } else {
+                        String::new()
+                    };
+                    // F19: inst_path kosong (`get(this, "", ...)`) →
+                    // resolve ke path hierarki penuh objek saat ini.
+                    if inst_name.is_empty() {
+                        if let Some(oid) = self.current_this {
+                            inst_name = self.uvm_object_full_path(oid);
+                        }
+                    }
+                    // F19: exact match menang, lalu wildcard paling spesifik.
+                    let stored = self.config_db_find(&inst_name, &field_name);
+                    if let Some(val) = stored {
+                        if let Some(IrExpr::Signal(sig_id, _)) = args.get(3) {
+                            self.state.write_signal(*sig_id, val);
+                        }
+                        Ok(LogicVec::from_u64(1, 1))
+                    } else {
+                        Ok(LogicVec::from_u64(0, 1))
+                    }
+                }
+                "uvm_resource_db::set" => {
+                    let arg_vals: Vec<LogicVec> = args
+                        .iter()
+                        .map(|a| self.evaluate_expr(a))
+                        .collect::<Result<_, _>>()?;
+                    let scope = if !arg_vals.is_empty() {
+                        logicvec_to_string(&arg_vals[0])
+                    } else {
+                        String::new()
+                    };
+                    let name = if arg_vals.len() > 1 {
+                        logicvec_to_string(&arg_vals[1])
+                    } else {
+                        String::new()
+                    };
+                    let value = if arg_vals.len() > 2 {
+                        arg_vals[2].clone()
+                    } else {
+                        LogicVec::new(1)
+                    };
+                    self.uvm_resource_db_data.insert((scope, name), value);
+                    Ok(LogicVec::from_u64(1, 1))
+                }
+                "uvm_resource_db::write_by_name" => {
+                    // VERIF-07: alias set dgn arg ke-4 rw access type (diabaikan).
+                    let arg_vals: Vec<LogicVec> = args
+                        .iter()
+                        .map(|a| self.evaluate_expr(a))
+                        .collect::<Result<_, _>>()?;
+                    let scope = if !arg_vals.is_empty() {
+                        logicvec_to_string(&arg_vals[0])
+                    } else {
+                        String::new()
+                    };
+                    let name = if arg_vals.len() > 1 {
+                        logicvec_to_string(&arg_vals[1])
+                    } else {
+                        String::new()
+                    };
+                    let value = if arg_vals.len() > 2 {
+                        arg_vals[2].clone()
+                    } else {
+                        LogicVec::new(1)
+                    };
+                    self.uvm_resource_db_data.insert((scope, name), value);
+                    Ok(LogicVec::from_u64(1, 1))
+                }
+                "uvm_resource_db::get" | "uvm_resource_db::read_by_name" => {
+                    // VERIF-07: lookup exact dulu, lalu wildcard scope paling
+                    // spesifik (sama dgn config_db) — `set("*.env", ...)`
+                    // terbaca oleh `get("tb.env", ...)`. read_by_name = alias
+                    // get (arg ke-4 rw access type diabaikan).
+                    let arg_vals: Vec<LogicVec> = args
+                        .iter()
+                        .map(|a| self.evaluate_expr(a))
+                        .collect::<Result<_, _>>()?;
+                    let scope = if !arg_vals.is_empty() {
+                        logicvec_to_string(&arg_vals[0])
+                    } else {
+                        String::new()
+                    };
+                    let rname = if arg_vals.len() > 1 {
+                        logicvec_to_string(&arg_vals[1])
+                    } else {
+                        String::new()
+                    };
+                    let stored = self.resource_db_find(&scope, &rname);
+                    if let Some(val) = stored {
+                        if let Some(IrExpr::Signal(sig_id, _)) = args.get(2) {
+                            self.state.write_signal(*sig_id, val);
+                        }
+                        Ok(LogicVec::from_u64(1, 1))
+                    } else {
+                        Ok(LogicVec::from_u64(0, 1))
+                    }
+                }
+                "uvm_resource_db::exists" => {
+                    // VERIF-07: 1 bila resource (scope, name) tersedia
+                    // (exact atau wildcard paling spesifik), 0 bila tidak.
+                    let arg_vals: Vec<LogicVec> = args
+                        .iter()
+                        .map(|a| self.evaluate_expr(a))
+                        .collect::<Result<_, _>>()?;
+                    let scope = if !arg_vals.is_empty() {
+                        logicvec_to_string(&arg_vals[0])
+                    } else {
+                        String::new()
+                    };
+                    let rname = if arg_vals.len() > 1 {
+                        logicvec_to_string(&arg_vals[1])
+                    } else {
+                        String::new()
+                    };
+                    Ok(LogicVec::from_u64(
+                        if self.resource_db_exists(&scope, &rname) {
+                            1
+                        } else {
+                            0
+                        },
+                        1,
+                    ))
+                }
+                "uvm_cmdline_processor::get" => {
+                    // VERIF-03: singleton uvm_cmdline_processor. Return
+                    // handle objek (obj_id) — variabel `cl` menyimpannya;
+                    // method has_plusarg/get_arg_value di-dispatch via
+                    // execute_uvm_cmdline_method (class uvm_cmdline_processor).
+                    let obj_id = match self.uvm_cmdline_id {
+                        Some(id) => id,
+                        None => {
+                            let id = self
+                                .state
+                                .alloc_object(Symbol::intern("uvm_cmdline_processor"));
+                            self.uvm_cmdline_id = Some(id);
+                            id
+                        }
+                    };
+                    Ok(LogicVec::from_u64(obj_id as u64, 64))
+                }
+                "uvm_factory::set_type_override_by_type"
+                | "ovm_factory::set_type_override_by_type" => {
+                    let arg_vals: Vec<LogicVec> = args
+                        .iter()
+                        .map(|a| self.evaluate_expr(a))
+                        .collect::<Result<_, _>>()?;
+                    let orig = if !arg_vals.is_empty() {
+                        logicvec_to_string(&arg_vals[0])
+                    } else {
+                        String::new()
+                    };
+                    let override_type = if arg_vals.len() > 1 {
+                        logicvec_to_string(&arg_vals[1])
+                    } else {
+                        String::new()
+                    };
+                    self.factory_type_overrides.insert(orig, override_type);
+                    Ok(LogicVec::from_u64(1, 1))
+                }
+                "$test$plusargs" => {
+                    if let Some(pattern) = args.first() {
+                        if let Ok(pat_val) = self.evaluate_expr(pattern) {
+                            let pat_str = logicvec_to_string(&pat_val);
+                            for key in self.plusargs.keys() {
+                                if key.starts_with(&pat_str) {
+                                    return Ok(LogicVec::from_u64(1, 32));
+                                }
+                            }
+                        }
+                    }
+                    Ok(LogicVec::from_u64(0, 32))
+                }
+                "$value$plusargs" => {
+                    if let Some(pattern) = args.first() {
+                        if let Ok(pat_val) = self.evaluate_expr(pattern) {
+                            let pat_str = logicvec_to_string(&pat_val);
+                            let plusarg_name = pat_str
+                                .split('%')
+                                .next()
+                                .unwrap_or(&pat_str)
+                                .trim_end_matches('=');
+                            let plusargs = self.plusargs.clone();
+                            for (key, val) in &plusargs {
+                                if key == plusarg_name {
+                                    if let Some(var_arg) = args.get(1) {
+                                        let num = if let Some(hex) = val
+                                            .strip_prefix("0x")
+                                            .or_else(|| val.strip_prefix("0X"))
+                                        {
+                                            u64::from_str_radix(hex, 16).unwrap_or(0)
+                                        } else {
+                                            val.parse::<u64>().unwrap_or(0)
+                                        };
+                                        if let IrExpr::Signal(id, _) = var_arg {
+                                            // `%s` ke string-signal → string,
+                                            // selain itu → numerik 32.
+                                            let is_str = self
+                                                .design
+                                                .top
+                                                .signals
+                                                .get(*id)
+                                                .map(|si| si.is_string)
+                                                .unwrap_or(false);
+                                            if is_str {
+                                                self.state.write_signal(
+                                                    *id,
+                                                    crate::simulator::util::string_to_logicvec(
+                                                        val,
+                                                    ),
+                                                );
+                                            } else {
+                                                self.state.write_signal(
+                                                    *id,
+                                                    LogicVec::from_u64(num, 32),
+                                                );
+                                            }
+                                        }
+                                    }
+                                    return Ok(LogicVec::from_u64(1, 32));
+                                }
+                            }
+                        }
+                    }
+                    Ok(LogicVec::from_u64(0, 32))
+                }
+                "$rose" => {
+                    if let Some(arg) = args.first() {
+                        let val = self.evaluate_expr(arg)?;
+                        let key = format!("$rose({:?})", arg);
+                        let prev = self
+                            .sysfunc_prev
+                            .entry(Symbol::intern(&key))
+                            .or_insert_with(|| LogicVec::fill(LogicVal::Zero, val.width));
+                        let rose =
+                            !prev.to_bool().unwrap_or(false) && val.to_bool().unwrap_or(false);
+                        *prev = val;
+                        Ok(LogicVec::from_u64(if rose { 1 } else { 0 }, 1))
+                    } else {
+                        Ok(LogicVec::from_u64(0, 1))
+                    }
+                }
+                "$fell" => {
+                    if let Some(arg) = args.first() {
+                        let val = self.evaluate_expr(arg)?;
+                        let key = format!("$fell({:?})", arg);
+                        let prev = self
+                            .sysfunc_prev
+                            .entry(Symbol::intern(&key))
+                            .or_insert_with(|| LogicVec::fill(LogicVal::Zero, val.width));
+                        let fell =
+                            prev.to_bool().unwrap_or(false) && !val.to_bool().unwrap_or(false);
+                        *prev = val;
+                        Ok(LogicVec::from_u64(if fell { 1 } else { 0 }, 1))
+                    } else {
+                        Ok(LogicVec::from_u64(0, 1))
+                    }
+                }
+                "$stable" => {
+                    if let Some(arg) = args.first() {
+                        let val = self.evaluate_expr(arg)?;
+                        let key = format!("$stable({:?})", arg);
+                        let prev = self
+                            .sysfunc_prev
+                            .entry(Symbol::intern(&key))
+                            .or_insert_with(|| LogicVec::fill(LogicVal::Zero, val.width));
+                        let stable = *prev == val;
+                        *prev = val;
+                        Ok(LogicVec::from_u64(if stable { 1 } else { 0 }, 1))
+                    } else {
+                        Ok(LogicVec::from_u64(0, 1))
+                    }
+                }
+                "$changed" => {
+                    if let Some(arg) = args.first() {
+                        let val = self.evaluate_expr(arg)?;
+                        let key = format!("$changed({:?})", arg);
+                        let prev = self
+                            .sysfunc_prev
+                            .entry(Symbol::intern(&key))
+                            .or_insert_with(|| LogicVec::fill(LogicVal::Zero, val.width));
+                        let changed = *prev != val;
+                        *prev = val;
+                        Ok(LogicVec::from_u64(if changed { 1 } else { 0 }, 1))
+                    } else {
+                        Ok(LogicVec::from_u64(0, 1))
+                    }
+                }
+                "$past" => {
+                    if let Some(arg) = args.first() {
+                        let val = self.evaluate_expr(arg)?;
+                        let w = val.width.max(1);
+                        let n = if args.len() > 1 {
+                            if let Ok(nv) = self.evaluate_expr(&args[1]) {
+                                nv.to_u64().max(1) as usize
+                            } else {
+                                1
+                            }
+                        } else {
+                            1
+                        };
+                        // Kunci per (arg, n): `$past(x)`, `$past(x,2)`,
+                        // `$past(x,3)` riwayatnya TERPISAH. Sebelumnya
+                        // kunci hanya arg → 3 deque tercampur + cap
+                        // n+1 per panggilan saling menggusur (probe:
+                        // p1=p2=p3=4 padahal harus 5,4,3).
+                        let key = format!("$past({:?},{n})", arg);
+                        let hist = self
+                            .sysfunc_history
+                            .entry(Symbol::intern(&key))
+                            .or_default();
+                        hist.push_back(val);
+                        // Cap riwayat ke n+1 entry terbaru — `$past` tidak
+                        // pernah butuh data lebih tua dari kedalaman n,
+                        // jadi jangan numpuk O(cycles) per call-site.
+                        while hist.len() > n + 1 {
+                            hist.pop_front();
+                        }
+                        if hist.len() > n {
+                            let past = hist[hist.len() - 1 - n].clone();
+                            Ok(past)
+                        } else {
+                            // Belum ada sampel cukup: X (4-state), bukan 0.
+                            Ok(LogicVec::new(w))
+                        }
+                    } else {
+                        Ok(LogicVec::from_u64(0, 32))
+                    }
+                }
+                _ => {
+                    // Konversi real↔integer (LRM 1800 §20.8): real disimpan
+                    // sebagai bit-pattern f64 64-bit; `$rtoi` membulatkan ke
+                    // integer terdekat (ties away from zero — `f64::round`),
+                    // `$itor` mengubah integer (signed) → f64.
+                    // PRA-FIX keduanya tak dikenal → 0 + warning RT9003.
+                    let fn_name = name.as_str();
+                    match fn_name {
+                        "$rtoi" => {
+                            if let Some(a) = args.first() {
+                                let v = self.evaluate_expr(a)?;
+                                let f = f64::from_bits(v.to_u64());
+                                if !f.is_finite() {
+                                    return Ok(LogicVec::from_u64(0, 32));
+                                }
+                                return Ok(LogicVec::from_u64(f.round() as i64 as u64, 32));
+                            }
+                            return Ok(LogicVec::from_u64(0, 32));
+                        }
+                        "$itor" => {
+                            if let Some(a) = args.first() {
+                                let v = self.evaluate_expr(a)?;
+                                let f = v.to_i64() as f64;
+                                return Ok(LogicVec::from_u64(f.to_bits(), 64));
+                            }
+                            return Ok(LogicVec::from_u64(0, 64));
+                        }
+                        "$realtobits" | "$bitstoreal" => {
+                            // Bit-pattern bolak-balik: keduanya menyimpan
+                            // f64 sebagai 64-bit → passthrough.
+                            if let Some(a) = args.first() {
+                                return self.evaluate_expr(a);
+                            }
+                            return Ok(LogicVec::from_u64(0, 64));
+                        }
+                        _ => {}
+                    }
+                    // Try VPI registered system functions first
+                    if crate::vpi::systf::call_registered_systf(fn_name, true) {
+                        return Ok(LogicVec::from_u64(0, 32));
+                    }
+                    // F20: via DiagSink agar warning punya file:line:col.
+                    // Dedup: emit SEKALI per nama fungsi (bukan per
+                    // penggunaan — utk `$realtobits` di 4 assign harusnya
+                    // 1 warning, bukan 4-20).
+                    if self.notimpl_warned.insert(*name) {
+                        self.emit_warning(
+                            mivon_core::diagnostics::DiagCode::NotImplemented,
+                            format!("unsupported system function '{}'", fn_name),
+                        );
+                    }
+                    Ok(LogicVec::from_u64(0, 32))
+                }
+            }
+    }
+
+    /// Dispatcher tipis evaluasi ekspresi (bug #37).
+    ///
+    /// Tulang belakang rekursif ekspresi — `BinaryOp`/`UnaryOp` — ditangani di
+    /// sini lewat helper `#[inline(never)]`, sehingga rantai ekspresi panjang
+    /// (`&&`/`||`/aritmetika ≥8 operan) TIDAK mengalokasikan frame besar
+    /// `evaluate_expr_deep` per level rekursi. Di build debug frame itu
+    /// ~184 KB/level → stack thread test 2 MiB overflow. Node lain
+    /// didelegasikan ke `evaluate_expr_deep`.
     fn evaluate_expr_impl(&mut self, expr: &IrExpr) -> Result<LogicVec, SimError> {
+        match expr {
+            IrExpr::BinaryOp(op, lhs, rhs) => self.eval_binary_op(op, lhs, rhs),
+            IrExpr::UnaryOp(op, inner) => self.eval_unary_op(op, inner),
+            _ => self.evaluate_expr_deep(expr),
+        }
+    }
+
+    /// Body arm `IrExpr::UnaryOp` — dipindah dari `evaluate_expr_deep`
+    /// (bug #37) agar frame dispatcher `evaluate_expr_impl` tetap kecil.
+    #[inline(never)]
+    fn eval_unary_op(&mut self, op: &UnaryIrOp, inner: &IrExpr) -> Result<LogicVec, SimError> {
+                let val = self.evaluate_expr(inner)?;
+                // Deteksi real rekursif (sinyal real, `$itor(...)`, cast real,
+                // dll) — PRA-FIX hanya `IrExpr::Signal` langsung sehingga
+                // `-($itor(2))` diperlakukan sebagai aritmetika integer.
+                let inner_is_real = crate::simulator::util::ir_expr_is_real(
+                    inner,
+                    &self.design.top.signals,
+                );
+                if inner_is_real {
+                    let a = f64::from_bits(val.to_u64());
+                    let result = match op {
+                        UnaryIrOp::Minus => -a,
+                        UnaryIrOp::Plus => a,
+                        _ => return Ok(eval_unary(op.clone(), &val)),
+                    };
+                    return Ok(LogicVec::from_u64(result.to_bits(), 64));
+                }
+                // Try packed eval first (SIMD-ready bitmask ops)
+                if self.use_packed_eval {
+                    let packed = PackedLogicVec::from_logicvec(&val);
+                    if let Some(packed_result) = eval_unary_packed(op, &packed) {
+                        let result = packed_result.to_logicvec();
+                        return Ok(result);
+                    }
+                }
+                // Try JIT for non-real unary operations
+                if let Some(ref mut jit) = self.jit_evaluator {
+                    if let Some(result) = jit.eval_unary(op, &val) {
+                        return Ok(result);
+                    }
+                }
+                Ok(eval_unary(op.clone(), &val))
+    }
+
+    /// Body arm `IrExpr::BinaryOp` — dipindah dari `evaluate_expr_deep`
+    /// (bug #37) agar frame dispatcher `evaluate_expr_impl` tetap kecil.
+    #[inline(never)]
+    fn eval_binary_op(
+        &mut self,
+        op: &BinaryIrOp,
+        lhs: &IrExpr,
+        rhs: &IrExpr,
+    ) -> Result<LogicVec, SimError> {
+                let lval = self.evaluate_expr(lhs)?;
+                let rval = self.evaluate_expr(rhs)?;
+                if std::env::var("MIVON_DBG_PS").is_ok() {
+                    fn tag(e: &IrExpr) -> &'static str {
+                        match e {
+                            IrExpr::Signed(_) => "Signed",
+                            IrExpr::Cast { .. } => "Cast",
+                            IrExpr::Const(_) => "Const",
+                            IrExpr::Signal(..) => "Signal",
+                            IrExpr::BinaryOp(..) => "BinOp",
+                            _ => "Other",
+                        }
+                    }
+                    eprintln!(
+                        "[DBG-BIN] op={:?} l={:x}({}b) r={:x}({}b) ls={} rs={} lnode={} rnode={} lxz={} rxz={}",
+                        op, lval.to_u64(), lval.width, rval.to_u64(), rval.width,
+                        is_signed_expr(lhs, &self.design.top.signals),
+                        is_signed_expr(rhs, &self.design.top.signals),
+                        tag(lhs), tag(rhs),
+                        lval.bits.iter().any(|b| matches!(b, LogicVal::X | LogicVal::Z)),
+                        rval.bits.iter().any(|b| matches!(b, LogicVal::X | LogicVal::Z)),
+                    );
+                }
+                let lhs_is_real =
+                    crate::simulator::util::ir_expr_is_real(lhs, &self.design.top.signals);
+                let rhs_is_real =
+                    crate::simulator::util::ir_expr_is_real(rhs, &self.design.top.signals);
+                if lhs_is_real || rhs_is_real {
+                    let a = f64::from_bits(lval.to_u64());
+                    let b = f64::from_bits(rval.to_u64());
+                    let result = match op {
+                        BinaryIrOp::Add => a + b,
+                        BinaryIrOp::Sub => a - b,
+                        BinaryIrOp::Mul => a * b,
+                        BinaryIrOp::Div => a / b,
+                        BinaryIrOp::Mod => a % b,
+                        BinaryIrOp::Power => a.powf(b),
+                        BinaryIrOp::Lt => {
+                            return Ok(LogicVec::from_u64(if a < b { 1 } else { 0 }, 32))
+                        }
+                        BinaryIrOp::Le => {
+                            return Ok(LogicVec::from_u64(if a <= b { 1 } else { 0 }, 32))
+                        }
+                        BinaryIrOp::Gt => {
+                            return Ok(LogicVec::from_u64(if a > b { 1 } else { 0 }, 32))
+                        }
+                        BinaryIrOp::Ge => {
+                            return Ok(LogicVec::from_u64(if a >= b { 1 } else { 0 }, 32))
+                        }
+                        BinaryIrOp::Eq => {
+                            return Ok(LogicVec::from_u64(if a == b { 1 } else { 0 }, 32))
+                        }
+                        BinaryIrOp::Neq => {
+                            return Ok(LogicVec::from_u64(if a != b { 1 } else { 0 }, 32))
+                        }
+                        _ => return Ok(eval_binary(op.clone(), &lval, &rval)),
+                    };
+                    Ok(LogicVec::from_u64(result.to_bits(), 64))
+                } else if matches!(
+                    op,
+                    BinaryIrOp::Add
+                        | BinaryIrOp::Sub
+                        | BinaryIrOp::Mul
+                        | BinaryIrOp::Eq
+                        | BinaryIrOp::Neq
+                        | BinaryIrOp::CaseEq
+                        | BinaryIrOp::CaseNeq
+                        | BinaryIrOp::Lt
+                        | BinaryIrOp::Le
+                        | BinaryIrOp::Gt
+                        | BinaryIrOp::Ge
+                ) && (is_signed_expr(lhs, &self.design.top.signals)
+                    && is_signed_expr(rhs, &self.design.top.signals))
+                {
+                    // LRM §11.8.2 any-unsigned: perbandingan & ARITMETIK
+                    // dilakukan SIGNED hanya bila KEDUA operand signed
+                    // (mis. `logic [1:0] m = 3; m > 2` → 3 > 2 = 1, bukan
+                    // sign-extend 2-bit 11 → -1 > 2 = 0). eval_binary_signed
+                    // men-sign-extend operan ke lebar umum: `-8'sd4 + 1`
+                    // (lebar campur) harus -3, bukan 253 (probe q07 — dulu
+                    // Add/Sub/Mul jatuh ke eval_binary zero-extend).
+                    // Eq/CaseEq ikut (sign-extend operan ke lebar umum):
+                    // `int X = -2; X === -2` salah bila zero-extend
+                    // (0xFFFFFFFFFFFFFFFE vs 0x00000000FFFFFFFE — probe p12f).
+                    Ok(eval_binary_signed(op.clone(), &lval, &rval))
+                } else if matches!(op, BinaryIrOp::Div | BinaryIrOp::Mod)
+                    && (is_signed_expr(lhs, &self.design.top.signals)
+                        && is_signed_expr(rhs, &self.design.top.signals))
+                {
+                    // Div/Mod signed: operand sinyal mungkin SUDAH zero-extend ke
+                    // lebar konteks saat evaluate (bug #7: 8-bit -4 → 0x000000FC
+                    // → 252). Clip ke lebar ASLI signal agar eval_binary_signed
+                    // melakukan sign-extend yang benar.
+                    let lv_c = signed_raw_operand(lhs, &lval, &self.design.top.signals);
+                    let rv_c = signed_raw_operand(rhs, &rval, &self.design.top.signals);
+                    Ok(eval_binary_signed(op.clone(), &lv_c, &rv_c))
+                } else if matches!(op, BinaryIrOp::Sshr) {
+                    // `>>>` (IEEE 1800 §11.4.10): ARITHMETIC bila lhs signed,
+                    // LOGICAL bila unsigned. eval_sshr_signed memakai lebar
+                    // ASLI lhs — extend_to selalu zero-extend sehingga Sshr
+                    // lama kehilangan sign bit (signed [7:0] -128 >>> 2 = 0x20
+                    // padahal harusnya 0xE0).
+                    if is_signed_expr(lhs, &self.design.top.signals) {
+                        Ok(eval_sshr_signed(&lval, &rval))
+                    } else {
+                        Ok(eval_binary(BinaryIrOp::Shr, &lval, &rval))
+                    }
+                } else {
+                    // Try packed eval first (SIMD-ready bitmask ops for bitwise ops only)
+                    if self.use_packed_eval && is_packable_binary_op(op) {
+                        let packed_lhs = PackedLogicVec::from_logicvec(&lval);
+                        let packed_rhs = PackedLogicVec::from_logicvec(&rval);
+                        if let Some(packed_result) =
+                            eval_binary_packed(op, &packed_lhs, &packed_rhs)
+                        {
+                            let result = packed_result.to_logicvec();
+                            return Ok(result);
+                        }
+                    }
+                    // Try JIT for non-real binary operations (but not shifts/comparisons - JIT uses max width which is wrong for shifts, and signed comparison for all comparisons)
+                    let is_shift = matches!(
+                        op,
+                        BinaryIrOp::Shl | BinaryIrOp::Shr | BinaryIrOp::Sshl | BinaryIrOp::Sshr
+                    );
+                    let is_comparison = matches!(
+                        op,
+                        BinaryIrOp::Lt | BinaryIrOp::Le | BinaryIrOp::Gt | BinaryIrOp::Ge
+                    );
+                    if !is_shift && !is_comparison {
+                        if let Some(ref mut jit) = self.jit_evaluator {
+                            if let Some(result) = jit.eval_binary(op, &lval, &rval) {
+                                return Ok(result);
+                            }
+                        }
+                    }
+                    Ok(eval_binary(op.clone(), &lval, &rval))
+                }
+    }
+
+    fn evaluate_expr_deep(&mut self, expr: &IrExpr) -> Result<LogicVec, SimError> {
         match expr {
             IrExpr::Const(val) | IrExpr::RealConst(val) => Ok(val.clone()),
             IrExpr::FillLit(val) => Ok(LogicVec::fill(*val, 1)),
@@ -398,179 +1936,14 @@ impl SimulationEngine {
                 }
                 Ok(result)
             }
-            IrExpr::UnaryOp(op, inner) => {
-                let val = self.evaluate_expr(inner)?;
-                // Deteksi real rekursif (sinyal real, `$itor(...)`, cast real,
-                // dll) — PRA-FIX hanya `IrExpr::Signal` langsung sehingga
-                // `-($itor(2))` diperlakukan sebagai aritmetika integer.
-                let inner_is_real = crate::simulator::util::ir_expr_is_real(
-                    inner,
-                    &self.design.top.signals,
-                );
-                if inner_is_real {
-                    let a = f64::from_bits(val.to_u64());
-                    let result = match op {
-                        UnaryIrOp::Minus => -a,
-                        UnaryIrOp::Plus => a,
-                        _ => return Ok(eval_unary(op.clone(), &val)),
-                    };
-                    return Ok(LogicVec::from_u64(result.to_bits(), 64));
-                }
-                // Try packed eval first (SIMD-ready bitmask ops)
-                if self.use_packed_eval {
-                    let packed = PackedLogicVec::from_logicvec(&val);
-                    if let Some(packed_result) = eval_unary_packed(op, &packed) {
-                        let result = packed_result.to_logicvec();
-                        return Ok(result);
-                    }
-                }
-                // Try JIT for non-real unary operations
-                if let Some(ref mut jit) = self.jit_evaluator {
-                    if let Some(result) = jit.eval_unary(op, &val) {
-                        return Ok(result);
-                    }
-                }
-                Ok(eval_unary(op.clone(), &val))
-            }
-            IrExpr::BinaryOp(op, lhs, rhs) => {
-                let lval = self.evaluate_expr(lhs)?;
-                let rval = self.evaluate_expr(rhs)?;
-                if std::env::var("MIVON_DBG_PS").is_ok() {
-                    fn tag(e: &IrExpr) -> &'static str {
-                        match e {
-                            IrExpr::Signed(_) => "Signed",
-                            IrExpr::Cast { .. } => "Cast",
-                            IrExpr::Const(_) => "Const",
-                            IrExpr::Signal(..) => "Signal",
-                            IrExpr::BinaryOp(..) => "BinOp",
-                            _ => "Other",
-                        }
-                    }
-                    eprintln!(
-                        "[DBG-BIN] op={:?} l={:x}({}b) r={:x}({}b) ls={} rs={} lnode={} rnode={} lxz={} rxz={}",
-                        op, lval.to_u64(), lval.width, rval.to_u64(), rval.width,
-                        is_signed_expr(lhs.as_ref(), &self.design.top.signals),
-                        is_signed_expr(rhs.as_ref(), &self.design.top.signals),
-                        tag(lhs.as_ref()), tag(rhs.as_ref()),
-                        lval.bits.iter().any(|b| matches!(b, LogicVal::X | LogicVal::Z)),
-                        rval.bits.iter().any(|b| matches!(b, LogicVal::X | LogicVal::Z)),
-                    );
-                }
-                let lhs_is_real =
-                    crate::simulator::util::ir_expr_is_real(lhs, &self.design.top.signals);
-                let rhs_is_real =
-                    crate::simulator::util::ir_expr_is_real(rhs, &self.design.top.signals);
-                if lhs_is_real || rhs_is_real {
-                    let a = f64::from_bits(lval.to_u64());
-                    let b = f64::from_bits(rval.to_u64());
-                    let result = match op {
-                        BinaryIrOp::Add => a + b,
-                        BinaryIrOp::Sub => a - b,
-                        BinaryIrOp::Mul => a * b,
-                        BinaryIrOp::Div => a / b,
-                        BinaryIrOp::Mod => a % b,
-                        BinaryIrOp::Power => a.powf(b),
-                        BinaryIrOp::Lt => {
-                            return Ok(LogicVec::from_u64(if a < b { 1 } else { 0 }, 32))
-                        }
-                        BinaryIrOp::Le => {
-                            return Ok(LogicVec::from_u64(if a <= b { 1 } else { 0 }, 32))
-                        }
-                        BinaryIrOp::Gt => {
-                            return Ok(LogicVec::from_u64(if a > b { 1 } else { 0 }, 32))
-                        }
-                        BinaryIrOp::Ge => {
-                            return Ok(LogicVec::from_u64(if a >= b { 1 } else { 0 }, 32))
-                        }
-                        BinaryIrOp::Eq => {
-                            return Ok(LogicVec::from_u64(if a == b { 1 } else { 0 }, 32))
-                        }
-                        BinaryIrOp::Neq => {
-                            return Ok(LogicVec::from_u64(if a != b { 1 } else { 0 }, 32))
-                        }
-                        _ => return Ok(eval_binary(op.clone(), &lval, &rval)),
-                    };
-                    Ok(LogicVec::from_u64(result.to_bits(), 64))
-                } else if matches!(
-                    op,
-                    BinaryIrOp::Add
-                        | BinaryIrOp::Sub
-                        | BinaryIrOp::Mul
-                        | BinaryIrOp::Eq
-                        | BinaryIrOp::Neq
-                        | BinaryIrOp::CaseEq
-                        | BinaryIrOp::CaseNeq
-                        | BinaryIrOp::Lt
-                        | BinaryIrOp::Le
-                        | BinaryIrOp::Gt
-                        | BinaryIrOp::Ge
-                ) && (is_signed_expr(lhs.as_ref(), &self.design.top.signals)
-                    && is_signed_expr(rhs.as_ref(), &self.design.top.signals))
-                {
-                    // LRM §11.8.2 any-unsigned: perbandingan & ARITMETIK
-                    // dilakukan SIGNED hanya bila KEDUA operand signed
-                    // (mis. `logic [1:0] m = 3; m > 2` → 3 > 2 = 1, bukan
-                    // sign-extend 2-bit 11 → -1 > 2 = 0). eval_binary_signed
-                    // men-sign-extend operan ke lebar umum: `-8'sd4 + 1`
-                    // (lebar campur) harus -3, bukan 253 (probe q07 — dulu
-                    // Add/Sub/Mul jatuh ke eval_binary zero-extend).
-                    // Eq/CaseEq ikut (sign-extend operan ke lebar umum):
-                    // `int X = -2; X === -2` salah bila zero-extend
-                    // (0xFFFFFFFFFFFFFFFE vs 0x00000000FFFFFFFE — probe p12f).
-                    Ok(eval_binary_signed(op.clone(), &lval, &rval))
-                } else if matches!(op, BinaryIrOp::Div | BinaryIrOp::Mod)
-                    && (is_signed_expr(lhs.as_ref(), &self.design.top.signals)
-                        && is_signed_expr(rhs.as_ref(), &self.design.top.signals))
-                {
-                    // Div/Mod signed: operand sinyal mungkin SUDAH zero-extend ke
-                    // lebar konteks saat evaluate (bug #7: 8-bit -4 → 0x000000FC
-                    // → 252). Clip ke lebar ASLI signal agar eval_binary_signed
-                    // melakukan sign-extend yang benar.
-                    let lv_c = signed_raw_operand(lhs.as_ref(), &lval, &self.design.top.signals);
-                    let rv_c = signed_raw_operand(rhs.as_ref(), &rval, &self.design.top.signals);
-                    Ok(eval_binary_signed(op.clone(), &lv_c, &rv_c))
-                } else if matches!(op, BinaryIrOp::Sshr) {
-                    // `>>>` (IEEE 1800 §11.4.10): ARITHMETIC bila lhs signed,
-                    // LOGICAL bila unsigned. eval_sshr_signed memakai lebar
-                    // ASLI lhs — extend_to selalu zero-extend sehingga Sshr
-                    // lama kehilangan sign bit (signed [7:0] -128 >>> 2 = 0x20
-                    // padahal harusnya 0xE0).
-                    if is_signed_expr(lhs.as_ref(), &self.design.top.signals) {
-                        Ok(eval_sshr_signed(&lval, &rval))
-                    } else {
-                        Ok(eval_binary(BinaryIrOp::Shr, &lval, &rval))
-                    }
-                } else {
-                    // Try packed eval first (SIMD-ready bitmask ops for bitwise ops only)
-                    if self.use_packed_eval && is_packable_binary_op(op) {
-                        let packed_lhs = PackedLogicVec::from_logicvec(&lval);
-                        let packed_rhs = PackedLogicVec::from_logicvec(&rval);
-                        if let Some(packed_result) =
-                            eval_binary_packed(op, &packed_lhs, &packed_rhs)
-                        {
-                            let result = packed_result.to_logicvec();
-                            return Ok(result);
-                        }
-                    }
-                    // Try JIT for non-real binary operations (but not shifts/comparisons - JIT uses max width which is wrong for shifts, and signed comparison for all comparisons)
-                    let is_shift = matches!(
-                        op,
-                        BinaryIrOp::Shl | BinaryIrOp::Shr | BinaryIrOp::Sshl | BinaryIrOp::Sshr
-                    );
-                    let is_comparison = matches!(
-                        op,
-                        BinaryIrOp::Lt | BinaryIrOp::Le | BinaryIrOp::Gt | BinaryIrOp::Ge
-                    );
-                    if !is_shift && !is_comparison {
-                        if let Some(ref mut jit) = self.jit_evaluator {
-                            if let Some(result) = jit.eval_binary(op, &lval, &rval) {
-                                return Ok(result);
-                            }
-                        }
-                    }
-                    Ok(eval_binary(op.clone(), &lval, &rval))
-                }
-            }
+            // Bug #37: body dipindah ke `eval_unary_op` (dipanggil dispatcher
+            // `evaluate_expr_impl`) agar frame fungsi ini tidak dialokasikan
+            // per level rekursi rantai ekspresi.
+            IrExpr::UnaryOp(op, inner) => self.eval_unary_op(op, inner),
+            // Bug #37: body dipindah ke `eval_binary_op` (dipanggil dispatcher
+            // `evaluate_expr_impl`) agar frame fungsi ini tidak dialokasikan
+            // per level rekursi rantai ekspresi.
+            IrExpr::BinaryOp(op, lhs, rhs) => self.eval_binary_op(op, lhs, rhs),
             IrExpr::Cond(cond, true_expr, false_expr) => {
                 let cval = self.evaluate_expr(cond)?;
                 let tv = self.evaluate_expr(true_expr)?;
@@ -619,1333 +1992,7 @@ impl SimulationEngine {
                     bits,
                 })
             }
-            IrExpr::SysFunc {
-                name,
-                args,
-                line,
-                col,
-            } => {
-                // F20: catat posisi sysfunc agar warning runtime punya lokasi.
-                self.set_cur_src_pos(*line, *col);
-                match name.as_str() {
-                    "$random" => {
-                        self.rand_call_count += 1;
-                        // If seed argument provided, reseed RNG for reproducibility
-                        if let Some(seed_arg) = args.first() {
-                            if let Ok(seed_val) = self.evaluate_expr(seed_arg) {
-                                let seed = seed_val.to_u64();
-                                self.rng = rand::rngs::StdRng::seed_from_u64(seed);
-                                self.rand_seed = seed;
-                            }
-                        }
-                        let val: i32 = self.rng.gen();
-                        Ok(LogicVec::from_u64(val as u64, 32))
-                    }
-                    "$urandom" => {
-                        self.rand_call_count += 1;
-                        let val: u32 = self.rng.gen();
-                        Ok(LogicVec::from_u64(val as u64, 32))
-                    }
-                    "$urandom_range" => {
-                        self.rand_call_count += 1;
-                        let args_eval: Vec<LogicVec> = args
-                            .iter()
-                            .map(|a| self.evaluate_expr(a))
-                            .collect::<Result<_, _>>()?;
-                        let maxval = args_eval.first().map(|v| v.to_u64()).unwrap_or(0);
-                        let minval = args_eval.get(1).map(|v| v.to_u64()).unwrap_or(0);
-                        if maxval <= minval {
-                            Ok(LogicVec::from_u64(minval, 32))
-                        } else {
-                            let range = maxval - minval + 1;
-                            let val: u64 = if range <= 1 {
-                                minval
-                            } else {
-                                minval + (self.rng.gen::<u64>() % range)
-                            };
-                            Ok(LogicVec::from_u64(val, 32))
-                        }
-                    }
-                    "$urandom_seed" => {
-                        let prev_seed = self.rand_seed;
-                        let seed = args
-                            .first()
-                            .map(|a| self.evaluate_expr(a).unwrap_or(LogicVec::from_u64(0, 32)))
-                            .unwrap_or(LogicVec::from_u64(0, 32))
-                            .to_u64();
-                        self.rng = rand::rngs::StdRng::seed_from_u64(seed);
-                        self.rand_seed = seed;
-                        self.rand_call_count += 1;
-                        Ok(LogicVec::from_u64(prev_seed, 64))
-                    }
-                    "$srandom" => {
-                        let prev_seed = self.rand_seed;
-                        if let Some(seed_arg) = args.first() {
-                            if let Ok(seed_val) = self.evaluate_expr(seed_arg) {
-                                let seed = seed_val.to_u64();
-                                self.rng = rand::rngs::StdRng::seed_from_u64(seed);
-                                self.rand_seed = seed;
-                            }
-                        }
-                        Ok(LogicVec::from_u64(prev_seed, 64))
-                    }
-                    "$get_randcount" => Ok(LogicVec::from_u64(self.rand_call_count, 32)),
-                    "$get_randstate" => Ok(LogicVec::from_u64(self.rand_seed, 64)),
-                    "$signed" => {
-                        if let Some(arg) = args.first() {
-                            let val = self.evaluate_expr(arg)?;
-                            // Sign-extend: copy the MSB to all higher bits
-                            if val.width > 0 {
-                                let msb = val.bits.last().copied().unwrap_or(LogicVal::Zero);
-                                let new_width = val.width.max(1);
-                                let mut bits = val.bits.clone();
-                                bits.resize(new_width, msb);
-                                Ok(LogicVec {
-                                    width: new_width,
-                                    bits,
-                                })
-                            } else {
-                                Ok(val)
-                            }
-                        } else {
-                            Err(self.diag_error(
-                                mivon_core::diagnostics::DiagCode::DpiError,
-                                "$signed expects 1 argument",
-                            ))
-                        }
-                    }
-                    "$unsigned" => {
-                        if let Some(arg) = args.first() {
-                            let val = self.evaluate_expr(arg)?;
-                            // Unsigned: zero-extend (already the default)
-                            Ok(val)
-                        } else {
-                            Err(self.diag_error(
-                                mivon_core::diagnostics::DiagCode::DpiError,
-                                "$unsigned expects 1 argument",
-                            ))
-                        }
-                    }
-                    "$countones" => {
-                        if let Some(arg) = args.first() {
-                            let val = self.evaluate_expr(arg)?;
-                            let count =
-                                val.bits.iter().filter(|b| **b == LogicVal::One).count() as u64;
-                            Ok(LogicVec::from_u64(count, 32))
-                        } else {
-                            Err(self.diag_error(
-                                mivon_core::diagnostics::DiagCode::DpiError,
-                                "$countones expects 1 argument",
-                            ))
-                        }
-                    }
-                    "$onehot" => {
-                        if let Some(arg) = args.first() {
-                            let val = self.evaluate_expr(arg)?;
-                            let ones = val.bits.iter().filter(|b| **b == LogicVal::One).count();
-                            let is_onehot = ones == 1;
-                            Ok(LogicVec::from_u64(if is_onehot { 1 } else { 0 }, 1))
-                        } else {
-                            Err(self.diag_error(
-                                mivon_core::diagnostics::DiagCode::DpiError,
-                                "$onehot expects 1 argument",
-                            ))
-                        }
-                    }
-                    "$isunknown" => {
-                        if let Some(arg) = args.first() {
-                            let val = self.evaluate_expr(arg)?;
-                            let has_x_or_z = val
-                                .bits
-                                .iter()
-                                .any(|b| *b == LogicVal::X || *b == LogicVal::Z);
-                            Ok(LogicVec::from_u64(if has_x_or_z { 1 } else { 0 }, 1))
-                        } else {
-                            Err(self.diag_error(
-                                mivon_core::diagnostics::DiagCode::DpiError,
-                                "$isunknown expects 1 argument",
-                            ))
-                        }
-                    }
-                    "$countbits" => {
-                        if let Some(arg) = args.first() {
-                            let val = self.evaluate_expr(arg)?;
-                            // $countbits counts non-zero bits (1, X, Z)
-                            let count =
-                                val.bits.iter().filter(|b| **b != LogicVal::Zero).count() as u64;
-                            Ok(LogicVec::from_u64(count, 32))
-                        } else {
-                            Err(self.diag_error(
-                                mivon_core::diagnostics::DiagCode::DpiError,
-                                "$countbits expects 1 argument",
-                            ))
-                        }
-                    }
-                    "$dimensions" => {
-                        if let Some(arg) = args.first() {
-                            // $dimensions - for runtime, try to get array dimensions from signal info
-                            // If it's a signal reference, we can check the signal info from design
-                            if let IrExpr::Signal(sig_id, _) = arg {
-                                if *sig_id < self.design.top.signals.len() {
-                                    let sig_info = &self.design.top.signals[*sig_id];
-                                    let packed_dims = sig_info.packed_dims.len();
-                                    let unpacked_dims = sig_info.array_dims.len();
-                                    let dims = packed_dims + unpacked_dims;
-                                    Ok(LogicVec::from_u64(dims as u64, 32))
-                                } else {
-                                    Ok(LogicVec::from_u64(0, 32))
-                                }
-                            } else {
-                                // For non-signal expressions, evaluate and return 0 as fallback
-                                let _val = self.evaluate_expr(arg)?;
-                                Ok(LogicVec::from_u64(0, 32))
-                            }
-                        } else {
-                            Err(self.diag_error(
-                                mivon_core::diagnostics::DiagCode::DpiError,
-                                "$dimensions expects 1 argument",
-                            ))
-                        }
-                    }
-                    "$onehot0" => {
-                        if let Some(arg) = args.first() {
-                            let val = self.evaluate_expr(arg)?;
-                            let ones = val.bits.iter().filter(|b| **b == LogicVal::One).count();
-                            Ok(LogicVec::from_u64(if ones <= 1 { 1 } else { 0 }, 1))
-                        } else {
-                            Err(self.diag_error(
-                                mivon_core::diagnostics::DiagCode::DpiError,
-                                "$onehot0 expects 1 argument",
-                            ))
-                        }
-                    }
-                    // Fungsi matematika real LRM 1800 §20.8: argumen real
-                    // (atau integer → konversi) → hasil real (bit-pattern
-                    // f64 64-bit, sama seperti `$itor`). Sebelumnya tak
-                    // dikenal → 0 + warning RT9003 (mis. `$sqrt(2.0)` = 0).
-                    "$ln" | "$log10" | "$exp" | "$sqrt" | "$floor" | "$ceil" | "$round"
-                    | "$sin" | "$cos" | "$tan" | "$asin" | "$acos" | "$atan" | "$sinh"
-                    | "$cosh" | "$tanh" | "$asinh" | "$acosh" | "$atanh" => {
-                        if let Some(arg) = args.first() {
-                            let x = self.eval_sysfunc_real_arg(arg)?;
-                            let r = match name.as_str() {
-                                "$ln" => x.ln(),
-                                "$log10" => x.log10(),
-                                "$exp" => x.exp(),
-                                "$sqrt" => x.sqrt(),
-                                "$floor" => x.floor(),
-                                "$ceil" => x.ceil(),
-                                "$round" => x.round(),
-                                "$sin" => x.sin(),
-                                "$cos" => x.cos(),
-                                "$tan" => x.tan(),
-                                "$asin" => x.asin(),
-                                "$acos" => x.acos(),
-                                "$atan" => x.atan(),
-                                "$sinh" => x.sinh(),
-                                "$cosh" => x.cosh(),
-                                "$tanh" => x.tanh(),
-                                "$asinh" => x.asinh(),
-                                "$acosh" => x.acosh(),
-                                _ => x.atanh(),
-                            };
-                            Ok(LogicVec::from_u64(r.to_bits(), 64))
-                        } else {
-                            Err(self.diag_error(
-                                mivon_core::diagnostics::DiagCode::DpiError,
-                                "real math function expects 1 argument",
-                            ))
-                        }
-                    }
-                    "$pow" | "$atan2" | "$hypot" => {
-                        if args.len() >= 2 {
-                            let x = self.eval_sysfunc_real_arg(&args[0])?;
-                            let y = self.eval_sysfunc_real_arg(&args[1])?;
-                            let r = match name.as_str() {
-                                "$pow" => x.powf(y),
-                                "$atan2" => x.atan2(y),
-                                _ => x.hypot(y),
-                            };
-                            Ok(LogicVec::from_u64(r.to_bits(), 64))
-                        } else {
-                            Err(self.diag_error(
-                                mivon_core::diagnostics::DiagCode::DpiError,
-                                "real math function expects 2 arguments",
-                            ))
-                        }
-                    }
-                    "$cast" => {
-                        if args.len() >= 2 {
-                            // $cast(dest, src) - dynamic cast for class handles or type cast
-                            // First argument is destination (lvalue), second is source
-                            // For class handles: check if src object class is same or subclass of dest class
-                            // For type cast: just assign and return success
-
-                            // Evaluate source first (returns object ID for class handles)
-                            let src_val = self.evaluate_expr(&args[1])?;
-
-                            // Check if destination is a class handle signal
-                            let dest_arg = &args[0];
-                            let mut success = 1u64;
-
-                            // If dest is a signal, check its SignalInfo for class_name
-                            if let IrExpr::Signal(sig_id, _) = dest_arg {
-                                if *sig_id < self.design.top.signals.len() {
-                                    let sig_info = &self.design.top.signals[*sig_id];
-                                    if let Some(dest_class_name) = sig_info.class_name {
-                                        // Destination signal is a class handle - check class hierarchy
-                                        // Source value is the object ID to cast from
-                                        let src_obj_id = src_val.to_u64();
-
-                                        if src_obj_id == 0 {
-                                            // Casting null to class handle - always succeeds, sets to null
-                                            self.state.write_signal(
-                                                *sig_id,
-                                                LogicVec::from_u64(0, sig_info.width),
-                                            );
-                                        } else if src_obj_id < self.state.objects.len() as u64 {
-                                            let src_obj = &self.state.objects[src_obj_id as usize];
-                                            if !src_obj.class_name.is_empty() {
-                                                // Check if src_obj.class_name is same as or subclass of dest_class_name
-                                                let src_class = src_obj.class_name;
-                                                success = if self
-                                                    .is_subclass_or_same(src_class, dest_class_name)
-                                                {
-                                                    1
-                                                } else {
-                                                    0
-                                                };
-                                                if success == 1 {
-                                                    // Perform the cast - write source object ID to destination
-                                                    self.state.write_signal(
-                                                        *sig_id,
-                                                        LogicVec::from_u64(
-                                                            src_obj_id,
-                                                            sig_info.width,
-                                                        ),
-                                                    );
-                                                } else {
-                                                    // Cast failed - write null (0)
-                                                    self.state.write_signal(
-                                                        *sig_id,
-                                                        LogicVec::from_u64(0, sig_info.width),
-                                                    );
-                                                }
-                                            }
-                                        }
-                                    } else {
-                                        // Destination is not a class handle - simple type cast, always succeeds
-                                        // Just assign the value (truncate/extend as needed)
-                                        let dest_width = sig_info.width;
-                                        let assigned = src_val.resize(dest_width);
-                                        self.state.write_signal(*sig_id, assigned);
-                                    }
-                                }
-                            } else {
-                                // Other destination types (e.g., HierRef, etc.) - simple assignment
-                                // For now, just evaluate and return success
-                                success = 1;
-                            }
-
-                            Ok(LogicVec::from_u64(success, 1))
-                        } else {
-                            Err(self.diag_error(
-                                mivon_core::diagnostics::DiagCode::DpiError,
-                                "$cast requires two arguments",
-                            ))
-                        }
-                    }
-                    "$typename" => {
-                        if let Some(arg) = args.first() {
-                            // $typename returns type name as string in 8-bit per char format
-                            // For now, we evaluate the argument to get its type info
-                            // The type name was already resolved during elaboration and stored as Const string
-                            let val = self.evaluate_expr(arg)?;
-                            Ok(val)
-                        } else {
-                            Err(self.diag_error(
-                                mivon_core::diagnostics::DiagCode::DpiError,
-                                "$typename expects 1 argument",
-                            ))
-                        }
-                    }
-                    "$fopen" => {
-                        let fname = args.first().and_then(|a| {
-                            if let IrExpr::String(s) = a {
-                                Some(s.clone())
-                            } else {
-                                None
-                            }
-                        });
-                        if let Some(fname) = fname {
-                            let mode = args.get(1).and_then(|a| {
-                                if let IrExpr::String(s) = a {
-                                    Some(s.as_str())
-                                } else {
-                                    None
-                                }
-                            });
-                            let open_result = match mode {
-                                Some("r") | Some("rb") => std::fs::File::open(&fname),
-                                _ => std::fs::OpenOptions::new()
-                                    .read(true)
-                                    .write(true)
-                                    .create(true)
-                                    .truncate(true)
-                                    .open(&fname),
-                            };
-                            match open_result {
-                                Ok(f) => {
-                                    let handle = self.next_file_handle;
-                                    self.next_file_handle += 1;
-                                    self.file_handles.insert(handle, f);
-                                    self.file_read_pos.insert(handle, 0);
-                                    Ok(LogicVec::from_u64(handle as u64, 32))
-                                }
-                                Err(_) => Ok(LogicVec::from_u64(0, 32)),
-                            }
-                        } else {
-                            Ok(LogicVec::from_u64(0, 32))
-                        }
-                    }
-                    "$fdisplay" => {
-                        let handle = args
-                            .first()
-                            .and_then(|a| self.evaluate_expr(a).ok().map(|v| v.to_u64() as u32));
-                        if let Some(h) = handle {
-                            let msg = self.format_display(&args[1..]);
-                            if let Some(f) = self.file_handles.get_mut(&h) {
-                                let _ = write!(f, "{}", msg);
-                            }
-                        }
-                        Ok(LogicVec::from_u64(0, 1))
-                    }
-                    "$fread" => {
-                        let target = args.first().and_then(|a| {
-                            if let IrExpr::Signal(id, _) = a {
-                                Some(*id)
-                            } else {
-                                None
-                            }
-                        });
-                        let src = args.get(1);
-                        let data = if let Some(IrExpr::String(fname)) = src {
-                            std::fs::read(fname).ok()
-                        } else if let Some(arg) = src {
-                            let handle = self
-                                .evaluate_expr(arg)
-                                .ok()
-                                .map(|v| v.to_u64() as u32)
-                                .unwrap_or(0);
-                            if handle > 0 {
-                                use std::io::Read;
-                                self.file_handles.get_mut(&handle).and_then(|f| {
-                                    let mut buf = Vec::new();
-                                    f.read_to_end(&mut buf).ok().map(|_| buf)
-                                })
-                            } else {
-                                None
-                            }
-                        } else {
-                            None
-                        };
-                        if let (Some(sid), Some(bytes)) = (target, data) {
-                            let mut bits = Vec::with_capacity(bytes.len() * 8);
-                            for byte in bytes {
-                                for i in 0..8 {
-                                    bits.push(if (byte >> i) & 1 == 1 {
-                                        LogicVal::One
-                                    } else {
-                                        LogicVal::Zero
-                                    });
-                                }
-                            }
-                            self.state.write_signal(
-                                sid,
-                                LogicVec {
-                                    width: bits.len(),
-                                    bits,
-                                },
-                            );
-                        }
-                        Ok(LogicVec::from_u64(0, 1))
-                    }
-                    "$fclose" => {
-                        let handle = args
-                            .first()
-                            .and_then(|a| self.evaluate_expr(a).ok().map(|v| v.to_u64() as u32));
-                        if let Some(h) = handle {
-                            self.file_handles.remove(&h);
-                            self.file_read_pos.remove(&h);
-                        }
-                        Ok(LogicVec::from_u64(0, 1))
-                    }
-                    "$fflush" => {
-                        let handle = args
-                            .first()
-                            .and_then(|a| self.evaluate_expr(a).ok().map(|v| v.to_u64() as u32));
-                        if let Some(h) = handle {
-                            if let Some(f) = self.file_handles.get_mut(&h) {
-                                use std::io::Write;
-                                let _ = f.flush();
-                            }
-                        }
-                        Ok(LogicVec::from_u64(0, 1))
-                    }
-                    "$fseek" => {
-                        let handle = args
-                            .first()
-                            .and_then(|a| self.evaluate_expr(a).ok().map(|v| v.to_u64() as u32));
-                        let offset = args
-                            .get(1)
-                            .and_then(|a| self.evaluate_expr(a).ok().map(|v| v.to_u64() as i64));
-                        let op = args
-                            .get(2)
-                            .and_then(|a| self.evaluate_expr(a).ok().map(|v| v.to_u64()));
-                        if let (Some(h), Some(off)) = (handle, offset) {
-                            if let Some(f) = self.file_handles.get_mut(&h) {
-                                use std::io::{Seek, SeekFrom};
-                                let seek_from = match op {
-                                    Some(1) => SeekFrom::Current(off),
-                                    Some(2) => SeekFrom::End(off),
-                                    _ => SeekFrom::Start(off as u64),
-                                };
-                                let _ = f.seek(seek_from);
-                                if let Ok(pos) = f.stream_position() {
-                                    self.file_read_pos.insert(h, pos);
-                                }
-                            }
-                        }
-                        Ok(LogicVec::from_u64(0, 1))
-                    }
-                    "$ftell" => {
-                        let handle = args
-                            .first()
-                            .and_then(|a| self.evaluate_expr(a).ok().map(|v| v.to_u64() as u32));
-                        if let Some(h) = handle {
-                            if let Some(f) = self.file_handles.get_mut(&h) {
-                                use std::io::Seek;
-                                let pos = f.stream_position().unwrap_or(0);
-                                return Ok(LogicVec::from_u64(pos, 32));
-                            }
-                        }
-                        Ok(LogicVec::from_u64(0, 32))
-                    }
-                    "$feof" => {
-                        let handle = args
-                            .first()
-                            .and_then(|a| self.evaluate_expr(a).ok().map(|v| v.to_u64() as u32));
-                        if let Some(h) = handle {
-                            if let Some(f) = self.file_handles.get_mut(&h) {
-                                use std::io::{Read, Seek};
-                                let pos = f.stream_position().unwrap_or(0);
-                                let mut byte = [0u8; 1];
-                                let n = f.read(&mut byte).unwrap_or(0);
-                                f.seek(std::io::SeekFrom::Start(pos)).ok();
-                                return Ok(LogicVec::from_u64(if n == 0 { 1 } else { 0 }, 1));
-                            }
-                        }
-                        Ok(LogicVec::from_u64(1, 1))
-                    }
-                    "$rewind" => {
-                        // $rewind(fd) — rewind file to beginning (same as $fseek(fd, 0, 0))
-                        let handle = args
-                            .first()
-                            .and_then(|a| self.evaluate_expr(a).ok().map(|v| v.to_u64() as u32));
-                        if let Some(h) = handle {
-                            if let Some(f) = self.file_handles.get_mut(&h) {
-                                use std::io::{Seek, SeekFrom};
-                                let _ = f.seek(SeekFrom::Start(0));
-                                self.file_read_pos.insert(h, 0);
-                                self.file_ungetc_buf.remove(&h);
-                            }
-                        }
-                        Ok(LogicVec::from_u64(0, 1))
-                    }
-                    "$fgets" => {
-                        // $fgets(str_var, fd) — read a line from file handle into string var
-                        let str_arg = args.first();
-                        let handle = args
-                            .get(1)
-                            .and_then(|a| self.evaluate_expr(a).ok().map(|v| v.to_u64() as u32));
-                        if let Some(h) = handle {
-                            if let Some(f) = self.file_handles.get_mut(&h) {
-                                use std::io::{BufRead, BufReader};
-                                let mut reader = BufReader::new(f.by_ref());
-                                let mut line = String::new();
-                                let bytes = reader.read_line(&mut line).unwrap_or(0);
-                                if bytes > 0 {
-                                    // Trim trailing newline for Verilog string compatibility
-                                    if line.ends_with('\n') {
-                                        line.pop();
-                                    }
-                                    if line.ends_with('\r') {
-                                        line.pop();
-                                    }
-                                    // Convert string to LogicVec
-                                    let mut bits = Vec::with_capacity(line.len() * 8);
-                                    for c in line.chars() {
-                                        let byte = c as u8;
-                                        for i in 0..8 {
-                                            bits.push(if (byte >> i) & 1 == 1 {
-                                                LogicVal::One
-                                            } else {
-                                                LogicVal::Zero
-                                            });
-                                        }
-                                    }
-                                    // Write into the string variable
-                                    if let Some(IrExpr::Signal(sid, _)) = str_arg {
-                                        self.state.write_signal(
-                                            *sid,
-                                            LogicVec {
-                                                width: bits.len(),
-                                                bits,
-                                            },
-                                        );
-                                    }
-                                    return Ok(LogicVec::from_u64(bytes as u64, 32));
-                                }
-                            }
-                        }
-                        Ok(LogicVec::from_u64(0, 32))
-                    }
-                    "$fgetc" => {
-                        // $fgetc(fd) — read a single character from file handle
-                        let handle = args
-                            .first()
-                            .and_then(|a| self.evaluate_expr(a).ok().map(|v| v.to_u64() as u32));
-                        if let Some(h) = handle {
-                            // Check ungetc buffer first
-                            if let Some(buf) = self.file_ungetc_buf.get_mut(&h) {
-                                if let Some(byte) = buf.pop() {
-                                    return Ok(LogicVec::from_u64(byte as u64, 32));
-                                }
-                            }
-                            if let Some(f) = self.file_handles.get_mut(&h) {
-                                use std::io::Read;
-                                let mut byte = [0u8; 1];
-                                let bytes = f.read(&mut byte).unwrap_or(0);
-                                if bytes > 0 {
-                                    return Ok(LogicVec::from_u64(byte[0] as u64, 32));
-                                }
-                            }
-                        }
-                        Ok(LogicVec::from_u64(!0u64, 32)) // EOF: returns 32'hFFFFFFFF
-                    }
-                    "$ungetc" => {
-                        // $ungetc(char, fd) — push back a character to file handle
-                        let char_val = args
-                            .first()
-                            .and_then(|a| self.evaluate_expr(a).ok().map(|v| v.to_u64() as u8));
-                        let handle = args
-                            .get(1)
-                            .and_then(|a| self.evaluate_expr(a).ok().map(|v| v.to_u64() as u32));
-                        if let (Some(c), Some(h)) = (char_val, handle) {
-                            self.file_ungetc_buf.entry(h).or_default().push(c);
-                        }
-                        Ok(LogicVec::from_u64(0, 1))
-                    }
-                    "$fscanf" => {
-                        let handle = args
-                            .first()
-                            .and_then(|a| self.evaluate_expr(a).ok().map(|v| v.to_u64() as u32));
-                        if let Some(h) = handle {
-                            if let Some(f) = self.file_handles.get_mut(&h) {
-                                use std::io::{Read, Seek};
-                                let read_pos = self.file_read_pos.entry(h).or_insert(0);
-                                f.seek(std::io::SeekFrom::Start(*read_pos)).ok();
-                                let mut content = String::new();
-                                let _bytes_read = f.read_to_string(&mut content).unwrap_or(0);
-                                *read_pos = f.stream_position().unwrap_or(0);
-                                let fmt = args.get(1).and_then(|a| {
-                                    if let IrExpr::String(s) = a {
-                                        Some(s.clone())
-                                    } else {
-                                        None
-                                    }
-                                });
-                                if let Some(ref fmt_str) = fmt {
-                                    let tokens: Vec<&str> = content.split_whitespace().collect();
-                                    let mut ti = 0;
-                                    let mut ai = 0;
-                                    let mut chars = fmt_str.chars().peekable();
-                                    while let Some(c) = chars.next() {
-                                        if c == '%' {
-                                            if let Some(spec) = chars.next() {
-                                                if spec == 'd' || spec == 'h' || spec == 'b' {
-                                                    if let Some(tok) = tokens.get(ti) {
-                                                        if let Ok(val) = if spec == 'h' {
-                                                            i64::from_str_radix(tok, 16)
-                                                        } else if spec == 'b' {
-                                                            i64::from_str_radix(tok, 2)
-                                                        } else {
-                                                            tok.parse::<i64>()
-                                                        } {
-                                                            let out_idx = 2 + ai;
-                                                            if let Some(IrExpr::Signal(sid, _)) =
-                                                                args.get(out_idx)
-                                                            {
-                                                                self.state.write_signal(
-                                                                    *sid,
-                                                                    LogicVec::from_u64(
-                                                                        val as u64, 32,
-                                                                    ),
-                                                                );
-                                                            }
-                                                            ai += 1;
-                                                        }
-                                                    }
-                                                    ti += 1;
-                                                }
-                                            }
-                                        }
-                                    }
-                                    // $fscanf returns number of items matched (or EOF)
-                                    return Ok(LogicVec::from_u64(ai as u64, 32));
-                                }
-                            }
-                        }
-                        Ok(LogicVec::from_u64(0, 32))
-                    }
-                    "$sformatf" => {
-                        if args.is_empty() {
-                            return Ok(LogicVec::new(0));
-                        }
-                        let msg = self.format_display(args);
-                        let mut bits = Vec::with_capacity(msg.len() * 8);
-                        for c in msg.chars() {
-                            let byte = c as u8;
-                            for i in 0..8 {
-                                bits.push(if (byte >> i) & 1 == 1 {
-                                    LogicVal::One
-                                } else {
-                                    LogicVal::Zero
-                                });
-                            }
-                        }
-                        Ok(LogicVec {
-                            width: bits.len(),
-                            bits,
-                        })
-                    }
-                    "$clog2" => {
-                        if let Some(arg) = args.first() {
-                            let val = self.evaluate_expr(arg)?;
-                            let n = val.to_u64();
-                            if n <= 1 {
-                                Ok(LogicVec::from_u64(0, 32))
-                            } else {
-                                let bits = (64 - n.leading_zeros()) as u64;
-                                if n.is_power_of_two() {
-                                    Ok(LogicVec::from_u64(bits - 1, 32))
-                                } else {
-                                    Ok(LogicVec::from_u64(bits, 32))
-                                }
-                            }
-                        } else {
-                            Ok(LogicVec::from_u64(0, 32))
-                        }
-                    }
-                    "$time" => Ok(LogicVec::from_u64(self.state.time, 64)),
-                    // $stime = waktu simulasi 32-bit (IEEE 1800 §20.17); $time
-                    // 64-bit. Sebelumnya $stime tak dikenal → 0 (probe x01).
-                    "$stime" => Ok(LogicVec::from_u64(self.state.time & 0xFFFF_FFFF, 32)),
-                    "$realtime" => {
-                        let t = self.state.time as f64;
-                        Ok(LogicVec::from_u64(t.to_bits(), 64))
-                    }
-                    "process::self" => {
-                        let pid = self.current_process_id.unwrap_or(0);
-                        if pid == 0 {
-                            let pid = self.state.alloc_object("__process".into());
-                            self.process_map.insert(
-                                pid,
-                                ProcessInfo {
-                                    status: ProcessStatus::Running,
-                                    await_continuations: Vec::new(),
-                                },
-                            );
-                            self.current_process_id = Some(pid);
-                        }
-                        Ok(LogicVec::from_u64(
-                            self.current_process_id.unwrap_or(0) as u64,
-                            64,
-                        ))
-                    }
-                    "run_test" => {
-                        // F18: run_test("name") — buat objek test & jalankan
-                        // fase UVM. No-op bila execute_phases (auto-detect di
-                        // run()) sudah menjalankan fase (guard uvm_phases_started
-                        // di run_uvm_test).
-                        let arg_vals: Vec<LogicVec> = args
-                            .iter()
-                            .map(|a| self.evaluate_expr(a))
-                            .collect::<Result<_, _>>()?;
-                        let test_name =
-                            arg_vals.first().map(logicvec_to_string).unwrap_or_default();
-                        self.run_uvm_test(&test_name)?;
-                        Ok(LogicVec::from_u64(1, 1))
-                    }
-                    "uvm_test_top" => {
-                        // F18: handle global root test UVM — obj id dari
-                        // run_test/execute_phases; 0 (null) bila tidak ada.
-                        Ok(LogicVec::from_u64(
-                            self.root_test_obj_id.unwrap_or(0) as u64,
-                            64,
-                        ))
-                    }
-                    "uvm_root::get" => {
-                        // VERIF-04: singleton uvm_root — semua get() → obj id
-                        // sama (pola sama dengan uvm_cmdline_processor::get).
-                        let obj_id = match self.uvm_root_id {
-                            Some(id) => id,
-                            None => {
-                                let id = self.state.alloc_object(Symbol::intern("uvm_root"));
-                                self.uvm_root_id = Some(id);
-                                id
-                            }
-                        };
-                        Ok(LogicVec::from_u64(obj_id as u64, 64))
-                    }
-                    "uvm_root::get_top" => {
-                        // VERIF-04: komponen top (uvm_test_top) — obj id dari
-                        // run_test/execute_phases; 0 (null) bila tidak ada.
-                        Ok(LogicVec::from_u64(
-                            self.root_test_obj_id.unwrap_or(0) as u64,
-                            64,
-                        ))
-                    }
-                    "uvm_root::run_test" => {
-                        // VERIF-04: varian class-method run_test("name") —
-                        // sama dgn bare run_test (F18).
-                        let arg_vals: Vec<LogicVec> = args
-                            .iter()
-                            .map(|a| self.evaluate_expr(a))
-                            .collect::<Result<_, _>>()?;
-                        let test_name =
-                            arg_vals.first().map(logicvec_to_string).unwrap_or_default();
-                        self.run_uvm_test(&test_name)?;
-                        Ok(LogicVec::from_u64(1, 1))
-                    }
-                    "uvm_tr_database::get_db" => {
-                        // VERIF-18: singleton uvm_tr_database — semua get_db()
-                        // → obj id sama (pola sama dgn uvm_root::get).
-                        let obj_id = match self.uvm_tr_db_id {
-                            Some(id) => id,
-                            None => {
-                                let id = self.state.alloc_object(Symbol::intern("uvm_tr_database"));
-                                self.uvm_tr_db_id = Some(id);
-                                id
-                            }
-                        };
-                        Ok(LogicVec::from_u64(obj_id as u64, 64))
-                    }
-                    "uvm_tr_database::get_stream" => {
-                        // VERIF-18: get_stream(name) — stream obj id (create/
-                        // reuse), pola sama dgn method dispatch.
-                        let arg_vals: Vec<LogicVec> = args
-                            .iter()
-                            .map(|a| self.evaluate_expr(a))
-                            .collect::<Result<_, _>>()?;
-                        let stream_name =
-                            arg_vals.first().map(logicvec_to_string).unwrap_or_default();
-                        let id = self.tr_stream_get(&stream_name);
-                        Ok(LogicVec::from_u64(id as u64, 64))
-                    }
-                    "uvm_tr_database::get_tr_count" => {
-                        // VERIF-18: jumlah record transaksi (semua stream).
-                        Ok(LogicVec::from_u64(self.tr_records.len() as u64, 64))
-                    }
-                    "uvm_tr_database::set_stream" => {
-                        // VERIF-18: set_stream(name) — stream default db.
-                        let arg_vals: Vec<LogicVec> = args
-                            .iter()
-                            .map(|a| self.evaluate_expr(a))
-                            .collect::<Result<_, _>>()?;
-                        let stream_name =
-                            arg_vals.first().map(logicvec_to_string).unwrap_or_default();
-                        self.tr_stream_get(&stream_name);
-                        self.tr_db_default_stream = Some(stream_name);
-                        Ok(LogicVec::from_u64(0, 64))
-                    }
-                    "uvm_config_db::set" => {
-                        let arg_vals: Vec<LogicVec> = args
-                            .iter()
-                            .map(|a| self.evaluate_expr(a))
-                            .collect::<Result<_, _>>()?;
-                        let inst_name = if arg_vals.len() > 1 {
-                            logicvec_to_string(&arg_vals[1])
-                        } else {
-                            String::new()
-                        };
-                        let field_name = if arg_vals.len() > 2 {
-                            logicvec_to_string(&arg_vals[2])
-                        } else {
-                            String::new()
-                        };
-                        let value = if arg_vals.len() > 3 {
-                            arg_vals[3].clone()
-                        } else {
-                            LogicVec::new(1)
-                        };
-                        self.uvm_config_db_data
-                            .insert((inst_name.clone(), field_name.clone()), value);
-                        // VERIF-06: wait_modified ter-blokir menunggu key ini.
-                        self.config_db_release_waiters(&inst_name, &field_name)?;
-                        Ok(LogicVec::from_u64(1, 1))
-                    }
-                    // VERIF-06: exists(inst, field) → 1/0 (non-blocking).
-                    "uvm_config_db::exists" => {
-                        let arg_vals: Vec<LogicVec> = args
-                            .iter()
-                            .map(|a| self.evaluate_expr(a))
-                            .collect::<Result<_, _>>()?;
-                        let mut inst_name = if arg_vals.len() > 1 {
-                            logicvec_to_string(&arg_vals[1])
-                        } else {
-                            String::new()
-                        };
-                        let field_name = if arg_vals.len() > 2 {
-                            logicvec_to_string(&arg_vals[2])
-                        } else {
-                            String::new()
-                        };
-                        if inst_name.is_empty() {
-                            if let Some(oid) = self.current_this {
-                                inst_name = self.uvm_object_full_path(oid);
-                            }
-                        }
-                        Ok(LogicVec::from_u64(
-                            if self.config_db_exists(&inst_name, &field_name) {
-                                1
-                            } else {
-                                0
-                            },
-                            1,
-                        ))
-                    }
-                    // VERIF-06: wait_modified — kondisi terkini (blocking
-                    // di-intercept block.rs; di sini query saja).
-                    "uvm_config_db::wait_modified" => {
-                        let arg_vals: Vec<LogicVec> = args
-                            .iter()
-                            .map(|a| self.evaluate_expr(a))
-                            .collect::<Result<_, _>>()?;
-                        let inst_name = if arg_vals.len() > 1 {
-                            logicvec_to_string(&arg_vals[1])
-                        } else {
-                            String::new()
-                        };
-                        let field_name = if arg_vals.len() > 2 {
-                            logicvec_to_string(&arg_vals[2])
-                        } else {
-                            String::new()
-                        };
-                        Ok(LogicVec::from_u64(
-                            if self.config_db_exists(&inst_name, &field_name) {
-                                1
-                            } else {
-                                0
-                            },
-                            1,
-                        ))
-                    }
-                    "uvm_config_db::get" => {
-                        let arg_vals: Vec<LogicVec> = args
-                            .iter()
-                            .map(|a| self.evaluate_expr(a))
-                            .collect::<Result<_, _>>()?;
-                        let mut inst_name = if arg_vals.len() > 1 {
-                            logicvec_to_string(&arg_vals[1])
-                        } else {
-                            String::new()
-                        };
-                        let field_name = if arg_vals.len() > 2 {
-                            logicvec_to_string(&arg_vals[2])
-                        } else {
-                            String::new()
-                        };
-                        // F19: inst_path kosong (`get(this, "", ...)`) →
-                        // resolve ke path hierarki penuh objek saat ini.
-                        if inst_name.is_empty() {
-                            if let Some(oid) = self.current_this {
-                                inst_name = self.uvm_object_full_path(oid);
-                            }
-                        }
-                        // F19: exact match menang, lalu wildcard paling spesifik.
-                        let stored = self.config_db_find(&inst_name, &field_name);
-                        if let Some(val) = stored {
-                            if let Some(IrExpr::Signal(sig_id, _)) = args.get(3) {
-                                self.state.write_signal(*sig_id, val);
-                            }
-                            Ok(LogicVec::from_u64(1, 1))
-                        } else {
-                            Ok(LogicVec::from_u64(0, 1))
-                        }
-                    }
-                    "uvm_resource_db::set" => {
-                        let arg_vals: Vec<LogicVec> = args
-                            .iter()
-                            .map(|a| self.evaluate_expr(a))
-                            .collect::<Result<_, _>>()?;
-                        let scope = if !arg_vals.is_empty() {
-                            logicvec_to_string(&arg_vals[0])
-                        } else {
-                            String::new()
-                        };
-                        let name = if arg_vals.len() > 1 {
-                            logicvec_to_string(&arg_vals[1])
-                        } else {
-                            String::new()
-                        };
-                        let value = if arg_vals.len() > 2 {
-                            arg_vals[2].clone()
-                        } else {
-                            LogicVec::new(1)
-                        };
-                        self.uvm_resource_db_data.insert((scope, name), value);
-                        Ok(LogicVec::from_u64(1, 1))
-                    }
-                    "uvm_resource_db::write_by_name" => {
-                        // VERIF-07: alias set dgn arg ke-4 rw access type (diabaikan).
-                        let arg_vals: Vec<LogicVec> = args
-                            .iter()
-                            .map(|a| self.evaluate_expr(a))
-                            .collect::<Result<_, _>>()?;
-                        let scope = if !arg_vals.is_empty() {
-                            logicvec_to_string(&arg_vals[0])
-                        } else {
-                            String::new()
-                        };
-                        let name = if arg_vals.len() > 1 {
-                            logicvec_to_string(&arg_vals[1])
-                        } else {
-                            String::new()
-                        };
-                        let value = if arg_vals.len() > 2 {
-                            arg_vals[2].clone()
-                        } else {
-                            LogicVec::new(1)
-                        };
-                        self.uvm_resource_db_data.insert((scope, name), value);
-                        Ok(LogicVec::from_u64(1, 1))
-                    }
-                    "uvm_resource_db::get" | "uvm_resource_db::read_by_name" => {
-                        // VERIF-07: lookup exact dulu, lalu wildcard scope paling
-                        // spesifik (sama dgn config_db) — `set("*.env", ...)`
-                        // terbaca oleh `get("tb.env", ...)`. read_by_name = alias
-                        // get (arg ke-4 rw access type diabaikan).
-                        let arg_vals: Vec<LogicVec> = args
-                            .iter()
-                            .map(|a| self.evaluate_expr(a))
-                            .collect::<Result<_, _>>()?;
-                        let scope = if !arg_vals.is_empty() {
-                            logicvec_to_string(&arg_vals[0])
-                        } else {
-                            String::new()
-                        };
-                        let rname = if arg_vals.len() > 1 {
-                            logicvec_to_string(&arg_vals[1])
-                        } else {
-                            String::new()
-                        };
-                        let stored = self.resource_db_find(&scope, &rname);
-                        if let Some(val) = stored {
-                            if let Some(IrExpr::Signal(sig_id, _)) = args.get(2) {
-                                self.state.write_signal(*sig_id, val);
-                            }
-                            Ok(LogicVec::from_u64(1, 1))
-                        } else {
-                            Ok(LogicVec::from_u64(0, 1))
-                        }
-                    }
-                    "uvm_resource_db::exists" => {
-                        // VERIF-07: 1 bila resource (scope, name) tersedia
-                        // (exact atau wildcard paling spesifik), 0 bila tidak.
-                        let arg_vals: Vec<LogicVec> = args
-                            .iter()
-                            .map(|a| self.evaluate_expr(a))
-                            .collect::<Result<_, _>>()?;
-                        let scope = if !arg_vals.is_empty() {
-                            logicvec_to_string(&arg_vals[0])
-                        } else {
-                            String::new()
-                        };
-                        let rname = if arg_vals.len() > 1 {
-                            logicvec_to_string(&arg_vals[1])
-                        } else {
-                            String::new()
-                        };
-                        Ok(LogicVec::from_u64(
-                            if self.resource_db_exists(&scope, &rname) {
-                                1
-                            } else {
-                                0
-                            },
-                            1,
-                        ))
-                    }
-                    "uvm_cmdline_processor::get" => {
-                        // VERIF-03: singleton uvm_cmdline_processor. Return
-                        // handle objek (obj_id) — variabel `cl` menyimpannya;
-                        // method has_plusarg/get_arg_value di-dispatch via
-                        // execute_uvm_cmdline_method (class uvm_cmdline_processor).
-                        let obj_id = match self.uvm_cmdline_id {
-                            Some(id) => id,
-                            None => {
-                                let id = self
-                                    .state
-                                    .alloc_object(Symbol::intern("uvm_cmdline_processor"));
-                                self.uvm_cmdline_id = Some(id);
-                                id
-                            }
-                        };
-                        Ok(LogicVec::from_u64(obj_id as u64, 64))
-                    }
-                    "uvm_factory::set_type_override_by_type"
-                    | "ovm_factory::set_type_override_by_type" => {
-                        let arg_vals: Vec<LogicVec> = args
-                            .iter()
-                            .map(|a| self.evaluate_expr(a))
-                            .collect::<Result<_, _>>()?;
-                        let orig = if !arg_vals.is_empty() {
-                            logicvec_to_string(&arg_vals[0])
-                        } else {
-                            String::new()
-                        };
-                        let override_type = if arg_vals.len() > 1 {
-                            logicvec_to_string(&arg_vals[1])
-                        } else {
-                            String::new()
-                        };
-                        self.factory_type_overrides.insert(orig, override_type);
-                        Ok(LogicVec::from_u64(1, 1))
-                    }
-                    "$test$plusargs" => {
-                        if let Some(pattern) = args.first() {
-                            if let Ok(pat_val) = self.evaluate_expr(pattern) {
-                                let pat_str = logicvec_to_string(&pat_val);
-                                for key in self.plusargs.keys() {
-                                    if key.starts_with(&pat_str) {
-                                        return Ok(LogicVec::from_u64(1, 32));
-                                    }
-                                }
-                            }
-                        }
-                        Ok(LogicVec::from_u64(0, 32))
-                    }
-                    "$value$plusargs" => {
-                        if let Some(pattern) = args.first() {
-                            if let Ok(pat_val) = self.evaluate_expr(pattern) {
-                                let pat_str = logicvec_to_string(&pat_val);
-                                let plusarg_name = pat_str
-                                    .split('%')
-                                    .next()
-                                    .unwrap_or(&pat_str)
-                                    .trim_end_matches('=');
-                                let plusargs = self.plusargs.clone();
-                                for (key, val) in &plusargs {
-                                    if key == plusarg_name {
-                                        if let Some(var_arg) = args.get(1) {
-                                            let num = if let Some(hex) = val
-                                                .strip_prefix("0x")
-                                                .or_else(|| val.strip_prefix("0X"))
-                                            {
-                                                u64::from_str_radix(hex, 16).unwrap_or(0)
-                                            } else {
-                                                val.parse::<u64>().unwrap_or(0)
-                                            };
-                                            if let IrExpr::Signal(id, _) = var_arg {
-                                                // `%s` ke string-signal → string,
-                                                // selain itu → numerik 32.
-                                                let is_str = self
-                                                    .design
-                                                    .top
-                                                    .signals
-                                                    .get(*id)
-                                                    .map(|si| si.is_string)
-                                                    .unwrap_or(false);
-                                                if is_str {
-                                                    self.state.write_signal(
-                                                        *id,
-                                                        crate::simulator::util::string_to_logicvec(
-                                                            val,
-                                                        ),
-                                                    );
-                                                } else {
-                                                    self.state.write_signal(
-                                                        *id,
-                                                        LogicVec::from_u64(num, 32),
-                                                    );
-                                                }
-                                            }
-                                        }
-                                        return Ok(LogicVec::from_u64(1, 32));
-                                    }
-                                }
-                            }
-                        }
-                        Ok(LogicVec::from_u64(0, 32))
-                    }
-                    "$rose" => {
-                        if let Some(arg) = args.first() {
-                            let val = self.evaluate_expr(arg)?;
-                            let key = format!("$rose({:?})", arg);
-                            let prev = self
-                                .sysfunc_prev
-                                .entry(Symbol::intern(&key))
-                                .or_insert_with(|| LogicVec::fill(LogicVal::Zero, val.width));
-                            let rose =
-                                !prev.to_bool().unwrap_or(false) && val.to_bool().unwrap_or(false);
-                            *prev = val;
-                            Ok(LogicVec::from_u64(if rose { 1 } else { 0 }, 1))
-                        } else {
-                            Ok(LogicVec::from_u64(0, 1))
-                        }
-                    }
-                    "$fell" => {
-                        if let Some(arg) = args.first() {
-                            let val = self.evaluate_expr(arg)?;
-                            let key = format!("$fell({:?})", arg);
-                            let prev = self
-                                .sysfunc_prev
-                                .entry(Symbol::intern(&key))
-                                .or_insert_with(|| LogicVec::fill(LogicVal::Zero, val.width));
-                            let fell =
-                                prev.to_bool().unwrap_or(false) && !val.to_bool().unwrap_or(false);
-                            *prev = val;
-                            Ok(LogicVec::from_u64(if fell { 1 } else { 0 }, 1))
-                        } else {
-                            Ok(LogicVec::from_u64(0, 1))
-                        }
-                    }
-                    "$stable" => {
-                        if let Some(arg) = args.first() {
-                            let val = self.evaluate_expr(arg)?;
-                            let key = format!("$stable({:?})", arg);
-                            let prev = self
-                                .sysfunc_prev
-                                .entry(Symbol::intern(&key))
-                                .or_insert_with(|| LogicVec::fill(LogicVal::Zero, val.width));
-                            let stable = *prev == val;
-                            *prev = val;
-                            Ok(LogicVec::from_u64(if stable { 1 } else { 0 }, 1))
-                        } else {
-                            Ok(LogicVec::from_u64(0, 1))
-                        }
-                    }
-                    "$changed" => {
-                        if let Some(arg) = args.first() {
-                            let val = self.evaluate_expr(arg)?;
-                            let key = format!("$changed({:?})", arg);
-                            let prev = self
-                                .sysfunc_prev
-                                .entry(Symbol::intern(&key))
-                                .or_insert_with(|| LogicVec::fill(LogicVal::Zero, val.width));
-                            let changed = *prev != val;
-                            *prev = val;
-                            Ok(LogicVec::from_u64(if changed { 1 } else { 0 }, 1))
-                        } else {
-                            Ok(LogicVec::from_u64(0, 1))
-                        }
-                    }
-                    "$past" => {
-                        if let Some(arg) = args.first() {
-                            let val = self.evaluate_expr(arg)?;
-                            let w = val.width.max(1);
-                            let n = if args.len() > 1 {
-                                if let Ok(nv) = self.evaluate_expr(&args[1]) {
-                                    nv.to_u64().max(1) as usize
-                                } else {
-                                    1
-                                }
-                            } else {
-                                1
-                            };
-                            // Kunci per (arg, n): `$past(x)`, `$past(x,2)`,
-                            // `$past(x,3)` riwayatnya TERPISAH. Sebelumnya
-                            // kunci hanya arg → 3 deque tercampur + cap
-                            // n+1 per panggilan saling menggusur (probe:
-                            // p1=p2=p3=4 padahal harus 5,4,3).
-                            let key = format!("$past({:?},{n})", arg);
-                            let hist = self
-                                .sysfunc_history
-                                .entry(Symbol::intern(&key))
-                                .or_default();
-                            hist.push_back(val);
-                            // Cap riwayat ke n+1 entry terbaru — `$past` tidak
-                            // pernah butuh data lebih tua dari kedalaman n,
-                            // jadi jangan numpuk O(cycles) per call-site.
-                            while hist.len() > n + 1 {
-                                hist.pop_front();
-                            }
-                            if hist.len() > n {
-                                let past = hist[hist.len() - 1 - n].clone();
-                                Ok(past)
-                            } else {
-                                // Belum ada sampel cukup: X (4-state), bukan 0.
-                                Ok(LogicVec::new(w))
-                            }
-                        } else {
-                            Ok(LogicVec::from_u64(0, 32))
-                        }
-                    }
-                    _ => {
-                        // Konversi real↔integer (LRM 1800 §20.8): real disimpan
-                        // sebagai bit-pattern f64 64-bit; `$rtoi` membulatkan ke
-                        // integer terdekat (ties away from zero — `f64::round`),
-                        // `$itor` mengubah integer (signed) → f64.
-                        // PRA-FIX keduanya tak dikenal → 0 + warning RT9003.
-                        let fn_name = name.as_str();
-                        match fn_name {
-                            "$rtoi" => {
-                                if let Some(a) = args.first() {
-                                    let v = self.evaluate_expr(a)?;
-                                    let f = f64::from_bits(v.to_u64());
-                                    if !f.is_finite() {
-                                        return Ok(LogicVec::from_u64(0, 32));
-                                    }
-                                    return Ok(LogicVec::from_u64(f.round() as i64 as u64, 32));
-                                }
-                                return Ok(LogicVec::from_u64(0, 32));
-                            }
-                            "$itor" => {
-                                if let Some(a) = args.first() {
-                                    let v = self.evaluate_expr(a)?;
-                                    let f = v.to_i64() as f64;
-                                    return Ok(LogicVec::from_u64(f.to_bits(), 64));
-                                }
-                                return Ok(LogicVec::from_u64(0, 64));
-                            }
-                            "$realtobits" | "$bitstoreal" => {
-                                // Bit-pattern bolak-balik: keduanya menyimpan
-                                // f64 sebagai 64-bit → passthrough.
-                                if let Some(a) = args.first() {
-                                    return self.evaluate_expr(a);
-                                }
-                                return Ok(LogicVec::from_u64(0, 64));
-                            }
-                            _ => {}
-                        }
-                        // Try VPI registered system functions first
-                        if crate::vpi::systf::call_registered_systf(fn_name, true) {
-                            return Ok(LogicVec::from_u64(0, 32));
-                        }
-                        // F20: via DiagSink agar warning punya file:line:col.
-                        // Dedup: emit SEKALI per nama fungsi (bukan per
-                        // penggunaan — utk `$realtobits` di 4 assign harusnya
-                        // 1 warning, bukan 4-20).
-                        if self.notimpl_warned.insert(*name) {
-                            self.emit_warning(
-                                mivon_core::diagnostics::DiagCode::NotImplemented,
-                                format!("unsupported system function '{}'", fn_name),
-                            );
-                        }
-                        Ok(LogicVec::from_u64(0, 32))
-                    }
-                }
-            }
+            IrExpr::SysFunc { name, args, line, col } => self.eval_sysfunc(name, args, *line, *col),
             IrExpr::NewCall { class_name, args } => {
                 let arg_vals: Vec<LogicVec> = args
                     .iter()

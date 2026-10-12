@@ -425,22 +425,29 @@ bug di mivon utama (parser/elaborator/simulator). Status: ✅ fixed / ⏳ open.
         `expr_uses`, `lib.rs` `collect_expr_refs`) kini menelusuri
         `with_clause` (sebelumnya di-skip lewat `..`).
 
+37. **Frame `evaluate_expr_impl` ~184 KB → stack overflow rekursi (#37).** Rantai
+    `&&` **≥8 operan** di evaluator rekursif (`use_packed_eval=false` — dipakai
+    `EngineFlags::default()`, yaitu jalur test API `simulate_signals`) menabrak
+    stack thread test 2 MiB. gdb: tiap level rekursi `evaluate_expr_impl`
+    memakai **~0x2E240 ≈ 184 KB** (fungsi ~2874 baris; temporari antar match-arm
+    tak berbagi slot stack di build debug). Kedalaman aman ≈ 7 kondisi; 8 kondisi
+    → `SIGABRT`. Bukan bug semantik (nilai benar bila stack cukup): CLI
+    `mivon sim` (main thread 8 MiB) & packed eval tidak terpengaruh.
+    - **Fix:** arm `SysFunc` (≈1320 baris, `match name.as_str() { ... }`) dipecah
+      ke method baru `#[inline(never)] fn eval_sysfunc(&mut self, name, args,
+      line, col)` di `engine/eval/expr.rs`. Body identik (dipindah apa adanya,
+      hanya `self.set_cur_src_pos(*line, *col)` → `(line, col)`), arm kini jadi
+      satu baris delegasi `=> self.eval_sysfunc(name, args, *line, *col),`.
+      Frame `evaluate_expr_impl` yang dipakai tiap level rekursi menyusut
+      drastis (locals raksasa `SysFunc` pindah ke frame helper yang dipanggil
+      sekali, bukan per level).
+    - Verifikasi: `examples/mv/logic_chain.mv` (rantai `&&`/`||` 16 operan) —
+      test `test_mv_long_logic_chain_no_stack_overflow`. Dibuktikan GAGAL
+      (SIGABRT stack overflow) pada `expr.rs` pra-fix, LULUS pasca-fix.
+    - Catatan: fix ini TIDAK mengubah semantik apa pun — seluruh 281 test
+      `mivon-mv` + suite `mivon-tests` hijau.
+
 ## ⏳ Open
 
-**#37 (open) — frame `evaluate_expr_impl` ~184 KB → stack overflow rekursi.**
-Ditemukan saat F41 (bukan regresi F41): rantai `&&` **≥8 operan** di evaluator
-rekursif (`use_packed_eval=false` — dipakai `EngineFlags::default()`, yaitu
-jalur test API `simulate_signals`) menabrak stack thread test 2 MiB. gdb:
-tiap level rekursi `evaluate_expr_impl` memakai **~0x2E240 ≈ 184 KB**
-(fungsi ~2874 baris; temporari antar match-arm tak berbagi slot stack di build
-debug). Kedalaman aman ≈ 7 kondisi; 8 kondisi → `SIGABRT` stack overflow.
-Bukan bug semantik (nilai benar bila stack cukup): CLI `mivon sim` (main thread
-8 MiB) & packed eval tidak terpengaruh. Bukti: `MIVON_DBG_PS=1` → 13 eval
-BinaryOp untuk 7 kondisi (linear, bukan eksponensial); AST 8 kondisi hanya 352 B.
-**Fix yang disarankan (belum dikerjakan — HIGH risk, core evaluator):** pecah
-`evaluate_expr_impl` jadi helper per-arm (`#[inline(never)]`) agar frame tak
-menjumlahkan semua arm, atau box temporari besar. Sementara ini demo
-`examples/mv/array_methods.mv` memakai cek per-kondisi (bukan satu rantai `&&`).
-
-_(Selain #37, semua item fixed. Caveat chained method temporer & iverilog `with`
+_(Tidak ada item open. Caveat chained method temporer & iverilog `with`
 tercatat di #36 sbg keterbatasan tool/desain, bukan bug.)_
