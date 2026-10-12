@@ -854,9 +854,42 @@ impl LspBackend {
             .unwrap_or_else(|| "declaration".into());
 
         Some(format!(
-            "**{kind}** `{word}`\n\n```systemverilog\n{decl_text}\n```{}",
+            "**{kind}** `{word}`\n\n```systemverilog\n{decl_text}\n```{}{}",
+            Self::port_detail(&kind, &decl_text)
+                .map(|d| format!("\n\n{d}"))
+                .unwrap_or_default(),
             doc.map(|d| format!("\n\n{d}")).unwrap_or_default()
         ))
+    }
+
+    /// LSP-06 tahap 2b: detail eksplisit port — `direction: input ·
+    /// range: `[7:0]`` (atau `scalar` tanpa kurung). Return None bila
+    /// bukan port.
+    pub(crate) fn port_detail(kind: &str, decl_text: &str) -> Option<String> {
+        let dir = kind.strip_prefix("port ")?;
+        let mut depth = 0usize;
+        let mut start = None;
+        let mut range = None;
+        for (i, c) in decl_text.char_indices() {
+            if c == '[' {
+                if depth == 0 {
+                    start = Some(i);
+                }
+                depth += 1;
+            } else if c == ']' {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    if let Some(s) = start.take() {
+                        range = Some(decl_text[s..=i].to_string());
+                        break;
+                    }
+                }
+            }
+        }
+        Some(match range {
+            Some(r) => format!("direction: {dir} · range: `{r}`"),
+            None => format!("direction: {dir} · scalar"),
+        })
     }
 
     /// LSP-06 tahap 2a: kumpulkan baris komentar `//` berurutan tepat di
@@ -3791,6 +3824,29 @@ endmodule
         assert!(LspBackend::doc_comment_above(src, 3).is_none());
         let info = LspBackend::hover_info(src, 2, 8).expect("hover modul");
         assert!(info.contains("Counter utama"), "{info}");
+    }
+
+    #[test]
+    fn test_hover_port_detail() {
+        // LSP-06 tahap 2b: direction + range eksplisit untuk port.
+        assert_eq!(
+            LspBackend::port_detail("port input", "input logic [7:0] clk,").as_deref(),
+            Some("direction: input · range: `[7:0]`")
+        );
+        assert_eq!(
+            LspBackend::port_detail("port output", "output bit o").as_deref(),
+            Some("direction: output · scalar")
+        );
+        assert!(LspBackend::port_detail("module", "module m;").is_none());
+        assert_eq!(
+            LspBackend::port_detail("port inout", "inout wire [3:0] b").as_deref(),
+            Some("direction: inout · range: `[3:0]`")
+        );
+        let src = "module m(\n  input logic [7:0] d\n);\n  assign x = d;\nendmodule\n";
+        let uline = 3u32;
+        let ucol = src.lines().nth(3).unwrap().find("d;").unwrap() as u32;
+        let info = LspBackend::hover_info(src, uline, ucol).expect("hover port");
+        assert!(info.contains("direction: input · range: `[7:0]`"), "{info}");
     }
 
     #[test]

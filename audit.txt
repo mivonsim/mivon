@@ -1891,14 +1891,15 @@ LSP-05: ⚠️ IN PROGRESS (ROUND 95/116) — rename tahap 1+2a:
          (ROUND 116): prepare_rename handler (capability RenameOptions
          prepare_provider) + core prepare_rename_range + placeholder.
          MASIH OPEN: cross-file rename.
-LSP-06: ⚠️ IN PROGRESS (ROUND 95/113) — hover tahap 1+2a:
+LSP-06: ✅ FIXED (ROUND 95/113/126) — hover lengkap:
          backend.rs — capability hover_provider + handler hover;
          core murni hover_info(): markdown **kind** `name` + snippet
          baris deklarasi (kind dari keyword definisi: module/interface/
          port input/output/inout/parameter/function/task, fallback
          "declaration"). Tahap 2a (ROUND 113): doc_comment_above —
          komentar `//` berurutan di atas definisi masuk hover.
-         MASIH OPEN: dokumentasi kaya (port direction + range).
+         Tahap 2b (ROUND 126): port_detail — direction + range/`scalar`
+         eksplisit untuk port.
 LSP-07: ✅ FIXED (ROUND 109/119/124/125) — semantic tokens lengkap:
          backend.rs — capability SemanticTokensOptions dengan legend
          8 tipe (namespace/type/class/interface/function/variable/
@@ -5342,6 +5343,21 @@ LSP-07 kini ✅ FIXED (full + range + delta + modifier tertutup).
 
 📊 VERIFIKASI ROUND 125:
    - cargo test -p mivon-env --lib --features lsp lsp: 51 passed (+1)
+   - Review subagent: APPROVE.
+
+═══ ROUND 126 — LSP-06 port detail (tahap 2b, ITEM SELESAI) ═══
+
+✅ PORT DETAIL (crates/mivon-env/src/lsp/backend.rs):
+   - port_detail(kind, decl): direction dari kind + range kurung
+     pertama seimbang (atau `scalar`); non-port → None (output lama
+     identik).
+
+Test (+1): test_hover_port_detail (range/scalar/inout/None + e2e).
+
+LSP-06 kini ✅ FIXED (kind + snippet + doc + port detail tertutup).
+
+📊 VERIFIKASI ROUND 126:
+   - cargo test -p mivon-env --lib --features lsp lsp: 52 passed (+1)
    - Review subagent: APPROVE.
 
 ========================================
