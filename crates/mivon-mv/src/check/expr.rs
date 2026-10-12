@@ -342,6 +342,14 @@ pub(crate) fn check_expr<'a>(
                 }
             }
         }
+        Expr::SysFunc(name, args, l, c) => {
+            if let Some(a) = args {
+                for arg in a {
+                    check_expr(arg, ctx, scope, depth + 1)?;
+                }
+            }
+            // System functions have flexible arity; could add known arities later
+        }
         // Named arg `f(x = 4)` — validasi ekspresi dalam; nama tidak divalidasi
         // (bisa param function eksternal/UVM).
         Expr::NamedArg { expr, .. } => check_expr(expr, ctx, scope, depth + 1)?,
@@ -854,7 +862,7 @@ pub(crate) fn expr_width(e: &Expr, ctx: &Ctx, scope: &Scope, depth: usize) -> Op
                 _ => None,
             }
         }
-        Expr::Call(..) | Expr::MethodCall { .. } => None,
+        Expr::Call(..) | Expr::MethodCall { .. } | Expr::SysFunc(..) => None,
         // Named arg — lebar dari ekspresi dalam (dipakai Call args? tidak
         // dihitung E2002 utk call; None aman).
         Expr::NamedArg { expr, .. } => expr_width(expr, ctx, scope, depth + 1),
@@ -1180,6 +1188,7 @@ pub(crate) fn expr_uses(e: &Expr, name: &str) -> bool {
             parts.iter().any(|p| expr_uses(p, name))
         }
         Expr::Call(_, args, ..) => args.iter().any(|a| expr_uses(a, name)),
+        Expr::SysFunc(_, args, ..) => args.as_ref().map(|a| a.iter().any(|a| expr_uses(a, name))).unwrap_or(false),
         Expr::MethodCall { obj, args, .. } => {
             expr_uses(obj, name) || args.iter().any(|a| expr_uses(a, name))
         }

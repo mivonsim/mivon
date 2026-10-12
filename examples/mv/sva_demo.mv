@@ -1,0 +1,95 @@
+// ─────────────────────────────────────────────────────────────
+// SVA Demo — Mivon HDL (.mv) dengan full SVA sequences/properties
+// ─────────────────────────────────────────────────────────────
+
+module sva_demo {
+    in  clk, rst_n : bit
+    in  req, ack   : bit
+    out grant      : bit
+
+    reg grant : bit = '0
+    reg state : logic[1:0] = 0
+
+    // Sequence declarations (F85)
+    sequence req_ack_seq = req ##1 ack;
+    sequence grant_seq = grant ##1 !req;
+    sequence req_to_grant = req |-> ##[1:3] grant;
+    sequence grant_to_ack = grant |=> ack;
+
+    // Property declarations (F85)
+    property req_implies_ack = req |-> ##[1:5] ack;
+    property grant_eventually = eventually grant;
+    property no_grant_without_req = never (grant & !req);
+    property req_stable_until_ack = req throughout ack;
+
+    // Sequential logic
+    seq(clk, rst_n) {
+        if (!rst_n) {
+            grant <= '0
+            state <= 0
+        } else {
+            case (state) {
+                0: if (req) {
+                    grant <= 1
+                    state <= 1
+                }
+                1: if (ack) {
+                    grant <= 0
+                    state <= 0
+                }
+                default: state <= 0
+            }
+        }
+    }
+
+    // Native SVA assertions using structured properties (F85)
+    assert property (req_implies_ack) $info("req → ack ok") else $error("req → ack failed")
+    assert property (grant_eventually) $info("grant eventually ok") else $error("grant never asserted")
+    assume property (no_grant_without_req) $info("no grant w/o req ok") else $error("grant without req")
+    cover property (req_stable_until_ack) $info("req stable until ack covered")
+
+    // Native SVA cover (F85)
+    cover property (eventually (req & ack)) $info("req & ack covered")
+
+    // Immediate assertions for comparison (inside initial block) — hanya boolean expression
+    initial {
+        assert (req) $info("req asserted") else $error("req not asserted")
+        cover (ack) $info("ack covered")
+    }
+}
+
+module tb_sva_demo {
+    sig clk, rst_n : bit
+    sig req, ack   : bit
+    sig grant      : bit
+
+    inst sva_demo u (.clk, .rst_n, .req, .ack, .grant)
+
+    initial {
+        clk = 0
+        rst_n = 0
+        req = 0
+        ack = 0
+        #10
+        rst_n = 1
+        
+        // Test 1: req → ack within 5 cycles
+        repeat (2) @(posedge clk)
+        req = 1
+        repeat (3) @(posedge clk) ack = 1
+        repeat (2) @(posedge clk)
+        req = 0
+        ack = 0
+        
+        // Test 2: grant without req (should fail assume)
+        repeat (2) @(posedge clk)
+        // Note: DUT won't grant without req due to logic
+        
+        repeat (10) @(posedge clk)
+        $finish
+    }
+
+    initial {
+        forever #5 clk = ~clk
+    }
+}

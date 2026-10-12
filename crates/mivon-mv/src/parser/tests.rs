@@ -880,6 +880,11 @@ fn stmt_kinds(stmts: &[Stmt]) -> Vec<&'static str> {
             Stmt::Cover { .. } => "Cover",
             Stmt::CoverProperty(_) => "CoverProperty",
             Stmt::CaseInside { .. } => "CaseInside",
+            Stmt::AssertPropertyStruct { .. } => "AssertPropertyStruct",
+            Stmt::AssumePropertyStruct { .. } => "AssumePropertyStruct",
+            Stmt::CoverPropertyStruct { .. } => "CoverPropertyStruct",
+            Stmt::Sequence(_) => "Sequence",
+            Stmt::Property(_) => "Property",
             Stmt::ExprStmt(_) => "ExprStmt",
             Stmt::RawSvh(_) => "RawSvh",
         }

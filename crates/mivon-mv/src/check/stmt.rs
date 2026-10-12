@@ -553,9 +553,40 @@ pub(crate) fn check_stmt<'a>(
         }
         // `cover property (...)` — mirror `assert property` (RAW, konservatif).
         Stmt::CoverProperty(_) => Ok(()),
+        // SVA Native Assertions (F85)
+        Stmt::AssertPropertyStruct { prop, pass, fail, .. } => {
+            check_sva_prop_expr(prop, ctx, scope, 0)?;
+            if let Some(p) = pass {
+                check_stmt(p, ctx, scope, kind)?;
+            }
+            if let Some(f) = fail {
+                check_stmt(f, ctx, scope, kind)?;
+            }
+            Ok(())
+        }
+        Stmt::AssumePropertyStruct { prop, pass, fail, .. } => {
+            check_sva_prop_expr(prop, ctx, scope, 0)?;
+            if let Some(p) = pass {
+                check_stmt(p, ctx, scope, kind)?;
+            }
+            if let Some(f) = fail {
+                check_stmt(f, ctx, scope, kind)?;
+            }
+            Ok(())
+        }
+        Stmt::CoverPropertyStruct { prop, pass, .. } => {
+            check_sva_prop_expr(prop, ctx, scope, 0)?;
+            if let Some(p) = pass {
+                check_stmt(p, ctx, scope, kind)?;
+            }
+            Ok(())
+        }
         // Escape hatch `@sv { ... }` — teks SV mentah, ditangani lexer/codegen;
         // check tidak menganalisis isi (konservatif, seperti assert property).
         Stmt::RawSvh(_) => Ok(()),
+        // SVA Sequence/Property as statements (F85) — konservatif.
+        Stmt::Sequence(seq) => check_sva_seq_expr(seq, ctx, scope, 0),
+        Stmt::Property(prop) => check_sva_prop_expr(prop, ctx, scope, 0),
     }
 }
 
@@ -625,4 +656,78 @@ pub(crate) fn check_lvalue_not_const(
         ));
     }
     Ok(())
+}
+
+/// SVA Sequence expression type-check (F85).
+/// Validasi rekursif ekspresi sequence: boolean expr, delay, repeat,
+/// implication, or/and/intersect, first_match, throughout, within.
+fn check_sva_seq_expr(
+    seq: &crate::ast::SvaSeqExpr,
+    ctx: &Ctx<'_>,
+    scope: &Scope<'_>,
+    min_prec: usize,
+) -> Result<(), MvError> {
+    use crate::ast::SvaSeqExpr;
+    match seq {
+        SvaSeqExpr::Expr(e) => super::expr::check_expr(e, ctx, scope, min_prec as usize),
+        SvaSeqExpr::Delay { left, right, min, max } => {
+            check_sva_seq_expr(left, ctx, scope, min_prec)?;
+            check_sva_seq_expr(right, ctx, scope, min_prec)?;
+            super::expr::check_expr(min, ctx, scope, 0)?;
+            if let Some(m) = max {
+                super::expr::check_expr(m, ctx, scope, 0)?;
+            }
+            Ok(())
+        }
+        SvaSeqExpr::Repeat { expr, min, max } => {
+            check_sva_seq_expr(expr, ctx, scope, min_prec)?;
+            super::expr::check_expr(min, ctx, scope, 0)?;
+            if let Some(m) = max {
+                super::expr::check_expr(m, ctx, scope, 0)?;
+            }
+            Ok(())
+        }
+        SvaSeqExpr::Implies { left, right }
+        | SvaSeqExpr::NextImplies { left, right }
+        | SvaSeqExpr::Or { left, right }
+        | SvaSeqExpr::And { left, right }
+        | SvaSeqExpr::Intersect { left, right }
+        | SvaSeqExpr::Throughout { left, right }
+        | SvaSeqExpr::Within { left, right } => {
+            check_sva_seq_expr(left, ctx, scope, min_prec)?;
+            check_sva_seq_expr(right, ctx, scope, min_prec)
+        }
+        SvaSeqExpr::FirstMatch { expr } => check_sva_seq_expr(expr, ctx, scope, min_prec),
+    }
+}
+
+/// SVA Property expression type-check (F85).
+/// Validasi rekursif ekspresi property: sequence, always/never/eventually/nexttime,
+/// implication, iff, disable iff.
+fn check_sva_prop_expr(
+    prop: &crate::ast::SvaPropExpr,
+    ctx: &Ctx<'_>,
+    scope: &Scope<'_>,
+    min_prec: usize,
+) -> Result<(), MvError> {
+    use crate::ast::SvaPropExpr;
+    match prop {
+        SvaPropExpr::Seq(s) => check_sva_seq_expr(s, ctx, scope, min_prec as usize),
+        SvaPropExpr::Always { expr } | SvaPropExpr::Never { expr } => {
+            check_sva_seq_expr(expr, ctx, scope, min_prec as usize)
+        }
+        SvaPropExpr::Eventually { expr, .. } | SvaPropExpr::Nexttime { expr, .. } => {
+            check_sva_seq_expr(expr, ctx, scope, min_prec as usize)
+        }
+        SvaPropExpr::Implies { seq, prop }
+        | SvaPropExpr::NextImplies { seq, prop } => {
+            check_sva_seq_expr(seq, ctx, scope, min_prec as usize)?;
+            check_sva_prop_expr(prop, ctx, scope, min_prec as usize)
+        }
+        SvaPropExpr::Iff { cond, prop } | SvaPropExpr::DisableIff { cond, prop } => {
+            super::expr::check_expr(cond, ctx, scope, 0)?;
+            check_sva_prop_expr(prop, ctx, scope, min_prec as usize)
+        }
+        SvaPropExpr::Name(_) => Ok(()),
+    }
 }

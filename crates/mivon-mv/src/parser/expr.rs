@@ -526,6 +526,23 @@ impl Parser {
                     Ok(Expr::Concat(parts))
                 }
             }
+            // System task/function calls: `$info`, `$display`, `$finish`, `$random`, etc.
+            Tok::Dollar => {
+                self.advance();
+                let (l, c) = self.pos_line();
+                let name = self.expect_ident()?;
+                let args = if self.eat(&Tok::LParen) {
+                    let mut args = Vec::new();
+                    while !self.eat(&Tok::RParen) {
+                        args.push(self.parse_expr()?);
+                        self.eat(&Tok::Comma);
+                    }
+                    Some(args)
+                } else {
+                    None
+                };
+                Ok(Expr::SysFunc(name, args, l, c))
+            }
             _ => {
                 let (l, c) = self.pos_line();
                 Err(MvError::new(

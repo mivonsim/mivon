@@ -392,6 +392,40 @@ impl Parser {
                 self.advance();
                 if self.is_ident("property") {
                     self.advance();
+                    // Check if it's a structured SVA property expression (F85)
+                    // Try structured parsing first, but fall back to raw on failure.
+                    // Also use raw if it starts with `@` (event control like `@(posedge clk)`).
+                    if self.peek() == &Tok::LParen {
+                        let save = self.pos;
+                        self.advance(); // consume `(` 
+                        let use_raw = matches!(self.peek(), Tok::At);
+                        self.pos = save; // restore position
+                        
+                        if use_raw {
+                            // Event control form: `@(posedge clk) ...` — use raw parsing
+                            let raw = self.parse_assert_property_raw()?;
+                            return Ok(MItem::AssertProperty(raw));
+                        }
+                        
+                        // Try structured parsing
+                        self.advance();
+                        let prop = self.parse_sva_prop_expr()?;
+                        self.expect(&Tok::RParen)?;
+                        let pass = if matches!(self.peek(), Tok::Else) || matches!(self.peek(), Tok::RBrace)
+                        {
+                            None
+                        } else {
+                            Some(Box::new(self.parse_stmt()?))
+                        };
+                        let fail = if self.eat(&Tok::Else) {
+                            Some(Box::new(self.parse_stmt()?))
+                        } else {
+                            None
+                        };
+                        let (l, c) = self.pos_line();
+                        return Ok(MItem::AssertPropertyStruct { prop: Box::new(prop), pass, fail, line: l, col: c });
+                    }
+                    // Fallback to raw
                     let raw = self.parse_assert_property_raw()?;
                     return Ok(MItem::AssertProperty(raw));
                 }
@@ -410,6 +444,35 @@ impl Parser {
                 self.advance();
                 if self.is_ident("property") {
                     self.advance();
+                    // Check if it's a structured SVA property expression (F85)
+                    if self.peek() == &Tok::LParen {
+                        let save = self.pos;
+                        self.advance(); // consume `(` 
+                        let use_raw = matches!(self.peek(), Tok::At);
+                        self.pos = save; // restore position
+                        
+                        if use_raw {
+                            let raw = self.parse_assert_property_raw()?;
+                            return Ok(MItem::AssumeProperty(raw));
+                        }
+                        
+                        self.advance();
+                        let prop = self.parse_sva_prop_expr()?;
+                        self.expect(&Tok::RParen)?;
+                        let pass = if matches!(self.peek(), Tok::Else) || matches!(self.peek(), Tok::RBrace)
+                        {
+                            None
+                        } else {
+                            Some(Box::new(self.parse_stmt()?))
+                        };
+                        let fail = if self.eat(&Tok::Else) {
+                            Some(Box::new(self.parse_stmt()?))
+                        } else {
+                            None
+                        };
+                        let (l, c) = self.pos_line();
+                        return Ok(MItem::AssumePropertyStruct { prop: Box::new(prop), pass, fail, line: l, col: c });
+                    }
                     let raw = self.parse_assert_property_raw()?;
                     return Ok(MItem::AssumeProperty(raw));
                 }
@@ -428,6 +491,38 @@ impl Parser {
                 self.advance();
                 if self.is_ident("property") {
                     self.advance();
+                    // Check if it's a structured SVA property expression (F85)
+                    if self.peek() == &Tok::LParen {
+                        let save = self.pos;
+                        self.advance(); // consume `(` 
+                        let use_raw = matches!(self.peek(), Tok::At);
+                        self.pos = save; // restore position
+                        
+                        if use_raw {
+                            let raw = self.parse_assert_property_raw()?;
+                            return Ok(MItem::CoverProperty(raw));
+                        }
+                        
+                        self.advance();
+                        let prop = self.parse_sva_prop_expr()?;
+                        self.expect(&Tok::RParen)?;
+                        // `cover` tanpa `else` (tak ada cabang gagal, LRM 1800 §20.11):
+                        if matches!(self.peek(), Tok::Else) {
+                            let (l, c) = self.pos_line();
+                            return Err(MvError::new(
+                                l,
+                                c,
+                                "'cover' tidak memakai 'else' (tak ada cabang gagal) — hapus 'else'".to_string(),
+                            ));
+                        }
+                        let pass = if matches!(self.peek(), Tok::RBrace) {
+                            None
+                        } else {
+                            Some(Box::new(self.parse_stmt()?))
+                        };
+                        let (l, c) = self.pos_line();
+                        return Ok(MItem::CoverPropertyStruct { prop: Box::new(prop), pass, line: l, col: c });
+                    }
                     let raw = self.parse_assert_property_raw()?;
                     return Ok(MItem::CoverProperty(raw));
                 }
@@ -559,6 +654,9 @@ impl Parser {
             }
             Tok::Func => Ok(MItem::Func(self.parse_func()?)),
             Tok::Task => Ok(MItem::Task(self.parse_task()?)),
+            // SVA Sequence/Property declarations (F85)
+            Tok::Ident(s) if s == "sequence" => Ok(self.parse_sequence_decl()?),
+            Tok::Ident(s) if s == "property" => Ok(self.parse_property_decl()?),
             _ => {
                 let (l, c) = self.pos_line();
                 Err(MvError::new(
@@ -631,7 +729,79 @@ impl Parser {
         })
     }
 
-    /// Daftar override parameter instansiasi: `#(8)` (positional, nama
+    /// Parse SVA Sequence declaration: `sequence name (args) = expr;`
+    fn parse_sequence_decl(&mut self) -> Result<MItem, MvError> {
+        let (l, c) = self.pos_line();
+        self.expect_ident()?; // "sequence"
+        let name = self.expect_ident()?;
+        let args = if self.eat(&Tok::LParen) {
+            let mut args = Vec::new();
+            while !self.eat(&Tok::RParen) {
+                let arg_name = self.expect_ident()?;
+                self.expect(&Tok::Colon)?;
+                let ty = self.parse_type()?;
+                args.push(Param {
+                    name: arg_name,
+                    ty: Some(ty),
+                    default: None,
+                    type_default: None,
+                    line: 0,
+                    col: 0,
+                });
+                self.eat(&Tok::Comma);
+            }
+            args
+        } else {
+            Vec::new()
+        };
+        self.expect(&Tok::BlockingAssign)?;
+        let expr = self.parse_sva_seq_expr()?;
+        self.expect(&Tok::Semi)?;
+        Ok(MItem::SequenceDecl {
+            name,
+            args,
+            expr: Box::new(expr),
+            line: l,
+            col: c,
+        })
+    }
+
+    /// Parse SVA Property declaration: `property name (args) = expr;`
+    fn parse_property_decl(&mut self) -> Result<MItem, MvError> {
+        let (l, c) = self.pos_line();
+        self.expect_ident()?; // "property"
+        let name = self.expect_ident()?;
+        let args = if self.eat(&Tok::LParen) {
+            let mut args = Vec::new();
+            while !self.eat(&Tok::RParen) {
+                let arg_name = self.expect_ident()?;
+                self.expect(&Tok::Colon)?;
+                let ty = self.parse_type()?;
+                args.push(Param {
+                    name: arg_name,
+                    ty: Some(ty),
+                    default: None,
+                    type_default: None,
+                    line: 0,
+                    col: 0,
+                });
+                self.eat(&Tok::Comma);
+            }
+            args
+        } else {
+            Vec::new()
+        };
+        self.expect(&Tok::BlockingAssign)?;
+        let expr = self.parse_sva_prop_expr()?;
+        self.expect(&Tok::Semi)?;
+        Ok(MItem::PropertyDecl {
+            name,
+            args,
+            expr: Box::new(expr),
+            line: l,
+            col: c,
+        })
+    }
     /// kosong) / `#(.DEPTH(4))` (named) / campuran. Konsumsi `Hash` + kurung.
     fn parse_inst_params(&mut self) -> Result<Vec<(String, Expr)>, MvError> {
         self.expect(&Tok::Hash)?;

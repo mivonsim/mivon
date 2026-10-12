@@ -285,6 +285,8 @@ fn check_module_item<'a>(
         // `Stmt::AssertProperty` di check/stmt.rs) — operator SVA bukan
         // ekspresi `.mv` yang bisa divalidasi.
         MItem::AssertProperty(_) | MItem::AssumeProperty(_) | MItem::CoverProperty(_) => Ok(()),
+        // SVA Structured Assertions (F85) — konservatif, body SVA tidak dianalisis
+        MItem::AssertPropertyStruct { .. } | MItem::AssumePropertyStruct { .. } | MItem::CoverPropertyStruct { .. } => Ok(()),
         MItem::Sig {
             names, ty, init, ..
         }
@@ -799,5 +801,8 @@ fn check_module_item<'a>(
         }
         MItem::Func(f) => super::class::check_func(f, ctx, scope),
         MItem::Task(t) => super::class::check_task(t, ctx, scope),
+        // SVA Sequence/Property declarations (F85) — konservatif: body SVA
+        // tidak dianalisis (operator SVA bukan ekspresi .mv).
+        MItem::SequenceDecl { .. } | MItem::PropertyDecl { .. } => Ok(()),
     }
 }

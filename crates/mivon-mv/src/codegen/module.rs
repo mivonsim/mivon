@@ -237,6 +237,68 @@ pub(crate) fn emit_module_kw(out: &mut String, m: &Module, kw: &str, iface_names
             MItem::CoverProperty(raw) => {
                 line(out, 1, &format!("cover property {raw};"));
             }
+            // SVA Structured Assertions (F85)
+            MItem::AssertPropertyStruct { prop, pass, fail, .. } => {
+                let prop_str = super::stmt::emit_sva_prop_expr(prop);
+                if let Some(p) = pass {
+                    line(out, 1, &format!("assert property ({prop_str})"));
+                    super::stmt::emit_stmt(out, 2, p);
+                } else {
+                    line(out, 1, &format!("assert property ({prop_str});"));
+                }
+                if let Some(f) = fail {
+                    line(out, 1, "else");
+                    super::stmt::emit_stmt(out, 2, f);
+                    line(out, 1, ";");
+                }
+            }
+            MItem::AssumePropertyStruct { prop, pass, fail, .. } => {
+                let prop_str = super::stmt::emit_sva_prop_expr(prop);
+                if let Some(p) = pass {
+                    line(out, 1, &format!("assume property ({prop_str})"));
+                    super::stmt::emit_stmt(out, 2, p);
+                } else {
+                    line(out, 1, &format!("assume property ({prop_str});"));
+                }
+                if let Some(f) = fail {
+                    line(out, 1, "else");
+                    super::stmt::emit_stmt(out, 2, f);
+                    line(out, 1, ";");
+                }
+            }
+            MItem::CoverPropertyStruct { prop, pass, .. } => {
+                let prop_str = super::stmt::emit_sva_prop_expr(prop);
+                if let Some(p) = pass {
+                    line(out, 1, &format!("cover property ({prop_str})"));
+                    super::stmt::emit_stmt(out, 2, p);
+                } else {
+                    line(out, 1, &format!("cover property ({prop_str});"));
+                }
+            }
+            // SVA Sequence/Property declarations (F85) — hoisted to file scope,
+            // but we emit them here for module context (they're allowed in modules)
+            MItem::SequenceDecl { name, args, expr, .. } => {
+                let arg_str = args
+                    .iter()
+                    .map(|p| {
+                        let ty = p.ty.as_ref().unwrap_or(&crate::ast::MvType::Int);
+                        format!("{} : {}", p.name, emit_type(ty))
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                line(out, 1, &format!("sequence {}({}) = {};", name, arg_str, super::stmt::emit_sva_seq_expr(expr)));
+            }
+            MItem::PropertyDecl { name, args, expr, .. } => {
+                let arg_str = args
+                    .iter()
+                    .map(|p| {
+                        let ty = p.ty.as_ref().unwrap_or(&crate::ast::MvType::Int);
+                        format!("{} : {}", p.name, emit_type(ty))
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                line(out, 1, &format!("property {}({}) = {};", name, arg_str, super::stmt::emit_sva_prop_expr(expr)));
+            }
             MItem::Seq(spec, body) => {
                 line(out, 0, "");
                 line(out, 1, "// ── logika sekuensial ──");
@@ -471,6 +533,67 @@ pub(crate) fn emit_module_item_at(
         MItem::CoverProperty(raw) => {
             // Mirror `assert property`: cover concurrent = module item.
             line(out, indent, &format!("cover property {raw};"));
+        }
+        // SVA Structured Assertions (F85)
+        MItem::AssertPropertyStruct { prop, pass, fail, .. } => {
+            let prop_str = super::stmt::emit_sva_prop_expr(prop);
+            if let Some(p) = pass {
+                line(out, indent, &format!("assert property ({prop_str})"));
+                super::stmt::emit_stmt(out, indent + 1, p);
+            } else {
+                line(out, indent, &format!("assert property ({prop_str});"));
+            }
+            if let Some(f) = fail {
+                line(out, indent, "else");
+                super::stmt::emit_stmt(out, indent + 1, f);
+                line(out, indent, ";");
+            }
+        }
+        MItem::AssumePropertyStruct { prop, pass, fail, .. } => {
+            let prop_str = super::stmt::emit_sva_prop_expr(prop);
+            if let Some(p) = pass {
+                line(out, indent, &format!("assume property ({prop_str})"));
+                super::stmt::emit_stmt(out, indent + 1, p);
+            } else {
+                line(out, indent, &format!("assume property ({prop_str});"));
+            }
+            if let Some(f) = fail {
+                line(out, indent, "else");
+                super::stmt::emit_stmt(out, indent + 1, f);
+                line(out, indent, ";");
+            }
+        }
+        MItem::CoverPropertyStruct { prop, pass, .. } => {
+            let prop_str = super::stmt::emit_sva_prop_expr(prop);
+            if let Some(p) = pass {
+                line(out, indent, &format!("cover property ({prop_str})"));
+                super::stmt::emit_stmt(out, indent + 1, p);
+            } else {
+                line(out, indent, &format!("cover property ({prop_str});"));
+            }
+        }
+        // SVA Sequence/Property declarations (F85)
+        MItem::SequenceDecl { name, args, expr, .. } => {
+            let arg_str = args
+                .iter()
+                .map(|p| {
+                    let ty = p.ty.as_ref().unwrap_or(&crate::ast::MvType::Int);
+                    format!("{} : {}", p.name, super::expr::emit_type(ty))
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            line(out, indent, &format!("sequence {}({}) = {};", name, arg_str, super::stmt::emit_sva_seq_expr(expr)));
+        }
+        MItem::PropertyDecl { name, args, expr, .. } => {
+            let arg_str = args
+                .iter()
+                .map(|p| {
+                    let ty = p.ty.as_ref().unwrap_or(&crate::ast::MvType::Int);
+                    format!("{} : {}", p.name, super::expr::emit_type(ty))
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            line(out, indent, &format!("property {}({}) = {};", name, arg_str, super::stmt::emit_sva_prop_expr(expr)));
         }
         MItem::Seq(spec, body) => emit_seq(out, indent, spec, body),
         MItem::Comb(body) => {

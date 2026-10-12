@@ -526,7 +526,43 @@ impl Parser {
                 // `##`, `[*]`) yang bukan token .mv. Emisi 1:1 (MIVON-HDL.md §7.2).
                 if self.is_ident("property") {
                     self.advance();
-                    return Ok(Stmt::AssertProperty(self.parse_assert_property_raw()?));
+                    // Check if it's a structured SVA property expression (F85)
+                    // Try structured parsing first, but fall back to raw on failure.
+                    // Also use raw if it starts with `@` (event control like `@(posedge clk)`).
+                    if self.peek() == &Tok::LParen {
+                        // Peek ahead to see if it's an event control `@(...)`
+                        let save = self.pos;
+                        self.advance(); // consume `(` 
+                        let use_raw = matches!(self.peek(), Tok::At);
+                        self.pos = save; // restore position
+                        
+                        if use_raw {
+                            // Event control form: `@(posedge clk) ...` — use raw parsing
+                            let raw = self.parse_assert_property_raw()?;
+                            return Ok(Stmt::AssertProperty(raw));
+                        }
+                        
+                        // Try structured parsing
+                        self.advance();
+                        let prop = self.parse_sva_prop_expr()?;
+                        self.expect(&Tok::RParen)?;
+                        let pass = if matches!(self.peek(), Tok::Else) || matches!(self.peek(), Tok::RBrace)
+                        {
+                            None
+                        } else {
+                            Some(Box::new(self.parse_stmt()?))
+                        };
+                        let fail = if self.eat(&Tok::Else) {
+                            Some(Box::new(self.parse_stmt()?))
+                        } else {
+                            None
+                        };
+                        let (l, c) = self.pos_line();
+                        return Ok(Stmt::AssertPropertyStruct { prop: Box::new(prop), pass, fail, line: l, col: c });
+                    }
+                    // Fallback to raw
+                    let raw = self.parse_assert_property_raw()?;
+                    return Ok(Stmt::AssertProperty(raw));
                 }
                 self.expect(&Tok::LParen)?;
                 let cond = self.parse_expr()?;
@@ -549,7 +585,39 @@ impl Parser {
                 // `assume property (...)` — mirror `assert property` (RAW SVA).
                 if self.is_ident("property") {
                     self.advance();
-                    return Ok(Stmt::AssumeProperty(self.parse_assert_property_raw()?));
+                    // Check if it's a structured SVA property expression (F85)
+                    // Try structured parsing first, but fall back to raw on failure.
+                    // Also use raw if it starts with `@` (event control like `@(posedge clk)`).
+                    if self.peek() == &Tok::LParen {
+                        let save = self.pos;
+                        self.advance();
+                        let use_raw = matches!(self.peek(), Tok::At);
+                        self.pos = save;
+                        
+                        if use_raw {
+                            let raw = self.parse_assert_property_raw()?;
+                            return Ok(Stmt::AssumeProperty(raw));
+                        }
+                        
+                        self.advance();
+                        let prop = self.parse_sva_prop_expr()?;
+                        self.expect(&Tok::RParen)?;
+                        let pass = if matches!(self.peek(), Tok::Else) || matches!(self.peek(), Tok::RBrace)
+                        {
+                            None
+                        } else {
+                            Some(Box::new(self.parse_stmt()?))
+                        };
+                        let fail = if self.eat(&Tok::Else) {
+                            Some(Box::new(self.parse_stmt()?))
+                        } else {
+                            None
+                        };
+                        let (l, c) = self.pos_line();
+                        return Ok(Stmt::AssumePropertyStruct { prop: Box::new(prop), pass, fail, line: l, col: c });
+                    }
+                    let raw = self.parse_assert_property_raw()?;
+                    return Ok(Stmt::AssumeProperty(raw));
                 }
                 self.expect(&Tok::LParen)?;
                 let cond = self.parse_expr()?;
@@ -572,7 +640,43 @@ impl Parser {
                 // `cover property (...)` — mirror `assert property` (RAW SVA).
                 if self.is_ident("property") {
                     self.advance();
-                    return Ok(Stmt::CoverProperty(self.parse_assert_property_raw()?));
+                    // Check if it's a structured SVA property expression (F85)
+                    // Try structured parsing first, but fall back to raw on failure.
+                    // Also use raw if it starts with `@` (event control like `@(posedge clk)`).
+                    if self.peek() == &Tok::LParen {
+                        let save = self.pos;
+                        self.advance();
+                        let use_raw = matches!(self.peek(), Tok::At);
+                        self.pos = save;
+                        
+                        if use_raw {
+                            let raw = self.parse_assert_property_raw()?;
+                            return Ok(Stmt::CoverProperty(raw));
+                        }
+                        
+                        self.advance();
+                        let prop = self.parse_sva_prop_expr()?;
+                        self.expect(&Tok::RParen)?;
+                        // `cover` tanpa `else` (tak ada cabang gagal, LRM 1800 §20.11):
+                        if matches!(self.peek(), Tok::Else) {
+                            let (l, c) = self.pos_line();
+                            return Err(MvError::new(
+                                l,
+                                c,
+                                "'cover' tidak memakai 'else' (tak ada cabang gagal) — hapus 'else'".to_string(),
+                            ));
+                        }
+                        let pass = if matches!(self.peek(), Tok::RBrace) {
+                            None
+                        } else {
+                            Some(Box::new(self.parse_stmt()?))
+                        };
+                        let (l, c) = self.pos_line();
+                        return Ok(Stmt::CoverPropertyStruct { prop: Box::new(prop), pass, line: l, col: c });
+                    }
+                    // Fallback to raw
+                    let raw = self.parse_assert_property_raw()?;
+                    return Ok(Stmt::CoverProperty(raw));
                 }
                 self.expect(&Tok::LParen)?;
                 let cond = self.parse_expr()?;
@@ -742,5 +846,235 @@ impl Parser {
         }
         let e = self.parse_expr()?;
         Ok(Stmt::ExprStmt(e))
+    }
+
+    /// Parse SVA Sequence expression (F85) — reusable by module parser.
+    pub(crate) fn parse_sva_seq_expr(&mut self) -> Result<crate::ast::SvaSeqExpr, MvError> {
+        use crate::ast::SvaSeqExpr;
+        
+        // Handle leading delay: `##N seq` or `##[M:N] seq`
+        let mut left = if matches!(self.peek(), Tok::HashHash | Tok::HashHashLBrack) {
+            // Leading delay: `##N seq` or `##[M:N] seq`
+            // Treat as `1 ##delay seq` where `1` is always-true boolean
+            let has_range = matches!(self.peek(), Tok::HashHashLBrack);
+            self.advance(); // consume ## or ##[
+            let min = self.parse_expr()?;
+            let max = if self.eat(&Tok::Colon) {
+                Some(self.parse_expr()?)
+            } else {
+                None
+            };
+            if has_range {
+                self.expect(&Tok::RBrack)?;
+            }
+            let right = self.parse_sva_seq_expr()?;
+            SvaSeqExpr::Delay {
+                left: Box::new(SvaSeqExpr::Expr(Expr::Int(1))), // always-true
+                right: Box::new(right),
+                min,
+                max,
+            }
+        } else {
+            SvaSeqExpr::Expr(self.parse_expr()?)
+        };
+        
+        loop {
+            match self.peek() {
+                Tok::HashHash | Tok::HashHashLBrack => {
+                    // Binary delay operator: `left ##delay right` or `left ##[min:max] right`
+                    let has_range = matches!(self.peek(), Tok::HashHashLBrack);
+                    self.advance();
+                    let min = self.parse_expr()?;
+                    let max = if self.eat(&Tok::Colon) {
+                        Some(self.parse_expr()?)
+                    } else {
+                        None
+                    };
+                    if has_range {
+                        self.expect(&Tok::RBrack)?;
+                    }
+                    // Parse the right-hand side sequence expression
+                    let right = self.parse_sva_seq_expr()?;
+                    left = SvaSeqExpr::Delay {
+                        left: Box::new(left),
+                        right: Box::new(right),
+                        min,
+                        max,
+                    };
+                }
+                Tok::LBrackStar => {
+                    self.advance();
+                    let min = self.parse_expr()?;
+                    let max = if self.eat(&Tok::Colon) {
+                        Some(self.parse_expr()?)
+                    } else {
+                        None
+                    };
+                    self.expect(&Tok::RBrack)?;
+                    left = SvaSeqExpr::Repeat {
+                        expr: Box::new(left),
+                        min,
+                        max,
+                    };
+                }
+                Tok::PipeArrow => {
+                    self.advance();
+                    let right = self.parse_sva_seq_expr()?;
+                    left = SvaSeqExpr::Implies {
+                        left: Box::new(left),
+                        right: Box::new(right),
+                    };
+                }
+                Tok::PipeFatArrow => {
+                    self.advance();
+                    let right = self.parse_sva_seq_expr()?;
+                    left = SvaSeqExpr::NextImplies {
+                        left: Box::new(left),
+                        right: Box::new(right),
+                    };
+                }
+                Tok::Or => {
+                    self.advance();
+                    let right = self.parse_sva_seq_expr()?;
+                    left = SvaSeqExpr::Or {
+                        left: Box::new(left),
+                        right: Box::new(right),
+                    };
+                }
+                Tok::And => {
+                    self.advance();
+                    let right = self.parse_sva_seq_expr()?;
+                    left = SvaSeqExpr::And {
+                        left: Box::new(left),
+                        right: Box::new(right),
+                    };
+                }
+                Tok::Intersect => {
+                    self.advance();
+                    let right = self.parse_sva_seq_expr()?;
+                    left = SvaSeqExpr::Intersect {
+                        left: Box::new(left),
+                        right: Box::new(right),
+                    };
+                }
+                Tok::FirstMatch => {
+                    self.advance();
+                    self.expect(&Tok::LParen)?;
+                    let expr = self.parse_sva_seq_expr()?;
+                    self.expect(&Tok::RParen)?;
+                    left = SvaSeqExpr::FirstMatch { expr: Box::new(expr) };
+                }
+                Tok::Throughout => {
+                    self.advance();
+                    let right = self.parse_sva_seq_expr()?;
+                    left = SvaSeqExpr::Throughout {
+                        left: Box::new(left),
+                        right: Box::new(right),
+                    };
+                }
+                Tok::Within => {
+                    self.advance();
+                    let right = self.parse_sva_seq_expr()?;
+                    left = SvaSeqExpr::Within {
+                        left: Box::new(left),
+                        right: Box::new(right),
+                    };
+                }
+                _ => break,
+            }
+        }
+        Ok(left)
+    }
+
+    /// Parse SVA Property expression (F85).
+    pub(crate) fn parse_sva_prop_expr(&mut self) -> Result<crate::ast::SvaPropExpr, MvError> {
+        use crate::ast::SvaPropExpr;
+        
+        // Property name reference: `property_name` — only if standalone
+        // (not followed by sequence/property operators like |->, |=>, ##, [*,
+        // throughout, within, or, and, intersect, first_match)
+        if let Tok::Ident(name) = self.peek().clone() {
+            let name_str = name.as_str();
+            if !matches!(name_str, "always" | "never" | "eventually" | "s_eventually" | "nexttime" | "s_nexttime" | "iff" | "disable") {
+                // Look ahead to see if followed by sequence/property operators
+                let next = self.peek_at(1).clone();
+                let is_operator = matches!(next, 
+                    Tok::PipeArrow | Tok::PipeFatArrow | Tok::HashHash | Tok::HashHashLBrack
+                    | Tok::LBrackStar | Tok::Throughout | Tok::Within
+                    | Tok::Or | Tok::And | Tok::Intersect | Tok::FirstMatch
+                );
+                if !is_operator {
+                    self.advance();
+                    return Ok(SvaPropExpr::Name(name));
+                }
+            }
+        }
+        
+        match self.peek() {
+            Tok::Always => {
+                self.advance();
+                let expr = self.parse_sva_seq_expr()?;
+                return Ok(SvaPropExpr::Always { expr: Box::new(expr) });
+            }
+            Tok::Never => {
+                self.advance();
+                let expr = self.parse_sva_seq_expr()?;
+                return Ok(SvaPropExpr::Never { expr: Box::new(expr) });
+            }
+            Tok::Eventually => {
+                self.advance();
+                let expr = self.parse_sva_seq_expr()?;
+                return Ok(SvaPropExpr::Eventually { expr: Box::new(expr), strong: false });
+            }
+            Tok::Nexttime => {
+                self.advance();
+                let expr = self.parse_sva_seq_expr()?;
+                return Ok(SvaPropExpr::Nexttime { expr: Box::new(expr), strong: false });
+            }
+            Tok::Iff => {
+                self.advance();
+                self.expect(&Tok::LParen)?;
+                let cond = self.parse_expr()?;
+                self.expect(&Tok::RParen)?;
+                let prop = self.parse_sva_prop_expr()?;
+                return Ok(SvaPropExpr::Iff { cond, prop: Box::new(prop) });
+            }
+            Tok::Disable => {
+                self.advance();
+                if self.is_ident("iff") {
+                    self.advance();
+                    self.expect(&Tok::LParen)?;
+                    let cond = self.parse_expr()?;
+                    self.expect(&Tok::RParen)?;
+                    let prop = self.parse_sva_prop_expr()?;
+                    return Ok(SvaPropExpr::DisableIff { cond, prop: Box::new(prop) });
+                }
+            }
+            _ => {}
+        }
+        
+        let seq = self.parse_sva_seq_expr()?;
+        
+        match self.peek() {
+            Tok::PipeArrow => {
+                self.advance();
+                let prop = self.parse_sva_prop_expr()?;
+                return Ok(SvaPropExpr::Implies {
+                    seq: Box::new(seq),
+                    prop: Box::new(prop),
+                });
+            }
+            Tok::PipeFatArrow => {
+                self.advance();
+                let prop = self.parse_sva_prop_expr()?;
+                return Ok(SvaPropExpr::NextImplies {
+                    seq: Box::new(seq),
+                    prop: Box::new(prop),
+                });
+            }
+            _ => {}
+        }
+        
+        Ok(SvaPropExpr::Seq(Box::new(seq)))
     }
 }

@@ -111,6 +111,7 @@ pub enum Tok {
     Assert,
     Assume,
     Cover,
+    Never,
     PosEdge,
     NegEdge,
     Dollar,
@@ -154,6 +155,36 @@ pub enum Tok {
     Equiv,
     /// `:/` — bobot dist dibagi (F12)
     ColonSlash,
+
+    // ── SVA Sequence/Property operators (F85) ──
+    /// `##` — delay operator in sequences
+    HashHash,
+    /// `##[` — delay range start
+    HashHashLBrack,
+    /// `|->` — overlapping implication
+    PipeArrow,
+    /// `|=>` — non-overlapping implication
+    PipeFatArrow,
+    /// `[*` — repeat operator start
+    LBrackStar,
+    /// `throughout` — sequence throughout
+    Throughout,
+    /// `first_match` — sequence first_match
+    FirstMatch,
+    /// `eventually` / `s_eventually` — property eventually
+    Eventually,
+    /// `nexttime` / `s_nexttime` — property nexttime
+    Nexttime,
+    /// `iff` — property iff
+    Iff,
+    /// `or` — sequence or
+    Or,
+    /// `and` — sequence and
+    And,
+    /// `intersect` — sequence intersect
+    Intersect,
+    /// `within` — sequence within
+    Within,
 
     // ── Operator ──
     Plus,
@@ -302,6 +333,19 @@ fn keyword(s: &str) -> Option<Tok> {
         "dist" => Tok::Dist,
         "solve" => Tok::Solve,
         "before" => Tok::Before,
+        // SVA Sequence/Property keywords (F85)
+        "throughout" => Tok::Throughout,
+        "first_match" => Tok::FirstMatch,
+        "eventually" => Tok::Eventually,
+        "s_eventually" => Tok::Eventually,
+        "nexttime" => Tok::Nexttime,
+        "s_nexttime" => Tok::Nexttime,
+        "never" => Tok::Never,
+        "iff" => Tok::Iff,
+        "or" => Tok::Or,
+        "and" => Tok::And,
+        "intersect" => Tok::Intersect,
+        "within" => Tok::Within,
         _ => return None,
     })
 }
@@ -712,13 +756,31 @@ pub fn tokenize(src: &str) -> Result<Vec<(Tok, usize, usize)>, MvError> {
             '}' => (Tok::RBrace, 1),
             '(' => (Tok::LParen, 1),
             ')' => (Tok::RParen, 1),
-            '[' => (Tok::LBrack, 1),
+            '[' => {
+                // SVA: `[*` (repeat operator)
+                if peek(&chars, i, '*') {
+                    (Tok::LBrackStar, 2)
+                } else {
+                    (Tok::LBrack, 1)
+                }
+            }
             ']' => (Tok::RBrack, 1),
             ',' => (Tok::Comma, 1),
             ';' => (Tok::Semi, 1),
             '?' => (Tok::Question, 1),
             '@' => (Tok::At, 1),
-            '#' => (Tok::Hash, 1),
+            '#' => {
+                // SVA: `##` (delay) / `##[` (delay range)
+                if peek(&chars, i, '#') {
+                    if peek2(&chars, i, '[') {
+                        (Tok::HashHashLBrack, 3)
+                    } else {
+                        (Tok::HashHash, 2)
+                    }
+                } else {
+                    (Tok::Hash, 1)
+                }
+            }
             '~' => {
                 // Binary XNOR `~^` — LRM 1800 §11.13. Sebelumnya `~`
                 // selalu diperlakukan unary, sehingga `a ~^ b` gagal parse
@@ -870,7 +932,18 @@ pub fn tokenize(src: &str) -> Result<Vec<(Tok, usize, usize)>, MvError> {
                 }
             }
             '|' => {
-                if peek(&chars, i, '|') {
+                // SVA: `|=>` (non-overlapping implication) — check first
+                // For `|=>`: chars[i]='|', chars[i+1]='=', chars[i+2]='>'
+                if i + 2 < chars.len() && chars[i + 1] == '=' && chars[i + 2] == '>' {
+                    (Tok::PipeFatArrow, 4)
+                } else if peek(&chars, i, '-') {
+                    // SVA: `|->` (overlapping implication)
+                    if peek2(&chars, i, '>') {
+                        (Tok::PipeArrow, 3)
+                    } else {
+                        (Tok::Pipe, 1)
+                    }
+                } else if peek(&chars, i, '|') {
                     (Tok::PipePipe, 2)
                 } else if peek(&chars, i, '=') {
                     // F36: `|=` compound
@@ -920,6 +993,10 @@ fn is_atsv(chars: &[char], i: usize) -> bool {
 
 fn peek2(chars: &[char], i: usize, c: char) -> bool {
     i + 2 < chars.len() && chars[i + 2] == c
+}
+
+fn peek3(chars: &[char], i: usize, c: char) -> bool {
+    i + 3 < chars.len() && chars[i + 3] == c
 }
 
 #[cfg(test)]

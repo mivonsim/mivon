@@ -765,7 +765,12 @@ fn collect_file_refs(file: &ast::MvFile, out: &mut Vec<String>) {
                 }
                 MItem::AssertProperty(_)
                 | MItem::AssumeProperty(_)
-                | MItem::CoverProperty(_) => {}
+                | MItem::CoverProperty(_)
+                | MItem::AssertPropertyStruct { .. }
+                | MItem::AssumePropertyStruct { .. }
+                | MItem::CoverPropertyStruct { .. }
+                | MItem::SequenceDecl { .. }
+                | MItem::PropertyDecl { .. } => {}
             }
         }
     }
@@ -960,7 +965,12 @@ fn collect_mitem_refs(item: &crate::ast::MItem, out: &mut Vec<String>) {
         }
         MItem::AssertProperty(_)
         | MItem::AssumeProperty(_)
-        | MItem::CoverProperty(_) => {}
+        | MItem::CoverProperty(_)
+        | MItem::AssertPropertyStruct { .. }
+        | MItem::AssumePropertyStruct { .. }
+        | MItem::CoverPropertyStruct { .. }
+        | MItem::SequenceDecl { .. }
+        | MItem::PropertyDecl { .. } => {}
     }
 }
 

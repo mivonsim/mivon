@@ -157,6 +157,7 @@ pub enum Token {
     AmpAmp,
     PipePipe,
     PipeArrow, // |-> (overlap implication SVA)
+    PipeFatArrow, // |=> (non-overlapping implication SVA)
     Shl,
     Shr,
     Sshl,
@@ -460,6 +461,7 @@ impl fmt::Display for Token {
             Token::EndEnum => write!(f, "endenum"),
             Token::HashHash => write!(f, "##"),
             Token::PipeArrow => write!(f, "|->"),
+            Token::PipeFatArrow => write!(f, "|=>"),
             Token::Ident(s) => write!(f, "'{}'", s.as_str()),
             Token::Eof => write!(f, "<eof>"),
             Token::Error(s) => write!(f, "<error: {}>", s),
@@ -1389,7 +1391,12 @@ impl Lexer {
                 }
             }
             '|' => {
-                if self.peek() == Some('|') {
+                // SVA: `|=>` (non-overlapping implication) — check first
+                if self.peek() == Some('=') && self.peek_next() == Some('>') {
+                    self.advance(); // '='
+                    self.advance(); // '>'
+                    Token::PipeFatArrow
+                } else if self.peek() == Some('|') {
                     self.advance();
                     Token::PipePipe
                 } else if self.peek() == Some('=') {

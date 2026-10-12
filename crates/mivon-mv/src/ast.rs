@@ -86,6 +86,9 @@ pub enum Expr {
     /// Call `$display(...)`, `clog2(...)`, `pkg::func(...)`.
     /// `(line, col)` = posisi nama fungsi — dipakai E2011 (jumlah argumen).
     Call(String, Vec<Expr>, usize, usize),
+    /// System function call: `$info`, `$display`, `$finish`, `$random`, etc.
+    /// `(line, col)` = posisi nama — dipakai E2011 (jumlah argumen).
+    SysFunc(String, Option<Vec<Expr>>, usize, usize),
     /// Named argument dalam call: `f(10, factor = 4)` — nama dengan `=`,
     /// di-emit SV `.factor(4)`. Hanya valid di argumen call.
     NamedArg { name: String, expr: Box<Expr> },
@@ -345,10 +348,105 @@ pub enum Stmt {
     /// `cover property (...)` — cover concurrent (module item, LRM 1800 §14).
     /// Body RAW seperti `AssertProperty`.
     CoverProperty(String),
+
+    // ── SVA Native Assertions (F85) ──────────────────────────────────────
+    /// `assert property (expr) [pass] [else fail]` — structured concurrent assertion
+    AssertPropertyStruct {
+        prop: Box<SvaPropExpr>,
+        pass: Option<Box<Stmt>>,
+        fail: Option<Box<Stmt>>,
+        line: usize,
+        col: usize,
+    },
+    /// `assume property (expr) [pass] [else fail]` — structured concurrent assumption
+    AssumePropertyStruct {
+        prop: Box<SvaPropExpr>,
+        pass: Option<Box<Stmt>>,
+        fail: Option<Box<Stmt>>,
+        line: usize,
+        col: usize,
+    },
+    /// `cover property (expr) [pass]` — structured concurrent cover
+    CoverPropertyStruct {
+        prop: Box<SvaPropExpr>,
+        pass: Option<Box<Stmt>>,
+        line: usize,
+        col: usize,
+    },
+
+    // ── SVA Sequence/Property (F85) ──────────────────────────────────────
+    /// Sequence expression: `##1`, `##[1:3]`, `[*N]`, `seq1 |-> seq2`,
+    /// `seq1 or seq2`, `seq1 and seq2`, `seq1 intersect seq2`,
+    /// `first_match(seq)`, `seq1 throughout seq2`, `seq1 within seq2`.
+    Sequence(Box<SvaSeqExpr>),
+    /// Property expression: `always seq`, `never seq`, `eventually seq`,
+    /// `nexttime seq`, `seq1 |-> seq2` (as property), `iff (cond) prop`,
+    /// `disable iff (cond) prop`, `property ( ... )`.
+    Property(Box<SvaPropExpr>),
+
     /// Escape hatch: `@sv { ... }` — teks SystemVerilog mentah yang di-emit
     /// verbatim (untuk konstruk SV yang belum didukung bahasa). Body diambil
     /// mentah dari source oleh lexer (bukan token .mv).
     RawSvh(String),
+}
+
+/// SVA Sequence expression (F85) — LRM 1800 §16.12-16.16.
+/// Representasi terstruktur untuk ekspresi sequence: `##N`, `##[M:N]`,
+/// `[*N]`, implikasi `|->`/`|=>`, kombinasi `or`/`and`/`intersect`,
+/// `first_match()`, `throughout`, `within`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SvaSeqExpr {
+    /// Boolean expression (base sequence)
+    Expr(Expr),
+    /// Delay: `seq1 ##N seq2` atau `seq1 ##[M:N] seq2`
+    Delay { left: Box<SvaSeqExpr>, right: Box<SvaSeqExpr>, min: Expr, max: Option<Expr> },
+    /// Repeat: `[*N]` atau `[*M:N]`
+    Repeat { expr: Box<SvaSeqExpr>, min: Expr, max: Option<Expr> },
+    /// Overlapping implication: `seq1 |-> seq2`
+    Implies { left: Box<SvaSeqExpr>, right: Box<SvaSeqExpr> },
+    /// Non-overlapping implication: `seq1 |=> seq2`
+    NextImplies { left: Box<SvaSeqExpr>, right: Box<SvaSeqExpr> },
+    /// Or: `seq1 or seq2`
+    Or { left: Box<SvaSeqExpr>, right: Box<SvaSeqExpr> },
+    /// And: `seq1 and seq2`
+    And { left: Box<SvaSeqExpr>, right: Box<SvaSeqExpr> },
+    /// Intersect: `seq1 intersect seq2`
+    Intersect { left: Box<SvaSeqExpr>, right: Box<SvaSeqExpr> },
+    /// First match: `first_match(seq)`
+    FirstMatch { expr: Box<SvaSeqExpr> },
+    /// Throughout: `seq1 throughout seq2`
+    Throughout { left: Box<SvaSeqExpr>, right: Box<SvaSeqExpr> },
+    /// Within: `seq1 within seq2`
+    Within { left: Box<SvaSeqExpr>, right: Box<SvaSeqExpr> },
+}
+
+/// SVA Property expression (F85) — LRM 1800 §16.12-16.16.
+/// Representasi terstruktur untuk ekspresi property: `always seq`,
+/// `never seq`, `eventually seq`, `nexttime seq`,
+/// `seq1 |-> seq2` (as property), `iff (cond) prop`,
+/// `disable iff (cond) prop`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SvaPropExpr {
+    /// Sequence as property (strong property)
+    Seq(Box<SvaSeqExpr>),
+    /// Always: `always seq`
+    Always { expr: Box<SvaSeqExpr> },
+    /// Never: `never seq`
+    Never { expr: Box<SvaSeqExpr> },
+    /// Eventually: `eventually seq` / `s_eventually seq`
+    Eventually { expr: Box<SvaSeqExpr>, strong: bool },
+    /// Nexttime: `nexttime seq` / `s_nexttime seq`
+    Nexttime { expr: Box<SvaSeqExpr>, strong: bool },
+    /// Implication as property: `seq |-> prop`
+    Implies { seq: Box<SvaSeqExpr>, prop: Box<SvaPropExpr> },
+    /// Non-overlapping implication as property: `seq |=> prop`
+    NextImplies { seq: Box<SvaSeqExpr>, prop: Box<SvaPropExpr> },
+    /// Iff: `iff (cond) prop`
+    Iff { cond: Expr, prop: Box<SvaPropExpr> },
+    /// Disable iff: `disable iff (cond) prop`
+    DisableIff { cond: Expr, prop: Box<SvaPropExpr> },
+    /// Property name reference: `property_name`
+    Name(String),
 }
 
 /// F39: mode sinkronisasi fork/join (MIVON-HDL.md §6.6).
@@ -773,6 +871,49 @@ pub enum MItem {
     /// `cover property ( … )` di LEVEL MODULE — cover concurrent
     /// (module item, LRM 1800 §14). Mirror `AssertProperty`.
     CoverProperty(String),
+
+    // ── SVA Structured Assertions (F85) ────────────────────────────────
+    /// `assert property (prop) [action] [else action]` — structured concurrent assertion
+    AssertPropertyStruct {
+        prop: Box<SvaPropExpr>,
+        pass: Option<Box<Stmt>>,
+        fail: Option<Box<Stmt>>,
+        line: usize,
+        col: usize,
+    },
+    /// `assume property (prop) [action] [else action]` — structured concurrent assumption
+    AssumePropertyStruct {
+        prop: Box<SvaPropExpr>,
+        pass: Option<Box<Stmt>>,
+        fail: Option<Box<Stmt>>,
+        line: usize,
+        col: usize,
+    },
+    /// `cover property (prop) [action]` — structured concurrent cover
+    CoverPropertyStruct {
+        prop: Box<SvaPropExpr>,
+        pass: Option<Box<Stmt>>,
+        line: usize,
+        col: usize,
+    },
+
+    // ── SVA Sequence/Property declarations (F85) ────────────────────────
+    /// `sequence name (args) = expr;` — sequence declaration
+    SequenceDecl {
+        name: String,
+        args: Vec<Param>,
+        expr: Box<SvaSeqExpr>,
+        line: usize,
+        col: usize,
+    },
+    /// `property name (args) = expr;` — property declaration
+    PropertyDecl {
+        name: String,
+        args: Vec<Param>,
+        expr: Box<SvaPropExpr>,
+        line: usize,
+        col: usize,
+    },
 }
 
 /// Module `.mv`. Posisi (line, col) nama untuk E2007 duplikat (F11).

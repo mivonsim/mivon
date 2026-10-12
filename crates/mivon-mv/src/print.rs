@@ -163,6 +163,10 @@ pub fn print_expr(e: &Expr) -> String {
             let a: Vec<String> = args.iter().map(wrap).collect();
             format!("{name}({})", a.join(", "))
         }
+        Expr::SysFunc(name, args, ..) => {
+            let a = args.as_ref().map(|args| args.iter().map(wrap).collect::<Vec<_>>().join(", ")).unwrap_or_default();
+            format!("${name}({a})")
+        }
         Expr::NamedArg { name, expr } => format!("{name} = {}", wrap(expr)),
         Expr::MethodCall {
             obj, method, args, ..
@@ -519,6 +523,37 @@ fn print_stmt_b(b: &mut StrB, indent: usize, s: &Stmt) {
             b.line(indent, &format!("cover ({}){p}", print_expr(cond)));
         }
         Stmt::CoverProperty(raw) => b.line(indent, &format!("cover property {raw}")),
+        // SVA Native Assertions (F85)
+        Stmt::AssertPropertyStruct { prop, pass, fail, .. } => {
+            b.line(indent, &format!("assert property ({})", print_sva_prop_expr(prop)));
+            if let Some(p) = pass {
+                print_stmt_b(b, indent + 1, p);
+            }
+            if let Some(f) = fail {
+                b.line(indent, "else");
+                print_stmt_b(b, indent + 1, f);
+                b.line(indent, ";");
+            }
+        }
+        Stmt::AssumePropertyStruct { prop, pass, fail, .. } => {
+            b.line(indent, &format!("assume property ({})", print_sva_prop_expr(prop)));
+            if let Some(p) = pass {
+                print_stmt_b(b, indent + 1, p);
+            }
+            if let Some(f) = fail {
+                b.line(indent, "else");
+                print_stmt_b(b, indent + 1, f);
+                b.line(indent, ";");
+            }
+        }
+        Stmt::CoverPropertyStruct { prop, pass, .. } => {
+            b.line(indent, &format!("cover property ({})", print_sva_prop_expr(prop)));
+            if let Some(p) = pass {
+                print_stmt_b(b, indent + 1, p);
+            }
+        }
+        Stmt::Sequence(seq) => b.line(indent, &format!("sequence ({})", print_sva_seq_expr(seq))),
+        Stmt::Property(prop) => b.line(indent, &format!("property ({})", print_sva_prop_expr(prop))),
         Stmt::RawSvh(body) => {
             b.line(indent, "@sv {");
             // Body mentah — trim baris & buang baris kosong (boundary newline
@@ -702,6 +737,34 @@ fn print_m_item(b: &mut StrB, indent: usize, item: &MItem) {
         }
         MItem::CoverProperty(raw) => {
             b.line(indent, &format!("cover property {raw}"));
+        }
+        MItem::AssertPropertyStruct { prop, pass, fail, .. } => {
+            b.line(indent, &format!("assert property ({})", print_sva_prop_expr(prop)));
+            if let Some(p) = pass {
+                print_stmt_b(b, indent + 1, p);
+            }
+            if let Some(f) = fail {
+                b.line(indent, "else");
+                print_stmt_b(b, indent + 1, f);
+                b.line(indent, ";");
+            }
+        }
+        MItem::AssumePropertyStruct { prop, pass, fail, .. } => {
+            b.line(indent, &format!("assume property ({})", print_sva_prop_expr(prop)));
+            if let Some(p) = pass {
+                print_stmt_b(b, indent + 1, p);
+            }
+            if let Some(f) = fail {
+                b.line(indent, "else");
+                print_stmt_b(b, indent + 1, f);
+                b.line(indent, ";");
+            }
+        }
+        MItem::CoverPropertyStruct { prop, pass, .. } => {
+            b.line(indent, &format!("cover property ({})", print_sva_prop_expr(prop)));
+            if let Some(p) = pass {
+                print_stmt_b(b, indent + 1, p);
+            }
         }
         MItem::Port(p) => {
             let dir = match p.dir {
@@ -997,6 +1060,28 @@ fn print_m_item(b: &mut StrB, indent: usize, item: &MItem) {
                 b.line(indent, l);
             }
         }
+        MItem::SequenceDecl { name, args, expr, .. } => {
+            let arg_str = args
+                .iter()
+                .map(|p| {
+                    let ty = p.ty.as_ref().unwrap_or(&crate::ast::MvType::Int);
+                    format!("{} : {}", p.name, print_type(ty))
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            b.line(indent, &format!("sequence {}({}) = {};", name, arg_str, print_sva_seq_expr(expr)));
+        }
+        MItem::PropertyDecl { name, args, expr, .. } => {
+            let arg_str = args
+                .iter()
+                .map(|p| {
+                    let ty = p.ty.as_ref().unwrap_or(&crate::ast::MvType::Int);
+                    format!("{} : {}", p.name, print_type(ty))
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            b.line(indent, &format!("property {}({}) = {};", name, arg_str, print_sva_prop_expr(expr)));
+        }
     }
 }
 
@@ -1074,6 +1159,85 @@ fn print_constraint_item(it: &ConstraintItem) -> String {
         ConstraintItem::Solve { var, before, .. } => {
             format!("solve {var} before {}", before.join(", "))
         }
+    }
+}
+
+/// Print SVA Sequence expression (F85).
+fn print_sva_seq_expr(seq: &crate::ast::SvaSeqExpr) -> String {
+    use crate::ast::SvaSeqExpr;
+    match seq {
+        SvaSeqExpr::Expr(e) => print_expr(e),
+        SvaSeqExpr::Delay { left, right, min, max } => {
+            let m = if let Some(max) = max {
+                format!("{}:{}", print_expr(min), print_expr(max))
+            } else {
+                print_expr(min)
+            };
+            format!("{} ##[{}] {}", print_sva_seq_expr(left), m, print_sva_seq_expr(right))
+        }
+        SvaSeqExpr::Repeat { expr, min, max } => {
+            let m = if let Some(max) = max {
+                format!("{}:{}", print_expr(min), print_expr(max))
+            } else {
+                print_expr(min)
+            };
+            format!("[*{}] {}", m, print_sva_seq_expr(expr))
+        }
+        SvaSeqExpr::Implies { left, right } => {
+            format!("{} |-> {}", print_sva_seq_expr(left), print_sva_seq_expr(right))
+        }
+        SvaSeqExpr::NextImplies { left, right } => {
+            format!("{} |=> {}", print_sva_seq_expr(left), print_sva_seq_expr(right))
+        }
+        SvaSeqExpr::Or { left, right } => {
+            format!("{} or {}", print_sva_seq_expr(left), print_sva_seq_expr(right))
+        }
+        SvaSeqExpr::And { left, right } => {
+            format!("{} and {}", print_sva_seq_expr(left), print_sva_seq_expr(right))
+        }
+        SvaSeqExpr::Intersect { left, right } => {
+            format!("{} intersect {}", print_sva_seq_expr(left), print_sva_seq_expr(right))
+        }
+        SvaSeqExpr::FirstMatch { expr } => {
+            format!("first_match({})", print_sva_seq_expr(expr))
+        }
+        SvaSeqExpr::Throughout { left, right } => {
+            format!("{} throughout {}", print_sva_seq_expr(left), print_sva_seq_expr(right))
+        }
+        SvaSeqExpr::Within { left, right } => {
+            format!("{} within {}", print_sva_seq_expr(left), print_sva_seq_expr(right))
+        }
+    }
+}
+
+/// Print SVA Property expression (F85).
+fn print_sva_prop_expr(prop: &crate::ast::SvaPropExpr) -> String {
+    use crate::ast::SvaPropExpr;
+    match prop {
+        SvaPropExpr::Seq(s) => print_sva_seq_expr(s),
+        SvaPropExpr::Always { expr } => format!("always {}", print_sva_seq_expr(expr)),
+        SvaPropExpr::Never { expr } => format!("never {}", print_sva_seq_expr(expr)),
+        SvaPropExpr::Eventually { expr, strong } => {
+            let s = if *strong { "s_" } else { "" };
+            format!("{}eventually {}", s, print_sva_seq_expr(expr))
+        }
+        SvaPropExpr::Nexttime { expr, strong } => {
+            let s = if *strong { "s_" } else { "" };
+            format!("{}nexttime {}", s, print_sva_seq_expr(expr))
+        }
+        SvaPropExpr::Implies { seq, prop } => {
+            format!("{} |-> {}", print_sva_seq_expr(seq), print_sva_prop_expr(prop))
+        }
+        SvaPropExpr::NextImplies { seq, prop } => {
+            format!("{} |=> {}", print_sva_seq_expr(seq), print_sva_prop_expr(prop))
+        }
+        SvaPropExpr::Iff { cond, prop } => {
+            format!("iff ({}) {}", print_expr(cond), print_sva_prop_expr(prop))
+        }
+        SvaPropExpr::DisableIff { cond, prop } => {
+            format!("disable iff ({}) {}", print_expr(cond), print_sva_prop_expr(prop))
+        }
+        SvaPropExpr::Name(n) => n.clone(),
     }
 }
 
