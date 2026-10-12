@@ -12544,6 +12544,31 @@ endmodule
 }
 
 #[test]
+fn test_ovm_factory_override_alias() {
+    // VERIF-20 tahap 2: `ovm_factory::set_type_override_by_type` alias
+    // ke handler UVM yang sama (elab SysFunc + engine IR/AST).
+    // Runtime: return 1 + override tercatat (terbaca via get-like path:
+    // override memengaruhi `new` berikutnya — di sini assert return).
+    let source = r#"
+module tb;
+    int ok;
+    initial begin
+        ok = ovm_factory::set_type_override_by_type("base_driver", "extended_driver");
+        assert(ok == 1);
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 10).expect("ovm_factory run failed");
+    let ok = sigs
+        .iter()
+        .find(|(n, _)| n == "ok")
+        .map(|(_, v)| v.to_u64())
+        .unwrap_or(99);
+    assert_eq!(ok, 1, "ovm_factory alias harus return 1, got {}", ok);
+}
+
+#[test]
 fn test_uvm_resource_db_set_get() {
     // VERIF-07: set/get sebagai bare statement (bukan di-eliminasi
     // elaborator) — set menyimpan ke map, get mengembalikan nilai.

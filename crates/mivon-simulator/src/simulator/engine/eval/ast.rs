@@ -483,7 +483,8 @@ impl SimulationEngine {
                 Ok(LogicVec::from_u64(1, 1))
             }
             Expr::FuncCall { name, args, .. }
-                if name == "uvm_factory::set_type_override_by_type" =>
+                if name == "uvm_factory::set_type_override_by_type"
+                    || name == "ovm_factory::set_type_override_by_type" =>
             {
                 let arg_vals: Vec<LogicVec> = args
                     .iter()

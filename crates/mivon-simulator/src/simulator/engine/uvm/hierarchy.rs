@@ -775,10 +775,15 @@ impl SimulationEngine {
     }
 
     /// VERIF-05: class `uvm_phase` — handle phase (jump/get_name/skip).
+    /// VERIF-20 tahap 2: `ovm_phase` juga dikenali (alias OVM).
     pub(crate) fn is_uvm_phase_hierarchy(&self, class_name: &str) -> bool {
         let mut current = class_name;
         loop {
-            if current == "__uvm_phase" || current == "uvm_phase" {
+            if current == "__uvm_phase"
+                || current == "uvm_phase"
+                || current == "__ovm_phase"
+                || current == "ovm_phase"
+            {
                 return true;
             }
             match self.design.classes.get(&Symbol::intern(current)) {

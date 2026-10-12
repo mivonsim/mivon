@@ -384,6 +384,8 @@ const BUILTIN_UVM_CLASSES: &[&str] = &[
     "uvm_root",
     // VERIF-05: uvm_phase — handle phase (jump/get_name/skip).
     "uvm_phase",
+    // VERIF-20 tahap 2: ovm_phase — alias OVM dikenali hierarchy.
+    "ovm_phase",
     // VERIF-20: OVM compatibility — OVM class names map to UVM equivalents.
     "ovm_object",
     "ovm_component",

@@ -1624,7 +1624,7 @@ VERIF-19: ✅ uvm_tr_stream / uvm_recorded_item (ROUND 69) — stream objek
            stream, get_tr_count() per stream; execute_uvm_tr_stream_method +
            report_tr_records() (ringkasan total/terbuka/per-stream dicetak
            saat end-of-sim bila ada record). Test: test_uvm_tr_database_stream_singleton.
-VERIF-20: ✅ OVM compatibility (ROUND 85b) — tahap 1:
+VERIF-20: ⚠️ IN PROGRESS (ROUND 85b/122) — OVM compatibility tahap 1+2:
          - BUILTIN_UVM_CLASSES: +18 OVM class names (ovm_object, ovm_component,
            ovm_driver, ovm_monitor, ovm_sequencer, ovm_sequence, ovm_sequence_item,
            ovm_env, ovm_agent, ovm_test, ovm_scoreboard, ovm_config_db,
@@ -1634,7 +1634,12 @@ VERIF-20: ✅ OVM compatibility (ROUND 85b) — tahap 1:
            recognize __ovm_object/__ovm_component base classes.
          - builtin.rs: OVM library class fallback (ovm_* → dispatch to uvm_object).
          Catatan: OVM class dispatch ke UVM implementations yang sama.
-         Masih open: OVM-specific APIs (ovm_phase, ovm_factory specifics).
+         Tahap 2 (ROUND 122): ovm_phase hierarchy (__ovm_phase/ovm_phase +
+         BUILTIN) + ovm_factory::set_type_override_by_type alias di 3
+         jalur (elab SysFunc, engine IR, engine AST).
+         MASIH OPEN: remap extends ovm_* → __uvm_* penuh (kini fallback
+         generik object — pre-existing tahap 1, item terpisah) +
+         ovm_* di is_builtin `::new` jalur AST.
 VERIF-21: [x] Functional coverage integration ke coverage database —
          RE-VERIFIKASI (ROUND 66): CoverageDatabase.merge_from_engine
          (coverage_db.rs:232) sudah membawa covergroup/coverpoint/cross
@@ -5267,6 +5272,25 @@ copy → bukan FSM).
 📊 VERIFIKASI ROUND 121:
    - cargo test -p mivon-synth fsm: 7 passed (+1)
    - Review subagent: APPROVE.
+
+═══ ROUND 122 — VERIF-20 OVM tahap 2 (ovm_phase + ovm_factory) ═══
+
+✅ OVM SPECIFICS (5 titik):
+   - hierarchy.rs is_uvm_phase_hierarchy: + __ovm_phase/ovm_phase.
+   - elab BUILTIN_UVM_CLASSES: + ovm_phase.
+   - ovm_factory::set_type_override_by_type alias di elab SysFunc,
+     engine IR (expr.rs), engine AST (ast.rs).
+   - Review putaran 1 REQUEST CHANGES (minta remap ovm_* penuh +
+     test runtime) → test diperkuat ke runtime (return 1 + snapshot);
+     remap penuh DITOLAK dengan alasan (pre-existing tahap 1, risiko
+     ubah dispatch + butuh __ovm_* class defs — item terpisah, dicatat
+     sebagai MASIH OPEN).
+
+Test (+1): test_ovm_factory_override_alias (runtime IR path).
+
+📊 VERIFIKASI ROUND 122:
+   - cargo test -p mivon-tests --lib ovm_factory + factory: 2 passed (+1)
+   - Review subagent putaran 2: APPROVE (verifikasi ulang).
 
 ========================================
 END OF AUDIT REPORT

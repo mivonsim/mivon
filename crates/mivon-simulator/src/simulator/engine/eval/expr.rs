@@ -1703,7 +1703,8 @@ impl SimulationEngine {
                         };
                         Ok(LogicVec::from_u64(obj_id as u64, 64))
                     }
-                    "uvm_factory::set_type_override_by_type" => {
+                    "uvm_factory::set_type_override_by_type"
+                    | "ovm_factory::set_type_override_by_type" => {
                         let arg_vals: Vec<LogicVec> = args
                             .iter()
                             .map(|a| self.evaluate_expr(a))

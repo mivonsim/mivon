@@ -1834,7 +1834,9 @@ impl Elaborator {
                 line,
                 col,
                 ..
-            } if name == "uvm_factory::set_type_override_by_type" => {
+            } if name == "uvm_factory::set_type_override_by_type"
+                || name == "ovm_factory::set_type_override_by_type" =>
+            {
                 let ir_args: Result<Vec<IrExpr>, SimError> = args
                     .iter()
                     .map(|a| self.elaborate_expr(a, signal_map, signals))
