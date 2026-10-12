@@ -37,21 +37,49 @@ thread_local! {
     static TYPE_MAP: RefCell<Option<HashMap<String, MvType>>> = RefCell::new(None);
 }
 
-/// Bangun map nama typedef (alias) → tipe ter-resolusi dari `file.typedefs`.
-/// Alias berantai (`type Q2 = Q`) diselesaikan satu level.
+/// Bangun map nama typedef (alias) → tipe ter-resolusi. Mencakup typedef
+/// level file DAN typedef di dalam package (kunci `name` dan `pkg::name`,
+/// karena cast scoped `pkg::Q'(x)`). Alias berantai (`type Q2 = Q`) diselesaikan
+/// ke fixpoint (Q3=Q2=Q juga ter-resolve).
 fn build_typedef_map(file: &MvFile) -> HashMap<String, MvType> {
     let mut raw: HashMap<String, MvType> = HashMap::new();
+    let mut add = |name: String, ty: &MvType| {
+        if let MvType::Named(..) | MvType::Queue(_) | MvType::Array(..) = ty {
+            raw.insert(name, ty.clone());
+        }
+    };
     for td in &file.typedefs {
         if let Typedef::Alias { name, ty, .. } = td {
-            raw.insert(name.clone(), ty.clone());
+            add(name.clone(), ty);
         }
     }
-    let mut map = raw.clone();
-    for (k, v) in &raw {
-        if let MvType::Named(n, ..) = v {
-            if let Some(r) = raw.get(n) {
-                map.insert(k.clone(), r.clone());
+    for pkg in &file.packages {
+        for td in &pkg.typedefs {
+            if let Typedef::Alias { name, ty, .. } = td {
+                add(name.clone(), ty);
+                add(format!("{}::{}", pkg.name, name), ty);
             }
+        }
+    }
+    // Resolusi alias berantai ke fixpoint (maks 8 hop — cukup utk rantai nyata).
+    let mut map = raw.clone();
+    for _ in 0..8 {
+        let updates: Vec<(String, MvType)> = raw
+            .keys()
+            .filter_map(|k| match map.get(k) {
+                Some(MvType::Named(n, ..)) => map.get(n).map(|r| (k.clone(), r.clone())),
+                _ => None,
+            })
+            .collect();
+        let mut changed = false;
+        for (k, r) in updates {
+            if map.get(&k) != Some(&r) {
+                map.insert(k, r);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
         }
     }
     map

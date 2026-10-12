@@ -707,6 +707,24 @@ fn codegen_typedef_queue() {
     );
 }
 
+// Blind spot review: cast ke queue typedef yang dideklarasikan di dalam
+// PACKAGE (bukan level file) juga harus terdeteksi → emit `'{ x }`.
+#[test]
+fn codegen_cast_queue_via_package_typedef() {
+    let src = "package p {\n    type Q = logic[7:0][$]\n}\nmodule m {\n    use p::*\n    in  a : logic[7:0]\n    out q : Q\n    comb {\n        q = Q'(a)\n    }\n}\n";
+    let out = generate(&parse(src).unwrap(), "m");
+    assert!(out.sv.contains("q = '{ a };"), "sv: {}", out.sv);
+}
+
+// Blind spot review: rantai alias (`type Q2 = Q` → queue) harus ter-resolve
+// ke queue → emit `'{ x }` (bukan static cast `Q2'(x)`).
+#[test]
+fn codegen_cast_queue_via_alias_chain() {
+    let src = "type Q = logic[7:0][$]\ntype Q2 = Q\nmodule m {\n    in  a : logic[7:0]\n    out q : Q2\n    comb {\n        q = Q2'(a)\n    }\n}\n";
+    let out = generate(&parse(src).unwrap(), "m");
+    assert!(out.sv.contains("q = '{ a };"), "sv: {}", out.sv);
+}
+
 #[test]
 fn codegen_typedef_local_module() {
     // typedef lokal module: `type X` / `enum E` di badan module → emit
