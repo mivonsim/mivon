@@ -73,6 +73,7 @@ pub mod expr;
 pub mod sign;
 pub mod stmt;
 pub mod struct_lit;
+pub mod timescale;
 pub mod topo;
 
 use stmt::{lvalue_signal_id, propagate_context_width};
@@ -2386,106 +2387,6 @@ impl Elaborator {
         };
         resolve_param_values_with_ctx(module, instance_overrides, &ctx, Some(&pkg_full))
             .map_err(|e| self.elab_diag(DiagCode::ParamMismatch, e))
-    }
-
-    /// Hitung context package global SEKALI: qualified `pkg::name` untuk semua
-    /// parameter package + enum member (plain & qualified) dari semua package,
-    /// plus konstanta package ter-evaluasi. Hasil disimpan di `self.pkg_param_ctx`
-    /// Basis eksponen satuan (satuan TERHALUS) design — dipakai bersama
-    /// `compute_module_delay_scales` dan `delay_scale_for_unit`.
-    fn design_base_exp(&self) -> i32 {
-        let mut exps: Vec<i32> = Vec::new();
-        if let Some(e) = self
-            .design
-            .timescale
-            .as_ref()
-            .and_then(|(u, _)| crate::util::generate::time_unit_exponent(u))
-        {
-            exps.push(e);
-        }
-        for module in &self.design.modules {
-            if let Some(e) = module
-                .timescale
-                .as_ref()
-                .and_then(|(u, _)| crate::util::generate::time_unit_exponent(u))
-            {
-                exps.push(e);
-            }
-        }
-        for iface in &self.design.interfaces {
-            if let Some(e) = iface
-                .timescale
-                .as_ref()
-                .and_then(|(u, _)| crate::util::generate::time_unit_exponent(u))
-            {
-                exps.push(e);
-            }
-        }
-        exps.into_iter().min().unwrap_or(-9)
-    }
-
-    /// Faktor skala delay untuk satu satuan `timescale` (F84).
-    ///
-    /// Dipakai untuk entri yang TIDAK ada di `design.modules` — misalnya
-    /// `Interface` yang dielaborasi sebagai `Module` sintetik. Tanpa ini
-    /// interface `1us` punya faktor 1 dan delay-nya salah diam-diam.
-    fn delay_scale_for_unit(&self, unit: Option<&(String, String)>) -> u64 {
-        let Some((u, _)) = unit else {
-            return 1;
-        };
-        let Some(exp) = crate::util::generate::time_unit_exponent(u) else {
-            return 1;
-        };
-        let diff = exp - self.design_base_exp();
-        if diff <= 0 {
-            1
-        } else {
-            // Batasi 12 digit supaya satuan raksasa (`1s` vs basis `1fs`) tak
-            // overflow u64 dan delay jadi tak masuk akal.
-            10u64.checked_pow(diff.min(12) as u32).unwrap_or(1)
-        }
-    }
-
-    /// Hitung peta `module → faktor skala delay` (F84, LRM §19.8).
-    ///
-    /// `#N` di module dengan satuan lebih besar dari basis (`1us` pada basis
-    /// `1ns`) dikali 10^diff; module pada basis dapat faktor 1. Karena basis =
-    /// satuan TERHALUS design, `diff` tak pernah negatif — delay tak pernah
-    /// terpotong jadi 0 dan tak ada risiko loop tak berujung.
-    ///
-    /// Module TANPA directive `timescale` tidak masuk peta (faktor 1). Itu
-    /// keputusan produk, bukan LRM: §19.8 menyatakan modul tanpa directive
-    /// memakai default simulator, dan `iverilog` memakai `1s` — jauh dari
-    /// default mivon `1ns`. Memakai `1ns` menjaga kompatibilitas dengan
-    /// ribuan design/test lama yang tak pernah menulis directive.
-    fn compute_module_delay_scales(&mut self) {
-        use std::collections::HashMap;
-
-        let mut scales: HashMap<Symbol, u64> = HashMap::new();
-        for module in &self.design.modules {
-            let scale = self.delay_scale_for_unit(module.timescale.as_ref());
-            if module.timescale.is_some() {
-                scales.insert(module.name, scale);
-            }
-        }
-        // Interface ikut dihitung di sini karena `elaborate_module` untuk
-        // module sintetiknya berjalan SETELAH fungsi ini; entri yang diinsert
-        // nanti di loop interface (lihat pemanggil) tidak akan terpakai kalau
-        // basisnya berubah di tengah. Aman: basis design-wide, bukan per-item.
-        for iface in &self.design.interfaces {
-            let scale = self.delay_scale_for_unit(iface.timescale.as_ref());
-            if iface.timescale.is_some() {
-                scales.insert(iface.name, scale);
-            }
-        }
-        self.module_delay_scale = scales;
-    }
-
-    /// Faktor skala delay untuk module yang sedang dielaborasi (F84).
-    fn current_delay_scale(&self) -> u64 {
-        self.current_module
-            .and_then(|m| self.module_delay_scale.get(&m).copied())
-            .unwrap_or(1)
     }
 
     /// Bangun global package param context SEKALI: qualified `pkg::name` untuk semua

@@ -217,6 +217,10 @@ Arsitektur-06: ⚠️ Elaborator monolithic — PARTIAL (ROUND 80)
   self → free fn) + header yatim dibersihkan.
 - types.rs += enum helpers (ROUND 132): eval_enum_member_value +
   package_overlay (free) + verify_enum_members (method); 5 call site.
+- timescale.rs (BARU ROUND 133, ~200 baris): 4 method delay-scale
+  F84 (design_base_exp, delay_scale_for_unit,
+  compute_module_delay_scales, current_delay_scale) pindah verbatim
+  (pub(crate)); +doc yatim build_pkg_param_ctx dibersihkan.
   Masih perlu: type resolution, param resolution, topo order, diagnostic
   helpers bisa dipisah lebih lanjut.
   Severity: High
@@ -5454,6 +5458,20 @@ penuh (0 fail).
 
 📊 VERIFIKASI ROUND 132:
    - cargo test -p mivon-elaboration: 13 passed
+   - cargo test --workspace: 0 fail
+   - Review subagent: APPROVE.
+
+═══ ROUND 133 — Arsitektur-06 timescale.rs extract ═══
+
+✅ EXTRACT (crates/mivon-elaboration/src/elaborator/timescale.rs BARU):
+   - 4 method delay-scale F84 pindah verbatim (pub(crate)).
+   - Review: APPROVE (doc yatim ikut bersih).
+
+Test (+2): unit basis Skala + peta module/interface + guard
+workspace penuh (0 fail).
+
+📊 VERIFIKASI ROUND 133:
+   - cargo test -p mivon-elaboration: 15 passed
    - cargo test --workspace: 0 fail
    - Review subagent: APPROVE.
 
