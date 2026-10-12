@@ -21,7 +21,8 @@ use lsp_types::{
     ReferenceParams, RenameOptions, RenameParams, SelectionRange, SelectionRangeParams, SemanticToken,
     SemanticTokens, SemanticTokensLegend, SemanticTokensOptions, SemanticTokensParams,
     SemanticTokensRangeParams, SemanticTokensRangeResult, SemanticTokensResult, ServerCapabilities, ServerInfo, SymbolInformation, SymbolKind,
-    TextDocumentPositionParams, TextDocumentSyncCapability, TextDocumentSyncKind, Url,
+    TextDocumentPositionParams, TextDocumentSyncCapability, TextDocumentSyncKind, TypeHierarchyItem,
+    TypeHierarchyPrepareParams, TypeHierarchySubtypesParams, TypeHierarchySupertypesParams, Url,
     WorkspaceEdit, WorkspaceSymbolParams, PrepareRenameResponse,
 };
 use mivon_parser::lexer::Lexer;
@@ -49,6 +50,12 @@ pub(crate) struct DocSymbol {
     pub line: u32,
     pub col: u32,
     pub children: Vec<DocSymbol>,
+    /// LSP-14 tahap 2a: parent class (`class A extends B`) — None bila
+    /// tanpa extends / bukan class.
+    pub base: Option<String>,
+    /// LSP-14 tahap 2a: kolom NAMA (selection_range akurat). `col` tetap
+    /// kolom keyword (dipakai fitur lama: semantic token, to_lsp).
+    pub name_col: u32,
 }
 
 impl DocSymbol {
@@ -942,8 +949,20 @@ impl LspBackend {
 
             // Buka scope: keyword + nama.
             if let Some((_, kind)) = OPEN_KW.iter().find(|(kw, _)| *kw == t0.as_str()) {
-                if let Some((w1, _)) = toks.get(1) {
-                    if Self::is_valid_identifier(w1) {
+                if let Some((w1, c1)) = toks.get(1).cloned() {
+                    if Self::is_valid_identifier(&w1) {
+                        // LSP-14 tahap 2a: `class A extends B` (+ parameter
+                        // `class A #(...) extends B` — cari token extends).
+                        let base = (*kind == DocSymbol::KIND_CLASS)
+                            .then(|| {
+                                toks.iter()
+                                    .skip(2)
+                                    .position(|(w, _)| w == "extends")
+                                    .and_then(|p| toks.get(p + 3))
+                                    .filter(|(w, _)| Self::is_valid_identifier(w))
+                                    .map(|(w, _)| w.clone())
+                            })
+                            .flatten();
                         stack.push(Frame {
                             sym: Some(DocSymbol {
                                 name: w1.clone(),
@@ -951,6 +970,8 @@ impl LspBackend {
                                 line: idx as u32,
                                 col: c0 as u32,
                                 children: Vec::new(),
+                                base,
+                                name_col: c1 as u32,
                             }),
                             children: Vec::new(),
                         });
@@ -981,6 +1002,8 @@ impl LspBackend {
                                             line: idx as u32,
                                             col: c as u32,
                                             children: Vec::new(),
+                                            base: None,
+                                            name_col: c as u32,
                                         });
                                     }
                                 }
@@ -1017,6 +1040,8 @@ impl LspBackend {
                                 line: idx as u32,
                                 col: c as u32,
                                 children: Vec::new(),
+                                base: None,
+                                name_col: c as u32,
                             }),
                             children: Vec::new(),
                         });
@@ -1049,6 +1074,8 @@ impl LspBackend {
                             line: idx as u32,
                             col: c as u32,
                             children: Vec::new(),
+                            base: None,
+                            name_col: c as u32,
                         });
                     }
                 }
@@ -1082,6 +1109,8 @@ impl LspBackend {
                             line: idx as u32,
                             col: c as u32,
                             children: Vec::new(),
+                            base: None,
+                            name_col: c as u32,
                         });
                     }
                 }
@@ -1113,6 +1142,115 @@ impl LspBackend {
     ///     sebagai token terakhir baris header; case sebagai token pertama),
     ///     ditutup bila baris memuat token `end` / `endcase`.
     ///     Return (start_line, end_line) urut.
+    /// LSP-14 tahap 2a: rantai supertype (langsung → akar) mengikuti
+    /// `base` (`class A extends B`). Hanya base terdefinisi yang masuk
+    /// rantai (unknown menghentikan). Cycle-guard. Non-class → kosong.
+    pub(crate) fn type_supertypes(symbols: &[DocSymbol], name: &str) -> Vec<String> {
+        fn find<'a>(syms: &'a [DocSymbol], name: &str) -> Option<&'a DocSymbol> {
+            for s in syms {
+                if s.kind == DocSymbol::KIND_CLASS && s.name == name {
+                    return Some(s);
+                }
+                if let Some(f) = find(&s.children, name) {
+                    return Some(f);
+                }
+            }
+            None
+        }
+        let mut out = Vec::new();
+        let mut cur = name.to_string();
+        while let Some(sym) = find(symbols, &cur) {
+            let Some(b) = sym.base.clone() else {
+                break;
+            };
+            // Cycle-guard + base tak terdefinisi menghentikan rantai
+            // tanpa dimasukkan (kontrak: hanya class terdefinisi, dan
+            // peminta sendiri tidak termasuk).
+            if b == name || out.contains(&b) || find(symbols, &b).is_none() {
+                break;
+            }
+            out.push(b.clone());
+            cur = b;
+        }
+        out
+    }
+
+    /// LSP-14 tahap 2a: subtype langsung + transitif (BFS mengikuti
+    /// edge base→child). Urut BFS deterministik.
+    pub(crate) fn type_subtypes(symbols: &[DocSymbol], name: &str) -> Vec<String> {
+        fn all_classes<'a>(syms: &'a [DocSymbol], out: &mut Vec<&'a DocSymbol>) {
+            for s in syms {
+                if s.kind == DocSymbol::KIND_CLASS {
+                    out.push(s);
+                }
+                all_classes(&s.children, out);
+            }
+        }
+        let mut all = Vec::new();
+        all_classes(symbols, &mut all);
+        let mut out = Vec::new();
+        let mut queue = std::collections::VecDeque::from([name.to_string()]);
+        while let Some(cur) = queue.pop_front() {
+            for c in &all {
+                // Self-extends / siklus kembali ke peminta dikecualikan.
+                if c.name == name {
+                    continue;
+                }
+                if c.base.as_deref() == Some(cur.as_str()) && !out.contains(&c.name) {
+                    out.push(c.name.clone());
+                    queue.push_back(c.name.clone());
+                }
+            }
+        }
+        out
+    }
+
+    /// LSP-14 tahap 2a: posisi (line, name_col) deklarasi class ber-nama.
+    pub(crate) fn find_class_symbol(symbols: &[DocSymbol], name: &str) -> Option<(u32, u32)> {
+        for s in symbols {
+            if s.kind == DocSymbol::KIND_CLASS && s.name == name {
+                return Some((s.line, s.name_col));
+            }
+            if let Some(p) = Self::find_class_symbol(&s.children, name) {
+                return Some(p);
+            }
+        }
+        None
+    }
+
+    /// LSP-14 tahap 2a: bangun TypeHierarchyItem untuk nama-nama class
+    /// yang ada deklarasinya (lewati base tak terdefinisi).
+    pub(crate) fn hierarchy_items(
+        uri: &Url,
+        symbols: &[DocSymbol],
+        names: &[String],
+    ) -> Vec<TypeHierarchyItem> {
+        let mut out = Vec::new();
+        for n in names {
+            let Some((line, col)) = Self::find_class_symbol(symbols, n) else {
+                continue;
+            };
+            let len = n.len() as u32;
+            out.push(TypeHierarchyItem {
+                name: n.clone(),
+                kind: SymbolKind::CLASS,
+                tags: None,
+                detail: None,
+                uri: uri.clone(),
+                range: Range {
+                    start: Position { line, character: 0 },
+                    end: Position { line, character: col + len },
+                },
+                selection_range: Range {
+                    start: Position { line, character: col },
+                    end: Position { line, character: col + len },
+                },
+                data: None,
+            });
+        }
+        out
+    }
+
     pub(crate) fn compute_folding_ranges(source: &str) -> Vec<(u32, u32)> {
         // (keyword pembuka, keyword penutup) — pasangan scope utama.
         const PAIRS: &[(&str, &str)] = &[
@@ -1909,6 +2047,80 @@ impl LanguageServer for LspBackend {
         Ok(Some(refs))
     }
 
+    /// LSP-14 tahap 2a: siapkan item hierarki tipe untuk class di kursor.
+    /// Batasan: capability `typeHierarchyProvider` belum ada di lsp-types
+    /// 0.94 ServerCapabilities → belum diiklankan; handler siap dipakai
+    /// saat upgrade lsp-types.
+    async fn prepare_type_hierarchy(
+        &self,
+        params: TypeHierarchyPrepareParams,
+    ) -> JsonRpcResult<Option<Vec<TypeHierarchyItem>>> {
+        let uri = &params.text_document_position_params.text_document.uri;
+        let pos = params.text_document_position_params.position;
+        let Some(text) = self.document_text(uri) else {
+            return Ok(None);
+        };
+        let line_text = text.lines().nth(pos.line as usize).unwrap_or("");
+        let Some((word, _, _)) = Self::word_at_position(line_text, pos.character) else {
+            return Ok(None);
+        };
+        let syms = Self::document_symbols(&text);
+        let Some((line, col)) = Self::find_class_symbol(&syms, &word) else {
+            return Ok(None);
+        };
+        let len = word.len() as u32;
+        Ok(Some(vec![TypeHierarchyItem {
+            name: word,
+            kind: SymbolKind::CLASS,
+            tags: None,
+            detail: None,
+            uri: uri.clone(),
+            range: Range {
+                start: Position { line, character: 0 },
+                end: Position { line, character: col + len },
+            },
+            selection_range: Range {
+                start: Position { line, character: col },
+                end: Position { line, character: col + len },
+            },
+            data: None,
+        }]))
+    }
+
+    /// LSP-14 tahap 2a: supertypes dari item hierarki.
+    async fn supertypes(
+        &self,
+        params: TypeHierarchySupertypesParams,
+    ) -> JsonRpcResult<Option<Vec<TypeHierarchyItem>>> {
+        let Some(text) = self.document_text(&params.item.uri) else {
+            return Ok(None);
+        };
+        let syms = Self::document_symbols(&text);
+        let names = Self::type_supertypes(&syms, &params.item.name);
+        let items = Self::hierarchy_items(&params.item.uri, &syms, &names);
+        if items.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(items))
+    }
+
+    /// LSP-14 tahap 2a: subtypes dari item hierarki.
+    async fn subtypes(
+        &self,
+        params: TypeHierarchySubtypesParams,
+    ) -> JsonRpcResult<Option<Vec<TypeHierarchyItem>>> {
+        let Some(text) = self.document_text(&params.item.uri) else {
+            return Ok(None);
+        };
+        let syms = Self::document_symbols(&text);
+        let names = Self::type_subtypes(&syms, &params.item.name);
+        let items = Self::hierarchy_items(&params.item.uri, &syms, &names);
+        if items.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(items))
+    }
+
     /// LSP-05 tahap 2a: prepare_rename — validasi kursor + kembalikan
     /// range kata dan placeholder (nama saat ini).
     async fn prepare_rename(
@@ -2184,6 +2396,8 @@ impl LanguageServer for LspBackend {
                     line: 0,
                     col: 0,
                     children: Vec::new(),
+                    base: None,
+                    name_col: 0,
                 }
                 .lsp_kind(),
                 tags: None,
@@ -3533,6 +3747,48 @@ endmodule
         let tf = tm.children.iter().find(|c| c.name == "run").expect("task ada");
         assert_eq!(tf.kind, DocSymbol::KIND_FUNCTION);
         assert!(tf.children.iter().any(|c| c.name == "t"), "{tf:?}");
+    }
+
+    #[test]
+    fn test_type_hierarchy_extends() {
+        // LSP-14 tahap 2a: rantai extends + supertypes/subtypes.
+        let src = "class base;\nendclass\nclass mid extends base;\nendclass\nclass leaf extends mid;\nendclass\nclass lone;\nendclass\n";
+        let syms = LspBackend::document_symbols(src);
+        assert_eq!(LspBackend::type_supertypes(&syms, "leaf"), vec!["mid", "base"]);
+        assert!(LspBackend::type_supertypes(&syms, "lone").is_empty());
+        assert!(LspBackend::type_supertypes(&syms, "tak_ada").is_empty());
+        let sub = LspBackend::type_subtypes(&syms, "base");
+        assert_eq!(sub, vec!["mid", "leaf"], "{sub:?}");
+        assert!(LspBackend::type_subtypes(&syms, "leaf").is_empty());
+        // Parameterized: `class p #(int W) extends base`.
+        let psrc = "class base;\nendclass\nclass p #(int W) extends base;\nendclass\n";
+        let psyms = LspBackend::document_symbols(psrc);
+        assert_eq!(LspBackend::type_supertypes(&psyms, "p"), vec!["base"]);
+        // Base tak terdefinisi: rantai berhenti, tidak dimasukkan.
+        let usrc = "class a extends Unknown;\nendclass\n";
+        let usyms = LspBackend::document_symbols(usrc);
+        assert!(LspBackend::type_supertypes(&usyms, "a").is_empty());
+        // Cycle A↔B: berhenti tanpa hang, peminta dikecualikan.
+        let csrc = "class a extends b;\nendclass\nclass b extends a;\nendclass\n";
+        let csyms = LspBackend::document_symbols(csrc);
+        assert_eq!(LspBackend::type_supertypes(&csyms, "a"), vec!["b"]);
+        assert_eq!(LspBackend::type_subtypes(&csyms, "a"), vec!["b"]);
+        // Self-extends: kosong dua arah.
+        let ssrc = "class s extends s;\nendclass\n";
+        let ssys = LspBackend::document_symbols(ssrc);
+        assert!(LspBackend::type_supertypes(&ssys, "s").is_empty());
+        assert!(LspBackend::type_subtypes(&ssys, "s").is_empty());
+        // selection_range menutupi NAMA (bukan keyword `class`).
+        let uri = lsp_types::Url::parse("file:///t.sv").unwrap();
+        let items = LspBackend::hierarchy_items(&uri, &syms, &["mid".to_string()]);
+        assert_eq!(items.len(), 1);
+        let r = &items[0].selection_range;
+        assert_eq!((r.start.line, r.start.character, r.end.character), (2, 6, 9), "{r:?}");
+        // col keyword vs name_col nama.
+        let mid = syms.iter().find(|s| s.name == "mid").unwrap();
+        assert_eq!((mid.col, mid.name_col), (0, 6));
+        // Unknown difilter di items.
+        assert!(LspBackend::hierarchy_items(&uri, &syms, &["Ghost".to_string()]).is_empty());
     }
 
     #[test]

@@ -1955,10 +1955,15 @@ LSP-13: ✅ Call hierarchy (ROUND 91) — LspBackend::compute_call_hierarchy
           declarations + call sites. extract_symbol_name skip type keywords.
           Capability didaftarkan di ServerCapabilities. 2 test: declarations
           + calls found, single function no calls.
-LSP-14: ⚠️ Type hierarchy — PARTIAL (ROUND 91)
-         SystemVerilog tidak punya inheritance tree exposed via LSP. Dasar
-         class extends chains bisa ditelusuri via document_symbols. Status:
-         masih open untuk implementasi penuh.
+LSP-14: ⚠️ IN PROGRESS (ROUND 91/123) — type hierarchy tahap 1+2a:
+         backend.rs — DocSymbol.base (extends, incl parameterized) +
+         name_col (selection akurat); core murni type_supertypes
+         (rantai, unknown stop, cycle-guard tanpa peminta) +
+         type_subtypes (BFS transitif, self/cycle kembali dikecualikan)
+         + hierarchy_items + handler prepare/supertypes/subtypes.
+         Batasan: capability tak bisa diiklankan (lsp-types 0.94 tanpa
+         field type_hierarchy_provider) — handler siap saat upgrade.
+         MASIH OPEN: iklan capability (upgrade lsp-types).
 LSP-15: ⚠️ IN PROGRESS (ROUND 98/114) — folding range tahap 1+2a:
          backend.rs — capability folding_range_provider + handler
          folding_range; core murni compute_folding_ranges(): stack
@@ -5291,6 +5296,21 @@ Test (+1): test_ovm_factory_override_alias (runtime IR path).
 📊 VERIFIKASI ROUND 122:
    - cargo test -p mivon-tests --lib ovm_factory + factory: 2 passed (+1)
    - Review subagent putaran 2: APPROVE (verifikasi ulang).
+
+═══ ROUND 123 — LSP-14 type hierarchy (tahap 2a) ═══
+
+✅ HIERARKI TIPE (crates/mivon-env/src/lsp/backend.rs):
+   - DocSymbol.base + name_col (6 situs; col lama tak berubah).
+   - type_supertypes/subtypes + hierarchy_items + 3 handler.
+   - Review 2 putaran REQUEST CHANGES (kolom nama, BFS, kontrak
+     unknown, guard peminta, test ketat) → semua diperbaiki.
+
+Test (+1): test_type_hierarchy_extends (rantai, parameterized,
+unknown, cycle A↔B + self, range nama, filter items).
+
+📊 VERIFIKASI ROUND 123:
+   - cargo test -p mivon-env --lib --features lsp lsp: 49 passed (+1)
+   - Review subagent putaran 3: APPROVE (verifikasi ulang).
 
 ========================================
 END OF AUDIT REPORT
