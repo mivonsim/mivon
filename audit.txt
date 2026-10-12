@@ -210,6 +210,9 @@ Arsitektur-06: ⚠️ Elaborator monolithic — PARTIAL (ROUND 80)
   (elab_diag/at, elab_warn/at, find_name/literal_in_source,
   resolve_source_location, check_packed_width) + MAX_PACKED_WIDTH
   pindah verbatim (pub(crate)); call site tak berubah.
+- topo.rs (BARU ROUND 130, ~190 baris): 4 fn instance-graph/top
+  (collect_inst_names, build_inst_graph, module_cone_size,
+  score_auto_top) pindah verbatim; 2 call site jadi topo::.
   Masih perlu: type resolution, param resolution, topo order, diagnostic
   helpers bisa dipisah lebih lanjut.
   Severity: High
@@ -5408,6 +5411,19 @@ workspace penuh (48 suite ok, 0 fail).
 
 📊 VERIFIKASI ROUND 129:
    - cargo test --workspace: 48 suite ok, 0 fail
+   - Review subagent: APPROVE.
+
+═══ ROUND 130 — Arsitektur-06 topo.rs extract ═══
+
+✅ EXTRACT (crates/mivon-elaboration/src/elaborator/topo.rs BARU):
+   - 4 fn instance-graph/top pindah verbatim; mod.rs -112.
+   - Review: APPROVE.
+
+Test (+2): cone transitif+siklus, skor dominan+penalti + guard
+workspace penuh (0 fail).
+
+📊 VERIFIKASI ROUND 130:
+   - cargo test --workspace: 0 fail
    - Review subagent: APPROVE.
 
 ========================================
