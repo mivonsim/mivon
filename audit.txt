@@ -1108,8 +1108,8 @@ COMP-10: ✅ Gate-level optimization lint (ROUND 91) — mlint --gate-opt:
          find_gate_opt_patterns() + find_redundant_assigns() deteksi
          sinyal yang ditulis >1x di scope sama (redundant assignment).
          CLI flag --gate-opt + LintArgs + dispatch.
-COMP-11: ⚠️ IN PROGRESS (ROUND 105/110/117) — FSM extraction tahap 1+2a+2b:
-         crates/maria-synth/src/fsm.rs (BARU) — deteksi & ekstraksi FSM
+COMP-11: ⚠️ IN PROGRESS (ROUND 105/110/117/121) — FSM extraction:
+         crates/maria-synth/src/fsm.rs — deteksi & ekstraksi FSM
          dari proses Sequential: state register = selector `case` yang
          juga ditulis NBA di proses yang sama; transisi dari label case
          konstanta → konstanta NBA-write; default branch menambah keluar
@@ -1123,7 +1123,12 @@ COMP-11: ⚠️ IN PROGRESS (ROUND 105/110/117) — FSM extraction tahap 1+2a+2b
          di case (Blocking+NBA, LHS select/array/concat di-resolve,
          HierRef skip) → RHS selain state = Mealy (menang), else Moore;
          report baris outputs. Batasan: For/loop & If.cond tak dihitung.
-         MASIH OPEN: lintas-always FSM.
+         Tahap 2c (ROUND 121): lintas-proses 2-always klasik —
+         `state <= next` (NBA, RHS sinyal) di always_ff + `case (state)`
+         di combinational menulis `next`; refactor extract_from_case
+         dipakai kedua jalur; skip bila tahap 1 sudah dapat. Batasan:
+         case tingkat atas (tak dibungkus Block/If).
+         MASIH OPEN: FSM 3+ proses / hierarki instance.
 COMP-12: ✅ Case analysis parallel_case/full_case (ROUND 85) — mlint
          new check --case-analysis: deteksi case/unique/priority tanpa default
          (warning potensi latch atau nilai tak terdefinisi). LintArgs +
@@ -5246,6 +5251,22 @@ after kembali ke module, task/endtask, dokumen rusak).
 📊 VERIFIKASI ROUND 120:
    - cargo test -p mivon-env --lib --features lsp lsp: 48 passed (+1)
    - Review subagent putaran 2: APPROVE (verifikasi ulang).
+
+═══ ROUND 121 — COMP-11 tahap 2c (lintas-proses 2-always) ═══
+
+✅ LINTAS-PROSES (crates/mivon-synth/src/fsm.rs):
+   - Refactor: extract_from_case(items, default, state, next, design)
+     dipakai jalur tahap 1 (next=state) & 2c (7/7 test lama lolos).
+   - find_nba_copies: `state <= next` NBA RHS-sinyal di Sequential;
+     case(state) di Combinational/CombReactive menulis next →
+     FSM (skip bila tahap 1 sudah dapat state tsb).
+
+Test (+1): test_fsm_two_process_classic (0→1→2 + negatif tanpa
+copy → bukan FSM).
+
+📊 VERIFIKASI ROUND 121:
+   - cargo test -p mivon-synth fsm: 7 passed (+1)
+   - Review subagent: APPROVE.
 
 ========================================
 END OF AUDIT REPORT

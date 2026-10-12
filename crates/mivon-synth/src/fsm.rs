@@ -13,6 +13,10 @@
 //!
 //! Tahap 2a (selesai): minimisasi ringan — buang state terisolasi
 //! (tanpa transisi masuk/keluar) + encoding padat 0..N-1 untuk report.
+//! Tahap 2b (selesai): klasifikasi output Mealy/Moore.
+//! Tahap 2c (selesai): pola 2-proses klasik — `state <= next` di
+//! always_ff + `case (state)` di combinational yang menulis `next`.
+//! Batasan: case tingkat atas proses (tidak dibungkus Block/If).
 //!
 //! Catatan penamaan: fungsi/struct di modul ini memakai awalan `Fsm`
 //! agar tidak tertukar dengan tipe netlist lain.
@@ -84,31 +88,29 @@ pub(crate) fn try_const_u64(expr: &IrExpr) -> Option<u64> {
     }
 }
 
-/// Kumpulkan nilai konstanta NBA-write ke `sig_id` dalam sekumpulan
-/// statement (rekursif Block/If/Case).
-fn collect_nba_consts(stmts: &[IrStmt], sig_id: usize, out: &mut Vec<u64>) {
+/// Kumpulkan nilai konstanta write (Blocking + NBA) ke `sig_id` dalam
+/// sekumpulan statement (rekursif Block/If). LHS select/array di-resolve
+/// ke id target; HierRef dilewati.
+fn collect_const_writes_to(stmts: &[IrStmt], sig_id: usize, out: &mut Vec<u64>) {
     for stmt in stmts {
         match stmt {
-            IrStmt::NonBlockingAssign {
-                lhs: IrLValue::Signal(id, _),
-                rhs,
-                ..
-            } => {
-                if *id == sig_id {
+            IrStmt::BlockingAssign { lhs, rhs, .. }
+            | IrStmt::NonBlockingAssign { lhs, rhs, .. } => {
+                if lvalue_sig_id(lhs) == Some(sig_id) {
                     if let Some(v) = try_const_u64(rhs) {
                         out.push(v);
                     }
                 }
             }
-            IrStmt::Block { stmts: inner } => collect_nba_consts(inner, sig_id, out),
-            IrStmt::NamedBlock { stmts: inner, .. } => collect_nba_consts(inner, sig_id, out),
+            IrStmt::Block { stmts: inner } => collect_const_writes_to(inner, sig_id, out),
+            IrStmt::NamedBlock { stmts: inner, .. } => collect_const_writes_to(inner, sig_id, out),
             IrStmt::If {
                 true_branch,
                 false_branch,
                 ..
             } => {
-                collect_nba_consts(true_branch, sig_id, out);
-                collect_nba_consts(false_branch, sig_id, out);
+                collect_const_writes_to(true_branch, sig_id, out);
+                collect_const_writes_to(false_branch, sig_id, out);
             }
             _ => {}
         }
@@ -316,6 +318,99 @@ fn collect_writes(stmts: &[IrStmt], out: &mut Vec<(usize, IrExpr, Vec<usize>)>) 
     }
 }
 
+/// Ekstraksi transisi + output dari satu `case`.
+/// Parameter:
+///   - `state_sig`: sinyal selector case (state saat ini).
+//   - `next_sig`: sinyal yang membawa state berikutnya. Pola 1-proses:
+//     sama dengan state_sig; pola lintas-proses 2c: sinyal next-state
+//     yang di-copy ke state oleh `state <= next` di always_ff.
+// Return (states sorted, transitions, outputs sorted by nama). Output =
+// write selain state & next di case; RHS selain state → Mealy.
+fn extract_from_case(
+    items: &[IrCaseItem],
+    default: &[IrStmt],
+    state_sig: usize,
+    next_sig: usize,
+    design: &IrDesign,
+) -> (Vec<u64>, Vec<FsmTransition>, Vec<FsmOutput>) {
+    let mut states: Vec<u64> = Vec::new();
+    let mut transitions: Vec<FsmTransition> = Vec::new();
+    let mut outputs: Vec<FsmOutput> = Vec::new();
+    let push_state = |states: &mut Vec<u64>, v: u64| {
+        if !states.contains(&v) {
+            states.push(v);
+        }
+    };
+    let push_trans = |t: &mut Vec<FsmTransition>, tr: FsmTransition| {
+        if !t.contains(&tr) {
+            t.push(tr);
+        }
+    };
+
+    for item in items {
+        // State saat ini = konstanta pertama pada label yang bisa dievaluasi.
+        let from = item.labels.iter().find_map(try_const_u64);
+        // State berikutnya = konstanta write pertama ke next_sig.
+        let mut nexts = Vec::new();
+        collect_const_writes_to(&item.body, next_sig, &mut nexts);
+        if let Some(from_v) = from {
+            push_state(&mut states, from_v);
+            for to in &nexts {
+                push_state(&mut states, *to);
+                push_trans(
+                    &mut transitions,
+                    FsmTransition { from: Some(from_v), to: *to },
+                );
+            }
+        }
+    }
+
+    // Default branch: transisi dari state mana pun yang belum punya keluar
+    // (konservatif — hanya bila ada write konstanta).
+    let mut default_nexts = Vec::new();
+    collect_const_writes_to(default, next_sig, &mut default_nexts);
+    for to in &default_nexts {
+        push_state(&mut states, *to);
+        for &from in states.clone().iter() {
+            if from != *to && !transitions.iter().any(|t| t.from == Some(from)) {
+                push_trans(&mut transitions, FsmTransition { from: Some(from), to: *to });
+            }
+        }
+    }
+
+    states.sort_unstable();
+
+    // Klasifikasi output — write selain state & next di dalam case.
+    let mut writes: Vec<(usize, IrExpr, Vec<usize>)> = Vec::new();
+    for item in items {
+        collect_writes(&item.body, &mut writes);
+    }
+    collect_writes(default, &mut writes);
+    for (id, rhs, idx_deps) in &writes {
+        if *id == state_sig || *id == next_sig {
+            continue;
+        }
+        let mut deps = idx_deps.clone();
+        collect_rhs_signals(rhs, &mut deps);
+        let mealy = deps.iter().any(|d| *d != state_sig);
+        let name = design.top.signals.get(*id).map(|s| s.name.to_string());
+        let Some(name) = name else { continue };
+        match outputs.iter_mut().find(|o| o.signal == name) {
+            Some(o) => {
+                if mealy {
+                    o.kind = FsmOutputKind::Mealy;
+                }
+            }
+            None => outputs.push(FsmOutput {
+                signal: name,
+                kind: if mealy { FsmOutputKind::Mealy } else { FsmOutputKind::Moore },
+            }),
+        }
+    }
+    outputs.sort_by(|a, b| a.signal.cmp(&b.signal));
+    (states, transitions, outputs)
+}
+
 /// Ekstraksi FSM utama: pindai semua proses Sequential pada top module.
 pub fn extract_fsms(design: &IrDesign) -> Vec<FsmInfo> {
     let mut fsms = Vec::new();
@@ -351,103 +446,101 @@ pub fn extract_fsms(design: &IrDesign) -> Vec<FsmInfo> {
             let Some(sig_info) = design.top.signals.get(*sig_id) else {
                 continue;
             };
-            let mut info = FsmInfo {
+            let (states, transitions, outputs) =
+                extract_from_case(items, default, *sig_id, *sig_id, design);
+            let info = FsmInfo {
                 process_name: pname.clone(),
                 state_signal: sig_info.name.to_string(),
                 state_width: sig_info.width,
-                states: Vec::new(),
-                transitions: Vec::new(),
-                outputs: Vec::new(),
+                states,
+                transitions,
+                outputs,
             };
-
-            let push_state = |states: &mut Vec<u64>, v: u64| {
-                if !states.contains(&v) {
-                    states.push(v);
-                }
-            };
-            let push_trans = |t: &mut Vec<FsmTransition>, tr: FsmTransition| {
-                if !t.contains(&tr) {
-                    t.push(tr);
-                }
-            };
-
-            for item in items {
-                // State saat ini = konstanta pertama pada label yang bisa
-                // dievaluasi.
-                let from = item.labels.iter().find_map(try_const_u64);
-                // State berikutnya = konstanta NBA pertama ke state reg.
-                let mut nexts = Vec::new();
-                collect_nba_consts(&item.body, *sig_id, &mut nexts);
-                if let Some(from_v) = from {
-                    push_state(&mut info.states, from_v);
-                    for to in &nexts {
-                        push_state(&mut info.states, *to);
-                        push_trans(
-                            &mut info.transitions,
-                            FsmTransition {
-                                from: Some(from_v),
-                                to: *to,
-                            },
-                        );
-                    }
-                }
-            }
-
-            // Default branch: transisi dari state mana pun yang belum
-            // punya keluar (konservatif — hanya bila ada NBA konstanta).
-            let mut default_nexts = Vec::new();
-            collect_nba_consts(default, *sig_id, &mut default_nexts);
-            for to in &default_nexts {
-                push_state(&mut info.states, *to);
-                for &from in info.states.clone().iter() {
-                    if from != *to && !info.transitions.iter().any(|t| t.from == Some(from)) {
-                        push_trans(
-                            &mut info.transitions,
-                            FsmTransition {
-                                from: Some(from),
-                                to: *to,
-                            },
-                        );
-                    }
-                }
-            }
-
-            info.states.sort_unstable();
-            // COMP-11 tahap 2b: klasifikasi output — write selain state reg
-            // di dalam case (items + default). RHS merujuk sinyal selain
-            // state → Mealy; hanya state/konstanta → Moore. Mealy menang
-            // bila satu output ditulis di beberapa item berbeda jenis.
-            {
-                let mut writes: Vec<(usize, IrExpr, Vec<usize>)> = Vec::new();
-                for item in items {
-                    collect_writes(&item.body, &mut writes);
-                }
-                collect_writes(default, &mut writes);
-                for (id, rhs, idx_deps) in &writes {
-                    if *id == *sig_id {
-                        continue;
-                    }
-                    let mut deps = idx_deps.clone();
-                    collect_rhs_signals(rhs, &mut deps);
-                    let mealy = deps.iter().any(|d| *d != *sig_id);
-                    let name = design.top.signals.get(*id).map(|s| s.name.to_string());
-                    let Some(name) = name else { continue };
-                    match info.outputs.iter_mut().find(|o| o.signal == name) {
-                        Some(o) => {
-                            if mealy {
-                                o.kind = FsmOutputKind::Mealy;
-                            }
-                        }
-                        None => info.outputs.push(FsmOutput {
-                            signal: name,
-                            kind: if mealy { FsmOutputKind::Mealy } else { FsmOutputKind::Moore },
-                        }),
-                    }
-                }
-                info.outputs.sort_by(|a, b| a.signal.cmp(&b.signal));
-            }
             if !info.transitions.is_empty() {
                 fsms.push(info);
+            }
+        }
+    }
+
+    // COMP-11 tahap 2c: pola 2-proses klasik — `state <= next` (NBA,
+    // RHS tepat satu sinyal) di always_ff + `case (state)` di proses
+    // Combinational/CombReactive yang menulis `next` secara Blocking.
+    // Lewati state yang sudah punya FSM tahap 1.
+    {
+        // Petakan state → next dari copy NBA di proses Sequential.
+        fn find_nba_copies(stmts: &[IrStmt], out: &mut Vec<(usize, usize)>) {
+            for stmt in stmts {
+                match stmt {
+                    IrStmt::NonBlockingAssign { lhs, rhs, .. } => {
+                        if let (Some(id), IrExpr::Signal(next, _)) =
+                            (lvalue_sig_id(lhs), rhs)
+                        {
+                            if *next != id && !out.contains(&(id, *next)) {
+                                out.push((id, *next));
+                            }
+                        }
+                    }
+                    IrStmt::Block { stmts: inner }
+                    | IrStmt::NamedBlock { stmts: inner, .. } => find_nba_copies(inner, out),
+                    IrStmt::If { true_branch, false_branch, .. } => {
+                        find_nba_copies(true_branch, out);
+                        find_nba_copies(false_branch, out);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let mut copies: Vec<(usize, usize)> = Vec::new();
+        for process in &design.top.processes {
+            let Process::Sequential { body, .. } = process else {
+                continue;
+            };
+            find_nba_copies(body, &mut copies);
+        }
+        for (state_sig, next_sig) in &copies {
+            if fsms.iter().any(|f| {
+                design
+                    .top
+                    .signals
+                    .get(*state_sig)
+                    .map(|s| s.name.to_string() == f.state_signal)
+                    .unwrap_or(false)
+            }) {
+                continue;
+            }
+            for process in &design.top.processes {
+                let (pname, body) = match process {
+                    Process::Combinational { name, body, .. }
+                    | Process::CombReactive { name, body, .. } => (name.to_string(), body),
+                    _ => continue,
+                };
+                for stmt in body {
+                    let IrStmt::Case { expr, items, default, .. } = stmt else {
+                        continue;
+                    };
+                    let IrExpr::Signal(sel, _) = expr else {
+                        continue;
+                    };
+                    if *sel != *state_sig {
+                        continue;
+                    }
+                    let Some(sig_info) = design.top.signals.get(*state_sig) else {
+                        continue;
+                    };
+                    let (states, transitions, outputs) =
+                        extract_from_case(items, default, *state_sig, *next_sig, design);
+                    if transitions.is_empty() {
+                        continue;
+                    }
+                    fsms.push(FsmInfo {
+                        process_name: pname.clone(),
+                        state_signal: sig_info.name.to_string(),
+                        state_width: sig_info.width,
+                        states,
+                        transitions,
+                        outputs,
+                    });
+                }
             }
         }
     }
@@ -790,5 +883,60 @@ mod tests {
         let report = render_fsm_report(&[f.clone()]);
         assert!(report.contains("out_moore(Mealy)"), "{report}");
         assert!(report.contains("out_mealy(Mealy)"), "{report}");
+    }
+
+    #[test]
+    fn test_fsm_two_process_classic() {
+        // Pola 2-proses klasik: always_ff `state <= next` + always_comb
+        // `case (state) { 0: next = 1; 1: next = 2; }`.
+        // Sinyal: state(0), next(1).
+        let item = |label: u64, to: u64| IrCaseItem {
+            labels: vec![IrExpr::Const(LogicVec::from_u64(label, 2))],
+            body: vec![IrStmt::BlockingAssign {
+                lhs: IrLValue::Signal(1, 2),
+                rhs: IrExpr::Const(LogicVec::from_u64(to, 2)),
+                delay: None,
+            }],
+        };
+        let mut design = IrDesign::default();
+        design.top.name = Symbol::from("fsm_2p");
+        design.top.signals = vec![
+            SignalInfo { name: Symbol::from("state"), width: 2, ..Default::default() },
+            SignalInfo { name: Symbol::from("next"), width: 2, ..Default::default() },
+        ];
+        design.top.processes = vec![
+            Process::Sequential {
+                name: Symbol::from("seq"),
+                clock: ClockEdge::PosEdge(0),
+                reset: None,
+                body: vec![IrStmt::NonBlockingAssign {
+                    lhs: IrLValue::Signal(0, 2),
+                    rhs: IrExpr::Signal(1, 0),
+                    delay: None,
+                }],
+                iff: None,
+            },
+            Process::Combinational {
+                name: Symbol::from("comb"),
+                sensitivity: vec![],
+                body: vec![IrStmt::Case {
+                    case_type: CaseType::Normal,
+                    expr: IrExpr::Signal(0, 0),
+                    items: vec![item(0, 1), item(1, 2)],
+                    default: vec![],
+                }],
+            },
+        ];
+        let fsms = extract_fsms(&design);
+        assert_eq!(fsms.len(), 1, "{fsms:?}");
+        let f = &fsms[0];
+        assert_eq!(f.state_signal, "state");
+        assert_eq!(f.states, vec![0, 1, 2]);
+        assert!(f.transitions.contains(&FsmTransition { from: Some(0), to: 1 }), "{f:?}");
+        assert!(f.transitions.contains(&FsmTransition { from: Some(1), to: 2 }), "{f:?}");
+        // Tanpa copy `state <= next`, comb saja bukan FSM.
+        let mut design2 = design.clone();
+        design2.top.processes.remove(0);
+        assert!(extract_fsms(&design2).is_empty());
     }
 }
