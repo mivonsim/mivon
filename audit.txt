@@ -1963,7 +1963,7 @@ LSP-14: ⚠️ IN PROGRESS (ROUND 91/123) — type hierarchy tahap 1+2a:
          Batasan: capability tak bisa diiklankan (lsp-types 0.94 tanpa
          field type_hierarchy_provider) — handler siap saat upgrade.
          MASIH OPEN: iklan capability (upgrade lsp-types).
-LSP-15: ⚠️ IN PROGRESS (ROUND 98/114) — folding range tahap 1+2a:
+LSP-15: ✅ FIXED (ROUND 98/114/127) — folding range lengkap:
          backend.rs — capability folding_range_provider + handler
          folding_range; core murni compute_folding_ranges(): stack
          pairing untuk scope utama (module/interface/package/program/
@@ -1971,8 +1971,8 @@ LSP-15: ⚠️ IN PROGRESS (ROUND 98/114) — folding range tahap 1+2a:
          case...endcase (urutan close-before-open utk baris `end else
          begin`). Tahap 2a (ROUND 114): comment_folding_ranges —
          blok `/* */` multi-baris + marker `// #region/#endregion`
-         (alias tanpa `#`, batas kata, unclosed aman).
-         MASIH OPEN: import region khusus.
+         (alias tanpa `#`, batas kata, unclosed aman). Tahap 2b
+         (ROUND 127): import_folding_ranges — grup 2+ baris import.
 LSP-16: ✅ Signature help (ROUND 90) — signature_help handler di LSP backend.
            Trigger character: '('. find_function_signature scan text untuk
            function/task declaration → extract label + param list. Active parameter
@@ -5358,6 +5358,21 @@ LSP-06 kini ✅ FIXED (kind + snippet + doc + port detail tertutup).
 
 📊 VERIFIKASI ROUND 126:
    - cargo test -p mivon-env --lib --features lsp lsp: 52 passed (+1)
+   - Review subagent: APPROVE.
+
+═══ ROUND 127 — LSP-15 import fold (tahap 2b, ITEM SELESAI) ═══
+
+✅ IMPORT FOLD (crates/mivon-env/src/lsp/backend.rs):
+   - import_folding_ranges: grup 2+ baris `import` berurutan
+     (kosong/komentar di dalam dilewati, flush akhir, tunggal tidak).
+
+Test (+1): test_folding_import_group (positif/negatif/gap/
+komentar-di-dalam/EOF).
+
+LSP-15 kini ✅ FIXED.
+
+📊 VERIFIKASI ROUND 127:
+   - cargo test -p mivon-env --lib --features lsp lsp: 53 passed (+1)
    - Review subagent: APPROVE.
 
 ========================================

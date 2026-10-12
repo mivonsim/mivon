@@ -1378,9 +1378,52 @@ impl LspBackend {
         // LSP-15 tahap 2a: fold blok komentar `/* ... */` multi-baris +
         // region `// #region` / `// #endregion` (alias tanpa `#`).
         out.extend(Self::comment_folding_ranges(source));
+        // LSP-15 tahap 2b: fold grup baris `import` berurutan (2+).
+        out.extend(Self::import_folding_ranges(source));
 
         out.sort_by_key(|(s, e)| (*s, *e));
         out.dedup();
+        out
+    }
+
+    /// LSP-15 tahap 2b: rentang fold grup `import` berurutan (2+ baris,
+    /// baris kosong di dalam grup dilewati). Murni.
+    pub(crate) fn import_folding_ranges(source: &str) -> Vec<(u32, u32)> {
+        let mut out = Vec::new();
+        let mut start: Option<u32> = None;
+        let mut last: u32 = 0;
+        let mut count = 0u32;
+        let flush = |start: &mut Option<u32>, last: u32, count: u32, out: &mut Vec<(u32, u32)>| {
+            if count >= 2 {
+                out.push((start.take().unwrap(), last));
+            } else {
+                start.take();
+            }
+        };
+        for (idx, line) in source.lines().enumerate() {
+            let t = line.trim_start();
+            if t.is_empty() {
+                continue;
+            }
+            if t.starts_with("//") {
+                continue;
+            }
+            let is_import = Self::line_tokens(line)
+                .first()
+                .map(|(w, _)| w == "import")
+                .unwrap_or(false);
+            if is_import {
+                if start.is_none() {
+                    start = Some(idx as u32);
+                }
+                last = idx as u32;
+                count += 1;
+            } else {
+                flush(&mut start, last, count, &mut out);
+                count = 0;
+            }
+        }
+        flush(&mut start, last, count, &mut out);
         out
     }
 
@@ -4046,6 +4089,25 @@ endmodule
         let notreg = "// regional bus\nmodule m;\n// #endregion\nendmodule\n";
         let fnr = LspBackend::compute_folding_ranges(notreg);
         assert!(!fnr.iter().any(|(s, e)| *e == 2 && *s == 0), "{fnr:?}");
+    }
+
+    #[test]
+    fn test_folding_import_group() {
+        // LSP-15 tahap 2b: 2+ baris import berurutan terlipat.
+        let src = "import pkg_a::*;\nimport pkg_b::*;\nmodule m;\nendmodule\n";
+        let f = LspBackend::compute_folding_ranges(src);
+        assert!(f.contains(&(0, 1)), "{f:?}");
+        assert!(f.contains(&(2, 3)), "{f:?}");
+        // Tunggal tidak dilipat; baris kosong di dalam grup dilewati.
+        let single = "import pkg_a::*;\nmodule m;\nendmodule\n";
+        assert!(!LspBackend::compute_folding_ranges(single).iter().any(|(s, _)| *s == 0));
+        let gap = "import pkg_a::*;\n\nimport pkg_b::*;\nmodule m;\nendmodule\n";
+        assert!(LspBackend::compute_folding_ranges(gap).contains(&(0, 2)));
+        // Komentar di dalam grup ikut; grup di EOF ter-flush.
+        let cmt = "import pkg_a::*;\n// usein\nimport pkg_b::*;\nmodule m;\nendmodule\n";
+        assert!(LspBackend::compute_folding_ranges(cmt).contains(&(0, 2)));
+        let eof = "module m;\nendmodule\nimport pkg_a::*;\nimport pkg_b::*;\n";
+        assert!(LspBackend::compute_folding_ranges(eof).contains(&(2, 3)));
     }
 
     #[test]
