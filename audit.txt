@@ -1927,17 +1927,19 @@ LSP-11: ⚠️ IN PROGRESS (ROUND 99) — workspace symbol search tahap 1:
          Query kosong = semua simbol. Test 1 unit (multi-doc,
          case-insensitive, empty query, no-match). MASIH OPEN: indeks
          lintas file di disk (bukan hanya dokumen terbuka), caching.
-LSP-12: ⚠️ IN PROGRESS (ROUND 96) — document symbol tahap 1:
+LSP-12: ⚠️ IN PROGRESS (ROUND 96/120) — document symbol tahap 1+2a:
          backend.rs — capability document_symbol_provider + handler
          document_symbol → DocumentSymbolResponse::Nested; core murni
          document_symbols(): stack-based scope nesting (module/interface/
          package/class/checker sebagai container via Frame {sym,children}),
-         anak: function/task (FUNCTION), parameter/localparam inline
-         `#(parameter ...)` di baris module (CONSTANT), port/signal decl
-         (VARIABLE); dokumen rusak tetap menghasilkan outline.
-         Konversi DocSymbol → lsp_types::DocumentSymbol (range = baris
-         decl, selection_range = nama). MASIH OPEN: nested function scope
-         penuh, workspace symbol search (LSP-11), folding range (LSP-15).
+         anak: function/task sebagai scope frame (tahap 2a — lokal di
+         badan function jadi anak function; tutup endfunction/endtask),
+         parameter/localparam inline `#(parameter ...)` di baris module
+         (CONSTANT), port/signal decl (VARIABLE); dokumen rusak tetap
+         menghasilkan outline. Konversi DocSymbol → lsp_types::
+         DocumentSymbol (range = baris decl, selection_range = nama).
+         MASIH OPEN: workspace symbol search (LSP-11), folding range
+         (LSP-15 ✅ tahap 2a selesai).
 LSP-13: ✅ Call hierarchy (ROUND 91) — LspBackend::compute_call_hierarchy
           (sync, maria-env/src/lsp/backend.rs): scan text untuk function/task
           declarations + call sites. extract_symbol_name skip type keywords.
@@ -5227,6 +5229,23 @@ OOB, decode absolut range 1..1).
 📊 VERIFIKASI ROUND 119:
    - cargo test -p mivon-env --lib --features lsp lsp: 47 passed (+1)
    - Review subagent: APPROVE.
+
+═══ ROUND 120 — LSP-12 function scope frame (tahap 2a) ═══
+
+✅ FUNCTION SCOPE (crates/mivon-env/src/lsp/backend.rs):
+   - CLOSE_KW + endfunction/endtask; FUNC arm push Frame scope
+     (bukan leaf) → lokal badan function jadi children function.
+   - Dokumen rusak tanpa penutup tetap nested via cleanup loop.
+   - Review putaran 1 klaim spasi `" endfunction"` — diverifikasi
+     salah baca (grep: 0 kemunculan; spasi itu separator koma).
+     Saran test (sibling + task) valid → ditambahkan, lolos.
+
+Test (+1): test_document_symbols_function_scope (tmp di anak fn,
+after kembali ke module, task/endtask, dokumen rusak).
+
+📊 VERIFIKASI ROUND 120:
+   - cargo test -p mivon-env --lib --features lsp lsp: 48 passed (+1)
+   - Review subagent putaran 2: APPROVE (verifikasi ulang).
 
 ========================================
 END OF AUDIT REPORT

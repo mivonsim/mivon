@@ -877,10 +877,11 @@ impl LspBackend {
         Some(out.join("\n"))
     }
 
-    /// Document symbol core (murni, bisa diuji) — LSP-12 tahap 1:
+    /// Document symbol core (murni, bisa diuji) — LSP-12 tahap 1+2a:
     /// outline simbol dokumen dengan nesting scope sederhana
-    /// (module/interface/package/class sebagai container; function/task/
-    /// parameter/port/signal sebagai anak).
+    /// (module/interface/package/class/checker sebagai container;
+    /// function/task sebagai scope frame — lokal di badannya jadi anak
+    /// function; parameter/port/signal sebagai anak).
     pub(crate) fn document_symbols(source: &str) -> Vec<DocSymbol> {
         const OPEN_KW: &[(&str, u8)] = &[
             ("module", DocSymbol::KIND_MODULE),
@@ -896,6 +897,8 @@ impl LspBackend {
             "endpackage",
             "endclass",
             "endchecker",
+            "endfunction",
+            "endtask",
         ];
         const FUNC_KW: &[&str] = &["function", "task"];
         const CONST_KW: &[&str] = &["parameter", "localparam"];
@@ -988,7 +991,9 @@ impl LspBackend {
                 continue;
             }
 
-            // Function/task → Function symbol (leaf).
+            // Function/task → scope frame (LSP-12 tahap 2a): deklarasi
+            // lokal di badan function menjadi children function, bukan
+            // sibling module. Ditutup oleh `endfunction`/`endtask`.
             if FUNC_KW.contains(&t0.as_str()) {
                 for (w, c) in toks.iter().skip(1).cloned() {
                     if Self::is_valid_identifier(&w)
@@ -1005,11 +1010,14 @@ impl LspBackend {
                                 | "void"
                         )
                     {
-                        stack.last_mut().unwrap().children.push(DocSymbol {
-                            name: w.clone(),
-                            kind: DocSymbol::KIND_FUNCTION,
-                            line: idx as u32,
-                            col: c as u32,
+                        stack.push(Frame {
+                            sym: Some(DocSymbol {
+                                name: w.clone(),
+                                kind: DocSymbol::KIND_FUNCTION,
+                                line: idx as u32,
+                                col: c as u32,
+                                children: Vec::new(),
+                            }),
                             children: Vec::new(),
                         });
                         break;
@@ -3495,6 +3503,36 @@ endmodule
                 .unwrap_or(0)
         });
         assert_eq!(lsp.kind, SymbolKind::MODULE);
+    }
+
+    #[test]
+    fn test_document_symbols_function_scope() {
+        // LSP-12 tahap 2a: lokal di badan function jadi anak function.
+        let src = "module m;\n  function int add(input int a);\n    logic tmp;\n    return a;\n  endfunction\nendmodule\n";
+        let syms = LspBackend::document_symbols(src);
+        assert_eq!(syms.len(), 1);
+        let m = &syms[0];
+        let f = m.children.iter().find(|c| c.name == "add").expect("function ada");
+        assert_eq!(f.kind, DocSymbol::KIND_FUNCTION);
+        assert!(f.children.iter().any(|c| c.name == "tmp"), "{f:?}");
+        assert!(!m.children.iter().any(|c| c.name == "tmp"), "{m:?}");
+        // Tanpa endfunction (dokumen rusak) tetap nested via cleanup.
+        let broken = "module m;\n  function int add();\n    logic tmp;\n";
+        let b = &LspBackend::document_symbols(broken)[0];
+        let bf = b.children.iter().find(|c| c.name == "add").expect("fn ada");
+        assert!(bf.children.iter().any(|c| c.name == "tmp"), "{bf:?}");
+        // Sinyal setelah endfunction kembali ke module (bukan anak function).
+        let after = "module m;\n  function int add();\n    logic tmp;\n  endfunction\n  logic after;\nendmodule\n";
+        let am = &LspBackend::document_symbols(after)[0];
+        assert!(am.children.iter().any(|c| c.name == "after"), "{am:?}");
+        let af = am.children.iter().find(|c| c.name == "add").expect("fn ada");
+        assert!(!af.children.iter().any(|c| c.name == "after"), "{af:?}");
+        // Task/endtask sama.
+        let tsrc = "module m;\n  task run();\n    logic t;\n  endtask\nendmodule\n";
+        let tm = &LspBackend::document_symbols(tsrc)[0];
+        let tf = tm.children.iter().find(|c| c.name == "run").expect("task ada");
+        assert_eq!(tf.kind, DocSymbol::KIND_FUNCTION);
+        assert!(tf.children.iter().any(|c| c.name == "t"), "{tf:?}");
     }
 
     #[test]
