@@ -1080,7 +1080,7 @@ fn f75_assign_drive_input_is_e2003() {
     // assign ke input port di DUT → E2003; di TB (ada initial) boleh.
     let e = check_src("module m { in a : bit\n out y : bit\n assign a = y }").unwrap_err();
     assert!(e.msg.contains("E2003"), "msg: {}", e.msg);
-    let tb = "module tb { in a : bit\n out y : bit\n assign a = y\n initial { a = 0 } }";
+    let tb = "module tb { in a : bit\n out y : bit\n assign a = y\n initial { y = 0 } }";
     check_src(tb).expect("TB boleh drive input via assign");
 }
 
@@ -1135,7 +1135,9 @@ fn f79_gen_case_ok_and_e2001() {
 fn f80_gen_cond_const_forms_ok() {
     // F80: kondisi generate konstan — parameter, perbandingan, sized,
     // ternary, konstanta package, member enum — semua lolos.
-    let src = "package p {\n const W = 8\n enum S { A, B }\n}\nmodule m #(N = 4) {\n use p::*\n in clk : bit\n out y : bit\n if (N > 2) {\n comb { y = 1 }\n } else {\n comb { y = 0 }\n }\n if (8'd4 == N) {\n comb { y = 1 }\n }\n if (p::W == 8 ? 1 : 0) {\n comb { y = 1 }\n }\n if (N > A) {\n comb { y = 1 }\n }\n case (N) {\n 4: { comb { y = 1 } }\n default: { comb { y = 0 } }\n }\n case (A) {\n 0: { comb { y = 1 } }\n }\n}\n";
+    // (§9A E3001: tiap blok generate drive sinyal BERBEDA — satu sinyal
+    // di-drive banyak blok generate = multi-driver.)
+    let src = "package p {\n const W = 8\n enum S { A, B }\n}\nmodule m #(N = 4) {\n use p::*\n in clk : bit\n out y : bit\n sig t1, t2, t3, t4, t5 : bit\n if (N > 2) {\n comb { y = 1 }\n } else {\n comb { y = 0 }\n }\n if (8'd4 == N) {\n comb { t1 = 1 }\n }\n if (p::W == 8 ? 1 : 0) {\n comb { t2 = 1 }\n }\n if (N > A) {\n comb { t3 = 1 }\n }\n case (N) {\n 4: { comb { t4 = 1 } }\n default: { comb { t4 = 0 } }\n }\n case (A) {\n 0: { comb { t5 = 1 } }\n }\n}\n";
     check_src(src).expect("kondisi konstan harus lolos");
 }
 
@@ -1198,7 +1200,8 @@ fn f80r3_instance_genvar_shadow_enum() {
     assert!(e.msg.contains("E2014"), "instance menutupi enum: {}", e.msg);
     // Genvar tersubstitusi per iterasi oleh elaborator → kondisi generate
     // bersarang yang merujuknya dilewati E2014 (bukan false-positive).
-    let src2 = "module m #(N = 2) {\n in clk : bit\n out y : logic[7:0]\n for i in 0..N {\n if (i < N) {\n comb { y = i }\n }\n if ((i > 10) ? i : 0) {\n comb { y = 0 }\n }\n }\n}";
+    // (§9A E3001: dua comb dalam for-body drive sinyal berbeda.)
+    let src2 = "module m #(N = 2) {\n in clk : bit\n out y : logic[7:0]\n sig z : logic[7:0]\n for i in 0..N {\n if (i < N) {\n comb { y = i }\n }\n if ((i > 10) ? i : 0) {\n comb { z = 0 }\n }\n }\n}";
     check_src(src2).expect("genvar bersarang harus lolos E2014");
 }
 
@@ -1211,4 +1214,136 @@ fn f82_specify_forward_ref_and_pos() {
     let e = check_src("module m {\n in clk : bit\n sig d : bit\n specify {\n setup(d, posedge NOPE, 1)\n }\n}").unwrap_err();
     assert!(e.msg.contains("E2001"), "msg: {}", e.msg);
     assert!(e.line == 5, "posisi baris setup: {}:{}", e.line, e.col);
+}
+
+// ── §9A: Static Analysis & RTL Hazard Checker (bawaan) ──
+
+#[test]
+fn hazard_e3001_multidriver_rejected() {
+    // seq + comb drive sinyal sama → E3001 berposisi di driver kedua.
+    let e = check_src(
+        "module m {\n in clk : bit\n out q : bit\n seq(clk) { q <= 1 }\n comb { q = 0 }\n}",
+    )
+    .unwrap_err();
+    assert!(e.msg.contains("E3001"), "msg: {}", e.msg);
+    assert!(e.msg.contains("'q'"), "msg: {}", e.msg);
+    // assign kontinu + prosedural juga multi-driver.
+    let e2 = check_src(
+        "module m {\n in clk : bit\n out q : bit\n sig q : bit\n assign q = clk\n comb { q = 0 }\n}",
+    )
+    .unwrap_err();
+    assert!(e2.msg.contains("E3001"), "msg: {}", e2.msg);
+}
+
+#[test]
+fn hazard_e3001_exclusive_generate_ok_and_net_excluded() {
+    // Cabang generate eksklusif (then/else, case-item) bukan multi-driver.
+    check_src("module m #(S = 0) {\n in clk : bit\n out y : bit\n if (S) {\n comb { y = 1 }\n } else {\n comb { y = 0 }\n }\n}").expect("then/else eksklusif harus lolos");
+    check_src("module m #(S = 0) {\n in clk : bit\n out y : bit\n case (S) {\n 0: { comb { y = 1 } }\n default: { comb { y = 0 } }\n }\n}").expect("case-branch eksklusif harus lolos");
+    // Net resolution (wand) memang multi-driver by design → dikecualikan.
+    check_src("module m {\n in a : bit\n in b : bit\n wand w : bit\n assign w = a\n assign w = b\n}").expect("wand multi-driver harus lolos");
+}
+
+#[test]
+fn hazard_e3002_latch_rejected() {
+    // comb if tanpa else yang meng-assign → E3002.
+    let e = check_src(
+        "module m {\n in en : bit\n in d : bit\n out q : bit\n comb { if (en) { q = d } }\n}",
+    )
+    .unwrap_err();
+    assert!(e.msg.contains("E3002"), "msg: {}", e.msg);
+    // comb case tanpa default yang meng-assign → E3002.
+    let e2 = check_src(
+        "module m #(S = 0) {\n in clk : bit\n out y : bit\n comb { case (S) { 0: { y = 1 } } }\n}",
+    );
+    // NOTE: S parameter → case ini behavioral (bukan generate) → latch.
+    assert!(e2.unwrap_err().msg.contains("E3002"));
+    // if-else penuh bukan latch; latch{} eksplisit bukan E3002.
+    check_src("module m {\n in en : bit\n in d : bit\n out q : bit\n comb { if (en) { q = d } else { q = 0 } }\n}").expect("if-else penuh harus lolos");
+    check_src("module m {\n in en : bit\n in d : bit\n out q : bit\n latch { if (en) { q = d } }\n}").expect("latch eksplisit harus lolos");
+    // Idiom default-assignment (`q = 0; if (en) { q = d }`) bukan latch.
+    check_src("module m {\n in en : bit\n in d : bit\n out q : bit\n comb { q = 0\n if (en) { q = d } }\n}").expect("default-assignment harus lolos");
+}
+
+#[test]
+fn hazard_e3003_comb_loop_rejected() {
+    let e = check_src("module m {\n in a : bit\n out y : bit\n assign y = y & a\n}")
+        .unwrap_err();
+    assert!(e.msg.contains("E3003"), "msg: {}", e.msg);
+    let e2 = check_src(
+        "module m {\n in a : bit\n out y : bit\n comb { y = y & a }\n}",
+    )
+    .unwrap_err();
+    assert!(e2.msg.contains("E3003"), "msg: {}", e2.msg);
+    // Counter sekuensial (baca-tulis di seq) bukan loop.
+    check_src("module m {\n in clk : bit\n in rst_n : bit\n out c : logic[7:0]\n seq(clk, rst_n) { if (!rst_n) { c <= '0 } else { c <= c + 1 } }\n}").expect("counter seq harus lolos");
+    // Field-ke-field (`awready = awvalid`) bukan loop.
+    check_src("package p {\n packed struct Ch { valid : bit\n ready : bit }\n}\nmodule m {\n use p::*\n in clk : bit\n sig ch : Ch\n out rdy : bit\n comb { ch.ready = ch.valid\n rdy = ch.ready }\n}").expect("field-ke-field harus lolos");
+    // Rakitan whole-struct dari field (`p = {p.a, p.b}`) bukan loop.
+    check_src("package p {\n packed struct P { a : bit\n b : bit }\n}\nmodule m {\n use p::*\n in clk : bit\n sig p : P\n out q : P\n comb { p = {p.a, p.b}\n q = p }\n}").expect("whole-from-field harus lolos");
+    // `q++` di comb = read-modify-write kombinasional → E3003.
+    let e3 = check_src("module m {\n in clk : bit\n out q : logic[7:0]\n comb { q++ }\n}")
+        .unwrap_err();
+    assert!(e3.msg.contains("E3003"), "msg: {}", e3.msg);
+    // Self-read di `always` juga loop → E3003.
+    let e4 = check_src("module m {\n in a : bit\n out y : bit\n always { y = y & a }\n}")
+        .unwrap_err();
+    assert!(e4.msg.contains("E3003"), "msg: {}", e4.msg);
+}
+
+#[test]
+fn hazard_e3004_undriven_output_rejected_stub_skipped() {
+    let e = check_src(
+        "module m {\n in clk : bit\n out q : bit\n comb { q = clk }\n out r : bit\n}",
+    )
+    .unwrap_err();
+    assert!(e.msg.contains("E3004"), "msg: {}", e.msg);
+    assert!(e.msg.contains("'r'"), "msg: {}", e.msg);
+    // Stub port-only (tanpa logika) dilewati — pola uji F29–F32.
+    check_src("module foo {\n in a : bit\n out b : bit\n}").expect("stub harus lolos");
+    // Testbench (ada initial) dikecualikan.
+    check_src("module tb {\n out y : bit\n initial { y = 0 }\n}").expect("TB harus lolos");
+}
+
+#[test]
+fn hazard_e3005_async_reset_unhandled_rejected() {
+    let e = check_src(
+        "module m {\n in clk : bit\n in rst_n : bit\n out c : logic[7:0]\n seq(clk, rst_n) { c <= c + 1 }\n}",
+    )
+    .unwrap_err();
+    assert!(e.msg.contains("E3005"), "msg: {}", e.msg);
+    check_src("module m {\n in clk : bit\n in rst_n : bit\n out c : logic[7:0]\n seq(clk, rst_n) { if (!rst_n) { c <= '0 } else { c <= c + 1 } }\n}").expect("reset ditangani harus lolos");
+}
+
+#[test]
+fn hazard_e3006_clock_driven_rejected() {
+    let e = check_src(
+        "module m {\n in clk_in : bit\n in en : bit\n out q : bit\n sig clk : bit\n seq(clk) { q <= en }\n comb { clk = clk_in & en }\n}",
+    )
+    .unwrap_err();
+    assert!(e.msg.contains("E3006"), "msg: {}", e.msg);
+}
+
+#[test]
+fn hazard_warnings_fired() {
+    // W3001 CDC + W3002 async-release.
+    let f = parse("module m {\n in a : bit\n in b : bit\n in r : bit\n out qa : bit\n out qb : bit\n seq(a, r) { if (!r) { qa <= '0 } else { qa <= 1 } }\n seq(b) { qb <= qa }\n}").unwrap();
+    let w = hazard_warnings(&f);
+    let codes: Vec<&str> = w.iter().map(|x| x.code.as_str()).collect();
+    assert!(codes.contains(&"W3001"), "CDC harus warn: {codes:?}");
+    assert!(codes.contains(&"W3002"), "async harus warn: {codes:?}");
+    // W3003 ditulis-tak-dibaca + W3004 dibaca-tak-didriven.
+    let f2 = parse("module m {\n in clk : bit\n out y : bit\n sig dead : bit\n sig ghost : bit\n comb { dead = clk\n y = ghost }\n}").unwrap();
+    let w2 = hazard_warnings(&f2);
+    let codes2: Vec<&str> = w2.iter().map(|x| x.code.as_str()).collect();
+    assert!(codes2.contains(&"W3003"), "unused harus warn: {codes2:?}");
+    assert!(codes2.contains(&"W3004"), "undriven harus warn: {codes2:?}");
+    // W3005 case tanpa default di seq.
+    let f3 = parse("module m #(S = 0) {\n in clk : bit\n out y : bit\n seq(clk) { case (y) { 1'b0: { y <= 1 } } }\n}").unwrap();
+    let w3 = hazard_warnings(&f3);
+    assert!(w3.iter().any(|x| x.code == "W3005"), "case-no-default harus warn");
+    // Desain bersih → tanpa warning.
+    let f4 = parse("module m {\n in clk : bit\n in rst_n : bit\n out c : logic[7:0]\n seq(clk) { c <= c + 1 }\n}").unwrap();
+    let w4 = hazard_warnings(&f4);
+    assert!(w4.is_empty(), "desain bersih tanpa warning: {w4:?}");
 }

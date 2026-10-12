@@ -1326,6 +1326,95 @@ awalan `[E20xx]`; hanya E2008 dan E2009 yang belum membawa posisi `line:col`
 
 ---
 
+## 9A. Static Analysis & RTL Hazard Checker (bawaan, E30xx/W3xxx)
+
+> **Status:** aktif bawaan sejak versi ini — **bukan** subcommand/tool terpisah.
+> Berjalan OTOMATIS di setiap `check`/`check_many` (sebelum codegen), untuk
+> `.mv` DAN `.mvh`, single-file maupun batch lintas-file. Berlaku juga di
+> jalur inline (`mivon run/sim/cov/elab/prof/bench/lint/inspect x.mv` via
+> `transpile_mv_to_inline` + `run` on-the-fly). Tidak ada flag aktivasi;
+> satu-satunya escape hatch adalah `--no-check` (melewati E20xx SEKALIGUS
+> E30xx/W3xxx — untuk konstruk eksternal yang belum dipahami checker).
+
+Motivasi (prinsip desain #4, diperkeras gaya Rust): penyakit khas `.sv`/`.svh`
+— multi-driver, latch tak disengaja, combinational loop, output mengambang,
+reset async tanpa cabang reset, CDC — **wajib** tertangkap di level `.mv`/`.mvh`
+dengan posisi `line:col` + snippet + caret (`mv::format_error`), bukan di SV
+hasil generate. Ini **bukan linter biasa** (`mlint` tetap ada sebagai tool
+pasif); ini gate blokir emisi.
+
+### 9A.1 Error keras (E30xx) — blokir emisi
+
+| Kode | Nama | Pasti bug bila | Contoh `.mv` ditolak |
+|------|------|----------------|----------------------|
+| E3001 | multi-driver | sinyal/var `sig`/`reg` (bukan net `wire`/`wand`/`wor`/`tri*`) di-drive dari >1 sumber prosedural (`seq`/`comb`/`always`/`latch`/`assign` kontinu/`force` dihitung 1 sumber; driver dari `initial`/`final` tidak dihitung — stimulus sekali-jalan) | `seq(clk){q<=1}` + `comb{q=2}` → `[E3001] sinyal 'q' di-drive 2 sumber` |
+| E3002 | latch tak disengaja | `comb` berisi `if` tanpa `else`, atau `case` tanpa `default`, yang meng-assign sinyal TAK TERCOVER default-assignment tak-bersyarat (inferensi latch di SV) | `comb { if (en) { q = d } }` → `[E3002] comb tanpa else/default meng-infer latch` |
+| E3003 | combinational loop | `assign y = ...y...` (self-reference) atau `comb`/`always` membaca LHS-nya sendiri (`y = y & a`, `q++`; perbandingan level field: `awready = awvalid` dan rakitan `p = {p.a,p.b}` sah) | `assign y = y & 1` → `[E3003] combinational loop pada 'y'` |
+| E3004 | output mengambang | port `out` DUT (module tanpa `initial`/`final`) tidak pernah di-assign di mana pun | `out q : logic[7:0]` tanpa driver → `[E3004] output 'q' tidak pernah di-drive` |
+| E3005 | reset async tanpa cabang | `seq(clk, rst)` async (2 argumen) tapi body tidak menyebut sinyal reset sama sekali | `seq(clk, rst_n) { count <= count + 1 }` → `[E3005] reset 'rst_n' tak pernah ditangani` |
+| E3006 | clock di-drive logika | clock `seq` (full path: `clk`, `iface.clk`) di-assign di `comb`/`always`/`latch`/`force`/`assign` (`initial`/`final` dikecualikan — clock-gen idiomatik) | `comb { clk = en & clk_in }` → `[E3006] clock 'clk' di-drive logika` |
+
+Aturan:
+- Net resolution (`wire`/`wand`/`wor`/`tri`/`tri0`/`tri1`/`supply0`/`supply1`)
+  DIKECUALIKAN dari E3001 (multi-driver adalah semantiknya, LRM 1800 §6.5).
+- Cabang generate eksklusif (then vs else, item `case` berbeda) TIDAK dihitung
+  multi-driver — hanya satu yang survive elaborasi. `GenFor` tidak eksklusif.
+- Field interface di-track per-field (`pkt.valid` ≠ `pkt.addr`; clock
+  `iface.clk` ≠ field `iface.awready`) — E3001/E3003/E3006.
+- Testbench (module ber-`initial`/`final`) DIKECUALIKAN dari E3004
+  (stimulus boleh parsial; DUT saja yang wajib penuh). E3001 TIDAK butuh
+  pengecualian TB lagi karena driver `initial`/`final` memang tidak dihitung.
+- Modul stub tanpa driver sama sekali (pola uji port-only) dan modul memuat
+  `@sv` verbatim (driver tersembunyi) DIKECUALIKAN dari E3004; `@sv` juga
+  menonaktifkan W3003/W3004 (bacaan tak terlihat checker).
+- `latch { }` eksplisit bukan E3002 (niat terdokumentasi); idiom
+  default-assignment (`q = 0; if (en) { q = d }`) juga bukan E3002.
+- `force` dihitung driver E3001 (override fault-injection); pola `force` +
+  `assign` di DUT ditolak, di TB lolos karena driver `initial` tak dihitung.
+- Slice/bit-select berbeda dari sinyal sama (`q[7:4]` vs `q[3:0]` dari dua
+  blok) TETAP E3001 — tool EDA mayoritas menolaknya sebagai multi-driver.
+- Posisi: E3001 di driver kedua (urutan sumber, key di-sort deterministik),
+  E3002/E3003 di statement pelanggar, E3004 di deklarasi port, E3005 di spec
+  `seq`; format `[E30xx] pesan — di 'module'`, fail-fast (error pertama
+  menang, sama seperti E20xx). Urutan: E20xx dulu, baru E30xx.
+
+### 9A.2 Warning potensi (W3xxx) — tetap generate + ringkasan akhir
+
+| Kode | Nama | Potensi bila | Contoh |
+|------|------|--------------|--------|
+| W3001 | CDC | >1 domain clock berbeda (`seq(clk_a)` + `seq(clk_b)`) dalam 1 module | `seq(clk_a){...}` + `seq(clk_b){...}` → sinkronisasi belum terlihat |
+| W3002 | async-reset perlu sync-release | ada `seq(clk, rst)` async | ingatkan synchronizer + deassert sync |
+| W3003 | sinyal tak dibaca | `sig`/`reg`/`wire` internal di-assign tapi tak pernah dibaca (init/coverpoint/specify/body func-task dihitung dibaca) | typo / logika mati |
+| W3004 | sinyal tak di-drive | `sig`/`reg`/`wire` internal dibaca tapi tak pernah di-assign (selain port) | lupa stimulus / koneksi |
+| W3005 | `case` tanpa `default` di `seq` | bukan latch (seq aman), tapi rawan X-propagation / coverage | sarankan `default` |
+| W3006 | kedalaman `if` ekstrem | nesting `if` >4 di satu rantai (sulit timing/coverage) | refaktor ke `case` |
+
+Aturan:
+- Warning TIDAK memblokir emisi. `TranspileResult.warnings: Vec<MvWarning>`
+  selalu terisi; `mgen` + `run`/semua tool inline mencetak tiap warning
+  (`warning[W3xxx] path:line:col: pesan` + snippet + caret ke stderr) +
+  ringkasan `── hazard: N warning ──` bila N>0.
+- `MvWarning { line, col, code, msg }` nol-dependensi (seperti `MvError`),
+  `format()` = `line:col: [W3xxx] pesan`.
+- Duplikat warning sama (kode+baris) di-dedup; urutan deterministik (urutan
+  deklarasi module, lalu kode).
+- `--no-check` melewati warning juga (hindari false positive di konstruk
+  eksternal).
+
+### 9A.3 Implementasi (1 file = 1 tanggung jawab)
+
+```
+crates/mivon-mv/src/check/hazard.rs — error E30xx + warning W3xxx (AST-only,
+                                       tanpa elaborasi, konservatif)
+crates/mivon-mv/src/lib.rs          — MvWarning + TranspileResult.warnings +
+                                      pengisian bawaan di semua transpile_*
+crates/mivon-tools/src/gen.rs       — cetak warning bawaan (stderr, bukan flag)
+crates/mivon-tools/src/lib.rs       — transpile_mv_to_inline teruskan warning
+src/main.rs                         — run on-the-fly cetak warning bawaan
+```
+
+---
+
 ## 10. Emisi Codegen — Aturan Mapping SV
 
 Ringkasan mapping konstruk `.mv` → SV:

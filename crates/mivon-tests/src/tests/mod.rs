@@ -23272,8 +23272,9 @@ fn test_mv_duplicate_generate_labels_uniquified() {
 module dut_g #(N : int = 4) {
     in  clk : bit
     out q   : logic[N-1:0]
+    sig p   : logic[N-1:0]
     for i in 0..N { seq(clk) { q[i] <= q[i] } }
-    for i in 0..N { comb { q[i] = q[i] } }
+    for i in 0..N { comb { p[i] = 1'b1 } }
 }
 "#;
     let r = mivon_mv::transpile(src, "gt").expect("transpile .mv OK");

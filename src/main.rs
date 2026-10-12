@@ -1061,6 +1061,19 @@ fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), SimError> {
             mv_files.len(),
             "transpile_many harus mengembalikan hasil sejajar dengan input"
         );
+        // ── §9A.2 warning hazard bawaan (stderr, non-blokir) ──
+        {
+            let mut n_warn = 0usize;
+            for ((p, item), tr) in mv_files.iter().zip(items.iter()).zip(results.iter()) {
+                for w in &tr.warnings {
+                    eprintln!("{}", mivon_api::mv::format_warning(p, &item.src, w));
+                    n_warn += 1;
+                }
+            }
+            if n_warn > 0 {
+                eprintln!("── hazard: {n_warn} warning ──");
+            }
+        }
         for (p, tr) in mv_files.iter().zip(results.iter()) {
             // Gabung .svh + .sv jadi satu buffer; buang baris `` `include "x.svh" ``
             // (definisi bersama sudah ada di atasnya).

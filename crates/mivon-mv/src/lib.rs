@@ -104,6 +104,57 @@ pub fn format_error(path: &str, src: &str, e: &MvError) -> String {
     out
 }
 
+/// Warning hazard bawaan (§9A.2): `W3xxx` potensi masalah RTL.
+/// Nol-dependensi seperti `MvError`; TIDAK memblokir emisi.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MvWarning {
+    pub line: usize,
+    pub col: usize,
+    pub code: String,
+    pub msg: String,
+}
+
+impl MvWarning {
+    pub fn new(line: usize, col: usize, code: impl Into<String>, msg: impl Into<String>) -> Self {
+        MvWarning {
+            line,
+            col,
+            code: code.into(),
+            msg: msg.into(),
+        }
+    }
+
+    /// Format ringkas `line:col: [W3xxx] pesan`.
+    pub fn format(&self) -> String {
+        if self.line == 0 && self.col == 0 {
+            format!("[{}] {}", self.code, self.msg)
+        } else {
+            format!("{}:{}: [{}] {}", self.line, self.col, self.code, self.msg)
+        }
+    }
+}
+
+impl std::fmt::Display for MvWarning {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.format())
+    }
+}
+
+/// Format warning dengan snippet source (gaya `format_error`).
+pub fn format_warning(path: &str, src: &str, w: &MvWarning) -> String {
+    let mut out = format!("warning[{wcode}] {path}: {wfmt}", wcode = w.code, wfmt = w.format());
+    if w.line > 0 && w.col > 0 {
+        if let Some(line) = src.lines().nth(w.line - 1) {
+            out.push_str(&format!("\n  --> {path}:{}:{}", w.line, w.col));
+            out.push_str("\n   |");
+            out.push_str(&format!("\n{:>4} | {}", w.line, line));
+            let pad = " ".repeat(w.col.saturating_sub(1));
+            out.push_str(&format!("\n     | {pad}^"));
+        }
+    }
+    out
+}
+
 /// Hasil transpile satu file `.mv`/`.mvh`.
 #[derive(Debug, Clone)]
 pub struct TranspileResult {
@@ -112,6 +163,9 @@ pub struct TranspileResult {
     pub sv: String,
     /// Konten `.svh` (package/typedef/interface + include guard)
     pub svh: String,
+    /// Warning hazard bawaan (§9A.2) — selalu terisi (bisa kosong).
+    /// Dicetak caller ke stderr (bukan flag); tidak memblokir emisi.
+    pub warnings: Vec<MvWarning>,
 }
 
 /// Satu item input batch transpile (F43): sumber + nama base + flag header.
@@ -159,10 +213,15 @@ impl MvItem {
 /// `base` = nama file tanpa ekstensi (mis. `counter` dari `counter.mv`).
 /// Type-check dijalankan SEBELUM emisi — error E2001–E2007 muncul di level
 /// `.mv`, bukan di SV hasil generate (MIVON-HDL.md §9, prinsip desain #4).
+/// Hazard checker §9A jalan bawaan di dalam `check` (E30xx blokir) +
+/// warning W3xxx di `warnings` (non-blokir).
 pub fn transpile(src: &str, base: &str) -> Result<TranspileResult, MvError> {
     let file = parser::parse(src)?;
     check::check(&file)?;
-    generate_from(&file, base, &[], "mv", None, &[])
+    let warnings = check::hazard_warnings(&file);
+    let mut r = generate_from(&file, base, &[], "mv", None, &[])?;
+    r.warnings = warnings;
+    Ok(r)
 }
 
 /// Transpile source `.mvh` (header Mivon HDL, F43) → `.svh` saja.
@@ -173,13 +232,16 @@ pub fn transpile_header(src: &str, base: &str) -> Result<TranspileResult, MvErro
     let file = parser::parse(src)?;
     check::check(&file)?;
     validate_header_only(&file)?;
-    generate_from(&file, base, &[], "mvh", None, &[])
+    let warnings = check::hazard_warnings(&file);
+    let mut r = generate_from(&file, base, &[], "mvh", None, &[])?;
+    r.warnings = warnings;
+    Ok(r)
 }
 
 /// Transpile TANPA type-check (escape hatch `mgen --no-check` — untuk kode
 /// yang memakai konstruk eksternal yang belum dipahami checker).
 /// Validasi header-only `.mvh` (E2008) TETAP dijalankan — kontrak ekstensi,
-/// bukan type-check.
+/// bukan type-check. Hazard §9A juga dilewati (hindari false positive).
 pub fn transpile_no_check(src: &str, base: &str) -> Result<TranspileResult, MvError> {
     let file = parser::parse(src)?;
     generate_from(&file, base, &[], "mv", None, &[])
@@ -210,7 +272,12 @@ pub fn transpile_many_items(
             validate_header_only(&files[i]).map_err(|e| (i, e))?;
         }
     }
-    generate_all(items, &files)
+    let mut out = generate_all(items, &files)?;
+    // Hazard warning bawaan §9A.2 — non-blokir, per file.
+    for (r, f) in out.iter_mut().zip(files.iter()) {
+        r.warnings = check::hazard_warnings(f);
+    }
+    Ok(out)
 }
 
 /// `transpile_many_items` tanpa type-check (padanan `--no-check` untuk
@@ -1220,6 +1287,7 @@ fn generate_from(
     Ok(TranspileResult {
         sv: out.sv,
         svh: out.svh,
+        warnings: Vec::new(),
     })
 }
 
@@ -1386,6 +1454,8 @@ module m {
     in clk : bit
     out acc : logic[7:0]
     sig a : logic[7:0]
+    sig b : logic[7:0]
+    sig c : logic[7:0]
     // generate dengan step
     for i in 0..8 step 2 {
         sig a_int : logic[7:0]
@@ -1394,14 +1464,17 @@ module m {
     // behavioral dengan step (hanya genap)
     comb {
         for j in 0..8 step 2 {
-            a[j] = 1
+            b[j] = 1
         }
     }
     // behavioral tanpa step
     comb {
         for k in 0..4 {
-            a[k] = 0
+            c[k] = 0
         }
+    }
+    comb {
+        acc = a + b + c
     }
 }
 "#;

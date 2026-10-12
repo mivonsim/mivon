@@ -92,6 +92,23 @@ pub fn run(args: &GenArgs) -> Result<(), SimError> {
     }
     let results = transpile_by_directory(&files, &items, args.no_check)?;
 
+    // ── §9A.2 warning hazard bawaan (stderr, semua mode incl. --stdout/--check) ──
+    {
+        let mut n_warn = 0usize;
+        for ((path, item), result) in files.iter().zip(items.iter()).zip(results.iter()) {
+            for w in &result.warnings {
+                eprintln!(
+                    "{}",
+                    mv::format_warning(&path.display().to_string(), &item.src, w)
+                );
+                n_warn += 1;
+            }
+        }
+        if n_warn > 0 {
+            eprintln!("── hazard: {n_warn} warning ──");
+        }
+    }
+
     let mut changed_any = false;
     for (path, result) in files.iter().zip(results.iter()) {
         let base = path

@@ -17,6 +17,7 @@ use std::collections::{HashMap, HashSet};
 pub mod class;
 pub mod defs;
 pub mod expr;
+pub mod hazard;
 pub mod module;
 pub mod stmt;
 
@@ -528,7 +529,15 @@ pub(crate) fn check_with_ctx<'a>(file: &'a MvFile, ctx: &'a Ctx<'a>) -> Result<(
         let mut scope = new_scope(ctx, &t.name);
         check_task(t, ctx, &mut scope)?;
     }
+
+    // ── §9A hazard bawaan (E30xx blokir, setelah E20xx) ──
+    hazard::hazard_check_file(file)?;
     Ok(())
+}
+
+/// Warning hazard bawaan §9A.2 (non-blokir) untuk satu file.
+pub fn hazard_warnings(file: &MvFile) -> Vec<crate::MvWarning> {
+    hazard::hazard_warnings_file(file)
 }
 
 // ── Indeks ──

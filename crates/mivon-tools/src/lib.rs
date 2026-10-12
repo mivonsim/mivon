@@ -205,6 +205,23 @@ pub fn transpile_mv_to_inline(
     let results = mivon_mv::transpile_many_items(&items)
         .map_err(|(i, e)| diag_io(format!("{}: {}", files[mv_idx[i]].display(), e)))?;
 
+    // ── §9A.2 warning hazard bawaan (stderr, non-blokir) ──
+    {
+        let mut n_warn = 0usize;
+        for ((&i, item), tr) in mv_idx.iter().zip(items.iter()).zip(results.iter()) {
+            for w in &tr.warnings {
+                eprintln!(
+                    "{}",
+                    mivon_mv::format_warning(&files[i].display().to_string(), &item.src, w)
+                );
+                n_warn += 1;
+            }
+        }
+        if n_warn > 0 {
+            eprintln!("── hazard: {n_warn} warning ──");
+        }
+    }
+
     let mut inline = std::collections::HashMap::new();
     for (&i, tr) in mv_idx.iter().zip(results.iter()) {
         let mut buf = tr.svh.clone();
