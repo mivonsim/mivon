@@ -221,6 +221,9 @@ Arsitektur-06: ⚠️ Elaborator monolithic — PARTIAL (ROUND 80)
   F84 (design_base_exp, delay_scale_for_unit,
   compute_module_delay_scales, current_delay_scale) pindah verbatim
   (pub(crate)); +doc yatim build_pkg_param_ctx dibersihkan.
+- params.rs (BARU ROUND 134, ~560 baris): 3 method param resolution
+  (resolve_param_values, build_pkg_param_ctx, collect_package_param_ctx)
+  pindah verbatim (pub(crate)); mod.rs 6280 → 5754 (-526).
   Masih perlu: type resolution, param resolution, topo order, diagnostic
   helpers bisa dipisah lebih lanjut.
   Severity: High
@@ -5472,6 +5475,22 @@ workspace penuh (0 fail).
 
 📊 VERIFIKASI ROUND 133:
    - cargo test -p mivon-elaboration: 15 passed
+   - cargo test --workspace: 0 fail
+   - Review subagent: APPROVE.
+
+═══ ROUND 134 — Arsitektur-06 params.rs extract ═══
+
+✅ EXTRACT (crates/mivon-elaboration/src/elaborator/params.rs BARU):
+   - 3 method param resolution pindah verbatim (pub(crate));
+     sempat kurung tutup elaborate ikut terhapus → dikembalikan;
+     unused import dibersihkan.
+   - Review: APPROVE.
+
+Test (+1): test_build_pkg_param_ctx_qualified + 19 package
+integration + guard workspace penuh (0 fail).
+
+📊 VERIFIKASI ROUND 134:
+   - cargo test -p mivon-elaboration: 16 passed
    - cargo test --workspace: 0 fail
    - Review subagent: APPROVE.
 
