@@ -19,7 +19,8 @@ use lsp_types::{
     HoverContents, InitializeParams, InitializeResult, InsertTextFormat, LanguageString, LinkedEditingRangeParams,
     LinkedEditingRanges, Location, MarkedString, OneOf, Position, PublishDiagnosticsParams, Range,
     ReferenceParams, RenameOptions, RenameParams, SelectionRange, SelectionRangeParams, SemanticToken,
-    SemanticTokens, SemanticTokensLegend, SemanticTokensOptions, SemanticTokensParams,
+    SemanticTokens, SemanticTokensDelta, SemanticTokensDeltaParams, SemanticTokensEdit,
+    SemanticTokensFullDeltaResult, SemanticTokensLegend, SemanticTokensOptions, SemanticTokensParams,
     SemanticTokensRangeParams, SemanticTokensRangeResult, SemanticTokensResult, ServerCapabilities, ServerInfo, SymbolInformation, SymbolKind,
     TextDocumentPositionParams, TextDocumentSyncCapability, TextDocumentSyncKind, TypeHierarchyItem,
     TypeHierarchyPrepareParams, TypeHierarchySubtypesParams, TypeHierarchySupertypesParams, Url,
@@ -143,6 +144,11 @@ pub struct LspBackend {
     client: Client,
     /// Dokumen terbuka: uri → teks (LSP-03: sumber goto-definition).
     documents: std::sync::Mutex<HashMap<String, String>>,
+    /// LSP-07 tahap 2c: cache token semantik per dokumen —
+    /// uri → (result_id, tokens) untuk delta update.
+    semantic_cache: std::sync::Mutex<HashMap<String, (String, Vec<SemanticToken>)>>,
+    /// Counter result_id token semantik.
+    semantic_seq: std::sync::atomic::AtomicU64,
 }
 
 impl LspBackend {
@@ -150,6 +156,8 @@ impl LspBackend {
         LspBackend {
             client,
             documents: std::sync::Mutex::new(HashMap::new()),
+            semantic_cache: std::sync::Mutex::new(HashMap::new()),
+            semantic_seq: std::sync::atomic::AtomicU64::new(1),
         }
     }
 
@@ -1759,6 +1767,36 @@ impl LspBackend {
         out
     }
 
+    /// LSP-07 tahap 2c: diff prefix/suffix dua deret token → edit
+    /// minimal (0-1 edit; kosong = identik). Murni, bisa diuji.
+    pub(crate) fn semantic_tokens_delta(
+        prev: &[SemanticToken],
+        next: &[SemanticToken],
+    ) -> Vec<SemanticTokensEdit> {
+        let mut prefix = 0usize;
+        while prefix < prev.len()
+            && prefix < next.len()
+            && prev[prefix] == next[prefix]
+        {
+            prefix += 1;
+        }
+        let mut suffix = 0usize;
+        while suffix < prev.len() - prefix
+            && suffix < next.len() - prefix
+            && prev[prev.len() - 1 - suffix] == next[next.len() - 1 - suffix]
+        {
+            suffix += 1;
+        }
+        if prefix + suffix == prev.len() && prefix + suffix == next.len() {
+            return Vec::new();
+        }
+        vec![SemanticTokensEdit {
+            start: prefix as u32,
+            delete_count: (prev.len() - prefix - suffix) as u32,
+            data: Some(next[prefix..next.len() - suffix].to_vec()),
+        }]
+    }
+
     /// LSP-07 tahap 2b: token semantik untuk rentang baris inklusif
     /// [start_line, end_line] — filter SEBELUM encode agar delta valid.
     /// `start > end` → kosong.
@@ -1871,7 +1909,9 @@ impl LanguageServer for LspBackend {
                                 token_modifiers: vec![],
                             },
                             range: Some(true),
-                            full: Some(lsp_types::SemanticTokensFullOptions::Bool(true)),
+                            full: Some(lsp_types::SemanticTokensFullOptions::Delta {
+                                delta: Some(true),
+                            }),
                         },
                     ),
                 ),
@@ -2448,7 +2488,8 @@ impl LanguageServer for LspBackend {
         Ok(Some(ranges))
     }
 
-    /// Semantic tokens full (LSP-07 tahap 1).
+    /// Semantic tokens full (LSP-07 tahap 1+2c: simpan cache + result_id
+    /// untuk delta update).
     async fn semantic_tokens_full(
         &self,
         params: SemanticTokensParams,
@@ -2458,10 +2499,69 @@ impl LanguageServer for LspBackend {
             return Ok(None);
         };
         let tokens = Self::compute_semantic_tokens(&text);
+        let rid = self
+            .semantic_seq
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            .to_string();
+        if let Ok(mut cache) = self.semantic_cache.lock() {
+            cache.insert(uri.as_str().to_string(), (rid.clone(), tokens.clone()));
+        }
         Ok(Some(SemanticTokensResult::Tokens(SemanticTokens {
-            result_id: None,
+            result_id: Some(rid),
             data: tokens,
         })))
+    }
+
+    /// Semantic tokens delta (LSP-07 tahap 2c): edit dari previous_result_id.
+    /// Id tak dikenal → full Tokens (bukan error, sesuai LSP).
+    async fn semantic_tokens_full_delta(
+        &self,
+        params: SemanticTokensDeltaParams,
+    ) -> JsonRpcResult<Option<SemanticTokensFullDeltaResult>> {
+        let uri = &params.text_document.uri;
+        let Some(text) = self.document_text(uri) else {
+            return Ok(None);
+        };
+        let tokens = Self::compute_semantic_tokens(&text);
+        let prev = self
+            .semantic_cache
+            .lock()
+            .ok()
+            .and_then(|c| c.get(uri.as_str()).cloned());
+        // Cache miss / id mismatch → full Tokens DENGAN result_id baru
+        // (agar client bisa delta berikutnya; cache ikut diperbarui).
+        let matched = match &prev {
+            Some((prev_id, _)) if *prev_id == params.previous_result_id => true,
+            _ => false,
+        };
+        if !matched {
+            let rid = self
+                .semantic_seq
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                .to_string();
+            if let Ok(mut cache) = self.semantic_cache.lock() {
+                cache.insert(uri.as_str().to_string(), (rid.clone(), tokens.clone()));
+            }
+            return Ok(Some(SemanticTokensFullDeltaResult::Tokens(SemanticTokens {
+                result_id: Some(rid),
+                data: tokens,
+            })));
+        }
+        let prev_tokens = prev.map(|(_, t)| t).unwrap_or_default();
+        let edits = Self::semantic_tokens_delta(&prev_tokens, &tokens);
+        let rid = self
+            .semantic_seq
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            .to_string();
+        if let Ok(mut cache) = self.semantic_cache.lock() {
+            cache.insert(uri.as_str().to_string(), (rid.clone(), tokens));
+        }
+        Ok(Some(SemanticTokensFullDeltaResult::TokensDelta(
+            SemanticTokensDelta {
+                result_id: Some(rid),
+                edits,
+            },
+        )))
     }
 
     /// Semantic tokens range (LSP-07 tahap 2b).
@@ -2663,8 +2763,16 @@ impl LanguageServer for LspBackend {
         }))
     }
 
-    /// Text document didClose — clear diagnostics.
+    /// Text document didClose — clear diagnostics + evict caches
+    /// (LSP-07 tahap 2c: semantic_cache ikut dibuang agar tak basi).
     async fn did_close(&self, params: lsp_types::DidCloseTextDocumentParams) {
+        let key = params.text_document.uri.as_str().to_string();
+        if let Ok(mut docs) = self.documents.lock() {
+            docs.remove(&key);
+        }
+        if let Ok(mut cache) = self.semantic_cache.lock() {
+            cache.remove(&key);
+        }
         self.client
             .send_notification::<PublishDiagnostics>(PublishDiagnosticsParams {
                 uri: params.text_document.uri,
@@ -4014,6 +4122,57 @@ endmodule
             line += t.delta_line;
             assert_eq!(line, 1, "{r1:?}");
         }
+    }
+
+    #[test]
+    fn test_semantic_tokens_delta() {
+        // LSP-07 tahap 2c: diff token identik/sisip/tengah.
+        let tok = |dl: u32, ds: u32| SemanticToken {
+            delta_line: dl,
+            delta_start: ds,
+            length: 3,
+            token_type: 5,
+            token_modifiers_bitset: 0,
+        };
+        let a = vec![tok(0, 0), tok(1, 0), tok(1, 4)];
+        // Identik → tanpa edit.
+        assert!(LspBackend::semantic_tokens_delta(&a, &a).is_empty());
+        // Sisip 1 di tengah → 1 edit {start 1, delete 0, data 1}.
+        let mut b = a.clone();
+        b.insert(1, tok(9, 9));
+        let e = LspBackend::semantic_tokens_delta(&a, &b);
+        assert_eq!(e.len(), 1);
+        assert_eq!((e[0].start, e[0].delete_count), (1, 0));
+        assert_eq!(e[0].data.as_ref().unwrap().len(), 1);
+        // Hapus tengah → delete 1 tanpa data.
+        let e2 = LspBackend::semantic_tokens_delta(&b, &a);
+        assert_eq!(e2.len(), 1);
+        assert_eq!((e2[0].start, e2[0].delete_count), (1, 1));
+        // Terapkan edit ke prev → sama dengan next (roundtrip).
+        let mut applied = a.clone();
+        let (s, d) = (e[0].start as usize, e[0].delete_count as usize);
+        applied.splice(s..s + d, e[0].data.clone().unwrap());
+        assert_eq!(applied, b);
+        // Kosong → kosong.
+        assert!(LspBackend::semantic_tokens_delta(&[], &[]).is_empty());
+        // Replace total → 1 edit hapus semua + data penuh.
+        let e3 = LspBackend::semantic_tokens_delta(&a, &[tok(7, 7)]);
+        assert_eq!((e3[0].start, e3[0].delete_count), (0, 3));
+        assert_eq!(e3[0].data.as_ref().unwrap().len(), 1);
+        // Overlap suffix [A,A]→[A]: prefix 1, hapus 1, tanpa data.
+        let dup = vec![tok(0, 0), tok(0, 0)];
+        let e4 = LspBackend::semantic_tokens_delta(&dup, &[tok(0, 0)]);
+        assert_eq!((e4[0].start, e4[0].delete_count), (1, 1));
+        assert!(e4[0].data.as_ref().unwrap().is_empty());
+        // Kosong → isi: insert di 0.
+        let e5 = LspBackend::semantic_tokens_delta(&[], &a);
+        assert_eq!((e5[0].start, e5[0].delete_count), (0, 0));
+        assert_eq!(e5[0].data.as_ref().unwrap().len(), 3);
+        // Roundtrip delete: terapkan e2 ke b → a.
+        let mut back = b.clone();
+        let (s2, d2) = (e2[0].start as usize, e2[0].delete_count as usize);
+        back.splice(s2..s2 + d2, e2[0].data.clone().unwrap());
+        assert_eq!(back, a);
     }
 
     #[test]

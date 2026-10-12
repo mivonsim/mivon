@@ -1899,7 +1899,7 @@ LSP-06: ⚠️ IN PROGRESS (ROUND 95/113) — hover tahap 1+2a:
          "declaration"). Tahap 2a (ROUND 113): doc_comment_above —
          komentar `//` berurutan di atas definisi masuk hover.
          MASIH OPEN: dokumentasi kaya (port direction + range).
-LSP-07: ⚠️ IN PROGRESS (ROUND 109/119) — semantic tokens tahap 1+2b:
+LSP-07: ⚠️ IN PROGRESS (ROUND 109/119/124) — semantic tokens:
          backend.rs — capability SemanticTokensOptions dengan legend
          8 tipe (namespace/type/class/interface/function/variable/
          parameter/keyword); handler semantic_tokens_full; core murni
@@ -1908,7 +1908,10 @@ LSP-07: ⚠️ IN PROGRESS (ROUND 109/119) — semantic tokens tahap 1+2b:
          Test 1 unit (module type=0, variable type=5, keyword type=7).
          Tahap 2b (ROUND 119): refactor raw+encode; range request
          (capability + handler semantic_tokens_range, filter sebelum
-         encode). MASIH OPEN: delta update, modifier bitset.
+         encode). Tahap 2c (ROUND 124): delta update — cache per-uri +
+         result_id monotonik, semantic_tokens_delta (prefix/suffix),
+         full_delta handler (miss → full ber-id baru), did_close evict.
+         MASIH OPEN: modifier bitset.
 LSP-08: ✅ Code lens (ROUND 90) — code_lens handler di LSP backend. compute_code_lens
            menampilkan: (1) di atas setiap module: jumlah test functions ("N tests"),
            (2) di atas setiap function/task: reference count ("N references").
@@ -5311,6 +5314,24 @@ unknown, cycle A↔B + self, range nama, filter items).
 📊 VERIFIKASI ROUND 123:
    - cargo test -p mivon-env --lib --features lsp lsp: 49 passed (+1)
    - Review subagent putaran 3: APPROVE (verifikasi ulang).
+
+═══ ROUND 124 — LSP-07 delta update (tahap 2c) ═══
+
+✅ DELTA (crates/mivon-env/src/lsp/backend.rs):
+   - semantic_tokens_delta(prev, next): prefix/suffix → 0-1 edit.
+   - Cache per-uri (result_id, tokens) + AtomicU64 monotonik; full
+     mengisi cache; full_delta: miss → full ber-id baru; match →
+     TokensDelta. did_close evict kedua cache.
+   - Capability full Delta{delta:true}.
+   - Review REQUEST CHANGES (fallback tanpa id/cache + did_close
+     leak + test kurang) → semua diperbaiki.
+
+Test (+1): test_semantic_tokens_delta (identik/sisip/hapus/
+roundtrip/replace/overlap/kosong/delete-roundtrip).
+
+📊 VERIFIKASI ROUND 124:
+   - cargo test -p mivon-env --lib --features lsp lsp: 50 passed (+1)
+   - Review subagent putaran 2: APPROVE.
 
 ========================================
 END OF AUDIT REPORT
