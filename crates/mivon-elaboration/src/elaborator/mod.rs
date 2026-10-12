@@ -200,6 +200,13 @@ pub struct Elaborator {
     /// dynamic (storage bit-vector dinamis), bukan skalar.
     pub typedef_queue: std::collections::HashSet<Symbol>,
     pub typedef_dynamic: std::collections::HashSet<Symbol>,
+    /// Sedang mengelaborasi `with` clause sebuah array manipulation method
+    /// (`q.find with (item > 3)`, LRM 1800 §7.12.1). Saat true, identifier
+    /// `item` di-resolve ke `IrExpr::HierRef("item")` (local runtime yang
+    /// di-push evaluator ke `method_locals`), bukan E2001. Di-set/restore
+    /// di `elaborate_with_clause`. `Cell` karena `elaborate_expr` bertipe
+    /// `&self` (seperti `opt_stats`).
+    pub with_item_bound: std::cell::Cell<bool>,
     pub package_symbols: HashMap<Symbol, HashMap<Symbol, PackageItem>>,
     /// Konstanta package ter-evaluasi (kualifikasi `pkg::name`): skalar & array.
     pub pkg_const_scalars: HashMap<Symbol, i64>,
@@ -612,6 +619,7 @@ impl Elaborator {
             typedef_dims: HashMap::new(),
             typedef_queue: std::collections::HashSet::new(),
             typedef_dynamic: std::collections::HashSet::new(),
+            with_item_bound: std::cell::Cell::new(false),
             typedef_field_map: HashMap::new(),
             package_symbols,
             pkg_const_scalars,

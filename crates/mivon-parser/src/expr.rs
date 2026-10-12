@@ -439,6 +439,20 @@ impl Parser {
                                 with_clause: Some(Box::new(with_expr)),
                             };
                         }
+                        // Array manipulation TANPA tanda kurung argumen:
+                        // `q.find with (item > 3)` (LRM 1800 §7.12.1). `q.find`
+                        // sudah ter-parse sebagai MemberAccess (tidak ada `(`),
+                        // jadi di sini diangkat ke MethodCall tanpa arg +
+                        // with_clause. Tanpa ini parser salah menolak dgn
+                        // "'with' clause can only follow a method call".
+                        Expr::MemberAccess { obj, field } => {
+                            lhs = Expr::MethodCall {
+                                obj,
+                                method: field,
+                                args: Vec::new(),
+                                with_clause: Some(Box::new(with_expr)),
+                            };
+                        }
                         // F17: pola UVM `!x.randomize() with { ... }` — `with`
                         // melekat ke MethodCall DALAM, `!` tetap di luar:
                         // `!(x.randomize() with { ... })`. Sebelumnya parser
@@ -540,7 +554,7 @@ impl Parser {
                 }
                 Token::Dot => {
                     self.advance();
-                    let member = self.expect_ident()?;
+                    let member = self.expect_member_name()?;
                     if self.peek() == &Token::LParen {
                         self.advance();
                         let args = self.parse_call_args()?;

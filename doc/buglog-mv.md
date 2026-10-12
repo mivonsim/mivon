@@ -367,6 +367,66 @@ bug di mivon utama (parser/elaborator/simulator). Status: ✅ fixed / ⏳ open.
     - Sisa caveat (keterbatasan TOOL, bukan generasi): iverilog tak dukung
       queue sbg port module — verifikasi port via verilator/simulator mivon.
 
+36. **Array method `with (item …)` tak bisa dipakai (F41)** — tiga bug di jalur
+    array manipulation (LRM 1800 §7.12), ditemukan dari probe `q.find with
+    (item > 3)` (verilator lint clean → bentuk ini SV valid):
+    - **Parser SV** menolak bentuk LRM **tanpa kurung argumen** `q.find with
+      (item > 3)` — E1005 "'with' clause can only follow a method call"
+      (karena `q.find` ter-parse sebagai `MemberAccess`, bukan `MethodCall`).
+    - **Elaborator** tak mengenal iterator implisit `item` di dalam clause →
+      E2001 "signal 'item' not found" (bahkan untuk `q.find() with (…)`).
+    - **Method bernama keyword** (`unique`/`and`/`or`/`xor`) gagal parse
+      setelah `.` ("expected identifier, found unique") — lexer memetakannya
+      ke token keyword.
+    - **Semantik clause**: reduction/ordering memakai clause sbg BOOL
+      (`check_with_clause`) — salah untuk clause bernilai (`q.sum with
+      (item * 2)`).
+    Fix:
+    - **Parser SV** (`mivon-parser/src/expr.rs`): arm `Expr::MemberAccess
+      {obj,field}` di blok `with` → `MethodCall{obj, method:field, args:[],
+      with_clause}`.
+    - **Parser SV + `.mv`** (`mivon-parser/src/lib.rs` `expect_member_name`;
+      `mivon-mv/src/parser/mod.rs` `expect_member_name`): menerima
+      `Token::Unique/And/Or/Xor` (`Tok::Unique/And/Or`) sbg nama member —
+      HANYA setelah `.` (keyword tetap keyword di konteks lain).
+    - **Elaborator** (`mivon-elaboration`): field `with_item_bound: Cell<bool>`
+      + helper `elaborate_with_clause` (dipakai di 4 situs MethodCall);
+      saat true, `Expr::Ident("item")` → `IrExpr::HierRef("item")`.
+    - **Runtime** (`engine/eval/expr.rs`): `IrExpr::HierRef` fallback ke
+      `get_local` (`method_locals`). `engine/uvm/util.rs`: `eval_with_value`
+      (nilai clause per elemen) dipakai sum/product/and/or/xor/min/max/unique/
+      sort/rsort; `check_with_clause` jadi wrapper bool.
+    - **Semantik `unique`** (LRM §7.12.3): kini **mengembalikan queue baru** &
+      tidak mengubah sumber — dulu write-in-place + return kosong (chained
+      `.size()` → RT0001).
+    - **`.mv`** (`mivon-mv`): lexer `Tok::With`; AST `MethodCall.with_clause`;
+      parser arm `Tok::With`; codegen/print `q.find() with (…)`; check
+      mengenali `item` (bukan E2001).
+    - Verifikasi: `mivon sim examples/mv/array_methods.mv --top tb_arr` →
+      `ARR_OK` (find/find_index/sum/min/max/sort/unique); verilator lint OK.
+      3 test baru: `test_array_method_with_clause_item_iterator`,
+      `test_array_method_keyword_names`,
+      `test_mv_array_method_with_clause_end_to_end`.
+    - Sisa caveat (keterbatasan, bukan bug): chained method pada hasil
+      temporer (`q.unique().size()`) belum didukung — simpan ke queue dulu
+      (`r = q.unique(); r.size()`); iverilog tak dukung `with` clause.
+
 ## ⏳ Open
 
-_(kosong — semua item fixed.)_
+**#37 (open) — frame `evaluate_expr_impl` ~184 KB → stack overflow rekursi.**
+Ditemukan saat F41 (bukan regresi F41): rantai `&&` **≥8 operan** di evaluator
+rekursif (`use_packed_eval=false` — dipakai `EngineFlags::default()`, yaitu
+jalur test API `simulate_signals`) menabrak stack thread test 2 MiB. gdb:
+tiap level rekursi `evaluate_expr_impl` memakai **~0x2E240 ≈ 184 KB**
+(fungsi ~2874 baris; temporari antar match-arm tak berbagi slot stack di build
+debug). Kedalaman aman ≈ 7 kondisi; 8 kondisi → `SIGABRT` stack overflow.
+Bukan bug semantik (nilai benar bila stack cukup): CLI `mivon sim` (main thread
+8 MiB) & packed eval tidak terpengaruh. Bukti: `MIVON_DBG_PS=1` → 13 eval
+BinaryOp untuk 7 kondisi (linear, bukan eksponensial); AST 8 kondisi hanya 352 B.
+**Fix yang disarankan (belum dikerjakan — HIGH risk, core evaluator):** pecah
+`evaluate_expr_impl` jadi helper per-arm (`#[inline(never)]`) agar frame tak
+menjumlahkan semua arm, atau box temporari besar. Sementara ini demo
+`examples/mv/array_methods.mv` memakai cek per-kondisi (bukan satu rantai `&&`).
+
+_(Selain #37, semua item fixed. Caveat chained method temporer & iverilog `with`
+tercatat di #36 sbg keterbatasan tool/desain, bukan bug.)_

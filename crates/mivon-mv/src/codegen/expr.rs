@@ -119,10 +119,18 @@ pub(crate) fn emit_expr(e: &Expr) -> String {
         // Named arg `f(10, factor = 4)` → SV `.factor(4)`.
         Expr::NamedArg { name, expr } => format!(".{name}({})", emit_expr(expr)),
         Expr::MethodCall {
-            obj, method, args, ..
+            obj,
+            method,
+            args,
+            with_clause,
+            ..
         } => {
             let a: Vec<String> = args.iter().map(emit_expr).collect();
-            format!("{}.{method}({})", emit_expr(obj), a.join(", "))
+            let base = format!("{}.{method}({})", emit_expr(obj), a.join(", "));
+            match with_clause {
+                Some(wc) => format!("{base} with ({})", emit_expr(wc)),
+                None => base,
+            }
         }
         Expr::Member(obj, f, ..) => format!("{}.{f}", emit_expr(obj)),
         Expr::Index(obj, i) => format!("{}[{}]", emit_expr(obj), emit_expr(i)),

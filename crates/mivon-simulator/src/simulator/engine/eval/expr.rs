@@ -2270,6 +2270,12 @@ impl SimulationEngine {
                 return_width,
             } => self.evaluate_dpi_call(name.as_str(), args, *return_width),
             IrExpr::HierRef(name) => {
+                // Local frame dulu: `item` (iterator `with` clause array
+                // method, LRM 1800 §7.12.1) di-push evaluator ke
+                // `method_locals` sebelum mengevaluasi clause.
+                if let Some(v) = self.get_local(name.as_str()) {
+                    return Ok(v);
+                }
                 if let Some(sig_id) = self.find_signal(name.as_str()) {
                     let mut val = self.state.read_signal(sig_id).clone();
                     sanitize_for_2state(&self.design.top.signals, sig_id, &mut val);

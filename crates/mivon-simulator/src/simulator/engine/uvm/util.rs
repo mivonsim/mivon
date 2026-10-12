@@ -257,21 +257,42 @@ impl SimulationEngine {
     }
 }
 impl SimulationEngine {
+    /// Evaluasi `with` clause sebuah array method untuk satu elemen dan
+    /// kembalikan NILAINYA (bukan bool). Dipakai reduction/ordering method
+    /// (`sum`/`product`/`and`/`or`/`xor`/`min`/`max`/`unique`/`sort`/`rsort`)
+    /// di mana clause `with (item.x)` adalah ekspresi bernilai (LRM 1800
+    /// §7.12.1). Bila tidak ada clause, kembalikan elemen itu sendiri.
+    /// `item` di-bind ke `elem` lewat `method_locals`.
+    pub(crate) fn eval_with_value(
+        &mut self,
+        with_clause: Option<&IrExpr>,
+        elem: &LogicVec,
+    ) -> Result<LogicVec, SimError> {
+        match with_clause {
+            Some(wc) => {
+                let depth = self.method_locals.len();
+                let mut scope = std::collections::HashMap::new();
+                scope.insert(Symbol::intern("item"), elem.clone());
+                self.method_locals.push(scope);
+                let result = self.evaluate_expr(wc);
+                self.method_locals.truncate(depth);
+                result
+            }
+            None => Ok(elem.clone()),
+        }
+    }
+
     pub(crate) fn check_with_clause(
         &mut self,
         with_clause: Option<&IrExpr>,
         elem: &LogicVec,
     ) -> Result<bool, SimError> {
-        if let Some(wc) = with_clause {
-            let depth = self.method_locals.len();
-            let mut scope = std::collections::HashMap::new();
-            scope.insert(Symbol::intern("item"), elem.clone());
-            self.method_locals.push(scope);
-            let result = self.evaluate_expr(wc)?.to_bool().unwrap_or(false);
-            self.method_locals.truncate(depth);
-            Ok(result)
-        } else {
-            Ok(true)
+        match with_clause {
+            Some(_) => Ok(self
+                .eval_with_value(with_clause, elem)?
+                .to_bool()
+                .unwrap_or(false)),
+            None => Ok(true),
         }
     }
 
@@ -565,21 +586,24 @@ impl SimulationEngine {
                 let elem_width = sig.elem_width;
                 if elem_width > 0 {
                     let count = lv.width.checked_div(elem_width).unwrap_or(0);
-                    let mut elems: Vec<LogicVec> = (0..count)
-                        .map(|i| {
-                            let mut bits = Vec::with_capacity(elem_width);
-                            for j in 0..elem_width {
-                                bits.push(lv.bits[i * elem_width + j]);
-                            }
-                            LogicVec {
-                                width: elem_width,
-                                bits,
-                            }
-                        })
-                        .collect();
-                    elems.sort_by_key(|a| a.to_u64());
+                    // Kunci pengurutan = nilai `with (item.x)` bila ada clause
+                    // (LRM 1800 §7.12.1), jika tidak = elemen itu sendiri.
+                    let mut keyed: Vec<(u64, LogicVec)> = Vec::with_capacity(count);
+                    for i in 0..count {
+                        let mut bits = Vec::with_capacity(elem_width);
+                        for j in 0..elem_width {
+                            bits.push(lv.bits[i * elem_width + j]);
+                        }
+                        let elem = LogicVec {
+                            width: elem_width,
+                            bits,
+                        };
+                        let key = self.eval_with_value(with_clause, &elem)?.to_u64();
+                        keyed.push((key, elem));
+                    }
+                    keyed.sort_by(|a, b| a.0.cmp(&b.0));
                     let mut new_bits = Vec::with_capacity(lv.width);
-                    for e in &elems {
+                    for (_, e) in &keyed {
                         new_bits.extend(e.bits.iter().copied());
                     }
                     let sorted = LogicVec {
@@ -595,21 +619,22 @@ impl SimulationEngine {
                 let elem_width = sig.elem_width;
                 if elem_width > 0 {
                     let count = lv.width.checked_div(elem_width).unwrap_or(0);
-                    let mut elems: Vec<LogicVec> = (0..count)
-                        .map(|i| {
-                            let mut bits = Vec::with_capacity(elem_width);
-                            for j in 0..elem_width {
-                                bits.push(lv.bits[i * elem_width + j]);
-                            }
-                            LogicVec {
-                                width: elem_width,
-                                bits,
-                            }
-                        })
-                        .collect();
-                    elems.sort_by_key(|a| std::cmp::Reverse(a.to_u64()));
+                    let mut keyed: Vec<(u64, LogicVec)> = Vec::with_capacity(count);
+                    for i in 0..count {
+                        let mut bits = Vec::with_capacity(elem_width);
+                        for j in 0..elem_width {
+                            bits.push(lv.bits[i * elem_width + j]);
+                        }
+                        let elem = LogicVec {
+                            width: elem_width,
+                            bits,
+                        };
+                        let key = self.eval_with_value(with_clause, &elem)?.to_u64();
+                        keyed.push((key, elem));
+                    }
+                    keyed.sort_by(|a, b| b.0.cmp(&a.0));
                     let mut new_bits = Vec::with_capacity(lv.width);
-                    for e in &elems {
+                    for (_, e) in &keyed {
                         new_bits.extend(e.bits.iter().copied());
                     }
                     let sorted = LogicVec {
@@ -667,10 +692,8 @@ impl SimulationEngine {
                             width: elem_width,
                             bits,
                         };
-                        if !self.check_with_clause(with_clause, &elem)? {
-                            continue;
-                        }
-                        result = result.wrapping_add(elem.to_u64());
+                        let v = self.eval_with_value(with_clause, &elem)?;
+                        result = result.wrapping_add(v.to_u64());
                     }
                     Ok(LogicVec::from_u64(result, elem_width.max(32)))
                 } else {
@@ -692,10 +715,8 @@ impl SimulationEngine {
                             width: elem_width,
                             bits,
                         };
-                        if !self.check_with_clause(with_clause, &elem)? {
-                            continue;
-                        }
-                        result = result.wrapping_mul(elem.to_u64());
+                        let v = self.eval_with_value(with_clause, &elem)?;
+                        result = result.wrapping_mul(v.to_u64());
                     }
                     Ok(LogicVec::from_u64(result, elem_width.max(32)))
                 } else {
@@ -716,12 +737,10 @@ impl SimulationEngine {
                         }
                         let elem = LogicVec {
                             width: elem_width,
-                            bits: bits.clone(),
+                            bits,
                         };
-                        if !self.check_with_clause(with_clause, &elem)? {
-                            continue;
-                        }
-                        for (j, bit) in bits.iter().enumerate().take(elem_width) {
+                        let v = self.eval_with_value(with_clause, &elem)?;
+                        for (j, bit) in v.bits.iter().enumerate().take(elem_width) {
                             if bit == &LogicVal::Zero {
                                 result.bits[j] = LogicVal::Zero;
                             }
@@ -746,12 +765,10 @@ impl SimulationEngine {
                         }
                         let elem = LogicVec {
                             width: elem_width,
-                            bits: bits.clone(),
+                            bits,
                         };
-                        if !self.check_with_clause(with_clause, &elem)? {
-                            continue;
-                        }
-                        for (j, bit) in bits.iter().enumerate().take(elem_width) {
+                        let v = self.eval_with_value(with_clause, &elem)?;
+                        for (j, bit) in v.bits.iter().enumerate().take(elem_width) {
                             if bit == &LogicVal::One {
                                 result.bits[j] = LogicVal::One;
                             }
@@ -776,12 +793,10 @@ impl SimulationEngine {
                         }
                         let elem = LogicVec {
                             width: elem_width,
-                            bits: bits.clone(),
+                            bits,
                         };
-                        if !self.check_with_clause(with_clause, &elem)? {
-                            continue;
-                        }
-                        for (j, bit) in bits.iter().enumerate().take(elem_width) {
+                        let v = self.eval_with_value(with_clause, &elem)?;
+                        for (j, bit) in v.bits.iter().enumerate().take(elem_width) {
                             if bit == &LogicVal::One {
                                 result.bits[j] = match result.bits[j] {
                                     LogicVal::Zero => LogicVal::One,
@@ -812,10 +827,7 @@ impl SimulationEngine {
                             width: elem_width,
                             bits,
                         };
-                        if !self.check_with_clause(with_clause, &elem)? {
-                            continue;
-                        }
-                        let v = elem.to_u64();
+                        let v = self.eval_with_value(with_clause, &elem)?.to_u64();
                         if v < min_val {
                             min_val = v;
                         }
@@ -840,10 +852,7 @@ impl SimulationEngine {
                             width: elem_width,
                             bits,
                         };
-                        if !self.check_with_clause(with_clause, &elem)? {
-                            continue;
-                        }
-                        let v = elem.to_u64();
+                        let v = self.eval_with_value(with_clause, &elem)?.to_u64();
                         if v > max_val {
                             max_val = v;
                         }
@@ -869,10 +878,8 @@ impl SimulationEngine {
                             width: elem_width,
                             bits,
                         };
-                        if !self.check_with_clause(with_clause, &elem)? {
-                            continue;
-                        }
-                        if seen.insert(elem.to_u64()) {
+                        let key = self.eval_with_value(with_clause, &elem)?.to_u64();
+                        if seen.insert(key) {
                             for j in 0..elem_width {
                                 let idx = i * elem_width + j;
                                 new_bits.push(lv.bits.get(idx).copied().unwrap_or(LogicVal::X));
@@ -883,7 +890,11 @@ impl SimulationEngine {
                         width: new_bits.len(),
                         bits: new_bits,
                     };
-                    self.state.write_signal(sig_id, result);
+                    // LRM 1800 §7.12.3: `unique` MENGEMBALIKAN queue baru dan
+                    // TIDAK mengubah array sumber (beda dgn `sort`/`reverse`
+                    // yang in-place). Dulu write_signal(sig_id,..) + return
+                    // kosong → `q.unique().size()` gagal (RT0001).
+                    return Ok(result);
                 }
                 Ok(LogicVec::new(0))
             }

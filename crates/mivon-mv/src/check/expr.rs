@@ -374,12 +374,20 @@ pub(crate) fn check_expr<'a>(
             obj,
             method,
             args,
+            with_clause,
             line,
             col,
         } => {
             check_expr(obj, ctx, scope, depth + 1)?;
             for a in args {
                 check_expr(a, ctx, scope, depth + 1)?;
+            }
+            // Klausa `with (item …)`: iterator implisit `item` (LRM 1800
+            // §7.12.1) dianggap terdeklarasi di dalam clause (bukan E2001).
+            if let Some(wc) = with_clause {
+                let mut ws = scope.clone();
+                ws.sigs.insert("item");
+                check_expr(wc, ctx, &ws, depth + 1)?;
             }
             // E2011 juga untuk method class (yang dicari = nama method).
             let n = args.len();

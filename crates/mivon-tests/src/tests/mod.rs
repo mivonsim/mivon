@@ -1030,6 +1030,78 @@ endmodule
     assert_eq!(get("n"), 2, "dua elemen");
 }
 
+/// Array manipulation method dengan `with (item ...)` (LRM 1800 §7.12.1):
+/// parser menerima bentuk TANPA tanda kurung argumen (`q.find with (...)`,
+/// bukan hanya `q.find() with (...)`), elaborator men-bind iterator implisit
+/// `item` (bukan E2001), dan evaluator memberi nilai `item` per elemen.
+#[test]
+fn test_array_method_with_clause_item_iterator() {
+    let source = r#"
+module tb_with;
+    int q[$];
+    int r[$];
+    int iq[$];
+    int sum2, mn, mx, fn, fv, fi, s0, s4;
+    initial begin
+        q = '{1,2,3,4,5};
+        r  = q.find with (item > 3);
+        fn = r.size();
+        r  = q.find_first with (item > 2);
+        fv = r[0];
+        iq = q.find_index with (item == 3);
+        fi = iq[0];
+        sum2 = q.sum with (item * 2);
+        mn = q.min with (item);
+        mx = q.max with (item);
+        q.sort with (item);
+        s0 = q[0];
+        s4 = q[4];
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 5).unwrap();
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    assert_eq!(get("fn"), 2, "find with (item>3) → 4,5");
+    assert_eq!(get("fv"), 3, "find_first with (item>2) → 3");
+    assert_eq!(get("fi"), 2, "find_index with (item==3) → indeks 2");
+    assert_eq!(get("sum2"), 30, "sum with (item*2) → 30");
+    assert_eq!(get("mn"), 1, "min with (item) → 1");
+    assert_eq!(get("mx"), 5, "max with (item) → 5");
+    assert_eq!(get("s0"), 1, "sort with (item) → elemen 0 = 1");
+    assert_eq!(get("s4"), 5, "sort with (item) → elemen 4 = 5");
+}
+
+/// Method array yang namanya keyword (`unique`/`and`/`or`/`xor`, LRM 1800
+/// §7.12.3) harus bisa dipanggil setelah `.`. `unique` mengembalikan queue
+/// baru (tidak mengubah sumber, §7.12.3).
+#[test]
+fn test_array_method_keyword_names() {
+    let source = r#"
+module tb_kw;
+    int q[$];
+    int r[$];
+    int a, o, x, u;
+    initial begin
+        q = '{1,2,3,4,5};
+        a = q.and();
+        o = q.or();
+        x = q.xor();
+        q = '{1,1,2,3,3};
+        r = q.unique();
+        u = r.size();
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 5).unwrap();
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    assert_eq!(get("a"), 0, "and reduction 1&2&3&4&5 = 0");
+    assert_eq!(get("o"), 7, "or reduction 1|2|3|4|5 = 7");
+    assert_eq!(get("x"), 1, "xor reduction 1^2^3^4^5 = 1");
+    assert_eq!(get("u"), 3, "unique 1,1,2,3,3 → 1,2,3");
+}
+
 #[test]
 fn test_mv_fork_join_modes() {
     // F39: `fork { ... } { ... } join / join_any / join_none` di-transpile
@@ -23834,6 +23906,27 @@ fn test_mv_queue_typedef_example_end_to_end() {
     assert_eq!(get("e1"), 0x22, "pattern elemen 1");
     assert_eq!(get("e2"), 0x33, "pattern elemen 2");
     assert_eq!(get("ok"), 1, "semua assertion queue lolos (QTD_OK)");
+}
+
+/// E2E `.mv`: klausa `with (item …)` (find/find_index/sum/min/max/sort) dan
+/// method bernama keyword (`unique`) — dari sumber `.mv` sampai simulasi.
+#[test]
+fn test_mv_array_method_with_clause_end_to_end() {
+    let src = include_str!("../../../../examples/mv/array_methods.mv");
+    let r = mivon_mv::transpile(src, "array_methods").expect("transpile .mv OK");
+    let combined = format!("{}\n{}", r.svh, r.sv);
+    let sigs =
+        simulate_signals(&combined, 100).expect("array_methods harus simulasi bersih");
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    assert_eq!(get("n"), 2, "find with (item>3)");
+    assert_eq!(get("i"), 2, "find_index with (item==3)");
+    assert_eq!(get("s"), 30, "sum with (item*2)");
+    assert_eq!(get("mn"), 1, "min with (item)");
+    assert_eq!(get("mx"), 5, "max with (item)");
+    assert_eq!(get("s0"), 1, "sort with (item) → elemen 0");
+    assert_eq!(get("s4"), 5, "sort with (item) → elemen 4");
+    assert_eq!(get("un"), 3, "unique");
+    assert_eq!(get("ok"), 1, "semua lolos (ARR_OK)");
 }
 
 // ── LRM 1800 §7.3 — dimensi unpacked harus SETELAH nama variabel ──────

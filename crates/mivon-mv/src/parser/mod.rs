@@ -168,6 +168,26 @@ impl Parser {
         }
     }
 
+    /// Nama member setelah `.` — identifier biasa plus keyword yang juga nama
+    /// method bawaan array (LRM 1800 §7.12.3): `unique`/`and`/`or`. Tanpa ini
+    /// `q.unique()`/`q.and()` gagal parse ("diharapkan identifier, ditemukan
+    /// Unique"). Dipakai HANYA di posisi member-access (setelah `.`).
+    pub(crate) fn expect_member_name(&mut self) -> Result<String, MvError> {
+        let kw = match self.peek() {
+            Tok::Unique => Some("unique"),
+            Tok::And => Some("and"),
+            Tok::Or => Some("or"),
+            _ => None,
+        };
+        match kw {
+            Some(s) => {
+                self.advance();
+                Ok(s.to_string())
+            }
+            None => self.expect_ident(),
+        }
+    }
+
     // ── Raw slice (untuk `assert property`) ──
     pub(crate) fn byte_offset(&self, line: usize, col: usize) -> usize {
         let ls = *self.line_starts.get(line.wrapping_sub(1)).unwrap_or(&0);

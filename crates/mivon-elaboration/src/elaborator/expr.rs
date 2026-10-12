@@ -167,6 +167,13 @@ impl Elaborator {
                         return self.elaborate_expr(&ld.expr, signal_map, signals);
                     }
                 }
+                // Iterator implisit `item` di dalam `with` clause array method
+                // (`q.find with (item > 3)`, LRM 1800 §7.12.1) — di-bind
+                // evaluator ke `method_locals` (lihat check_with_clause /
+                // eval_with_value). Di-emit sebagai HierRef agar name-keyed.
+                if self.with_item_bound.get() && name.as_str() == "item" {
+                    return Ok(IrExpr::HierRef(*name));
+                }
                 // Check if this ident is a parameter (from param_vals or effective_params)
                 if let Some(&val) = self.param_vals.get(name) {
                     return Ok(super::sign::const_or_signed(
@@ -835,6 +842,64 @@ impl Elaborator {
         self.bind_with_fields(with_clause, &obj_owned, &fields, signal_map)
     }
 
+    /// Metode array yang menerima `with (expr)` dengan iterator implisit
+    /// `item` (LRM 1800 §7.12.1): locator (`find*`), reduction (`sum`/
+    /// `product`/`and`/`or`/`xor`), ordering (`min`/`max`/`unique`/`sort`/
+    /// `rsort`).
+    fn is_array_with_method(name: &str) -> bool {
+        matches!(
+            name,
+            "find"
+                | "find_first"
+                | "find_last"
+                | "find_index"
+                | "find_first_index"
+                | "find_last_index"
+                | "sum"
+                | "product"
+                | "and"
+                | "or"
+                | "xor"
+                | "min"
+                | "max"
+                | "unique"
+                | "unique_index"
+                | "sort"
+                | "rsort"
+        )
+    }
+
+    /// Elaborate `with` clause sebuah MethodCall.
+    /// - `randomize`: field class di-bind ke receiver (`bind_randomize_with`).
+    /// - method array (`find`/`sum`/`sort`/…): iterator `item` di-bind ke local
+    ///   runtime — `with_item_bound` membuat `item` jadi `HierRef("item")`
+    ///   yang di-resolve evaluator dari `method_locals` (LRM 1800 §7.12.1).
+    /// - metode lain: elaborate apa adanya (perilaku lama).
+    pub(crate) fn elaborate_with_clause(
+        &self,
+        obj: &Expr,
+        method: &Symbol,
+        with_clause: Option<&Expr>,
+        signal_map: &HashMap<Symbol, SignalId>,
+        signals: &[SignalInfo],
+    ) -> Result<Option<Box<IrExpr>>, SimError> {
+        let Some(wc) = with_clause else {
+            return Ok(None);
+        };
+        if method.as_str() == "randomize" {
+            let bound = self.bind_randomize_with(obj, method, wc, signal_map, signals);
+            return Ok(Some(Box::new(self.elaborate_expr(&bound, signal_map, signals)?)));
+        }
+        if Self::is_array_with_method(method.as_str()) {
+            let saved = self.with_item_bound.get();
+            self.with_item_bound.set(true);
+            let r = self.elaborate_expr(wc, signal_map, signals);
+            self.with_item_bound.set(saved);
+            return Ok(Some(Box::new(r?)));
+        }
+        Ok(Some(Box::new(self.elaborate_expr(wc, signal_map, signals)?)))
+    }
+
     /// Kumpulkan nama field data sebuah class AST + rantai `extends` (parent
     /// duluan, child boleh override — sejajar merge runtime di
     /// elaborator/classes.rs). Guard siklus + batas depth 16.
@@ -1376,16 +1441,13 @@ impl Elaborator {
                             .iter()
                             .map(|a| self.elaborate_expr(a, signal_map, signals))
                             .collect();
-                        let ir_with = match with_clause {
-                            Some(wc) => {
-                                let bound =
-                                    self.bind_randomize_with(obj, method, wc, signal_map, signals);
-                                Some(Box::new(
-                                    self.elaborate_expr(&bound, signal_map, signals)?,
-                                ))
-                            }
-                            None => None,
-                        };
+                        let ir_with = self.elaborate_with_clause(
+                            obj,
+                            method,
+                            with_clause.as_deref(),
+                            signal_map,
+                            signals,
+                        )?;
                         return Ok(IrExpr::MethodCall {
                             obj: Box::new(IrExpr::HierRef(*name)),
                             method: *method,
@@ -1399,14 +1461,13 @@ impl Elaborator {
                     .iter()
                     .map(|a| self.elaborate_expr(a, signal_map, signals))
                     .collect();
-                let ir_with = match with_clause {
-                    Some(wc) => {
-                        let bound =
-                            self.bind_randomize_with(obj, method, wc, signal_map, signals);
-                        Some(Box::new(self.elaborate_expr(&bound, signal_map, signals)?))
-                    }
-                    None => None,
-                };
+                let ir_with = self.elaborate_with_clause(
+                    obj,
+                    method,
+                    with_clause.as_deref(),
+                    signal_map,
+                    signals,
+                )?;
                 Ok(IrExpr::MethodCall {
                     obj: Box::new(ir_obj),
                     method: *method,

@@ -1321,12 +1321,13 @@ impl Elaborator {
                                     .iter()
                                     .map(|a| self.elaborate_expr(a, signal_map, signals))
                                     .collect::<Result<_, _>>()?;
-                                let ir_with = match with_clause {
-                                    Some(wc) => Some(Box::new(
-                                        self.elaborate_expr(wc, signal_map, signals)?,
-                                    )),
-                                    None => None,
-                                };
+                                let ir_with = self.elaborate_with_clause(
+                                    obj,
+                                    method,
+                                    with_clause.as_deref(),
+                                    signal_map,
+                                    signals,
+                                )?;
                                 return Ok(IrStmt::MethodCallStmt {
                                     obj: IrExpr::HierRef(*name),
                                     method: *method,
@@ -1340,12 +1341,13 @@ impl Elaborator {
                             .iter()
                             .map(|a| self.elaborate_expr(a, signal_map, signals))
                             .collect::<Result<_, _>>()?;
-                        let ir_with = match with_clause {
-                            Some(wc) => {
-                                Some(Box::new(self.elaborate_expr(wc, signal_map, signals)?))
-                            }
-                            None => None,
-                        };
+                        let ir_with = self.elaborate_with_clause(
+                            obj,
+                            method,
+                            with_clause.as_deref(),
+                            signal_map,
+                            signals,
+                        )?;
                         Ok(IrStmt::MethodCallStmt {
                             obj: ir_obj,
                             method: *method,

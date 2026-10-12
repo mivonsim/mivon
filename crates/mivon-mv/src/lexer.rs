@@ -185,6 +185,9 @@ pub enum Tok {
     Intersect,
     /// `within` — sequence within
     Within,
+    /// `with` — klausa `with (expr)` pada array manipulation method
+    /// (`q.find with (item > 3)`, LRM 1800 §7.12.1)
+    With,
 
     // ── Operator ──
     Plus,
@@ -346,6 +349,7 @@ fn keyword(s: &str) -> Option<Tok> {
         "and" => Tok::And,
         "intersect" => Tok::Intersect,
         "within" => Tok::Within,
+        "with" => Tok::With,
         _ => return None,
     })
 }

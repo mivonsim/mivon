@@ -169,10 +169,18 @@ pub fn print_expr(e: &Expr) -> String {
         }
         Expr::NamedArg { name, expr } => format!("{name} = {}", wrap(expr)),
         Expr::MethodCall {
-            obj, method, args, ..
+            obj,
+            method,
+            args,
+            with_clause,
+            ..
         } => {
             let a: Vec<String> = args.iter().map(wrap).collect();
-            format!("{}.{}({})", wrap(obj), method, a.join(", "))
+            let base = format!("{}.{}({})", wrap(obj), method, a.join(", "));
+            match with_clause {
+                Some(wc) => format!("{base} with ({})", wrap(wc)),
+                None => base,
+            }
         }
         Expr::Member(o, f, _, _) => format!("{}.{}", wrap(o), f),
         Expr::Index(o, i) => format!("{}[{}]", wrap(o), wrap(i)),

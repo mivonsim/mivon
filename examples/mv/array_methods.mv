@@ -1,0 +1,88 @@
+// F41 — Array manipulation methods dengan klausa `with (item …)`
+// (LRM 1800 §7.12.1/§7.12.3).
+//
+// Menutup keterbatasan lama:
+//   * parser SV menolak bentuk TANPA kurung argumen `q.find with (item > 3)`
+//     ("'with' clause can only follow a method call");
+//   * elaborator tak mengenal iterator implisit `item` (E2001 signal 'item');
+//   * method bernama keyword (`unique`/`and`/`or`/`xor`) tak bisa dipanggil
+//     setelah `.` ("expected identifier, found unique").
+// Kini `with` clause penuh: locator (find/find_first/find_index), reduction
+// (sum/min/max), ordering (sort), dan `unique` (mengembalikan queue baru).
+//
+// Jalankan:
+//   mivon mgen examples/mv/array_methods.mv
+//   mivon sim  examples/mv/array_methods.mv --top tb_arr -T 100
+//
+// Harapan:
+//   ARR_FIND n=2 a=4 b=5
+//   ARR_INDEX i=2
+//   ARR_SUM2 s=30
+//   ARR_MINMAX mn=1 mx=5
+//   ARR_SORT s0=1 s4=5
+//   ARR_UNIQUE n=3
+//   ARR_OK
+
+type Q = logic[7:0][$]
+
+module tb_arr {
+    sig q  : Q
+    sig r  : Q
+    sig iq : Q
+    sig n, i, s, mn, mx, s0, s4, un : logic[31:0]
+    sig ok : bit = 0
+
+    initial {
+        q = '{8'd1, 8'd2, 8'd3, 8'd4, 8'd5}
+
+        // locator: find / find_index dengan kondisi `item`
+        r  = q.find with (item > 3)
+        n  = r.size()
+        $display("ARR_FIND n=%0d a=%0d b=%0d", n, r[0], r[1])
+        iq = q.find_index with (item == 3)
+        i  = iq[0]
+        $display("ARR_INDEX i=%0d", i)
+
+        // reduction: sum dengan ekspresi `item * 2`
+        s = q.sum with (item * 2)
+        $display("ARR_SUM2 s=%0d", s)
+
+        // ordering: min / max dengan kunci `item`
+        mn = q.min with (item)
+        mx = q.max with (item)
+        $display("ARR_MINMAX mn=%0d mx=%0d", mn, mx)
+
+        // sort in-place dengan kunci `item`
+        q.sort with (item)
+        s0 = q[0]
+        s4 = q[4]
+        $display("ARR_SORT s0=%0d s4=%0d", s0, s4)
+
+        // method bernama keyword: unique (mengembalikan queue baru)
+        r  = '{8'd1, 8'd1, 8'd2, 8'd3, 8'd3}
+        iq = r.unique()
+        un = iq.size()
+        $display("ARR_UNIQUE n=%0d", un)
+
+        // Cek hasil. Sengaja TIDAK memakai satu rantai `&&` panjang: rantai
+        // `&&` ≥8 operan membuat kedalaman rekursi evaluator (frame
+        // `evaluate_expr_impl` besar) melampaui stack thread test 2 MiB —
+        // keterbatasan pre-existing, bukan fitur ini. Bentuk per-cek ini
+        // setara & lebih tahan.
+        ok = 1
+        if (n  != 2)  { ok = 0 }
+        if (i  != 2)  { ok = 0 }
+        if (s  != 30) { ok = 0 }
+        if (mn != 1)  { ok = 0 }
+        if (mx != 5)  { ok = 0 }
+        if (s0 != 1)  { ok = 0 }
+        if (s4 != 5)  { ok = 0 }
+        if (un != 3)  { ok = 0 }
+        if (ok) {
+            $display("ARR_OK")
+        } else {
+            $display("ARR_BROKEN")
+        }
+        $finish
+    }
+}

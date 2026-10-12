@@ -291,6 +291,22 @@ Aturan:
     `exists`), indeks `q[i]`/`q[$]`, cast, assignment pattern, var & port
     queue. Gap simulator lama (F40) sudah ditutup (F40b) — lihat
     `examples/mv/queue_typedef.mv`.
+- **Array manipulation methods + `with (item …)` (F41).** Method array untuk
+  queue/dynamic array didukung penuh (LRM 1800 §7.12): locator `find`/
+  `find_first`/`find_last`/`find_index`/`find_first_index`/`find_last_index`,
+  reduction `sum`/`product`/`and`/`or`/`xor`, ordering `min`/`max`/`sort`/
+  `rsort`/`reverse`/`shuffle`, dan `unique`/`unique_index`. Klausa
+  `with (expr)` boleh **tanpa kurung argumen** (`q.find with (item > 3)`,
+  bentuk LRM) maupun dengan (`q.find() with (...)`); iterator implisit
+  **`item`** di-bind per elemen. Untuk reduction/ordering nilai clause dipakai
+  sebagai kunci/nilai (`q.sum with (item * 2)`, `q.sort with (item.x)`), untuk
+  locator sebagai kondisi boolean. `unique` **mengembalikan queue baru**
+  (tidak mengubah sumber, §7.12.3). Method bernama keyword (`unique`/`and`/
+  `or`/`xor`) boleh dipanggil setelah `.` (`q.unique()`, `q.and()`). Contoh:
+  `examples/mv/array_methods.mv`.
+  - **Caveat**: chained method pada hasil temporer (`q.unique().size()`) belum
+    didukung — simpan dulu ke queue (`r = q.unique(); r.size()`). iverilog tak
+    mendukung `with` clause (limit tool); verilator & `mivon sim` OK.
 - **Rangkuman emisi cast** (codegen): `logic[M:N]'(x)` → `W'(x)`
   (width cast), `Q'(x)` dengan `Q` typedef queue → `'{ x }`, selain itu
   `T'(x)` static cast apa adanya (termasuk typedef non-queue & tipe dasar).
@@ -1866,6 +1882,7 @@ module tb_traffic {
 | **F80** ✅ | **Tolak kondisi generate non-konstan (E2014)** — `if`/`case` generate dengan sinyal dikompilasi diam-diam (elaborator warning + ambil cabang pertama). Kini check menolak: kondisi harus ter-fold ke parameter/konstanta/literal (perbandingan, ternary, sized, `'0`/`'1`, member enum, konstanta package). `fold_const` diperluas serasi (Sized/Fill/comparison/logika/ternary — hanya menambah `Some`, tak ubah perilaku lama) | 2 test (`const_forms_ok` + `nonconst_is_e2014` berposisi); seluruh suite + contoh lama hijau (kondisinya memang konstan) |
 | **F81** ✅ | **Functional coverage `covergroup`/`coverpoint`/`bins` di `.mv`** — gap: tak ada cara menulis coverage fungsional (engine sudah dukung sampling implisit + bins + wildcard, LRM §19). Kini `covergroup cg [@(posedge clk)] { coverpoint [label :] expr { bins n = {v, [lo:hi]} } }` → emisi berlabel (`x: coverpoint x`, karena parser SV melewatkan tak-berlabel diam-diam) + `endgroup`. Check E2001 event/expr/bins; F77 walk mencakup referensi scoped. Cross/bins transisi/option via `@sv` | `cov cover.mv --top tb_cov` → Functional 100% (implicit, tanpa `sample()`); iverilog/verilator menolak `covergroup` (limit tool); contoh `examples/mv/cover.mv`; e2e `test_mv_covergroup_samples_implicitly` |
 | **F40b** ✅ | **Queue lewat typedef penuh (var + port + assignment pattern)** — gap: `typedef logic [7:0] Q [$];` (dimensi `[$]` **setelah nama typedef**) dibuang parser (`skip_typedef_unpacked_dims`) tanpa jejak → `Q q;` / `out q : Q` dianggap **skalar** (`q.size()`=0, `q[0]` bit sampah, `Q'(x)` lebar salah). Kini `TypedefDecl.is_queue`/`is_dynamic` (AST+serde), parser mengembalikan `(is_queue, is_dynamic)`; elaborator menandai var/port bertipe queue typedef sebagai queue (storage bit-vector dinamis); assignment pattern queue di-repack agar **elemen 0 = operand pertama** (parser desugar `'{a,b,c}` → `Concat` MSB-first). Menutup buglog-mv open #1 | `mivon sim examples/mv/queue_typedef.mv` → `QTD_OK` (push/cast/pattern/port); `cast_queue.mv` → `TB_CASTQ_OK r=a5 q0=a5`; 3 test baru (`test_mv_queue_typedef_var_and_cast`, `test_queue_typedef_pattern_multi_elem`, `test_mv_queue_typedef_example_end_to_end`); buglog-mv #35 |
+| **F41** ✅ | **Array manipulation methods + `with (item …)` (LRM 1800 §7.12)** — 3 gap: (1) parser SV menolak bentuk TANPA kurung argumen `q.find with (item > 3)` ("'with' clause can only follow a method call"); (2) elaborator tak kenal iterator implisit `item` (E2001 signal 'item'); (3) method bernama keyword `unique`/`and`/`or`/`xor` gagal parse setelah `.` ("expected identifier, found unique"). Kini: parser menerima `MemberAccess`+`with` → `MethodCall` tanpa arg; `expect_member_name` menerima keyword sbg nama member (SV + `.mv`); elaborator `elaborate_with_clause` men-bind `item` → `HierRef("item")` (via `with_item_bound` `Cell`); runtime `IrExpr::HierRef` fallback ke `method_locals` + `eval_with_value` (reduction/ordering pakai **NILAI** clause, bukan bool — `q.sum with (item*2)`); `unique` mengembalikan queue baru (§7.12.3). `.mv`: lexer `Tok::With`, AST `MethodCall.with_clause`, parser arm `Tok::With`, codegen `q.find() with (...)` | `mivon sim examples/mv/array_methods.mv --top tb_arr` → `ARR_OK` (find/find_index/sum/min/max/sort/unique); verilator lint OK; 3 test baru (`test_array_method_with_clause_item_iterator`, `test_array_method_keyword_names`, `test_mv_array_method_with_clause_end_to_end`); buglog-mv #36 |
 
 **Kriteria selesai F2:** `mivon mgen examples/mv/counter.mv` menghasilkan
 `counter.sv` yang bisa disimulasikan oleh `mivon counter.sv` tanpa error.

@@ -322,7 +322,7 @@ impl Parser {
                 Tok::Dot => {
                     let (l, c) = self.pos_line();
                     self.advance();
-                    let f = self.expect_ident()?;
+                    let f = self.expect_member_name()?;
                     e = Expr::Member(Box::new(e), f, l, c);
                 }
                 Tok::LParen => {
@@ -343,6 +343,7 @@ impl Parser {
                                 obj,
                                 method,
                                 args,
+                                with_clause: None,
                                 line: l,
                                 col: c,
                             };
@@ -357,6 +358,7 @@ impl Parser {
                             obj,
                             method,
                             args,
+                            with_clause: None,
                             line: l,
                             col: c,
                         },
@@ -369,6 +371,51 @@ impl Parser {
                             ));
                         }
                     }
+                }
+                // Klausa `with (expr)` array manipulation method (LRM 1800
+                // §7.12.1): `q.find with (item > 3)` (tanpa kurung argumen)
+                // atau `q.find() with (item > 3)`. Di-emit ke SV sebagai
+                // `q.find() with (...)`.
+                Tok::With => {
+                    self.advance();
+                    self.expect(&Tok::LParen)?;
+                    let clause = self.parse_expr()?;
+                    self.expect(&Tok::RParen)?;
+                    e = match e {
+                        Expr::Member(obj, method, l, c) => Expr::MethodCall {
+                            obj,
+                            method,
+                            args: Vec::new(),
+                            with_clause: Some(Box::new(clause)),
+                            line: l,
+                            col: c,
+                        },
+                        Expr::MethodCall {
+                            obj,
+                            method,
+                            args,
+                            line,
+                            col,
+                            ..
+                        } => Expr::MethodCall {
+                            obj,
+                            method,
+                            args,
+                            with_clause: Some(Box::new(clause)),
+                            line,
+                            col,
+                        },
+                        _ => {
+                            let (l, c) = self.pos_line();
+                            return Err(MvError::new(
+                                l,
+                                c,
+                                "'with' hanya valid setelah method array \
+                                 (find/sum/sort/…)"
+                                    .to_string(),
+                            ));
+                        }
+                    };
                 }
                 // F37: postfix `x++`/`x--` di akhir ekspresi.
                 Tok::PlusPlus | Tok::MinusMinus => {

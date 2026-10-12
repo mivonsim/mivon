@@ -97,6 +97,10 @@ pub enum Expr {
         obj: Box<Expr>,
         method: String,
         args: Vec<Expr>,
+        /// Klausa `with (expr)` pada array manipulation method
+        /// (`q.find with (item > 3)`, LRM 1800 §7.12.1). Iterator implisit
+        /// `item` di-bind saat simulasi. `None` bila tak ada.
+        with_clause: Option<Box<Expr>>,
         /// posisi nama method — E2011
         line: usize,
         col: usize,

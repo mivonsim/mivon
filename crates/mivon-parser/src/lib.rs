@@ -775,6 +775,29 @@ impl Parser {
         }
     }
 
+    /// Nama member setelah `.` — menerima identifier biasa plus keyword yang
+    /// juga nama method bawaan array (LRM 1800 §7.12.3): `unique`/`and`/`or`/
+    /// `xor`. Tanpa ini `q.unique()`/`q.and()` gagal parse ("expected
+    /// identifier, found unique"). Dipakai HANYA di posisi member-access
+    /// (setelah `.`), jadi keyword ini tetap keyword di konteks lain
+    /// (`unique case`, gate primitive `and (...)`).
+    fn expect_member_name(&mut self) -> Result<Symbol, SimError> {
+        let kw = match self.peek() {
+            Token::Unique => Some("unique"),
+            Token::And => Some("and"),
+            Token::Or => Some("or"),
+            Token::Xor => Some("xor"),
+            _ => None,
+        };
+        match kw {
+            Some(name) => {
+                self.advance();
+                Ok(Symbol::intern(name))
+            }
+            None => self.expect_ident(),
+        }
+    }
+
     pub fn parse_design(&mut self) -> Result<Design, SimError> {
         // PARSER-11 bug fix: `Token::Error` dari lexer (mis. karakter
         // non-ASCII/Unicode di luar string/komentar, base literal salah)
