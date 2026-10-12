@@ -517,3 +517,90 @@ impl Elaborator {
         }
     }
 }
+
+/// Evaluasi nilai eksplisit member enum — pindah dari mod.rs
+/// (Arsitektur-06): overlay param-sendiri DULU (scope LRM menang atas
+/// global untuk nama sama), lalu konteks global. Overlay (`None` = tanpa
+/// param sendiri) dibangun malas oleh pemanggil agar tak clone map besar
+/// sia-sia.
+pub(crate) fn eval_enum_member_value(
+    expr: &Expr,
+    ctx: &HashMap<Symbol, i64>,
+    overlay: Option<&HashMap<Symbol, i64>>,
+) -> Option<i64> {
+    if let Some(o) = overlay {
+        if let Ok(v) = const_eval_with_params(expr, o) {
+            return Some(v);
+        }
+    }
+    const_eval_with_params(expr, ctx).ok()
+}
+
+/// Overlay param-sendiri untuk satu package — pindah dari mod.rs
+/// (Arsitektur-06): global + param package (menang). `None` bila package
+/// tak punya param ter-cache (tak perlu).
+pub(crate) fn package_overlay(
+    ctx: &HashMap<Symbol, i64>,
+    own: Option<&[(Symbol, i64)]>,
+) -> Option<HashMap<Symbol, i64>> {
+    let params = own.filter(|p| !p.is_empty())?;
+    let mut overlay = ctx.clone();
+    for (n, v) in params {
+        overlay.insert(*n, *v);
+    }
+    Some(overlay)
+}
+
+impl Elaborator {
+    /// Verifikasi pasca-fixpoint — pindah dari mod.rs (Arsitektur-06):
+    /// member enum bernilai eksplisit yang tetap tak ter-evaluasi
+    /// (typo/unknown — bukan forward-ref yang sudah konvergen) dilaporkan
+    /// sebagai warning, bukan ditebak diam-diam dari counter `last`. Satu
+    /// warning per typedef (member gagal pertama); nama yang sudah
+    /// di-warning dilewati (scan ganda items+decls).
+    pub(crate) fn verify_enum_members(
+        &self,
+        enums: &[Vec<(Symbol, Option<Expr>)>],
+        context: &str,
+        ctx: &HashMap<Symbol, i64>,
+        overlay: Option<&HashMap<Symbol, i64>>,
+    ) {
+        let mut warned: std::collections::HashSet<Symbol> = std::collections::HashSet::new();
+        for members in enums {
+            let mut last: Option<i64> = Some(0);
+            for (member_name, member_expr) in members {
+                let val = match member_expr {
+                    Some(expr) => eval_enum_member_value(expr, ctx, overlay),
+                    None => last,
+                };
+                if member_expr.is_some() && val.is_none() && warned.insert(*member_name) {
+                    self.elab_warn(
+                        DiagCode::ParamMismatch,
+                        format!(
+                            "nilai enum member '{member_name}' bukan ekspresi konstan ({context}) — \
+                             member dilewati; rujukan ke sana gagal E2001"
+                        ),
+                    );
+                    break;
+                }
+                last = val.map(|v| v.wrapping_add(1));
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_package_overlay_wins_and_none() {
+        let mut ctx = HashMap::new();
+        ctx.insert(Symbol::intern("A"), 1);
+        // own menang atas global; None bila kosong.
+        let ov = package_overlay(&ctx, Some(&[(Symbol::intern("A"), 9)]));
+        assert_eq!(ov.as_ref().and_then(|m| m.get(&Symbol::intern("A")).copied()), Some(9));
+        assert!(package_overlay(&ctx, None).is_none());
+        assert!(package_overlay(&ctx, Some(&[])).is_none());
+    }
+}

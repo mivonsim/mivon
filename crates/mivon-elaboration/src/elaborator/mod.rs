@@ -2572,7 +2572,7 @@ impl Elaborator {
                 let mut last: Option<i64> = Some(0);
                 for (member_name, member_expr) in members {
                     let val = match member_expr {
-                        Some(expr) => Self::eval_enum_member_value(expr, &ctx, None),
+                        Some(expr) => types::eval_enum_member_value(expr, &ctx, None),
                         None => last,
                     };
                     if let Some(v) = val {
@@ -2610,13 +2610,13 @@ impl Elaborator {
             for (pkg_name, enums) in &pkg_enums {
                 let own: Option<&[(Symbol, i64)]> =
                     pkg_param_cache.get(pkg_name).map(|v| v.as_slice());
-                let overlay = Self::package_overlay(&ctx, own);
+                let overlay = types::package_overlay(&ctx, own);
                 for members in enums {
                     let mut last: Option<i64> = Some(0);
                     for (member_name, member_expr) in members {
                         let val = match member_expr {
                             Some(expr) => {
-                                Self::eval_enum_member_value(expr, &ctx, overlay.as_ref())
+                                types::eval_enum_member_value(expr, &ctx, overlay.as_ref())
                             }
                             None => last,
                         };
@@ -2655,7 +2655,7 @@ impl Elaborator {
         for (pkg_name, enums) in &pkg_enums {
             let own: Option<&[(Symbol, i64)]> =
                 pkg_param_cache.get(pkg_name).map(|v| v.as_slice());
-            let overlay = Self::package_overlay(&ctx, own);
+            let overlay = types::package_overlay(&ctx, own);
             for members in enums {
                 self.verify_enum_members(
                     std::slice::from_ref(members),
@@ -2992,72 +2992,6 @@ impl Elaborator {
             eprintln!("[DBG-ELAB]   collect total: {}us", t0.elapsed().as_micros());
         }
         std::borrow::Cow::Owned(ctx)
-    }
-
-    /// Evaluasi nilai eksplisit member enum: overlay param-sendiri DULU
-    /// (scope LRM menang atas global untuk nama sama), lalu konteks global.
-    /// Overlay (`None` = tanpa param sendiri) dibangun malas oleh pemanggil
-    /// agar tak clone map besar sia-sia.
-    fn eval_enum_member_value(
-        expr: &Expr,
-        ctx: &HashMap<Symbol, i64>,
-        overlay: Option<&HashMap<Symbol, i64>>,
-    ) -> Option<i64> {
-        if let Some(o) = overlay {
-            if let Ok(v) = const_eval_with_params(expr, o) {
-                return Some(v);
-            }
-        }
-        const_eval_with_params(expr, ctx).ok()
-    }
-
-    /// Overlay param-sendiri untuk satu package: global + param package
-    /// (menang). `None` bila package tak punya param ter-cache (tak perlu).
-    fn package_overlay(
-        ctx: &HashMap<Symbol, i64>,
-        own: Option<&[(Symbol, i64)]>,
-    ) -> Option<HashMap<Symbol, i64>> {
-        let params = own.filter(|p| !p.is_empty())?;
-        let mut overlay = ctx.clone();
-        for (n, v) in params {
-            overlay.insert(*n, *v);
-        }
-        Some(overlay)
-    }
-
-    /// Verifikasi pasca-fixpoint: member enum bernilai eksplisit yang tetap
-    /// tak ter-evaluasi (typo/unknown — bukan forward-ref yang sudah
-    /// konvergen) dilaporkan sebagai warning, bukan ditebak diam-diam dari
-    /// counter `last`. Satu warning per typedef (member gagal pertama);
-    /// nama yang sudah di-warning dilewati (scan ganda items+decls).
-    fn verify_enum_members(
-        &self,
-        enums: &[Vec<(Symbol, Option<Expr>)>],
-        context: &str,
-        ctx: &HashMap<Symbol, i64>,
-        overlay: Option<&HashMap<Symbol, i64>>,
-    ) {
-        let mut warned: std::collections::HashSet<Symbol> = std::collections::HashSet::new();
-        for members in enums {
-            let mut last: Option<i64> = Some(0);
-            for (member_name, member_expr) in members {
-                let val = match member_expr {
-                    Some(expr) => Self::eval_enum_member_value(expr, ctx, overlay),
-                    None => last,
-                };
-                if member_expr.is_some() && val.is_none() && warned.insert(*member_name) {
-                    self.elab_warn(
-                        DiagCode::ParamMismatch,
-                        format!(
-                            "nilai enum member '{member_name}' bukan ekspresi konstan ({context}) — \
-                             member dilewati; rujukan ke sana gagal E2001"
-                        ),
-                    );
-                    break;
-                }
-                last = val.map(|v| v.wrapping_add(1));
-            }
-        }
     }
 
     /// Flush diagnostics from DiagSink and return them.
@@ -4232,7 +4166,7 @@ impl Elaborator {
                 let mut last: Option<i64> = Some(0);
                 for (member_name, member_expr) in members {
                     let val = match member_expr {
-                        Some(expr) => Self::eval_enum_member_value(&expr, &effective_params, None),
+                        Some(expr) => types::eval_enum_member_value(&expr, &effective_params, None),
                         None => last,
                     };
                     if let Some(v) = val {

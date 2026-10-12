@@ -215,6 +215,8 @@ Arsitektur-06: ⚠️ Elaborator monolithic — PARTIAL (ROUND 80)
   score_auto_top) pindah verbatim; 2 call site jadi topo::.
   ROUND 131: + compute_module_checksum + compute_topo_order (tanpa
   self → free fn) + header yatim dibersihkan.
+- types.rs += enum helpers (ROUND 132): eval_enum_member_value +
+  package_overlay (free) + verify_enum_members (method); 5 call site.
   Masih perlu: type resolution, param resolution, topo order, diagnostic
   helpers bisa dipisah lebih lanjut.
   Severity: High
@@ -5440,6 +5442,20 @@ Test (+2): topo child-first+siklus, checksum stabil/nama-sensitif
 📊 VERIFIKASI ROUND 131:
    - cargo test --workspace: 0 fail
    - Review subagent putaran 2: APPROVE (verifikasi ulang).
+
+═══ ROUND 132 — Arsitektur-06 enum helpers → types.rs ═══
+
+✅ PINDAH: eval_enum_member_value + package_overlay (free) +
+   verify_enum_members (method, pub(crate)); 5 call site update.
+   Review: APPROVE.
+
+Test (+1): test_package_overlay_wins_and_none + guard workspace
+penuh (0 fail).
+
+📊 VERIFIKASI ROUND 132:
+   - cargo test -p mivon-elaboration: 13 passed
+   - cargo test --workspace: 0 fail
+   - Review subagent: APPROVE.
 
 ========================================
 END OF AUDIT REPORT
