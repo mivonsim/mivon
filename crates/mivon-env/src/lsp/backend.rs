@@ -1664,19 +1664,25 @@ impl LspBackend {
     /// Legend: 0=namespace(module), 1=type(interface), 2=class,
     ///         3=interface, 4=function, 5=variable,
     ///         6=constant(param), 7=keyword.
+    /// Modifier (tahap 2d): bit0=declaration (definisi outline),
+    ///         bit1=readonly (parameter/konstanta).
     pub(crate) fn compute_semantic_tokens(source: &str) -> Vec<SemanticToken> {
         Self::encode_semantic_tokens(&Self::semantic_raw_tokens(source))
     }
 
-    /// LSP-07 tahap 2b: token mentah absolut (line, col, len, legend_idx)
-    /// sebelum delta-encoding — dipakai full & range agar filter baris
-    /// benar (filter SESUDAH encode akan merusak delta).
-    pub(crate) fn semantic_raw_tokens(source: &str) -> Vec<(u32, u32, u32, u32)> {
-        // Kumpulkan definisi dari outline → (line, col, len, legend_idx).
-        let syms = Self::document_symbols(source);
-        let mut raw: Vec<(u32, u32, u32, u32)> = Vec::new();
+    /// Bit modifier token semantik (urutan = legend token_modifiers).
+    pub(crate) const MOD_DECLARATION: u32 = 1;
+    pub(crate) const MOD_READONLY: u32 = 2;
 
-        fn collect(syms: &[DocSymbol], raw: &mut Vec<(u32, u32, u32, u32)>) {
+    /// LSP-07 tahap 2b: token mentah absolut (line, col, len, legend_idx,
+    /// modifiers) sebelum delta-encoding — dipakai full & range agar
+    /// filter baris benar (filter SESUDAH encode akan merusak delta).
+    pub(crate) fn semantic_raw_tokens(source: &str) -> Vec<(u32, u32, u32, u32, u32)> {
+        // Kumpulkan definisi dari outline → (line, col, len, legend_idx, mods).
+        let syms = Self::document_symbols(source);
+        let mut raw: Vec<(u32, u32, u32, u32, u32)> = Vec::new();
+
+        fn collect(syms: &[DocSymbol], raw: &mut Vec<(u32, u32, u32, u32, u32)>) {
             for s in syms {
                 let idx = match s.kind {
                     DocSymbol::KIND_MODULE => 0,
@@ -1688,7 +1694,12 @@ impl LspBackend {
                     DocSymbol::KIND_VARIABLE => 5,
                     _ => 5,
                 };
-                raw.push((s.line, s.col, s.name.len() as u32, idx));
+                let mods = if s.kind == DocSymbol::KIND_CONSTANT {
+                    LspBackend::MOD_DECLARATION | LspBackend::MOD_READONLY
+                } else {
+                    LspBackend::MOD_DECLARATION
+                };
+                raw.push((s.line, s.col, s.name.len() as u32, idx, mods));
                 collect(&s.children, raw);
             }
         }
@@ -1735,23 +1746,23 @@ impl LspBackend {
             }
             for (w, col) in Self::line_tokens(line) {
                 if KW.contains(&w.as_str()) {
-                    raw.push((idx as u32, col as u32, w.len() as u32, 7));
+                    raw.push((idx as u32, col as u32, w.len() as u32, 7, 0));
                 }
             }
         }
 
         // Urutkan by (line, col).
-        raw.sort_by_key(|&(l, c, _, _)| (l, c));
+        raw.sort_by_key(|&(l, c, _, _, _)| (l, c));
         raw
     }
 
     /// LSP-07 tahap 2b: delta-encoding LSP dari token mentah absolut.
-    pub(crate) fn encode_semantic_tokens(raw: &[(u32, u32, u32, u32)]) -> Vec<SemanticToken> {
+    pub(crate) fn encode_semantic_tokens(raw: &[(u32, u32, u32, u32, u32)]) -> Vec<SemanticToken> {
         // Konversi ke delta encoding LSP.
         let mut out: Vec<SemanticToken> = Vec::with_capacity(raw.len());
         let mut prev_line = 0u32;
         let mut prev_col = 0u32;
-        for &(l, c, len, typ) in raw {
+        for &(l, c, len, typ, mods) in raw {
             let dl = l - prev_line;
             let ds = if l == prev_line { c - prev_col } else { c };
             out.push(SemanticToken {
@@ -1759,7 +1770,7 @@ impl LspBackend {
                 delta_start: ds,
                 length: len,
                 token_type: typ,
-                token_modifiers_bitset: 0,
+                token_modifiers_bitset: mods,
             });
             prev_line = l;
             prev_col = c;
@@ -1808,9 +1819,9 @@ impl LspBackend {
         if start_line > end_line {
             return Vec::new();
         }
-        let raw: Vec<(u32, u32, u32, u32)> = Self::semantic_raw_tokens(source)
+        let raw: Vec<(u32, u32, u32, u32, u32)> = Self::semantic_raw_tokens(source)
             .into_iter()
-            .filter(|(l, _, _, _)| *l >= start_line && *l <= end_line)
+            .filter(|(l, _, _, _, _)| *l >= start_line && *l <= end_line)
             .collect();
         Self::encode_semantic_tokens(&raw)
     }
@@ -1906,7 +1917,10 @@ impl LanguageServer for LspBackend {
                                     lsp_types::SemanticTokenType::PARAMETER,
                                     lsp_types::SemanticTokenType::KEYWORD,
                                 ],
-                                token_modifiers: vec![],
+                                token_modifiers: vec![
+                                    lsp_types::SemanticTokenModifier::DECLARATION,
+                                    lsp_types::SemanticTokenModifier::READONLY,
+                                ],
                             },
                             range: Some(true),
                             full: Some(lsp_types::SemanticTokensFullOptions::Delta {
@@ -4099,6 +4113,20 @@ endmodule
             "keyword: {:?}",
             toks
         );
+    }
+
+    #[test]
+    fn test_semantic_tokens_modifiers() {
+        // LSP-07 tahap 2d: definisi bawa declaration; parameter juga
+        // readonly; keyword 0.
+        let src = "module counter #(parameter WIDTH = 8);\n  logic clk;\nendmodule\n";
+        let toks = LspBackend::compute_semantic_tokens(src);
+        assert!(toks.iter().any(|t| t.token_modifiers_bitset
+            == LspBackend::MOD_DECLARATION | LspBackend::MOD_READONLY
+            && t.token_type == 6), "{toks:?}");
+        assert!(toks.iter().any(|t| t.token_modifiers_bitset == LspBackend::MOD_DECLARATION
+            && t.token_type == 5), "{toks:?}");
+        assert!(toks.iter().any(|t| t.token_modifiers_bitset == 0 && t.token_type == 7), "{toks:?}");
     }
 
     #[test]

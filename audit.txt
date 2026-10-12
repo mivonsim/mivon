@@ -1899,19 +1899,14 @@ LSP-06: ⚠️ IN PROGRESS (ROUND 95/113) — hover tahap 1+2a:
          "declaration"). Tahap 2a (ROUND 113): doc_comment_above —
          komentar `//` berurutan di atas definisi masuk hover.
          MASIH OPEN: dokumentasi kaya (port direction + range).
-LSP-07: ⚠️ IN PROGRESS (ROUND 109/119/124) — semantic tokens:
+LSP-07: ✅ FIXED (ROUND 109/119/124/125) — semantic tokens lengkap:
          backend.rs — capability SemanticTokensOptions dengan legend
          8 tipe (namespace/type/class/interface/function/variable/
-         parameter/keyword); handler semantic_tokens_full; core murni
-         compute_semantic_tokens(): flatten outline → definisi sebagai
-         token + keyword SV scan per baris, delta-encoded LSP format.
-         Test 1 unit (module type=0, variable type=5, keyword type=7).
-         Tahap 2b (ROUND 119): refactor raw+encode; range request
-         (capability + handler semantic_tokens_range, filter sebelum
-         encode). Tahap 2c (ROUND 124): delta update — cache per-uri +
-         result_id monotonik, semantic_tokens_delta (prefix/suffix),
-         full_delta handler (miss → full ber-id baru), did_close evict.
-         MASIH OPEN: modifier bitset.
+         parameter/keyword) + modifier declaration/readonly; handler
+         full/range/delta; core murni raw+encode (outline → definisi +
+         keyword, delta-encoded). Tahap 2b (ROUND 119): range request.
+         Tahap 2c (ROUND 124): delta update. Tahap 2d (ROUND 125):
+         modifier bitset (definisi=declaration, parameter=readonly).
 LSP-08: ✅ Code lens (ROUND 90) — code_lens handler di LSP backend. compute_code_lens
            menampilkan: (1) di atas setiap module: jumlah test functions ("N tests"),
            (2) di atas setiap function/task: reference count ("N references").
@@ -5332,6 +5327,22 @@ roundtrip/replace/overlap/kosong/delete-roundtrip).
 📊 VERIFIKASI ROUND 124:
    - cargo test -p mivon-env --lib --features lsp lsp: 50 passed (+1)
    - Review subagent putaran 2: APPROVE.
+
+═══ ROUND 125 — LSP-07 modifier bitset (tahap 2d, ITEM SELESAI) ═══
+
+✅ MODIFIER (crates/mivon-env/src/lsp/backend.rs):
+   - Legend token_modifiers: declaration + readonly (bit0/bit1).
+   - Raw tuple 4→5 (modifiers); definisi=declaration,
+     parameter=readonly tambahan; keyword=0. Encode teruskan bitset.
+
+Test (+1): test_semantic_tokens_modifiers (readonly type 6,
+declaration type 5, keyword 0).
+
+LSP-07 kini ✅ FIXED (full + range + delta + modifier tertutup).
+
+📊 VERIFIKASI ROUND 125:
+   - cargo test -p mivon-env --lib --features lsp lsp: 51 passed (+1)
+   - Review subagent: APPROVE.
 
 ========================================
 END OF AUDIT REPORT
