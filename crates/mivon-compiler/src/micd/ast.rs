@@ -15,7 +15,10 @@ use mivon_ast::Design;
 /// (LRM §19.8). Cache AST v4 tak punya field itu — bincode akan gagal decode
 /// struct baru dari bytes lama, jadi versi wajib naik supaya cache lama
 /// di-invalidate, bukan salah-decode diam-diam.
-pub const AST_FORMAT_VERSION: u64 = 5;
+/// Bumped 5 → 6 (F40b): `TypedefDecl` dapat field `is_queue`/`is_dynamic`.
+/// Alasan sama seperti bump 4→5 — bincode positional, cache lama wajib
+/// di-invalidate (bukan salah-decode jadi AST korup).
+pub const AST_FORMAT_VERSION: u64 = 6;
 
 /// Serialisasi `Design` → bytes biner (bincode).
 pub fn serialize_design(design: &Design) -> Result<Vec<u8>, String> {

@@ -3128,6 +3128,24 @@ impl Elaborator {
         }
     }
 
+    /// Apakah nama tipe merujuk typedef queue/dynamic. Menerima nama polos
+    /// maupun berkualifikasi (`pkg::Q`, `pkg.Q`) — fallback ke nama dasar
+    /// setelah `::`/`.`. Catatan: set-nya GLOBAL per nama (sama seperti
+    /// `typedef_map`); desain yang memakai nama typedef sama untuk tipe
+    /// berbeda di dua unit sudah di luar asumsi (lihat komentar typedef_map).
+    pub(crate) fn typedef_kind(&self, name: Symbol) -> (bool, bool) {
+        let base = name
+            .as_str()
+            .rsplit(|c| c == ':' || c == '.')
+            .next()
+            .unwrap_or(name.as_str());
+        let base_sym = Symbol::intern(base);
+        (
+            self.typedef_queue.contains(&name) || self.typedef_queue.contains(&base_sym),
+            self.typedef_dynamic.contains(&name) || self.typedef_dynamic.contains(&base_sym),
+        )
+    }
+
     /// Resolve lebar typedef, mengalikan semua packed dimensions (range
     /// pertama + `extra_packed_dims`). Untuk `[4:0][4:0][W-1:0]` hasilnya
     /// 5 * 5 * W. `const_eval_params` dipakai agar batas yang memakai

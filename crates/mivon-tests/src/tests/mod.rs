@@ -998,6 +998,38 @@ endmodule
     assert_eq!(get("n"), 3, "queue berisi 3 elemen");
 }
 
+/// Konkatenasi `{a, b}` yang di-assign ke queue: karena parser meng-desugar
+/// `'{a,b}` (pola) dan `{a,b}` (concat) ke node `Concat` yang sama, mivon
+/// menetapkan urutan operand = urutan elemen (elemen 0 = operand pertama).
+/// Test ini MENGUNCI semantik tsb (assign concat ke queue tak terdefinisi di
+/// LRM; `.mv` memakai `'{...}` untuk literal array).
+#[test]
+fn test_queue_concat_operand_order_is_element_order() {
+    let source = r#"
+typedef logic [7:0] Q [$];
+module tb_qcat;
+    Q q;
+    reg [7:0] a, b;
+    reg [7:0] e0, e1;
+    reg [31:0] n;
+    initial begin
+        a = 8'h11;
+        b = 8'h22;
+        q = {a, b};
+        e0 = q[0];
+        e1 = q[1];
+        n = q.size();
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 5).unwrap();
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    assert_eq!(get("e0"), 0x11, "operand pertama = elemen 0");
+    assert_eq!(get("e1"), 0x22, "operand kedua = elemen 1");
+    assert_eq!(get("n"), 2, "dua elemen");
+}
+
 #[test]
 fn test_mv_fork_join_modes() {
     // F39: `fork { ... } { ... } join / join_any / join_none` di-transpile

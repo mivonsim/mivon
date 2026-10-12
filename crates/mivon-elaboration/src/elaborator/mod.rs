@@ -3112,13 +3112,11 @@ impl Elaborator {
                 // `typedef logic[7:0] Q [$];`): lebar yang ter-resolve adalah
                 // lebar ELEMEN, bukan total — tandai queue + mulai kosong
                 // (width 0), sinkron storage bit-vector dinamis di engine.
-                let tn_base = tn.as_str().split('.').next().unwrap_or(tn.as_str());
-                let tn_sym = Symbol::intern(tn_base);
-                if self.typedef_queue.contains(&tn_sym) || self.typedef_dynamic.contains(&tn_sym)
-                {
+                let (tn_q, tn_d) = self.typedef_kind(*tn);
+                if tn_q || tn_d {
                     let sig = &mut signals[sid];
-                    sig.is_queue = self.typedef_queue.contains(&tn_sym);
-                    sig.is_dynamic = self.typedef_dynamic.contains(&tn_sym);
+                    sig.is_queue = tn_q;
+                    sig.is_dynamic = tn_d;
                     sig.width = 0;
                     sig.array_depth = 0;
                     sig.init_val = LogicVec::new(0);
@@ -3772,10 +3770,7 @@ impl Elaborator {
                 // var.is_queue hanya terisi untuk bentuk inline `x : logic[7:0][$]`;
                 // bentuk typedef harus dicek lewat `typedef_queue`.
                 let (td_q, td_d) = match &decl.dtype {
-                    DataType::UserDefined(n) => (
-                        self.typedef_queue.contains(n),
-                        self.typedef_dynamic.contains(n),
-                    ),
+                    DataType::UserDefined(n) => self.typedef_kind(*n),
                     _ => (false, false),
                 };
                 let eff_queue = var.is_queue || td_q;
