@@ -3115,6 +3115,19 @@ impl Elaborator {
         self.resolve_typedef_width_dims(dtype, range, &[], &self.param_vals)
     }
 
+    /// Tandai nama typedef sebagai queue (`[$]`) / dynamic (`[]`) agar saat
+    /// membuat signal var/port bertipe `UserDefined(name)` bisa dimodelkan
+    /// sebagai queue/dynamic (bukan skalar). Dipanggil di setiap situs
+    /// registrasi typedef (package import / module item / $unit).
+    pub(crate) fn register_typedef_kind(&mut self, td: &mivon_ast::types::TypedefDecl) {
+        if td.is_queue {
+            self.typedef_queue.insert(td.name);
+        }
+        if td.is_dynamic {
+            self.typedef_dynamic.insert(td.name);
+        }
+    }
+
     /// Resolve lebar typedef, mengalikan semua packed dimensions (range
     /// pertama + `extra_packed_dims`). Untuk `[4:0][4:0][W-1:0]` hasilnya
     /// 5 * 5 * W. `const_eval_params` dipakai agar batas yang memakai

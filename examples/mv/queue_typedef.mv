@@ -1,0 +1,78 @@
+// F40b — Queue lewat TYPEDEF (`type Q = logic[7:0][$]`), bukan inline `[$]`.
+//
+// Menutup keterbatasan lama: `typedef logic [7:0] Q [$];` (dimensi `[$]`
+// setelah nama) dulu dibuang parser sehingga `Q q;` / `out q : Q` dianggap
+// SKALAR — `q.size()` = 0, `q[0]` membaca bit sampah, dan assignment pattern
+// `Q'(a)` hanya 1 bit. Kini `Q q;` (var) DAN `out q : Q` (port) dimodelkan
+// sebagai queue penuh (storage bit-vector dinamis di engine), termasuk
+// assignment pattern multi-elemen (elemen 0 di bit terendah).
+//
+// Jalankan:
+//   mivon mgen examples/mv/queue_typedef.mv
+//   mivon sim  examples/mv/queue_typedef.mv --top tb_qtd -T 100
+//
+// Harapan: QTD_PUSH size=2 first=3 last=4
+//          QTD_CAST size=1 q0=a5
+//          QTD_PATTERN size=3 e0=11 e1=22 e2=33
+//          QTD_PORT q0=5a
+//          QTD_OK
+
+type Q = logic[7:0][$]
+
+// DUT: output bertipe queue via typedef (port queue).
+module q_echo {
+    in  d : logic[7:0]
+    out o : Q
+    comb {
+        // cast-to-queue 1 elemen (SV: `o = '{ d }`)
+        o = Q'(d)
+    }
+}
+
+module tb_qtd {
+    sig d : logic[7:0]
+    sig qd : Q
+    sig q : Q
+    sig first, last, e0, e1, e2 : logic[7:0]
+    sig ok : bit = 0
+
+    inst q_echo u (.d, .o(qd))
+
+    initial {
+        // 1) method push (queue typedef lokal)
+        q.push_back(8'd3)
+        q.push_back(8'd4)
+        first = q[0]
+        last  = q[1]
+        $display("QTD_PUSH size=%0d first=%0d last=%0d", q.size(), first, last)
+
+        // 2) cast-to-queue mengganti isi (1 elemen)
+        q = Q'(8'hA5)
+        $display("QTD_CAST size=%0d q0=%0h", q.size(), q[0])
+
+        // 3) assignment pattern berurutan (elemen 0 = operand pertama)
+        q = Q'(8'h11)
+        q.push_back(8'h22)
+        q.push_back(8'h33)
+        e0 = q[0]
+        e1 = q[1]
+        e2 = q[2]
+        $display("QTD_PATTERN size=%0d e0=%0h e1=%0h e2=%0h", q.size(), e0, e1, e2)
+
+        // 4) port queue (DUT out : Q)
+        d = 8'h5A
+        #10
+        $display("QTD_PORT q0=%0h", qd[0])
+
+        if (first == 3 && last == 4 && e0 == 8'h11 && e1 == 8'h22 && e2 == 8'h33
+            && qd[0] == 8'h5A) {
+            ok = 1
+        }
+        if (ok) {
+            $display("QTD_OK")
+        } else {
+            $display("QTD_BROKEN")
+        }
+        $finish
+    }
+}

@@ -567,6 +567,15 @@ pub struct TypedefDecl {
     /// parser sehingga width typedef salah (hanya range pertama dihitung) —
     /// sekarang disimpan agar `resolve_typedef_width` mengalikan semua dims.
     pub extra_packed_dims: Vec<ExprRange>,
+    /// Queue typedef: `typedef logic [7:0] Q [$];` — dimensi `[$]` setelah nama.
+    /// Sebelumnya dibuang (`skip_typedef_unpacked_dims`) sehingga `Q x;`
+    /// dianggap skalar; kini dipakai agar var/port bertipe `Q` dimodelkan
+    /// sebagai queue (storage bit-vector dinamis di engine).
+    #[serde(default)]
+    pub is_queue: bool,
+    /// Dynamic-array typedef: `typedef logic [7:0] A [];` — dimensi `[]`.
+    #[serde(default)]
+    pub is_dynamic: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]

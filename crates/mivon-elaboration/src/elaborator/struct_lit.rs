@@ -1,18 +1,20 @@
-//! Assignment pattern struct: `p = '{hi: 4'hA, lo: 4'h5}` (LRM 1800
-//! §7.9 struct assignment pattern).
+//! Assignment pattern packing: `lhs = '{...}` (LRM 1800 §7.9/§10.9).
+//!
+//! Dua bentuk agregat di-pack ke `IrExpr` di level STATEMENT (saat LHS diketahui):
+//!
+//! - **Struct**: `p = '{hi: 4'hA, lo: 4'h5}` — layout `StructFieldInfo`
+//!   (offset+width tiap field) di-pack `IrExpr::Concat` MSB-first.
+//! - **Queue/dynamic array**: `q = '{a}` / `q = '{1,2,3}` — tiap elemen
+//!   di-cast ke `elem_width`, digabung MSB-first (elemen 0 = bit terendah,
+//!   sinkron storage queue engine yang menaruh elemen i di `i*elem_width`).
 //!
 //! Sebelumnya pola bernama di runtime di-evaluate jadi `FillLit(0)`
 //! (lihat `elaborate_expr` arm `Expr::StructLit`) karena layout typedef tak
 //! tersedia di level ekspresi. Akibatnya `p = '{hi:4'hA, lo:4'h5}` menghasilkan
-//! `p = 0` — silent wrong (padahal member access `p.hi` berfungsi penuh).
+//! `p = 0`, dan cast-to-queue `Q'(a)` → `'{ a }` menghasilkan lebar 1
+//! (queue terbaca kosong/X) — silent wrong.
 //!
-//! Fix: di level STATEMENT kita tahu LHS-nya struct, jadi layout
-//! (`StructFieldInfo`: offset+width tiap field) tersedia. Pola di-pack menjadi
-//! `IrExpr::Concat` MSB-first sesuai offset field, tiap member di-cast ke
-//! lebar field-nya, bit celah di-isi nol, dan member yang tidak disebut
-//! bernilai 0 (default SV).
-//!
-//! 1 file = 1 tanggung jawab (packing layout + call site statement).
+//! 1 file = 1 tanggung jawab (packing assignment-pattern + call site statement).
 
 use mivon_ast::expr::{Expr, StructLitMember};
 use mivon_core::error::SimError;
@@ -26,9 +28,10 @@ use super::Elaborator;
 const MAX_DEPTH: usize = 16;
 
 impl Elaborator {
-    /// Kalau `rhs` adalah struct assignment pattern dan LHS-nya struct dengan
-    /// layout diketahui, pack menjadi `IrExpr`. `Ok(None)` = bukan pola atau
-    /// layout tak diketahui → pemanggil jatuh ke `elaborate_expr` (perilaku lama).
+    /// Kalau `rhs` adalah assignment pattern `'{...}` dan LHS-nya agregat
+    /// (struct ber-layout, atau queue/dynamic array), pack menjadi `IrExpr`.
+    /// `Ok(None)` = bukan pola atau layout tak diketahui → pemanggil jatuh ke
+    /// `elaborate_expr` (perilaku lama).
     pub(crate) fn elaborate_struct_pattern(
         &self,
         ir_lhs: &IrLValue,
@@ -36,19 +39,86 @@ impl Elaborator {
         signal_map: &HashMap<Symbol, SignalId>,
         signals: &[SignalInfo],
     ) -> Result<Option<IrExpr>, SimError> {
+        let IrLValue::Signal(sid, _) = ir_lhs else {
+            return Ok(None);
+        };
+        let Some(sig) = signals.get(*sid) else {
+            return Ok(None);
+        };
+        // Queue/dynamic array: assignment pattern `'{a,b,c}` di-desugar parser
+        // menjadi `Expr::Concat` (semua posisional) atau tetap `StructLit`
+        // (ada named/default). Keduanya = daftar ELEMEN queue berurutan;
+        // elemen 0 di bit terendah (storage engine `i*elem_width`).
+        // Associative array punya storage HashMap → dilewati.
+        if (sig.is_queue || sig.is_dynamic) && !sig.is_associative {
+            let elems: Vec<&Expr> = match rhs {
+                Expr::StructLit { members } => members
+                    .iter()
+                    .map(|m| match m {
+                        StructLitMember::Positional(e)
+                        | StructLitMember::Named(_, e)
+                        | StructLitMember::Default(e) => e,
+                    })
+                    .collect(),
+                Expr::Concat(es) => es.iter().collect(),
+                _ => Vec::new(),
+            };
+            if !elems.is_empty() {
+                return Ok(Some(self.pack_array_pattern(
+                    &elems,
+                    sig.elem_width.max(1),
+                    signal_map,
+                    signals,
+                )?));
+            }
+            return Ok(None);
+        }
         let Expr::StructLit { members } = rhs else {
             return Ok(None);
         };
-        let Some(fields) = lvalue_struct_fields(ir_lhs, signals) else {
-            return Ok(None);
-        };
-        Ok(Some(self.pack_struct_pattern(
-            members,
-            &fields,
-            signal_map,
-            signals,
-            0,
-        )?))
+        if !sig.struct_fields.is_empty() {
+            return Ok(Some(self.pack_struct_pattern(
+                members,
+                &sig.struct_fields.clone(),
+                signal_map,
+                signals,
+                0,
+            )?));
+        }
+        Ok(None)
+    }
+
+    /// Pack assignment pattern untuk queue/dynamic array → `IrExpr::Concat`
+    /// MSB-first: elemen terakhir di posisi MSB, elemen 0 di bit terendah
+    /// (storage queue engine menaruh elemen i di `i*elem_width`). Setiap
+    /// elemen di-cast ke `elem_width`. Satu elemen → nilai tunggal.
+    fn pack_array_pattern(
+        &self,
+        elems: &[&Expr],
+        elem_width: usize,
+        signal_map: &HashMap<Symbol, SignalId>,
+        signals: &[SignalInfo],
+    ) -> Result<IrExpr, SimError> {
+        let mut irs: Vec<IrExpr> = Vec::with_capacity(elems.len());
+        for e in elems {
+            let ir = self.elaborate_expr(e, signal_map, signals)?;
+            irs.push(if ir_val_width(&ir) == elem_width {
+                ir
+            } else {
+                IrExpr::Cast {
+                    width: elem_width,
+                    expr: Box::new(ir),
+                }
+            });
+        }
+        // Concat membangun operand PERTAMA sebagai bit TERTINGGI (MSB-first);
+        // queue menaruh elemen 0 di bit TERENDAH, jadi urutan dibalik.
+        let parts: Vec<IrExpr> = irs.into_iter().rev().collect();
+        Ok(if parts.len() == 1 {
+            parts.into_iter().next().unwrap()
+        } else {
+            IrExpr::Concat(parts)
+        })
     }
 
     /// Pack `'{...}` → concat MSB-first sesuai offset field.
@@ -135,23 +205,6 @@ impl Elaborator {
             _ => IrExpr::Concat(parts),
         })
     }
-}
-
-/// Layout struct dari lvalue — `SignalInfo.struct_fields` (dipakai juga untuk
-/// member access). Lvalue non-signal (bit/part select struct) belum punya
-/// layout di elaborasi → `None` (perilaku lama).
-fn lvalue_struct_fields(
-    ir_lhs: &IrLValue,
-    signals: &[SignalInfo],
-) -> Option<Vec<StructFieldInfo>> {
-    let IrLValue::Signal(sid, _) = ir_lhs else {
-        return None;
-    };
-    let sig = signals.get(*sid)?;
-    if sig.struct_fields.is_empty() {
-        return None;
-    }
-    Some(sig.struct_fields.clone())
 }
 
 /// Lebar statis IrExpr bila bisa diketahui tanpa evaluasi (Const/Cast/Concat);

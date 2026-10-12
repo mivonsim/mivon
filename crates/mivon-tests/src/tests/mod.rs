@@ -929,6 +929,75 @@ module tb_qw {
     assert_eq!(v, 9, "q[0] elemen 8-bit terbaca utuh");
 }
 
+/// Queue lewat TYPEDEF (`type Q = logic[7:0][$]` → SV `typedef logic [7:0] Q [$];`).
+/// Regresi: dimensi `[$]` setelah nama typedef dulu dibuang parser
+/// (`skip_typedef_unpacked_dims`) sehingga `Q q;` dianggap SKALAR → `q.size()`
+/// = 0, `q[0]` membaca bit sampah, dan assignment pattern `Q'(a)` → lebar 1.
+/// Kini `Q q;` (var) DAN `out q : Q` (port) dimodelkan sebagai queue penuh.
+#[test]
+fn test_mv_queue_typedef_var_and_cast() {
+    let src = r#"
+type Q = logic[7:0][$]
+
+module tb_qtd {
+    sig q : Q
+    sig v : logic[7:0] = 0
+    sig n : int = 0
+    initial {
+        q.push_back(8'd7)
+        v = q[0]
+        n = q.size()
+        // cast-to-queue via typedef → SV `q = '{ 8'hA5 }` (1 elemen)
+        q = Q'(8'hA5)
+        $display("QT v=%0d n=%0d sz=%0d q0=%0h", v, n, q.size(), q[0])
+    }
+}
+"#;
+    let r = mivon_mv::transpile(src, "qtdef").expect("transpile .mv OK");
+    assert!(
+        r.svh.contains("typedef logic [7:0] Q [$];"),
+        "typedef queue emit `[$]` setelah nama: {}",
+        r.svh
+    );
+    // Typedef ada di `.svh` → gabung header + body agar tipe `Q` ter-resolve.
+    let combined = format!("{}\n{}", r.svh, r.sv);
+    let sigs = simulate_signals(&combined, 5).unwrap();
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    assert_eq!(get("v"), 7, "push_back + q[0] pada queue typedef");
+    assert_eq!(get("n"), 1, "size()=1 setelah push_back");
+    // `q = Q'(8'hA5)` mengganti queue dengan 1 elemen 0xA5.
+    assert_eq!(get("q"), 0xA5, "assignment pattern queue 1 elemen = 0xA5");
+}
+
+/// Assignment pattern multi-elemen `q = '{a, b, c}` pada queue typedef →
+/// queue berisi 3 elemen berurutan (elemen 0 di bit terendah). Menutup jalur
+/// `pack_array_pattern` (bukan hanya 1 elemen). Oracle: LRM 1800 §10.9.
+#[test]
+fn test_queue_typedef_pattern_multi_elem() {
+    let source = r#"
+typedef logic [7:0] Q [$];
+module tb_qpat;
+    Q q;
+    reg [7:0] e0, e1, e2;
+    reg [31:0] n;
+    initial begin
+        q = '{ 8'h11, 8'h22, 8'h33 };
+        e0 = q[0];
+        e1 = q[1];
+        e2 = q[2];
+        n = q.size();
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 5).unwrap();
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    assert_eq!(get("e0"), 0x11, "elemen 0 = 0x11 (LSB)");
+    assert_eq!(get("e1"), 0x22, "elemen 1 = 0x22");
+    assert_eq!(get("e2"), 0x33, "elemen 2 = 0x33 (MSB)");
+    assert_eq!(get("n"), 3, "queue berisi 3 elemen");
+}
+
 #[test]
 fn test_mv_fork_join_modes() {
     // F39: `fork { ... } { ... } join / join_any / join_none` di-transpile
@@ -23715,6 +23784,24 @@ fn test_mv_dsl_demo_example_end_to_end() {
     assert_eq!(get("lo"), 3, "mat[1][0]");
     assert_eq!(get("hi"), 4, "mat[1][1]");
     assert_eq!(get("w"), 7, "override/restore + assign");
+}
+
+/// Demo `examples/mv/queue_typedef.mv` — queue lewat typedef end-to-end:
+/// method push, cast-to-queue, assignment pattern berurutan, dan port queue.
+/// Regresi: dimensi `[$]` typedef dulu dibuang → queue jadi skalar.
+#[test]
+fn test_mv_queue_typedef_example_end_to_end() {
+    let src = include_str!("../../../../examples/mv/queue_typedef.mv");
+    let r = mivon_mv::transpile(src, "queue_typedef").expect("transpile .mv OK");
+    let combined = format!("{}\n{}", r.svh, r.sv);
+    let sigs = simulate_signals(&combined, 100).expect("queue_typedef harus simulasi bersih");
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    assert_eq!(get("first"), 3, "push_back + q[0]");
+    assert_eq!(get("last"), 4, "q[1]");
+    assert_eq!(get("e0"), 0x11, "pattern elemen 0");
+    assert_eq!(get("e1"), 0x22, "pattern elemen 1");
+    assert_eq!(get("e2"), 0x33, "pattern elemen 2");
+    assert_eq!(get("ok"), 1, "semua assertion queue lolos (QTD_OK)");
 }
 
 // ── LRM 1800 §7.3 — dimensi unpacked harus SETELAH nama variabel ──────

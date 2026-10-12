@@ -1292,6 +1292,8 @@ impl Parser {
 
     pub(crate) fn parse_typedef(&mut self) -> Result<TypedefDecl, SimError> {
         self.advance(); // consume typedef
+        // Queue typedef yang `[$]`-nya dikonsumsi inline di cabang user-defined.
+        let mut typedef_is_queue = false;
         let (name, dtype, range, extra_packed_dims) = match self.peek() {
             // Forward class declaration: `typedef class foo;` (LRM 1800 §6.18).
             Token::Class => {
@@ -1644,12 +1646,13 @@ impl Parser {
                     let name = *name;
                     self.advance();
                     // Queue typedef: `name [$]` / `name [$:N]` (unbounded /
-                    // bounded queue). mivon tidak memodelkan queue sebagai
-                    // tipe, tapi JANGAN error — pola umum DV OpenTitan
-                    // (`typedef spi_data_t spi_queue_t [$];` di spid_common).
+                    // bounded queue). Ditandai `typedef_is_queue` agar var/port
+                    // bertipe ini dimodelkan sebagai queue (bukan skalar) —
+                    // pola umum DV OpenTitan (`typedef spi_data_t q_t [$];`).
                     while self.peek() == &Token::LBrack
                         && matches!(self.peek_ahead(1), Token::Dollar)
                     {
+                        typedef_is_queue = true;
                         self.advance(); // [
                         self.advance(); // $
                         if self.peek() == &Token::Colon {
@@ -1667,13 +1670,15 @@ impl Parser {
         };
         // Unpacked dims SETELAH nama typedef (`[]`, `[$]`, `[type]`, `[N]`)
         // — konsumsi untuk semua branch (logic/bit/int/enum/struct/user-defined).
-        self.skip_typedef_unpacked_dims()?;
+        let (td_queue, td_dynamic) = self.skip_typedef_unpacked_dims()?;
         self.skip_semi();
         Ok(TypedefDecl {
             name,
             dtype,
             range,
             extra_packed_dims,
+            is_queue: typedef_is_queue || td_queue,
+            is_dynamic: td_dynamic,
         })
     }
 
@@ -2057,8 +2062,20 @@ impl Parser {
     /// `typedef logic [7:0] fq_t[$];`, `typedef data_t mem_t[addr_t];`
     /// (umum di DV OpenTitan). Isi bracket dilewati balance-aware terhadap
     /// bracket bersarang dan kurung ekspresi.
-    pub(crate) fn skip_typedef_unpacked_dims(&mut self) -> Result<(), SimError> {
+    /// Konsumsi dimensi unpacked SETELAH nama typedef (`[]`, `[$]`, `[type]`,
+    /// `[N]`) dan kembalikan `(is_queue, is_dynamic)`: `[$]`/`[$:N]` → queue,
+    /// `[]` → dynamic array. Sebelumnya bentuk queue/dynamic dibuang tanpa
+    /// jejak sehingga `typedef logic [7:0] Q [$];` + `Q x;` dianggap skalar.
+    pub(crate) fn skip_typedef_unpacked_dims(&mut self) -> Result<(bool, bool), SimError> {
+        let mut is_queue = false;
+        let mut is_dynamic = false;
         while self.peek() == &Token::LBrack {
+            let first = self.peek_ahead(1).clone();
+            if first == Token::Dollar {
+                is_queue = true;
+            } else if first == Token::RBrack {
+                is_dynamic = true;
+            }
             let mut depth: i64 = 0;
             loop {
                 match self.peek() {
@@ -2082,7 +2099,7 @@ impl Parser {
                 }
             }
         }
-        Ok(())
+        Ok((is_queue, is_dynamic))
     }
 
     /// Parse packed dimensions tambahan `[msb:lsb][msb:lsb]...` setelah range

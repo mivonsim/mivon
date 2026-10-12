@@ -256,6 +256,18 @@ Aturan:
   menghasilkan elemen 8-bit.
 - Queue kosong by-design: tak dianggap "uninitialized register" (WR0014
   dikecualikan); diisi via method, bukan assignment langsung.
+- **Queue lewat typedef didukung penuh (F40b).** `type Q = logic[7:0][$]`
+  (SV `typedef logic [7:0] Q [$];`) boleh dipakai sebagai tipe **var maupun
+  port**: `sig q : Q` dan `out q : Q` keduanya dimodelkan sebagai queue
+  (storage bit-vector dinamis di engine). Sebelumnya dimensi `[$]` setelah
+  nama typedef dibuang parser sehingga `Q q;` dianggap **skalar** —
+  `q.size()` = 0 dan `q[0]` membaca bit sampah (silent wrong). Contoh:
+  `examples/mv/queue_typedef.mv`.
+- **Assignment pattern queue (F40b).** `q = '{a, b, c}` (atau hasil
+  cast-to-queue berisi >1 elemen) menaruh **elemen 0 di bit terendah**:
+  urutan operand = urutan elemen (`'{a,b,c}` → `q[0]=a`, `q[2]=c`).
+  Implementasi: elaborator me-repack operand MSB-first (parser meng-desugar
+  pola semua-posisional jadi `Concat` MSB-first) menjadi urutan elemen.
 - **Cast ke tipe ber-range** didukung penuh (LRM 1800 §6.24): `logic[7:0]'(x)`
   di-emit sebagai **width cast** `8'(x)` (SV valid di semua tool — bentuk
   `logic[M:N]'(x)` sendiri tidak didukung tool EDA). Batas range harus
@@ -273,11 +285,12 @@ Aturan:
     module** (`Port q ... with type queue is not supported`) — batasi queue
     ke variabel lokal di TB, atau gunakan verilator untuk modul ber-port
     queue. Ini keterbatasan iverilog, bukan bug generasi (SV hasil LRM-valid
-    & lolos verilator).
-  - **Caveat simulator utama mivon**: engine SV mivon (`mivon sim`) belum
-    mendukung tipe queue secara penuh — verifikasi queue portabel via
-    **verilator** (`mgen` → `verilator`). Lihat buglog-mv (gap simulator
-    queue).
+    & lolos verilator). Simulator mivon (`mivon sim`) mendukung port queue.
+  - **Simulator mivon (`mivon sim`) mendukung queue penuh** — method
+    (`push_back`/`push_front`/`pop_front`/`pop_back`/`insert`/`delete`/`size`/
+    `exists`), indeks `q[i]`/`q[$]`, cast, assignment pattern, var & port
+    queue. Gap simulator lama (F40) sudah ditutup (F40b) — lihat
+    `examples/mv/queue_typedef.mv`.
 - **Rangkuman emisi cast** (codegen): `logic[M:N]'(x)` → `W'(x)`
   (width cast), `Q'(x)` dengan `Q` typedef queue → `'{ x }`, selain itu
   `T'(x)` static cast apa adanya (termasuk typedef non-queue & tipe dasar).
@@ -1852,6 +1865,7 @@ module tb_traffic {
 | **F79** ✅ | **Generate `case` di `.mv`** — gap: seleksi blok generate hanya via `for`/`if` (engine sudah dukung `GenerateItem::Case`, LRM 1800 §27.5). Kini `case (e) { v: {...} a, b: {...} default: {...} }` (+ `casez`/`casex`) di level module → `generate case (e) v: begin : gen_case ... endcase` (label unik deterministik `gen_case[_N]`/`gen_case_else`, pola F60). Check E2001 expr/label; `default` ganda ditolak parse | `mgen gen_case.mv` → iverilog + verilator bersih; `run --top tb_gc` → `GC_OK y=20` (cabang multi-label `1, 2`); contoh `examples/mv/gen_case.mv`; e2e `test_mv_gen_case_selects_branch` |
 | **F80** ✅ | **Tolak kondisi generate non-konstan (E2014)** — `if`/`case` generate dengan sinyal dikompilasi diam-diam (elaborator warning + ambil cabang pertama). Kini check menolak: kondisi harus ter-fold ke parameter/konstanta/literal (perbandingan, ternary, sized, `'0`/`'1`, member enum, konstanta package). `fold_const` diperluas serasi (Sized/Fill/comparison/logika/ternary — hanya menambah `Some`, tak ubah perilaku lama) | 2 test (`const_forms_ok` + `nonconst_is_e2014` berposisi); seluruh suite + contoh lama hijau (kondisinya memang konstan) |
 | **F81** ✅ | **Functional coverage `covergroup`/`coverpoint`/`bins` di `.mv`** — gap: tak ada cara menulis coverage fungsional (engine sudah dukung sampling implisit + bins + wildcard, LRM §19). Kini `covergroup cg [@(posedge clk)] { coverpoint [label :] expr { bins n = {v, [lo:hi]} } }` → emisi berlabel (`x: coverpoint x`, karena parser SV melewatkan tak-berlabel diam-diam) + `endgroup`. Check E2001 event/expr/bins; F77 walk mencakup referensi scoped. Cross/bins transisi/option via `@sv` | `cov cover.mv --top tb_cov` → Functional 100% (implicit, tanpa `sample()`); iverilog/verilator menolak `covergroup` (limit tool); contoh `examples/mv/cover.mv`; e2e `test_mv_covergroup_samples_implicitly` |
+| **F40b** ✅ | **Queue lewat typedef penuh (var + port + assignment pattern)** — gap: `typedef logic [7:0] Q [$];` (dimensi `[$]` **setelah nama typedef**) dibuang parser (`skip_typedef_unpacked_dims`) tanpa jejak → `Q q;` / `out q : Q` dianggap **skalar** (`q.size()`=0, `q[0]` bit sampah, `Q'(x)` lebar salah). Kini `TypedefDecl.is_queue`/`is_dynamic` (AST+serde), parser mengembalikan `(is_queue, is_dynamic)`; elaborator menandai var/port bertipe queue typedef sebagai queue (storage bit-vector dinamis); assignment pattern queue di-repack agar **elemen 0 = operand pertama** (parser desugar `'{a,b,c}` → `Concat` MSB-first). Menutup buglog-mv open #1 | `mivon sim examples/mv/queue_typedef.mv` → `QTD_OK` (push/cast/pattern/port); `cast_queue.mv` → `TB_CASTQ_OK r=a5 q0=a5`; 3 test baru (`test_mv_queue_typedef_var_and_cast`, `test_queue_typedef_pattern_multi_elem`, `test_mv_queue_typedef_example_end_to_end`); buglog-mv #35 |
 
 **Kriteria selesai F2:** `mivon mgen examples/mv/counter.mv` menghasilkan
 `counter.sv` yang bisa disimulasikan oleh `mivon counter.sv` tanpa error.

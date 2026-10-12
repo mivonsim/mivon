@@ -194,6 +194,12 @@ pub struct Elaborator {
     /// Range + packed dims typedef module/package (untuk mengisi `packed_dims`
     /// signal bertipe UserDefined seperti `box_t` → `[4:0][4:0][W-1:0]`).
     pub typedef_dims: HashMap<Symbol, (Option<ExprRange>, Vec<ExprRange>)>,
+    /// Nama typedef yang merupakan QUEUE (`typedef logic[7:0] Q [$];`) /
+    /// DYNAMIC array (`typedef logic[7:0] A [];`). Dipakai saat membuat signal
+    /// var/port bertipe `UserDefined(name)` agar dimodelkan sebagai queue/
+    /// dynamic (storage bit-vector dinamis), bukan skalar.
+    pub typedef_queue: std::collections::HashSet<Symbol>,
+    pub typedef_dynamic: std::collections::HashSet<Symbol>,
     pub package_symbols: HashMap<Symbol, HashMap<Symbol, PackageItem>>,
     /// Konstanta package ter-evaluasi (kualifikasi `pkg::name`): skalar & array.
     pub pkg_const_scalars: HashMap<Symbol, i64>,
@@ -604,6 +610,8 @@ impl Elaborator {
             checker_decls: HashMap::new(),
             typedef_map: HashMap::new(),
             typedef_dims: HashMap::new(),
+            typedef_queue: std::collections::HashSet::new(),
+            typedef_dynamic: std::collections::HashSet::new(),
             typedef_field_map: HashMap::new(),
             package_symbols,
             pkg_const_scalars,
@@ -2572,6 +2580,14 @@ impl Elaborator {
                                                 td.name,
                                                 (td.range.clone(), td.extra_packed_dims.clone()),
                                             );
+                                            // Direct field insert (td dipinjam dari
+                                            // self.package_symbols → tak boleh method &mut self).
+                                            if td.is_queue {
+                                                self.typedef_queue.insert(td.name);
+                                            }
+                                            if td.is_dynamic {
+                                                self.typedef_dynamic.insert(td.name);
+                                            }
                                         }
                                         if matches!(
                                             &td.dtype,
@@ -2600,6 +2616,7 @@ impl Elaborator {
                     self.typedef_map.insert(td.name, width);
                     self.typedef_dims
                         .insert(td.name, (td.range.clone(), td.extra_packed_dims.clone()));
+                    self.register_typedef_kind(td);
                     if matches!(
                         &td.dtype,
                         DataType::StructType { .. } | DataType::UnionType { .. }
@@ -2657,6 +2674,7 @@ impl Elaborator {
             self.typedef_map.insert(td.name, width);
             self.typedef_dims
                 .insert(td.name, (td.range.clone(), td.extra_packed_dims.clone()));
+            self.register_typedef_kind(td);
             if matches!(
                 &td.dtype,
                 DataType::StructType { .. } | DataType::UnionType { .. }
@@ -2692,6 +2710,12 @@ impl Elaborator {
                             self.typedef_map.insert(td.name, width);
                             self.typedef_dims
                                 .insert(td.name, (td.range.clone(), td.extra_packed_dims.clone()));
+                            if td.is_queue {
+                                self.typedef_queue.insert(td.name);
+                            }
+                            if td.is_dynamic {
+                                self.typedef_dynamic.insert(td.name);
+                            }
                         }
                     }
                 }
@@ -3083,6 +3107,21 @@ impl Elaborator {
                         let sig = &mut signals[sid];
                         sig.struct_fields = fields;
                     }
+                }
+                // Queue/dynamic-array typedef port (`out q : Q` dengan
+                // `typedef logic[7:0] Q [$];`): lebar yang ter-resolve adalah
+                // lebar ELEMEN, bukan total — tandai queue + mulai kosong
+                // (width 0), sinkron storage bit-vector dinamis di engine.
+                let tn_base = tn.as_str().split('.').next().unwrap_or(tn.as_str());
+                let tn_sym = Symbol::intern(tn_base);
+                if self.typedef_queue.contains(&tn_sym) || self.typedef_dynamic.contains(&tn_sym)
+                {
+                    let sig = &mut signals[sid];
+                    sig.is_queue = self.typedef_queue.contains(&tn_sym);
+                    sig.is_dynamic = self.typedef_dynamic.contains(&tn_sym);
+                    sig.width = 0;
+                    sig.array_depth = 0;
+                    sig.init_val = LogicVec::new(0);
                 }
             }
             // F27: tandai port interface (iface_type) agar member access
@@ -3729,7 +3768,19 @@ impl Elaborator {
                     });
                     continue;
                 }
-                if var.is_dynamic || var.is_queue {
+                // Queue/dynamic via typedef (`typedef logic[7:0] Q [$];` → `Q x;`):
+                // var.is_queue hanya terisi untuk bentuk inline `x : logic[7:0][$]`;
+                // bentuk typedef harus dicek lewat `typedef_queue`.
+                let (td_q, td_d) = match &decl.dtype {
+                    DataType::UserDefined(n) => (
+                        self.typedef_queue.contains(n),
+                        self.typedef_dynamic.contains(n),
+                    ),
+                    _ => (false, false),
+                };
+                let eff_queue = var.is_queue || td_q;
+                let eff_dynamic = var.is_dynamic || td_d;
+                if eff_dynamic || eff_queue {
                     let dtype_width = self.resolve_dtype_width(&decl.dtype, &type_param_widths)?;
                     let elem_width = dtype_width
                         .max(
@@ -3761,8 +3812,8 @@ impl Elaborator {
                         is_semaphore: false,
                         is_real: false,
                         is_2state: decl_is_2state,
-                        is_dynamic: var.is_dynamic,
-                        is_queue: var.is_queue,
+                        is_dynamic: eff_dynamic,
+                        is_queue: eff_queue,
                         is_associative: var.is_associative,
                         is_signed: is_signed_type(&decl.dtype),
                         is_const: false,
@@ -4692,6 +4743,7 @@ impl Elaborator {
                     self.typedef_map.insert(td.name, width);
                     self.typedef_dims
                         .insert(td.name, (td.range.clone(), td.extra_packed_dims.clone()));
+                    self.register_typedef_kind(td);
                     // Store struct/union field info for member access
                     match &td.dtype {
                         DataType::StructType { members } | DataType::UnionType { members } => {

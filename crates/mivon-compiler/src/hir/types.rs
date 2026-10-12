@@ -411,12 +411,16 @@ mod tests {
                 dtype: DataType::Int,
                 range: None,
                 extra_packed_dims: vec![],
+                is_queue: false,
+                is_dynamic: false,
             },
             TypedefDecl {
                 name: Symbol::intern("my_logic"),
                 dtype: DataType::Logic,
                 range: None,
                 extra_packed_dims: vec![],
+                is_queue: false,
+                is_dynamic: false,
             },
         ];
 

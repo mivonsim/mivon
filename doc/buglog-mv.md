@@ -339,14 +339,34 @@ bug di mivon utama (parser/elaborator/simulator). Status: ✅ fixed / ⏳ open.
     `$left`/`$right`/`$low`/`$high` full-evaluator masih kembalikan nilai
     arg — butuh info tipe array yang tak tersedia di const-eval.
 
+35. **Queue lewat typedef dianggap skalar (F40b)** — `typedef logic [7:0]
+    Q [$];` (dimensi `[$]` **setelah nama typedef**) dibuang parser
+    (`skip_typedef_unpacked_dims`) tanpa jejak, sehingga `Q q;` / `out q : Q`
+    jadi **skalar** (lebar elemen): `q.size()` = 0, `q[0]` membaca bit sampah,
+    dan `q = Q'(x)` (→ `'{ x }`) menyimpan lebar salah. Ditemukan dari buglog
+    open #1 (`cast_queue.mv` → `TB_CASTQ_BROKEN qs=0 q0=1`). Fix lengkap:
+    - **AST** (`mivon-ast/src/types.rs`): `TypedefDecl.is_queue` + `is_dynamic`
+      (`#[serde(default)]`).
+    - **Parser** (`mivon-parser/src/decl.rs`): `skip_typedef_unpacked_dims`
+      kini mengembalikan `(is_queue, is_dynamic)` (`[$]`/`[$:N]` → queue,
+      `[]` → dynamic); cabang user-defined menandai queue inline.
+    - **Elaborator** (`elaborator/mod.rs`, `expr.rs`): set `typedef_queue`/
+      `typedef_dynamic` di semua situs registrasi typedef; var bertipe
+      `UserDefined` + port bertipe queue typedef dimodelkan sebagai queue
+      (width 0, elem_width = lebar dasar, init kosong).
+    - **Assignment pattern queue** (`elaborator/struct_lit.rs`): parser
+      meng-desugar `'{a,b,c}` semua-posisional jadi `Expr::Concat` (MSB-first);
+      untuk LHS queue/dynamic, operand di-repack terbalik agar **elemen 0 =
+      operand pertama (bit terendah)**. Jalur `pack_array_pattern` juga
+      menangani `Expr::Concat` (bukan hanya `Expr::StructLit`).
+    - Verifikasi: `mivon sim examples/mv/queue_typedef.mv` → `QTD_OK`
+      (push/cast/pattern/port); `cast_queue.mv` → `TB_CASTQ_OK r=a5 q0=a5`.
+      3 test baru: `test_mv_queue_typedef_var_and_cast`,
+      `test_queue_typedef_pattern_multi_elem`,
+      `test_mv_queue_typedef_example_end_to_end`.
+    - Sisa caveat (keterbatasan TOOL, bukan generasi): iverilog tak dukung
+      queue sbg port module — verifikasi port via verilator/simulator mivon.
+
 ## ⏳ Open
 
-1. **Simulator utama mivon tak dukung tipe queue** — `type Q = logic[7:0][$];
-   sig q : Q` + `q.push_back(...)` berjalan tanpa crash tapi elemen terbaca
-   X (storage queue tak diimplementasikan di signal model engine; F40 belum
-   di-wire ke simulator). Dampak: e2e queue (`cast_queue.mv`) lolos **verilator**
-   tapi `mivon sim` membaca X. Workaround: verifikasi queue via `mgen` →
-   `verilator`/`iverilog` (cast `'{ x }` valid di kedua tool; iverilog tak
-   dukung queue sbg port module — batasi ke variabel lokal TB). Mirip pola
-   buglog historis F54 (associative array awalnya juga tak berfungsi di
-   simulator). Di-lacak di MIVON-HDL.md §4.6.
+_(kosong — semua item fixed.)_

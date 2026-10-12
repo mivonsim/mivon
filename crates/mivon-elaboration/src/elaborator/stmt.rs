@@ -931,12 +931,16 @@ impl Elaborator {
                 // layout struct hanya diketahui di level statement (LHS),
                 // sedangkan arm `Expr::StructLit` di `elaborate_expr` tak bisa
                 // me-resolve tipe (jadi FillLit 0 = silent wrong).
+                // `matches!(StructLit)` tetap men-skip const-fold utk pola
+                // struct yang tak bisa di-pack (LHS non-signal); `pattern_used`
+                // menandai jalur pack queue/array (Concat/StructLit) juga.
+                let mut pattern_used = matches!(rhs, Expr::StructLit { .. });
                 if let Some(ir_pattern) =
                     self.elaborate_struct_pattern(&ir_lhs, rhs, signal_map, signals)?
                 {
                     ir_rhs = ir_pattern;
+                    pattern_used = true;
                 }
-                let struct_pattern = matches!(rhs, Expr::StructLit { .. });
                 // Konversi implisit real→integer saat assignment (LRM 1800
                 // §6.24.3: nilai real dibulatkan ke integer terdekat ketika
                 // disimpan ke variabel integer). PRA-FIX hanya resize bit →
@@ -975,7 +979,7 @@ impl Elaborator {
                 // RHS (LRM §11.8.1) sebelum evaluasi runtime.
                 let _at = std::time::Instant::now();
                 let _at = std::time::Instant::now();
-                if !struct_pattern {
+                if !pattern_used {
                     self.apply_lhs_context_width(&ir_lhs, rhs, &mut ir_rhs, signal_map, signals);
                 }
                 self.dbg_apply_us
@@ -1048,15 +1052,14 @@ impl Elaborator {
                 } else {
                     self.elaborate_expr(rhs, signal_map, signals)?
                 };
-                // Struct assignment pattern — lihat arm BlockingAssign.
+                // Assignment pattern struct/queue/array — lihat arm BlockingAssign.
+                let mut pattern_used = matches!(rhs, Expr::StructLit { .. });
                 if let Some(ir_pattern) =
                     self.elaborate_struct_pattern(&ir_lhs, rhs, signal_map, signals)?
                 {
                     ir_rhs = ir_pattern;
+                    pattern_used = true;
                 }
-                // Pola struct tak boleh dilewatkan const-fold `Expr::StructLit`
-                // (tak tahu layout → 0), lihat arm BlockingAssign.
-                let struct_pattern = matches!(rhs, Expr::StructLit { .. });
                 if let IrExpr::NewCall {
                     ref mut class_name, ..
                 } = ir_rhs
@@ -1074,7 +1077,7 @@ impl Elaborator {
                 let lhs_sid = lvalue_signal_id(&ir_lhs);
                 // Propagasi lebar konteks LHS (lihat arm BlockingAssign).
                 let _at = std::time::Instant::now();
-                if !struct_pattern {
+                if !pattern_used {
                     self.apply_lhs_context_width(&ir_lhs, rhs, &mut ir_rhs, signal_map, signals);
                 }
                 self.dbg_apply_us
