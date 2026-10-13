@@ -53,15 +53,19 @@ impl SimulationEngine {
             // zero-extend: -3 jadi 253 (probe p12i). Generalisasi via
             // is_signed_expr menangani unary/binary/signal/ternary signed.
             let mut val = self.evaluate_expr(expr)?;
-            // LHS queue/dynamic array: LEBAR LHS tidak tetap (didefinisikan oleh
-            // RHS) — JANGAN sign-extend ke `get_lvalue_width` (lebar STORAGE
-            // saat ini), karena itu menumbuhkan kembali slice KOSONG
-            // (`r = q[5:9]` → elemen nol). LHS fixed-width tetap di-extend.
-            let lhs_dyn = self
-                .signal_id_from_lvalue(lhs)
-                .and_then(|id| self.design.top.signals.get(id))
-                .map(|s| s.is_queue || s.is_dynamic)
-                .unwrap_or(false);
+            // LHS queue/dynamic array SELURUHNYA (`q = …`): LEBAR LHS tidak
+            // tetap (didefinisikan oleh RHS) — JANGAN sign-extend ke
+            // `get_lvalue_width` (lebar STORAGE saat ini), karena itu
+            // menumbuhkan kembali slice KOSONG (`r = q[5:9]` → elemen nol).
+            // HANYA `IrLValue::Signal` (bukan elemen `q[i]`/slice `q[a:b]`
+            // yang lebarnya tetap) — kalau tidak, sign-extension elemen
+            // (`q[0] = -8'sd3`) hilang. LHS fixed-width tetap di-extend.
+            let lhs_dyn = matches!(lhs, IrLValue::Signal(..))
+                && self
+                    .signal_id_from_lvalue(lhs)
+                    .and_then(|id| self.design.top.signals.get(id))
+                    .map(|s| s.is_queue || s.is_dynamic)
+                    .unwrap_or(false);
             let target_w = self.get_lvalue_width(lhs);
             if !lhs_dyn && val.width < target_w {
                 let msb = val.bits.last().copied().unwrap_or(LogicVal::Zero);
@@ -1844,10 +1848,16 @@ impl SimulationEngine {
                 // Queue/dynamic array: `q[a:b]` = potongan ELEMEN (LRM §7.12.1) —
                 // clamp ke size aktual (batas atas) & kosong bila indeks awal di
                 // luar batas. Elaborator meng-encode elemen sebagai bit-range
-                // ber-align `elem_width` (lihat `Expr::RangeSelect`).
+                // ber-align `elem_width` (lihat `Expr::RangeSelect`). Gate
+                // ALIGNMENT: rentang tak ber-align (mis. `+:`/`-:` yang TIDAK
+                // valid pada queue, atau jalur fallback) TIDAK di-clamp —
+                // biarkan jalur bit lama agar tak salah-decode.
                 if let Some(sig) = self.design.top.signals.get(*sig_id) {
                     if sig.is_queue || sig.is_dynamic {
-                        return Ok(clamp_queue_element_slice(&val, sig.elem_width, start, end));
+                        let ew = sig.elem_width.max(1);
+                        if start % ew == 0 && end.saturating_add(1) % ew == 0 {
+                            return Ok(clamp_queue_element_slice(&val, sig.elem_width, start, end));
+                        }
                     }
                 }
                 // Out-of-range select → bit luar batas X, bit dalam batas
@@ -1885,9 +1895,10 @@ impl SimulationEngine {
                 };
                 // Hasil method ber-queue (`q.unique()[a:b]`, `q.find with (…)[a:b]`):
                 // potongan ELEMEN dgn clamping ke size aktual (LRM §7.12.1).
+                // Gate ALIGNMENT (lihat arm RangeSelect): hanya rentang ber-align.
                 if matches!(inner.as_ref(), IrExpr::MethodCall { .. }) {
                     if let Some(ew) = self.array_method_result_elem_width(inner) {
-                        if ew > 0 {
+                        if ew > 0 && start % ew == 0 && end.saturating_add(1) % ew == 0 {
                             return Ok(clamp_queue_element_slice(&val, ew, start, end));
                         }
                     }

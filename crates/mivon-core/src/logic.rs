@@ -160,6 +160,11 @@ impl LogicVec {
     }
 
     pub fn to_i64(&self) -> i64 {
+        if self.width == 0 {
+            // Lebar 0 (mis. queue kosong): tak ada bit → nilai 0. Tanpa guard
+            // ini `1u64 << (width-1)` underflow → panic.
+            return 0;
+        }
         let uval = self.to_u64();
         if self.width < 64 {
             let mask = 1u64 << (self.width - 1);

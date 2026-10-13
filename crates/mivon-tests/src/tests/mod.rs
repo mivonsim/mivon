@@ -1353,6 +1353,59 @@ endmodule
     assert_eq!(get("v"), 2, "q.unique()[1:1][0] = 2");
 }
 
+/// Review-fix F89 (temuan [major] auto-review): guard "LHS queue → jangan
+/// sign-extend" HARUS hanya untuk penugasan SELURUH queue (`IrLValue::Signal`).
+/// Kalau tidak, penugasan ELEMEN `q[0] = -8'sd3` kehilangan sign-extension
+/// (253, harus -3). LHS skalar/fixed-width tetap sign-extend.
+#[test]
+fn test_queue_element_assign_sign_extension() {
+    let source = r#"
+module tb_qes;
+    int q[$];
+    byte b;
+    int e;
+    initial begin
+        b = -1;
+        q = '{0};
+        q[0] = b;         // elemen (ArrayIndex) → sign-extend
+        e = b;            // skalar → sign-extend
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 5).unwrap();
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_i64();
+    assert_eq!(get("e"), -1, "skalar byte→int sign-extend = -1");
+    let q0 = sigs.iter().find(|(s, _)| s == "q").map(|(_, v)| v).unwrap();
+    // q[0] harus -1 (0xFFFFFFFF); bandingkan 32-bit rendah.
+    assert_eq!(q0.to_u64() as u32, 0xFFFF_FFFF, "q[0] = -1 (sign-extended)");
+}
+
+/// Review-fix F89: `$display("%d", <queue kosong>)` tidak boleh panic
+/// (`LogicVec::to_i64` underflow saat width 0). Menutup [minor] auto-review.
+#[test]
+fn test_empty_queue_display_no_panic() {
+    let source = r#"
+module tb_qed;
+    int q[$];
+    int r[$];
+    int n;
+    initial begin
+        q = '{1,2,3,4};
+        r = q[5:9];       // slice kosong
+        n = r.size();
+        $display("ED n=%0d v=%0d", n, r);  // dulu panic (width 0)
+        q.delete();
+        $display("ED2 v=%0d", q);
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 5).expect("queue kosong tak boleh panic");
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    assert_eq!(get("n"), 0, "slice kosong → size 0");
+}
+
 /// Review F41: `min`/`max` mengembalikan **elemen** (bukan nilai kunci
 /// `with`), dan `find_last`/`find_last_index` mengembalikan **hanya satu**
 /// kecocokan terakhir (LRM 1800 §7.12.1).

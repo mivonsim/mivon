@@ -658,18 +658,37 @@ bug di mivon utama (parser/elaborator/simulator). Status: ✅ fixed / ⏳ open.
          `get_lvalue_width(lhs)` — untuk LHS queue itu lebar STORAGE saat ini,
          sehingga slice KOSONG di-zero-extend balik (`r = q[5:9]` setelah
          `r`=2 elemen → tetap 2 elemen nol, bukan kosong). Kini resize
-         **dilewati** bila LHS queue/dynamic (lebar LHS didefinisikan RHS).
+         **dilewati** HANYA bila LHS adalah SELURUH queue (`IrLValue::Signal`
+         bertipe queue/dynamic; lebar LHS didefinisikan RHS).
+    - **Review-fix ronde 2 (temuan [major] auto-review):**
+      1. Guard di atas awalnya memakai `signal_id_from_lvalue`, yang juga
+         mengembalikan id untuk `ArrayIndex`/`BitSelect`/… → penugasan ELEMEN
+         `q[0] = -8'sd3` salah dianggap "seluruh queue" & kehilangan
+         sign-extension (253, harus -3). Dibatasi ke `matches!(lhs,
+         IrLValue::Signal(..))`.
+      2. Gate **ALIGNMENT** pada clamp runtime (`start % ew == 0 && (end+1) %
+         ew == 0`): rentang tak ber-align (mis. `+:`/`-:` — yang ternyata
+         **TIDAK valid** pada queue per verilator: "Illegal +: or -: select")
+         tidak di-clamp, jatuh ke jalur bit lama → tak salah-decode.
+      3. `mivon-core/src/logic.rs` `to_i64`: guard `width == 0` → 0 (dulu
+         `1u64 << (width-1)` underflow → panic saat `$display("%d", <queue
+         kosong>)`).
     - **Oracle:** verilator 5.020 (`q[0:9]` pada 4-elemen → 4, clamp;
       descending → 0). iverilog 12.0 queue-slice RUSAK (`q[0:1]` → size 4;
       `q[5:9]` → 4) & verilator segfault pada queue kosong — untuk kasus
       batas ini mivon mengikuti semantik LRM (§7.12.1: indeks awal di luar
-      batas / descending → kosong), bukan bug tool.
+      batas / descending → kosong), bukan bug tool. `q[1 +: 2]` pada queue =
+      **illegal** SV (verilator menolak), jadi tak ada semantik benar yang
+      hilang.
     - Verifikasi: `test_queue_element_index_and_slice` (SV) — `q[0:1]` → `n`=2,
       `r0`=1, `r1`=2, `q.unique()[0]`=1, `q.unique()[1]`=2, `q.unique()[i=2]`=3;
       `test_queue_slice_clamped_and_empty` (review-fix) — `q[0:9]`→4,
       `q[5:9]`→0, `q[3:0]`→0, queue kosong→0, slice kosong mengosongkan
       target→0, in-range→2; `test_queue_method_result_slice_clamped` —
-      `q.unique()[0:9]`→3, `q.unique()[1:1]`→1 elemen=2. Demo e2e `.mv`
+      `q.unique()[0:9]`→3, `q.unique()[1:1]`→1 elemen=2;
+      `test_queue_element_assign_sign_extension` (ronde 2) — `q[0] = byte(-1)`
+      → 0xFFFFFFFF (sign-extend elemen tetap); `test_empty_queue_display_no_panic`
+      (ronde 2) — `$display("%d", queue kosong)` tak panic. Demo e2e `.mv`
       `examples/mv/queue_slice.mv` → `QS n=2 r0=1 r1=2 e0=1 e1=2 ei=3 cu=4 cd=0`
       + `QS_OK`; test `test_mv_queue_slice_end_to_end`. Full workspace test hijau.
 
