@@ -614,8 +614,44 @@ bug di mivon utama (parser/elaborator/simulator). Status: ✅ fixed / ⏳ open.
       Demo e2e `.mv` `examples/mv/chained_methods.mv` → `CHAIN_OK`; test
       `test_mv_chained_methods_end_to_end`. Full workspace test hijau.
 
+43. **Index/range pada QUEUE & hasil method = ELEMEN, bukan bit — bug mivon
+    utama (LRM 1800 §7.12.1).** `q[i]` dan `q[a:b]` pada queue/dynamic array
+    (juga pada hasil method ber-queue, `q.unique()[i]`) diperlakukan sebagai
+    potongan **BIT** oleh elaborator → nilai salah: `q.unique()[1]` membaca
+    bit ke-1 (hasil 0, harus 2); `q[0:1]` menghasilkan queue kosong (harus
+    sub-queue 2 elemen). Bukan keterbatasan parser (mgen sudah emit verbatim)
+    — murni elaborator (`Expr::BitSelect`/`Expr::RangeSelect` tak membedakan
+    indeks ELEMEN vs bit untuk receiver queue).
+    - **Reproduksi:** `int q[$] = '{1,2,3,4}; q.unique()[1]` → **0** (harus 2);
+      `q[0:1].size()` → **0** (harus 2).
+    - **Fix (elaborator saja, `crates/mivon-elaboration/src/elaborator/expr.rs`):**
+      1. Helper `array_method_result_elem_width(expr, signals)` — lebar ELEMEN
+         hasil sebuah ekspresi bila hasilnya queue/dynamic array: `Signal`
+         queue/dynamic → `elem_width`; `MethodCall` `find`/`find_first`/
+         `find_last`/`unique` → lebar receiver; `find_index`/
+         `find_first_index`/`find_last_index`/`unique_index` → 32 (indeks);
+         ordering (`sort`/`rsort`/`reverse`/`shuffle`, §7.12.2 **void**) dan
+         skalar lain → `None` (tak chainable).
+      2. Arm `Expr::BitSelect`: bila `inner_expr` adalah `MethodCall` dengan
+         lebar elemen `ew>0` → indeks = indeks ELEMEN (potong `ew` bit):
+         literal → `ExprRangeSelect(inner, idx*ew+ew-1, idx*ew)`, dinamis →
+         `ExprPartSelect(inner, idx*ew, ew)`. Ditempatkan **sebelum** cek
+         `Signal`/string agar tak tertimpa jalur bit.
+      3. Arm `Expr::RangeSelect`: bila rentang **ascending** (`msb_c <= lsb_c`)
+         dan lebar elemen `ew>1` → sub-queue elemen: `Signal` →
+         `RangeSelect(sid, (lsb_c+1)*ew-1, msb_c*ew)`, lainnya →
+         `ExprRangeSelect(inner, …)`. Rentang descending tetap jalur lama.
+    - Runtime **tidak** berubah (`read_signal`/`write` queue sudah benar bila
+      diberi potongan elemen).
+    - Verifikasi: `test_queue_element_index_and_slice` (SV, baru) — `q[0:1]`
+      → `n`=2, `r0`=1, `r1`=2, `q.unique()[0]`=1, `q.unique()[1]`=2,
+      `q.unique()[i=2]`=3. Demo e2e `.mv` `examples/mv/queue_slice.mv` →
+      `QS n=2 r0=1 r1=2 e0=1 e1=2 ei=3` + `QS_OK`; test
+      `test_mv_queue_slice_end_to_end`. Full workspace test hijau.
+
 ## ⏳ Open
 
-_(Tidak ada item open. `with (item.x)` kini DIDUKUNG penuh (#40) & method
-bertaut pada hasil temporer (`q.unique().size()`) DIDUKUNG penuh (#42).
+_(Tidak ada item open. `with (item.x)` kini DIDUKUNG penuh (#40), method
+bertaut pada hasil temporer (`q.unique().size()`) DIDUKUNG penuh (#42), dan
+index/range pada queue & hasil method = ELEMEN DIDUKUNG penuh (#43).
 Caveat iverilog `with` clause = keterbatasan TOOL, bukan bug.)_

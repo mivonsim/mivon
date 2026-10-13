@@ -405,6 +405,30 @@ impl Elaborator {
                 ) {
                     let msb_c = msb_c.max(0) as usize;
                     let lsb_c = lsb_c.max(0) as usize;
+                    // `q[a:b]` pada QUEUE/dynamic array (atau hasil method yang
+                    // mengembalikan queue, `q.unique()[a:b]`) = potongan ELEMEN
+                    // (LRM 1800 §7.12.1), bukan potongan BIT. Tanpa ini
+                    // `q[0:1]` = bit 0..1 → queue hasil kosong/salah.
+                    // Hanya rentang ASCENDING (a<=b) yang di-handle; descending
+                    // tetap jalur lama.
+                    if msb_c <= lsb_c {
+                        if let Some(ew) = self.array_method_result_elem_width(&inner_expr, signals)
+                        {
+                            if ew > 1 {
+                                let bit_lsb = msb_c.saturating_mul(ew);
+                                let bit_msb = (lsb_c + 1).saturating_mul(ew) - 1;
+                                return Ok(if let IrExpr::Signal(sid, _) = &inner_expr {
+                                    IrExpr::RangeSelect(*sid, bit_msb, bit_lsb)
+                                } else {
+                                    IrExpr::ExprRangeSelect(
+                                        Box::new(inner_expr),
+                                        bit_msb,
+                                        bit_lsb,
+                                    )
+                                });
+                            }
+                        }
+                    }
                     if let IrExpr::Signal(sid, _) = &inner_expr {
                         Ok(IrExpr::RangeSelect(*sid, msb_c, lsb_c))
                     } else {
@@ -469,6 +493,36 @@ impl Elaborator {
                         Box::new(base_expr),
                         Box::new(IrExpr::Const(LogicVec::from_u64(elem_w as u64, 32))),
                     ));
+                }
+                // `q.unique()[i]` / `q.find with (…)[i]`: base adalah METHOD yang
+                // mengembalikan queue → indeks = indeks ELEMEN (potong
+                // elem_width bit), bukan bit tunggal (LRM §7.12.1). Tanpa ini
+                // `q.unique()[1]` membaca bit ke-1 → nilai salah (0).
+                if matches!(inner_expr, IrExpr::MethodCall { .. }) {
+                    if let Some(ew) = self.array_method_result_elem_width(&inner_expr, signals) {
+                        if ew > 0 {
+                            if let Ok(idx) = const_eval_params(index, &self.param_vals) {
+                                let lsb = (idx.max(0) as usize).saturating_mul(ew);
+                                let msb = lsb + ew - 1;
+                                return Ok(IrExpr::ExprRangeSelect(
+                                    Box::new(inner_expr),
+                                    msb,
+                                    lsb,
+                                ));
+                            }
+                            let index_expr = self.elaborate_expr(index, signal_map, signals)?;
+                            let base_expr = IrExpr::BinaryOp(
+                                BinaryIrOp::Mul,
+                                Box::new(index_expr),
+                                Box::new(IrExpr::Const(LogicVec::from_u64(ew as u64, 32))),
+                            );
+                            return Ok(IrExpr::ExprPartSelect(
+                                Box::new(inner_expr),
+                                Box::new(base_expr),
+                                Box::new(IrExpr::Const(LogicVec::from_u64(ew as u64, 32))),
+                            ));
+                        }
+                    }
                 }
                 if let IrExpr::Signal(sid, _) = &inner_expr {
                     let sig = &signals[*sid];
@@ -980,6 +1034,39 @@ impl Elaborator {
             }
         }
         Vec::new()
+    }
+
+    /// Lebar ELEMEN hasil sebuah method array (bila hasilnya queue/dynamic
+    /// array). Dipakai untuk `q.unique()[i]` / `q.find with (…)[a:b]`:
+    /// indeks pada hasil method = indeks ELEMEN (potong `elem_width` bit),
+    /// bukan bit tunggal (LRM 1800 §7.12.1). `None` bila receiver bukan queue
+    /// atau hasil method skalar/void (ordering §7.12.2).
+    fn array_method_result_elem_width(
+        &self,
+        expr: &IrExpr,
+        signals: &[SignalInfo],
+    ) -> Option<usize> {
+        match expr {
+            IrExpr::Signal(id, _) => {
+                let s = signals.get(*id)?;
+                if s.is_queue || s.is_dynamic {
+                    Some(s.elem_width)
+                } else {
+                    None
+                }
+            }
+            IrExpr::MethodCall { obj, method, .. } => {
+                let rw = self.array_method_result_elem_width(obj, signals)?;
+                match method.as_str() {
+                    "find" | "find_first" | "find_last" | "unique" => Some(rw),
+                    "find_index" | "find_first_index" | "find_last_index" | "unique_index" => {
+                        Some(32)
+                    }
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
     }
 
     /// Kumpulkan nama field data sebuah class AST + rantai `extends` (parent

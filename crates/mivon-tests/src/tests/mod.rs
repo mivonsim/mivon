@@ -1256,6 +1256,40 @@ endmodule
     assert_eq!(get("s1"), 6, "q.unique().sum() → 3+1+2");
 }
 
+/// LRM 1800 §7.12.1: `q[i]` / `q[a:b]` pada QUEUE (dan pada hasil method yang
+/// mengembalikan queue, `q.unique()[i]`) = potongan ELEMEN, bukan potongan
+/// bit. PRA-FIX `q.unique()[1]` baca bit ke-1 (0) & `q[0:1]` → queue kosong.
+#[test]
+fn test_queue_element_index_and_slice() {
+    let source = r#"
+module tb_qs;
+    int q[$];
+    int r[$];
+    int e0, e1, ei, i, n, r0, r1;
+    initial begin
+        q = '{1,2,3,4};
+        r  = q[0:1];
+        n  = r.size();
+        r0 = r[0];
+        r1 = r[1];
+        e0 = q.unique()[0];
+        e1 = q.unique()[1];
+        i  = 2;
+        ei = q.unique()[i];
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 5).unwrap();
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    assert_eq!(get("n"), 2, "q[0:1] → 2 elemen");
+    assert_eq!(get("r0"), 1, "r[0] = 1");
+    assert_eq!(get("r1"), 2, "r[1] = 2");
+    assert_eq!(get("e0"), 1, "q.unique()[0] = 1");
+    assert_eq!(get("e1"), 2, "q.unique()[1] = 2 (bukan bit 1)");
+    assert_eq!(get("ei"), 3, "q.unique()[i=2] = 3 (index dinamis)");
+}
+
 /// Review F41: `min`/`max` mengembalikan **elemen** (bukan nilai kunci
 /// `with`), dan `find_last`/`find_last_index` mengembalikan **hanya satu**
 /// kecocokan terakhir (LRM 1800 §7.12.1).
@@ -24218,6 +24252,23 @@ fn test_mv_chained_methods_end_to_end() {
     assert_eq!(get("n4"), 2, "q.find with (item>1).unique().size()");
     assert_eq!(get("s1"), 6, "q.unique().sum()");
     assert_eq!(get("ok"), 1, "semua lolos (CHAIN_OK)");
+}
+
+/// E2E `.mv` (F89): index/range pada queue & hasil method = ELEMEN (bukan bit).
+#[test]
+fn test_mv_queue_slice_end_to_end() {
+    let src = include_str!("../../../../examples/mv/queue_slice.mv");
+    let r = mivon_mv::transpile(src, "queue_slice").expect("transpile .mv OK");
+    let combined = format!("{}\n{}", r.svh, r.sv);
+    let sigs = simulate_signals(&combined, 100).expect("queue_slice harus simulasi bersih");
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    assert_eq!(get("n"), 2, "q[0:1] → 2 elemen");
+    assert_eq!(get("r0"), 1, "r[0] = 1");
+    assert_eq!(get("r1"), 2, "r[1] = 2");
+    assert_eq!(get("e0"), 1, "q.unique()[0]");
+    assert_eq!(get("e1"), 2, "q.unique()[1]");
+    assert_eq!(get("ei"), 3, "q.find with (item>2)[0]");
+    assert_eq!(get("ok"), 1, "semua lolos (QS_OK)");
 }
 
 /// Regresi bug #37: rantai `&&`/`||` panjang (16 operan) TIDAK boleh

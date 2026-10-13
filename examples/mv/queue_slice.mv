@@ -1,0 +1,53 @@
+// F89 — Index/range pada QUEUE & hasil method = ELEMEN, bukan bit
+// (LRM 1800 §7.12.1).
+//
+// Menutup bug: `q[i]` / `q[a:b]` pada queue (atau pada hasil method yang
+// mengembalikan queue, `q.unique()[i]`) diperlakukan sebagai potongan BIT →
+// nilai salah (`q.unique()[1]` baca bit ke-1 = 0; `q[0:1]` → queue kosong).
+// Kini potongan ELEMEN (lebar = elem_width).
+//
+// Jalankan:
+//   mivon mgen examples/mv/queue_slice.mv
+//   mivon sim  examples/mv/queue_slice.mv --top tb_qslice -T 100
+//
+// Harapan:
+//   QS n=2 r0=1 r1=2 e0=1 e1=2 ei=3
+//   QS_OK
+
+module tb_qslice {
+    sig q  : logic[31:0][$]
+    sig r  : logic[31:0][$]
+    sig e0, e1, ei, n, r0, r1 : logic[31:0]
+    sig ok : bit = 0
+
+    initial {
+        q = '{32'd1, 32'd2, 32'd3, 32'd4}
+
+        // range slice pada queue → sub-queue ELEMEN
+        r  = q[0:1]                      // {1,2}
+        n  = r.size()
+        r0 = r[0]
+        r1 = r[1]
+
+        // index pada hasil method → ELEMEN (bukan bit)
+        e0 = q.unique()[0]               // 1
+        e1 = q.unique()[1]               // 2
+        ei = q.find with (item > 2)[0]   // {3,4}[0] = 3
+
+        $display("QS n=%0d r0=%0d r1=%0d e0=%0d e1=%0d ei=%0d", n, r0, r1, e0, e1, ei)
+
+        ok = 1
+        if (n  != 2) { ok = 0 }
+        if (r0 != 1) { ok = 0 }
+        if (r1 != 2) { ok = 0 }
+        if (e0 != 1) { ok = 0 }
+        if (e1 != 2) { ok = 0 }
+        if (ei != 3) { ok = 0 }
+        if (ok) {
+            $display("QS_OK")
+        } else {
+            $display("QS_BROKEN")
+        }
+        $finish
+    }
+}

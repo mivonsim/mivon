@@ -317,6 +317,16 @@ Aturan:
   `examples/mv/chained_methods.mv`.
   - **Caveat**: iverilog tak mendukung `with` clause (limit tool);
     verilator & `mivon sim` OK.
+- **Index/range pada queue & hasil method = ELEMEN (F89).** `q[i]` dan
+  `q[a:b]` (rentang **ascending**) pada queue/dynamic array memilih **ELEMEN**
+  ke-`i` / sub-queue elemen `a..b` (LRM 1800 §7.12.1) — lebar hasil = lebar
+  elemen (`elem_width`), bukan satu bit. Hal yang sama berlaku pada hasil
+  method yang mengembalikan queue: `q.unique()[1]` = elemen ke-1 hasil
+  `unique` (bukan bit ke-1), `q.find with (item > 2)[0]` = elemen pertama
+  hasil `find`, `q.unique()[i]` menerima indeks **dinamis**. Sebelumnya
+  elaborator memperlakukan keduanya sebagai potongan bit → nilai salah
+  (`q.unique()[1]` = 0, `q[0:1]` → queue kosong). Contoh:
+  `examples/mv/queue_slice.mv`.
 - **Rangkuman emisi cast** (codegen): `logic[M:N]'(x)` → `W'(x)`
   (width cast), `Q'(x)` dengan `Q` typedef queue → `'{ x }`, selain itu
   `T'(x)` static cast apa adanya (termasuk typedef non-queue & tipe dasar).
@@ -1899,6 +1909,7 @@ module tb_traffic {
 | **F86** ✅ | **Akses field struct pada iterator `item` — keterbatasan → full support (LRM §7.12.1, bug #40)** — caveat F41: `with` hanya boleh pakai `item` utuh; `q.find with (item.x > 3)` di-emit `HierRef("item.x")` → RT0001. Kini `item.<field>` dikenali: `Elaborator.with_item_fields` (field struct TIPE ELEMEN receiver, diisi di `elaborate_with_clause`) + cabang `MemberAccess` mengubah `item.x` → `ExprRangeSelect(HierRef("item"), msb, lsb)` sesuai offset field (+`Signed` bila signed). Runtime tak berubah. | `test_array_method_with_item_field_access` (SV: `struct packed {x,y}` queue → find/sum/min/max/find_index atas `item.x`/`item.y`); demo e2e `.mv` `examples/mv/array_item_field.mv` → `ITF_OK` + `test_mv_array_item_field_end_to_end`; buglog-mv #40 |
 | **F87** ✅ | **Lebar field struct dari TIPE (bug #41)** — member struct tanpa range eksplisit (`int y;`, `byte b;`, enum/typedef) dihitung 1 oleh akumulasi offset struct_fields & `DataType::width()` → member MSB salah offset (`e.x`=21 bukan 7), lebar total struct salah. Fix di elaborator: (1) akumulasi offset struct_fields (`mod.rs` ×2, signal + `typedef_field_map`) pakai `f.width` hasil resolve, bukan `m.range.unwrap_or(1)`; (2) `resolve_type_width` arm baru `StructType`/`UnionType` = SUM/MAX lebar field `compute_struct_fields`. `DataType::width()` (mivon-ast) tak disentuh (context-free). | `test_inline_struct_type_width_member_offsets` (SV: `struct packed {logic[7:0] x; int y;}` → `e.x`=7, `sum with (item.x)`=14, `find_index`=1; PRA-FIX 21/150/0); demo e2e `.mv` `examples/mv/struct_field_width.mv` → `SFW_OK` + `test_mv_struct_field_width_end_to_end`; buglog-mv #41 |
 | **F88** ✅ | **Method array bertaut pada hasil temporer — keterbatasan → full support (LRM §7.12.1, bug #42)** — `q.unique().size()` gagal RT0001 (hasil method dalam diperlakukan handle objek). Fix runtime: slot sinyal scratch sekali-pakai (`state.rs` `push_scratch_signal`/`pop_scratch_signal`, state-only → tak di VCD) + helper `array_method_result_elem_width` (lebar elemen hasil method) di `engine/eval/expr.rs`; arm `MethodCall` mendeteksi receiver `MethodCall` ber-queue → evaluasi hasil dalam → scratch → dispatch ulang `evaluate_array_method`. Rantai bersarang & `with` per tahap didukung. | `test_array_method_chained_on_temporary` (SV: `unique().size()`=3, `unique_index().size()`=3, `find with (item==1).size()`=2, `find with (item>1).unique().size()`=2, `unique().sum()`=6); demo e2e `.mv` `examples/mv/chained_methods.mv` → `CHAIN_OK` + `test_mv_chained_methods_end_to_end`; buglog-mv #42 |
+| **F89** ✅ | **Index/range pada QUEUE & hasil method = ELEMEN, bukan bit (LRM §7.12.1, bug #43)** — `q[i]`/`q[a:b]` pada queue (dan pada hasil method ber-queue, `q.unique()[i]`) diperlakukan sebagai potongan **BIT** → nilai salah (`q.unique()[1]` baca bit ke-1 = 0; `q[0:1]` → queue kosong). Fix elaborator (`elaborator/expr.rs`): helper `array_method_result_elem_width(expr, signals)` (Signal queue/dynamic → `elem_width`; `find`/`find_first`/`find_last`/`unique` → lebar receiver; `*_index`/`unique_index` → 32; ordering §7.12.2 void → None) + intercept di arm `Expr::BitSelect` (base `MethodCall` ber-elem) & arm `Expr::RangeSelect` (rentang ascending, `ew>1`) → `ExprRangeSelect`/`ExprPartSelect` dengan basis `idx*ew`, atau `RangeSelect` untuk `Signal`. Runtime tak berubah. | `test_queue_element_index_and_slice` (SV: `q[0:1]`→2 elemen, `r[0]`=1, `r[1]`=2, `q.unique()[0]`=1, `q.unique()[1]`=2 (bukan bit 1), `q.unique()[i]`=3 indeks dinamis); demo e2e `.mv` `examples/mv/queue_slice.mv` → `QS n=2 r0=1 r1=2 e0=1 e1=2 ei=3` + `QS_OK` + `test_mv_queue_slice_end_to_end`; buglog-mv #43 |
 
 **Kriteria selesai F2:** `mivon mgen examples/mv/counter.mv` menghasilkan
 `counter.sv` yang bisa disimulasikan oleh `mivon counter.sv` tanpa error.
