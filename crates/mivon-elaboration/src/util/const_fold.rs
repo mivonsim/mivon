@@ -268,6 +268,107 @@ fn contains_shift_op(e: &Expr) -> bool {
     }
 }
 
+/// Apakah ekspresi memuat referensi SINYAL (nama yang ada di `signal_map`)?
+///
+/// Bug #38: `elaborate_expr` memanggil `try_fold_const` di SETIAP level; untuk
+/// ekspresi ber-sinyal, `const_eval_with_params` menelusuri seluruh subtree
+/// secara rekursif (frame besar) sebelum akhirnya gagal → pada rantai operator
+/// panjang total frame jadi O(N^2) → stack overflow (thread test 2 MiB). Walk
+/// ringan ini mendeteksi sinyal lebih dulu supaya ekspresi non-konstan langsung
+/// di-skip. Semantik identik: fold pada ekspresi ber-sinyal memang selalu
+/// gagal (mengembalikan None).
+pub fn contains_signal_ref(expr: &Expr, signal_map: &HashMap<Symbol, SignalId>) -> bool {
+    match expr {
+        Expr::Ident { name, .. } => signal_map.contains_key(name),
+        Expr::Paren(inner) => contains_signal_ref(inner, signal_map),
+        Expr::UnaryOp { expr: inner, .. }
+        | Expr::Cast { expr: inner, .. }
+        | Expr::IncDec { expr: inner, .. } => contains_signal_ref(inner, signal_map),
+        Expr::MemberAccess { obj, .. } => contains_signal_ref(obj, signal_map),
+        Expr::BinaryOp { lhs, rhs, .. } => {
+            contains_signal_ref(lhs, signal_map) || contains_signal_ref(rhs, signal_map)
+        }
+        Expr::TernaryOp {
+            cond,
+            true_expr,
+            false_expr,
+        } => {
+            contains_signal_ref(cond, signal_map)
+                || contains_signal_ref(true_expr, signal_map)
+                || contains_signal_ref(false_expr, signal_map)
+        }
+        Expr::Concat(elems) => elems.iter().any(|e| contains_signal_ref(e, signal_map)),
+        Expr::Replicate { count, expr: inner } => {
+            contains_signal_ref(count, signal_map) || contains_signal_ref(inner, signal_map)
+        }
+        Expr::CastWidth { width, expr: inner } => {
+            contains_signal_ref(width, signal_map) || contains_signal_ref(inner, signal_map)
+        }
+        Expr::BitSelect { expr: inner, index } => {
+            contains_signal_ref(inner, signal_map) || contains_signal_ref(index, signal_map)
+        }
+        Expr::RangeSelect { expr: inner, msb, lsb } => {
+            contains_signal_ref(inner, signal_map)
+                || contains_signal_ref(msb, signal_map)
+                || contains_signal_ref(lsb, signal_map)
+        }
+        Expr::PartSelect {
+            expr: inner,
+            base,
+            width,
+        } => {
+            contains_signal_ref(inner, signal_map)
+                || contains_signal_ref(base, signal_map)
+                || contains_signal_ref(width, signal_map)
+        }
+        Expr::FuncCall { args, .. } => args.iter().any(|e| contains_signal_ref(e, signal_map)),
+        Expr::MethodCall {
+            obj,
+            args,
+            with_clause,
+            ..
+        } => {
+            contains_signal_ref(obj, signal_map)
+                || args.iter().any(|e| contains_signal_ref(e, signal_map))
+                || with_clause
+                    .as_ref()
+                    .map_or(false, |w| contains_signal_ref(w, signal_map))
+        }
+        Expr::Inside {
+            expr: inner,
+            range_list,
+        } => {
+            contains_signal_ref(inner, signal_map)
+                || range_list
+                    .iter()
+                    .any(|e| contains_signal_ref(e, signal_map))
+        }
+        Expr::StreamingConcat {
+            slice_size, slices, ..
+        } => {
+            slice_size
+                .as_ref()
+                .map_or(false, |s| contains_signal_ref(s, signal_map))
+                || slices.iter().any(|e| contains_signal_ref(e, signal_map))
+        }
+        Expr::Dist { expr: inner, items } => {
+            contains_signal_ref(inner, signal_map)
+                || items.iter().any(|it| match it {
+                    DistItem::Value(e, _) => contains_signal_ref(e, signal_map),
+                    DistItem::Range(a, b, _) => {
+                        contains_signal_ref(a, signal_map) || contains_signal_ref(b, signal_map)
+                    }
+                })
+        }
+        Expr::StructLit { members } => members.iter().any(|m| match m {
+            StructLitMember::Named(_, e)
+            | StructLitMember::Positional(e)
+            | StructLitMember::Default(e) => contains_signal_ref(e, signal_map),
+        }),
+        _ => false,
+    }
+}
+
 fn contains_ctx_sensitive_unary(e: &Expr) -> bool {
     match e {
         Expr::UnaryOp {

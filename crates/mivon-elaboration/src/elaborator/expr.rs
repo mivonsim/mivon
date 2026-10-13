@@ -21,7 +21,19 @@ impl Elaborator {
     /// Coba fold konstanta + catat statistik optimasi (db.md "6. optimize/",
     /// "10. expression/"). Wrapper `try_fold_const` yang menambah sampel
     /// (teks ekspresi, nilai) ke `opt_stats` bila berhasil.
-    fn try_fold_const(&self, expr: &Expr) -> Result<Option<IrExpr>, String> {
+    fn try_fold_const(
+        &self,
+        expr: &Expr,
+        signal_map: &HashMap<Symbol, SignalId>,
+    ) -> Result<Option<IrExpr>, String> {
+        // Bug #38: ekspresi ber-sinyal BUKAN konstanta. Lewati const-fold lebih
+        // awal (walk ringan `contains_signal_ref`) supaya `const_eval` tidak
+        // menelusuri seluruh subtree berulang di tiap level `elaborate_expr`
+        // (total frame O(N^2) → stack overflow pada rantai operator panjang).
+        // Semantik identik: fold ekspresi ber-sinyal selalu gagal (None).
+        if super::super::util::contains_signal_ref(expr, signal_map) {
+            return Ok(None);
+        }
         let folded = super::super::util::try_fold_const(expr, &self.param_vals)?;
         if let Some(IrExpr::Const(lv)) = &folded {
             self.opt_stats
@@ -93,7 +105,80 @@ impl Elaborator {
         }
     }
 
+    /// Dispatcher tipis (bug #38): BinaryOp/UnaryOp diarahkan ke helper kecil
+    /// `elaborate_binary`/`elaborate_unary` supaya bingkai di jalur rekursi
+    /// rantai operator tetap kecil; sisanya ke `elaborate_expr_deep`. Sebelumnya
+    /// seluruh arm ada di satu fungsi → bingkai besar bertumpuk tiap level →
+    /// rantai `&&` >=~17 operan menabrak stack (test thread 2 MiB).
     pub(crate) fn elaborate_expr(
+        &self,
+        expr: &Expr,
+        signal_map: &HashMap<Symbol, SignalId>,
+        signals: &[SignalInfo],
+    ) -> Result<IrExpr, SimError> {
+        match expr {
+            Expr::BinaryOp { op, lhs, rhs } => {
+                self.elaborate_binary(expr, op, lhs, rhs, signal_map, signals)
+            }
+            Expr::UnaryOp { op, expr: inner } => {
+                self.elaborate_unary(expr, op, inner, signal_map, signals)
+            }
+            _ => self.elaborate_expr_deep(expr, signal_map, signals),
+        }
+    }
+
+    /// BinaryOp (bug #38): body arm identik; dipisah agar bingkainya kecil di
+    /// jalur rekursi rantai operator (pola fix #37).
+    #[inline(never)]
+    fn elaborate_binary(
+        &self,
+        expr: &Expr,
+        op: &BinaryOp,
+        lhs: &Expr,
+        rhs: &Expr,
+        signal_map: &HashMap<Symbol, SignalId>,
+        signals: &[SignalInfo],
+    ) -> Result<IrExpr, SimError> {
+                if let Some(folded) = self.try_fold_const(expr, signal_map)? {
+                    return Ok(folded);
+                }
+                // REAL literal fold: `1.5 + 2.25` — eval biner hanya kenal
+                // is_real utk operand SIGNAL; literal+literal jatuh jalur int
+                // → NaN. Fold real di sini (bug #6).
+                if let (Some(a), Some(b)) = (real_literal(lhs), real_literal(rhs)) {
+                    if let Some(v) = fold_binary_real(op, a, b) {
+                        return Ok(v);
+                    }
+                }
+                let lhs_expr = self.elaborate_expr(lhs, signal_map, signals)?;
+                let rhs_expr = self.elaborate_expr(rhs, signal_map, signals)?;
+                let ir_op = map_binary_op(op)?;
+                Ok(IrExpr::BinaryOp(
+                    ir_op,
+                    Box::new(lhs_expr),
+                    Box::new(rhs_expr),
+                ))
+    }
+
+    /// UnaryOp (bug #38): body arm identik; dipisah agar bingkai kecil.
+    #[inline(never)]
+    fn elaborate_unary(
+        &self,
+        expr: &Expr,
+        op: &UnaryOp,
+        inner: &Expr,
+        signal_map: &HashMap<Symbol, SignalId>,
+        signals: &[SignalInfo],
+    ) -> Result<IrExpr, SimError> {
+                if let Some(folded) = self.try_fold_const(expr, signal_map)? {
+                    return Ok(folded);
+                }
+                let inner_expr = self.elaborate_expr(inner, signal_map, signals)?;
+                let ir_op = map_unary_op(op)?;
+                Ok(IrExpr::UnaryOp(ir_op, Box::new(inner_expr)))
+    }
+
+    fn elaborate_expr_deep(
         &self,
         expr: &Expr,
         signal_map: &HashMap<Symbol, SignalId>,
@@ -309,7 +394,7 @@ impl Elaborator {
                 lsb,
             } => {
                 // Const-fold array/param range select (e.g. `pkg::ARR[3:0]`)
-                if let Some(folded) = self.try_fold_const(expr)? {
+                if let Some(folded) = self.try_fold_const(expr, signal_map)? {
                     return Ok(folded);
                 }
                 let inner_expr = self.elaborate_expr(inner, signal_map, signals)?;
@@ -362,7 +447,7 @@ impl Elaborator {
             Expr::BitSelect { expr: inner, index } => {
                 // Const-fold array/param element select (e.g. `pkg::ARR[2]` via
                 // flattened param_vals key `ARR[2]`). Falls through if not constant.
-                if let Some(folded) = self.try_fold_const(expr)? {
+                if let Some(folded) = self.try_fold_const(expr, signal_map)? {
                     return Ok(folded);
                 }
                 let inner_expr = self.elaborate_expr(inner, signal_map, signals)?;
@@ -618,7 +703,7 @@ impl Elaborator {
                 }
             }
             Expr::Concat(exprs) => {
-                if let Some(folded) = self.try_fold_const(expr)? {
+                if let Some(folded) = self.try_fold_const(expr, signal_map)? {
                     return Ok(folded);
                 }
                 let parts: Result<Vec<IrExpr>, SimError> = exprs
@@ -628,7 +713,7 @@ impl Elaborator {
                 Ok(IrExpr::Concat(parts?))
             }
             Expr::Replicate { count, expr: inner } => {
-                if let Some(folded) = self.try_fold_const(expr)? {
+                if let Some(folded) = self.try_fold_const(expr, signal_map)? {
                     return Ok(folded);
                 }
                 let c = const_eval_params(count, &self.param_vals).map_err(|e| {
@@ -643,41 +728,12 @@ impl Elaborator {
                 let inner_expr = self.elaborate_expr(inner, signal_map, signals)?;
                 Ok(IrExpr::Replicate(c, Box::new(inner_expr)))
             }
-            Expr::UnaryOp { op, expr: inner } => {
-                if let Some(folded) = self.try_fold_const(expr)? {
-                    return Ok(folded);
-                }
-                let inner_expr = self.elaborate_expr(inner, signal_map, signals)?;
-                let ir_op = map_unary_op(op)?;
-                Ok(IrExpr::UnaryOp(ir_op, Box::new(inner_expr)))
-            }
-            Expr::BinaryOp { op, lhs, rhs } => {
-                if let Some(folded) = self.try_fold_const(expr)? {
-                    return Ok(folded);
-                }
-                // REAL literal fold: `1.5 + 2.25` — eval biner hanya kenal
-                // is_real utk operand SIGNAL; literal+literal jatuh jalur int
-                // → NaN. Fold real di sini (bug #6).
-                if let (Some(a), Some(b)) = (real_literal(lhs), real_literal(rhs)) {
-                    if let Some(v) = fold_binary_real(op, a, b) {
-                        return Ok(v);
-                    }
-                }
-                let lhs_expr = self.elaborate_expr(lhs, signal_map, signals)?;
-                let rhs_expr = self.elaborate_expr(rhs, signal_map, signals)?;
-                let ir_op = map_binary_op(op)?;
-                Ok(IrExpr::BinaryOp(
-                    ir_op,
-                    Box::new(lhs_expr),
-                    Box::new(rhs_expr),
-                ))
-            }
             Expr::TernaryOp {
                 cond,
                 true_expr,
                 false_expr,
             } => {
-                if let Some(folded) = self.try_fold_const(expr)? {
+                if let Some(folded) = self.try_fold_const(expr, signal_map)? {
                     return Ok(folded);
                 }
                 let ir_cond = self.elaborate_expr(cond, signal_map, signals)?;

@@ -462,30 +462,37 @@ bug di mivon utama (parser/elaborator/simulator). Status: ✅ fixed / ⏳ open.
     - Catatan: fix ini TIDAK mengubah semantik apa pun — seluruh 281 test
       `mivon-mv` + suite `mivon-tests` (1092) hijau.
 
+38. **Deep-recursion di ELABORATOR + const-eval — rantai ekspresi ≥~17 operan →
+    stack overflow.** Ditemukan saat memperluas test #37: rantai `&&` 32 operan
+    (semua operand SINYAL, bukan konstanta) masih `SIGABRT` di thread test 2 MiB,
+    overflow BUKAN di evaluator melainkan di `mivon_ast::const_eval` +
+    `Elaborator::elaborate_expr`. Tiga akar (ditemukan bertahap via gdb):
+    - **(a) `elaborate_expr` memanggil `try_fold_const` di SETIAP level.** Untuk
+      ekspresi ber-sinyal, `const_eval_with_params` menelusuri seluruh subtree
+      (rekursif, frame besar) sebelum gagal → total frame O(N^2) saat menurunkan
+      rantai. **Fix:** walker `util::const_fold::contains_signal_ref` (walk
+      ringan) dipanggil di awal `Elaborator::try_fold_const`; ekspresi ber-sinyal
+      langsung di-skip (semantik identik — fold ber-sinyal memang selalu None).
+    - **(b) `const_eval_with_params` satu match ~944 baris** (frame besar/level).
+      **Fix:** dispatcher tipis + `#[inline(never)] const_eval_ops` (BinaryOp/
+      UnaryOp, jalur rekursi) + `const_eval_deep` (sisa arm, di luar jalur) —
+      pola fix #37.
+    - **(c) `elaborate_expr` (~920 baris) ber-rekursi di jalur rantai.**
+      **Fix:** dispatcher tipis + `#[inline(never)] elaborate_binary`/
+      `elaborate_unary` + `elaborate_expr_deep` (pola fix #37).
+    - **Depth-guard** `const_eval_with_params` (`MAX_CONST_EVAL_DEPTH = 128`,
+      thread-local counter): jalur lain (mis. `util/width.rs`) memanggil
+      const-eval langsung tanpa guard sinyal → batas ini menjamin tak ada jalur
+      yang overflow (ekspresi >128 dianggap bukan konstanta → `Err`).
+    - **Batas terukur pasca-fix:** 16 → **128 operan LULUS** (evaluator +
+      elaborator). Cliff berikutnya ada di SIMULATOR `eval_binary_op` (~256
+      operan) — evaluator rekursif masih ber-frame sedang; bukan target bug ini
+      (rantai ≥256 operan tak realistis).
+    - Verifikasi: `test_mv_very_long_logic_chain_no_stack_overflow` (64 operan
+      sinyal, dibuktikan GAGAL/SIGABRT pada 32 pra-fix, LULUS pasca-fix); #37
+      test tetap hijau.
+
 ## ⏳ Open
 
-38. **Deep-recursion limit di ELABORATOR (bukan evaluator) — rantai ekspresi
-    ≥~17 operan → stack overflow saat ELABORASI.** Ditemukan saat memperluas
-    test #37: rantai `&&` 32 operan (semua operand sinyal, bukan konstanta)
-    masih `SIGABRT` di thread test 2 MiB, tapi gdb menunjukkan overflow BUKAN
-    di `evaluate_expr_impl` melainkan di:
-    `mivon_ast::const_eval::const_eval_with_params` (`const_eval.rs:528`,
-    arm `LogicalAnd`) → `mivon_elaboration::util::const_fold::try_fold_const_*`
-    → `Elaborator::elaborate_expr` (`elaborator/expr.rs:666`). Dua match
-    raksasa (`const_eval_with_params` + `elaborate_expr`) ber-rekursi atas
-    seluruh pohon; meski ekspresi TIDAK konstan (semua sinyal), const-fold
-    tetap menelusuri sampai dasar sebelum gagal → frame bertumpuk.
-    - Batas terukur: 16 operan LULUS, 32 GAGAL (elaborasi) → aman ~16,
-      gagal ≤32. Fix #37 (evaluator) menaikkan batas evaluator di atas batas
-      elaborator, jadi yang tersisa murni masalah elaborator/const-fold.
-    - **Fix yang disarankan (belum dikerjakan — HIGH risk, core elaborator):**
-      (a) depth-guard di `const_eval_with_params` (bail → `Err` "not constant"
-      saat kedalaman > N) supaya ekspresi non-konstan tak menelusuri dalam;
-      atau (b) pecah `const_eval_with_params`/`elaborate_expr` jadi helper
-      per-arm `#[inline(never)]` (pola fix #37); atau (c) deteksi cepat
-      "mengandung sinyal" sebelum const-fold. Test regresi:
-      `test_deep_boolean_chain_no_stack_overflow` diperluas ke 32 operan
-      begitu fix mendarat.
-
-_(Caveat chained method temporer & iverilog `with` tercatat di #36 sbg
-keterbatasan tool/desain, bukan bug.)_
+_(Tidak ada item open. Caveat chained method temporer & iverilog `with`
+tercatat di #36 sbg keterbatasan tool/desain, bukan bug.)_

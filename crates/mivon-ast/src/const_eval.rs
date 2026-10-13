@@ -270,42 +270,57 @@ pub fn sized_width(e: &Expr) -> Option<u64> {
     }
 }
 
+thread_local! {
+    /// Kedalaman rekursi `const_eval_with_params` saat ini (bug #38).
+    static CONST_EVAL_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// Batas kedalaman rekursi const-eval (bug #38). Ekspresi lebih dalam dari ini
+/// dianggap BUKAN konstanta (`Err`) alih-alih menabrak stack. Dipakai karena
+/// banyak jalur (mis. `util/width.rs`) memanggil `const_eval_with_params`
+/// langsung tanpa guard sinyal; batas ini menjamin tak ada jalur yang overflow.
+const MAX_CONST_EVAL_DEPTH: u32 = 128;
+
 pub fn const_eval_with_params(
     expr: &Expr,
     param_vals: &HashMap<Symbol, i64>,
 ) -> Result<i64, String> {
-    match expr {
-        Expr::Value(Value::Decimal(n)) => Ok(*n),
-        Expr::Value(Value::Binary {
-            bits,
-            width,
-            is_signed,
-        }) => parse_sized_literal(bits, 2, *width, *is_signed),
-        Expr::Value(Value::Hex {
-            bits,
-            width,
-            is_signed,
-        }) => parse_sized_literal(bits, 16, *width, *is_signed),
-        Expr::Value(Value::Octal {
-            bits,
-            width,
-            is_signed,
-        }) => parse_sized_literal(bits, 8, *width, *is_signed),
-        Expr::String(s) => Ok(string_to_i64(s)),
-        Expr::Ident { name, .. } => {
-            if let Some(&val) = param_vals.get(name) {
-                Ok(val)
-            } else if name == "1" {
-                Ok(1)
-            } else if name.starts_with("$") {
-                Err(format!(
-                    "cannot evaluate system function '{}' in constant context",
-                    name
-                ))
-            } else {
-                Err(format!("'{}' not found in parameter context", name))
-            }
+    CONST_EVAL_DEPTH.with(|d| {
+        let cur = d.get();
+        if cur >= MAX_CONST_EVAL_DEPTH {
+            return Err("constant expression nested too deeply".to_string());
         }
+        d.set(cur + 1);
+        let r = const_eval_dispatch(expr, param_vals);
+        d.set(cur);
+        r
+    })
+}
+
+fn const_eval_dispatch(
+    expr: &Expr,
+    param_vals: &HashMap<Symbol, i64>,
+) -> Result<i64, String> {
+    // Dispatcher tipis (bug #38). Sebelumnya fungsi ini adalah SATU match
+    // raksasa (~944 baris) sehingga frame-nya ~ratusan KB dan bertumpuk di
+    // tiap level rekursi rantai operator — rantai `&&` >=~17 operan menabrak
+    // stack thread test 2 MiB. Kini jalur rekursi BinaryOp/UnaryOp melewati
+    // helper kecil `const_eval_ops`; sisa arm (frame besar) di `const_eval_deep`
+    // yang TIDAK berada di jalur rekursi rantai. Tanpa perubahan semantik.
+    match expr {
+        Expr::BinaryOp { .. } | Expr::UnaryOp { .. } => const_eval_ops(expr, param_vals),
+        _ => const_eval_deep(expr, param_vals),
+    }
+}
+
+/// Helper BinaryOp/UnaryOp (bug #38): frame kecil agar rekursi rantai
+/// operator tidak menabrak stack. Body arm identik dengan sebelumnya.
+#[inline(never)]
+fn const_eval_ops(
+    expr: &Expr,
+    param_vals: &HashMap<Symbol, i64>,
+) -> Result<i64, String> {
+    match expr {
         Expr::UnaryOp {
             op: UnaryOp::Minus,
             expr: inner,
@@ -749,6 +764,49 @@ pub fn const_eval_with_params(
         } => {
             let v = const_eval_with_params(inner, param_vals)?;
             Ok(1 - (v.count_ones() & 1) as i64)
+        }
+        _ => const_eval_deep(expr, param_vals),
+    }
+}
+
+/// Helper arm non-operator (bug #38): Value/Ident/Ternary/Concat/FuncCall/...
+/// Body identik; hanya dipindah keluar dari jalur rekursi rantai operator.
+#[inline(never)]
+fn const_eval_deep(
+    expr: &Expr,
+    param_vals: &HashMap<Symbol, i64>,
+) -> Result<i64, String> {
+    match expr {
+        Expr::Value(Value::Decimal(n)) => Ok(*n),
+        Expr::Value(Value::Binary {
+            bits,
+            width,
+            is_signed,
+        }) => parse_sized_literal(bits, 2, *width, *is_signed),
+        Expr::Value(Value::Hex {
+            bits,
+            width,
+            is_signed,
+        }) => parse_sized_literal(bits, 16, *width, *is_signed),
+        Expr::Value(Value::Octal {
+            bits,
+            width,
+            is_signed,
+        }) => parse_sized_literal(bits, 8, *width, *is_signed),
+        Expr::String(s) => Ok(string_to_i64(s)),
+        Expr::Ident { name, .. } => {
+            if let Some(&val) = param_vals.get(name) {
+                Ok(val)
+            } else if name == "1" {
+                Ok(1)
+            } else if name.starts_with("$") {
+                Err(format!(
+                    "cannot evaluate system function '{}' in constant context",
+                    name
+                ))
+            } else {
+                Err(format!("'{}' not found in parameter context", name))
+            }
         }
         Expr::TernaryOp {
             cond,
