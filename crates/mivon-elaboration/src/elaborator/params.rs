@@ -146,6 +146,19 @@ impl Elaborator {
                         continue;
                     }
                     if let Some(expr) = &p.default {
+                        // Koleksi (struct literal / concat multi-elemen) BUKAN
+                        // skalar — const_eval_with_params mengembalikan 0
+                        // untuk StructLit; mendaftarkannya menutupi struct
+                        // asli di lookup yang mengutamakan scalars (mis. arg
+                        // `user_pkg::UCFG` ke fungsi struct jadi Scalar(0)).
+                        if matches!(expr, Expr::StructLit { .. }) {
+                            continue;
+                        }
+                        if let Expr::Concat(parts) = expr {
+                            if parts.len() > 1 {
+                                continue;
+                            }
+                        }
                         if let Ok(val) = const_eval_with_params(expr, &ctx) {
                             ctx.insert(qualified, val);
                             changed = true;
@@ -239,6 +252,16 @@ impl Elaborator {
                             continue;
                         }
                         if let Some(expr) = &p.default {
+                            // Guard koleksi sama seperti loop qualified di atas
+                            // (StructLit → 0 menutupi struct asli).
+                            if matches!(expr, Expr::StructLit { .. }) {
+                                continue;
+                            }
+                            if let Expr::Concat(parts) = expr {
+                                if parts.len() > 1 {
+                                    continue;
+                                }
+                            }
                             if let Ok(val) = const_eval_with_params(expr, &unit_ctx) {
                                 unit_ctx.insert(p.name, val);
                                 changed = true;
@@ -295,6 +318,15 @@ impl Elaborator {
                         continue;
                     }
                     if let Some(expr) = &p.default {
+                        // Guard koleksi (lihat loop qualified).
+                        if matches!(expr, Expr::StructLit { .. }) {
+                            continue;
+                        }
+                        if let Expr::Concat(parts) = expr {
+                            if parts.len() > 1 {
+                                continue;
+                            }
+                        }
                         if let Ok(val) = const_eval_with_params(expr, &pctx) {
                             pctx.insert(p.name, val);
                             changed = true;

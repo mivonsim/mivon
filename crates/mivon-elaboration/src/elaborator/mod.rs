@@ -551,10 +551,14 @@ impl Elaborator {
         // Index konstanta STRUCT package: key `pkg::name.<field>` di
         // pkg_const_scalars → `name` → fields. Dibangun sekali agar body-param
         // loop bisa resolve `Info = PartInfoDefault` via lookup O(1).
+        // SELAIN plain `name`, daftarkan juga qualified `pkg::name` agar
+        // referensi ScopedIdent (`user_pkg::UCFG` sebagai arg fungsi package
+        // mis. `build_config(user_pkg::UCFG)`) ikut ter-resolve.
         let mut pkg_struct_ref_index: HashMap<Symbol, Vec<SField>> = HashMap::new();
         for (k, v) in &pkg_const_scalars {
             let s = k.as_str();
             if let Some(idx) = s.rfind("::") {
+                let pkg = &s[..idx];
                 let after = &s[idx + 2..];
                 if let Some(dot) = after.find('.') {
                     let base = &after[..dot];
@@ -570,6 +574,16 @@ impl Elaborator {
                             .any(|f| f.name.map(|n| n.as_str() == field).unwrap_or(false))
                         {
                             entry.push(SField::named(Symbol::intern(field), CVal::Scalar(*v)));
+                        }
+                        // Varian qualified untuk lookup ScopedIdent.
+                        let qentry = pkg_struct_ref_index
+                            .entry(Symbol::intern(&format!("{}::{}", pkg, base)))
+                            .or_default();
+                        if !qentry
+                            .iter()
+                            .any(|f| f.name.map(|n| n.as_str() == field).unwrap_or(false))
+                        {
+                            qentry.push(SField::named(Symbol::intern(field), CVal::Scalar(*v)));
                         }
                     }
                 }

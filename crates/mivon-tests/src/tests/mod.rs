@@ -25461,3 +25461,43 @@ endmodule
     assert_eq!(usage.width, 2, "idx_width(3) harus 2");
     assert_eq!(usage.to_u64(), 3, "usage='1 harus 2'b11");
 }
+
+#[test]
+fn test_struct_param_func_default_flatten() {
+    // Default param FUNCCALL yang mengembalikan struct
+    // (`Cfg = build_config(user_pkg::UCFG)` ala CVA6 top) harus di-flatten
+    // ke key `Cfg.field` agar member access di width/generate bisa
+    // const-eval. Sebelum fix: fallback lebar 1.
+    let source = r#"
+package user_pkg;
+  typedef struct packed { int unsigned XLEN; bit FOO; } user_cfg_t;
+  localparam user_cfg_t UCFG = '{XLEN:32, FOO:0};
+endpackage
+package cfg_pkg;
+  typedef struct packed { int unsigned XLEN; bit FOO; bit BIG; } cfg_t;
+  function automatic cfg_t build_config(user_pkg::user_cfg_t u);
+    cfg_t cfg;
+    cfg.XLEN = u.XLEN;
+    cfg.FOO = u.FOO;
+    cfg.BIG = (u.XLEN > 32) ? 1'b1 : 1'b0;
+    return cfg;
+  endfunction
+endpackage
+module top import cfg_pkg::*;
+#(parameter cfg_t Cfg = build_config(user_pkg::UCFG)) ();
+  logic [Cfg.XLEN-1:0] wide;
+  generate
+    if (Cfg.BIG) begin : gbig
+      logic big;
+    end else begin : gsmall
+      logic small;
+    end
+  endgenerate
+  initial begin wide = '1; $finish; end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 20).unwrap();
+    let wide = &sigs.iter().find(|(s, _)| s == "wide").unwrap().1;
+    assert_eq!(wide.width, 32, "XLEN=32 dari build_config");
+    assert_eq!(wide.to_u64(), 0xFFFF_FFFFu64, "wide='1 harus semua 1");
+}

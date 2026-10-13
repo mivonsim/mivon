@@ -10,7 +10,7 @@
 
 use std::collections::HashMap;
 
-use mivon_ast::const_eval_ext::{eval_param_default_full, CVal, SField};
+use mivon_ast::const_eval_ext::{eval_cval_full, eval_param_default_full, CVal, SField};
 use mivon_ast::types::const_eval_with_params;
 use mivon_ast::types::string_to_i64;
 use mivon_ast::types::PackageItem;
@@ -395,15 +395,24 @@ pub fn resolve_param_values_with_ctx(
             }
         }
         for (pname, e) in struct_defaults {
-            // Hanya default berbentuk ident / scoped ident / bitsel array
-            // element yang mereferensikan konstanta struct package.
-            let base: Option<String> = match &e {
-                Expr::Ident { name, .. } => Some(name.as_str().to_string()),
-                Expr::ScopedIdent { item, .. } => Some(item.as_str().to_string()),
+            // Default berbentuk ident / scoped ident / bitsel array element
+            // yang mereferensikan konstanta struct package — atau FUNCCALL
+            // yang mengembalikan struct (mis. CVA6
+            // `CVA6Cfg = build_config_pkg::build_config(cva6_cfg)`).
+            let fields: Option<Vec<SField>> = match &e {
+                Expr::Ident { name, .. } => p
+                    .structs
+                    .get(&Symbol::intern(name.as_str()))
+                    .cloned(),
+                Expr::ScopedIdent { item, .. } => {
+                    p.structs.get(&Symbol::intern(item.as_str())).cloned()
+                }
                 Expr::BitSelect { expr: inner, index } => {
                     if let Expr::Ident { name, .. } = inner.as_ref() {
                         if let Ok(idx) = const_eval_with_params(index, &vals) {
-                            Some(format!("{}[{}]", name.as_str(), idx))
+                            p.structs
+                                .get(&Symbol::intern(&format!("{}[{}]", name.as_str(), idx)))
+                                .cloned()
                         } else {
                             None
                         }
@@ -411,14 +420,17 @@ pub fn resolve_param_values_with_ctx(
                         None
                     }
                 }
+                Expr::FuncCall { .. } => {
+                    match eval_cval_full(&e, &vals, p.arrays, p.package_symbols, p.structs) {
+                        Some(CVal::Struct(fs)) => Some(fs),
+                        _ => None,
+                    }
+                }
                 _ => None,
             };
-            let Some(base) = base else { continue };
-            let Some(fields) = p.structs.get(&Symbol::intern(base.as_str())) else {
-                continue;
-            };
+            let Some(fields) = fields else { continue };
             let mut key_created = false;
-            for f in fields {
+            for f in &fields {
                 if let Some(fname) = f.name {
                     if let CVal::Scalar(v) = f.val {
                         let key = format!("{}.{}", pname.as_str(), fname.as_str());
