@@ -25280,33 +25280,19 @@ package p;
   typedef struct packed { int unsigned XLEN; bit FOO; } cfg_t;
   localparam cfg_t CFG_EMPTY = cfg_t'(0);
 endpackage
-module m import p::*;
+module top import p::*;
 #(parameter cfg_t Cfg = CFG_EMPTY)
-(
-  input logic clk_i
-);
-  // XLEN=0 → width fallback, tapi elaborasi tidak boleh skip module.
-  // Pakai FOO (1-bit) untuk generate-if yang pasti bisa di-eval.
-  generate
-    if (Cfg.FOO == 0) begin : g0
-      logic ok;
-    end else begin : g1
-      logic ng;
-    end
-  endgenerate
-  initial $display("foo=%0d", Cfg.FOO);
-endmodule
-module top;
-  logic clk;
-  m u (.clk_i(clk));
-  initial begin $finish; end
+();
+  logic flag;
+  initial begin
+    if (Cfg.FOO == 0) flag = 1'b1; else flag = 1'b0;
+    $finish;
+  end
 endmodule
 "#;
     let sigs = simulate_signals(source, 20).unwrap();
-    assert!(
-        sigs.iter().any(|(n, _)| n == "clk"),
-        "top harus punya clk"
-    );
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    assert_eq!(get("flag"), 1, "FOO dari cfg_t'(0) harus 0");
 }
 
 #[test]
@@ -25329,29 +25315,22 @@ package cfg_pkg;
   localparam user_cfg_t U = '{XLEN:64, FOO:1};
   localparam cfg_t C = build_config(U);
 endpackage
-module m import cfg_pkg::*;
+module top import cfg_pkg::*;
 #(parameter cfg_t Cfg = C)
-(
-  input logic clk_i
-);
-  generate
-    if (Cfg.IS64) begin : g64
-      logic ok64;
-    end else begin : g32
-      logic ok32;
-    end
-  endgenerate
-  initial $display("xlen=%0d is64=%0d", Cfg.XLEN, Cfg.IS64);
-endmodule
-module top;
-  logic clk;
-  m u (.clk_i(clk));
-  initial begin $finish; end
+();
+  logic [Cfg.XLEN-1:0] wide;
+  logic flag;
+  initial begin
+    wide = '1;
+    if (Cfg.IS64) flag = 1'b1; else flag = 1'b0;
+    $finish;
+  end
 endmodule
 "#;
     let sigs = simulate_signals(source, 20).unwrap();
-    assert!(
-        sigs.iter().any(|(n, _)| n == "clk"),
-        "top harus punya clk"
-    );
+    let wide = &sigs.iter().find(|(s, _)| s == "wide").unwrap().1;
+    assert_eq!(wide.width, 64, "XLEN dari build_config harus 64");
+    assert_eq!(wide.to_u64(), u64::MAX, "wide='1 harus semua 1");
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    assert_eq!(get("flag"), 1, "IS64 harus 1 untuk XLEN=64");
 }

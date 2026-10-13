@@ -591,6 +591,50 @@ fn lookup_pkg_typedef<'a>(
     })
 }
 
+/// Nama member bila typedef adalah struct/union (termasuk `signed` wrapper).
+/// Inti tunggal untuk `struct_field_names` + `datatype_struct_fields`.
+fn typedef_struct_members(td: &crate::types::TypedefDecl) -> Option<Vec<Symbol>> {
+    match &td.dtype {
+        crate::types::DataType::StructType { members }
+        | crate::types::DataType::UnionType { members } => {
+            Some(members.iter().map(|m| m.name).collect())
+        }
+        crate::types::DataType::Signed(inner) => match inner.as_ref() {
+            crate::types::DataType::StructType { members }
+            | crate::types::DataType::UnionType { members } => {
+                Some(members.iter().map(|m| m.name).collect())
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Cari typedef `T` (`pkg::type` eksplisit atau plain-name: `cur_pkg` dulu
+/// lalu semua package). Dipakai kedua resolver struct di bawah.
+fn find_typedef<'a>(
+    package_symbols: &'a HashMap<Symbol, HashMap<Symbol, PackageItem>>,
+    dtype: &str,
+    cur_pkg: Option<&str>,
+) -> Option<&'a crate::types::TypedefDecl> {
+    if let Some((pkg, t)) = dtype.split_once("::") {
+        return package_symbols
+            .get(&Symbol::intern(pkg))
+            .and_then(|items| lookup_pkg_typedef(items, t));
+    }
+    if let Some(pkg) = cur_pkg {
+        if let Some(td) = package_symbols
+            .get(&Symbol::intern(pkg))
+            .and_then(|items| lookup_pkg_typedef(items, dtype))
+        {
+            return Some(td);
+        }
+    }
+    package_symbols
+        .values()
+        .find_map(|items| lookup_pkg_typedef(items, dtype))
+}
+
 /// Nama field struct untuk `T'(0)` → Struct zero. Cari typedef `T` di
 /// `cur_pkg` dulu lalu semua package. Hanya StructType (packed/unpacked);
 /// Union di-expand juga (semua member 0). Return None bila bukan struct.
@@ -599,68 +643,8 @@ fn struct_field_names(
     dtype: &str,
     cur_pkg: Option<&str>,
 ) -> Option<Vec<Symbol>> {
-    // `pkg::type` eksplisit.
-    if let Some((pkg, t)) = dtype.split_once("::") {
-        let td = ctx
-            .package_symbols
-            .get(&Symbol::intern(pkg))
-            .and_then(|items| lookup_pkg_typedef(items, t))?;
-        return match &td.dtype {
-            crate::types::DataType::StructType { members }
-            | crate::types::DataType::UnionType { members } => {
-                Some(members.iter().map(|m| m.name).collect())
-            }
-            crate::types::DataType::Signed(inner) => match inner.as_ref() {
-                crate::types::DataType::StructType { members }
-                | crate::types::DataType::UnionType { members } => {
-                    Some(members.iter().map(|m| m.name).collect())
-                }
-                _ => None,
-            },
-            _ => None,
-        };
-    }
-    // Plain-name: cur_pkg dulu.
-    if let Some(pkg) = cur_pkg {
-        if let Some(items) = ctx.package_symbols.get(&Symbol::intern(pkg)) {
-            if let Some(td) = lookup_pkg_typedef(items, dtype) {
-                match &td.dtype {
-                    crate::types::DataType::StructType { members }
-                    | crate::types::DataType::UnionType { members } => {
-                        return Some(members.iter().map(|m| m.name).collect());
-                    }
-                    crate::types::DataType::Signed(inner) => match inner.as_ref() {
-                        crate::types::DataType::StructType { members }
-                        | crate::types::DataType::UnionType { members } => {
-                            return Some(members.iter().map(|m| m.name).collect());
-                        }
-                        _ => {}
-                    },
-                    _ => {}
-                }
-            }
-        }
-    }
-    // Fallback semua package.
-    for items in ctx.package_symbols.values() {
-        if let Some(td) = lookup_pkg_typedef(items, dtype) {
-            match &td.dtype {
-                crate::types::DataType::StructType { members }
-                | crate::types::DataType::UnionType { members } => {
-                    return Some(members.iter().map(|m| m.name).collect());
-                }
-                crate::types::DataType::Signed(inner) => match inner.as_ref() {
-                    crate::types::DataType::StructType { members }
-                    | crate::types::DataType::UnionType { members } => {
-                        return Some(members.iter().map(|m| m.name).collect());
-                    }
-                    _ => {}
-                },
-                _ => {}
-            }
-        }
-    }
-    None
+    let td = find_typedef(ctx.package_symbols, dtype, cur_pkg)?;
+    typedef_struct_members(td)
 }
 
 /// Field struct untuk `DataType` deklarasi lokal (`cva6_cfg_t cfg;`).
@@ -672,65 +656,8 @@ fn datatype_struct_fields(
 ) -> Option<Vec<Symbol>> {
     match dtype {
         DataType::UserDefined(name) => {
-            let s = name.as_str();
-            if let Some((pkg, t)) = s.split_once("::") {
-                let td = package_symbols
-                    .get(&Symbol::intern(pkg))
-                    .and_then(|items| lookup_pkg_typedef(items, t))?;
-                match &td.dtype {
-                    DataType::StructType { members } | DataType::UnionType { members } => {
-                        Some(members.iter().map(|m| m.name).collect())
-                    }
-                    DataType::Signed(inner) => match inner.as_ref() {
-                        DataType::StructType { members } | DataType::UnionType { members } => {
-                            Some(members.iter().map(|m| m.name).collect())
-                        }
-                        _ => None,
-                    },
-                    _ => None,
-                }
-            } else {
-                // Plain: cur_pkg dulu lalu semua package (tanpa ctx penuh).
-                if let Some(pkg) = cur_pkg {
-                    if let Some(items) = package_symbols.get(&Symbol::intern(pkg)) {
-                        if let Some(td) = lookup_pkg_typedef(items, s) {
-                            match &td.dtype {
-                                DataType::StructType { members }
-                                | DataType::UnionType { members } => {
-                                    return Some(members.iter().map(|m| m.name).collect());
-                                }
-                                DataType::Signed(inner) => match inner.as_ref() {
-                                    DataType::StructType { members }
-                                    | DataType::UnionType { members } => {
-                                        return Some(members.iter().map(|m| m.name).collect());
-                                    }
-                                    _ => {}
-                                },
-                                _ => {}
-                            }
-                        }
-                    }
-                }
-                for items in package_symbols.values() {
-                    if let Some(td) = lookup_pkg_typedef(items, s) {
-                        match &td.dtype {
-                            DataType::StructType { members }
-                            | DataType::UnionType { members } => {
-                                return Some(members.iter().map(|m| m.name).collect());
-                            }
-                            DataType::Signed(inner) => match inner.as_ref() {
-                                DataType::StructType { members }
-                                | DataType::UnionType { members } => {
-                                    return Some(members.iter().map(|m| m.name).collect());
-                                }
-                                _ => {}
-                            },
-                            _ => {}
-                        }
-                    }
-                }
-                None
-            }
+            let td = find_typedef(package_symbols, name.as_str(), cur_pkg)?;
+            typedef_struct_members(td)
         }
         DataType::Signed(inner) => datatype_struct_fields(package_symbols, inner, cur_pkg),
         _ => None,
