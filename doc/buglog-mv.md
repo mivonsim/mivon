@@ -637,17 +637,41 @@ bug di mivon utama (parser/elaborator/simulator). Status: ✅ fixed / ⏳ open.
          literal → `ExprRangeSelect(inner, idx*ew+ew-1, idx*ew)`, dinamis →
          `ExprPartSelect(inner, idx*ew, ew)`. Ditempatkan **sebelum** cek
          `Signal`/string agar tak tertimpa jalur bit.
-      3. Arm `Expr::RangeSelect`: bila rentang **ascending** (`msb_c <= lsb_c`)
-         dan lebar elemen `ew>1` → sub-queue elemen: `Signal` →
-         `RangeSelect(sid, (lsb_c+1)*ew-1, msb_c*ew)`, lainnya →
-         `ExprRangeSelect(inner, …)`. Rentang descending tetap jalur lama.
-    - Runtime **tidak** berubah (`read_signal`/`write` queue sudah benar bila
-      diberi potongan elemen).
-    - Verifikasi: `test_queue_element_index_and_slice` (SV, baru) — `q[0:1]`
-      → `n`=2, `r0`=1, `r1`=2, `q.unique()[0]`=1, `q.unique()[1]`=2,
-      `q.unique()[i=2]`=3. Demo e2e `.mv` `examples/mv/queue_slice.mv` →
-      `QS n=2 r0=1 r1=2 e0=1 e1=2 ei=3` + `QS_OK`; test
-      `test_mv_queue_slice_end_to_end`. Full workspace test hijau.
+      3. Arm `Expr::RangeSelect`: bila `inner_expr` ber-lebar elemen `ew>0`
+         (queue/dynamic) → potongan ELEMEN, bukan bit:
+         - rentang **ascending** (`a<=b`) → bit-range ber-align elemen:
+           `Signal` → `RangeSelect(sid, (b+1)*ew-1, a*ew)`, lainnya →
+           `ExprRangeSelect(inner, …)`;
+         - rentang **descending** (`a>b`) → `IrExpr::Const(LogicVec::new(0))`
+           (queue KOSONG, §7.12.1).
+    - **Fix runtime (review-fix, temuan auto-review F89 — bagian [major]):**
+      clamping slice ke size AKTUAL tidak bisa dilakukan elaborator (size
+      dinamis). Dua perubahan:
+      1. `engine/eval/expr.rs`: helper bebas `clamp_queue_element_slice(val,
+         ew, start, end)` — `n = bits.len()/ew`; indeks awal `a` di luar batas
+         atau rentang kosong → `LogicVec::new(0)`; batas atas di-clamp ke `n`.
+         Dipanggil di arm `RangeSelect` (bila `sig.is_queue || sig.is_dynamic`)
+         & `ExprRangeSelect` (bila `inner` `MethodCall` ber-queue). Elaborator
+         meng-encode elemen sebagai bit-range ber-align → runtime decode `a`,
+         `b` lalu clamp.
+      2. `eval_assign_rhs`: cabang RHS **signed** dulu sign-extend ke
+         `get_lvalue_width(lhs)` — untuk LHS queue itu lebar STORAGE saat ini,
+         sehingga slice KOSONG di-zero-extend balik (`r = q[5:9]` setelah
+         `r`=2 elemen → tetap 2 elemen nol, bukan kosong). Kini resize
+         **dilewati** bila LHS queue/dynamic (lebar LHS didefinisikan RHS).
+    - **Oracle:** verilator 5.020 (`q[0:9]` pada 4-elemen → 4, clamp;
+      descending → 0). iverilog 12.0 queue-slice RUSAK (`q[0:1]` → size 4;
+      `q[5:9]` → 4) & verilator segfault pada queue kosong — untuk kasus
+      batas ini mivon mengikuti semantik LRM (§7.12.1: indeks awal di luar
+      batas / descending → kosong), bukan bug tool.
+    - Verifikasi: `test_queue_element_index_and_slice` (SV) — `q[0:1]` → `n`=2,
+      `r0`=1, `r1`=2, `q.unique()[0]`=1, `q.unique()[1]`=2, `q.unique()[i=2]`=3;
+      `test_queue_slice_clamped_and_empty` (review-fix) — `q[0:9]`→4,
+      `q[5:9]`→0, `q[3:0]`→0, queue kosong→0, slice kosong mengosongkan
+      target→0, in-range→2; `test_queue_method_result_slice_clamped` —
+      `q.unique()[0:9]`→3, `q.unique()[1:1]`→1 elemen=2. Demo e2e `.mv`
+      `examples/mv/queue_slice.mv` → `QS n=2 r0=1 r1=2 e0=1 e1=2 ei=3 cu=4 cd=0`
+      + `QS_OK`; test `test_mv_queue_slice_end_to_end`. Full workspace test hijau.
 
 ## ⏳ Open
 

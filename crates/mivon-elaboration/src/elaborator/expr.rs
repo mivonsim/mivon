@@ -409,24 +409,23 @@ impl Elaborator {
                     // mengembalikan queue, `q.unique()[a:b]`) = potongan ELEMEN
                     // (LRM 1800 §7.12.1), bukan potongan BIT. Tanpa ini
                     // `q[0:1]` = bit 0..1 → queue hasil kosong/salah.
-                    // Hanya rentang ASCENDING (a<=b) yang di-handle; descending
-                    // tetap jalur lama.
-                    if msb_c <= lsb_c {
-                        if let Some(ew) = self.array_method_result_elem_width(&inner_expr, signals)
-                        {
-                            if ew > 1 {
-                                let bit_lsb = msb_c.saturating_mul(ew);
-                                let bit_msb = (lsb_c + 1).saturating_mul(ew) - 1;
-                                return Ok(if let IrExpr::Signal(sid, _) = &inner_expr {
-                                    IrExpr::RangeSelect(*sid, bit_msb, bit_lsb)
-                                } else {
-                                    IrExpr::ExprRangeSelect(
-                                        Box::new(inner_expr),
-                                        bit_msb,
-                                        bit_lsb,
-                                    )
-                                });
+                    // Rentang ASCENDING (a<=b) → potongan elemen a..b, di-encode
+                    // sebagai bit-range ber-align elemen (`a*ew .. (b+1)*ew-1`);
+                    // runtime meng-clamp ke size aktual (batas atas) & memotong
+                    // elemen di luar batas (§7.12.1). Rentang DESCENDING (a>b) →
+                    // queue KOSONG (§7.12.1), bukan bit-range.
+                    if let Some(ew) = self.array_method_result_elem_width(&inner_expr, signals) {
+                        if ew > 0 {
+                            if msb_c > lsb_c {
+                                return Ok(IrExpr::Const(LogicVec::new(0)));
                             }
+                            let bit_lsb = msb_c.saturating_mul(ew);
+                            let bit_msb = (lsb_c + 1).saturating_mul(ew) - 1;
+                            return Ok(if let IrExpr::Signal(sid, _) = &inner_expr {
+                                IrExpr::RangeSelect(*sid, bit_msb, bit_lsb)
+                            } else {
+                                IrExpr::ExprRangeSelect(Box::new(inner_expr), bit_msb, bit_lsb)
+                            });
                         }
                     }
                     if let IrExpr::Signal(sid, _) = &inner_expr {

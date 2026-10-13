@@ -15,6 +15,28 @@ use rand::SeedableRng;
 use std::collections::{HashMap, VecDeque};
 use std::io::Write;
 
+/// Potong elemen `q[a..b]` dari sebuah queue/dynamic array, dengan clamping ke
+/// panjang AKTUAL `val` (LRM 1800 §7.12.1): bila indeks awal di luar batas →
+/// queue KOSONG; batas atas di-clamp ke `size-1`. `start..=end` adalah bit-range
+/// ber-align elemen (`ew` bit/elem, `start` = `a*ew`, `end` = `(b+1)*ew-1`).
+/// Mengembalikan `count*ew` bit (0 bit = queue kosong).
+fn clamp_queue_element_slice(val: &LogicVec, ew: usize, start: usize, end: usize) -> LogicVec {
+    let ew = ew.max(1);
+    let n = val.bits.len() / ew; // jumlah elemen aktual
+    let a = start / ew; // elemen awal (inklusif)
+    let b_excl = end.saturating_add(1) / ew; // elemen akhir (eksklusif)
+    if a >= n || a >= b_excl {
+        return LogicVec::new(0);
+    }
+    let hi = b_excl.min(n);
+    let w = (hi - a) * ew;
+    let from = a * ew;
+    LogicVec {
+        width: w,
+        bits: val.bits[from..from + w].to_vec(),
+    }
+}
+
 impl SimulationEngine {
     pub(crate) fn eval_assign_rhs(
         &mut self,
@@ -31,8 +53,17 @@ impl SimulationEngine {
             // zero-extend: -3 jadi 253 (probe p12i). Generalisasi via
             // is_signed_expr menangani unary/binary/signal/ternary signed.
             let mut val = self.evaluate_expr(expr)?;
+            // LHS queue/dynamic array: LEBAR LHS tidak tetap (didefinisikan oleh
+            // RHS) — JANGAN sign-extend ke `get_lvalue_width` (lebar STORAGE
+            // saat ini), karena itu menumbuhkan kembali slice KOSONG
+            // (`r = q[5:9]` → elemen nol). LHS fixed-width tetap di-extend.
+            let lhs_dyn = self
+                .signal_id_from_lvalue(lhs)
+                .and_then(|id| self.design.top.signals.get(id))
+                .map(|s| s.is_queue || s.is_dynamic)
+                .unwrap_or(false);
             let target_w = self.get_lvalue_width(lhs);
-            if val.width < target_w {
+            if !lhs_dyn && val.width < target_w {
                 let msb = val.bits.last().copied().unwrap_or(LogicVal::Zero);
                 val.bits.resize(target_w, msb);
                 val.width = target_w;
@@ -1810,6 +1841,15 @@ impl SimulationEngine {
                 } else {
                     (*msb, *lsb)
                 };
+                // Queue/dynamic array: `q[a:b]` = potongan ELEMEN (LRM §7.12.1) —
+                // clamp ke size aktual (batas atas) & kosong bila indeks awal di
+                // luar batas. Elaborator meng-encode elemen sebagai bit-range
+                // ber-align `elem_width` (lihat `Expr::RangeSelect`).
+                if let Some(sig) = self.design.top.signals.get(*sig_id) {
+                    if sig.is_queue || sig.is_dynamic {
+                        return Ok(clamp_queue_element_slice(&val, sig.elem_width, start, end));
+                    }
+                }
                 // Out-of-range select → bit luar batas X, bit dalam batas
                 // tetap NILAI ASLI (LRM 1800 §11.5.1). Dulu seluruh hasil
                 // X bila sebagian di luar batas — menghilangkan bit known-0
@@ -1843,6 +1883,15 @@ impl SimulationEngine {
                 } else {
                     (*msb, *lsb)
                 };
+                // Hasil method ber-queue (`q.unique()[a:b]`, `q.find with (…)[a:b]`):
+                // potongan ELEMEN dgn clamping ke size aktual (LRM §7.12.1).
+                if matches!(inner.as_ref(), IrExpr::MethodCall { .. }) {
+                    if let Some(ew) = self.array_method_result_elem_width(inner) {
+                        if ew > 0 {
+                            return Ok(clamp_queue_element_slice(&val, ew, start, end));
+                        }
+                    }
+                }
                 // Out-of-range select → bit luar batas X, bit dalam batas
                 // tetap nilai asli (LRM §11.5.1 — sama dgn RangeSelect).
                 if start > end {

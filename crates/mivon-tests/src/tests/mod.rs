@@ -1290,6 +1290,69 @@ endmodule
     assert_eq!(get("ei"), 3, "q.unique()[i=2] = 3 (index dinamis)");
 }
 
+/// Review-fix F89 (bug #43): slice queue di-CLAMP ke size aktual & rentang
+/// DESCENDING / queue KOSONG → queue kosong (LRM 1800 §7.12.1). Juga regresi:
+/// menugaskan slice KOSONG ke queue yang tadinya berisi HARUS mengosongkannya
+/// (dulu di-zero-extend balik ke lebar storage lama oleh jalur RHS signed).
+#[test]
+fn test_queue_slice_clamped_and_empty() {
+    let source = r#"
+module tb_qc;
+    int q[$];
+    int r[$];
+    int upper, lower, desc, emptyq, cleared, keep;
+    initial begin
+        q = '{1,2,3,4};
+        r = q[0:9];   upper = r.size();   // clamp ke 4
+        r = q[5:9];   lower = r.size();   // indeks awal di luar → 0
+        r = q[3:0];   desc  = r.size();   // descending → 0
+        q.delete();
+        r = q[0:1];   emptyq = r.size();  // queue kosong → 0
+        // regresi: r berisi lalu ditugasi slice kosong → HARUS kosong
+        q = '{1,2,3,4};
+        r = q[0:1];                       // r = 2 elemen
+        r = q[5:9];   cleared = r.size(); // harus 0 (bukan 2)
+        r = q[0:1];   keep = r.size();    // 2 (in-range tetap benar)
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 5).unwrap();
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    assert_eq!(get("upper"), 4, "q[0:9] pada 4-elemen → clamp ke 4");
+    assert_eq!(get("lower"), 0, "q[5:9] indeks awal di luar batas → kosong");
+    assert_eq!(get("desc"), 0, "q[3:0] descending → queue kosong");
+    assert_eq!(get("emptyq"), 0, "slice pada queue kosong → kosong");
+    assert_eq!(get("cleared"), 0, "slice kosong mengosongkan target (bukan zero-extend)");
+    assert_eq!(get("keep"), 2, "slice in-range tetap benar");
+}
+
+/// Review-fix F89: slice pada HASIL method ber-queue juga di-clamp
+/// (`q.unique()[0:9]`), dan slice kosong mengosongkan target.
+#[test]
+fn test_queue_method_result_slice_clamped() {
+    let source = r#"
+module tb_qmc;
+    int q[$];
+    int r[$];
+    int n, clamp, mid, v;
+    initial begin
+        q = '{1,1,2,3,3};
+        r = q.unique();       n = r.size();      // 3
+        r = q.unique()[0:9];  clamp = r.size();  // clamp ke 3
+        r = q.unique()[1:1];  mid = r.size(); v = r[0];  // 1 elemen = 2
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 5).unwrap();
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    assert_eq!(get("n"), 3, "q.unique() → 3 elemen");
+    assert_eq!(get("clamp"), 3, "q.unique()[0:9] → clamp ke 3");
+    assert_eq!(get("mid"), 1, "q.unique()[1:1] → 1 elemen");
+    assert_eq!(get("v"), 2, "q.unique()[1:1][0] = 2");
+}
+
 /// Review F41: `min`/`max` mengembalikan **elemen** (bukan nilai kunci
 /// `with`), dan `find_last`/`find_last_index` mengembalikan **hanya satu**
 /// kecocokan terakhir (LRM 1800 §7.12.1).
@@ -24268,6 +24331,8 @@ fn test_mv_queue_slice_end_to_end() {
     assert_eq!(get("e0"), 1, "q.unique()[0]");
     assert_eq!(get("e1"), 2, "q.unique()[1]");
     assert_eq!(get("ei"), 3, "q.find with (item>2)[0]");
+    assert_eq!(get("cu"), 4, "q[0:9] → clamp ke 4");
+    assert_eq!(get("cd"), 0, "q[3:0] descending → kosong");
     assert_eq!(get("ok"), 1, "semua lolos (QS_OK)");
 }
 
