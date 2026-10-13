@@ -512,8 +512,14 @@ bug di mivon utama (parser/elaborator/simulator). Status: ✅ fixed / ⏳ open.
          `q.unique_index with (item)`).
     - Parser tidak perlu diubah: `unique_index` **bukan** keyword SV (beda dgn
       `unique`), jadi sudah di-parse sebagai identifier method biasa.
+    - `with` clause opsional didukung (LRM §7.12.1): `q.unique_index with
+      (item / 2)` dedup atas **nilai clause** — membuktikan jalur
+      `is_array_with_method("unique_index")` (binding `item`) benar-benar
+      terpakai.
     - Verifikasi: `test_array_method_unique_index` (baru) — `q='{1,1,2,3,3}` →
-      `q.unique_index()` = `{0,2,3}` (size 3). Demo e2e
+      `q.unique_index()` = `{0,2,3}` (size 3); `test_array_method_unique_index_
+      with_clause` (baru, review-fix) — `q.unique_index with (item/2)` =
+      `{0,2}`. Demo e2e
       `examples/mv/array_methods.mv` diperluas: `mivon sim` →
       `ARR_UIDX n=3 i0=0 i1=2 i2=3` + `ARR_OK`. Test
       `test_mv_array_method_with_clause_end_to_end` diperluas (assert un2/ui0/

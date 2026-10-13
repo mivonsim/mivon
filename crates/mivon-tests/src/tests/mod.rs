@@ -1131,6 +1131,35 @@ endmodule
     assert_eq!(get("i2"), 3, "indeks pertama elemen unik 3 → 3");
 }
 
+/// LRM 1800 §7.12.1: `unique_index` menerima `with` clause opsional; dedup
+/// dilakukan atas **nilai clause** (bukan elemen mentah), yang dikembalikan
+/// adalah indeks elemen. Menutup review-fix F84: membuktikan jalur
+/// `is_array_with_method("unique_index")` (binding `item`) benar-benar dipakai.
+#[test]
+fn test_array_method_unique_index_with_clause() {
+    let source = r#"
+module tb_uiw;
+    int q[$];
+    int iq[$];
+    int n, i0, i1;
+    initial begin
+        q = '{1,1,2,3,3};
+        iq = q.unique_index with (item / 2);
+        n  = iq.size();
+        i0 = iq[0];
+        i1 = iq[1];
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 5).unwrap();
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    // item/2 = 0,0,1,1,1 → kunci unik {0,1} pada indeks 0 dan 2.
+    assert_eq!(get("n"), 2, "unique_index with (item/2) → 2 indeks unik");
+    assert_eq!(get("i0"), 0, "indeks kunci 0 → 0");
+    assert_eq!(get("i1"), 2, "indeks kunci 1 → 2");
+}
+
 /// Review F41: `min`/`max` mengembalikan **elemen** (bukan nilai kunci
 /// `with`), dan `find_last`/`find_last_index` mengembalikan **hanya satu**
 /// kecocokan terakhir (LRM 1800 §7.12.1).

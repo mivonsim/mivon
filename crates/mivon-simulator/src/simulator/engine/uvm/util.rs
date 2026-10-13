@@ -259,7 +259,8 @@ impl SimulationEngine {
 impl SimulationEngine {
     /// Evaluasi `with` clause sebuah array method untuk satu elemen dan
     /// kembalikan NILAINYA (bukan bool). Dipakai reduction/ordering method
-    /// (`sum`/`product`/`and`/`or`/`xor`/`min`/`max`/`unique`/`sort`/`rsort`)
+    /// (`sum`/`product`/`and`/`or`/`xor`/`min`/`max`/`unique`/`unique_index`/
+    /// `sort`/`rsort`)
     /// di mana clause `with (item.x)` adalah ekspresi bernilai (LRM 1800
     /// §7.12.1). Bila tidak ada clause, kembalikan elemen itu sendiri.
     /// `item` di-bind ke `elem` lewat `method_locals`.
@@ -904,6 +905,9 @@ impl SimulationEngine {
             "unique_index" => {
                 // LRM 1800 §7.12.1: seperti `unique` tetapi mengembalikan queue
                 // INDEKS elemen unik (bukan nilainya); tiap indeks 32-bit.
+                // Catatan: kunci dedup via `to_u64()` (sama seperti `unique`) —
+                // elemen >64-bit / X-Z bisa ter-truncate; keterbatasan turunan,
+                // bukan regresi.
                 let lv = self.state.read_signal(sig_id).clone();
                 let elem_width = sig.elem_width;
                 if elem_width > 0 && lv.width >= elem_width {
