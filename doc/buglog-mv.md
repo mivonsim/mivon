@@ -410,7 +410,8 @@ bug di mivon utama (parser/elaborator/simulator). Status: ✅ fixed / ⏳ open.
     - Sisa caveat (keterbatasan, bukan bug): chained method pada hasil
       temporer (`q.unique().size()`) belum didukung — simpan ke queue dulu
       (`r = q.unique(); r.size()`); akses member/index pada `item`
-      (`with (item.x)`) belum didukung; iverilog tak dukung `with` clause.
+      (`with (item.x)`) → **kini DIDUKUNG penuh, lihat #40**; iverilog tak
+      dukung `with` clause.
     - **Follow-up auto-review F41:**
       - `min`/`max` (§7.12.1) dulu mengembalikan **nilai kunci** clause,
         bukan elemen — `q.min with (100-item)` salah. Kini mengembalikan
@@ -525,7 +526,38 @@ bug di mivon utama (parser/elaborator/simulator). Status: ✅ fixed / ⏳ open.
       `test_mv_array_method_with_clause_end_to_end` diperluas (assert un2/ui0/
       ui1/ui2).
 
+40. **Akses field struct pada iterator `item` belum didukung — keterbatasan →
+    full support (LRM §7.12.1).** Caveat F41 (#36): klausa `with` hanya boleh
+    memakai `item` utuh; `q.find with (item.x > 3)` di-emit jadi
+    `IrExpr::HierRef("item.x")` (elaborator, cabang `MemberAccess` →
+    `Ok(IrExpr::HierRef(base_name))` menggabung `item` + `x`) → runtime
+    `HierRef` gagal → **RT0001 "hierarchical signal 'item.x' not found"**.
+    Padahal elemen queue bisa berupa struct packed, dan field-nya wajar dipakai
+    di locator/reduction/ordering.
+    - **Fix (elaborator saja, 2 titik):**
+      1. Field `Elaborator.with_item_fields: RefCell<Vec<StructFieldInfo>>` —
+         field struct dari TIPE ELEMEN receiver. Diisi di
+         `elaborate_with_clause` (helper `with_item_element_fields`: receiver
+         `Ident` → `SignalInfo.struct_fields`, yang untuk queue-of-struct =
+         field elemen) dan di-restore setelah clause (pola `with_item_bound`).
+      2. Cabang `MemberAccess` (`Ok(IrExpr::HierRef(base_name))`): bila
+         `base_name == "item"` dan field ada di `with_item_fields`, emit
+         `IrExpr::ExprRangeSelect(HierRef("item"), msb, lsb)` (potong bit sesuai
+         `f.offset`/`f.width`, + `Signed` bila field signed) alih-alih
+         `HierRef("item.x")`. Runtime sudah mendukung `ExprRangeSelect` atas
+         ekspresi apa pun (local `item` di `method_locals`).
+    - Runtime **tidak berubah**; `StructFieldInfo` sudah menyimpan offset/width/
+      is_signed dengan bit-order benar (member pertama packed struct = MSB).
+    - Verifikasi: `test_array_method_with_item_field_access` (baru, SV) —
+      `p_t q[$]` (`p_t = struct packed {logic[7:0] x; logic[7:0] y;}`),
+      `q='{'{1,10},'{5,20},'{9,30}}` → `find with (item.x>3)` n=2,
+      `sum with (item.y)`=60, `min with (item.x)`=266 (elemen {x=1,y=10}),
+      `max with (item.y)`=2334, `find_index with (item.x==9)`=2. Demo e2e `.mv`
+      `examples/mv/array_item_field.mv` → `ITF_OK`; test
+      `test_mv_array_item_field_end_to_end`.
+
 ## ⏳ Open
 
 _(Tidak ada item open. Caveat chained method temporer & iverilog `with`
-tercatat di #36 sbg keterbatasan tool/desain, bukan bug.)_
+tercatat di #36 sbg keterbatasan tool/desain, bukan bug. `with (item.x)`
+kini DIDUKUNG penuh — lihat #40.)_

@@ -1160,6 +1160,42 @@ endmodule
     assert_eq!(get("i1"), 2, "indeks kunci 1 → 2");
 }
 
+/// LRM 1800 §7.12.1: akses FIELD struct pada iterator `item` di klausa `with`
+/// (`q.find with (item.x > 3)`). Sebelum fix, `item.x` di-emit jadi
+/// `HierRef("item.x")` → RT0001 "hierarchical signal 'item.x' not found".
+/// Kini elaborator memotong bit elemen sesuai offset field (ExprRangeSelect).
+#[test]
+fn test_array_method_with_item_field_access() {
+    let source = r#"
+typedef struct packed { logic [7:0] x; logic [7:0] y; } p_t;
+module tb_if;
+    p_t q[$];
+    p_t r[$];
+    int iq[$];
+    int n, s, mn, mx, i0;
+    initial begin
+        q = '{'{8'd1,8'd10}, '{8'd5,8'd20}, '{8'd9,8'd30}};
+        r  = q.find with (item.x > 3);
+        n  = r.size();
+        s  = q.sum with (item.y);
+        mn = q.min with (item.x);
+        mx = q.max with (item.y);
+        iq = q.find_index with (item.x == 9);
+        i0 = iq[0];
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 5).unwrap();
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    // x = byte tinggi, y = byte rendah: elemen e = (x<<8)|y.
+    assert_eq!(get("n"), 2, "find with (item.x > 3) → 2 elemen");
+    assert_eq!(get("s"), 60, "sum with (item.y) = 10+20+30");
+    assert_eq!(get("mn"), 266, "min with (item.x) → elemen pemenang x=1 (266)");
+    assert_eq!(get("mx"), 2334, "max with (item.y) → elemen pemenang y=30 (2334)");
+    assert_eq!(get("i0"), 2, "find_index with (item.x == 9) → 2");
+}
+
 /// Review F41: `min`/`max` mengembalikan **elemen** (bukan nilai kunci
 /// `with`), dan `find_last`/`find_last_index` mengembalikan **hanya satu**
 /// kecocokan terakhir (LRM 1800 §7.12.1).
@@ -24071,6 +24107,24 @@ fn test_mv_array_method_with_clause_end_to_end() {
     assert_eq!(get("ui1"), 2, "unique_index indeks 2");
     assert_eq!(get("ui2"), 3, "unique_index indeks 3");
     assert_eq!(get("ok"), 1, "semua lolos (ARR_OK)");
+}
+
+/// E2E `.mv` (F86): akses field struct pada iterator `item`
+/// (`q.find with (item.x > 3)`) — dari sumber `.mv` sampai simulasi.
+#[test]
+fn test_mv_array_item_field_end_to_end() {
+    let src = include_str!("../../../../examples/mv/array_item_field.mv");
+    let r = mivon_mv::transpile(src, "array_item_field").expect("transpile .mv OK");
+    let combined = format!("{}\n{}", r.svh, r.sv);
+    let sigs =
+        simulate_signals(&combined, 100).expect("array_item_field harus simulasi bersih");
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    assert_eq!(get("n"), 2, "find with (item.x > 3)");
+    assert_eq!(get("s"), 60, "sum with (item.y)");
+    assert_eq!(get("mn"), 266, "min with (item.x) → elemen pemenang");
+    assert_eq!(get("mx"), 2334, "max with (item.y) → elemen pemenang");
+    assert_eq!(get("i0"), 2, "find_index with (item.x == 9)");
+    assert_eq!(get("ok"), 1, "semua lolos (ITF_OK)");
 }
 
 /// Regresi bug #37: rantai `&&`/`||` panjang (16 operan) TIDAK boleh

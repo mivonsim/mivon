@@ -207,6 +207,14 @@ pub struct Elaborator {
     /// di `elaborate_with_clause`. `Cell` karena `elaborate_expr` bertipe
     /// `&self` (seperti `opt_stats`).
     pub with_item_bound: std::cell::Cell<bool>,
+    /// Field struct dari TIPE ELEMEN receiver saat mengelaborasi `with`
+    /// clause array method (`q.find with (item.x > 3)`). Di-set di
+    /// `elaborate_with_clause` bila elemen queue/array adalah struct packed,
+    /// lalu dipakai `MemberAccess` untuk mengubah `item.x` menjadi
+    /// `ExprRangeSelect(HierRef("item"), msb, lsb)` (potong bit sesuai offset
+    /// field, LRM 1800 §7.12.1). Kosong bila elemen bukan struct. `RefCell`
+    /// karena `elaborate_expr` bertipe `&self`.
+    pub with_item_fields: std::cell::RefCell<Vec<StructFieldInfo>>,
     pub package_symbols: HashMap<Symbol, HashMap<Symbol, PackageItem>>,
     /// Konstanta package ter-evaluasi (kualifikasi `pkg::name`): skalar & array.
     pub pkg_const_scalars: HashMap<Symbol, i64>,
@@ -620,6 +628,7 @@ impl Elaborator {
             typedef_queue: std::collections::HashSet::new(),
             typedef_dynamic: std::collections::HashSet::new(),
             with_item_bound: std::cell::Cell::new(false),
+            with_item_fields: std::cell::RefCell::new(Vec::new()),
             typedef_field_map: HashMap::new(),
             package_symbols,
             pkg_const_scalars,

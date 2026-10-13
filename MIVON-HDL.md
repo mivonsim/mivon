@@ -305,13 +305,16 @@ Aturan:
   Locator memakai clause sebagai kondisi boolean. `unique` **mengembalikan
   queue baru** (tidak mengubah sumber, §7.12.1); `unique_index` mengembalikan
   queue **indeks** kemunculan pertama tiap nilai unik (tiap indeks 32-bit,
-  §7.12.1). Method bernama keyword
+  §7.12.1). Iterator `item` boleh diakses **field struct**-nya bila elemen
+  bertipe struct packed: `q.find with (item.x > 3)`, `q.sum with (item.y)`
+  (elaborator memotong bit elemen sesuai offset field → `ExprRangeSelect`).
+  Method bernama keyword
   (`unique`/`and`/`or`/`xor`) boleh dipanggil setelah `.` (`q.unique()`,
-  `q.and()`). Contoh: `examples/mv/array_methods.mv`.
+  `q.and()`). Contoh: `examples/mv/array_methods.mv`,
+  `examples/mv/array_item_field.mv`.
   - **Caveat**: (a) chained method pada hasil temporer (`q.unique().size()`)
     belum didukung — simpan dulu ke queue (`r = q.unique(); r.size()`);
-    (b) akses member/index pada `item` (`with (item.x)`) belum didukung —
-    clause hanya boleh memakai `item` utuh; iverilog tak mendukung `with`
+    iverilog tak mendukung `with`
     clause (limit tool); verilator & `mivon sim` OK.
 - **Rangkuman emisi cast** (codegen): `logic[M:N]'(x)` → `W'(x)`
   (width cast), `Q'(x)` dengan `Q` typedef queue → `'{ x }`, selain itu
@@ -1892,6 +1895,7 @@ module tb_traffic {
 | **F82** ✅ | **Fix stack overflow evaluator rekursif (bug #37)** — rantai ekspresi panjang (`&&`/`\|\|` ≥8 operan) di jalur `simulate_signals`/`EngineFlags::default()` (`use_packed_eval=false`) menabrak stack thread test 2 MiB karena frame `evaluate_expr_impl` ~184 KB/level. **Dua bagian:** (1) **dispatcher (decisive)** — match raksasa lama di-rename `evaluate_expr_deep`, lahir `evaluate_expr_impl` tipis yang menangani tulang belakang rekursif `BinaryOp`/`UnaryOp` lewat helper `#[inline(never)] fn eval_binary_op`/`fn eval_unary_op` (jadi frame besar tak dialokasikan per level); (2) pecah arm `SysFunc` (≈1320 baris) ke `#[inline(never)] fn eval_sysfunc` (memangkas frame `evaluate_expr_deep` utk pola rekursi lain). Body dipindah apa adanya — **tanpa perubahan semantik** | `examples/mv/logic_chain.mv` (rantai `&&`/`\|\|` 16 operan) + `test_mv_long_logic_chain_no_stack_overflow` + `test_deep_boolean_chain_no_stack_overflow`; bukti bagian (1) WAJIB: dengan HANYA pemecahan `SysFunc`, 8 operan masih SIGABRT; 281 test `mivon-mv` + suite `mivon-tests` (1092) hijau. **Sisa (open):** rantai ≥~17 operan masih menabrak deep-recursion ELABORATOR (`const_eval_with_params`/`elaborate_expr`) → buglog-mv #38 (**fixed di F83**) |
 | **F83** ✅ | **Fix deep-recursion elaborator + const-eval (bug #38)** — rantai operator ≥~17 operan (operand **sinyal**) → stack overflow saat **ELABORASI**. Tiga akar: (a) `elaborate_expr` memanggil `try_fold_const` di SETIAP level → const-eval menelusuri seluruh subtree berulang (total frame O(N²)); (b) `const_eval_with_params` satu match ~944 baris (frame besar/level); (c) `elaborate_expr` ~920 baris ber-rekursi di jalur rantai. Fix: walker `util::const_fold::contains_signal_ref` (lewati fold ekspresi ber-sinyal — semantik identik) + dispatcher tipis & helper `#[inline(never)]` (`const_eval_ops`/`const_eval_deep`, `elaborate_binary`/`elaborate_unary`/`elaborate_expr_deep`) + depth-guard const-eval (`MAX_CONST_EVAL_DEPTH=128`). Tanpa perubahan semantik | batas 16 → **128 operan LULUS** (evaluator+elaborator); `test_mv_very_long_logic_chain_no_stack_overflow` (64 operan sinyal; GAGAL/SIGABRT pada 32 pra-fix → LULUS pasca-fix); buglog-mv #38 |
 | **F84** ✅ | **`unique_index` — keterbatasan → full support (LRM §7.12.1, bug #39)** — F41 dulu sengaja membuang `unique_index` dari `is_array_with_method` (runtime belum ada → `q.unique_index()` jatuh ke arm fallback `Err(NotImplemented)`). Kini didukung penuh: arm runtime `"unique_index"` di `engine/uvm/util.rs` (dedup nilai via `HashSet`, dorong **indeks** 32-bit kemunculan pertama tiap nilai unik → queue baru, tak ubah sumber) + `"unique_index"` ditambahkan ke `is_array_with_method` (binding `item` bila ada `with`). Parser tak berubah (`unique_index` bukan keyword SV). | `test_array_method_unique_index` (baru: `'{1,1,2,3,3}` → `{0,2,3}`) + `test_array_method_unique_index_with_clause` (review-fix: `unique_index with (item/2)` → `{0,2}`); demo e2e `examples/mv/array_methods.mv` diperluas → `ARR_UIDX n=3 i0=0 i1=2 i2=3` + `ARR_OK`; `test_mv_array_method_with_clause_end_to_end` diperluas; buglog-mv #39 |
+| **F86** ✅ | **Akses field struct pada iterator `item` — keterbatasan → full support (LRM §7.12.1, bug #40)** — caveat F41: `with` hanya boleh pakai `item` utuh; `q.find with (item.x > 3)` di-emit `HierRef("item.x")` → RT0001. Kini `item.<field>` dikenali: `Elaborator.with_item_fields` (field struct TIPE ELEMEN receiver, diisi di `elaborate_with_clause`) + cabang `MemberAccess` mengubah `item.x` → `ExprRangeSelect(HierRef("item"), msb, lsb)` sesuai offset field (+`Signed` bila signed). Runtime tak berubah. | `test_array_method_with_item_field_access` (SV: `struct packed {x,y}` queue → find/sum/min/max/find_index atas `item.x`/`item.y`); demo e2e `.mv` `examples/mv/array_item_field.mv` → `ITF_OK` + `test_mv_array_item_field_end_to_end`; buglog-mv #40 |
 
 **Kriteria selesai F2:** `mivon mgen examples/mv/counter.mv` menghasilkan
 `counter.sv` yang bisa disimulasikan oleh `mivon counter.sv` tanpa error.

@@ -949,12 +949,37 @@ impl Elaborator {
         }
         if Self::is_array_with_method(method.as_str()) {
             let saved = self.with_item_bound.get();
+            // Field struct tipe ELEMEN receiver (mendukung `with (item.x)`).
+            let fields = self.with_item_element_fields(obj, signal_map, signals);
+            let saved_fields = self.with_item_fields.replace(fields);
             self.with_item_bound.set(true);
             let r = self.elaborate_expr(wc, signal_map, signals);
             self.with_item_bound.set(saved);
+            self.with_item_fields.replace(saved_fields);
             return Ok(Some(Box::new(r?)));
         }
         Ok(Some(Box::new(self.elaborate_expr(wc, signal_map, signals)?)))
+    }
+
+    /// Field struct dari TIPE ELEMEN receiver sebuah array manipulation method
+    /// (`q.find with (item.x > 3)`, LRM 1800 §7.12.1). Hanya bila receiver
+    /// adalah identifier yang menunjuk signal queue/dynamic-array yang elemennya
+    /// struct packed (maka `SignalInfo.struct_fields` = field elemen). Selain
+    /// itu kembalikan kosong (`with (item …)` utuh seperti sebelumnya).
+    fn with_item_element_fields(
+        &self,
+        obj: &Expr,
+        signal_map: &HashMap<Symbol, SignalId>,
+        signals: &[SignalInfo],
+    ) -> Vec<StructFieldInfo> {
+        if let Expr::Ident { name, .. } = obj {
+            if let Some(&sid) = signal_map.get(name) {
+                if let Some(info) = signals.get(sid) {
+                    return info.struct_fields.clone();
+                }
+            }
+        }
+        Vec::new()
     }
 
     /// Kumpulkan nama field data sebuah class AST + rantai `extends` (parent
@@ -1650,6 +1675,30 @@ impl Elaborator {
                         })
                     }
                     Ok(IrExpr::HierRef(base_name)) => {
+                        // `with (item.x)`: iterator `item` di-bind evaluator
+                        // sebagai local (HierRef("item")). Bila elemen receiver
+                        // adalah struct packed (`with_item_fields` di-set di
+                        // elaborate_with_clause), ubah `item.x` →
+                        // ExprRangeSelect(HierRef("item"), msb, lsb) yang memotong
+                        // bit sesuai offset field (LRM 1800 §7.12.1). Tanpa ini
+                        // `item.x` jadi HierRef("item.x") → RT0001 (tak ada sinyal).
+                        if base_name.as_str() == "item" {
+                            let fields = self.with_item_fields.borrow();
+                            if let Some(f) = fields.iter().find(|f| f.name == *field) {
+                                let lsb = f.offset;
+                                let msb = f.offset + f.width - 1;
+                                let sel = IrExpr::ExprRangeSelect(
+                                    Box::new(IrExpr::HierRef(base_name)),
+                                    msb,
+                                    lsb,
+                                );
+                                return Ok(if f.is_signed {
+                                    IrExpr::Signed(Box::new(sel))
+                                } else {
+                                    sel
+                                });
+                            }
+                        }
                         // Nested hier: inner already returned HierRef("u1.u"),
                         // combine with field → HierRef("u1.u.v").
                         let combined = format!("{}.{}", base_name.as_str(), field.as_str());

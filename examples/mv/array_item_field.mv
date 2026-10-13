@@ -1,0 +1,69 @@
+// F86 — Array manipulation method dengan akses FIELD struct pada iterator
+// `item` (`q.find with (item.x > 3)`, LRM 1800 §7.12.1).
+//
+// Menutup keterbatasan lama: klausa `with` hanya boleh memakai `item` utuh;
+// `item.x` (akses member) di-emit jadi `HierRef("item.x")` → RT0001
+// "hierarchical signal 'item.x' not found". Kini `item.<field>` dikenali:
+// elaborator memotong bit elemen sesuai offset field struct packed
+// (ExprRangeSelect), jadi field bisa dipakai di locator/reduction/ordering.
+//
+// Jalankan:
+//   mivon mgen examples/mv/array_item_field.mv
+//   mivon sim  examples/mv/array_item_field.mv --top tb_itemfield -T 100
+//
+// Harapan:
+//   ITF_FIND n=2
+//   ITF_SUM s=60
+//   ITF_MINMAX mn=266 mx=2334
+//   ITF_IDX i0=2
+//   ITF_OK
+
+packed struct P {
+    x : logic[7:0],
+    y : logic[7:0]
+}
+
+module tb_itemfield {
+    sig q  : P[$]
+    sig r  : P[$]
+    sig iq : logic[31:0][$]
+    sig n, s, mn, mx, i0 : logic[31:0]
+    sig ok : bit = 0
+
+    initial {
+        // elemen: {x, y} — x = byte tinggi, y = byte rendah
+        q = '{'{8'd1, 8'd10}, '{8'd5, 8'd20}, '{8'd9, 8'd30}}
+
+        // locator: akses field `item.x` sebagai kondisi
+        r  = q.find with (item.x > 3)
+        n  = r.size()
+        $display("ITF_FIND n=%0d", n)
+
+        // reduction: field `item.y` sebagai nilai
+        s = q.sum with (item.y)
+        $display("ITF_SUM s=%0d", s)
+
+        // ordering: min/max atas field; mengembalikan ELEMEN pemenang
+        mn = q.min with (item.x)
+        mx = q.max with (item.y)
+        $display("ITF_MINMAX mn=%0d mx=%0d", mn, mx)
+
+        // locator indeks: field `item.x`
+        iq = q.find_index with (item.x == 9)
+        i0 = iq[0]
+        $display("ITF_IDX i0=%0d", i0)
+
+        ok = 1
+        if (n  != 2)    { ok = 0 }
+        if (s  != 60)   { ok = 0 }
+        if (mn != 266)  { ok = 0 }
+        if (mx != 2334) { ok = 0 }
+        if (i0 != 2)    { ok = 0 }
+        if (ok) {
+            $display("ITF_OK")
+        } else {
+            $display("ITF_BROKEN")
+        }
+        $finish
+    }
+}
