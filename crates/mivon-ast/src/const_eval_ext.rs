@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use crate::const_eval::{sized_width, string_to_i64};
 use crate::expr::{BinaryOp, Expr, StructLitMember, UnaryOp, Value};
 use crate::stmt::Stmt;
-use crate::types::{FunctionDecl, PackageItem};
+use crate::types::{DataType, FunctionDecl, PackageItem};
 use mivon_core::intern::Symbol;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -340,7 +340,24 @@ pub fn eval_expr(e: &Expr, ctx: &PkgCtx, cur_pkg: Option<&str>) -> Result<CVal, 
             let inner = eval_expr(expr, ctx, cur_pkg)?;
             Ok(CVal::Array(vec![inner; c as usize]))
         }
-        Expr::Cast { expr, .. } => eval_expr(expr, ctx, cur_pkg),
+        Expr::Cast { dtype, expr } => {
+            // `T'(0)` ke struct packed = semua field 0 (mis. `cva6_cfg_t'(0)`
+            // untuk `CFG_EMPTY` CVA6). Tanpa ini default struct zero-cast jadi
+            // skalar 0, member `Cfg.XLEN` gagal "member access not allowed".
+            // Hanya 0 yang di-expand (non-zero butuh bit-slicing per width).
+            let inner = eval_expr(expr, ctx, cur_pkg)?;
+            if let Ok(0) = scalar(inner.clone()) {
+                if let Some(fields) = struct_field_names(ctx, dtype.as_str(), cur_pkg) {
+                    return Ok(CVal::Struct(
+                        fields
+                            .into_iter()
+                            .map(|f| SField::named(f, CVal::Scalar(0)))
+                            .collect(),
+                    ));
+                }
+            }
+            Ok(scalar(inner).map(CVal::Scalar)?)
+        }
         Expr::CastWidth { expr, .. } => eval_expr(expr, ctx, cur_pkg),
         Expr::FuncCall { name, args, .. } => eval_func(name.as_str(), args, ctx, cur_pkg),
         // Struct assignment pattern `'{name: v, default: d, ...}` — evaluasi
@@ -574,6 +591,152 @@ fn lookup_pkg_typedef<'a>(
     })
 }
 
+/// Nama field struct untuk `T'(0)` → Struct zero. Cari typedef `T` di
+/// `cur_pkg` dulu lalu semua package. Hanya StructType (packed/unpacked);
+/// Union di-expand juga (semua member 0). Return None bila bukan struct.
+fn struct_field_names(
+    ctx: &PkgCtx,
+    dtype: &str,
+    cur_pkg: Option<&str>,
+) -> Option<Vec<Symbol>> {
+    // `pkg::type` eksplisit.
+    if let Some((pkg, t)) = dtype.split_once("::") {
+        let td = ctx
+            .package_symbols
+            .get(&Symbol::intern(pkg))
+            .and_then(|items| lookup_pkg_typedef(items, t))?;
+        return match &td.dtype {
+            crate::types::DataType::StructType { members }
+            | crate::types::DataType::UnionType { members } => {
+                Some(members.iter().map(|m| m.name).collect())
+            }
+            crate::types::DataType::Signed(inner) => match inner.as_ref() {
+                crate::types::DataType::StructType { members }
+                | crate::types::DataType::UnionType { members } => {
+                    Some(members.iter().map(|m| m.name).collect())
+                }
+                _ => None,
+            },
+            _ => None,
+        };
+    }
+    // Plain-name: cur_pkg dulu.
+    if let Some(pkg) = cur_pkg {
+        if let Some(items) = ctx.package_symbols.get(&Symbol::intern(pkg)) {
+            if let Some(td) = lookup_pkg_typedef(items, dtype) {
+                match &td.dtype {
+                    crate::types::DataType::StructType { members }
+                    | crate::types::DataType::UnionType { members } => {
+                        return Some(members.iter().map(|m| m.name).collect());
+                    }
+                    crate::types::DataType::Signed(inner) => match inner.as_ref() {
+                        crate::types::DataType::StructType { members }
+                        | crate::types::DataType::UnionType { members } => {
+                            return Some(members.iter().map(|m| m.name).collect());
+                        }
+                        _ => {}
+                    },
+                    _ => {}
+                }
+            }
+        }
+    }
+    // Fallback semua package.
+    for items in ctx.package_symbols.values() {
+        if let Some(td) = lookup_pkg_typedef(items, dtype) {
+            match &td.dtype {
+                crate::types::DataType::StructType { members }
+                | crate::types::DataType::UnionType { members } => {
+                    return Some(members.iter().map(|m| m.name).collect());
+                }
+                crate::types::DataType::Signed(inner) => match inner.as_ref() {
+                    crate::types::DataType::StructType { members }
+                    | crate::types::DataType::UnionType { members } => {
+                        return Some(members.iter().map(|m| m.name).collect());
+                    }
+                    _ => {}
+                },
+                _ => {}
+            }
+        }
+    }
+    None
+}
+
+/// Field struct untuk `DataType` deklarasi lokal (`cva6_cfg_t cfg;`).
+/// Resolve `UserDefined(name)` (plain atau `pkg::type`) ke typedef struct.
+fn datatype_struct_fields(
+    package_symbols: &HashMap<Symbol, HashMap<Symbol, PackageItem>>,
+    dtype: &DataType,
+    cur_pkg: Option<&str>,
+) -> Option<Vec<Symbol>> {
+    match dtype {
+        DataType::UserDefined(name) => {
+            let s = name.as_str();
+            if let Some((pkg, t)) = s.split_once("::") {
+                let td = package_symbols
+                    .get(&Symbol::intern(pkg))
+                    .and_then(|items| lookup_pkg_typedef(items, t))?;
+                match &td.dtype {
+                    DataType::StructType { members } | DataType::UnionType { members } => {
+                        Some(members.iter().map(|m| m.name).collect())
+                    }
+                    DataType::Signed(inner) => match inner.as_ref() {
+                        DataType::StructType { members } | DataType::UnionType { members } => {
+                            Some(members.iter().map(|m| m.name).collect())
+                        }
+                        _ => None,
+                    },
+                    _ => None,
+                }
+            } else {
+                // Plain: cur_pkg dulu lalu semua package (tanpa ctx penuh).
+                if let Some(pkg) = cur_pkg {
+                    if let Some(items) = package_symbols.get(&Symbol::intern(pkg)) {
+                        if let Some(td) = lookup_pkg_typedef(items, s) {
+                            match &td.dtype {
+                                DataType::StructType { members }
+                                | DataType::UnionType { members } => {
+                                    return Some(members.iter().map(|m| m.name).collect());
+                                }
+                                DataType::Signed(inner) => match inner.as_ref() {
+                                    DataType::StructType { members }
+                                    | DataType::UnionType { members } => {
+                                        return Some(members.iter().map(|m| m.name).collect());
+                                    }
+                                    _ => {}
+                                },
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+                for items in package_symbols.values() {
+                    if let Some(td) = lookup_pkg_typedef(items, s) {
+                        match &td.dtype {
+                            DataType::StructType { members }
+                            | DataType::UnionType { members } => {
+                                return Some(members.iter().map(|m| m.name).collect());
+                            }
+                            DataType::Signed(inner) => match inner.as_ref() {
+                                DataType::StructType { members }
+                                | DataType::UnionType { members } => {
+                                    return Some(members.iter().map(|m| m.name).collect());
+                                }
+                                _ => {}
+                            },
+                            _ => {}
+                        }
+                    }
+                }
+                None
+            }
+        }
+        DataType::Signed(inner) => datatype_struct_fields(package_symbols, inner, cur_pkg),
+        _ => None,
+    }
+}
+
 fn find_package_func<'a>(
     package_symbols: &'a HashMap<Symbol, HashMap<Symbol, PackageItem>>,
     name: &'a str,
@@ -633,6 +796,7 @@ fn eval_function_body_inner(
 ) -> Result<CVal, String> {
     let mut local_scalars: Scalars = ctx.scalars.clone();
     let mut local_arrays: Arrays = ctx.arrays.clone();
+    let mut local_structs: HashMap<Symbol, Vec<SField>> = ctx.structs.clone();
     for (i, port) in func.ports.iter().enumerate() {
         let Some(arg) = args.get(i) else { break };
         match eval_expr(arg, ctx, cur_pkg)? {
@@ -642,7 +806,9 @@ fn eval_function_body_inner(
             CVal::Array(a) => {
                 local_arrays.insert(port.name, flatten(&a));
             }
-            CVal::Struct(_) => {}
+            CVal::Struct(s) => {
+                local_structs.insert(port.name, s);
+            }
         }
     }
     for decl in &func.decls {
@@ -652,7 +818,7 @@ fn eval_function_body_inner(
                     scalars: &local_scalars,
                     arrays: &local_arrays,
                     package_symbols: ctx.package_symbols,
-                    structs: ctx.structs,
+                    structs: &local_structs,
                 };
                 if let Ok(v) = eval_expr(init, &local_ctx, cur_pkg) {
                     match v {
@@ -662,25 +828,40 @@ fn eval_function_body_inner(
                         CVal::Array(a) => {
                             local_arrays.insert(var.name, flatten(&a));
                         }
-                        CVal::Struct(_) => {}
+                        CVal::Struct(s) => {
+                            local_structs.insert(var.name, s);
+                        }
                     }
                 }
             } else if var.array_range.is_some() {
                 local_arrays.insert(var.name, Vec::new());
+            } else if let Some(fields) =
+                datatype_struct_fields(ctx.package_symbols, &decl.dtype, cur_pkg)
+            {
+                // `cfg_t cfg;` tanpa init → struct kosong semua field 0.
+                local_structs.insert(
+                    var.name,
+                    fields
+                        .into_iter()
+                        .map(|f| SField::named(f, CVal::Scalar(0)))
+                        .collect(),
+                );
             }
         }
     }
     let mut stmts_scalars = local_scalars;
     let mut stmts_arrays = local_arrays;
+    let mut stmts_structs = local_structs;
     for stmt in &func.stmts {
         if let Some(v) = eval_stmt(
             stmt,
             &mut stmts_scalars,
             &mut stmts_arrays,
+            &mut stmts_structs,
             ctx.package_symbols,
             cur_pkg,
         )? {
-            return Ok(CVal::Scalar(v));
+            return Ok(v);
         }
     }
     Err(format!("function '{}' has no return", func.name.as_str()))
@@ -690,16 +871,17 @@ fn eval_stmt(
     stmt: &Stmt,
     scalars: &mut Scalars,
     arrays: &mut Arrays,
+    structs: &mut HashMap<Symbol, Vec<SField>>,
     package_symbols: &HashMap<Symbol, HashMap<Symbol, PackageItem>>,
     cur_pkg: Option<&str>,
-) -> Result<Option<i64>, String> {
+) -> Result<Option<CVal>, String> {
     macro_rules! eval_in_ctx {
         ($e:expr) => {{
             let pkg_ctx = PkgCtx {
                 scalars: &*scalars,
                 arrays: &*arrays,
                 package_symbols,
-                structs: no_structs(),
+                structs: &*structs,
             };
             eval_expr($e, &pkg_ctx, cur_pkg)
         }};
@@ -707,7 +889,8 @@ fn eval_stmt(
     match stmt {
         Stmt::Block { stmts } | Stmt::NamedBlock { stmts, .. } => {
             for s in stmts {
-                if let Some(v) = eval_stmt(s, scalars, arrays, package_symbols, cur_pkg)? {
+                if let Some(v) = eval_stmt(s, scalars, arrays, structs, package_symbols, cur_pkg)?
+                {
                     return Ok(Some(v));
                 }
             }
@@ -720,9 +903,9 @@ fn eval_stmt(
         } => {
             let c = scalar(eval_in_ctx!(cond)?)?;
             if c != 0 {
-                eval_stmt(true_branch, scalars, arrays, package_symbols, cur_pkg)
+                eval_stmt(true_branch, scalars, arrays, structs, package_symbols, cur_pkg)
             } else if let Some(fb) = false_branch {
-                eval_stmt(fb, scalars, arrays, package_symbols, cur_pkg)
+                eval_stmt(fb, scalars, arrays, structs, package_symbols, cur_pkg)
             } else {
                 Ok(None)
             }
@@ -734,7 +917,7 @@ fn eval_stmt(
             stmts,
         } => {
             if let Some(init) = init {
-                eval_stmt(init, scalars, arrays, package_symbols, cur_pkg)?;
+                eval_stmt(init, scalars, arrays, structs, package_symbols, cur_pkg)?;
             }
             let mut guard = 0usize;
             loop {
@@ -748,12 +931,13 @@ fn eval_stmt(
                     return Err("const loop exceeded iteration limit".to_string());
                 }
                 for s in stmts {
-                    if let Some(v) = eval_stmt(s, scalars, arrays, package_symbols, cur_pkg)? {
+                    if let Some(v) = eval_stmt(s, scalars, arrays, structs, package_symbols, cur_pkg)?
+                    {
                         return Ok(Some(v));
                     }
                 }
                 if let Some(st) = step {
-                    eval_stmt(st, scalars, arrays, package_symbols, cur_pkg)?;
+                    eval_stmt(st, scalars, arrays, structs, package_symbols, cur_pkg)?;
                 }
             }
             Ok(None)
@@ -769,7 +953,8 @@ fn eval_stmt(
                     return Err("const loop exceeded iteration limit".to_string());
                 }
                 for s in stmts {
-                    if let Some(v) = eval_stmt(s, scalars, arrays, package_symbols, cur_pkg)? {
+                    if let Some(v) = eval_stmt(s, scalars, arrays, structs, package_symbols, cur_pkg)?
+                    {
                         return Ok(Some(v));
                     }
                 }
@@ -779,7 +964,8 @@ fn eval_stmt(
             let n = scalar(eval_in_ctx!(count)?)?;
             for _ in 0..n {
                 for s in stmts {
-                    if let Some(v) = eval_stmt(s, scalars, arrays, package_symbols, cur_pkg)? {
+                    if let Some(v) = eval_stmt(s, scalars, arrays, structs, package_symbols, cur_pkg)?
+                    {
                         return Ok(Some(v));
                     }
                 }
@@ -796,8 +982,30 @@ fn eval_stmt(
                     CVal::Array(a) => {
                         arrays.insert(*name, flatten(&a));
                     }
-                    CVal::Struct(_) => {}
+                    CVal::Struct(s) => {
+                        structs.insert(*name, s);
+                    }
                 },
+                Expr::MemberAccess { obj, field } => {
+                    // `cfg.FIELD = v` — update field struct lokal.
+                    if let Expr::Ident { name, .. } = obj.as_ref() {
+                        if let Some(entries) = structs.get_mut(name) {
+                            let mut found = false;
+                            for f in entries.iter_mut() {
+                                if f.name.as_ref() == Some(field) {
+                                    f.val = v.clone();
+                                    found = true;
+                                    break;
+                                }
+                            }
+                            if !found {
+                                entries.push(SField::named(*field, v));
+                            }
+                        } else {
+                            structs.insert(*name, vec![SField::named(*field, v)]);
+                        }
+                    }
+                }
                 Expr::BitSelect { expr, index } => {
                     if let Expr::Ident { name, .. } = expr.as_ref() {
                         let idx = scalar(eval_in_ctx!(index.as_ref())?)?;
@@ -814,9 +1022,9 @@ fn eval_stmt(
         }
         Stmt::Return(Some(e)) => {
             let v = eval_in_ctx!(e)?;
-            Ok(Some(scalar(v)?))
+            Ok(Some(v))
         }
-        Stmt::Return(None) => Ok(Some(0)),
+        Stmt::Return(None) => Ok(Some(CVal::Scalar(0))),
         Stmt::Null => Ok(None),
         _ => Err("unsupported statement in const function".to_string()),
     }

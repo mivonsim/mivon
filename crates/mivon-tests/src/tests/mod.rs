@@ -6092,6 +6092,65 @@ endmodule
 }
 
 #[test]
+fn test_string_methods_mutating() {
+    // LRM 1800 §6.16.1 — method MUTATING: itoa/hextoa/bintoa/octtoa/putc.
+    // Memverifikasi (1) write-back hasil ke receiver string, (2) bentuk
+    // assignment `t = s.itoa(...)` juga berfungsi, dan (3) fix panic F91:
+    // shift-overflow di logicvec_to_string pada string hasil putc yang
+    // diperpanjang dengan NUL (internal NUL) serta indeks negatif putc (no-op).
+    let source = r#"
+module tb;
+    string a, b, c, d, e, f, g, z, y;
+    reg [31:0] flen;
+    initial begin
+        a.itoa(-42);                 // a = "-42"
+        b = "abc";  b.hextoa(255);   // b = "ff"
+        c = "abc";  c.bintoa(5);     // c = "101"
+        d = "abc";  d.octtoa(15);    // d = "17"
+        e = "abc";  e.putc(0, 88);   // e = "Xbc"
+        f = "abc";  f.putc(5, 90);   // f = "abc\0\0Z" (extend dgn NUL)
+        g = "abc";  g.putc(-3, 77);  // indeks negatif -> no-op (g = "abc")
+        flen = f.len();              // 6
+        z = "x";  y = z.itoa(9);     // assignment-form: y="9", z juga "9" (mutating)
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 5).unwrap();
+    let get = |n: &str| -> Vec<u8> {
+        sigs.iter()
+            .find(|(nm, _)| nm == n)
+            .map(|(_, v)| logicvec_to_string(v).into_bytes())
+            .unwrap_or_default()
+    };
+    let flen = sigs
+        .iter()
+        .find(|(n, _)| n == "flen")
+        .map(|(_, v)| v.to_u64())
+        .unwrap_or(0);
+
+    assert_eq!(get("a"), b"-42".to_vec(), "itoa(-42) -> \"-42\"");
+    assert_eq!(get("b"), b"ff".to_vec(), "hextoa(255) -> \"ff\"");
+    assert_eq!(get("c"), b"101".to_vec(), "bintoa(5) -> \"101\"");
+    assert_eq!(get("d"), b"17".to_vec(), "octtoa(15) -> \"17\"");
+    assert_eq!(get("e"), b"Xbc".to_vec(), "putc(0,88) -> \"Xbc\"");
+    // putc(5,90) pada "abc" -> "abc\0\0Z" (panjang 6, NUL internal).
+    assert_eq!(
+        get("f"),
+        vec![b'a', b'b', b'c', 0, 0, b'Z'],
+        "putc(5,90) extend dgn NUL -> \"abc\\0\\0Z\""
+    );
+    assert_eq!(get("g"), b"abc".to_vec(), "putc(-3,..) no-op -> \"abc\"");
+    assert_eq!(flen, 6, "len() setelah putc extend = 6");
+    assert_eq!(get("y"), b"9".to_vec(), "assignment-form y = z.itoa(9) -> \"9\"");
+    assert_eq!(
+        get("z"),
+        b"9".to_vec(),
+        "itoa mutating: receiver z ikut berubah -> \"9\""
+    );
+}
+
+#[test]
 fn test_string_var_decl() {
     let source = r#"
 module tb;
@@ -24448,6 +24507,42 @@ fn test_mv_string_methods_end_to_end() {
     assert_eq!(get("ok"), 1, "semua lolos (STR_OK)");
 }
 
+/// F91 — method string MUTATING LRM 1800 §6.16.1 (itoa/hextoa/bintoa/octtoa/
+/// putc) end-to-end lewat transpile .mv → SV → simulasi. Memverifikasi
+/// write-back ke receiver, bentuk assignment, dan fix panic F91.
+#[test]
+fn test_mv_string_mutate_end_to_end() {
+    let src = include_str!("../../../../examples/mv/string_mutate.mv");
+    let r = mivon_mv::transpile(src, "string_mutate").expect("transpile .mv OK");
+    let combined = format!("{}\n{}", r.svh, r.sv);
+    let sigs =
+        simulate_signals(&combined, 100).expect("string_mutate harus simulasi bersih");
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    let get_s = |n: &str| -> Vec<u8> {
+        sigs.iter()
+            .find(|(nm, _)| nm == n)
+            .map(|(_, v)| logicvec_to_string(v).into_bytes())
+            .unwrap_or_default()
+    };
+    // Aggregat: ok = 1 (MUT_OK) berarti semua periksa internal lolos.
+    assert_eq!(get("ok"), 1, "semua lolos (MUT_OK)");
+    // Periksa juga nilai string aktual (bukan hanya aggregate).
+    assert_eq!(get_s("a"), b"-42".to_vec(), "a.itoa(-42) = \"-42\"");
+    assert_eq!(get_s("b"), b"ff".to_vec(), "b.hextoa(255) = \"ff\"");
+    assert_eq!(get_s("c"), b"101".to_vec(), "c.bintoa(5) = \"101\"");
+    assert_eq!(get_s("d"), b"17".to_vec(), "d.octtoa(15) = \"17\"");
+    assert_eq!(get_s("e"), b"Xbc".to_vec(), "e.putc(0,88) = \"Xbc\"");
+    assert_eq!(
+        get_s("f"),
+        vec![b'a', b'b', b'c', 0, 0, b'Z'],
+        "f.putc(5,90) extend dgn NUL = \"abc\\0\\0Z\""
+    );
+    assert_eq!(get_s("g"), b"abc".to_vec(), "g.putc(-3,..) no-op = \"abc\"");
+    assert_eq!(get("flen"), 6, "f.len() setelah putc extend = 6");
+    assert_eq!(get_s("y"), b"9".to_vec(), "assignment-form y = z.itoa(9) = \"9\"");
+    assert_eq!(get_s("z"), b"9".to_vec(), "itoa mutating: z ikut \"9\"");
+}
+
 /// Regresi bug #37: rantai `&&`/`||` panjang (16 operan) TIDAK boleh
 /// stack-overflow pada jalur evaluator rekursif (`simulate_signals` →
 /// `EngineFlags::default()`, `use_packed_eval=false`). Sebelum fix, frame
@@ -25173,4 +25268,90 @@ endmodule
 "#;
     let (r2, diags2) = elaborate(ok);
     assert!(r2.is_ok(), "step konstan harus lolos: {diags2:?}");
+}
+
+#[test]
+fn test_struct_param_zero_cast_cfg_empty() {
+    // Bug CVA6: `localparam cfg_t CFG_EMPTY = cfg_t'(0)` harus jadi struct
+    // zero (semua field 0) agar `Cfg.XLEN`/`Cfg.FOO` bisa const-eval.
+    // Sebelum fix: "member access not allowed in constant expression".
+    let source = r#"
+package p;
+  typedef struct packed { int unsigned XLEN; bit FOO; } cfg_t;
+  localparam cfg_t CFG_EMPTY = cfg_t'(0);
+endpackage
+module m import p::*;
+#(parameter cfg_t Cfg = CFG_EMPTY)
+(
+  input logic clk_i
+);
+  // XLEN=0 → width fallback, tapi elaborasi tidak boleh skip module.
+  // Pakai FOO (1-bit) untuk generate-if yang pasti bisa di-eval.
+  generate
+    if (Cfg.FOO == 0) begin : g0
+      logic ok;
+    end else begin : g1
+      logic ng;
+    end
+  endgenerate
+  initial $display("foo=%0d", Cfg.FOO);
+endmodule
+module top;
+  logic clk;
+  m u (.clk_i(clk));
+  initial begin $finish; end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 20).unwrap();
+    assert!(
+        sigs.iter().any(|(n, _)| n == "clk"),
+        "top harus punya clk"
+    );
+}
+
+#[test]
+fn test_struct_param_func_return_cfg() {
+    // Bug CVA6: `localparam cfg_t C = build_config(U)` — fungsi package
+    // return struct harus bisa di-const-eval (arg struct, local `cfg.F`
+    // assign, `return cfg`). Sebelum fix: "member access not allowed".
+    let source = r#"
+package cfg_pkg;
+  typedef struct packed { int unsigned XLEN; bit IS64; bit FOO; } cfg_t;
+  typedef struct packed { int unsigned XLEN; bit FOO; } user_cfg_t;
+  function automatic cfg_t build_config(user_cfg_t u);
+    bit is64 = (u.XLEN == 64) ? 1'b1 : 1'b0;
+    cfg_t cfg;
+    cfg.XLEN = u.XLEN;
+    cfg.IS64 = is64;
+    cfg.FOO = u.FOO;
+    return cfg;
+  endfunction
+  localparam user_cfg_t U = '{XLEN:64, FOO:1};
+  localparam cfg_t C = build_config(U);
+endpackage
+module m import cfg_pkg::*;
+#(parameter cfg_t Cfg = C)
+(
+  input logic clk_i
+);
+  generate
+    if (Cfg.IS64) begin : g64
+      logic ok64;
+    end else begin : g32
+      logic ok32;
+    end
+  endgenerate
+  initial $display("xlen=%0d is64=%0d", Cfg.XLEN, Cfg.IS64);
+endmodule
+module top;
+  logic clk;
+  m u (.clk_i(clk));
+  initial begin $finish; end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 20).unwrap();
+    assert!(
+        sigs.iter().any(|(n, _)| n == "clk"),
+        "top harus punya clk"
+    );
 }
