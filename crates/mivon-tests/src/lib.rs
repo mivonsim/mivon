@@ -87,5 +87,12 @@ mod timescale_session_tests;
 #[cfg(test)]
 mod realtime_tests;
 
+/// Regresi parser untuk konstruk yang gagal saat compile CVA6
+/// (`mivon --filelist cva6/cva6.f`): dimensi array range `[msb:lsb]`,
+/// keyword `none`/`some` sebagai identifier, dan parameter override bertipe
+/// `#(.P(v))` pada deklarasi variabel.
+#[cfg(test)]
+mod cva6_parse_regression_tests;
+
 // Guided structure-aware fuzzer (metode test fuzzing "tidak buta"):
 // grammar-aware generation + coverage feedback + differential oracle.

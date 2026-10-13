@@ -1,5 +1,6 @@
 use super::super::SequenceAttempt;
 use super::super::SimulationEngine;
+use crate::simulator::engine::engine_utils::{evaluate_string_method, is_mutating_string_method};
 use crate::simulator::types::*;
 use crate::simulator::util::*;
 use mivon_core::diagnostics::DiagCode;
@@ -964,6 +965,23 @@ impl SimulationEngine {
                                     args,
                                     with_clause.as_deref(),
                                 )?;
+                                continue;
+                            }
+                            // LRM 1800 §6.16.1 — method string pada signal string
+                            // (getc/ato*/atoreal non-mutating; itoa/hextoa/bintoa/
+                            // octtoa/putc MUTATING → write-back ke receiver).
+                            if sig.is_string {
+                                let lv = self.state.read_signal(*id);
+                                let s = logicvec_to_string(&lv);
+                                let arg_vals: Vec<LogicVec> = args
+                                    .iter()
+                                    .map(|a| self.evaluate_expr(a))
+                                    .collect::<Result<_, _>>()?;
+                                let result =
+                                    evaluate_string_method(&s, method.as_str(), &arg_vals)?;
+                                if is_mutating_string_method(method.as_str()) {
+                                    self.state.write_signal(*id, result.clone());
+                                }
                                 continue;
                             }
                             // Auto-create object for class/covergroup variables
@@ -2794,6 +2812,23 @@ impl SimulationEngine {
                                     args,
                                     with_clause.as_deref(),
                                 )?;
+                                continue;
+                            }
+                            // LRM 1800 §6.16.1 — method string pada signal string
+                            // (getc/ato*/atoreal non-mutating; itoa/hextoa/bintoa/
+                            // octtoa/putc MUTATING → write-back ke receiver).
+                            if sig.is_string {
+                                let lv = self.state.read_signal(*id);
+                                let s = logicvec_to_string(&lv);
+                                let arg_vals: Vec<LogicVec> = args
+                                    .iter()
+                                    .map(|a| self.evaluate_expr(a))
+                                    .collect::<Result<_, _>>()?;
+                                let result =
+                                    evaluate_string_method(&s, method.as_str(), &arg_vals)?;
+                                if is_mutating_string_method(method.as_str()) {
+                                    self.state.write_signal(*id, result.clone());
+                                }
                                 continue;
                             }
                             if let Some(ref cn) = sig.class_name {

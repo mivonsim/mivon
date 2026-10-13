@@ -771,6 +771,20 @@ impl Parser {
                 self.advance();
                 Ok(Symbol::intern("option"))
             }
+            // `none`/`some` adalah keyword SV (dipakai sebagai nama bin di
+            // covergroup), namun kerap digunakan sebagai nama field struct /
+            // nama variabel di DV code (cva6: `fus_busy[i].none`, `logic none,
+            // load, ...`). Terima sebagai identifier di posisi identifier.
+            // Konteks covergroup tetap menangani Token::None/Some_ di match arm
+            // tersendiri (stmt.rs) sebelum mencapai expect_ident ini.
+            Token::None => {
+                self.advance();
+                Ok(Symbol::intern("none"))
+            }
+            Token::Some_ => {
+                self.advance();
+                Ok(Symbol::intern("some"))
+            }
             _ => Err(self.err(format!("expected identifier, found {}", self.peek()))),
         }
     }
@@ -2130,6 +2144,41 @@ impl Parser {
                                     self.expect(Token::RBrack)?;
                                     is_associative = true;
                                     assoc_key_type = Some(DataType::Int);
+                                } else if self.peek_bracket_has_range_colon() {
+                                    // `[msb:lsb]` — fixed unpacked range dimension
+                                    // (NEW): sebelumnya hanya `[N]` yang didukung,
+                                    // range `[msb:lsb]` gagal "expected RBrack,
+                                    // found Colon" (cva6: hpdcache_mem_resp_r_t x [1:0]).
+                                    match self.parse_range() {
+                                        Ok(Some(er)) => {
+                                            if let (Ok(m), Ok(l)) = (
+                                                const_eval_simple(&er.msb),
+                                                const_eval_simple(&er.lsb),
+                                            ) {
+                                                array_range = Some(Range {
+                                                    msb: m as usize,
+                                                    lsb: l as usize,
+                                                });
+                                            } else {
+                                                // Range non-const — simpan ukuran
+                                                // (|msb-lsb|+1) sebagai size expr.
+                                                array_size_expr = Some(Expr::BinaryOp {
+                                                    op: BinaryOp::Add,
+                                                    lhs: Box::new(Expr::BinaryOp {
+                                                        op: BinaryOp::Sub,
+                                                        lhs: Box::new(er.msb.clone()),
+                                                        rhs: Box::new(er.lsb.clone()),
+                                                    }),
+                                                    rhs: Box::new(Expr::Value(Value::Decimal(1))),
+                                                });
+                                            }
+                                        }
+                                        _ => {
+                                            self.advance();
+                                            let _ = self.parse_expr(0);
+                                            let _ = self.expect(Token::RBrack);
+                                        }
+                                    }
                                 } else {
                                     // `[N]` — unpacked array size
                                     self.advance();

@@ -785,16 +785,29 @@ fn eval_function_body_inner(
     let mut stmts_scalars = local_scalars;
     let mut stmts_arrays = local_arrays;
     let mut stmts_structs = local_structs;
-    for stmt in &func.stmts {
-        if let Some(v) = eval_stmt(
+    for (si, stmt) in func.stmts.iter().enumerate() {
+        match eval_stmt(
             stmt,
             &mut stmts_scalars,
             &mut stmts_arrays,
             &mut stmts_structs,
             ctx.package_symbols,
             cur_pkg,
-        )? {
-            return Ok(v);
+        ) {
+            Ok(Some(v)) => return Ok(v),
+            Ok(None) => {}
+            Err(e) => {
+                if std::env::var("DBG_FUNCDEF").is_ok() {
+                    eprintln!(
+                        "DBG-FUNCSTMT {}#{} err={} stmt={:?}",
+                        func.name.as_str(),
+                        si,
+                        e,
+                        stmt
+                    );
+                }
+                return Err(e);
+            }
         }
     }
     Err(format!("function '{}' has no return", func.name.as_str()))

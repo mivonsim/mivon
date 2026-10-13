@@ -280,29 +280,37 @@ pub fn is_signed_expr(expr: &IrExpr, signals: &[SignalInfo]) -> bool {
 pub fn logicvec_to_string(lv: &LogicVec) -> String {
     let mut s = String::new();
     let mut i = 0;
-    // F19: berhenti di byte NUL pertama (C-style) — string_to_logicvec
-    // menambahkan null terminator (8 bit 0) di akhir; tanpa pemotongan ini
-    // path instance UVM jadi `uvm_test_top\u0000.agent` dan config_db
-    // wildcard matching gagal karena suffix `\0` ikut dibandingkan.
-    while i + 7 < lv.width {
+    // Iterasi per 8-bit (byte) sampai habis atau sisa < 8 bit. Konsumsi
+    // penuh tiap byte (`i + 8 <= lv.width`) agar sisa (residual) selalu < 8
+    // bit — ini mencegah shift-overflow di blok residual (`1 << j` pada u8
+    // hanya valid untuk j < 8).
+    while i + 8 <= lv.width {
         let mut byte = 0u8;
         for j in 0..8 {
             if lv.bits[i + j] == LogicVal::One {
-                byte |= 1 << j;
+                byte |= 1u8 << j;
             }
         }
-        if byte == 0 {
+        // F19: henti di byte NUL PENUTUP (C-style terminator). Hanya byte NUL
+        // terakhir yang menghentikan — `string_to_logicvec` selalu mengakhiri
+        // string dg NUL tunggal, sehingga ini memotong suffix `\0` (penting
+        // agar wildcard config_db UVM cocok). NUL DI TENGAH (mis. hasil
+        // `putc(i, c)` dg i > len yang memanjangkan dgn NUL) TETAP dipertahankan
+        // sesuai semantik SV `%s` (NUL internal tak terlihat saat display).
+        let is_last_byte = i + 8 == lv.width;
+        if byte == 0 && is_last_byte {
             break;
         }
         s.push(byte as char);
         i += 8;
     }
-    // Remaining bits (last partial byte)
+    // Sisa < 8 bit (hanya terjadi bila lv.width tak kelipatan 8) — tangani
+    // tanpa overflow shift: batasi j ke < 8.
     if i < lv.width {
         let mut byte = 0u8;
-        for j in 0..(lv.width - i) {
+        for j in 0..(lv.width - i).min(8) {
             if lv.bits[i + j] == LogicVal::One {
-                byte |= 1 << j;
+                byte |= 1u8 << j;
             }
         }
         if byte != 0 {

@@ -1,0 +1,60 @@
+// F91 — Method string MUTATING LRM 1800 §6.16.1: itoa / hextoa / bintoa /
+// octtoa / putc. Sebelumnya method ini "not supported" (buglog #44 follow-up)
+// — kini diubah ke full support: hasil write-back ke receiver string, bentuk
+// assignment `t = s.itoa(...)` juga berfungsi, dan fix panic F91 (shift-
+// overflow di logicvec_to_string pada string hasil putc yang diperpanjang
+// dengan NUL / internal NUL, serta indeks negatif putc = no-op).
+//
+// Jalankan:
+//   mivon mgen examples/mv/string_mutate.mv
+//   mivon sim  examples/mv/string_mutate.mv --top tb_mut -T 100
+//
+// Harapan:
+//   MUT a=-42 b=ff c=101 d=17 e=Xbc f=abc^@^@Z flen=6 g=abc
+//   MUT y=9 z=9
+//   MUT_OK
+
+module tb_mut {
+    sig a, b, c, d, e, f, g, z, y : string = ""
+    sig flen : logic[31:0] = 0
+    sig ok : bit = 0
+
+    initial {
+        a.itoa(-42)              // a = "-42"
+        b = "abc"
+        b.hextoa(255)            // b = "ff"
+        c = "abc"
+        c.bintoa(5)              // c = "101"
+        d = "abc"
+        d.octtoa(15)             // d = "17"
+        e = "abc"
+        e.putc(0, 88)            // e = "Xbc"
+        f = "abc"
+        f.putc(5, 90)            // f = "abc\0\0Z" (extend dgn NUL)
+        g = "abc"
+        g.putc(-3, 77)           // indeks negatif -> no-op (g = "abc")
+        flen = f.len()           // 6
+        z = "x"
+        y = z.itoa(9)            // assignment-form: y="9", z juga "9"
+
+        $display("MUT a=%s b=%s c=%s d=%s e=%s f=%s flen=%0d g=%s", a, b, c, d, e, f, flen, g)
+        $display("MUT y=%s z=%s", y, z)
+
+        ok = 1
+        if (a != "-42")   { ok = 0 }
+        if (b != "ff")    { ok = 0 }
+        if (c != "101")   { ok = 0 }
+        if (d != "17")    { ok = 0 }
+        if (e != "Xbc")   { ok = 0 }
+        if (f.len() != 6) { ok = 0 }
+        if (g != "abc")   { ok = 0 }
+        if (y != "9")     { ok = 0 }
+        if (z != "9")     { ok = 0 }
+        if (ok) {
+            $display("MUT_OK")
+        } else {
+            $display("MUT_BROKEN")
+        }
+        $finish
+    }
+}

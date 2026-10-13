@@ -288,6 +288,19 @@ impl Parser {
                         type_name
                     )));
                 }
+                // Skip optional type parameter override `#(.P(v), ...)` that may
+                // appear BETWEEN the type name and the variable name, e.g.
+                // `automatic instr_trace_item #(.CVA6Cfg(CVA6Cfg), ...) iti =
+                // new (...)`. Parameter values diabaikan untuk
+                // DataType::UserDefined (sama seperti typedef parametrik di
+                // bawah). Tanpa ini parser salah masuk ke parse ekspresi dan
+                // gagal "expected expression, found Dot" (cva6 instr_tracer.sv).
+                if self.peek() == &Token::Hash {
+                    self.advance(); // '#'
+                    if self.peek() == &Token::LParen {
+                        self.skip_balanced_paren_light()?;
+                    }
+                }
                 let decl_expr_range =
                     if self.peek() == &Token::LBrack && self.peek_ahead(1) != &Token::Star {
                         self.parse_range()?
@@ -408,7 +421,16 @@ impl Parser {
         loop {
             let name_tok = self.peek().clone();
             match &name_tok {
-                Token::Ident(name) => {
+                Token::Ident(_) | Token::None | Token::Some_ => {
+                    // `none`/`some` adalah keyword SV namun valid sebagai nama
+                    // variabel/field (cva6: `logic none, load, ...`). Terima di
+                    // sini selain `Ident` biasa (simetris dengan expect_ident).
+                    let name = match &name_tok {
+                        Token::Ident(s) => *s,
+                        Token::None => Symbol::intern("none"),
+                        Token::Some_ => Symbol::intern("some"),
+                        _ => unreachable!(),
+                    };
                     self.advance();
                     let mut is_dynamic = false;
                     let mut is_queue = false;
@@ -956,7 +978,7 @@ impl Parser {
                         None
                     };
                     names.push(DeclVar {
-                        name: *name,
+                        name,
                         range: var_range,
                         expr_range: var_expr_range,
                         array_range,
@@ -1249,13 +1271,47 @@ impl Parser {
                     self.expect(Token::RBrack)?;
                 }
             }
-            self.skip_semi();
             members.push(StructMember {
                 name,
-                dtype: Box::new(member_type),
-                range,
-                expr_range,
+                dtype: Box::new(member_type.clone()),
+                range: range.clone(),
+                expr_range: expr_range.clone(),
             });
+            // Nama member ber-koma berbagi tipe SAMA (`logic a, b, c;` — valid
+            // di body struct/union per LRM 1800 §7.2). Tanpa ini `logic none,
+            // load, store, ...` di cva6 issue_read_operands.sv gagal "expected
+            // type in struct/union member" (parser hanya mengharap 1 nama per
+            // tipe). Tiap nama berikutnya didaftarkan sebagai member tersendiri
+            // dgn tipe/range/dims yang sama.
+            while self.peek() == &Token::Comma {
+                self.advance(); // ','
+                let extra_name = self.expect_ident()?;
+                while self.peek() == &Token::LBrack {
+                    if self.peek_is_packed_dim() {
+                        let _ = self.parse_range()?;
+                    } else if self.peek_ahead(1) == &Token::RBrack {
+                        self.advance();
+                        self.advance();
+                    } else if self.peek_ahead(1) == &Token::Dollar
+                        && self.peek_ahead(2) == &Token::RBrack
+                    {
+                        self.advance();
+                        self.advance();
+                        self.advance();
+                    } else {
+                        self.advance();
+                        let _ = self.parse_expr(0)?;
+                        self.expect(Token::RBrack)?;
+                    }
+                }
+                members.push(StructMember {
+                    name: extra_name,
+                    dtype: Box::new(member_type.clone()),
+                    range: range.clone(),
+                    expr_range: expr_range.clone(),
+                });
+            }
+            self.skip_semi();
         }
     }
 
