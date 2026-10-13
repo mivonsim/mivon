@@ -25370,3 +25370,32 @@ endmodule
     let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
     assert_eq!(get("flag"), 1, "V harus 1");
 }
+
+#[test]
+fn test_pkg_struct_member_access_qualified() {
+    // Member struct package via qualified path `pkg::CFG.XLEN` di default
+    // param module (pola CVA6: `cva6_config_pkg::cva6_cfg.XLEN`). Sebelum
+    // fix: expr_base_key tak kenal ScopedIdent → fallback lebar 1.
+    let source = r#"
+package cfg_pkg;
+  typedef struct packed { int unsigned XLEN; bit FOO; } cfg_t;
+  localparam cfg_t CFG = '{XLEN:64, FOO:1};
+endpackage
+module top ();
+  localparam int XL = cfg_pkg::CFG.XLEN;
+  logic [XL-1:0] wide;
+  logic flag;
+  initial begin
+    wide = '1;
+    if (cfg_pkg::CFG.FOO) flag = 1'b1; else flag = 1'b0;
+    $finish;
+  end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 20).unwrap();
+    let wide = &sigs.iter().find(|(s, _)| s == "wide").unwrap().1;
+    assert_eq!(wide.width, 64, "XL=cfg_pkg::CFG.XLEN harus 64");
+    assert_eq!(wide.to_u64(), u64::MAX, "wide='1 harus semua 1");
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    assert_eq!(get("flag"), 1, "FOO harus 1");
+}

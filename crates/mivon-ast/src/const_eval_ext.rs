@@ -356,6 +356,12 @@ pub fn eval_expr(e: &Expr, ctx: &PkgCtx, cur_pkg: Option<&str>) -> Result<CVal, 
                     ));
                 }
             }
+            // Cast array (mis. `1024'({...})` di cva6_cfg): pertahankan Array,
+            // jangan scalar() (yang error "expected scalar constant" dan
+            // menggagalkan seluruh struct literal).
+            if let CVal::Array(_) = inner {
+                return Ok(inner);
+            }
             Ok(scalar(inner).map(CVal::Scalar)?)
         }
         Expr::CastWidth { expr, .. } => eval_expr(expr, ctx, cur_pkg),

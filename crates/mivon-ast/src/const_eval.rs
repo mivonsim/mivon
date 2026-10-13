@@ -1284,6 +1284,11 @@ fn expr_base_key(
 ) -> Option<String> {
     match expr {
         Expr::Ident { name, .. } => Some(name.as_str().to_string()),
+        // `pkg::name` — member key `pkg::name.field` (mis.
+        // `cva6_config_pkg::cva6_cfg.XLEN` di default param module).
+        Expr::ScopedIdent { package, item, .. } => {
+            Some(format!("{}::{}", package.as_str(), item.as_str()))
+        }
         Expr::BitSelect { expr: inner, index } => {
             let base = expr_base_key(inner, param_vals)?;
             let idx = const_eval_with_params(index, param_vals).ok()?;
