@@ -25437,3 +25437,27 @@ endmodule
     let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
     assert_eq!(get("flag"), 1, "FOO harus 1");
 }
+
+#[test]
+fn test_width_generic_pkg_func_idx_width() {
+    // Fungsi package generik di konteks lebar sinyal
+    // (`logic [idx_width(D)-1:0]` ala cf_math_pkg CVA6) — inlining penuh
+    // via evaluator konstanta, bukan allowlist per-nama. Sebelum fix:
+    // "non-constant expression in parameter context" → module di-skip.
+    let source = r#"
+package math_pkg;
+  function automatic integer unsigned idx_width(input integer unsigned n);
+    return (n > 32'd1) ? unsigned'($clog2(n)) : 32'd1;
+  endfunction
+endpackage
+module top import math_pkg::*;
+#(parameter int D = 3) ();
+  logic [idx_width(D)-1:0] usage;
+  initial begin usage = '1; $finish; end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 20).unwrap();
+    let usage = &sigs.iter().find(|(s, _)| s == "usage").unwrap().1;
+    assert_eq!(usage.width, 2, "idx_width(3) harus 2");
+    assert_eq!(usage.to_u64(), 3, "usage='1 harus 2'b11");
+}
