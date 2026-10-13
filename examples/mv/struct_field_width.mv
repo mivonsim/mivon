@@ -1,0 +1,45 @@
+// F87 — Lebar field struct dari TIPE, bukan range mentah (bug #41).
+//
+// Member struct TANPA range eksplisit (`y : int`) lebarnya dari TIPE (32),
+// bukan default 1. PRA-FIX offset akumulasi memakai `range.unwrap_or(1)` →
+// member berikutnya (MSB) salah offset → `e.x` baca bit yang salah (21 bukan 7)
+// dan lebar total struct salah. Kini `DataType`/`resolve_type_width` &
+// akumulasi offset struct_fields memakai lebar hasil resolve tipe.
+//
+// Jalankan:
+//   mivon mgen examples/mv/struct_field_width.mv
+//   mivon sim  examples/mv/struct_field_width.mv --top tb_sfw -T 10
+//
+// Harapan:
+//   SFW sx=7 sy=42
+//   SFW_OK
+
+packed struct P {
+    x : logic[7:0],
+    y : int
+}
+
+module tb_sfw {
+    sig e  : P
+    sig sx : logic[31:0]
+    sig sy : logic[31:0]
+    sig ok : bit = 0
+
+    initial {
+        // struct = {x (MSB, 8-bit), y (LSB, 32-bit)} → lebar 40
+        e  = '{8'd7, 32'd42}
+        sx = e.x
+        sy = e.y
+        $display("SFW sx=%0d sy=%0d", sx, sy)
+
+        ok = 1
+        if (sx != 7)  { ok = 0 }
+        if (sy != 42) { ok = 0 }
+        if (ok) {
+            $display("SFW_OK")
+        } else {
+            $display("SFW_BROKEN")
+        }
+        $finish
+    }
+}

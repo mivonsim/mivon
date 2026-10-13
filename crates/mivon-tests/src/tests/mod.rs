@@ -1196,6 +1196,36 @@ endmodule
     assert_eq!(get("i0"), 2, "find_index with (item.x == 9) → 2");
 }
 
+/// Bug #41: member struct TANPA range eksplisit (`int y;`) lebarnya dari TIPE
+/// (32), bukan 1. PRA-FIX offset akumulasi struct_fields + lebar total struct
+/// memakai `range.unwrap_or(1)` → member MSB (`x`) salah offset → `e.x` baca
+/// bit yang salah (21 bukan 7) dan `q.sum with (item.x)` salah (150 bukan 14).
+#[test]
+fn test_inline_struct_type_width_member_offsets() {
+    let source = r#"
+module tb_inl;
+    struct packed { logic [7:0] x; int y; } q[$];
+    struct packed { logic [7:0] x; int y; } e;
+    int s, sx, i0;
+    int iq[$];
+    initial begin
+        q = '{'{8'd5, 32'd100}, '{8'd9, 32'd200}};
+        s  = q.sum with (item.x);
+        iq = q.find_index with (item.x == 9);
+        i0 = iq[0];
+        e = '{8'd7, 32'd42};
+        sx = e.x;
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 5).unwrap();
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    assert_eq!(get("sx"), 7, "e.x (member MSB, offset 32) = 7");
+    assert_eq!(get("s"), 14, "sum with (item.x) = 5+9");
+    assert_eq!(get("i0"), 1, "find_index with (item.x == 9) = 1");
+}
+
 /// Review F41: `min`/`max` mengembalikan **elemen** (bukan nilai kunci
 /// `with`), dan `find_last`/`find_last_index` mengembalikan **hanya satu**
 /// kecocokan terakhir (LRM 1800 §7.12.1).
@@ -24125,6 +24155,21 @@ fn test_mv_array_item_field_end_to_end() {
     assert_eq!(get("mx"), 2334, "max with (item.y) → elemen pemenang");
     assert_eq!(get("i0"), 2, "find_index with (item.x == 9)");
     assert_eq!(get("ok"), 1, "semua lolos (ITF_OK)");
+}
+
+/// E2E `.mv` (bug #41): member struct bertipe `int` (lebar dari TIPE, bukan
+/// range) — `e.x`/`e.y` harus baca bit yang benar.
+#[test]
+fn test_mv_struct_field_width_end_to_end() {
+    let src = include_str!("../../../../examples/mv/struct_field_width.mv");
+    let r = mivon_mv::transpile(src, "struct_field_width").expect("transpile .mv OK");
+    let combined = format!("{}\n{}", r.svh, r.sv);
+    let sigs =
+        simulate_signals(&combined, 10).expect("struct_field_width harus simulasi bersih");
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    assert_eq!(get("sx"), 7, "e.x = 7 (member MSB)");
+    assert_eq!(get("sy"), 42, "e.y = 42 (member LSB, 32-bit)");
+    assert_eq!(get("ok"), 1, "semua lolos (SFW_OK)");
 }
 
 /// Regresi bug #37: rantai `&&`/`||` panjang (16 operan) TIDAK boleh

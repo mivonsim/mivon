@@ -296,6 +296,24 @@ impl Elaborator {
                 );
                 Ok(1)
             }
+            // Struct/union: lebar = SUM (struct) / MAX (union) lebar field yang
+            // sudah di-resolve (typedef/enum/int), BUKAN `DataType::width()`
+            // yang memakai range mentah `unwrap_or(1)` → member tanpa range
+            // eksplisit (`int y;`, `byte b;`) salah jadi 1. Harus konsisten
+            // dengan `struct_fields` (offset member) agar `sig.x` /
+            // `with (item.x)` memotong bit yang benar.
+            DataType::StructType { .. } | DataType::UnionType { .. } => {
+                let fields = self.compute_struct_fields(dtype);
+                if fields.is_empty() {
+                    return Ok(dtype.width());
+                }
+                let w = if matches!(dtype, DataType::UnionType { .. }) {
+                    fields.iter().map(|f| f.width).max().unwrap_or(1)
+                } else {
+                    fields.iter().map(|f| f.width).sum()
+                };
+                Ok(w.max(1))
+            }
             DataType::Signed(inner) => self.resolve_type_width(inner),
             _ => Ok(dtype.width()),
         }

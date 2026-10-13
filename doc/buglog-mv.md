@@ -556,6 +556,33 @@ bug di mivon utama (parser/elaborator/simulator). Status: ✅ fixed / ⏳ open.
       `examples/mv/array_item_field.mv` → `ITF_OK`; test
       `test_mv_array_item_field_end_to_end`.
 
+41. **Lebar field struct dari TIPE salah (member tanpa range eksplisit) — bug
+    inti, ditemukan auto-review F86 (#40).** Member struct yang lebarnya dari
+    TIPE, bukan range (`int y;`, `byte b;`, enum/typedef), dihitung **1** oleh
+    akumulasi offset struct_fields DAN `DataType::width()`. Akibatnya member
+    berikutnya (MSB) salah offset → `e.x` baca bit yang salah; lebar total
+    struct pun salah → potongan bit di luar batas = X.
+    - **Reproduksi:** `struct packed { logic[7:0] x; int y; } e; e='{7,42};`
+      → `e.x` = **21** (harus 7), `q.sum with (item.x)` = **150** (harus 14),
+      `find_index with (item.x==9)` = 0 (harus 1). Terkena juga typedef struct
+      (`typedef ... p_t`) karena `typedef_field_map` memakai akumulasi sama.
+    - **Fix (elaborator saja, 3 titik — semua memakai lebar hasil resolve):**
+      1. `elaborator/mod.rs` (2 tempat: struct_fields signal + `typedef_field_map`):
+         `offset += m.range.unwrap_or(1)` → `offset += f.width.max(1)` (lebar
+         `StructFieldInfo` hasil `struct_field_from_member`, yang sudah resolve
+         typedef/enum/int). Menyamai `compute_struct_fields_depth`.
+      2. `elaborator/types.rs` `resolve_type_width`: arm baru `StructType |
+         UnionType` → lebar = SUM (struct) / MAX (union) lebar field hasil
+         `compute_struct_fields` (konsisten dgn offset member), bukan
+         `DataType::width()` (range mentah). Fallback `dtype.width()` hanya bila
+         field kosong.
+    - **Tidak menyentuh `DataType::width()` (mivon-ast)** — context-free, tak
+      bisa resolve typedef; sumber kebenaran = elaborator.
+    - Verifikasi: `test_inline_struct_type_width_member_offsets` (baru, SV) —
+      `sx`=7, `s`=14, `i0`=1 (PRA-FIX 21/150/0). Demo e2e `.mv`
+      `examples/mv/struct_field_width.mv` → `SFW_OK`; test
+      `test_mv_struct_field_width_end_to_end`. Full workspace test hijau.
+
 ## ⏳ Open
 
 _(Tidak ada item open. Caveat chained method temporer & iverilog `with`

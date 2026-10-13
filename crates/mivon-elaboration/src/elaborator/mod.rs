@@ -4120,9 +4120,15 @@ impl Elaborator {
                                     let mut offset = 0usize;
                                     let members_rev: Vec<_> = members.iter().rev().collect();
                                     for m in &members_rev {
-                                        sig.struct_fields
-                                            .push(self.struct_field_from_member(m, offset));
-                                        offset += m.range.as_ref().map(|r| r.width()).unwrap_or(1);
+                                        let f = self.struct_field_from_member(m, offset);
+                                        // Lebar dari `f.width` (bukan range mentah):
+                                        // member tanpa range eksplisit (`int y;`,
+                                        // `byte b;`, enum/typedef) lebarnya dari
+                                        // TIPE, bukan 1. PRA-FIX `unwrap_or(1)`
+                                        // membuat offset field berikutnya salah →
+                                        // `e.x` (member MSB) baca bit yang salah.
+                                        offset += f.width.max(1);
+                                        sig.struct_fields.push(f);
                                     }
                                     sig.struct_fields.reverse();
                                 }
@@ -4770,8 +4776,11 @@ impl Elaborator {
                                     let mut offset = 0usize;
                                     let members_rev: Vec<_> = members.iter().rev().collect();
                                     for m in &members_rev {
-                                        fields.push(self.struct_field_from_member(m, offset));
-                                        offset += m.range.as_ref().map(|r| r.width()).unwrap_or(1);
+                                        let f = self.struct_field_from_member(m, offset);
+                                        // Sama seperti di atas: pakai lebar field
+                                        // hasil resolve tipe, bukan range mentah.
+                                        offset += f.width.max(1);
+                                        fields.push(f);
                                     }
                                     fields.reverse();
                                 }
