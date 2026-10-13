@@ -1,4 +1,5 @@
 use super::super::SimulationEngine;
+use crate::simulator::engine::engine_utils::{evaluate_string_method, is_mutating_string_method};
 use crate::simulator::types::*;
 use crate::simulator::util::*;
 use crate::simulator::value::*;
@@ -753,19 +754,39 @@ impl SimulationEngine {
                 if self.design.module_functions.contains_key(name) {
                     return self.execute_module_function_call(name, &arg_vals);
                 }
+                // Plain-name via import (`is_bc(x)` dengan `import fpkg::*`):
+                // module_functions memakai key qualified (`fpkg::is_bc`).
+                // Cari akhiran `::name` yang UNIK; ambigu/tak ada → error
+                // keras di bawah (bukan 0 sunyi).
+                if !name.as_str().contains("::") {
+                    let suffix = format!("::{}", name.as_str());
+                    let mut found: Option<Symbol> = None;
+                    for k in self.design.module_functions.keys() {
+                        if k.as_str().ends_with(suffix.as_str()) {
+                            if found.is_some() {
+                                // Ambigu (dua package definisikan nama sama):
+                                // perlakukan sebagai tak dikenal (error keras).
+                                found = None;
+                                break;
+                            }
+                            found = Some(*k);
+                        }
+                    }
+                    if let Some(q) = found {
+                        return self.execute_module_function_call(&q, &arg_vals);
+                    }
+                }
                 // F20: gunakan posisi call terakhir yang diketahui (bukan 0,0)
-                // agar warning punya file:line:col.
+                // agar error punya file:line:col. Fungsi tak dikenal =
+                // ERROR keras (bukan null default 0): hasil 0 sunyi
+                // menyesatkan — simulasi terlihat lolos padahal salah hitung.
                 let (w_line, w_col) = self.cur_src_pos();
-                self.diag_warn_at(
+                return Err(self.diag_error_at(
                     DiagCode::NotImplemented,
-                    format!(
-                        "unknown function '{}' in method context; using null default",
-                        name
-                    ),
+                    format!("unknown function '{}' in method context", name.as_str()),
                     w_line,
                     w_col,
-                );
-                Ok(LogicVec::from_u64(0, 64))
+                ));
             }
             Expr::MethodCall {
                 obj,
@@ -773,6 +794,31 @@ impl SimulationEngine {
                 args,
                 with_clause,
             } => {
+                // String method (LRM 1800 §6.16.1) — receiver adalah signal
+                // string. Handle di sini (bukan execute_method yang untuk
+                // class object) + write-back bila method MUTATING (itoa/
+                // hextoa/bintoa/octtoa/putc). Menutup gap: `s.itoa(x)` sbg
+                // statement (jalur AST interpreter) sebelumnya tak memutasi s.
+                if let Expr::Ident { name, .. } = obj.as_ref() {
+                    if let Some(sig_id) = self.find_signal(name.as_str()) {
+                        if let Some(sig) = self.design.top.signals.get(sig_id) {
+                            if sig.is_string {
+                                let s_val = self.state.read_signal(sig_id);
+                                let s_str = logicvec_to_string(&s_val);
+                                let arg_vals: Vec<LogicVec> = args
+                                    .iter()
+                                    .map(|a| self.evaluate_ast_expr(a))
+                                    .collect::<Result<_, _>>()?;
+                                let result =
+                                    evaluate_string_method(&s_str, method.as_str(), &arg_vals)?;
+                                if is_mutating_string_method(method.as_str()) {
+                                    self.state.write_signal(sig_id, result.clone());
+                                }
+                                return Ok(result);
+                            }
+                        }
+                    }
+                }
                 if let Expr::Ident { name: s, .. } = obj.as_ref() {
                     if s == "super" {
                         let arg_vals: Vec<LogicVec> = args
@@ -1631,6 +1677,78 @@ impl SimulationEngine {
                 expr,
                 items,
                 default,
+            } => self.evaluate_ast_stmt(&Stmt::Case {
+                expr: expr.clone(),
+                items: items.clone(),
+                default: default.clone(),
+            }),
+            Stmt::CaseInside {
+                expr,
+                items,
+                default,
+            } => {
+                // `case (x) inside`: label cocok bila sama persis ATAU dalam
+                // rentang `[lo:hi]` (RangeSelect base-0 pola parser).
+                let case_val = self.evaluate_ast_expr(expr)?;
+                let sel = case_val.to_u64();
+                let mut matched = false;
+                for item in items {
+                    for pat in &item.labels {
+                        let mut hit = false;
+                        if let Expr::RangeSelect {
+                            expr: base,
+                            msb,
+                            lsb,
+                        } = pat
+                        {
+                            if matches!(base.as_ref(), Expr::Value(Value::Decimal(0))) {
+                                let lo = self.evaluate_ast_expr(msb)?.to_u64();
+                                let hi = self.evaluate_ast_expr(lsb)?.to_u64();
+                                if sel >= lo && sel <= hi {
+                                    hit = true;
+                                }
+                            }
+                        }
+                        if !hit {
+                            let pat_val = self.evaluate_ast_expr(pat)?;
+                            if case_val.case_val_eq(&pat_val) {
+                                hit = true;
+                            }
+                        }
+                        if hit {
+                            self.evaluate_ast_stmt(&item.stmt)?;
+                            matched = true;
+                            break;
+                        }
+                    }
+                    if matched {
+                        break;
+                    }
+                }
+                if !matched {
+                    if let Some(default_body) = default {
+                        self.evaluate_ast_stmt(default_body)?;
+                    }
+                }
+                Ok(())
+            }
+            Stmt::UniqueCase {
+                expr,
+                items,
+                default,
+                ..
+            }
+            | Stmt::PriorityCase {
+                expr,
+                items,
+                default,
+                ..
+            }
+            | Stmt::Unique0Case {
+                expr,
+                items,
+                default,
+                ..
             } => self.evaluate_ast_stmt(&Stmt::Case {
                 expr: expr.clone(),
                 items: items.clone(),

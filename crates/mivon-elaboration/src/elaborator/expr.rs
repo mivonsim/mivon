@@ -2552,33 +2552,24 @@ impl Elaborator {
             }
         };
 
-        // Find return expression
-        let ret_expr = func
-            .stmts
-            .iter()
-            .find_map(|s| {
-                if let Stmt::Return(Some(e)) = s {
-                    Some(e.clone())
-                } else {
-                    None
-                }
-            })
-            .ok_or_else(|| {
-                self.elab_diag_at(
-                    DiagCode::ModuleNotFound,
-                    format!(
-                        "function '{}::{}' has no return expression",
-                        pkg_name, func_name
-                    ),
-                    line,
-                    col,
-                )
-            })?;
+        // Cari return expression top-level — hanya untuk inlining trivial.
+        // Body non-trivial (case/if/loop/lokal) TIDAK lagi error di sini:
+        // turun ke pemanggilan runtime agar statement body dieksekusi di
+        // engine (mis. ariane_pkg::op_is_branch/is_rd_fpr di branch_unit —
+        // sebelumnya E3001 mematikan seluruh modul).
+        let ret_expr = func.stmts.iter().find_map(|s| {
+            if let Stmt::Return(Some(e)) = s {
+                Some(e.clone())
+            } else {
+                None
+            }
+        });
 
         // Function body hanya boleh inline bila berisi TEPAT satu statement
-        // `return <expr>;`. Fungsi dengan assignment/lokal/loop (mis. mubi4_and
-        // yang menulis `out[k]` dalam loop) tidak bisa di-inline sederhana —
-        // pakai pemanggilan runtime agar statement body dieksekusi di engine.
+        // `return <expr>;`. Fungsi dengan assignment/lokal/loop/case (mis.
+        // mubi4_and yang menulis `out[k]` dalam loop) tidak bisa di-inline
+        // sederhana — pakai pemanggilan runtime agar statement body
+        // dieksekusi di engine.
         let body_is_trivial =
             func.stmts.len() == 1 && matches!(func.stmts.first(), Some(Stmt::Return(_)));
         if !body_is_trivial {
@@ -2592,6 +2583,19 @@ impl Elaborator {
                 args: ir_args?,
             });
         }
+
+        // Trivial = satu Return: ret_expr pasti ada.
+        let ret_expr = ret_expr.ok_or_else(|| {
+            self.elab_diag_at(
+                DiagCode::ModuleNotFound,
+                format!(
+                    "function '{}::{}' has no return expression",
+                    pkg_name, func_name
+                ),
+                line,
+                col,
+            )
+        })?;
 
         // Substitute formal parameters with actual arguments
         let mut result = *ret_expr;

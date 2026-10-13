@@ -25372,6 +25372,44 @@ endmodule
 }
 
 #[test]
+fn test_pkg_case_func_runtime_call() {
+    // Panggilan RUNTIME fungsi case-inside package dengan arg sinyal:
+    // elaborasi harus emit FuncCall (bukan E3001 "has no return"), engine
+    // eksekusi tiap arm benar (exact, range, default). Pola CVA6
+    // branch_unit `ariane_pkg::op_is_branch(fu_data_i.operation)`.
+    let source = r#"
+package fpkg;
+  typedef enum logic [3:0] { OP_A=0, OP_B=1, OP_C=2, OP_D=3, OP_E=4 } op_t;
+  function automatic logic is_bc(input op_t op);
+    unique case (op) inside
+      OP_B, OP_C: return 1'b1;
+      [OP_C : OP_E]: return 1'b1;
+      default: return 1'b0;
+    endcase
+  endfunction
+endpackage
+module top;
+  import fpkg::*;
+  logic [3:0] sel = 0;
+  logic out_flag;
+  logic r0, r1, r3;
+  always_comb out_flag = is_bc(sel);
+  initial begin
+    sel = 4'd0; #1; r0 = out_flag;
+    sel = 4'd1; #1; r1 = out_flag;
+    sel = 4'd3; #1; r3 = out_flag;
+    $finish;
+  end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 50).unwrap();
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    assert_eq!(get("r0"), 0, "OP_A → default 0");
+    assert_eq!(get("r1"), 1, "OP_B → exact 1");
+    assert_eq!(get("r3"), 1, "OP_D → range 1");
+}
+
+#[test]
 fn test_pkg_struct_member_access_qualified() {
     // Member struct package via qualified path `pkg::CFG.XLEN` di default
     // param module (pola CVA6: `cva6_config_pkg::cva6_cfg.XLEN`). Sebelum

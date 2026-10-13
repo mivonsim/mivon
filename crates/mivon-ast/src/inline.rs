@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use super::expr::Expr;
 use super::expr::Value;
-use super::stmt::Stmt;
+use super::stmt::{CaseItem, Stmt};
 use super::types::{
     CaseGenerateItem, ExprRange, FunctionDecl, GenerateBlock, GenerateItem, Module, ModuleItem,
     Range,
@@ -2069,6 +2069,178 @@ thread_local! {
     static INLINE_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
+/// Ubah SEMUA `return <expr>` (termasuk bersarang di if/case/loop) menjadi
+/// assignment ke result temp. Sebelumnya hanya Return top-level body yang
+/// dikonversi; return di dalam case arm (pola ariane_pkg::is_rd_fpr:
+/// `unique case (op) inside ... return 1'b1;`) lolos sebagai Stmt::Return
+/// di dalam always_comb → temp hasil tak pernah di-assign (x).
+fn convert_returns_to_assign(stmt: Stmt, ret: Symbol) -> Stmt {
+    let assign = |e: Expr| Stmt::BlockingAssign {
+        lhs: Expr::Ident {
+            name: ret,
+            line: 0,
+            col: 0,
+        },
+        rhs: e,
+        delay: None,
+    };
+    let conv = |s: Stmt| convert_returns_to_assign(s, ret);
+    let conv_item = |item: CaseItem| CaseItem {
+        labels: item.labels,
+        stmt: Box::new(conv(*item.stmt)),
+    };
+    let conv_items = |items: Vec<CaseItem>| items.into_iter().map(conv_item).collect();
+    let conv_default =
+        |d: Option<Box<Stmt>>| d.map(|s| Box::new(convert_returns_to_assign(*s, ret)));
+    match stmt {
+        Stmt::Return(Some(e)) => assign(*e),
+        Stmt::Return(None) => Stmt::Block { stmts: vec![] },
+        Stmt::Block { stmts } => Stmt::Block {
+            stmts: stmts.into_iter().map(conv).collect(),
+        },
+        Stmt::NamedBlock { name, stmts, decls } => Stmt::NamedBlock {
+            name,
+            stmts: stmts.into_iter().map(conv).collect(),
+            decls,
+        },
+        Stmt::IfElse {
+            cond,
+            true_branch,
+            false_branch,
+        } => Stmt::IfElse {
+            cond,
+            true_branch: Box::new(conv(*true_branch)),
+            false_branch: false_branch.map(|s| Box::new(conv(*s))),
+        },
+        Stmt::Case {
+            expr,
+            items,
+            default,
+        } => Stmt::Case {
+            expr,
+            items: conv_items(items),
+            default: conv_default(default),
+        },
+        Stmt::CaseX {
+            expr,
+            items,
+            default,
+        } => Stmt::CaseX {
+            expr,
+            items: conv_items(items),
+            default: conv_default(default),
+        },
+        Stmt::CaseZ {
+            expr,
+            items,
+            default,
+        } => Stmt::CaseZ {
+            expr,
+            items: conv_items(items),
+            default: conv_default(default),
+        },
+        Stmt::StmtCase {
+            expr,
+            items,
+            default,
+        } => Stmt::StmtCase {
+            expr,
+            items: conv_items(items),
+            default: conv_default(default),
+        },
+        Stmt::UniqueCase {
+            expr,
+            items,
+            default,
+            kind,
+        } => Stmt::UniqueCase {
+            expr,
+            items: conv_items(items),
+            default: conv_default(default),
+            kind,
+        },
+        Stmt::PriorityCase {
+            expr,
+            items,
+            default,
+            kind,
+        } => Stmt::PriorityCase {
+            expr,
+            items: conv_items(items),
+            default: conv_default(default),
+            kind,
+        },
+        Stmt::Unique0Case {
+            expr,
+            items,
+            default,
+            kind,
+        } => Stmt::Unique0Case {
+            expr,
+            items: conv_items(items),
+            default: conv_default(default),
+            kind,
+        },
+        Stmt::CaseInside {
+            expr,
+            items,
+            default,
+        } => Stmt::CaseInside {
+            expr,
+            items: conv_items(items),
+            default: conv_default(default),
+        },
+        Stmt::LoopForever { stmts } => Stmt::LoopForever {
+            stmts: stmts.into_iter().map(conv).collect(),
+        },
+        Stmt::LoopWhile { cond, stmts } => Stmt::LoopWhile {
+            cond,
+            stmts: stmts.into_iter().map(conv).collect(),
+        },
+        Stmt::DoWhile { cond, stmts } => Stmt::DoWhile {
+            cond,
+            stmts: stmts.into_iter().map(conv).collect(),
+        },
+        Stmt::LoopFor {
+            init,
+            cond,
+            step,
+            stmts,
+        } => Stmt::LoopFor {
+            init: init.map(|s| Box::new(conv(*s))),
+            cond,
+            step: step.map(|s| Box::new(conv(*s))),
+            stmts: stmts.into_iter().map(conv).collect(),
+        },
+        Stmt::Repeat { count, stmts } => Stmt::Repeat {
+            count,
+            stmts: stmts.into_iter().map(conv).collect(),
+        },
+        Stmt::ForeachLoop {
+            array_var,
+            index_vars,
+            stmts,
+        } => Stmt::ForeachLoop {
+            array_var,
+            index_vars,
+            stmts: stmts.into_iter().map(conv).collect(),
+        },
+        Stmt::Delay { delay, stmt } => Stmt::Delay {
+            delay,
+            stmt: Box::new(conv(*stmt)),
+        },
+        Stmt::Wait { cond, stmt } => Stmt::Wait {
+            cond,
+            stmt: stmt.map(|s| Box::new(conv(*s))),
+        },
+        Stmt::EventControl { events, stmt } => Stmt::EventControl {
+            events,
+            stmt: stmt.map(|s| Box::new(conv(*s))),
+        },
+        _ => stmt,
+    }
+}
+
 fn replace_func_calls_in_expr(
     expr: Expr,
     funcs: &HashMap<Symbol, FunctionDecl>,
@@ -2442,19 +2614,10 @@ fn replace_func_calls_in_expr_inner(
 
                 for func_stmt in &func.stmts {
                     let mut renamed = rename_in_stmt(func_stmt, &rename_map);
-                    // Convert Return(expr) to assignment to result signal
+                    // Convert Return(expr) — TERMASUK bersarang di if/case/
+                    // loop — menjadi assignment ke result signal.
                     if let Some(ref rn) = ret_name {
-                        if let Stmt::Return(Some(expr)) = &renamed {
-                            renamed = Stmt::BlockingAssign {
-                                lhs: Expr::Ident {
-                                    name: *rn,
-                                    line: 0,
-                                    col: 0,
-                                },
-                                rhs: *expr.clone(),
-                                delay: None,
-                            };
-                        }
+                        renamed = convert_returns_to_assign(renamed, *rn);
                     }
                     renamed = rename_func_decls_in_stmt(renamed, &rename_map);
                     // Proses ulang statement body untuk menangkap nested

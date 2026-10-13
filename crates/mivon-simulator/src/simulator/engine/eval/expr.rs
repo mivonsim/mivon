@@ -1,4 +1,4 @@
-use super::super::engine_utils::{edge_matches_abbrev, evaluate_string_method, sym_char_matches};
+use super::super::engine_utils::{edge_matches_abbrev, evaluate_string_method, is_mutating_string_method, sym_char_matches};
 use super::super::SimulationEngine;
 use crate::simulator::packed::PackedLogicVec;
 use crate::simulator::packed_eval::{eval_binary_packed, eval_unary_packed, is_packable_binary_op};
@@ -2279,17 +2279,28 @@ impl SimulationEngine {
                     return Ok(result);
                 }
                 if let IrExpr::Signal(id, _) = obj.as_ref() {
-                    if let Some(sig) = self.design.top.signals.get(*id) {
-                        if sig.is_string {
-                            let lv = self.state.read_signal(*id);
-                            let s = logicvec_to_string(lv);
-                            let arg_vals: Vec<LogicVec> = args
-                                .iter()
-                                .map(|a| self.evaluate_expr(a))
-                                .collect::<Result<_, _>>()?;
-                            let result = evaluate_string_method(&s, method.as_str(), &arg_vals)?;
-                            return Ok(result);
+                    let is_string = self
+                        .design
+                        .top
+                        .signals
+                        .get(*id)
+                        .map(|sig| sig.is_string)
+                        .unwrap_or(false);
+                    if is_string {
+                        let lv = self.state.read_signal(*id);
+                        let s = logicvec_to_string(lv);
+                        let arg_vals: Vec<LogicVec> = args
+                            .iter()
+                            .map(|a| self.evaluate_expr(a))
+                            .collect::<Result<_, _>>()?;
+                        let result =
+                            evaluate_string_method(&s, method.as_str(), &arg_vals)?;
+                        // Method MUTATING (itoa/hextoa/bintoa/octtoa/putc) —
+                        // write-back hasil ke receiver string (LRM §6.16.1).
+                        if is_mutating_string_method(method.as_str()) {
+                            self.state.write_signal(*id, result.clone());
                         }
+                        return Ok(result);
                     }
                     if let Some(sig) = self.design.top.signals.get(*id) {
                         if let Some(ref cn) = sig.class_name {
@@ -2912,6 +2923,24 @@ impl SimulationEngine {
         for (i, arg_val) in arg_vals.iter().enumerate() {
             if let Some(port) = func.ports.get(i) {
                 locals.insert(port.name, arg_val.clone());
+            }
+        }
+
+        // Seed konstanta package (enum member, parameter) sebagai lokal agar
+        // body fungsi yang mereferensikan nama plain (mis. label `EQ`/`FMUL`
+        // di `unique case inside` ariane_pkg) ter-resolve saat runtime.
+        // Hanya paket fungsi ini (`pkg::func` → `pkg::*`), tanpa menimpa
+        // port/arg (or_insert). Sebelumnya: warning NullHandle + 0 (siluman).
+        if let Some((pkg, _)) = func_name.as_str().split_once("::") {
+            let prefix = format!("{}::", pkg);
+            for (k, v) in &self.design.pkg_scoped_consts {
+                if let Some(rest) = k.as_str().strip_prefix(&prefix) {
+                    if !rest.contains([':', '.', '[']) {
+                        locals.entry(Symbol::intern(rest)).or_insert_with(|| {
+                            LogicVec::from_u64(*v as u64, 64)
+                        });
+                    }
+                }
             }
         }
 
