@@ -319,6 +319,9 @@ impl SimulationState {
 
     /// Lepas slot scratch terakhir (lihat `push_scratch_signal`).
     pub fn pop_scratch_signal(&mut self) {
+        if let Some(id) = self.signals.len().checked_sub(1) {
+            self.wide_mem.remove(&id);
+        }
         self.signals.pop();
         self.next_signals.pop();
         self.changed.pop();

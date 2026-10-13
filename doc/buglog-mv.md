@@ -596,8 +596,11 @@ bug di mivon utama (parser/elaborator/simulator). Status: ✅ fixed / ⏳ open.
          muncul di VCD), push/pop LIFO di sekitar satu evaluasi.
       2. `engine/eval/expr.rs`: helper `array_method_result_elem_width(expr)` —
          lebar ELEMEN hasil sebuah method array (Signal queue → `elem_width`;
-         `find*`/`unique`/`sort`/`rsort`/`reverse`/`shuffle` → sama receiver;
-         `*_index`/`unique_index` → 32; skalar → None). Di arm `MethodCall`:
+         `find`/`find_first`/`find_last`/`unique` → sama receiver;
+         `*_index`/`unique_index` → 32; skalar/void → None). Method ordering
+         (`sort`/`rsort`/`reverse`/`shuffle`) **sengaja TIDAK** dianggap
+         chainable — LRM §7.12.2 mengembalikan **void** (in-place), jadi
+         `q.sort().size()` bukan SV valid (review-fix F88). Di arm `MethodCall`:
          bila `obj` adalah `MethodCall` yang menghasilkan queue, evaluasi hasil
          dalam → `push_scratch_signal` → dispatch method luar via
          `evaluate_array_method` yang sama (ia baca receiver via `read_signal`)

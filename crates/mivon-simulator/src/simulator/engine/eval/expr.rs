@@ -1576,14 +1576,16 @@ impl SimulationEngine {
             IrExpr::MethodCall { obj, method, .. } => {
                 let rw = self.array_method_result_elem_width(obj)?;
                 match method.as_str() {
-                    // Mengembalikan queue dgn elemen sama dgn receiver.
-                    "find" | "find_first" | "find_last" | "unique" | "sort" | "rsort"
-                    | "reverse" | "shuffle" => Some(rw),
+                    // Locator yang mengembalikan queue dgn elemen sama dgn
+                    // receiver (LRM §7.12.1). `sort`/`rsort`/`reverse`/`shuffle`
+                    // TIDAK termasuk — method ordering mengembalikan void
+                    // (in-place, §7.12.2), jadi `q.sort().size()` bukan SV valid.
+                    "find" | "find_first" | "find_last" | "unique" => Some(rw),
                     // Mengembalikan queue INDEKS 32-bit.
                     "find_index" | "find_first_index" | "find_last_index" | "unique_index" => {
                         Some(32)
                     }
-                    // Hasil skalar / bukan queue → tak bisa di-chain sbg array.
+                    // Hasil skalar / void → tak bisa di-chain sbg array.
                     _ => None,
                 }
             }
