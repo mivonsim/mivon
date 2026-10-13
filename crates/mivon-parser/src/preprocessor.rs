@@ -1376,6 +1376,23 @@ impl Preprocessor {
                                     }
                                 }
                             }
+                            // Pasangan backquote kosong `` `` `` di body macro
+                            // collapse ke empty (bukan literal). Pola
+                            // common_cells `/``* synopsys ... *``/`: double
+                            // backquote memecah `/*`/`*/` agar tak dimakan
+                            // sebagai komentar saat parse `define; hasil
+                            // ekspansi harus komentar `/* */` valid, bukan
+                            // E1002 di lexer. Dijalankan setelah stringify/
+                            // param/paste (yang set matched=true) agar
+                            // `` `PARAM` `` tetap paste arg.
+                            if !matched
+                                && val_bytes[pos] == b'`'
+                                && pos + 1 < val_bytes.len()
+                                && val_bytes[pos + 1] == b'`'
+                            {
+                                pos += 2;
+                                matched = true;
+                            }
                             if !matched {
                                 expanded.push(val_bytes[pos] as char);
                                 pos += 1;
@@ -1786,6 +1803,27 @@ mod tests {
         assert!(
             !out.contains("module b"),
             "branch elsif setelah ifdef diambil harus di-skip: {out}"
+        );
+    }
+
+    /// Double backquote di body macro (pola common_cells `registers.svh`):
+    /// `/``* synopsys ... *``/` — pasangan `` `` `` collapse ke empty agar
+    /// tak dimakan sebagai komentar saat parse `define; ekspansi harus
+    /// menghasilkan komentar `/* */` valid. Sebelum fix: backtick bocor ke
+    /// output → E1002 di lexer (CVA6 fpnew_cast_multi.sv).
+    #[test]
+    fn macro_body_backtick_escape_is_comment() {
+        let src = "`define FFL(q, d) \\\n  /``* synopsys sync_set_reset *``/ \\\n  always_ff @(posedge clk) q <= d;\n\
+                   module m;\n`FFL(a, b)\nendmodule\n";
+        let mut pp = Preprocessor::new();
+        let out = pp.preprocess(src, None).unwrap();
+        assert!(
+            out.contains("/* synopsys sync_set_reset */"),
+            "escape harus jadi komentar valid: {out}"
+        );
+        assert!(
+            !out.contains('`'),
+            "tak boleh ada backtick tersisa: {out}"
         );
     }
 }
