@@ -692,9 +692,34 @@ bug di mivon utama (parser/elaborator/simulator). Status: ✅ fixed / ⏳ open.
       `examples/mv/queue_slice.mv` → `QS n=2 r0=1 r1=2 e0=1 e1=2 ei=3 cu=4 cd=0`
       + `QS_OK`; test `test_mv_queue_slice_end_to_end`. Full workspace test hijau.
 
+### #44 — Method string LRM §6.16.1: `getc`/`atohex`/`atobin`/`atooct`/`atoreal` hilang (F90)
+
+- **Gejala:** matrix IEEE_1800_MATRIX.md §5.16 **mengklaim** `atoreal` didukung,
+  padahal dispatcher `evaluate_string_method` (`engine/engine_utils.rs`) hanya
+  punya `len`/`substr`/`atoi`/`hextoi`/`bintoi`/`octtoi`/`toupper`/`tolower`/
+  `compare`/`icompare` → `"ABC".atoreal()` / `.getc(0)` / `.atohex()` →
+  `unknown string method: ...` (NotImplemented). Selain itu nama konversi
+  string→int **non-standar** (`hextoi`/`bintoi`/`octtoi`); LRM 1800 §6.16.1
+  menetapkan `atohex`/`atobin`/`atooct`.
+- **Penyebab:** dispatcher belum lengkap vs LRM §6.16.1 (method murni yang
+  mengembalikan nilai).
+- **Fix** (`engine/engine_utils.rs`): tambah arm — `getc(i)` (byte ASCII 8-bit;
+  indeks di luar batas → 0 sesuai LRM §6.16.1); `atohex`/`atobin`/`atooct`
+  (nama LRM-standar, logika identik dgn `hextoi`/`bintoi`/`octtoi` yang tetap
+  dipertahankan utk backward-compat); `atoreal` (parse `f64` → bit-pattern
+  64-bit, konsisten dgn penanganan real `$itor` di engine ini). Method mutating
+  (`itoa`/`hextoa`/`putc`, yang mengubah receiver) **belum** — bukan diklaim
+  matrix, dan butuh write-back lvalue; catat sbg follow-up.
+- **Verifikasi:** `test_string_methods_getc_and_ato` (SV) — `getc(0)`='A'=65,
+  `getc(9)`=0, `atohex('1f')`=31, `atobin('101')`=5, `atooct('17')`=15,
+  `atoreal('3.5')`=0x400C000000000000; demo e2e `.mv` `examples/mv/string_methods.mv`
+  → `STR gc0=65 gc1=66 gc9=0 hx=31 bn=5 oc=15` + `STR_OK`; test
+  `test_mv_string_methods_end_to_end`. Full workspace test hijau.
+
 ## ⏳ Open
 
-_(Tidak ada item open. `with (item.x)` kini DIDUKUNG penuh (#40), method
-bertaut pada hasil temporer (`q.unique().size()`) DIDUKUNG penuh (#42), dan
-index/range pada queue & hasil method = ELEMEN DIDUKUNG penuh (#43).
+_(Tidak ada item open. `with (item.x)` DIDUKUNG penuh (#40), method bertaut
+pada hasil temporer DIDUKUNG penuh (#42), index/range queue = ELEMEN DIDUKUNG
+penuh (#43), method string §6.16.1 (`getc`/`atohex`/`atobin`/`atooct`/`atoreal`)
+DIDUKUNG penuh (#44; `itoa`/`hextoa`/`putc` mutating = follow-up).
 Caveat iverilog `with` clause = keterbatasan TOOL, bukan bug.)_

@@ -58,7 +58,7 @@
 | 5.13 | time type | ✅ | Width 64, 2-state, unsigned |
 | 5.14 | real type | ✅ | f64 arithmetic |
 | 5.15 | realtime type | ✅ | Sama dengan real + `$realtime` |
-| 5.16 | string type | ✅ | Declaration + methods (len/toupper/tolower/atoi/atoreal) |
+| 5.16 | string type | ✅ | Declaration + methods: len, substr, atoi, atoreal, getc, toupper, tolower, compare, icompare, atohex/atobin/atooct (nama LRM standar; alias hextoi/bintoi/octtoi dipertahankan) |
 | 5.17 | void type | ✅ | `DataType::Void`; inliner skip result; width 0 |
 | 5.18 | signed types | ✅ | `eval_binary_signed()` via `to_i64()` |
 | 5.19 | unsigned types | ✅ | Default behavior |

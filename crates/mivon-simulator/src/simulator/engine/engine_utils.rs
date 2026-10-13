@@ -144,6 +144,42 @@ pub(crate) fn evaluate_string_method(
             };
             Ok(LogicVec::from_u64(result as u64, 32))
         }
+        // LRM 1800 §6.16.1 — `getc(i)` mengembalikan nilai ASCII (8-bit) karakter
+        // pada indeks `i`; indeks di luar batas → 0 (sesuai LRM).
+        "getc" => {
+            if args.is_empty() {
+                return Err(SimError::with_diag(
+                    DiagCode::DpiError,
+                    "getc expects 1 argument".to_string(),
+                ));
+            }
+            let i = args[0].to_u64() as usize;
+            let byte = s.as_bytes().get(i).copied().unwrap_or(0);
+            Ok(LogicVec::from_u64(byte as u64, 8))
+        }
+        // Nama LRM-STANDAR untuk konversi string→integer (pengganti alias non-
+        // standar `hextoi`/`bintoi`/`octtoi` yang tetap dipertahankan).
+        "atohex" => {
+            let trimmed = s.trim().trim_start_matches("0x").trim_start_matches("0X");
+            let val = i64::from_str_radix(trimmed, 16).unwrap_or(0);
+            Ok(LogicVec::from_u64(val as u64, 32))
+        }
+        "atobin" => {
+            let trimmed = s.trim();
+            let val = i64::from_str_radix(trimmed, 2).unwrap_or(0);
+            Ok(LogicVec::from_u64(val as u64, 32))
+        }
+        "atooct" => {
+            let trimmed = s.trim();
+            let val = i64::from_str_radix(trimmed, 8).unwrap_or(0);
+            Ok(LogicVec::from_u64(val as u64, 32))
+        }
+        // LRM 1800 §6.16.1 — `atoreal()` → nilai real (bit-pattern f64 64-bit,
+        // konsisten dengan penanganan real di simulator ini, mis. `$itor`).
+        "atoreal" => {
+            let val: f64 = s.trim().parse().unwrap_or(0.0);
+            Ok(LogicVec::from_u64(f64::to_bits(val), 64))
+        }
         _ => Err(SimError::with_diag(
             DiagCode::NotImplemented,
             format!("unknown string method: {}", method),

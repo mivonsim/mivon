@@ -6051,6 +6051,47 @@ endmodule
 }
 
 #[test]
+fn test_string_methods_getc_and_ato() {
+    // LRM 1800 §6.16.1 — getc / atohex / atobin / atooct / atoreal.
+    let source = r#"
+module tb;
+    reg [7:0]  gc0;
+    reg [7:0]  gc1;
+    reg [7:0]  gc9;   // out-of-range -> 0
+    reg [31:0] hx;
+    reg [31:0] bn;
+    reg [31:0] oc;
+    real       rl;
+    initial begin
+        gc0 = "ABC".getc(0);   // 'A' = 65
+        gc1 = "ABC".getc(1);   // 'B' = 66
+        gc9 = "ABC".getc(9);   // out of range -> 0
+        hx  = "1f".atohex();   // 31
+        bn  = "101".atobin();  // 5
+        oc  = "17".atooct();   // 15
+        rl  = "3.5".atoreal(); // 3.5
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 5).unwrap();
+    let g = |n: &str| {
+        sigs.iter()
+            .find(|(nm, _)| nm == n)
+            .map(|(_, v)| v.to_u64())
+            .unwrap_or(0)
+    };
+    assert_eq!(g("gc0"), 65, "getc(0) of 'ABC' = 'A' = 65");
+    assert_eq!(g("gc1"), 66, "getc(1) of 'ABC' = 'B' = 66");
+    assert_eq!(g("gc9"), 0, "getc out-of-range = 0");
+    assert_eq!(g("hx"), 31, "atohex('1f') = 31");
+    assert_eq!(g("bn"), 5, "atobin('101') = 5");
+    assert_eq!(g("oc"), 15, "atooct('17') = 15");
+    // atoreal: bit-pattern f64 3.5 == 0x400C000000000000
+    assert_eq!(g("rl"), 0x400C000000000000u64, "atoreal('3.5') = 3.5");
+}
+
+#[test]
 fn test_string_var_decl() {
     let source = r#"
 module tb;
@@ -24387,6 +24428,24 @@ fn test_mv_queue_slice_end_to_end() {
     assert_eq!(get("cu"), 4, "q[0:9] → clamp ke 4");
     assert_eq!(get("cd"), 0, "q[3:0] descending → kosong");
     assert_eq!(get("ok"), 1, "semua lolos (QS_OK)");
+}
+
+/// F90 — method string LRM 1800 §6.16.1 (getc / atohex / atobin / atooct /
+/// atoreal) end-to-end lewat transpile .mv → SV → simulasi.
+#[test]
+fn test_mv_string_methods_end_to_end() {
+    let src = include_str!("../../../../examples/mv/string_methods.mv");
+    let r = mivon_mv::transpile(src, "string_methods").expect("transpile .mv OK");
+    let combined = format!("{}\n{}", r.svh, r.sv);
+    let sigs = simulate_signals(&combined, 100).expect("string_methods harus simulasi bersih");
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    assert_eq!(get("gc0"), 65, "s.getc(0) = 'A' = 65");
+    assert_eq!(get("gc1"), 66, "s.getc(1) = 'B' = 66");
+    assert_eq!(get("gc9"), 0, "s.getc(9) di luar batas = 0");
+    assert_eq!(get("hx"), 31, "atohex('1f') = 31");
+    assert_eq!(get("bn"), 5, "atobin('101') = 5");
+    assert_eq!(get("oc"), 15, "atooct('17') = 15");
+    assert_eq!(get("ok"), 1, "semua lolos (STR_OK)");
 }
 
 /// Regresi bug #37: rantai `&&`/`||` panjang (16 operan) TIDAK boleh

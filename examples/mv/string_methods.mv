@@ -1,0 +1,45 @@
+// F90 — Method string LRM 1800 §6.16.1: getc / atohex / atobin / atooct /
+// atoreal (nama STANDAR). Alias non-standar `hextoi`/`bintoi`/`octtoi` tetap
+// didukung (backward-compat). `atoreal` sebelumnya DIKLAIM di matrix §5.16
+// tapi HILANG dari dispatcher → kini ditambahkan.
+//
+// Jalankan:
+//   mivon mgen examples/mv/string_methods.mv
+//   mivon sim  examples/mv/string_methods.mv --top tb_str -T 100
+//
+// Harapan:
+//   STR gc0=65 gc1=66 gc9=0 hx=31 bn=5 oc=15
+//   STR_OK
+
+module tb_str {
+    sig s   : string = "ABC"
+    sig gc0, gc1, gc9 : logic[7:0]
+    sig hx, bn, oc    : logic[31:0]
+    sig ok : bit = 0
+
+    initial {
+        gc0 = s.getc(0)        // 'A' = 65
+        gc1 = s.getc(1)        // 'B' = 66
+        gc9 = s.getc(9)        // di luar batas -> 0
+
+        hx  = "1f".atohex()    // 31
+        bn  = "101".atobin()   // 5
+        oc  = "17".atooct()    // 15
+
+        $display("STR gc0=%0d gc1=%0d gc9=%0d hx=%0d bn=%0d oc=%0d", gc0, gc1, gc9, hx, bn, oc)
+
+        ok = 1
+        if (gc0 != 65) { ok = 0 }
+        if (gc1 != 66) { ok = 0 }
+        if (gc9 != 0)  { ok = 0 }
+        if (hx  != 31) { ok = 0 }
+        if (bn  != 5)  { ok = 0 }
+        if (oc  != 15) { ok = 0 }
+        if (ok) {
+            $display("STR_OK")
+        } else {
+            $display("STR_BROKEN")
+        }
+        $finish
+    }
+}
