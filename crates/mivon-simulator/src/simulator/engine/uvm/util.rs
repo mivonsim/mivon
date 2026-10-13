@@ -901,6 +901,37 @@ impl SimulationEngine {
                 }
                 Ok(LogicVec::new(0))
             }
+            "unique_index" => {
+                // LRM 1800 §7.12.1: seperti `unique` tetapi mengembalikan queue
+                // INDEKS elemen unik (bukan nilainya); tiap indeks 32-bit.
+                let lv = self.state.read_signal(sig_id).clone();
+                let elem_width = sig.elem_width;
+                if elem_width > 0 && lv.width >= elem_width {
+                    let count = lv.width / elem_width;
+                    let mut seen = std::collections::HashSet::new();
+                    let mut new_bits = Vec::new();
+                    for i in 0..count {
+                        let mut bits = Vec::with_capacity(elem_width);
+                        for j in 0..elem_width {
+                            bits.push(lv.bits[i * elem_width + j]);
+                        }
+                        let elem = LogicVec {
+                            width: elem_width,
+                            bits,
+                        };
+                        let key = self.eval_with_value(with_clause, &elem)?.to_u64();
+                        if seen.insert(key) {
+                            let idx_vec = LogicVec::from_u64(i as u64, 32);
+                            new_bits.extend(idx_vec.bits.iter());
+                        }
+                    }
+                    return Ok(LogicVec {
+                        width: new_bits.len(),
+                        bits: new_bits,
+                    });
+                }
+                Ok(LogicVec::new(0))
+            }
             // --- Locator methods ---
             "find" | "find_first" | "find_last" => {
                 let lv = self.state.read_signal(sig_id).clone();

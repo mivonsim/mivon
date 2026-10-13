@@ -419,7 +419,8 @@ bug di mivon utama (parser/elaborator/simulator). Status: ✅ fixed / ⏳ open.
         (terbalik), bukan satu terakhir — kini `break` setelah kecocokan
         pertama saat men-scan mundur.
       - `unique_index` dibuang dari daftar `is_array_with_method` (runtime
-        belum mengimplementasikannya — jangan overclaim).
+        belum mengimplementasikannya — jangan overclaim). → **kini didukung
+        penuh, lihat #39.**
       - Referensi §7.12.3 pada `unique` dikoreksi ke §7.12.1.
       - mivon-mv: walker sekunder (`hazard.rs` ×3, `check/expr.rs`
         `expr_uses`, `lib.rs` `collect_expr_refs`) kini menelusuri
@@ -491,6 +492,32 @@ bug di mivon utama (parser/elaborator/simulator). Status: ✅ fixed / ⏳ open.
     - Verifikasi: `test_mv_very_long_logic_chain_no_stack_overflow` (64 operan
       sinyal, dibuktikan GAGAL/SIGABRT pada 32 pra-fix, LULUS pasca-fix); #37
       test tetap hijau.
+
+39. **`unique_index` belum didukung — keterbatasan → full support (LRM §7.12.1).**
+    F41 (auto-review #36) sengaja membuang `unique_index` dari daftar
+    `is_array_with_method` karena runtime belum mengimplementasikannya; hanya
+    `unique` (queue NILAI) yang jalan. `q.unique_index()` jatuh ke arm fallback
+    `evaluate_array_method` → `Err(NotImplemented)` ("unknown array/queue
+    method"). LRM 1800 §7.12.1: `unique_index` mengembalikan queue **INDEKS**
+    kemunculan pertama tiap nilai unik (tiap indeks 32-bit).
+    - **Fix (2 titik, manual):**
+      1. **Runtime** (`engine/uvm/util.rs`): arm `"unique_index"` baru persis
+         setelah `"unique"` — iterasi elemen, dedup via `HashSet` atas kunci
+         `eval_with_value(with_clause, &elem)?.to_u64()`, dan untuk tiap nilai
+         unik dorong `LogicVec::from_u64(i, 32)` (indeks) ke queue hasil.
+         Mengembalikan queue baru (tidak mengubah sumber), sama seperti
+         `unique`.
+      2. **Elaborator** (`elaborator/expr.rs`): tambah `"unique_index"` ke
+         `is_array_with_method` (binding iterator `item` bila ditulis
+         `q.unique_index with (item)`).
+    - Parser tidak perlu diubah: `unique_index` **bukan** keyword SV (beda dgn
+      `unique`), jadi sudah di-parse sebagai identifier method biasa.
+    - Verifikasi: `test_array_method_unique_index` (baru) — `q='{1,1,2,3,3}` →
+      `q.unique_index()` = `{0,2,3}` (size 3). Demo e2e
+      `examples/mv/array_methods.mv` diperluas: `mivon sim` →
+      `ARR_UIDX n=3 i0=0 i1=2 i2=3` + `ARR_OK`. Test
+      `test_mv_array_method_with_clause_end_to_end` diperluas (assert un2/ui0/
+      ui1/ui2).
 
 ## ⏳ Open
 

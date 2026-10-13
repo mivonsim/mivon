@@ -901,8 +901,8 @@ impl Elaborator {
 
     /// Metode array yang menerima `with (expr)` dengan iterator implisit
     /// `item` (LRM 1800 §7.12.1): locator (`find*`), reduction (`sum`/
-    /// `product`/`and`/`or`/`xor`), ordering (`min`/`max`/`unique`/`sort`/
-    /// `rsort`).
+    /// `product`/`and`/`or`/`xor`), ordering (`min`/`max`/`unique`/
+    /// `unique_index`/`sort`/`rsort`).
     fn is_array_with_method(name: &str) -> bool {
         matches!(
             name,
@@ -920,6 +920,7 @@ impl Elaborator {
                 | "min"
                 | "max"
                 | "unique"
+                | "unique_index"
                 | "sort"
                 | "rsort"
         )

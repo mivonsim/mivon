@@ -8,7 +8,8 @@
 //   * method bernama keyword (`unique`/`and`/`or`/`xor`) tak bisa dipanggil
 //     setelah `.` ("expected identifier, found unique").
 // Kini `with` clause penuh: locator (find/find_first/find_index), reduction
-// (sum/min/max), ordering (sort), dan `unique` (mengembalikan queue baru).
+// (sum/min/max), ordering (sort), `unique` (mengembalikan queue baru), dan
+// `unique_index` (queue indeks elemen unik, §7.12.1).
 //
 // Jalankan:
 //   mivon mgen examples/mv/array_methods.mv
@@ -21,15 +22,19 @@
 //   ARR_MINMAX mn=1 mx=5
 //   ARR_SORT s0=1 s4=5
 //   ARR_UNIQUE n=3
+//   ARR_UIDX n=3 i0=0 i1=2 i2=3
 //   ARR_OK
 
 type Q = logic[7:0][$]
+type IQ = logic[31:0][$]
 
 module tb_arr {
     sig q  : Q
     sig r  : Q
     sig iq : Q
+    sig uiq : IQ
     sig n, i, s, mn, mx, s0, s4, un : logic[31:0]
+    sig un2, ui0, ui1, ui2 : logic[31:0]
     sig ok : bit = 0
 
     initial {
@@ -64,6 +69,14 @@ module tb_arr {
         un = iq.size()
         $display("ARR_UNIQUE n=%0d", un)
 
+        // unique_index: queue INDEKS elemen unik pertama (LRM 1800 §7.12.1)
+        uiq = r.unique_index()
+        un2 = uiq.size()
+        ui0 = uiq[0]
+        ui1 = uiq[1]
+        ui2 = uiq[2]
+        $display("ARR_UIDX n=%0d i0=%0d i1=%0d i2=%0d", un2, ui0, ui1, ui2)
+
         // Cek hasil. Sengaja TIDAK memakai satu rantai `&&` panjang: rantai
         // `&&` ≥8 operan membuat kedalaman rekursi evaluator (frame
         // `evaluate_expr_impl` besar) melampaui stack thread test 2 MiB —
@@ -78,6 +91,10 @@ module tb_arr {
         if (s0 != 1)  { ok = 0 }
         if (s4 != 5)  { ok = 0 }
         if (un != 3)  { ok = 0 }
+        if (un2 != 3) { ok = 0 }
+        if (ui0 != 0) { ok = 0 }
+        if (ui1 != 2) { ok = 0 }
+        if (ui2 != 3) { ok = 0 }
         if (ok) {
             $display("ARR_OK")
         } else {

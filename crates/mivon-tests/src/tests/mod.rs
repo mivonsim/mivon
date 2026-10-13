@@ -1102,6 +1102,35 @@ endmodule
     assert_eq!(get("u"), 3, "unique 1,1,2,3,3 → 1,2,3");
 }
 
+/// LRM 1800 §7.12.1: `unique_index` mengembalikan queue **indeks** elemen
+/// unik pertama (bukan nilainya), tiap indeks 32-bit. Menutup keterbatasan
+/// lama di mana hanya `unique` (nilai) yang didukung runtime.
+#[test]
+fn test_array_method_unique_index() {
+    let source = r#"
+module tb_ui;
+    int q[$];
+    int iq[$];
+    int n, i0, i1, i2;
+    initial begin
+        q = '{1,1,2,3,3};
+        iq = q.unique_index();
+        n  = iq.size();
+        i0 = iq[0];
+        i1 = iq[1];
+        i2 = iq[2];
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 5).unwrap();
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    assert_eq!(get("n"), 3, "unique_index 1,1,2,3,3 → 3 indeks unik");
+    assert_eq!(get("i0"), 0, "indeks pertama elemen unik 1 → 0");
+    assert_eq!(get("i1"), 2, "indeks pertama elemen unik 2 → 2");
+    assert_eq!(get("i2"), 3, "indeks pertama elemen unik 3 → 3");
+}
+
 /// Review F41: `min`/`max` mengembalikan **elemen** (bukan nilai kunci
 /// `with`), dan `find_last`/`find_last_index` mengembalikan **hanya satu**
 /// kecocokan terakhir (LRM 1800 §7.12.1).
@@ -24008,6 +24037,10 @@ fn test_mv_array_method_with_clause_end_to_end() {
     assert_eq!(get("s0"), 1, "sort with (item) → elemen 0");
     assert_eq!(get("s4"), 5, "sort with (item) → elemen 4");
     assert_eq!(get("un"), 3, "unique");
+    assert_eq!(get("un2"), 3, "unique_index → 3 indeks unik");
+    assert_eq!(get("ui0"), 0, "unique_index indeks 0");
+    assert_eq!(get("ui1"), 2, "unique_index indeks 2");
+    assert_eq!(get("ui2"), 3, "unique_index indeks 3");
     assert_eq!(get("ok"), 1, "semua lolos (ARR_OK)");
 }
 
