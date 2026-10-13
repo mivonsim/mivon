@@ -308,9 +308,13 @@ impl Elaborator {
                     return Ok(dtype.width());
                 }
                 let w = if matches!(dtype, DataType::UnionType { .. }) {
-                    fields.iter().map(|f| f.width).max().unwrap_or(1)
+                    fields.iter().map(|f| f.width.max(1)).max().unwrap_or(1)
                 } else {
-                    fields.iter().map(|f| f.width).sum()
+                    // `.max(1)` selaras dgn akumulasi offset (`f.width.max(1)` di
+                    // mod.rs) & `compute_struct_fields_depth` — member lebar 0
+                    // (`string`/`void` di packed struct, ilegal tapi mungkin di
+                    // AST) tetap menyumbang 1 agar total == extent offset.
+                    fields.iter().map(|f| f.width.max(1)).sum()
                 };
                 Ok(w.max(1))
             }
