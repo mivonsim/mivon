@@ -3519,6 +3519,22 @@ impl Elaborator {
             items
         };
 
+        // ── Index field struct-parameter ter-flatten (base → [(field, val)]) ──
+        // Diperlukan agar override `.CVA6Cfg(CVA6Cfg)` (value Ident yang merujuk
+        // struct-parameter LOKAL/GLOBAL) dapat menyalin field-nya (`CVA6Cfg.XLEN`
+        // dst.) ke param_map child — lihat loop override instance di bawah.
+        // `effective_params` sudah memuat key `base.field` hasil flatten struct
+        // parameter (lihat resolve_param_values), sehingga cukup di-indeks di sini.
+        let mut struct_field_map: HashMap<Symbol, Vec<(Symbol, i64)>> = HashMap::new();
+        for (k, v) in &effective_params {
+            if let Some((base, field)) = k.as_str().split_once('.') {
+                struct_field_map
+                    .entry(Symbol::intern(base))
+                    .or_default()
+                    .push((Symbol::intern(field), *v));
+            }
+        }
+
         // Update param_vals after generate expansion which may add body-level params
         self.param_vals = effective_params.clone();
 
@@ -5169,6 +5185,44 @@ impl Elaborator {
                                 }
                             };
                             param_map.insert(*pname, val);
+                            // Override berupa Ident/ScopedIdent yang merujuk
+                            // struct-parameter (field-nya SUDAH ter-flatten di
+                            // `effective_params` sebagai `name.field`, mis.
+                            // `CVA6Cfg.XLEN`/`CVA6Cfg.VpnLen`) — contoh
+                            // `.CVA6Cfg(CVA6Cfg)` di CVA6. `const_eval_with_params`
+                            // hanya mengambil nama utuh → skalar 0, sehingga field
+                            // ter-flatten HILANG dan member access `CVA6Cfg.XLEN` di
+                            // child gagal const-eval → "dynamic range select not
+                            // supported" / E3003 (pola CVA6). Salin seluruh key
+                            // `name.*` ke param_map (sebagai `pname.field`) agar child
+                            // menerima struct-field sebagai skalar — diteruskan oleh
+                            // passthrough `param.field` di resolve_param_values_with_ctx.
+                            let mut ref_bases: Vec<Symbol> = Vec::new();
+                            match pexpr {
+                                Expr::Ident { name, .. } => ref_bases.push(*name),
+                                Expr::ScopedIdent { package, item, .. } => {
+                                    ref_bases.push(Symbol::intern(&format!(
+                                        "{}::{}",
+                                        package, item
+                                    )));
+                                    ref_bases.push(*item);
+                                }
+                                _ => {}
+                            }
+                            for rb in &ref_bases {
+                                if let Some(fields) = struct_field_map.get(rb) {
+                                    for (field, fv) in fields {
+                                        param_map.insert(
+                                            Symbol::intern(&format!(
+                                                "{}.{}",
+                                                pname.as_str(),
+                                                field.as_str()
+                                            )),
+                                            *fv,
+                                        );
+                                    }
+                                }
+                            }
                             // Override STRUCT package (`Info = PartInfoDefault`,
                             // `Info = PartInfo[k]`): `const_eval_with_params`
                             // mengubah override struct menjadi skalar 0 (flatten

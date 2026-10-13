@@ -1,0 +1,87 @@
+//! Regresi: propagasi field struct-parameter melalui override instance.
+//!
+//! CVA6 mendeklarasikan `parameter cva6_cfg_t CVA6Cfg = config_pkg::cva6_cfg_empty`
+//! lalu meneruskannya lintas hierarki (`#(.CVA6Cfg(CVA6Cfg))`); submodule memakai
+//! `CVA6Cfg.VpnLen`/`CVA6Cfg.PtLevels` di bound range-select
+//! (`lu_vaddr_i[12 + (CVA6Cfg.VpnLen / CVA6Cfg.PtLevels) - 1 : 16]` di
+//! `cva6_tlb.sv`). Field struct-parameter yang dilewatkan sebagai override
+//! **Ident** (`#(.CVA6Cfg(CVA6Cfg))`) HARUS di-flatten ke `param_vals` child
+//! (sebagai `CVA6Cfg.VpnLen` dst.) agar member access `param.field` bisa
+//! di-const-eval — sebelumnya hanya nama utuh yang disalin (placeholder 0),
+//! sehingga `CVA6Cfg.VpnLen` tak ter-resolve → "dynamic range select not
+//! supported" (E3001) / E3003 param-tidak-konstan.
+//!
+//! Test ini memverifikasi rantai override `.CVA6Cfg(cfg_top)` → `.CFG(CVA6Cfg)`
+//! mempropagasikan field struct sehingga range-select di child berhasil
+//! di-fold (tanpa error elaborasi).
+
+use super::*;
+
+#[test]
+fn test_struct_param_override_field_propagation() {
+    let src = r#"
+typedef struct packed {
+    logic [7:0] A;
+    logic [7:0] B;
+} cfg_t;
+
+module child #(parameter cfg_t CFG = '{A:8'h3, B:8'h5});
+    logic [31:0] x;
+    wire [CFG.A-1:0] y;
+    assign y = x[CFG.A-1:0];
+    initial #10 $finish;
+endmodule
+
+module mid #(parameter cfg_t CVA6Cfg = '{A:8'h4, B:8'h6});
+    child #(.CFG(CVA6Cfg)) c();
+endmodule
+
+module top;
+    mid #(.CVA6Cfg(cfg_top)) t();
+    parameter cfg_t cfg_top = '{A:8'h7, B:8'h8};
+endmodule
+"#;
+    let result = simulate_signals(src, 20);
+    assert!(
+        result.is_ok(),
+        "propagasi field struct-parameter via override Ident harus sukses tanpa \
+         'dynamic range select not supported': {:?}",
+        result.err()
+    );
+}
+
+/// Sama seperti di atas namun dengan referensi struct-package sebagai default
+/// param (`CVA6Cfg = config_pkg::cva6_cfg_empty`, pola persis cva6_mmu.sv).
+/// Memastikan flattening default struct-package + propagasi override berlapis
+/// tetap menghasilkan field yang ter-resolve di submodule.
+#[test]
+fn test_struct_param_pkg_default_override_chain() {
+    let src = r#"
+package pp;
+  typedef struct packed { logic [7:0] A; logic [7:0] B; } cfg_t;
+  localparam cfg_t CFG_EMPTY = '{A:8'h4, B:8'h6};
+endpackage
+
+module child #(parameter pp::cfg_t CFG = pp::CFG_EMPTY);
+    logic [31:0] x;
+    wire [CFG.A-1:0] y;
+    assign y = x[CFG.A-1:0];
+    initial #10 $finish;
+endmodule
+
+module mid #(parameter pp::cfg_t CVA6Cfg = pp::CFG_EMPTY);
+    child #(.CFG(CVA6Cfg)) c();
+endmodule
+
+module top;
+    mid #(.CVA6Cfg(cfg_top)) t();
+    parameter pp::cfg_t cfg_top = '{A:8'h7, B:8'h8};
+endmodule
+"#;
+    let result = simulate_signals(src, 20);
+    assert!(
+        result.is_ok(),
+        "default struct-package + override chain harus sukses: {:?}",
+        result.err()
+    );
+}

@@ -94,5 +94,12 @@ mod realtime_tests;
 #[cfg(test)]
 mod cva6_parse_regression_tests;
 
+/// Regresi elaborasi CVA6: propagasi field struct-parameter melalui override
+/// instance (`#(.CVA6Cfg(CVA6Cfg))`) — field `param.field` harus ter-flatten ke
+/// `param_vals` submodule agar range-select bergantung parameter ter-resolve
+/// (bukan "dynamic range select not supported").
+#[cfg(test)]
+mod cva6_struct_param_regression_tests;
+
 // Guided structure-aware fuzzer (metode test fuzzing "tidak buta"):
 // grammar-aware generation + coverage feedback + differential oracle.
