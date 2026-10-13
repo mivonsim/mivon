@@ -25334,3 +25334,39 @@ endmodule
     let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
     assert_eq!(get("flag"), 1, "IS64 harus 1 untuk XLEN=64");
 }
+
+#[test]
+fn test_const_func_unique_case_inside() {
+    // Bug CVA6: fungsi package `unique case (op) inside` (pola
+    // ariane_pkg::op_is_branch/is_rd_fpr) tak didukung evaluator konstanta
+    // → "has no return". Mendukung label enum, multi-label, range `[a:b]`.
+    let source = r#"
+package fpkg;
+  typedef enum logic [3:0] { OP_A=0, OP_B=1, OP_C=2, OP_D=3, OP_E=4 } op_t;
+  function automatic logic is_bc(input op_t op);
+    unique case (op) inside
+      OP_B, OP_C: return 1'b1;
+      [OP_C : OP_E]: return 1'b1;
+      default: return 1'b0;
+    endcase
+  endfunction
+  localparam op_t OP = OP_D;
+  localparam bit R = is_bc(OP);
+endpackage
+module top import fpkg::*;
+#(parameter bit V = R)
+();
+  logic [V:0] w;
+  logic flag;
+  initial begin
+    if (V) flag = 1'b1; else flag = 1'b0;
+    $finish;
+  end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 20).unwrap();
+    let w = &sigs.iter().find(|(s, _)| s == "w").unwrap().1;
+    assert_eq!(w.width, 2, "R=is_bc(OP_D)=1 via range → [1:0]");
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    assert_eq!(get("flag"), 1, "V harus 1");
+}

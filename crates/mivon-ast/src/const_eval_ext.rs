@@ -899,6 +899,105 @@ fn eval_stmt(
             }
             Ok(None)
         }
+        Stmt::Case {
+            expr, items, default,
+        }
+        | Stmt::CaseX {
+            expr, items, default,
+        }
+        | Stmt::CaseZ {
+            expr, items, default,
+        }
+        | Stmt::StmtCase {
+            expr, items, default,
+        }
+        | Stmt::UniqueCase {
+            expr, items, default, ..
+        }
+        | Stmt::PriorityCase {
+            expr, items, default, ..
+        }
+        | Stmt::Unique0Case {
+            expr, items, default, ..
+        }
+        | Stmt::CaseInside {
+            expr, items, default,
+        } => {
+            // Selector non-skalar / non-konstan → tak bisa diputuskan di
+            // const-eval: skip case (bukan error) agar fungsi dengan arg
+            // runtime tetap bisa di-inline sebagian.
+            let sel = match eval_in_ctx!(expr) {
+                Ok(v) => match scalar(v) {
+                    Ok(s) => s,
+                    Err(_) => return Ok(None),
+                },
+                Err(_) => return Ok(None),
+            };
+            for item in items {
+                let mut hit = false;
+                for lab in &item.labels {
+                    // Range `[lo:hi]` case-inside: RangeSelect base literal 0
+                    // (pola parser) dengan msb=lo, lsb=hi.
+                    if let Expr::RangeSelect {
+                        expr: base,
+                        msb,
+                        lsb,
+                    } = lab
+                    {
+                        if matches!(base.as_ref(), Expr::Value(Value::Decimal(0))) {
+                            let (lo, hi) = match (
+                                eval_in_ctx!(msb.as_ref()),
+                                eval_in_ctx!(lsb.as_ref()),
+                            ) {
+                                (Ok(l), Ok(h)) => match (scalar(l), scalar(h)) {
+                                    (Ok(lo), Ok(hi)) => (lo, hi),
+                                    _ => continue,
+                                },
+                                _ => continue,
+                            };
+                            if sel >= lo && sel <= hi {
+                                hit = true;
+                                break;
+                            }
+                            continue;
+                        }
+                    }
+                    // Label biasa: exact match. (CaseX/Z wildcard di-
+                    // approximate exact-match: nilai x/z di-parse jadi 0 —
+                    // cukup untuk fungsi utilitas enum seperti ariane_pkg.)
+                    match eval_in_ctx!(lab) {
+                        Ok(lv) => match scalar(lv) {
+                            Ok(l) if l == sel => {
+                                hit = true;
+                                break;
+                            }
+                            _ => {}
+                        },
+                        Err(_) => {}
+                    }
+                }
+                if hit {
+                    // Match pertama menang (unique/priority sama di const).
+                    // Return di dalam branch ter-propagasi; item tanpa
+                    // return (side-effect only) mengakhiri case.
+                    if let Some(v) = eval_stmt(
+                        &item.stmt,
+                        scalars,
+                        arrays,
+                        structs,
+                        package_symbols,
+                        cur_pkg,
+                    )? {
+                        return Ok(Some(v));
+                    }
+                    return Ok(None);
+                }
+            }
+            if let Some(d) = default {
+                return eval_stmt(d, scalars, arrays, structs, package_symbols, cur_pkg);
+            }
+            Ok(None)
+        }
         Stmt::BlockingAssign { lhs, rhs, .. } => {
             let v = eval_in_ctx!(rhs)?;
             match lhs {
