@@ -2489,7 +2489,17 @@ impl CompileSession {
             elaborator.set_cache(std::mem::take(&mut self.cached_elab_modules));
         }
 
-        let ir_design = elaborator.elaborate(top_name, ElaborateMode::StrictSimulation)?;
+        let ir_design = match elaborator.elaborate(top_name, ElaborateMode::StrictSimulation) {
+            Ok(ir) => ir,
+            Err(e) => {
+                // Simpan diagnostik + cache walau elaborasi gagal — tanpa ini
+                // akar masalah (mis. instance tak ter-resolve) hilang dan tool
+                // hanya menampilkan E3005 generik.
+                self.elab_diagnostics = elaborator.flush_diagnostics();
+                self.cached_elab_modules = elaborator.take_cache();
+                return Err(e);
+            }
+        };
         self.timing.elab_us = elab_start.elapsed().as_micros() as u64;
 
         // Store module cache back for next incremental compile
@@ -2537,7 +2547,15 @@ impl CompileSession {
             elaborator.set_cache(std::mem::take(&mut self.cached_elab_modules));
         }
 
-        let ir_design = elaborator.elaborate(top_name, mode)?;
+        let ir_design = match elaborator.elaborate(top_name, mode) {
+            Ok(ir) => ir,
+            Err(e) => {
+                // Sama seperti jalur Strict: jangan buang diagnostik saat gagal.
+                self.elab_diagnostics = elaborator.flush_diagnostics();
+                self.cached_elab_modules = elaborator.take_cache();
+                return Err(e);
+            }
+        };
         self.timing.elab_us = elab_start.elapsed().as_micros() as u64;
 
         // Store module cache back for next incremental compile
@@ -2808,6 +2826,47 @@ mod tests {
             snippet.source_line.contains("missing_module"),
             "snippet content mismatch: {:?}",
             snippet.source_line
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_failed_elab_keeps_diagnostics() {
+        // Regresi: module yang di-skip di loop elaborasi + E3005 di top
+        // resolution MEMBUANG diagnostik akar — tool hanya menampilkan
+        // E3005 generik. Session harus menyimpan diagnostik via
+        // take_elab_diagnostics().
+        let dir =
+            std::env::temp_dir().join(format!("mivon_eldiag_test_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let top_path = dir.join("top.sv");
+        std::fs::write(
+            &top_path,
+            "module top_gone;\n  logic [NO_SUCH_PARAM-1:0] w;\n  initial begin w = 0; $finish; end\nendmodule\n",
+        )
+        .unwrap();
+
+        let config = SessionConfig {
+            sources: vec![top_path],
+            ..Default::default()
+        };
+        let mut session = CompileSession::new(config);
+        let err = match session.compile_and_elaborate(Some("top_gone")) {
+            Err(e) => e,
+            Ok(_) => panic!("expected elaboration error for bad width param"),
+        };
+        let _ = err;
+        let diags = session.take_elab_diagnostics();
+        assert!(
+            !diags.is_empty(),
+            "diagnostik elab gagal tak boleh hilang"
+        );
+        assert!(
+            diags.iter().any(|d| d.is_error()
+                && d.message.as_ref().contains("NO_SUCH_PARAM")),
+            "harus ada error akar skip-module: {:?}",
+            diags.iter().map(|d| d.message.as_ref()).collect::<Vec<_>>()
         );
 
         let _ = std::fs::remove_dir_all(&dir);

@@ -269,8 +269,22 @@ pub fn open_elaborated(
     let files = collect_targets(targets)?;
     let cfg = make_session_config_with_mv(files, incdirs, defines, top.map(|s| s.to_string()))?;
     let mut session = CompileSession::new(cfg);
-    let (design, ir, _len) = session.compile_and_elaborate_with_mode(top, mode)?;
-    Ok((session, design, ir))
+    match session.compile_and_elaborate_with_mode(top, mode) {
+        Ok((design, ir, _len)) => Ok((session, design, ir)),
+        Err(e) => {
+            // Elaborasi gagal: tampilkan diagnostik akar (instance tak
+            // ter-resolve, param gagal, dsb.) — bukan hanya E3005 generik.
+            // Best-effort: kegagalan render tak menutupi error asli.
+            let diags = session.take_elab_diagnostics();
+            if !diags.is_empty() {
+                let mut emitter = mivon_core::diagnostics::TerminalEmitter::new();
+                for d in &diags {
+                    let _ = emitter.emit(d);
+                }
+            }
+            Err(e)
+        }
+    }
 }
 
 /// Buka lapisan cache pipeline (`cache/<pid>/`) untuk project yang sama dengan
