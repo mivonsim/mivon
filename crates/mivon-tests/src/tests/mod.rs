@@ -24027,11 +24027,12 @@ fn test_mv_long_logic_chain_no_stack_overflow() {
     assert_eq!(get("y_or"), 1, "a=1 → OR rantai = 1");
 }
 
-/// Regresi bug #38: rantai `&&` **32 operan sinyal** (bukan konstanta) dulu
+/// Regresi bug #38: rantai `&&` **64 operan sinyal** (bukan konstanta) dulu
 /// `SIGABRT` saat **ELABORASI** (bukan evaluasi): `const_eval_with_params`
 /// (~944 baris, satu match raksasa) di-rekursi sampai dasar sebelum gagal,
-/// frame ~ratusan KB/level → stack thread test 2 MiB jebol. Fix: dispatcher
-/// tipis + `const_eval_ops`/`const_eval_deep` (pola fix #37).
+/// frame ~ratusan KB/level → stack thread test 2 MiB jebol (batas pra-fix:
+/// 16 LULUS / 32 GAGAL). Fix: guard `contains_signal_ref` + dispatcher tipis +
+/// `const_eval_ops`/`const_eval_deep`/`elaborate_binary`/`elaborate_unary`.
 #[test]
 fn test_mv_very_long_logic_chain_no_stack_overflow() {
     let n = 64usize;
@@ -24044,15 +24045,15 @@ fn test_mv_very_long_logic_chain_no_stack_overflow() {
         terms.push(format!("s{}", i));
     }
     let src = format!(
-        "module tb_chain32 {{\n{}    sig y : bit\n    initial {{\n{}        y = {}\n        $display(\"CHAIN32_OK y=%0d\", y)\n        $finish\n    }}\n}}\n",
+        "module tb_chain64 {{\n{}    sig y : bit\n    initial {{\n{}        y = {}\n        $display(\"CHAIN64_OK y=%0d\", y)\n        $finish\n    }}\n}}\n",
         decls,
         assigns,
         terms.join(" && ")
     );
-    let r = mivon_mv::transpile(&src, "chain32").expect("transpile .mv OK");
-    let sigs = simulate_signals(&r.sv, 10).expect("rantai 32 operan harus jalan");
+    let r = mivon_mv::transpile(&src, "chain64").expect("transpile .mv OK");
+    let sigs = simulate_signals(&r.sv, 10).expect("rantai 64 operan harus jalan");
     let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
-    assert_eq!(get("y"), 1, "semua operand 1 → AND 32 operan = 1");
+    assert_eq!(get("y"), 1, "semua operand 1 → AND 64 operan = 1");
 }
 
 // ── LRM 1800 §7.3 — dimensi unpacked harus SETELAH nama variabel ──────

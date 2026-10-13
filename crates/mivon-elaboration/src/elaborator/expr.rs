@@ -116,6 +116,11 @@ impl Elaborator {
         signal_map: &HashMap<Symbol, SignalId>,
         signals: &[SignalInfo],
     ) -> Result<IrExpr, SimError> {
+        // Statistik cache pipeline (db.md "10. expression/"): jumlah evaluasi
+        // ekspresi. Dihitung di DISPATCHER (satu-satunya pintu masuk) agar SETIAP
+        // sub-ekspresi — termasuk BinaryOp/UnaryOp yang dirutekan ke helper —
+        // tetap tercatat persis seperti sebelum pemecahan (bug #38).
+        self.opt_stats.record_expr_eval();
         match expr {
             Expr::BinaryOp { op, lhs, rhs } => {
                 self.elaborate_binary(expr, op, lhs, rhs, signal_map, signals)
@@ -184,10 +189,6 @@ impl Elaborator {
         signal_map: &HashMap<Symbol, SignalId>,
         signals: &[SignalInfo],
     ) -> Result<IrExpr, SimError> {
-        // Statistik cache pipeline (db.md "10. expression/"): jumlah evaluasi
-        // ekspresi. Dipanggil untuk setiap sub-ekspresi — di-akumulasi di
-        // `opt_stats` (Cell) dan di-snapshot ke cache setelah elaborasi.
-        self.opt_stats.record_expr_eval();
         match expr {
             Expr::Ident { name, .. } if name == "this" => Ok(IrExpr::This),
             Expr::Value(v) => {
