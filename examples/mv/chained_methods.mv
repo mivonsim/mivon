@@ -1,0 +1,52 @@
+// F88 — Method array BERTAUT pada hasil temporer (LRM 1800 §7.12.1).
+//
+// Menutup keterbatasan lama: `q.unique().size()` (method dipanggil pada hasil
+// method lain) gagal di runtime dengan RT0001 "cannot call method 'size' on
+// object with unknown class" — hasil method dalam diperlakukan sebagai handle
+// objek. Kini hasil method dalam disimpan ke slot scratch (state-only, LIFO)
+// lalu method luar di-dispatch lewat `evaluate_array_method` yang sama.
+// Berlaku juga utk rantai bersarang (`q.find with (...).unique().size()`).
+//
+// Jalankan:
+//   mivon mgen examples/mv/chained_methods.mv
+//   mivon sim  examples/mv/chained_methods.mv --top tb_chain -T 100
+//
+// Harapan:
+//   CH n1=3 n2=3 n3=2 n4=2 s1=6
+//   CHAIN_OK
+
+module tb_chain {
+    sig q  : logic[7:0][$]
+    sig n1, n2, n3, n4, s1 : logic[31:0]
+    sig ok : bit = 0
+
+    initial {
+        q = '{8'd3, 8'd1, 8'd2, 8'd1, 8'd3}
+
+        // unique() mengembalikan queue baru → .size() pada hasilnya
+        n1 = q.unique().size()                       // {3,1,2} → 3
+        // unique_index() → queue indeks → .size()
+        n2 = q.unique_index().size()                 // {0,1,2} → 3
+        // locator dgn with clause → hasil queue → .size()
+        n3 = q.find with (item == 1).size()          // {1,1} → 2
+        // rantai bersarang: find → unique → size
+        n4 = q.find with (item > 1).unique().size()  // {3,2,3} → {3,2} → 2
+        // reduction pada hasil method lain
+        s1 = q.unique().sum()                        // 3+1+2 → 6
+
+        $display("CH n1=%0d n2=%0d n3=%0d n4=%0d s1=%0d", n1, n2, n3, n4, s1)
+
+        ok = 1
+        if (n1 != 3) { ok = 0 }
+        if (n2 != 3) { ok = 0 }
+        if (n3 != 2) { ok = 0 }
+        if (n4 != 2) { ok = 0 }
+        if (s1 != 6) { ok = 0 }
+        if (ok) {
+            $display("CHAIN_OK")
+        } else {
+            $display("CHAIN_BROKEN")
+        }
+        $finish
+    }
+}

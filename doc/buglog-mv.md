@@ -408,8 +408,8 @@ bug di mivon utama (parser/elaborator/simulator). Status: ✅ fixed / ⏳ open.
       `test_array_method_keyword_names`,
       `test_mv_array_method_with_clause_end_to_end`.
     - Sisa caveat (keterbatasan, bukan bug): chained method pada hasil
-      temporer (`q.unique().size()`) belum didukung — simpan ke queue dulu
-      (`r = q.unique(); r.size()`); akses member/index pada `item`
+      temporer (`q.unique().size()`) → **kini DIDUKUNG penuh, lihat #42**;
+      akses member/index pada `item`
       (`with (item.x)`) → **kini DIDUKUNG penuh, lihat #40**; iverilog tak
       dukung `with` clause.
     - **Follow-up auto-review F41:**
@@ -583,8 +583,36 @@ bug di mivon utama (parser/elaborator/simulator). Status: ✅ fixed / ⏳ open.
       `examples/mv/struct_field_width.mv` → `SFW_OK`; test
       `test_mv_struct_field_width_end_to_end`. Full workspace test hijau.
 
+42. **Method array bertaut pada hasil temporer belum didukung — keterbatasan →
+    full support (LRM §7.12.1).** Caveat F41 (#36): `q.unique().size()` gagal
+    di runtime — hasil method dalam (`unique()`) diperlakukan sebagai handle
+    objek (`obj_val.to_u64() as ObjId` → `execute_method`) → **RT0001 "cannot
+    call method 'size' on object with unknown class"**. `q.find with (…).sum()`
+    dll juga. Bukan keterbatasan parser (mgen sudah emit `q.unique().size()`
+    verbatim) — murni runtime.
+    - **Fix (runtime saja):**
+      1. `state.rs`: `push_scratch_signal(val)` / `pop_scratch_signal()` — slot
+         sinyal sekali-pakai (state-only, id di luar `design.top.signals` → tak
+         muncul di VCD), push/pop LIFO di sekitar satu evaluasi.
+      2. `engine/eval/expr.rs`: helper `array_method_result_elem_width(expr)` —
+         lebar ELEMEN hasil sebuah method array (Signal queue → `elem_width`;
+         `find*`/`unique`/`sort`/`rsort`/`reverse`/`shuffle` → sama receiver;
+         `*_index`/`unique_index` → 32; skalar → None). Di arm `MethodCall`:
+         bila `obj` adalah `MethodCall` yang menghasilkan queue, evaluasi hasil
+         dalam → `push_scratch_signal` → dispatch method luar via
+         `evaluate_array_method` yang sama (ia baca receiver via `read_signal`)
+         → `pop_scratch_signal`.
+    - Rantai bersarang (`q.find with (…).unique().size()`) & `with` clause di
+      tiap tahap didukung (LIFO aman; `evaluate_array_method` meng-clone
+      receiver di awal arm).
+    - Verifikasi: `test_array_method_chained_on_temporary` (SV, baru) —
+      `unique().size()`=3, `unique_index().size()`=3, `find with (item==1)
+      .size()`=2, `find with (item>1).unique().size()`=2, `unique().sum()`=6.
+      Demo e2e `.mv` `examples/mv/chained_methods.mv` → `CHAIN_OK`; test
+      `test_mv_chained_methods_end_to_end`. Full workspace test hijau.
+
 ## ⏳ Open
 
-_(Tidak ada item open. Caveat chained method temporer & iverilog `with`
-tercatat di #36 sbg keterbatasan tool/desain, bukan bug. `with (item.x)`
-kini DIDUKUNG penuh — lihat #40.)_
+_(Tidak ada item open. `with (item.x)` kini DIDUKUNG penuh (#40) & method
+bertaut pada hasil temporer (`q.unique().size()`) DIDUKUNG penuh (#42).
+Caveat iverilog `with` clause = keterbatasan TOOL, bukan bug.)_

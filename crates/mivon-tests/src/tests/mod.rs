@@ -1226,6 +1226,36 @@ endmodule
     assert_eq!(get("i0"), 1, "find_index with (item.x == 9) = 1");
 }
 
+/// LRM 1800 §7.12.1: method array BERTAUT pada hasil temporer
+/// (`q.unique().size()`). PRA-FIX hasil method dalam diperlakukan sebagai
+/// handle objek → RT0001 "cannot call method 'size' on object with unknown
+/// class". Kini hasil dalam disimpan ke slot scratch lalu di-dispatch ulang.
+#[test]
+fn test_array_method_chained_on_temporary() {
+    let source = r#"
+module tb_ch;
+    int q[$];
+    int n1, n2, n3, n4, s1;
+    initial begin
+        q = '{3,1,2,1,3};
+        n1 = q.unique().size();
+        n2 = q.unique_index().size();
+        n3 = q.find with (item == 1).size();
+        n4 = q.find with (item > 1).unique().size();
+        s1 = q.unique().sum();
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 5).unwrap();
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    assert_eq!(get("n1"), 3, "q.unique().size() → 3");
+    assert_eq!(get("n2"), 3, "q.unique_index().size() → 3");
+    assert_eq!(get("n3"), 2, "q.find with (item==1).size() → 2");
+    assert_eq!(get("n4"), 2, "q.find with (item>1).unique().size() → 2");
+    assert_eq!(get("s1"), 6, "q.unique().sum() → 3+1+2");
+}
+
 /// Review F41: `min`/`max` mengembalikan **elemen** (bukan nilai kunci
 /// `with`), dan `find_last`/`find_last_index` mengembalikan **hanya satu**
 /// kecocokan terakhir (LRM 1800 §7.12.1).
@@ -24170,6 +24200,24 @@ fn test_mv_struct_field_width_end_to_end() {
     assert_eq!(get("sx"), 7, "e.x = 7 (member MSB)");
     assert_eq!(get("sy"), 42, "e.y = 42 (member LSB, 32-bit)");
     assert_eq!(get("ok"), 1, "semua lolos (SFW_OK)");
+}
+
+/// E2E `.mv` (F88): method array bertaut pada hasil temporer
+/// (`q.unique().size()`, `q.find with (...).unique().size()`) — sumber `.mv`
+/// sampai simulasi.
+#[test]
+fn test_mv_chained_methods_end_to_end() {
+    let src = include_str!("../../../../examples/mv/chained_methods.mv");
+    let r = mivon_mv::transpile(src, "chained_methods").expect("transpile .mv OK");
+    let combined = format!("{}\n{}", r.svh, r.sv);
+    let sigs = simulate_signals(&combined, 100).expect("chained_methods harus simulasi bersih");
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    assert_eq!(get("n1"), 3, "q.unique().size()");
+    assert_eq!(get("n2"), 3, "q.unique_index().size()");
+    assert_eq!(get("n3"), 2, "q.find with (item==1).size()");
+    assert_eq!(get("n4"), 2, "q.find with (item>1).unique().size()");
+    assert_eq!(get("s1"), 6, "q.unique().sum()");
+    assert_eq!(get("ok"), 1, "semua lolos (CHAIN_OK)");
 }
 
 /// Regresi bug #37: rantai `&&`/`||` panjang (16 operan) TIDAK boleh

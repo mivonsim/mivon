@@ -301,6 +301,31 @@ impl SimulationState {
         }
     }
 
+    /// Slot scratch sekali-pakai untuk hasil method array bertaut
+    /// (`q.unique().size()`, `q.find(...).sum()`): nilai hasil method DALAM
+    /// disimpan di sini agar `evaluate_array_method` (yang membaca receiver via
+    /// `read_signal`) bisa dipakai ulang tanpa sinyal desain nyata. Push/pop
+    /// LIFO mengelilingi satu evaluasi → tak ada pertumbuhan permanen. Signal
+    /// id di luar `design.top.signals` (state-only) sehingga tak muncul di VCD.
+    pub fn push_scratch_signal(&mut self, val: LogicVec) -> SignalId {
+        let id = self.signals.len();
+        self.signals.push(val.clone());
+        self.next_signals.push(val);
+        self.changed.push(false);
+        self.large_dirty.push(false);
+        self.alias_redirect.push(id);
+        id
+    }
+
+    /// Lepas slot scratch terakhir (lihat `push_scratch_signal`).
+    pub fn pop_scratch_signal(&mut self) {
+        self.signals.pop();
+        self.next_signals.pop();
+        self.changed.pop();
+        self.large_dirty.pop();
+        self.alias_redirect.pop();
+    }
+
     /// Snapshot nilai sinyal utk evaluasi/preponed/history. Sinyal ultra-lebar
     /// (array memori flat) SELALU di-snapshot LAZY (tanpa materialisasi):
     /// - par-eval utk array raksasa SUDAH di-disable (`has_wide_signals` →

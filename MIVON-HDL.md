@@ -310,12 +310,13 @@ Aturan:
   (elaborator memotong bit elemen sesuai offset field → `ExprRangeSelect`).
   Method bernama keyword
   (`unique`/`and`/`or`/`xor`) boleh dipanggil setelah `.` (`q.unique()`,
-  `q.and()`). Contoh: `examples/mv/array_methods.mv`,
-  `examples/mv/array_item_field.mv`.
-  - **Caveat**: (a) chained method pada hasil temporer (`q.unique().size()`)
-    belum didukung — simpan dulu ke queue (`r = q.unique(); r.size()`);
-    iverilog tak mendukung `with`
-    clause (limit tool); verilator & `mivon sim` OK.
+  `q.and()`). Method boleh **bertaut pada hasil temporer** (`q.unique().size()`,
+  `q.find with (item > 1).unique().size()`, `q.unique().sum()`) — hasil method
+  dalam di-dispatch ulang sebagai queue temporer. Contoh:
+  `examples/mv/array_methods.mv`, `examples/mv/array_item_field.mv`,
+  `examples/mv/chained_methods.mv`.
+  - **Caveat**: iverilog tak mendukung `with` clause (limit tool);
+    verilator & `mivon sim` OK.
 - **Rangkuman emisi cast** (codegen): `logic[M:N]'(x)` → `W'(x)`
   (width cast), `Q'(x)` dengan `Q` typedef queue → `'{ x }`, selain itu
   `T'(x)` static cast apa adanya (termasuk typedef non-queue & tipe dasar).
@@ -1897,6 +1898,7 @@ module tb_traffic {
 | **F84** ✅ | **`unique_index` — keterbatasan → full support (LRM §7.12.1, bug #39)** — F41 dulu sengaja membuang `unique_index` dari `is_array_with_method` (runtime belum ada → `q.unique_index()` jatuh ke arm fallback `Err(NotImplemented)`). Kini didukung penuh: arm runtime `"unique_index"` di `engine/uvm/util.rs` (dedup nilai via `HashSet`, dorong **indeks** 32-bit kemunculan pertama tiap nilai unik → queue baru, tak ubah sumber) + `"unique_index"` ditambahkan ke `is_array_with_method` (binding `item` bila ada `with`). Parser tak berubah (`unique_index` bukan keyword SV). | `test_array_method_unique_index` (baru: `'{1,1,2,3,3}` → `{0,2,3}`) + `test_array_method_unique_index_with_clause` (review-fix: `unique_index with (item/2)` → `{0,2}`); demo e2e `examples/mv/array_methods.mv` diperluas → `ARR_UIDX n=3 i0=0 i1=2 i2=3` + `ARR_OK`; `test_mv_array_method_with_clause_end_to_end` diperluas; buglog-mv #39 |
 | **F86** ✅ | **Akses field struct pada iterator `item` — keterbatasan → full support (LRM §7.12.1, bug #40)** — caveat F41: `with` hanya boleh pakai `item` utuh; `q.find with (item.x > 3)` di-emit `HierRef("item.x")` → RT0001. Kini `item.<field>` dikenali: `Elaborator.with_item_fields` (field struct TIPE ELEMEN receiver, diisi di `elaborate_with_clause`) + cabang `MemberAccess` mengubah `item.x` → `ExprRangeSelect(HierRef("item"), msb, lsb)` sesuai offset field (+`Signed` bila signed). Runtime tak berubah. | `test_array_method_with_item_field_access` (SV: `struct packed {x,y}` queue → find/sum/min/max/find_index atas `item.x`/`item.y`); demo e2e `.mv` `examples/mv/array_item_field.mv` → `ITF_OK` + `test_mv_array_item_field_end_to_end`; buglog-mv #40 |
 | **F87** ✅ | **Lebar field struct dari TIPE (bug #41)** — member struct tanpa range eksplisit (`int y;`, `byte b;`, enum/typedef) dihitung 1 oleh akumulasi offset struct_fields & `DataType::width()` → member MSB salah offset (`e.x`=21 bukan 7), lebar total struct salah. Fix di elaborator: (1) akumulasi offset struct_fields (`mod.rs` ×2, signal + `typedef_field_map`) pakai `f.width` hasil resolve, bukan `m.range.unwrap_or(1)`; (2) `resolve_type_width` arm baru `StructType`/`UnionType` = SUM/MAX lebar field `compute_struct_fields`. `DataType::width()` (mivon-ast) tak disentuh (context-free). | `test_inline_struct_type_width_member_offsets` (SV: `struct packed {logic[7:0] x; int y;}` → `e.x`=7, `sum with (item.x)`=14, `find_index`=1; PRA-FIX 21/150/0); demo e2e `.mv` `examples/mv/struct_field_width.mv` → `SFW_OK` + `test_mv_struct_field_width_end_to_end`; buglog-mv #41 |
+| **F88** ✅ | **Method array bertaut pada hasil temporer — keterbatasan → full support (LRM §7.12.1, bug #42)** — `q.unique().size()` gagal RT0001 (hasil method dalam diperlakukan handle objek). Fix runtime: slot sinyal scratch sekali-pakai (`state.rs` `push_scratch_signal`/`pop_scratch_signal`, state-only → tak di VCD) + helper `array_method_result_elem_width` (lebar elemen hasil method) di `engine/eval/expr.rs`; arm `MethodCall` mendeteksi receiver `MethodCall` ber-queue → evaluasi hasil dalam → scratch → dispatch ulang `evaluate_array_method`. Rantai bersarang & `with` per tahap didukung. | `test_array_method_chained_on_temporary` (SV: `unique().size()`=3, `unique_index().size()`=3, `find with (item==1).size()`=2, `find with (item>1).unique().size()`=2, `unique().sum()`=6); demo e2e `.mv` `examples/mv/chained_methods.mv` → `CHAIN_OK` + `test_mv_chained_methods_end_to_end`; buglog-mv #42 |
 
 **Kriteria selesai F2:** `mivon mgen examples/mv/counter.mv` menghasilkan
 `counter.sv` yang bisa disimulasikan oleh `mivon counter.sv` tanpa error.

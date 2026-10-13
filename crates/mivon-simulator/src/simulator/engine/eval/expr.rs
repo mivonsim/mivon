@@ -1556,6 +1556,41 @@ impl SimulationEngine {
         }
     }
 
+    /// Lebar ELEMEN hasil sebuah method array, bila hasilnya berupa queue/
+    /// dynamic array. Dipakai untuk mendukung method BERTAUT pada hasil
+    /// temporer (`q.unique().size()`, `q.find(...).sum()`): hasil method dalam
+    /// disimpan ke slot scratch dgn lebar elemen ini agar
+    /// `evaluate_array_method` bisa dipanggil ulang (ia membaca receiver via
+    /// `read_signal`). `None` bila receiver bukan queue atau hasilnya skalar
+    /// (mis. `size`/`sum`/`min` → bukan queue, tak bisa di-chain sbg array).
+    fn array_method_result_elem_width(&self, expr: &IrExpr) -> Option<usize> {
+        match expr {
+            IrExpr::Signal(id, _) => {
+                let s = self.design.top.signals.get(*id)?;
+                if s.is_queue || s.is_dynamic {
+                    Some(s.elem_width)
+                } else {
+                    None
+                }
+            }
+            IrExpr::MethodCall { obj, method, .. } => {
+                let rw = self.array_method_result_elem_width(obj)?;
+                match method.as_str() {
+                    // Mengembalikan queue dgn elemen sama dgn receiver.
+                    "find" | "find_first" | "find_last" | "unique" | "sort" | "rsort"
+                    | "reverse" | "shuffle" => Some(rw),
+                    // Mengembalikan queue INDEKS 32-bit.
+                    "find_index" | "find_first_index" | "find_last_index" | "unique_index" => {
+                        Some(32)
+                    }
+                    // Hasil skalar / bukan queue → tak bisa di-chain sbg array.
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
     /// Body arm `IrExpr::UnaryOp` — dipindah dari `evaluate_expr_deep`
     /// (bug #37) agar frame dispatcher `evaluate_expr_impl` tetap kecil.
     #[inline(never)]
@@ -2258,6 +2293,35 @@ impl SimulationEngine {
                             args,
                             with_clause.as_deref(),
                         );
+                    }
+                }
+                // Method array BERTAUT pada hasil temporer (`q.unique().size()`,
+                // `q.find with (…) .sum()`): receiver `obj` adalah MethodCall
+                // yang menghasilkan queue. Evaluasi hasil dalam, simpan ke slot
+                // scratch (state-only, LIFO), lalu dispatch method luar lewat
+                // `evaluate_array_method` yang sama (membaca receiver via
+                // `read_signal`). PRA-FIX jatuh ke arm objek-handle → RT0001
+                // "cannot call method 'size' on object with unknown class".
+                if matches!(obj.as_ref(), IrExpr::MethodCall { .. }) {
+                    if let Some(ew) = self.array_method_result_elem_width(obj) {
+                        if ew > 0 {
+                            let inner = self.evaluate_expr(obj)?;
+                            let scratch_id = self.state.push_scratch_signal(inner);
+                            let scratch_sig = SignalInfo {
+                                elem_width: ew,
+                                is_queue: true,
+                                ..Default::default()
+                            };
+                            let r = self.evaluate_array_method(
+                                scratch_id,
+                                &scratch_sig,
+                                method.as_str(),
+                                args,
+                                with_clause.as_deref(),
+                            );
+                            self.state.pop_scratch_signal();
+                            return r;
+                        }
                     }
                 }
                 // F36: method call pada instance interface / hier instance yang
