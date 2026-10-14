@@ -190,7 +190,23 @@ impl Parser {
                     self.advance();
                 }
                 let members = self.parse_struct_body()?;
-                let names = self.parse_decl_names(None, vec![])?;
+                // LRM §7.2: `struct packed {...} [packed_dim] name [unpacked]`
+                // (cva6: `} [NUM_RULES-1:0] rules [NUM_SLAVE]`,
+                // `} [TLB_ENTRIES-1:0] tags_q, tags_n`). Tanpa ini `[PARAM]`
+                // jatuh ke E1005 sesat. Pola sama dgn cabang logic/enum.
+                let decl_expr_range =
+                    if self.peek() == &Token::LBrack && self.peek_ahead(1) != &Token::Star {
+                        self.parse_range()?
+                    } else {
+                        None
+                    };
+                let mut extra_packed: Vec<(ExprRange, Option<Range>)> = Vec::new();
+                while self.peek_is_packed_dim() {
+                    if let Some(er) = self.parse_range()? {
+                        extra_packed.push((er, None));
+                    }
+                }
+                let names = self.parse_decl_names(decl_expr_range, extra_packed)?;
                 self.skip_semi();
                 return Ok(Decl {
                     dtype: DataType::StructType { members },
@@ -204,7 +220,20 @@ impl Parser {
                     self.advance();
                 }
                 let members = self.parse_struct_body()?;
-                let names = self.parse_decl_names(None, vec![])?;
+                // Sama dgn struct: packed-dim setelah body (cva6 union).
+                let decl_expr_range =
+                    if self.peek() == &Token::LBrack && self.peek_ahead(1) != &Token::Star {
+                        self.parse_range()?
+                    } else {
+                        None
+                    };
+                let mut extra_packed: Vec<(ExprRange, Option<Range>)> = Vec::new();
+                while self.peek_is_packed_dim() {
+                    if let Some(er) = self.parse_range()? {
+                        extra_packed.push((er, None));
+                    }
+                }
+                let names = self.parse_decl_names(decl_expr_range, extra_packed)?;
                 self.skip_semi();
                 return Ok(Decl {
                     dtype: DataType::UnionType { members },

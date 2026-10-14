@@ -153,3 +153,34 @@ endmodule
         sesat
     );
 }
+
+/// Bug-6 (cva6): struct anonim dgn packed-dim PARAM setelah body
+/// (`} [NUM_RULES-1:0] rules [NUM_SLAVE]`, `} [TLB_ENTRIES-1:0] tags_q`)
+/// jatuh ke E1005 sesat "skipping unknown construct: 'NUM_RULES'".
+/// Sekarang packed-dim di-parse (LRM §7.2).
+#[test]
+fn test_cva6_struct_packed_param_dim() {
+    let src = r#"
+module top #(parameter int NUM_RULES = 4, parameter int NUM_SLAVE = 2) ();
+  struct packed {
+    logic enabled;
+    logic [7:0] mask;
+  } [NUM_RULES-1:0] rules [NUM_SLAVE];
+  struct packed {
+    logic [3:0] vpn;
+  } [2-1:0] tags_q, tags_n;
+  initial #1 $finish;
+endmodule
+"#;
+    let (_design, errors) = lex_and_parse(src);
+    assert_no_parse_errors(src);
+    let sesat: Vec<_> = errors
+        .iter()
+        .filter(|d| format!("{}", d).contains("skipping unknown construct"))
+        .collect();
+    assert!(
+        sesat.is_empty(),
+        "diag sesat E1005 tidak boleh muncul: {:?}",
+        sesat
+    );
+}
