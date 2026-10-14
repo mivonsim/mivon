@@ -1634,6 +1634,16 @@ fn scope_rename_module_item(item: &mut ModuleItem, map: &HashMap<Symbol, Symbol>
                     er.msb = scope_rename_expr(&er.msb, map);
                     er.lsb = scope_rename_expr(&er.lsb, map);
                 }
+                // Dimensi packed LANJUTAN (`logic [A-1:0][B-1:0] x` → B ada di
+                // extra_packed_dims, bukan expr_range). Tanpa rename di sini,
+                // referensi localparam body-generate (`NUM_OPS`) di dim kedua
+                // TIDAK ber-prefix scope → lookup `NUM_OPS` gagal walau
+                // deklarasinya sudah di-rename `gen[i].NUM_OPS` (bug E3003
+                // "'NUM_OPS' not found in parameter context" di fpnew_top).
+                for (er, _) in &mut var.extra_packed_dims {
+                    er.msb = scope_rename_expr(&er.msb, map);
+                    er.lsb = scope_rename_expr(&er.lsb, map);
+                }
                 if let Some(init) = &mut var.expr {
                     let old =
                         std::mem::replace(init, Expr::Value(mivon_ast::expr::Value::Decimal(0)));

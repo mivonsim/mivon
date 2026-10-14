@@ -105,6 +105,143 @@ impl Elaborator {
         }
     }
 
+    /// Resolve lebar referensi hierarkis `inst.port` / `inst.sub.sig` /
+    /// `inst.sub.port.field` (membaca port/signal instance dari module induk).
+    /// Menelusuri rantai instance lewat AST module (`design.modules`) sampai
+    /// module yang memuat signal leaf, lalu menuruni field struct tersisa.
+    /// Untuk path 2-level, prioritas lebar dari EKSPRESI yang terhubung ke port
+    /// itu (memakai parameter module saat ini, bukan default module anak).
+    /// Mengembalikan None bila bukan referensi instance atau path tak ditemukan.
+    pub(crate) fn resolve_hier_member_width(
+        &self,
+        expr: &Expr,
+        signal_map: &HashMap<Symbol, SignalId>,
+        signals: &[SignalInfo],
+    ) -> Option<usize> {
+        // Bongkar rantai `a.b.c` → [a, b, c]. Basis wajib Ident (nama instance).
+        let mut segs: Vec<Symbol> = Vec::new();
+        let mut cur = expr;
+        loop {
+            match cur {
+                Expr::MemberAccess { obj, field } => {
+                    segs.push(*field);
+                    cur = obj.as_ref();
+                }
+                Expr::Ident { name, .. } => {
+                    segs.push(*name);
+                    break;
+                }
+                _ => return None,
+            }
+        }
+        segs.reverse();
+        if segs.len() < 2 {
+            return None;
+        }
+        let cur_mod = self.current_module?;
+        let inst0 = self.find_instance_in_module(cur_mod, segs[0])?;
+        // Path 2-level: coba lebar dari ekspresi koneksi port (param saat ini).
+        if segs.len() == 2 {
+            for conn in &inst0.port_conns {
+                if let PortConnection::Named {
+                    port,
+                    expr: cexpr,
+                } = conn
+                {
+                    if *port == segs[1] {
+                        if let Ok(w) = compute_expr_width(
+                            cexpr,
+                            signal_map,
+                            signals,
+                            &self.param_vals,
+                            &self.package_symbols,
+                        ) {
+                            if w > 0 {
+                                return Some(w);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // Telusuri rantai: tiap segmen yang masih instance di module berjalan
+        // digantikan module-nya; segmen pertama yang BUKAN instance = signal.
+        let mut mod_name = inst0.module_name;
+        let mut idx = 1;
+        while idx < segs.len() {
+            if let Some(inst) = self.find_instance_in_module(mod_name, segs[idx]) {
+                mod_name = inst.module_name;
+                idx += 1;
+            } else {
+                break;
+            }
+        }
+        if idx >= segs.len() {
+            return None;
+        }
+        let leaf_mod = self.modules.get(&mod_name)?;
+        let sig = leaf_mod.signals.iter().find(|s| s.name == segs[idx])?;
+        let mut width = sig.width.max(1);
+        let mut fields: &[StructFieldInfo] = &sig.struct_fields;
+        for &f in &segs[idx + 1..] {
+            let fi = fields.iter().find(|x| x.name == f)?;
+            width = fi.width.max(1);
+            fields = &fi.sub_fields;
+        }
+        Some(width)
+    }
+
+    /// Cari deklarasi instance bernama `inst_name` di module/interface `mod_name`.
+    fn find_instance_in_module(&self, mod_name: Symbol, inst_name: Symbol) -> Option<&ModuleInstance> {
+        let items = self
+            .design
+            .modules
+            .iter()
+            .find(|m| m.name == mod_name)
+            .map(|m| m.items.as_slice())
+            .or_else(|| {
+                self.design
+                    .interfaces
+                    .iter()
+                    .find(|i| i.name == mod_name)
+                    .map(|i| i.items.as_slice())
+            })?;
+        items.iter().find_map(|item| match item {
+            ModuleItem::Instance(i) if i.instance_name == inst_name => Some(i),
+            _ => None,
+        })
+    }
+
+    /// Lebar port module ANAK dari hint koneksi `inst.port` (mis.
+    /// `instr_tracer_i.ld_valid`). Dipakai sebagai fallback terakhir saat lebar
+    /// ekspresi koneksi tak bisa dihitung — mis. referensi hierarkis dalam
+    /// (`ex_stage_i.lsu_i.i_load_unit.req_port_o.tag_valid`) yang leaf-nya
+    /// bertipe TYPE PARAMETER (default `logic`) sehingga struct-field default
+    /// elaboration module anak tak memuat field aslinya. Memakai parameter
+    /// module SAAT INI (`self.param_vals`) — binding `.CVA6Cfg(CVA6Cfg)` membuat
+    /// parameter anak sepadan dengan induk.
+    fn child_port_width_from_hint(
+        &self,
+        hint_name: &str,
+        signal_map: &HashMap<Symbol, SignalId>,
+        signals: &[SignalInfo],
+    ) -> Option<usize> {
+        let (inst_name, port_name) = hint_name.rsplit_once('.')?;
+        let cur = self.current_module?;
+        let inst = self.find_instance_in_module(cur, Symbol::intern(inst_name))?;
+        let target = self
+            .module_idx
+            .get(&inst.module_name)
+            .and_then(|&i| self.design.modules.get(i))?;
+        let port = target
+            .ports
+            .iter()
+            .find(|p| p.name == Symbol::intern(port_name))?;
+        self.port_width_aware(port, &self.param_vals, signal_map, signals)
+            .ok()
+            .filter(|w| *w > 0)
+    }
+
     /// Dispatcher tipis (bug #38): BinaryOp/UnaryOp diarahkan ke helper kecil
     /// `elaborate_binary`/`elaborate_unary` supaya bingkai di jalur rekursi
     /// rantai operator tetap kecil; sisanya ke `elaborate_expr_deep`. Sebelumnya
@@ -460,8 +597,11 @@ impl Elaborator {
                             }
                         }
                         _ => Err(self.elab_diag_at(
-                            DiagCode::ModuleNotFound,
-                            "dynamic range select not supported",
+                            DiagCode::NotImplemented,
+                            format!(
+                                "dynamic range select not supported: bounds [{:?}:{:?}] are not constant at elaboration",
+                                msb, lsb
+                            ),
                             expr_location(expr).0,
                             expr_location(expr).1,
                         )),
@@ -2240,6 +2380,27 @@ impl Elaborator {
                             .iter()
                             .any(|mi| matches!(mi, ModuleItem::Func(fd) if fd.name == *name))
                     });
+                    if std::env::var("DBG_FNF").is_ok() && name.as_str() == "countSetBits" {
+                        let names: Vec<String> = self
+                            .design
+                            .modules
+                            .iter()
+                            .flat_map(|m| m.items.iter())
+                            .filter_map(|mi| match mi {
+                                ModuleItem::Func(fd) => Some(fd.name.as_str().to_string()),
+                                _ => None,
+                            })
+                            .filter(|n| n.contains("count"))
+                            .collect();
+                        eprintln!(
+                            "[DBG-FNF] name={} cur_mod={:?} n_modules={} func_exists={} count_funcs={:?}",
+                            name,
+                            self.current_module.map(|s| s.as_str()),
+                            self.design.modules.len(),
+                            func_exists,
+                            names
+                        );
+                    }
                     if func_exists {
                         let ir_args: Result<Vec<IrExpr>, SimError> = args
                             .iter()
@@ -3113,27 +3274,38 @@ impl Elaborator {
             }
         }
         // For compound expressions, create an implicit wire
-        let width_val = compute_expr_width(
+        let width_val = match compute_expr_width(
             expr,
             signal_map,
             signals,
             &self.param_vals,
             &self.package_symbols,
-        )
-        .map_err(|e| {
-            // Lokasi dari ekspresi koneksi port (port 'i.L' di baris instance)
-            // agar E2003 punya snippet — dulu elab_diag tanpa lokasi lalu
-            // fallback find_name_in_source gagal untuk nama dotted yang
-            // terpisah spasi di source (`i .L`) → diagnostik tanpa lokasi
-            // (temuan fuzzer O2 diag_missing). (0,0) tetap fallback lama.
-            let (e_l, e_c) = expr_location(expr);
-            self.elab_diag_at(
-                mivon_core::diagnostics::diagnostic::DiagCode::WidthMismatch,
-                format!("width computation failed for port '{}': {}", hint_name, e),
-                e_l,
-                e_c,
-            )
-        })?;
+        ) {
+            Ok(w) => w,
+            // Referensi hierarkis ke port instance (`id_stage_i.fetch_entry_valid_i`)
+            // — lebar dari koneksi port instance di module induk.
+            Err(e) => match self.resolve_hier_member_width(expr, signal_map, signals) {
+                Some(w) => w,
+                // Fallback terakhir: lebar port module anak (`instr_tracer_i.ld_valid`).
+                None => match self.child_port_width_from_hint(hint_name, signal_map, signals) {
+                    Some(w) => w,
+                    None => {
+                        // Lokasi dari ekspresi koneksi port (port 'i.L' di baris instance)
+                        // agar E2003 punya snippet — dulu elab_diag tanpa lokasi lalu
+                        // fallback find_name_in_source gagal untuk nama dotted yang
+                        // terpisah spasi di source (`i .L`) → diagnostik tanpa lokasi
+                        // (temuan fuzzer O2 diag_missing). (0,0) tetap fallback lama.
+                        let (e_l, e_c) = expr_location(expr);
+                        return Err(self.elab_diag_at(
+                            mivon_core::diagnostics::diagnostic::DiagCode::WidthMismatch,
+                            format!("width computation failed for port '{}': {}", hint_name, e),
+                            e_l,
+                            e_c,
+                        ));
+                    }
+                },
+            },
+        };
         let width = if width_val > 0 { width_val } else { 1 };
         if width > 1_000_000 {
             eprintln!(

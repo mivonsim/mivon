@@ -133,6 +133,20 @@ impl Elaborator {
             let needs_custom_params =
                 inst_module.is_some_and(|m| !m.params.is_empty()) && !inst.param_map.is_empty();
             let needs_type_params = !inst.type_param_map.is_empty();
+            if std::env::var("DBG_FLAT").is_ok() {
+                eprintln!(
+                    "[DBG-FLAT-RE] mod={} inst={} in_idx={} nparams={} pmap={} tpmap={} ncp={} ntp={} pristine={}",
+                    inst.module_name.as_str(),
+                    inst.instance_name.as_str(),
+                    inst_module.is_some(),
+                    inst_module.map(|m| m.params.len()).unwrap_or(0),
+                    inst.param_map.len(),
+                    inst.type_param_map.len(),
+                    needs_custom_params,
+                    needs_type_params,
+                    self.pristine_param_modules.contains_key(&inst.module_name),
+                );
+            }
             let mut child = if needs_custom_params || needs_type_params {
                 // Cache IR per signature (module + override). Ribuan instance
                 // dengan override identik → elaborasi hanya SEKALI per

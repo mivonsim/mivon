@@ -294,6 +294,14 @@ pub struct Elaborator {
     /// TIDAK ada di set ini (TB/DV terpisah, dependensi hilang) di-downgrade
     /// ke warning agar tidak memblokir cone RTL yang valid.
     pub reachable: std::collections::HashSet<Symbol>,
+    /// Module yang di-instansiasi minimal sekali TANPA override parameter
+    /// (default param dipakai) — hanya module inilah yang IR default-nya
+    /// benar-benar dipakai simulasi. Module di LUAR set ini hanya pernah
+    /// di-elaborasi ulang dengan override instance saat flatten; error
+    /// elaborasi default-nya (mis. `CVA6Cfg` kosong → `VpnLen/PtLevels` =
+    /// 0/0 di `cva6_tlb`) bersifat palsu dan di-downgrade ke warning agar
+    /// tidak memblokir simulasi. Diisi di `elaborate()` sebelum loop topo.
+    pub default_used_modules: std::collections::HashSet<Symbol>,
     /// Top-level tidak bisa di-resolve secara unik (multiple candidate tops,
     /// circular hierarchy, atau root module tidak ada) dan fallback recovery
     /// terpaksa dipakai. Dipakai main.rs untuk menonaktifkan simulasi/VCD:
@@ -364,6 +372,21 @@ impl Elaborator {
         }
     }
 
+    /// True bila module yang sedang di-elaborasi TIDAK pernah dipakai dengan
+    /// parameter default (selalu di-override instance) — IR default-nya tak
+    /// pernah disimulasikan, jadi error elaborasi default (mis. pembagian 0
+    /// dari config kosong) bersifat palsu dan cukup di-downgrade ke warning.
+    /// Set kosong (mis. saat `--top` tidak dipakai) → selalu false agar
+    /// perilaku lama dipertahankan.
+    pub(crate) fn is_current_module_only_override_used(&self) -> bool {
+        match self.current_module {
+            Some(m) => {
+                !self.default_used_modules.is_empty() && !self.default_used_modules.contains(&m)
+            }
+            None => false,
+        }
+    }
+
     /// Fragment modules (implicit unit wrappers for include snippets like
     /// compare_helper.sv, abs.sv) have no real declarations; signals come
     /// from the enclosing context. All elaboration errors in these modules
@@ -419,14 +442,25 @@ impl Elaborator {
             reachable.insert(first.name);
         }
         while let Some(name) = queue.pop_front() {
+            let mut insts = Vec::new();
             if let Some(module) = module_map.get(&name) {
-                let mut insts = Vec::new();
                 topo::collect_instance_names(&module.items, &mut insts);
-                for mn in insts {
-                    if all_names.contains(&mn) && !reachable.contains(&mn) {
-                        reachable.insert(mn);
-                        queue.push_back(mn);
-                    }
+            }
+            // PRISTINE (belum ter-expand generate) module: `design.modules`
+            // sudah di-expand dengan param DEFAULT, sehingga cabang generate
+            // yang hanya aktif saat instance override param (mis.
+            // `frontend`'s `else : ras_gen ras ...` saat CVA6Cfg.RASDepth != 0)
+            // HILANG dari items ter-expand. Tanpa menelusuri pristine, module
+            // seperti `ras` salah dianggap unreachable → di-prune → gagal
+            // ditemukan saat re-elaborasi per override (bug E3001
+            // "module or interface 'ras' not found").
+            if let Some(pristine) = self.pristine_param_modules.get(&name) {
+                topo::collect_instance_names(&pristine.items, &mut insts);
+            }
+            for mn in insts {
+                if all_names.contains(&mn) && !reachable.contains(&mn) {
+                    reachable.insert(mn);
+                    queue.push_back(mn);
                 }
             }
         }
@@ -543,9 +577,9 @@ impl Elaborator {
             }
         }
 
-        // Evaluate package constants once (scalars + arrays)
+        // Evaluate package constants once (scalars + arrays + struct utuh)
         // eval_package_constants menerima referensi — tidak perlu clone map.
-        let (pkg_const_scalars, pkg_const_arrays) =
+        let (pkg_const_scalars, pkg_const_arrays, pkg_struct_values) =
             mivon_ast::const_eval_ext::eval_package_constants(&package_symbols);
 
         // Index konstanta STRUCT package: key `pkg::name.<field>` di
@@ -587,6 +621,20 @@ impl Elaborator {
                         }
                     }
                 }
+            }
+        }
+
+        // Overlay struct package AKURAT di atas index skalar: `pkg_struct_ref_index`
+        // dibangun dari key SKALAR `pkg::name.field` sehingga field bernilai
+        // array/struct (mis. `PMPCfgRstVal: {64{64'h0}}`) HILANG — member access
+        // `Cfg.PMPCfgRstVal` di fungsi package (build_config CVA6) gagal
+        // "field not found in struct constant". `pkg_struct_values` menyimpan
+        // nilai struct utuh dari evaluator package. Daftarkan kualifikasi
+        // `pkg::name` + plain `name` (agar ident_refs_pkg_struct juga akurat).
+        for (k, fields) in &pkg_struct_values {
+            pkg_struct_ref_index.insert(*k, fields.clone());
+            if let Some((_, base)) = k.as_str().rsplit_once("::") {
+                pkg_struct_ref_index.insert(Symbol::intern(base), fields.clone());
             }
         }
 
@@ -672,6 +720,7 @@ impl Elaborator {
             // `current_module`: setiap elaborasi modul menimpa miliknya).
             cur_type_param_widths: HashMap::new(),
             reachable: std::collections::HashSet::new(),
+            default_used_modules: std::collections::HashSet::new(),
             recovered: false,
 
             module_cache: HashMap::new(),
@@ -1173,6 +1222,25 @@ impl Elaborator {
                 elab_t0.elapsed().as_micros()
             );
         }
+        if std::env::var("DBG_PRISTINE").is_ok() {
+            let mut names: Vec<&str> = self
+                .pristine_param_modules
+                .keys()
+                .map(|s| s.as_str())
+                .collect();
+            names.sort_unstable();
+            eprintln!(
+                "[DBG-PRISTINE] n={} has_lsu={} has_mmu={} has_tlb={} names={:?}",
+                names.len(),
+                self.pristine_param_modules
+                    .contains_key(&Symbol::intern("load_store_unit")),
+                self.pristine_param_modules
+                    .contains_key(&Symbol::intern("cva6_mmu")),
+                self.pristine_param_modules
+                    .contains_key(&Symbol::intern("cva6_tlb")),
+                names,
+            );
+        }
         // Dead module detection: find unreachable modules via reachability from top
         let top_sym = top_module.map(Symbol::intern);
         // Set reachable dihitung sekali dan dipakai (a) warning unreachable,
@@ -1238,14 +1306,21 @@ impl Elaborator {
                 reachable.insert(first.name);
             }
             while let Some(name) = queue.pop_front() {
+                let mut insts = Vec::new();
                 if let Some(module) = module_map.get(&name) {
-                    let mut insts = Vec::new();
                     topo::collect_instance_names(&module.items, &mut insts);
-                    for mn in insts {
-                        if all_names.contains(&mn) && !reachable.contains(&mn) {
-                            reachable.insert(mn);
-                            queue.push_back(mn);
-                        }
+                }
+                // Pristine (belum ter-expand) module — cabang generate yang
+                // hilang saat expansion param-default tetap dihitung agar
+                // module spt `ras` tidak salah di-prune (lihat komentar
+                // compute_reachable_set).
+                if let Some(pristine) = self.pristine_param_modules.get(&name) {
+                    topo::collect_instance_names(&pristine.items, &mut insts);
+                }
+                for mn in insts {
+                    if all_names.contains(&mn) && !reachable.contains(&mn) {
+                        reachable.insert(mn);
+                        queue.push_back(mn);
                     }
                 }
             }
@@ -1417,6 +1492,37 @@ impl Elaborator {
         // dari top (sudah diperingatkan sebagai unreachable di atas). Error di
         // module mati tidak memblokir simulasi cone yang valid.
         let prune_unreachable = top_module.is_some();
+        // Modul yang di-instansiasi (di cone reachable) TANPA override
+        // param/type param di mana pun memakai IR hasil elaborasi default —
+        // bila elaborasi default gagal, itu error nyata. Modul yang SELALU
+        // di-instansiasi dengan override (mis. `wt_axi_adapter` yang butuh
+        // CVA6Cfg nyata; default `cva6_cfg_empty` → 0/0) akan di-elaborasi
+        // ULANG saat flatten dengan param instance, sehingga kegagalan
+        // elaborasi default bukan error fatal.
+        let mut default_used: std::collections::HashSet<Symbol> =
+            std::collections::HashSet::new();
+        for m in &self.design.modules {
+            if !reachable.contains(&m.name) {
+                continue;
+            }
+            for item in &m.items {
+                if let ModuleItem::Instance(inst) = item {
+                    let child_params_empty = snapshot_map
+                        .get(&inst.module_name)
+                        .map(|cm| cm.params.is_empty())
+                        .unwrap_or(true);
+                    let uses_default = (child_params_empty || inst.param_assigns.is_empty())
+                        && inst.type_param_assigns.is_empty();
+                    if uses_default {
+                        default_used.insert(inst.module_name);
+                    }
+                }
+            }
+        }
+        // Ekspos ke method elaborasi (dipakai untuk men-downgrade error
+        // elaborasi DEFAULT yang palsu di module yang hanya di-instansiasi
+        // dengan override — lihat `is_current_module_only_override_used`).
+        self.default_used_modules = default_used.clone();
         for &mod_name in &topo_order {
             if prune_unreachable && !reachable.contains(&mod_name) {
                 continue;
@@ -1495,6 +1601,17 @@ impl Elaborator {
                             diag.code = DiagCode::UnusedSignal;
                             diag.message = format!(
                                 "module '{}' is unreachable from top — elaboration issue treated as warning: {}",
+                                mod_name, e
+                            )
+                            .into();
+                        } else if !default_used.contains(&mod_name) {
+                            // Modul hanya di-instansiasi dengan override param —
+                            // IR default tak pernah dipakai; elaborasi ulang
+                            // dengan param instance terjadi saat flatten.
+                            diag.level = DiagLevel::Warning;
+                            diag.code = DiagCode::UnusedSignal;
+                            diag.message = format!(
+                                "module '{}' default-parameter elaboration failed but it is only instantiated with parameter overrides — deferred to specialization: {}",
                                 mod_name, e
                             )
                             .into();
@@ -3506,6 +3623,25 @@ impl Elaborator {
                                             const_eval_with_params(expr, &effective_params)
                                         {
                                             effective_params.insert(p.name, val);
+                                        } else if let Some(val) =
+                                            mivon_ast::const_eval_ext::eval_param_default_full(
+                                                expr,
+                                                &effective_params,
+                                                &self.pkg_const_arrays,
+                                                &self.package_symbols,
+                                                &self.pkg_struct_ref_index,
+                                            )
+                                        {
+                                            // Localparam body-generate yang butuh
+                                            // evaluator PENUH (inlining fungsi
+                                            // package + cast) — mis.
+                                            // `NUM_OPS = fpnew_pkg::num_operands(
+                                            //   fpnew_pkg::opgroup_e'(opgrp))`.
+                                            // `const_eval_with_params` tak punya
+                                            // package_symbols → gagal → nilai
+                                            // hilang → dim packed Decl yang
+                                            // merujuknya error E3003.
+                                            effective_params.insert(p.name, val);
                                         }
                                     }
                                 }
@@ -4518,7 +4654,9 @@ impl Elaborator {
                             Ok(process) => processes.push(process),
                             Err(e) => {
                                 let mut diag = e.to_diagnostic();
-                                if !self.is_current_module_reachable() || self.is_fragment_module()
+                                if !self.is_current_module_reachable()
+                                    || self.is_fragment_module()
+                                    || self.is_current_module_only_override_used()
                                 {
                                     diag.level = DiagLevel::Warning;
                                 }
@@ -4542,7 +4680,9 @@ impl Elaborator {
                             Ok(body) => processes.push(Process::Initial { name, body }),
                             Err(e) => {
                                 let mut diag = e.to_diagnostic();
-                                if !self.is_current_module_reachable() || self.is_fragment_module()
+                                if !self.is_current_module_reachable()
+                                    || self.is_fragment_module()
+                                    || self.is_current_module_only_override_used()
                                 {
                                     diag.level = DiagLevel::Warning;
                                 }
@@ -4563,7 +4703,10 @@ impl Elaborator {
                             // main.rs memblokir simulasi & VCD sampai semua bersih.
                             // F38: module unreachable → downgrade ke warning.
                             let mut diag = e.to_diagnostic();
-                            if !self.is_current_module_reachable() || self.is_fragment_module() {
+                            if !self.is_current_module_reachable()
+                                || self.is_fragment_module()
+                                || self.is_current_module_only_override_used()
+                            {
                                 diag.level = DiagLevel::Warning;
                             }
                             self.diag_sink.push(diag);
@@ -4591,7 +4734,10 @@ impl Elaborator {
                         Err(e) => {
                             // Error GLOBAL (lihat komentar di Always).
                             let mut diag = e.to_diagnostic();
-                            if !self.is_current_module_reachable() || self.is_fragment_module() {
+                            if !self.is_current_module_reachable()
+                                || self.is_fragment_module()
+                                || self.is_current_module_only_override_used()
+                            {
                                 diag.level = DiagLevel::Warning;
                             }
                             self.diag_sink.push(diag);
@@ -4618,7 +4764,10 @@ impl Elaborator {
                         Err(e) => {
                             // Error GLOBAL (lihat komentar di Always).
                             let mut diag = e.to_diagnostic();
-                            if !self.is_current_module_reachable() || self.is_fragment_module() {
+                            if !self.is_current_module_reachable()
+                                || self.is_fragment_module()
+                                || self.is_current_module_only_override_used()
+                            {
                                 diag.level = DiagLevel::Warning;
                             }
                             self.diag_sink.push(diag);
@@ -4769,8 +4918,13 @@ impl Elaborator {
                             // signals come from the enclosing context, not the
                             // fragment scope (mirrors parse-level fragment
                             // downgrade and `is_current_module_reachable`).
+                            // Juga module yang hanya di-instansiasi dengan
+                            // override (IR default tak pernah dipakai) — error
+                            // elaborasi default-nya palsu (mis. 0/0 config).
                             let mut diag = e.to_diagnostic();
-                            if self.is_fragment_module() {
+                            if self.is_fragment_module()
+                                || self.is_current_module_only_override_used()
+                            {
                                 diag.level = DiagLevel::Warning;
                             }
                             self.diag_sink.push(diag);

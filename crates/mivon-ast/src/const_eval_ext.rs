@@ -96,6 +96,57 @@ pub fn scalar(v: CVal) -> Result<i64, String> {
     }
 }
 
+/// `true` bila nilai konstanta seluruhnya nol. Packed vector > 64 bit
+/// direpresentasikan sebagai `CVal::Array` tanpa lebar elemen; sifat nol/tidak
+/// terdefinisi tanpa lebar, jadi helper ini dipakai untuk perbandingan terhadap
+/// 0 dan uji truthiness — bukan untuk menebak besaran nilai (yang akan salah).
+fn is_zero_val(v: &CVal) -> bool {
+    match v {
+        CVal::Scalar(s) => *s == 0,
+        CVal::Array(a) => a.iter().all(is_zero_val),
+        CVal::Struct(_) => false,
+    }
+}
+
+/// Truthiness untuk konteks kondisi (`if`, loop, `?:`, `&&`, `||`, `!`).
+/// Skalar: != 0. Array (packed vector > 64 bit): true bila ada bit/elemen
+/// bukan nol — terdefinisi tanpa lebar elemen. Struct tidak valid di sini.
+fn truthy(v: &CVal) -> Result<i64, String> {
+    match v {
+        CVal::Scalar(s) => Ok((*s != 0) as i64),
+        CVal::Array(_) => Ok((!is_zero_val(v)) as i64),
+        CVal::Struct(_) => Err("expected scalar constant (got struct)".to_string()),
+    }
+}
+
+/// Perbandingan `array OP 0` (array packed vector di kiri, nol di kanan).
+/// Hanya sifat nol/tidak yang bisa ditentukan tanpa lebar elemen, dan untuk
+/// perbandingan terhadap 0 itu memang cukup (unsigned: vector > 0 ⇔ bukan nol).
+fn cmp_array_zero(op: &BinaryOp, arr_is_zero: bool) -> Option<i64> {
+    Some(match op {
+        BinaryOp::Gt => (!arr_is_zero) as i64,
+        BinaryOp::Ge => 1,
+        BinaryOp::Lt => 0,
+        BinaryOp::Le => arr_is_zero as i64,
+        BinaryOp::Eq => arr_is_zero as i64,
+        BinaryOp::Neq => (!arr_is_zero) as i64,
+        _ => return None,
+    })
+}
+
+/// Kebalikan operator untuk membalik sisi (`0 OP array` → `array OP' 0`).
+fn flip_cmp(op: &BinaryOp) -> Option<BinaryOp> {
+    Some(match op {
+        BinaryOp::Gt => BinaryOp::Lt,
+        BinaryOp::Ge => BinaryOp::Le,
+        BinaryOp::Lt => BinaryOp::Gt,
+        BinaryOp::Le => BinaryOp::Ge,
+        BinaryOp::Eq => BinaryOp::Eq,
+        BinaryOp::Neq => BinaryOp::Neq,
+        _ => return None,
+    })
+}
+
 fn apply_bin(op: BinaryOp, l: i64, r: i64) -> Result<i64, String> {
     Ok(match op {
         BinaryOp::Add => l.wrapping_add(r),
@@ -211,7 +262,18 @@ pub fn eval_expr(e: &Expr, ctx: &PkgCtx, cur_pkg: Option<&str>) -> Result<CVal, 
         }
         Expr::Paren(inner) => eval_expr(inner, ctx, cur_pkg),
         Expr::UnaryOp { op, expr } => {
-            let v = scalar(eval_expr(expr, ctx, cur_pkg)?)?;
+            let raw = eval_expr(expr, ctx, cur_pkg)?;
+            // Packed vector > 64 bit (CVal::Array): hanya op yang butuh
+            // sifat nol/tidak yang bisa ditentukan tanpa lebar elemen.
+            if let CVal::Array(_) = raw {
+                match op {
+                    UnaryOp::Not => return Ok(CVal::Scalar((truthy(&raw)? == 0) as i64)),
+                    UnaryOp::ReductionOr => return Ok(CVal::Scalar(truthy(&raw)?)),
+                    UnaryOp::ReductionNor => return Ok(CVal::Scalar((truthy(&raw)? == 0) as i64)),
+                    _ => {}
+                }
+            }
+            let v = scalar(raw)?;
             Ok(CVal::Scalar(match op {
                 UnaryOp::Minus => v.wrapping_neg(),
                 UnaryOp::Plus => v,
@@ -237,8 +299,50 @@ pub fn eval_expr(e: &Expr, ctx: &PkgCtx, cur_pkg: Option<&str>) -> Result<CVal, 
             }))
         }
         Expr::BinaryOp { op, lhs, rhs } => {
-            let l = scalar(eval_expr(lhs, ctx, cur_pkg)?)?;
-            let r = scalar(eval_expr(rhs, ctx, cur_pkg)?)?;
+            let lv = eval_expr(lhs, ctx, cur_pkg)?;
+            let rv = eval_expr(rhs, ctx, cur_pkg)?;
+            // Packed vector > 64 bit = CVal::Array (lebar elemen tak dilacak).
+            // Perbandingan terhadap 0 hanya butuh sifat nol/tidak — dukung itu;
+            // selain itu tetap error agar nilai tidak ditebak (salah-compile).
+            if matches!(lv, CVal::Array(_)) || matches!(rv, CVal::Array(_)) {
+                if matches!(op, BinaryOp::LogicalAnd | BinaryOp::LogicalOr) {
+                    let lt = truthy(&lv)?;
+                    let rt = truthy(&rv)?;
+                    let res = match op {
+                        BinaryOp::LogicalAnd => (lt != 0 && rt != 0) as i64,
+                        BinaryOp::LogicalOr => (lt != 0 || rt != 0) as i64,
+                        _ => unreachable!(),
+                    };
+                    return Ok(CVal::Scalar(res));
+                }
+                let l_is_arr = matches!(lv, CVal::Array(_));
+                let r_is_arr = matches!(rv, CVal::Array(_));
+                let arr_is_zero = if l_is_arr {
+                    is_zero_val(&lv)
+                } else {
+                    is_zero_val(&rv)
+                };
+                let other_is_zero = if l_is_arr {
+                    matches!(rv, CVal::Scalar(0))
+                } else {
+                    matches!(lv, CVal::Scalar(0))
+                };
+                if other_is_zero {
+                    let eff_op = if l_is_arr {
+                        op.clone()
+                    } else {
+                        flip_cmp(op).unwrap_or_else(|| op.clone())
+                    };
+                    if let Some(res) = cmp_array_zero(&eff_op, arr_is_zero) {
+                        return Ok(CVal::Scalar(res));
+                    }
+                }
+                if l_is_arr && r_is_arr {
+                    return Err("comparison of wide packed vectors not supported".to_string());
+                }
+            }
+            let l = scalar(lv)?;
+            let r = scalar(rv)?;
             Ok(CVal::Scalar(apply_bin(op.clone(), l, r)?))
         }
         Expr::TernaryOp {
@@ -246,7 +350,7 @@ pub fn eval_expr(e: &Expr, ctx: &PkgCtx, cur_pkg: Option<&str>) -> Result<CVal, 
             true_expr,
             false_expr,
         } => {
-            let c = scalar(eval_expr(cond, ctx, cur_pkg)?)?;
+            let c = truthy(&eval_expr(cond, ctx, cur_pkg)?)?;
             if c != 0 {
                 eval_expr(true_expr, ctx, cur_pkg)
             } else {
@@ -387,9 +491,10 @@ pub fn eval_expr(e: &Expr, ctx: &PkgCtx, cur_pkg: Option<&str>) -> Result<CVal, 
             }
             Ok(CVal::Struct(fields))
         }
-        Expr::MemberAccess { obj, field } => match eval_expr(obj, ctx, cur_pkg)? {
-            CVal::Struct(fields) => {
-                for f in &fields {
+        Expr::MemberAccess { obj, field } => {
+            let obj_val = eval_expr(obj, ctx, cur_pkg);
+            if let Ok(CVal::Struct(fields)) = &obj_val {
+                for f in fields {
                     if f.name
                         .as_ref()
                         .map(|n| n.as_str() == field.as_str())
@@ -399,18 +504,66 @@ pub fn eval_expr(e: &Expr, ctx: &PkgCtx, cur_pkg: Option<&str>) -> Result<CVal, 
                     }
                 }
                 // Fallback `default: value` untuk field yang tidak disebutkan.
-                for f in &fields {
+                for f in fields {
                     if f.is_default {
                         return Ok(f.val.clone());
                     }
                 }
-                Err(format!(
+            }
+            // Fallback: key TER-FLATTEN `obj.field` di scalars/arrays (hasil
+            // resolusi struct-member param, mis. `CVA6Cfg.NrPMPEntries`). Dipakai
+            // saat struct utuh tak tersedia — mis. inlining fungsi package
+            // `avoid_neg(CVA6Cfg.NrPMPEntries-1)` di range deklarasi.
+            // `ARR[idx].field` (member akses elemen array-of-struct const
+            // package, mis. `fpnew_pkg::FP_ENCODINGS[fmt].exp_bits` di tubuh
+            // fungsi package `fp_width`) → key `pkg::ARR[idx].field` yang
+            // di-expansikan oleh eval_package_constants. Di AST pemilih
+            // elemen array tak-terbungkus direpresentasikan sebagai BitSelect.
+            let lookup_key: Option<String> = match obj.as_ref() {
+                Expr::BitSelect { expr: base, index } => eval_expr(index, ctx, cur_pkg)
+                    .and_then(scalar)
+                    .ok()
+                    .and_then(|i| {
+                        if i < 0 {
+                            return None;
+                        }
+                        match base.as_ref() {
+                            Expr::Ident { name, .. } => Some(qualify(cur_pkg, name.as_str())),
+                            Expr::ScopedIdent { package, item, .. } => {
+                                Some(format!("{}::{}", package.as_str(), item.as_str()))
+                            }
+                            _ => None,
+                        }
+                        .map(|b| format!("{}[{}].{}", b, i, field.as_str()))
+                    }),
+                Expr::Ident { name, .. } => {
+                    Some(format!("{}.{}", qualify(cur_pkg, name.as_str()), field.as_str()))
+                }
+                Expr::ScopedIdent { package, item, .. } => Some(format!(
+                    "{}::{}.{}",
+                    package.as_str(),
+                    item.as_str(),
+                    field.as_str()
+                )),
+                _ => None,
+            };
+            if let Some(key) = lookup_key {
+                let key = Symbol::intern(&key);
+                if let Some(&v) = ctx.scalars.get(&key) {
+                    return Ok(CVal::Scalar(v));
+                }
+                if let Some(a) = ctx.arrays.get(&key) {
+                    return Ok(CVal::Array(a.iter().map(|&x| CVal::Scalar(x)).collect()));
+                }
+            }
+            match obj_val {
+                Ok(CVal::Struct(_)) => Err(format!(
                     "field '{}' not found in struct constant",
                     field.as_str()
-                ))
+                )),
+                _ => Err("member access on non-struct constant".to_string()),
             }
-            _ => Err("member access on non-struct constant".to_string()),
-        },
+        }
         _ => Err("unsupported const expr".to_string()),
     }
 }
@@ -474,10 +627,13 @@ fn eval_func(
             Ok(CVal::Scalar(if a % b != 0 { a / b + 1 } else { a / b }))
         }
         _ => {
-            let Some((_pkg, func)) = find_package_func(ctx.package_symbols, name) else {
+            let Some((pkg, func)) = find_package_func(ctx.package_symbols, name) else {
                 return Err(format!("function '{}' not found", name));
             };
-            eval_function_body(func, args, ctx, cur_pkg)
+            // Pakai package FUNGSI sendiri sebagai `cur_pkg` agar referensi
+            // const/typedef plain-name di tubuhnya (`FP_ENCODINGS`, typedef
+            // lokal) ter-qualify benar.
+            eval_function_body(func, args, ctx, Some(pkg))
         }
     }
 }
@@ -595,6 +751,17 @@ fn lookup_pkg_typedef<'a>(
             None
         }
     })
+}
+
+/// Kualifikasi nama ident dengan `cur_pkg` bila belum scoped (`pkg::name`).
+/// Memastikan referensi const/array package plain-name di tubuh fungsi
+/// package (mis. `FP_ENCODINGS` → `fpnew_pkg::FP_ENCODINGS`) ter-resolve ke
+/// key ter-qualify yang disimpan eval_package_constants.
+fn qualify(cur_pkg: Option<&str>, name: &str) -> String {
+    match cur_pkg {
+        Some(pkg) if !name.contains("::") => format!("{}::{}", pkg, name),
+        _ => name.to_string(),
+    }
 }
 
 /// Nama member bila typedef adalah struct/union (termasuk `signed` wrapper).
@@ -732,6 +899,28 @@ fn eval_function_body_inner(
     let mut local_structs: HashMap<Symbol, Vec<SField>> = ctx.structs.clone();
     for (i, port) in func.ports.iter().enumerate() {
         let Some(arg) = args.get(i) else { break };
+        // Prioritas binding STRUCT: nama argumen yang ada di `ctx.structs`
+        // adalah struct (mis. `build_config(cva6_user_cfg)` di CVA6).
+        // `ctx.scalars` bisa memuat nama yang sama sebagai fallback 0
+        // (aproksimasi "nilai utuh" param struct untuk override instance) —
+        // `eval_expr` mendahulukan scalars sehingga arg struct salah jadi
+        // Scalar(0) → `CVA6Cfg.field` di tubuh fungsi gagal
+        // ("member access on non-struct constant") → seluruh fungsi gagal.
+        let arg_struct: Option<Vec<SField>> = match arg {
+            Expr::Ident { name, .. } => ctx.structs.get(name).cloned(),
+            Expr::ScopedIdent { package, item, .. } => ctx
+                .structs
+                .get(&Symbol::intern(&format!("{}::{}", package.as_str(), item.as_str())))
+                .cloned(),
+            _ => None,
+        };
+        if let Some(s) = arg_struct {
+            // Cabut binding skalar/array nama yang sama agar struct menang.
+            local_scalars.remove(&port.name);
+            local_arrays.remove(&port.name);
+            local_structs.insert(port.name, s);
+            continue;
+        }
         match eval_expr(arg, ctx, cur_pkg)? {
             CVal::Scalar(v) => {
                 local_scalars.insert(port.name, v);
@@ -740,6 +929,13 @@ fn eval_function_body_inner(
                 local_arrays.insert(port.name, flatten(&a));
             }
             CVal::Struct(s) => {
+                // Nama terikat sebagai struct di dalam tubuh fungsi → cabut
+                // binding skalar/array nama yang sama (warisan dari ctx luar,
+                // mis. nilai fallback param module `CVA6Cfg=0`) agar struct
+                // menang. Tanpa ini member access `CVA6Cfg.field` gagal
+                // "member access on non-struct constant".
+                local_scalars.remove(&port.name);
+                local_arrays.remove(&port.name);
                 local_structs.insert(port.name, s);
             }
         }
@@ -762,6 +958,8 @@ fn eval_function_body_inner(
                             local_arrays.insert(var.name, flatten(&a));
                         }
                         CVal::Struct(s) => {
+                            local_scalars.remove(&var.name);
+                            local_arrays.remove(&var.name);
                             local_structs.insert(var.name, s);
                         }
                     }
@@ -785,7 +983,7 @@ fn eval_function_body_inner(
     let mut stmts_scalars = local_scalars;
     let mut stmts_arrays = local_arrays;
     let mut stmts_structs = local_structs;
-    for (si, stmt) in func.stmts.iter().enumerate() {
+    for stmt in func.stmts.iter() {
         match eval_stmt(
             stmt,
             &mut stmts_scalars,
@@ -796,18 +994,7 @@ fn eval_function_body_inner(
         ) {
             Ok(Some(v)) => return Ok(v),
             Ok(None) => {}
-            Err(e) => {
-                if std::env::var("DBG_FUNCDEF").is_ok() {
-                    eprintln!(
-                        "DBG-FUNCSTMT {}#{} err={} stmt={:?}",
-                        func.name.as_str(),
-                        si,
-                        e,
-                        stmt
-                    );
-                }
-                return Err(e);
-            }
+            Err(e) => return Err(e),
         }
     }
     Err(format!("function '{}' has no return", func.name.as_str()))
@@ -847,7 +1034,7 @@ fn eval_stmt(
             true_branch,
             false_branch,
         } => {
-            let c = scalar(eval_in_ctx!(cond)?)?;
+            let c = truthy(&eval_in_ctx!(cond)?)?;
             if c != 0 {
                 eval_stmt(true_branch, scalars, arrays, structs, package_symbols, cur_pkg)
             } else if let Some(fb) = false_branch {
@@ -868,7 +1055,7 @@ fn eval_stmt(
             let mut guard = 0usize;
             loop {
                 if let Some(c) = cond {
-                    if scalar(eval_in_ctx!(c)?)? == 0 {
+                    if truthy(&eval_in_ctx!(c)?)? == 0 {
                         break;
                     }
                 }
@@ -891,7 +1078,7 @@ fn eval_stmt(
         Stmt::LoopWhile { cond, stmts } | Stmt::DoWhile { cond, stmts } => {
             let mut guard = 0usize;
             loop {
-                if scalar(eval_in_ctx!(cond)?)? == 0 {
+                if truthy(&eval_in_ctx!(cond)?)? == 0 {
                     break Ok(None);
                 }
                 guard += 1;
@@ -1076,9 +1263,14 @@ fn eval_stmt(
 }
 
 /// Evaluasi semua parameter package (key kualifikasi `pkg::name`).
+///
+/// Mengembalikan `(scalars, arrays, structs)`. `structs` = nilai struct
+/// package UTUH (key `pkg::name`) — termasuk field bernilai array/struct yang
+/// TIDAK terwakili di `scalars` (yang hanya menyimpan field skalar). Dipakai
+/// pemanggil untuk merekonstruksi argumen struct utuh (`build_config(cfg)`).
 pub fn eval_package_constants(
     package_symbols: &HashMap<Symbol, HashMap<Symbol, PackageItem>>,
-) -> (Scalars, Arrays) {
+) -> (Scalars, Arrays, HashMap<Symbol, Vec<SField>>) {
     let mut scalars: Scalars = HashMap::new();
     let mut arrays: Arrays = HashMap::new();
     // Nilai struct param package yang sudah dievaluasi (key qualified
@@ -1239,7 +1431,7 @@ pub fn eval_package_constants(
             break;
         }
     }
-    (scalars, arrays)
+    (scalars, arrays, structs)
 }
 
 /// Flatten hasil evaluasi konstanta ke dalam ctx i64 untuk const_eval_with_params.

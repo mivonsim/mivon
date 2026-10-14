@@ -106,6 +106,18 @@ impl Elaborator {
         match var.resolved_width(effective_params) {
             Ok(w) => Ok(w),
             Err(e) => {
+                if std::env::var("DBG_WID").is_ok() {
+                    eprintln!(
+                        "[DBG-WID] var={} err={} expr_range={:?} extra={}",
+                        var.name.as_str(),
+                        e,
+                        var.expr_range.as_ref().map(|er| format!(
+                            "{:?}:{:?}",
+                            er.msb, er.lsb
+                        )),
+                        var.extra_packed_dims.len()
+                    );
+                }
                 let mut total: usize = 1;
                 if let Some(er) = &var.expr_range {
                     total = self

@@ -264,6 +264,26 @@ pub fn resolve_param_values_with_ctx(
         }
     }
 
+    // Passthrough member keys struct dari override instance (`Info.integrity`
+    // dst. — hasil flatten override struct di elaborate_module_with_params_and_type).
+    // Loop param di bawah hanya menyalin override untuk nama param module;
+    // key `param.field` (mengandung `.`) harus ikut agar generate if / width
+    // member access di child bisa const-eval (pola `Info.integrity` di
+    // otp_ctrl_part_buf — tanpa ini gagal "member access not allowed").
+    //
+    // PENTING — urutan: passthrough HARUS sebelum `register_struct_member_keys`.
+    // Override instance (`CVA6Cfg(CVA6Cfg)` dgn config nyata) menang atas
+    // default struct module (`cva6_cfg_empty`, semua 0). Bila registrasi
+    // default jalan dulu, key `CVA6Cfg.field` = 0 terisi dan passthrough
+    // (guard `!contains_key`) ter-skip → child menerima config kosong →
+    // pembagian 0/0 (`ICACHE_LINE_WIDTH/AxiDataWidth`) saat elaborasi ulang
+    // instance ber-override (mis. `wt_axi_adapter`).
+    for (k, v) in instance_overrides {
+        if k.as_str().contains('.') && !vals.contains_key(k) {
+            insert_val!(*k, *v);
+        }
+    }
+
     for param in collect_body_params(module) {
         if !vals.contains_key(&param.name) {
             match &param.default {
@@ -289,18 +309,9 @@ pub fn resolve_param_values_with_ctx(
         }
     }
 
+    // Pass 1: parameter (NON-localparam) — override / nilai default.
     for (i, param) in module.params.iter().enumerate() {
         if param.is_localparam {
-            if let Some(e) = &param.default {
-                if let Some(v) = eval_param_default(e, &vals, pkg, module) {
-                    insert_val!(param.name, v);
-                } else if !param_default_is_collection(e) {
-                    // Fallback global sama seperti body params di atas.
-                    insert_val!(param.name, 1);
-                }
-            } else {
-                insert_val!(param.name, 0);
-            }
             continue;
         }
         let val = if i < positional_overrides.len() {
@@ -314,6 +325,34 @@ pub fn resolve_param_values_with_ctx(
             }
         };
         insert_val!(param.name, val);
+    }
+
+    // ── Member keys struct SEBELUM localparam ──
+    // `localparam int W = Cfg.Field;` (pola CVA6 `W = CVA6Cfg.VpnLen /
+    // CVA6Cfg.PtLevels`) harus bisa const-eval. Key `Cfg.Field` didaftarkan
+    // DI SINI — setelah param non-localparam (yang membawa struct) tapi
+    // SEBELUM localparam — agar localparam & array melihatnya. Sebelumnya
+    // registrasi terjadi setelah loop param, sehingga localparam yang
+    // mereferensikan member struct selalu jatuh ke fallback 1.
+    if let Some(p) = pkg {
+        register_struct_member_keys(module, &mut vals, p);
+    }
+
+    // Pass 2: localparam — SETELAH member key struct terdaftar.
+    for param in module.params.iter() {
+        if !param.is_localparam {
+            continue;
+        }
+        if let Some(e) = &param.default {
+            if let Some(v) = eval_param_default(e, &vals, pkg, module) {
+                insert_val!(param.name, v);
+            } else if !param_default_is_collection(e) {
+                // Fallback global sama seperti body params di atas.
+                insert_val!(param.name, 1);
+            }
+        } else {
+            insert_val!(param.name, 0);
+        }
     }
 
     // ── Localparam ARRAY: flatten keys `name[i]` / `name[r][c]` ──
@@ -363,94 +402,9 @@ pub fn resolve_param_values_with_ctx(
         }
     }
 
-    // Passthrough member keys struct dari override instance (`Info.integrity`
-    // dst. — hasil flatten override struct di elaborate_module_with_params_and_type).
-    // Loop param di atas hanya menyalin override untuk nama param module;
-    // key `param.field` (mengandung `.`) harus ikut agar generate if / width
-    // member access di child bisa const-eval (pola `Info.integrity` di
-    // otp_ctrl_part_buf — tanpa ini gagal "member access not allowed").
-    for (k, v) in instance_overrides {
-        if k.as_str().contains('.') && !vals.contains_key(k) {
-            insert_val!(*k, *v);
-        }
-    }
-
-    // ── Member keys struct untuk DEFAULT param (`Info = PartInfoDefault`) ──
-    // `eval_param_default` mengubah default struct menjadi skalar 0 sehingga
-    // `Info.size`/`Info.integrity` tidak pernah terdaftar. Dengan `pkg.structs`
-    // yang berisi index struct package global, salin fields default struct ke
-    // `param.field` keys — sama seperti override instance. Tanpa ini, module
-    // yang TIDAK di-override (default dipakai) tetap gagal member access di
-    // generate if / port width (pola otp_ctrl_part_buf).
-    if let Some(p) = pkg {
-        let mut struct_defaults: Vec<(Symbol, Expr)> = Vec::new();
-        for param in collect_body_params(module) {
-            if let Some(e) = &param.default {
-                struct_defaults.push((param.name, e.clone()));
-            }
-        }
-        for param in &module.params {
-            if let Some(e) = &param.default {
-                struct_defaults.push((param.name, e.clone()));
-            }
-        }
-        for (pname, e) in struct_defaults {
-            // Default berbentuk ident / scoped ident / bitsel array element
-            // yang mereferensikan konstanta struct package — atau FUNCCALL
-            // yang mengembalikan struct (mis. CVA6
-            // `CVA6Cfg = build_config_pkg::build_config(cva6_cfg)`).
-            let fields: Option<Vec<SField>> = match &e {
-                Expr::Ident { name, .. } => p
-                    .structs
-                    .get(&Symbol::intern(name.as_str()))
-                    .cloned(),
-                Expr::ScopedIdent { item, .. } => {
-                    p.structs.get(&Symbol::intern(item.as_str())).cloned()
-                }
-                Expr::BitSelect { expr: inner, index } => {
-                    if let Expr::Ident { name, .. } = inner.as_ref() {
-                        if let Ok(idx) = const_eval_with_params(index, &vals) {
-                            p.structs
-                                .get(&Symbol::intern(&format!("{}[{}]", name.as_str(), idx)))
-                                .cloned()
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    }
-                }
-                Expr::FuncCall { .. } => {
-                    match eval_cval_full(&e, &vals, p.arrays, p.package_symbols, p.structs) {
-                        Some(CVal::Struct(fs)) => Some(fs),
-                        _ => None,
-                    }
-                }
-                _ => None,
-            };
-            let Some(fields) = fields else { continue };
-            let mut key_created = false;
-            for f in &fields {
-                if let Some(fname) = f.name {
-                    if let CVal::Scalar(v) = f.val {
-                        let key = format!("{}.{}", pname.as_str(), fname.as_str());
-                        let key_sym = Symbol::intern(&key);
-                        if !vals.contains_key(&key_sym) {
-                            insert_val!(key_sym, v);
-                            key_created = true;
-                        }
-                    }
-                }
-            }
-            if key_created {
-                // Pastikan nama param terdaftar juga (skalar fallback 0)
-                // bila belum — key `param.field` butuh `param` ada.
-                if !vals.contains_key(&pname) {
-                    insert_val!(pname, 0);
-                }
-            }
-        }
-    }
+    // (Blok member key struct dipindah ke `register_struct_member_keys`,
+    //  dipanggil SEBELUM evaluasi localparam — lihat di atas. Passthrough
+    //  override `param.field` dipindah ke AWAL agar menang atas default.)
 
     if std::env::var("DBG_ELAB").is_ok() {
         eprintln!(
@@ -461,4 +415,88 @@ pub fn resolve_param_values_with_ctx(
         );
     }
     Ok(vals)
+}
+
+/// Daftarkan member key `param.field` untuk setiap param yang nilainya struct
+/// ke `vals` — dipanggil `resolve_param_values_with_ctx` SEBELUM localparam
+/// dievaluasi.
+///
+/// `eval_param_default` mengubah default struct menjadi skalar 0 sehingga
+/// `Cfg.field` tidak pernah terdaftar; tanpa key itu, localparam/generate
+/// yang memakai member struct gagal const-eval (pola CVA6
+/// `W = CVA6Cfg.VpnLen / CVA6Cfg.PtLevels` → "dynamic range select not
+/// supported", atau otp_ctrl_part_buf `Info.size`). Sumber fields:
+/// - ident/scoped ident yang merujuk konstanta struct package,
+/// - struct literal lokal module (`localparam user_cfg_t cfg = '{...}`),
+/// - FUNCCALL yang mengembalikan struct (`build_config(...)`).
+///
+/// Konteks struct TUMBUH selama loop (struct lokal yang baru dievaluasi bisa
+/// dipakai param berikutnya — `cva6_cfg` memakai `cva6_user_cfg`).
+fn register_struct_member_keys(module: &Module, vals: &mut HashMap<Symbol, i64>, p: &PkgFullCtx) {
+    let mut struct_defaults: Vec<(Symbol, Expr)> = Vec::new();
+    for param in collect_body_params(module) {
+        if let Some(e) = &param.default {
+            struct_defaults.push((param.name, e.clone()));
+        }
+    }
+    for param in &module.params {
+        if let Some(e) = &param.default {
+            struct_defaults.push((param.name, e.clone()));
+        }
+    }
+    // `p.structs` kecil (puluhan entri) — clone per-module dapat diabaikan.
+    let mut struct_ctx: HashMap<Symbol, Vec<SField>> = p.structs.clone();
+    for (pname, e) in struct_defaults {
+        let fields: Option<Vec<SField>> = match &e {
+            Expr::Ident { name, .. } => struct_ctx.get(&Symbol::intern(name.as_str())).cloned(),
+            Expr::ScopedIdent { item, .. } => struct_ctx.get(&Symbol::intern(item.as_str())).cloned(),
+            Expr::BitSelect { expr: inner, index } => {
+                if let Expr::Ident { name, .. } = inner.as_ref() {
+                    if let Ok(idx) = const_eval_with_params(index, vals) {
+                        struct_ctx
+                            .get(&Symbol::intern(&format!("{}[{}]", name.as_str(), idx)))
+                            .cloned()
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            }
+            Expr::StructLit { .. } => {
+                match eval_cval_full(&e, vals, p.arrays, p.package_symbols, &struct_ctx) {
+                    Some(CVal::Struct(fs)) => Some(fs),
+                    _ => None,
+                }
+            }
+            Expr::FuncCall { .. } => {
+                match eval_cval_full(&e, vals, p.arrays, p.package_symbols, &struct_ctx) {
+                    Some(CVal::Struct(fs)) => Some(fs),
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
+        let Some(fields) = fields else { continue };
+        // Daftarkan struct hasil agar param berikutnya bisa me-resolve-nya.
+        struct_ctx.insert(pname, fields.clone());
+        let mut key_created = false;
+        for f in &fields {
+            if let Some(fname) = f.name {
+                if let CVal::Scalar(v) = f.val {
+                    let key = format!("{}.{}", pname.as_str(), fname.as_str());
+                    let key_sym = Symbol::intern(&key);
+                    if !vals.contains_key(&key_sym) {
+                        vals.insert(key_sym, v);
+                        key_created = true;
+                    }
+                }
+            }
+        }
+        if key_created && !vals.contains_key(&pname) {
+            // Pastikan nama param terdaftar juga (skalar fallback 0) —
+            // key `param.field` butuh `param` ada.
+            vals.insert(pname, 0);
+        }
+    }
 }

@@ -1267,6 +1267,11 @@ fn const_eval_deep(
             "cannot evaluate system function '{}' in constant context",
             name
         )),
+        Expr::FuncCall { name, args, .. } => Err(format!(
+            "cannot evaluate function call '{}' with {} arg(s) in constant context",
+            name.as_str(),
+            args.len()
+        )),
         _ => Err(format!(
             "non-constant expression in parameter context: {:?}",
             expr
