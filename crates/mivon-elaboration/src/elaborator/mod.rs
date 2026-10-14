@@ -376,12 +376,24 @@ impl Elaborator {
     /// parameter default (selalu di-override instance) — IR default-nya tak
     /// pernah disimulasikan, jadi error elaborasi default (mis. pembagian 0
     /// dari config kosong) bersifat palsu dan cukup di-downgrade ke warning.
-    /// Set kosong (mis. saat `--top` tidak dipakai) → selalu false agar
-    /// perilaku lama dipertahankan.
+    /// Set kosong (tak ada instantiansi default di desain — desain kecil /
+    /// semua instance ber-override): module yang DI-INSTANSIASI selalu
+    /// ber-override (bila tidak set tak kosong) → true; module tak
+    /// terinstansiasi (top) memakai IR default → false agar error nyata di
+    /// top / module mati tetap dilaporkan (bukan didowngrade diam-diam).
     pub(crate) fn is_current_module_only_override_used(&self) -> bool {
         match self.current_module {
             Some(m) => {
-                !self.default_used_modules.is_empty() && !self.default_used_modules.contains(&m)
+                if self.default_used_modules.is_empty() {
+                    self.design.modules.iter().any(|md| {
+                        md.items.iter().any(|it| match it {
+                            ModuleItem::Instance(inst) => inst.module_name == m,
+                            _ => false,
+                        })
+                    })
+                } else {
+                    !self.default_used_modules.contains(&m)
+                }
             }
             None => false,
         }
@@ -5400,6 +5412,42 @@ impl Elaborator {
                                                     fname.as_str()
                                                 )),
                                                 v,
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                            // Override struct-LITERAL (`#(.CFG('{A:8,B:4}))` /
+                            // `#(.CFG(T'{A:8,B:4}))`, pola cva6_tlb `CVA6Cfg`):
+                            // `const_eval_with_params` melipat StructLit→0
+                            // (const_eval.rs) sehingga key `pname.field` HILANG
+                            // dan member access `CFG.A` di child gagal → E3001
+                            // "dynamic range select not supported" sesat.
+                            // Flatten tiap member Named ke `pname.field` agar
+                            // child menerima field sebagai skalar (simetris
+                            // dgn dua blok penyalinan di atas).
+                            let lit_members: Option<&Vec<StructLitMember>> = match pexpr {
+                                Expr::StructLit { members, .. } => Some(members),
+                                Expr::Cast { expr: inner, .. } => match inner.as_ref() {
+                                    Expr::StructLit { members, .. } => Some(members),
+                                    _ => None,
+                                },
+                                _ => None,
+                            };
+                            if let Some(members) = lit_members {
+                                for m in members {
+                                    if let StructLitMember::Named(fname, fexpr) = m {
+                                        if let Ok(fv) = const_eval_with_params(
+                                            fexpr,
+                                            &effective_params,
+                                        ) {
+                                            param_map.insert(
+                                                Symbol::intern(&format!(
+                                                    "{}.{}",
+                                                    pname.as_str(),
+                                                    fname.as_str()
+                                                )),
+                                                fv,
                                             );
                                         }
                                     }

@@ -85,3 +85,35 @@ endmodule
         result.err()
     );
 }
+
+/// Override struct-LITERAL bercast (`#(.CFG(pp::cfg_t'{A:27,B:3}))`, pola
+/// `CVA6Cfg` di cva6_tlb): `const_eval_with_params` melipat StructLit→0
+/// sehingga key `CFG.A`/`CFG.B` hilang dan range-select ber-Div
+/// (`x[12+(CFG.A/CFG.B)-1:16]`) gagal E3001 "dynamic range select not
+/// supported" sesat. Sekarang tiap member Named di-flatten ke
+/// `pname.field` saat override (elab mod.rs), tanpa error elaborasi.
+#[test]
+fn test_struct_param_cast_literal_override_flatten() {
+    let src = r#"
+package pp;
+  typedef struct packed { int unsigned A; int unsigned B; } cfg_t;
+endpackage
+
+module child #(parameter pp::cfg_t CFG = pp::cfg_t'(0));
+    logic [63:0] x;
+    wire w;
+    assign w = x[12 + (CFG.A / CFG.B) - 1 : 16] == 5'h0;
+    initial #10 $finish;
+endmodule
+
+module top;
+    child #(.CFG(pp::cfg_t'{A:27, B:3})) c();
+endmodule
+"#;
+    let result = simulate_signals(src, 20);
+    assert!(
+        result.is_ok(),
+        "override struct-literal bercast harus flatten field tanpa E3001: {:?}",
+        result.err()
+    );
+}
