@@ -29,6 +29,7 @@ pub mod lrm_judge;
 pub mod observer;
 pub mod testcase;
 pub mod verdict;
+pub mod regression;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};

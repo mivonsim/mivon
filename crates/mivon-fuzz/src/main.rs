@@ -20,6 +20,7 @@ fn main() {
         "minimize" => cmd_minimize(&args[2..]),
         "report" => cmd_report(&args[2..]),
         "verify" => cmd_verify(&args[2..]),
+        "regress" => cmd_regress(&args[2..]),
         "help" | "-h" | "--help" => {
             print_help();
             0
@@ -45,6 +46,7 @@ USAGE:
   mivon-fuzz minimize <file.sv> [--target <t>] [--timeout <ms>]
   mivon-fuzz verify  [<corpus-dir>] [--timeout <ms>]      # differential vs iverilog atas seed corpus
   mivon-fuzz verify  --cases <n> [--seed <n>] [--timeout]  # differential vs iverilog atas hasil MUTASI
+  mivon-fuzz regress [--dir <bugs>] [--out <file.rs>]      # generate auto-regression tests (1 bug = 1 test)
   mivon-fuzz report  [<dir>]
   mivon-fuzz help
 
@@ -632,6 +634,52 @@ fn verify_mutated(cases: usize, seed: u64, timeout_ms: u64) -> i32 {
         0
     } else {
         1
+    }
+}
+
+/// REGRESS: ubah artefak `.mivon-fuzz-bugs/*.sv` (+ `.txt`) jadi modul
+/// regression test (`#![cfg(feature="dev")]`). Tiap bug → 1 `#[test]`.
+/// Default out = `crates/mivon-fuzz/tests/fuzz_regression.rs` (relatif cwd),
+/// bisa di-override `--out <file>`. Artefak raksasa / tanpa metadata di-skip
+/// (dicatat sbg komentar) — butuh triage manual.
+fn cmd_regress(args: &[String]) -> i32 {
+    let (dir_s, rest) = take_flag(args, "--dir");
+    let (out_s, _rest) = take_flag(&rest, "--out");
+    let dir = dir_s
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(mivon_fuzz::bugs_dir);
+    let out = out_s.unwrap_or_else(|| {
+        mivon_fuzz::corpus::workspace_root()
+            .join("crates/mivon-fuzz/tests/fuzz_regression.rs")
+            .to_string_lossy()
+            .to_string()
+    });
+
+    if !dir.exists() {
+        eprintln!("regress: direktori bug tidak ada: {}", dir.display());
+        return 1;
+    }
+
+    let entries = mivon_fuzz::regression::collect_bugs(&dir);
+    let active = entries.iter().filter(|e| !e.skipped).count();
+    let skipped = entries.len() - active;
+    let code = mivon_fuzz::regression::emit_rust_tests(&entries);
+
+    match std::fs::write(&out, &code) {
+        Ok(()) => {
+            eprintln!(
+                "regress: {} entri ({active} aktif, {skipped} skip) -> {}",
+                entries.len(),
+                out
+            );
+            // Statistik singkat ke stdout (machine-friendly).
+            println!("REGRESS: entries={} active={} skipped={}", entries.len(), active, skipped);
+            0
+        }
+        Err(e) => {
+            eprintln!("regress: gagal tulis {}: {e}", out);
+            1
+        }
     }
 }
 
