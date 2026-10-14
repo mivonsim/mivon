@@ -449,8 +449,7 @@ pub fn bugdb_path() -> PathBuf {
 }
 
 /// Run kampanye fuzz.
-pub fn run(cfg: FuzzConfig) -> FuzzReport {
-    match cfg.target {
+pub fn run(cfg: FuzzConfig) -> FuzzReport {    match cfg.target {
         Target::All => {
             let mut merged = FuzzReport::default();
             for &target in Target::ALL {
@@ -583,6 +582,23 @@ fn strip_duplicate_modules(tb_src: &str, mod_src: &str) -> String {
     out
 }
 
+/// Bangun rencana indeks seed untuk satu kampanye: `cover =
+/// min(cases, candidates.len())` indeks PERTAMA = candidates terurut
+/// (setiap seed dijamah minimal sekali — "all seeds without skip"), sisa
+/// `cases - cover` diambil acak dari candidates. Fungsi murni (rng hanya
+/// untuk bagian acak) sehingga dapat diuji deterministik.
+pub(crate) fn build_seed_plan(candidates: &[usize], cases: usize, rng: &mut Rng) -> Vec<usize> {
+    if candidates.is_empty() {
+        return Vec::new();
+    }
+    let cover = candidates.len().min(cases);
+    let mut plan: Vec<usize> = candidates[..cover].to_vec();
+    for _ in cover..cases {
+        plan.push(candidates[rng.below(candidates.len())]);
+    }
+    plan
+}
+
 fn run_single(cfg: FuzzConfig) -> FuzzReport {
     use std::collections::BTreeMap;
 
@@ -610,25 +626,34 @@ fn run_single(cfg: FuzzConfig) -> FuzzReport {
         );
     }
 
-    for i in 0..cfg.cases {
-        // Ambil seed nyata dari corpus (100% — tanpa template sintetis).
-        // `.mv` return RAW source, transpile setelah mutasi.
-        // Target MV HANYA pakai seed `.mv` (SV di-feed ke transpile = noise).
-        let base_seed = if corpus.is_empty() {
-            break;
-        } else if cfg.target == Target::Mv {
-            // Target MV HANYA pakai seed `.mv` — sample langsung dari subset
-            // `.mv` (resample acak dari corpus penuh: 21/4664 seed → hampir
-            // selalu break di case pertama, kampanye MV 0-2 case/2000).
-            match corpus.random_mv_seed(&mut rng) {
-                Some(s) => s,
-                None => break,
-            }
+    // Seed-coverage guarantee: tiap seed dijamah minimal sekali per
+    // kampanye (round-robin terurut di awal), sisanya acak. Menghindari
+    // seed langka tak pernah ter-sample ("all seeds without skip").
+    let seed_plan: Vec<usize> = {
+        let candidates: Vec<usize> = if cfg.target == Target::Mv {
+            (0..corpus.len())
+                .filter(|&i| {
+                    corpus
+                        .seed_at(i)
+                        .map(|p| p.extension().and_then(|e| e.to_str()) == Some("mv"))
+                        .unwrap_or(false)
+                })
+                .collect()
         } else {
-            match corpus.random_seed(&mut rng) {
-                Some(src) => src,
-                None => break,
-            }
+            (0..corpus.len()).collect()
+        };
+        build_seed_plan(&candidates, cfg.cases, &mut rng)
+    };
+
+    for i in 0..cfg.cases {
+        // Ambil seed nyata dari corpus via plan (100% — tanpa template
+        // sintetis). `.mv` return RAW source, transpile setelah mutasi.
+        let Some(&seed_idx) = seed_plan.get(i) else {
+            break;
+        };
+        let base_seed = match corpus.seed_by_index(seed_idx) {
+            Some(s) => s,
+            None => break,
         };
         let is_mv = base_seed.is_mv;
 
@@ -980,5 +1005,32 @@ mod bugdb_tests {
         assert_eq!(Category::LrmViolation.label(), "lrm_violation");
         assert!(Category::LrmViolation.is_bug(), "violasi LRM = bug");
         assert_eq!(Oracle::O6LrmJudge.as_str(), "O6-lrm-judge");
+    }
+
+    /// Seed-coverage guarantee (tahap 3): tiap kandidat dijamah >=1x saat
+    /// cases >= kandidat; selebihnya acak. RNG deterministik.
+    #[test]
+    fn seed_plan_covers_every_candidate_once() {
+        let cand: Vec<usize> = (0..5).collect();
+        let plan = build_seed_plan(&cand, 5, &mut Rng::new(1));
+        assert_eq!(plan.len(), 5);
+        // 5 kasus pertama = kandidat terurut (tiap seed >=1x).
+        assert_eq!(plan[..5], [0, 1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn seed_plan_overcovers_with_random_tail() {
+        let cand: Vec<usize> = (0..3).collect();
+        let plan = build_seed_plan(&cand, 10, &mut Rng::new(7));
+        assert_eq!(plan.len(), 10);
+        // 3 pertama = cover penuh (terurut); 7 sisanya bebas (dari kandidat).
+        assert_eq!(plan[..3], [0, 1, 2]);
+        assert!(plan[3..].iter().all(|&i| (0..3).contains(&i)));
+    }
+
+    #[test]
+    fn seed_plan_empty_when_no_candidates() {
+        let plan: Vec<usize> = build_seed_plan(&[], 50, &mut Rng::new(1));
+        assert!(plan.is_empty());
     }
 }

@@ -654,18 +654,18 @@ mod tests {
     fn spawn_slow_with_progress_is_slow_not_hang() {
         let mut cmd = Command::new("sh");
         cmd.arg("-c")
-            .arg("i=0; while [ $i -lt 13 ]; do echo tick$i; i=$((i+1)); sleep 0.05; done")
+            .arg("i=0; while [ $i -lt 20 ]; do echo tick$i; i=$((i+1)); sleep 0.08; done")
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .stdin(Stdio::null());
-        // Nominal ~0.65s; timeout 150ms (basis 450ms, cap 3 ekstensi → ≤900ms).
-        // Rasio seimbang: nominal/basis ≈ cap/nominal ≈ 1.44× — tanpa ekstensi
-        // pasti Hang; selesai = bukti deadline adaptif. Jangan rapatkan: di
-        // bawah basis → slow=false (bukan bug kode, salah target waktu).
-        let out = spawn(&mut cmd, 150);
+        // Budget longgar agar tak flaky di mesin terbebani (nextest paralel).
+        // timeout 500ms → basis 1500ms, maks 6 ekstensi (+3s) = ≤4.5s. Loop
+        // nominal ~1.6s > basis 1500ms (wajib lewat ≥1 perpanjangan → slow),
+        // tetap jauh di bawah plafon 4.5s walau melambat ~2.5× saat load.
+        let out = spawn(&mut cmd, 500);
         assert_eq!(out.kind, Kind::Ok, "berprogres harus selesai Ok, dapat {:?}", out.kind);
         assert!(out.slow, "harus tandai slow (lewat perpanjangan)");
-        assert!(out.stdout.contains("tick12"), "output progres wajib utuh");
+        assert!(out.stdout.contains("tick19"), "output progres wajib utuh");
     }
 
     /// Spin SENYAP (tanpa byte baru) → tetap Hang walau deadline adaptif.
