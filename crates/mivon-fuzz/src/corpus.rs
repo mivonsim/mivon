@@ -13,12 +13,19 @@
 
 use std::path::{Path, PathBuf};
 
+/// Batas aman memuat seed ke memori. Seed di atas ini dicatat sebagai
+/// `skipped_large` (eksplisit, bukan dibuang senyap) — kampanye tak lagi
+/// "lupa" seed raksasa (RTL real cva6/opentitan sering >4MB).
+pub const MAX_SEED_BYTES: u64 = 32 * 1024 * 1024;
+
 /// Seed corpus. Load sekali per kampanye.
 pub struct Corpus {
     seeds: Vec<PathBuf>,
     /// Index dependency (package/module/interface name → file) utk resolve
     /// import/submodule seed project real (area dv/UVM yang tadinya skip).
     deps_index: crate::deps::DepsIndex,
+    /// Seed > `MAX_SEED_BYTES` — di-HITUNG, bukan dibuang senyap.
+    pub skipped_large: usize,
 }
 
 /// Source siap-evaluasi: sudah di-transpile bila `.mv`.
@@ -60,20 +67,39 @@ impl Corpus {
 
         seeds.sort();
         seeds.dedup();
-        // Guard: reject file terlalu besar.
-        seeds.retain(|p| p.metadata().map(|m| m.len() <= 4_000_000).unwrap_or(false));
 
         // Batas total seed (hindari jutaan file) — naikkan utk area penuh.
         if seeds.len() > 100_000 {
             seeds.truncate(100_000);
         }
 
+        // Akun seed raksasa: JANGAN buang senyap. Seed <= MAX_SEED_BYTES
+        // dipertahankan; sisanya di-HITUNG sebagai `skipped_large` (terlihat
+        // di laporan) dan tetap bisa dievaluasi lewat jalur large-aware di
+        // `run_single` bila ukurannya di bawah cap load yang lebih tinggi.
+        // (Dulu `retain` drop langsung tanpa jejak → coverage hilang diam-diam.)
+        let mut skipped_large = 0usize;
+        seeds.retain(|p| {
+            let ok = p
+                .metadata()
+                .map(|m| m.len() <= MAX_SEED_BYTES)
+                .unwrap_or(false);
+            if !ok {
+                skipped_large += 1;
+            }
+            ok
+        });
+
         // Index dependency (package/module/interface name → file) dibangun
         // SEKALI utk seluruh corpus — dipakai resolve deps di random_seed
         // (import/submodule seed real, terutama area dv/UVM opentitan).
         let deps_index = crate::deps::build_index(&seeds);
 
-        Self { seeds, deps_index }
+        Self {
+            seeds,
+            deps_index,
+            skipped_large,
+        }
     }
 
     /// Project real RTL (tanpa copy): scan cva6/core, openc910/gen_rtl,
@@ -391,4 +417,42 @@ pub fn transpile_mv_string(
         buf.push('\n');
     }
     Ok(buf)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn load_counts_large_seeds_instead_of_dropping() {
+        let dir = std::env::temp_dir().join(format!("fzcorp_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let small = dir.join("s.sv");
+        std::fs::write(&small, "module m; endmodule").unwrap();
+        // Seed raksasa (> MAX_SEED_BYTES) — dulu dibuang senyap oleh `retain`.
+        let large = dir.join("big.sv");
+        let _ = std::fs::File::create(&large).and_then(|mut f| {
+            f.write_all(&vec![b' '; MAX_SEED_BYTES as usize + 1024])
+        });
+        let corpus = Corpus::load(Some(&dir));
+        assert_eq!(corpus.len(), 1, "seed kecil tetap dipertahankan");
+        assert_eq!(
+            corpus.skipped_large, 1,
+            "seed raksasa di-HITUNG, bukan dibuang tanpa jejak"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_no_large_when_all_small() {
+        let dir = std::env::temp_dir().join(format!("fzcorp2_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        std::fs::write(dir.join("a.sv"), "module a; endmodule").unwrap();
+        std::fs::write(dir.join("b.sv"), "module b; endmodule").unwrap();
+        let corpus = Corpus::load(Some(&dir));
+        assert_eq!(corpus.len(), 2);
+        assert_eq!(corpus.skipped_large, 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

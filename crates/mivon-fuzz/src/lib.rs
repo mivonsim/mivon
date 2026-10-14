@@ -354,9 +354,11 @@ pub struct TargetSummary {
     pub target: Target,
     pub total: usize,
     pub bugs: usize,
-    /// Kasus di-skip karena source membengkak > SIZE_CAP pasca-mutasi
-    /// (input raksasa 100MB+ = lambat di tool mana pun, bukan bug mivon).
-    pub skipped_big: usize,
+    /// Kasus bersumber raksasa (> SIZE_CAP) yang TETAP dievaluasi (bukan
+    /// di-skip) dengan budget waktu lebih longgar. Dihitung agar kampanye
+    /// tahu persis berapa banyak seed besar yang dijamah — bukan hilang
+    /// senyap. (Dulu `skipped_big` memang di-`continue` → coverage terbuang.)
+    pub large_evaluated: usize,
     /// Hang yg TERNYATA selesai saat replay tenang (6× budget) → dibuang
     /// dari hitungan bug (slow ≠ hang; review kampanye 2026-09-29).
     pub dismissed_hangs: usize,
@@ -598,7 +600,15 @@ fn run_single(cfg: FuzzConfig) -> FuzzReport {
     let mut dismissed_hangs: usize = 0;
     let mut categories: BTreeMap<Category, usize> = BTreeMap::new();
     let mut seen_sigs: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut skipped_big: usize = 0;
+    let mut large_evaluated: usize = 0;
+
+    if corpus.skipped_large > 0 {
+        eprintln!(
+            "  (corpus: {} seed raksasa >= {}MB di-hitung, tak dibuang senyap)",
+            corpus.skipped_large,
+            crate::corpus::MAX_SEED_BYTES / (1024 * 1024)
+        );
+    }
 
     for i in 0..cfg.cases {
         // Ambil seed nyata dari corpus (100% — tanpa template sintetis).
@@ -642,8 +652,12 @@ fn run_single(cfg: FuzzConfig) -> FuzzReport {
             base_seed.text
         };
 
-        // Mutasi 0-4x (mutator dibuat per-iterasi agar borrow rng singkat)
-        let n_mut = rng.below(5);
+        // Source raksasa: JANGAN di-skip. Tekan mutasi pengembang (n_mut=0,
+        // tanpa directed) agar tak ada blowup `duplicate_chunk` (dulu 267MB
+        // → false hang massal). Source dievaluasi apa adanya — tetap
+        // dijamah, coverage tak terbuang.
+        let is_large = base_source.len() > SIZE_CAP;
+        let n_mut = if is_large { 0 } else { rng.below(5) };
         {
             let mut mutator = mutator::Mutator::new(&mut rng);
             for _ in 0..n_mut {
@@ -652,7 +666,8 @@ fn run_single(cfg: FuzzConfig) -> FuzzReport {
         }
 
         // Directed mutation: 30% kasus — serangan terarah SETELAH mutasi acak
-        if rng.chance(30) {
+        // (dilewati bila source raksasa, demi cegah blowup).
+        if !is_large && rng.chance(30) {
             let mut dir = directed::DirectedMutator::new(&mut rng);
             base_source = dir.mutate(&base_source);
         }
@@ -683,14 +698,19 @@ fn run_single(cfg: FuzzConfig) -> FuzzReport {
             let _ = std::fs::write(&trace_path, &source);
         }
 
-        // Size guard pasca-mutasi: source raksasa (duplicate_chunk blowup)
-        // lambat di tool mana pun — skip, jangan evaluasi (bukan bug mivon).
-        if source.len() > SIZE_CAP {
-            skipped_big += 1;
-            continue;
-        }
+        // Source raksasa: TIDAK di-skip. Evaluasi dgn budget waktu lebih
+        // longgar (parse/elab source besar butuh waktu lebih) agar tak
+        // salah digolongkan hang. Mutasi pengembang sudah ditekan → tak ada
+        // blowup. Dihitung di `large_evaluated` supaya kampanye tahu persis
+        // berapa seed besar yang dijamah (bukan hilang senyap).
+        let eval_timeout = if source.len() > SIZE_CAP {
+            large_evaluated += 1;
+            cfg.timeout_ms.saturating_mul(4)
+        } else {
+            cfg.timeout_ms
+        };
 
-        let mut result = oracle::evaluate(cfg.target, &source, cfg.timeout_ms);
+        let mut result = oracle::evaluate(cfg.target, &source, eval_timeout);
         // O6 utk jalur IN-PROCESS (lexer/parser/elab/fmt/preproc/mv): tak ada
         // subprocess stdout utk di-scan — scan `detail` (pesan error/ok)
         // utk pola KUAT HiddenBug (mis. pesan ber-"internal error") — dulu
@@ -742,11 +762,11 @@ fn run_single(cfg: FuzzConfig) -> FuzzReport {
 
         if (i + 1) % 500 == 0 {
             eprint!(
-                "\r  [{}/{}] bugs: {} skip_big: {}",
+                "\r  [{}/{}] bugs: {} large: {}",
                 i + 1,
                 cfg.cases,
                 results.len(),
-                skipped_big
+                large_evaluated
             );
         }
     }
@@ -758,7 +778,7 @@ fn run_single(cfg: FuzzConfig) -> FuzzReport {
         target: cfg.target,
         total: cfg.cases,
         bugs: results.len(),
-        skipped_big,
+        large_evaluated,
         dismissed_hangs,
         categories,
     };

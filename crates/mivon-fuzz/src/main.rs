@@ -152,11 +152,11 @@ fn cmd_run(args: &[String]) -> i32 {
             String::new()
         };
         println!(
-            "[{}] total={} bugs={} skip_big={}{} :: {}",
+            "[{}] total={} bugs={} large={}{} :: {}",
             s.target.as_str(),
             s.total,
             s.bugs,
-            s.skipped_big,
+            s.large_evaluated,
             dismissed,
             parts.join(" ")
         );
