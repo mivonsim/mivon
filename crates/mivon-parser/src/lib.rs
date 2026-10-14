@@ -84,6 +84,11 @@ pub struct Parser {
     /// Timescale aktif untuk module yang SEDANG di-parse — diisi di awal
     /// `parse_module` dari segmen, dipakai saat membuat `Module`.
     pub(crate) timescale_at_line: Option<(String, String)>,
+    /// Antrean assign tambahan dari `assign a=b, c=d;` (LRM §10.3: comma-
+    /// separated continuous assignments). `parse_assign` isi antrean ini;
+    /// `parse_module_item` drain dulu sebelum parse item baru. Tanpa ini
+    /// assignment ke-2+ jatuh ke E1005 "skipping unknown construct" (cva6).
+    pub(crate) pending_assigns: std::cell::RefCell<Vec<ModuleItem>>,
     pub errors: Vec<Diagnostic>,
 }
 
@@ -208,6 +213,7 @@ impl Parser {
             peek_count: std::cell::Cell::new(0),
             timescale_segments: Vec::new(),
             timescale_at_line: None,
+            pending_assigns: std::cell::RefCell::new(Vec::new()),
             errors: Vec::new(),
         }
     }
@@ -1648,6 +1654,11 @@ impl Parser {
     }
 
     fn parse_module_item(&mut self) -> Result<Option<ModuleItem>, SimError> {
+        // Drain antrean multi-assign dulu (lihat pending_assigns).
+        if !self.pending_assigns.borrow().is_empty() {
+            let item = self.pending_assigns.borrow_mut().remove(0);
+            return Ok(Some(item));
+        }
         self.push_depth()?;
         // Guard: if the token is `=`, skip to semi/end to avoid infinite loop
         if matches!(
@@ -1779,8 +1790,17 @@ impl Parser {
                 Ok(Some(ModuleItem::Final(final_block)))
             }
             Token::Assign => {
-                let assign = self.parse_assign()?;
-                Ok(Some(ModuleItem::Assign(assign)))
+                let mut assigns = self.parse_assign()?;
+                // `assign a=b, c=d;` → item pertama return, sisa antre.
+                for extra in assigns.drain(1..) {
+                    self.pending_assigns
+                        .borrow_mut()
+                        .push(ModuleItem::Assign(extra));
+                }
+                let first = assigns.into_iter().next().ok_or_else(|| {
+                    self.err("expected assignment after 'assign'")
+                })?;
+                Ok(Some(ModuleItem::Assign(first)))
             }
             Token::Dollar => {
                 // System task call di level MODULE: `$fatal(...)`, `$error(...)`,

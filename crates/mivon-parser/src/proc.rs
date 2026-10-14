@@ -225,7 +225,7 @@ impl Parser {
         Ok(SensitivityList { events })
     }
 
-    pub(crate) fn parse_assign(&mut self) -> Result<ContinuousAssign, SimError> {
+    pub(crate) fn parse_assign(&mut self) -> Result<Vec<ContinuousAssign>, SimError> {
         self.advance();
 
         // Drive strength: `assign (weak0, weak1) net = ...;` / `(strong0, pull1)`.
@@ -259,12 +259,28 @@ impl Parser {
             None
         };
 
-        let lhs = self.parse_expr(0)?;
-        self.expect(Token::BlockingAssign)?;
-        let rhs = self.parse_expr(0)?;
+        // LRM 1800 §10.3: `assign a=b, c=d, ...;` — list koma. Tiap
+        // pasangan punya lhs=rhs sendiri; delay awal berlaku utk semua
+        // (bentuk `#d a=b, c=d` jarang pakai delay per-item).
+        let mut out = Vec::new();
+        loop {
+            let lhs = self.parse_expr(0)?;
+            self.expect(Token::BlockingAssign)?;
+            let rhs = self.parse_expr(0)?;
+            out.push(ContinuousAssign {
+                lhs,
+                rhs,
+                delay: delay.clone(),
+            });
+            if self.peek() == &Token::Comma {
+                self.advance();
+                continue;
+            }
+            break;
+        }
         self.skip_semi();
 
-        Ok(ContinuousAssign { lhs, rhs, delay })
+        Ok(out)
     }
 
     /// Apakah token ini keyword drive-strength net (LRM 1800 §6.7.2)?

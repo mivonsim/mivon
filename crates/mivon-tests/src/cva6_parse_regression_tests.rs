@@ -119,3 +119,37 @@ endmodule
 "#;
     assert_no_parse_errors(src);
 }
+
+/// Bug-5 (cva6): `assign a=b, c.d=e, ...;` multi-assignment koma (LRM §10.3)
+/// — assignment ke-2+ jatuh ke E1005 "skipping unknown construct" sesat.
+/// Sekarang semua pasangan di-parse (cva6 hpdcache_to_l15, mem_to_axi_*).
+#[test]
+fn test_cva6_multi_assign_comma() {
+    let src = r#"
+module top;
+  logic a, b, c;
+  typedef struct packed { logic [7:0] x; logic [7:0] y; } req_t;
+  req_t r;
+  assign a = b, r.x = c, r.y = a;
+  initial #1 $finish;
+endmodule
+"#;
+    let (design, errors) = lex_and_parse(src);
+    assert_no_parse_errors(src);
+    // 3 assign harus jadi 3 ModuleItem::Assign (1 langsung + 2 antrean).
+    let assigns = design.modules[0]
+        .items
+        .iter()
+        .filter(|i| matches!(i, mivon_ast::ModuleItem::Assign(_)))
+        .count();
+    assert_eq!(assigns, 3, "multi-assign koma harus hasilkan 3 assign");
+    let sesat: Vec<_> = errors
+        .iter()
+        .filter(|d| format!("{}", d).contains("skipping unknown construct"))
+        .collect();
+    assert!(
+        sesat.is_empty(),
+        "diag sesat E1005 tidak boleh muncul: {:?}",
+        sesat
+    );
+}
