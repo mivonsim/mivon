@@ -519,7 +519,14 @@ pub fn eval_expr(e: &Expr, ctx: &PkgCtx, cur_pkg: Option<&str>) -> Result<CVal, 
             // fungsi package `fp_width`) → key `pkg::ARR[idx].field` yang
             // di-expansikan oleh eval_package_constants. Di AST pemilih
             // elemen array tak-terbungkus direpresentasikan sebagai BitSelect.
-            let lookup_key: Option<String> = match obj.as_ref() {
+            //
+            // Kandidat key: qualified dulu (semantik paket FUNGSI — argumen
+            // pemanggilan di-evaluasi dengan cur_pkg = paket fungsi), lalu
+            // PLAIN (nama caller-scope: param module `CFG.N` dalam argumen
+            // `avoid_neg(CFG.N-1)` — pola CVA6; tanpa ini miss → "member
+            // access on non-struct constant" sesat). Qualified menang bila
+            // keduanya ada; plain hanya menolong yang sebelumnya ERROR.
+            let lookup_keys: Vec<String> = match obj.as_ref() {
                 Expr::BitSelect { expr: base, index } => eval_expr(index, ctx, cur_pkg)
                     .and_then(scalar)
                     .ok()
@@ -534,21 +541,38 @@ pub fn eval_expr(e: &Expr, ctx: &PkgCtx, cur_pkg: Option<&str>) -> Result<CVal, 
                             }
                             _ => None,
                         }
-                        .map(|b| format!("{}[{}].{}", b, i, field.as_str()))
-                    }),
+                        .map(|b| {
+                            let mut v = vec![format!("{}[{}].{}", b, i, field.as_str())];
+                            if let Expr::Ident { name, .. } = base.as_ref() {
+                                let plain =
+                                    format!("{}[{}].{}", name.as_str(), i, field.as_str());
+                                if plain != v[0] {
+                                    v.push(plain);
+                                }
+                            }
+                            v
+                        })
+                    })
+                    .unwrap_or_default(),
                 Expr::Ident { name, .. } => {
-                    Some(format!("{}.{}", qualify(cur_pkg, name.as_str()), field.as_str()))
+                    let q = format!("{}.{}", qualify(cur_pkg, name.as_str()), field.as_str());
+                    let plain = format!("{}.{}", name.as_str(), field.as_str());
+                    if plain == q {
+                        vec![q]
+                    } else {
+                        vec![q, plain]
+                    }
                 }
-                Expr::ScopedIdent { package, item, .. } => Some(format!(
+                Expr::ScopedIdent { package, item, .. } => vec![format!(
                     "{}::{}.{}",
                     package.as_str(),
                     item.as_str(),
                     field.as_str()
-                )),
-                _ => None,
+                )],
+                _ => Vec::new(),
             };
-            if let Some(key) = lookup_key {
-                let key = Symbol::intern(&key);
+            for key in &lookup_keys {
+                let key = Symbol::intern(key);
                 if let Some(&v) = ctx.scalars.get(&key) {
                     return Ok(CVal::Scalar(v));
                 }

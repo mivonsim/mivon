@@ -117,3 +117,44 @@ endmodule
         result.err()
     );
 }
+
+/// FuncCall package murni di dimensi deklarasi (`avoid_neg(N-1)`, pola
+/// `pmpcfg_t [avoid_neg(CVA6Cfg.NrPMPEntries-1):0]` di cva6.sv): evaluator
+/// skalar menolak FuncCall ("cannot evaluate function call ... in constant
+/// context") → E3003 ParamMismatch yang mematikan elaborasi module.
+/// Sekarang lebar range di-resolve via evaluator-penuh (inline body fungsi)
+/// sebagai fallback di `range_width_aware` (elab types.rs) — keterbatasan
+/// "not supported" menjadi full support. Nilai override (`N=8` → `[7:0]`,
+/// `v='1` → 255) membuktikan field dipakai, bukan default.
+#[test]
+fn test_struct_param_funcall_in_decl_dim() {
+    let src = r#"
+package mpkg;
+  typedef struct packed { int unsigned N; int unsigned M; } cfg_t;
+  function automatic int unsigned avoid_neg(int n);
+    return (n < 0) ? 0 : n;
+  endfunction
+endpackage
+
+module child #(parameter mpkg::cfg_t CFG = mpkg::cfg_t'(0))
+  (output logic [avoid_neg(CFG.N-1):0] o);
+    assign o = '1;
+endmodule
+
+module top;
+    wire [7:0] vtop;
+    child #(.CFG(mpkg::cfg_t'{N:8, M:2})) c(.o(vtop));
+    initial #20 $finish;
+endmodule
+"#;
+    let result = simulate_signals(src, 20);
+    assert!(
+        result.is_ok(),
+        "FuncCall di dimensi deklarasi harus ter-resolve tanpa E3003: {:?}",
+        result.err()
+    );
+    let sigs = result.unwrap();
+    let v = sigs.iter().find(|(s, _)| s == "vtop").unwrap();
+    assert_eq!(v.1.width, 8, "override N=8 -> port [7:0]");
+    assert_eq!(v.1.to_u64(), 255, "override N=8 -> o='1 harus 255");
+}

@@ -15,6 +15,52 @@ use super::super::util::width;
 use super::Elaborator;
 use super::BUILTIN_UVM_CLASSES;
 
+/// True bila ekspresi memuat pemanggilan fungsi user (bukan `$sysfunc`).
+/// Gerbang murah agar evaluator-penuh (mahal) hanya jalan bila jalur
+/// skalar pasti gagal — varian tak dikenal = false (perilaku lama).
+fn expr_has_funcall(e: &Expr) -> bool {
+    match e {
+        Expr::FuncCall { name, args, .. } => {
+            !name.as_str().starts_with('$') || args.iter().any(expr_has_funcall)
+        }
+        Expr::BinaryOp { lhs, rhs, .. } => expr_has_funcall(lhs) || expr_has_funcall(rhs),
+        Expr::UnaryOp { expr, .. } => expr_has_funcall(expr),
+        Expr::TernaryOp {
+            cond,
+            true_expr,
+            false_expr,
+        } => expr_has_funcall(cond) || expr_has_funcall(true_expr) || expr_has_funcall(false_expr),
+        Expr::Paren(inner) => expr_has_funcall(inner),
+        Expr::RangeSelect { expr, msb, lsb } => {
+            expr_has_funcall(expr) || expr_has_funcall(msb) || expr_has_funcall(lsb)
+        }
+        Expr::BitSelect { expr, index } => expr_has_funcall(expr) || expr_has_funcall(index),
+        Expr::PartSelect { expr, base, width } => {
+            expr_has_funcall(expr) || expr_has_funcall(base) || expr_has_funcall(width)
+        }
+        Expr::Concat(items) => items.iter().any(expr_has_funcall),
+        Expr::Replicate { count, expr } => expr_has_funcall(count) || expr_has_funcall(expr),
+        Expr::MethodCall {
+            obj, args, with_clause, ..
+        } => {
+            expr_has_funcall(obj)
+                || args.iter().any(expr_has_funcall)
+                || with_clause.as_ref().is_some_and(|w| expr_has_funcall(w))
+        }
+        Expr::MemberAccess { obj, .. } => expr_has_funcall(obj),
+        Expr::Inside { expr, range_list } => {
+            expr_has_funcall(expr) || range_list.iter().any(expr_has_funcall)
+        }
+        Expr::Cast { expr, .. } | Expr::CastWidth { expr, .. } => expr_has_funcall(expr),
+        Expr::StructLit { members } => members.iter().any(|m| match m {
+            StructLitMember::Named(_, v)
+            | StructLitMember::Positional(v)
+            | StructLitMember::Default(v) => expr_has_funcall(v),
+        }),
+        _ => false,
+    }
+}
+
 impl Elaborator {
     pub(crate) fn store_typedef_fields(&mut self, name: Symbol, dtype: &DataType) {
         let fields = self.compute_struct_fields(dtype);
@@ -146,6 +192,16 @@ impl Elaborator {
         if let Ok(r) = resolve_expr_range(er, effective_params) {
             return Ok(r.width());
         }
+        // Fallback evaluator-penuh: bound memakai pemanggilan fungsi package
+        // murni (`avoid_neg(NrPMPEntries-1)` di dimensi deklarasi CVA6) yang
+        // evaluator skalar tolak ("cannot evaluate function call ... in
+        // constant context"). Evaluator penuh bisa inline body fungsi +
+        // member-access struct ter-flatten. Diposisikan SEBELUM width-aware
+        // historis agar fungsi menang bila keduanya bisa (width-aware tak
+        // kenal FuncCall sehingga tak ada konflik perilaku).
+        if let Some(w) = self.range_width_rich(er, effective_params) {
+            return Ok(w);
+        }
         let msb = width::eval_width_aware_param(
             &er.msb,
             signal_map,
@@ -163,6 +219,36 @@ impl Elaborator {
         )
         .ok_or_else(|| "cannot resolve range bound".to_string())?;
         Ok((msb.abs_diff(lsb) + 1) as usize)
+    }
+
+    /// Lebar range via evaluator-penuh const_eval_ext (mendukung FuncCall
+    /// package murni + member struct). None bila salah satu bound tak
+    /// ter-evaluasi menjadi skalar.
+    fn range_width_rich(
+        &self,
+        er: &ExprRange,
+        effective_params: &HashMap<Symbol, i64>,
+    ) -> Option<usize> {
+        if !expr_has_funcall(&er.msb) && !expr_has_funcall(&er.lsb) {
+            return None;
+        }
+        let m = mivon_ast::const_eval_ext::eval_cval_full(
+            &er.msb,
+            effective_params,
+            &self.pkg_const_arrays,
+            &self.package_symbols,
+            &self.pkg_struct_ref_index,
+        )
+        .and_then(|v| mivon_ast::const_eval_ext::scalar(v).ok())?;
+        let l = mivon_ast::const_eval_ext::eval_cval_full(
+            &er.lsb,
+            effective_params,
+            &self.pkg_const_arrays,
+            &self.package_symbols,
+            &self.pkg_struct_ref_index,
+        )
+        .and_then(|v| mivon_ast::const_eval_ext::scalar(v).ok())?;
+        Some((m.abs_diff(l) + 1) as usize)
     }
 
     /// Resolve lebar port dengan fallback width-aware (`$bits(pkg::Type)` dsb)
