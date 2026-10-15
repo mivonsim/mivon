@@ -30,7 +30,7 @@ impl<'r> DirectedMutator<'r> {
         if source.is_empty() {
             return String::new();
         }
-        match self.rng.below(10) {
+        match self.rng.below(12) {
             0 => self.del_end_keyword(source),
             1 => self.dup_end_keyword(source),
             2 => self.swap_operator(source),
@@ -40,6 +40,8 @@ impl<'r> DirectedMutator<'r> {
             6 => self.sensitivity_posedge(source),
             7 => self.add_delay(source),
             8 => self.dup_begin(source),
+            9 => self.swap_edge(source),
+            10 => self.swap_assign_kind(source),
             _ => self.remove_semi(source),
         }
     }
@@ -138,6 +140,30 @@ impl<'r> DirectedMutator<'r> {
         replace_all(source, from, to)
     }
 
+    /// Balik edge sensitivity: posedge↔negedge (scheduler edge-triggered;
+    /// komplemen sensitivity_posedge yang hanya comb→ff).
+    fn swap_edge(&mut self, source: &str) -> String {
+        if self.rng.below(2) == 0 {
+            if source.contains("posedge") {
+                return source.replacen("posedge", "negedge", 1);
+            }
+            return source.to_string();
+        }
+        if source.contains("negedge") {
+            return source.replacen("negedge", "posedge", 1);
+        }
+        source.to_string()
+    }
+
+    /// Tukar blocking↔non-blocking (`<=`↔`=` spasi, hindari `==`/`===`):
+    /// semantik race NBA vs Active region (area sekuensial rapuh).
+    fn swap_assign_kind(&mut self, source: &str) -> String {
+        if self.rng.below(2) == 0 {
+            replace_first(source, " <= ", " = ")
+        } else {
+            replace_first(source, " = ", " <= ")
+        }
+    }
     /// Tambah `@(posedge clk)` pada satu always_comb → salah sensitivity.
     fn sensitivity_posedge(&mut self, source: &str) -> String {
         if source.contains("always_comb") {
@@ -195,6 +221,19 @@ impl<'r> DirectedMutator<'r> {
 
 // ─── Helpers char-boundary safe ───
 
+fn replace_first(source: &str, pat: &str, to: &str) -> String {
+    match source.find(pat) {
+        Some(pos) => {
+            let mut out = String::with_capacity(source.len() + to.len());
+            out.push_str(&source[..pos]);
+            out.push_str(to);
+            out.push_str(&source[pos + pat.len()..]);
+            out
+        }
+        None => source.to_string(),
+    }
+}
+
 fn remove_first(source: &str, pat: &str) -> String {
     match source.find(pat) {
         Some(pos) => {
@@ -233,4 +272,46 @@ fn replace_all(source: &str, from: &str, to: &str) -> String {
     }
     out.push_str(rest);
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `swap_edge` membalik posedge↔negedge; tanpa edge → no-op.
+    /// `swap_assign_kind` menukar blocking↔non-blocking spasi-aman.
+    #[test]
+    fn edge_and_assign_swaps() {
+        let src = "always @(posedge clk) q <= d;";
+        let mut saw_negedge = false;
+        let mut saw_noop = false;
+        for seed in 0..20u64 {
+            let mut rng = crate::Rng::new(seed);
+            let mut m = DirectedMutator::new(&mut rng);
+            let out = m.swap_edge(src);
+            if out.contains("negedge") {
+                saw_negedge = true;
+            } else {
+                assert!(out.contains("posedge"), "seed {seed}: edge hilang: {out}");
+                saw_noop = true;
+            }
+        }
+        assert!(saw_negedge, "swap posedge→negedge harus tercapai");
+        let _ = saw_noop;
+        // `==` tak tersentuh (bukan assignment); kedua arah tercapai.
+        let mut saw_eq = false;
+        let mut saw_le = false;
+        for seed in 0..20u64 {
+            let mut rng = crate::Rng::new(seed);
+            let mut m = DirectedMutator::new(&mut rng);
+            let out = m.swap_assign_kind("if (a == b) q <= d;");
+            assert!(out.contains("=="), "seed {seed}: == rusak: {out}");
+            if out.contains(" = ") {
+                saw_eq = true;
+            } else {
+                saw_le = true;
+            }
+        }
+        assert!(saw_eq && saw_le, "kedua arah harus tercapai");
+    }
 }

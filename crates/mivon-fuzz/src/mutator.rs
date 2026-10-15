@@ -132,13 +132,13 @@ impl<'r> Mutator<'r> {
         Self { rng }
     }
 
-    /// Terapkan 1 operasi mutasi random (19 opsi — 13 lama + 3 baru area
-    /// sistem-task `$display`/const-fold `$bits`/streaming `{<<{`).
+    /// Terapkan 1 operasi mutasi random (21 opsi — termasuk range decl
+    /// dan timescale).
     pub fn mutate(&mut self, source: &str, corpus: &Corpus) -> String {
         if source.is_empty() {
             return String::new();
         }
-        match self.rng.below(19) {
+        match self.rng.below(21) {
             0 => self.splice_from_corpus(source, corpus),
             1 => self.replace_keyword(source),
             2 => self.delete_chunk(source),
@@ -158,6 +158,9 @@ impl<'r> Mutator<'r> {
             14 => self.inject_sysfunc_assign(source),
             15 => self.inject_display_format(source),
             16 => self.inject_stream_assign(source),
+            // ── Area baru: range decl / timescale ──
+            17 => self.tweak_range(source),
+            18 => self.inject_timescale(source),
             _ => source.to_string(), // no-op
         }
     }
@@ -639,6 +642,54 @@ impl<'r> Mutator<'r> {
             source.to_string()
         }
     }
+
+    /// Ubah range deklarasi `[a:b]` → balik `[b:a]` atau lebarkan MSB+8
+    /// (width resolution / range validation stress).
+    fn tweak_range(&mut self, source: &str) -> String {
+        let chars: Vec<char> = source.chars().collect();
+        let mut idx = 0usize;
+        while idx < chars.len() {
+            if chars[idx] == '[' {
+                let mut j = idx + 1;
+                while j < chars.len() && chars[j].is_ascii_digit() {
+                    j += 1;
+                }
+                if j > idx + 1 && j < chars.len() && chars[j] == ':' {
+                    let mut k = j + 1;
+                    while k < chars.len() && chars[k].is_ascii_digit() {
+                        k += 1;
+                    }
+                    if k > j + 1 && k < chars.len() && chars[k] == ']' {
+                        let a: String = chars[idx + 1..j].iter().collect();
+                        let b: String = chars[j + 1..k].iter().collect();
+                        let rep = if self.rng.below(2) == 0 {
+                            format!("[{b}:{a}]")
+                        } else {
+                            let widened: usize =
+                                a.parse::<usize>().unwrap_or(7).saturating_add(8);
+                            format!("[{widened}:{b}]")
+                        };
+                        let mut out: String = chars[..idx].iter().collect();
+                        out.push_str(&rep);
+                        out.extend(&chars[k + 1..]);
+                        return out;
+                    }
+                }
+            }
+            idx += 1;
+        }
+        source.to_string()
+    }
+
+    /// Sisipkan directive `` `timescale `` di baris pertama bila belum ada
+    /// (timescale resolution stress; no-op bila sudah ada).
+    fn inject_timescale(&mut self, source: &str) -> String {
+        if source.contains("timescale") {
+            return source.to_string();
+        }
+        let ts = self.rng.pick(&["`timescale 1ns/1ps\n", "`timescale 1ps/1ps\n"]);
+        format!("{ts}{source}")
+    }
 }
 
 #[cfg(test)]
@@ -684,5 +735,23 @@ mod tests {
             );
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `tweak_range` membalik/melebarkan range; tanpa range → no-op.
+    /// `inject_timescale` prepend sekali; sudah ada → no-op.
+    #[test]
+    fn range_and_timescale_mutations() {
+        let mut rng = crate::Rng::new(42);
+        let mut m = Mutator::new(&mut rng);
+        let src = "module m;\n  logic [7:0] a;\nendmodule\n";
+        let out = m.tweak_range(src);
+        assert!(
+            out.contains("[0:7]") || out.contains("[15:0]"),
+            "range berubah: {out}"
+        );
+        assert!(!m.tweak_range("module m; endmodule").contains('['));
+        let ts = m.inject_timescale(src);
+        assert!(ts.starts_with("`timescale"), "prepend timescale: {ts}");
+        assert_eq!(m.inject_timescale(&ts), ts, "ganda = no-op");
     }
 }
