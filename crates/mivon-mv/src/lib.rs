@@ -1370,6 +1370,25 @@ module m {
     }
 
     #[test]
+    fn bare_comparison_stmt_rejected() {
+        // REGRESI fuzz (mv roundtrip_mismatch bug_0000): `r != r + 1` sbg
+        // statement lolos parser → transpiler emit `r != r + 1;` → SV invalid
+        // ("expected expression, found Neq"). Perbandingan telanjang tak
+        // bermakna sbg statement: MV harus menolaknya bersih ber-lokasi.
+        let src = r#"
+module m {
+    out y : logic[7:0]
+    comb {
+        y = 1
+        y != 2
+    }
+}
+"#;
+        let err = transpile(src, "m").expect_err("perbandingan telanjang harus error bersih");
+        assert!(err.line > 0, "error wajib ber-lokasi: {err}");
+    }
+
+    #[test]
     fn transpile_error_position() {
 
         let err = transpile("module {", "m").unwrap_err();

@@ -755,6 +755,7 @@ impl Parser {
                 Err(_) => {
                     self.pos = save;
                     let e = self.parse_expr()?;
+                    check_expr_stmt(&e, l, c)?;
                     return Ok(Stmt::ExprStmt(e));
                 }
             };
@@ -791,6 +792,7 @@ impl Parser {
                     if self.toks[self.pos].1 != end_line {
                         self.pos = save;
                         let e = self.parse_expr()?;
+                        check_expr_stmt(&e, l, c)?;
                         return Ok(Stmt::ExprStmt(e));
                     }
                     let inc = matches!(self.peek(), Tok::PlusPlus);
@@ -840,11 +842,14 @@ impl Parser {
                 _ => {
                     self.pos = save;
                     let e = self.parse_expr()?;
+                    check_expr_stmt(&e, l, c)?;
                     return Ok(Stmt::ExprStmt(e));
                 }
             }
         }
+        let (l2, c2) = self.pos_line();
         let e = self.parse_expr()?;
+        check_expr_stmt(&e, l2, c2)?;
         Ok(Stmt::ExprStmt(e))
     }
 
@@ -1076,5 +1081,25 @@ impl Parser {
         }
         
         Ok(SvaPropExpr::Seq(Box::new(seq)))
+    }
+}
+
+/// Statement ekspresi telanjang yang valid: call/syscall/method/incdec +
+/// system task telanjang (`$finish;` — lexer menggabung `$`+nama jadi satu
+/// Ident, bukan SysFunc).
+/// Perbandingan/aritmetika/ident-biasa telanjang (`r != r+1`) tak bermakna
+/// sebagai statement dan menghasilkan SV invalid (`r != r + 1;` →
+/// "expected expression, found Neq"). Temuan fuzz roundtrip_mismatch:
+/// tolak bersih di parse dengan lokasi, bukan SV rusak.
+fn check_expr_stmt(e: &crate::ast::Expr, line: usize, col: usize) -> Result<(), MvError> {
+    use crate::ast::Expr;
+    match e {
+        Expr::Call(..) | Expr::SysFunc(..) | Expr::MethodCall { .. } | Expr::IncDec { .. } => Ok(()),
+        Expr::Ident(s, ..) if s.starts_with('$') => Ok(()),
+        _ => Err(MvError::new(
+            line,
+            col,
+            "ekspresi tak valid sebagai statement tunggal (hanya call/method/incdec/system-task)".to_string(),
+        )),
     }
 }
