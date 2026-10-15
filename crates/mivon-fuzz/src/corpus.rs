@@ -75,9 +75,10 @@ impl Corpus {
 
         // Akun seed raksasa: JANGAN buang senyap. Seed <= MAX_SEED_BYTES
         // dipertahankan; sisanya di-HITUNG sebagai `skipped_large` (terlihat
-        // di laporan) dan tetap bisa dievaluasi lewat jalur large-aware di
-        // `run_single` bila ukurannya di bawah cap load yang lebih tinggi.
-        // (Dulu `retain` drop langsung tanpa jejak → coverage hilang diam-diam.)
+        // di laporan) sebelum dibuang agar load tak meledak OOM. Cap ini
+        // praktis tak pernah kena (file RTL real < 2MB) — seed > SIZE_CAP
+        // yang muncul dari inlining include ditangani jalur large-aware di
+        // `run_single` (mutate_light + timeout 4×), bukan dibuang.
         let mut skipped_large = 0usize;
         seeds.retain(|p| {
             let ok = p
