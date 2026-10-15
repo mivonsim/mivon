@@ -2615,6 +2615,19 @@ fn mv_eval(source: &str) -> CaseResult {
                             &format!("mv transpile ok — tanpa top module: {msg}"),
                             source,
                         )
+                    } else if source.contains("@sv") {
+                        // Blok `@sv { ... }` = SV VERBATIM (transpiler
+                        // meneruskan mentah by-design). Mutasi merusak isi
+                        // verbatim → output tak parseable BUKAN bug codegen
+                        // (temuan fuzz bug_0474: splice RTL ke dalam @sv).
+                        // Klasifikasi jujur: CleanError, bukan mismatch.
+                        mk(
+                            Target::Mv,
+                            Oracle::O1NoCrash,
+                            Category::CleanError,
+                            &format!("output tak parseable di wilayah @sv verbatim: {msg}"),
+                            source,
+                        )
                     } else {
                         mk(
                             Target::Mv,
