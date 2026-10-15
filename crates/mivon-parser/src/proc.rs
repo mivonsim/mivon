@@ -1553,6 +1553,9 @@ impl Parser {
                 };
                 self.expect(Token::RParen)?;
                 let (body_label, body_items) = self.parse_generate_block_body()?;
+                if std::env::var("DBG_GEN").is_ok() {
+                    eprintln!("[DBG-PARSER-GENFOR] body_items count={}, items: {:?}", body_items.len(), body_items.iter().map(|mi| std::mem::discriminant(mi)).collect::<Vec<_>>());
+                }
                 Ok(GenerateItem::For {
                     var,
                     init: _init,
@@ -1629,6 +1632,9 @@ impl Parser {
     pub(crate) fn parse_generate_block_body(
         &mut self,
     ) -> Result<(Option<Symbol>, Vec<ModuleItem>), SimError> {
+        if std::env::var("DBG_GEN").is_ok() {
+            eprintln!("[DBG-PARSER-GENBODY-START] peek={:?}, pos={}", self.peek(), self.pos.get());
+        }
         if self.peek() == &Token::Begin {
             self.advance();
             // Optional begin label: `begin [: name]` — tangkap untuk scope generate.
@@ -1648,7 +1654,15 @@ impl Parser {
                 label = Some(n);
             }
             let mut items = Vec::new();
+            if std::env::var("DBG_GEN").is_ok() {
+                let (file, _) = mivon_core::diagnostics::resolve_source_location(&self.source_lines, &self.source_file, self.peek_line());
+                eprintln!("[DBG-PARSER-GENBODY-AFTER-LABEL] peek={:?}, pos={}, file={}", self.peek(), self.pos.get(), file);
+            }
             loop {
+                if std::env::var("DBG_GEN").is_ok() {
+                    let (file, _) = mivon_core::diagnostics::resolve_source_location(&self.source_lines, &self.source_file, self.peek_line());
+                    eprintln!("[DBG-PARSER-GENBODY-LOOP] peek={:?}, pos={}, items_count={}, file={}, items_ptr={:p}", self.peek(), self.pos.get(), items.len(), file, &items);
+                }
                 if matches!(self.peek(), Token::End | Token::Eof) {
                     self.advance();
                     // Handle optional : name after end
@@ -1662,7 +1676,13 @@ impl Parser {
                 }
                 let pos_before = self.pos.get();
                 match self.parse_module_item()? {
-                    Some(mi) => items.push(mi),
+                    Some(mi) => {
+                        if std::env::var("DBG_GEN").is_ok() {
+                            let (file, _) = mivon_core::diagnostics::resolve_source_location(&self.source_lines, &self.source_file, self.peek_line());
+                            eprintln!("[DBG-PARSER-GENBODY] parsed item: {:?}, depth={}, file={}", std::mem::discriminant(&mi), self.recursion_depth, file);
+                        }
+                        items.push(mi);
+                    }
                     None => {
                         // Hanya skip apabila posisi TIDAK bergerak (item tidak
                         // di-handle oleh parser). Sequence / Statement / Dollar
@@ -1673,6 +1693,9 @@ impl Parser {
                         }
                     }
                 }
+            }
+            if std::env::var("DBG_GEN").is_ok() {
+                eprintln!("[DBG-PARSER-GENBODY-RETURN] items count={}, items: {:?}", items.len(), items.iter().map(|mi| std::mem::discriminant(mi)).collect::<Vec<_>>());
             }
             Ok((label, items))
         } else {

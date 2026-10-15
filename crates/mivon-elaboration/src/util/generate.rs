@@ -14,10 +14,11 @@
 use std::collections::{HashMap, HashSet};
 
 use mivon_ast::types::const_eval_simple;
+use mivon_ast::types::const_eval_with_params;
+use mivon_ast::const_eval_ext::{eval_param_default_full, Arrays, SField, ArrayStructs};
+use mivon_ast::*;
 
 const MAX_GENERATED_ITEMS: usize = 1_000_000;
-use mivon_ast::types::const_eval_with_params;
-use mivon_ast::*;
 use mivon_core::diagnostics::diagnostic::{DiagCode, DiagLevel, Diagnostic, SourceSnippet};
 use mivon_core::diagnostics::DiagSink;
 use mivon_core::intern::Symbol;
@@ -177,6 +178,11 @@ pub fn expand_all_generates(
     diag_sink: &DiagSink,
     source_lines: &[String],
     source_file: &str,
+    // Package context untuk evaluasi localparam dengan package function calls
+    pkg_const_arrays: &Arrays,
+    package_symbols: &HashMap<Symbol, HashMap<Symbol, PackageItem>>,
+    pkg_struct_ref_index: &HashMap<Symbol, Vec<SField>>,
+    pkg_array_structs: &ArrayStructs,
 ) -> Result<(), ElabError> {
     if std::env::var("DBG_GEN").is_ok() {
         eprintln!(
@@ -198,6 +204,10 @@ pub fn expand_all_generates(
                 source_lines,
                 source_file,
                 "",
+                pkg_const_arrays,
+                package_symbols,
+                pkg_struct_ref_index,
+                            pkg_array_structs,
             ) {
                 Ok(expanded) => {
                     total_items += expanded.len();
@@ -428,6 +438,11 @@ pub fn expand_generate_block(
     // lokal Decl antar instance saling tertimpa (fuzzer t26, prim_max_tree
     // `logic sel` dlm for-genvar). Konvensi mirip LRM `genblk1[0]`.
     scope_prefix: &str,
+    // Package context untuk evaluasi localparam dengan package function calls
+    pkg_const_arrays: &Arrays,
+    package_symbols: &HashMap<Symbol, HashMap<Symbol, PackageItem>>,
+    pkg_struct_ref_index: &HashMap<Symbol, Vec<SField>>,
+    pkg_array_structs: &ArrayStructs,
 ) -> Result<Vec<ModuleItem>, ElabError> {
     let mut result = Vec::new();
     for item in &gen.items {
@@ -451,6 +466,10 @@ pub fn expand_generate_block(
                             source_lines,
                             source_file,
                             scope_prefix,
+                            pkg_const_arrays,
+                            package_symbols,
+                            pkg_struct_ref_index,
+                            pkg_array_structs,
                         )?);
                     }
                     Err(e) => {
@@ -495,6 +514,10 @@ pub fn expand_generate_block(
                             source_lines,
                             source_file,
                             scope_prefix,
+                            pkg_const_arrays,
+                            package_symbols,
+                            pkg_struct_ref_index,
+                            pkg_array_structs,
                         )?);
                     }
                 }
@@ -608,7 +631,14 @@ pub fn expand_generate_block(
                         // Fold localparam lokal → literal (mencegah kolisi
                         // nama scope antar iterasi loop luar saat nested —
                         // lihat doc fold_localparams).
-                        fold_localparams(&mut substituted, param_vals);
+                        fold_localparams(
+                            &mut substituted,
+                            param_vals,
+                            pkg_const_arrays,
+                            package_symbols,
+                            pkg_struct_ref_index,
+                            pkg_array_structs,
+                        );
                         // Scope name ber-prefix jalur outer (nested): `gl[1].go[0]`
                         // — tanpa prefix, `go[0]` kolisi antar iterasi outer.
                         let iter_scope = match label.as_ref() {
@@ -625,6 +655,10 @@ pub fn expand_generate_block(
                             source_lines,
                             source_file,
                             &child_prefix,
+                            pkg_const_arrays,
+                            package_symbols,
+                            pkg_struct_ref_index,
+                            pkg_array_structs,
                         )?);
                         cur += step_val;
                     }
@@ -646,7 +680,14 @@ pub fn expand_generate_block(
                         // Fold localparam lokal → literal (mencegah kolisi
                         // nama scope antar iterasi loop luar saat nested —
                         // lihat doc fold_localparams).
-                        fold_localparams(&mut substituted, param_vals);
+                        fold_localparams(
+                            &mut substituted,
+                            param_vals,
+                            pkg_const_arrays,
+                            package_symbols,
+                            pkg_struct_ref_index,
+                            pkg_array_structs,
+                        );
                         let iter_scope = match label.as_ref() {
                             Some(l) => format!("{}{}[{}]", scope_prefix, l.as_str(), cur),
                             None => format!("{}genblk[{}]", scope_prefix, cur),
@@ -661,6 +702,10 @@ pub fn expand_generate_block(
                             source_lines,
                             source_file,
                             &child_prefix,
+                            pkg_const_arrays,
+                            package_symbols,
+                            pkg_struct_ref_index,
+                            pkg_array_structs,
                         )?);
                         cur += step_val;
                     }
@@ -689,6 +734,10 @@ pub fn expand_generate_block(
                                 source_lines,
                                 source_file,
                                 scope_prefix,
+                                pkg_const_arrays,
+                                package_symbols,
+                                pkg_struct_ref_index,
+                            pkg_array_structs,
                             )?);
                         } else if let Some(default_items) = default {
                             result.extend(expand_item_list(
@@ -699,6 +748,10 @@ pub fn expand_generate_block(
                                 source_lines,
                                 source_file,
                                 scope_prefix,
+                                pkg_const_arrays,
+                                package_symbols,
+                                pkg_struct_ref_index,
+                            pkg_array_structs,
                             )?);
                         }
                         continue;
@@ -724,6 +777,10 @@ pub fn expand_generate_block(
                                 source_lines,
                                 source_file,
                                 scope_prefix,
+                                pkg_const_arrays,
+                                package_symbols,
+                                pkg_struct_ref_index,
+                            pkg_array_structs,
                             )?);
                             matched = true;
                             break;
@@ -743,6 +800,10 @@ pub fn expand_generate_block(
                             source_lines,
                             source_file,
                             scope_prefix,
+                            pkg_const_arrays,
+                            package_symbols,
+                            pkg_struct_ref_index,
+                            pkg_array_structs,
                         )?);
                     }
                 }
@@ -756,6 +817,10 @@ pub fn expand_generate_block(
                     source_lines,
                     source_file,
                     scope_prefix,
+                    pkg_const_arrays,
+                    package_symbols,
+                    pkg_struct_ref_index,
+                            pkg_array_structs,
                 )?);
             }
         }
@@ -774,6 +839,11 @@ fn expand_item_list(
     source_lines: &[String],
     source_file: &str,
     scope_prefix: &str,
+    // Package context untuk evaluasi localparam dengan package function calls
+    pkg_const_arrays: &Arrays,
+    package_symbols: &HashMap<Symbol, HashMap<Symbol, PackageItem>>,
+    pkg_struct_ref_index: &HashMap<Symbol, Vec<SField>>,
+    pkg_array_structs: &ArrayStructs,
 ) -> Result<Vec<ModuleItem>, ElabError> {
     let mut extended = param_vals.clone();
     for item in items {
@@ -785,6 +855,15 @@ fn expand_item_list(
                     }
                     if let Ok(v) = const_eval_with_params(e, &extended) {
                         extended.insert(p.name, v);
+                    } else if let Some(v) = eval_param_default_full(
+                        e,
+                        &extended,
+                        pkg_const_arrays,
+                        package_symbols,
+                        pkg_struct_ref_index,
+                        pkg_array_structs,
+                    ) {
+                        extended.insert(p.name, v);
                     }
                 }
             }
@@ -792,6 +871,12 @@ fn expand_item_list(
     }
     let mut result = Vec::new();
     for item in items {
+        if std::env::var("DBG_GEN").is_ok() {
+            eprintln!("[DBG-GEN-EXP] processing item: {:?}", std::mem::discriminant(item));
+            if let ModuleItem::Param(p) = item {
+                eprintln!("[DBG-GEN-EXP]   Param: {}", p.name.as_str());
+            }
+        }
         match item {
             ModuleItem::Generate(gen) => {
                 result.extend(expand_generate_block(
@@ -802,6 +887,10 @@ fn expand_item_list(
                     source_lines,
                     source_file,
                     scope_prefix,
+                    pkg_const_arrays,
+                    package_symbols,
+                    pkg_struct_ref_index,
+                            pkg_array_structs,
                 )?);
             }
             other => result.push(other.clone()),
@@ -820,13 +909,37 @@ fn expand_item_list(
 /// Setelah fold, referensi jadi literal → rename tak lagi menyentuhnya.
 /// Param items dibiarkan (tak ada referensi tersisa → kolisi berikutnya
 /// tak berdampak).
-fn fold_localparams(items: &mut [ModuleItem], base: &HashMap<Symbol, i64>) {
-    fn scan(items: &[ModuleItem], known: &HashMap<Symbol, i64>, out: &mut Vec<(Symbol, i64)>) {
+fn fold_localparams(
+    items: &mut [ModuleItem],
+    base: &HashMap<Symbol, i64>,
+    pkg_const_arrays: &Arrays,
+    package_symbols: &HashMap<Symbol, HashMap<Symbol, PackageItem>>,
+    pkg_struct_ref_index: &HashMap<Symbol, Vec<SField>>,
+    pkg_array_structs: &ArrayStructs,
+) {
+    fn scan(
+        items: &[ModuleItem],
+        known: &HashMap<Symbol, i64>,
+        out: &mut Vec<(Symbol, i64)>,
+        pkg_const_arrays: &Arrays,
+        package_symbols: &HashMap<Symbol, HashMap<Symbol, PackageItem>>,
+        pkg_struct_ref_index: &HashMap<Symbol, Vec<SField>>,
+        pkg_array_structs: &ArrayStructs,
+    ) {
         for item in items {
             if let ModuleItem::Param(p) = item {
                 if !known.contains_key(&p.name) {
                     if let Some(e) = &p.default {
                         if let Ok(v) = const_eval_with_params(e, known) {
+                            out.push((p.name, v));
+                        } else if let Some(v) = eval_param_default_full(
+                            e,
+                            known,
+                            pkg_const_arrays,
+                            package_symbols,
+                            pkg_struct_ref_index,
+                            pkg_array_structs,
+                        ) {
                             out.push((p.name, v));
                         }
                     }
@@ -852,18 +965,50 @@ fn fold_localparams(items: &mut [ModuleItem], base: &HashMap<Symbol, i64>) {
                             // ini (rename ber-prefix menangan).
                             if let Ok(v) = const_eval_with_params(cond, known) {
                                 let branch = if v != 0 { true_items } else { false_items };
-                                scan(branch, known, out);
+                                scan(
+                                    branch,
+                                    known,
+                                    out,
+                                    pkg_const_arrays,
+                                    package_symbols,
+                                    pkg_struct_ref_index,
+                            pkg_array_structs,
+                                );
                             }
                         }
                         GenerateItem::Case { items, default, .. } => {
                             for ci in items {
-                                scan(&ci.body, known, out);
+                                scan(
+                                    &ci.body,
+                                    known,
+                                    out,
+                                    pkg_const_arrays,
+                                    package_symbols,
+                                    pkg_struct_ref_index,
+                            pkg_array_structs,
+                                );
                             }
                             if let Some(d) = default {
-                                scan(d, known, out);
+                                scan(
+                                    d,
+                                    known,
+                                    out,
+                                    pkg_const_arrays,
+                                    package_symbols,
+                                    pkg_struct_ref_index,
+                            pkg_array_structs,
+                                );
                             }
                         }
-                        GenerateItem::Items(list) => scan(list, known, out),
+                        GenerateItem::Items(list) => scan(
+                            list,
+                            known,
+                            out,
+                            pkg_const_arrays,
+                            package_symbols,
+                            pkg_struct_ref_index,
+                            pkg_array_structs,
+                        ),
                         GenerateItem::For { .. } => {}
                     }
                 }
@@ -873,7 +1018,15 @@ fn fold_localparams(items: &mut [ModuleItem], base: &HashMap<Symbol, i64>) {
     let mut known = base.clone();
     loop {
         let mut folded: Vec<(Symbol, i64)> = Vec::new();
-        scan(items, &known, &mut folded);
+        scan(
+            items,
+            &known,
+            &mut folded,
+            pkg_const_arrays,
+            package_symbols,
+            pkg_struct_ref_index,
+                            pkg_array_structs,
+        );
         if folded.is_empty() {
             break;
         }

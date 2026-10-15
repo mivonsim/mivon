@@ -20440,13 +20440,17 @@ fn test_e2003_shorthand_port_conn_has_location() {
         mivon_elaboration::Elaborator::with_source(design, source_lines, "<string>".to_string());
     let _ = elaborator.elaborate(None, mivon_elaboration::elaborator::ElaborateMode::StrictSimulation);
     let diags = elaborator.flush_diagnostics();
+    // E2001 "signal 'p' not found" juga sah (lebih presisi dari E2003):
+    // shorthand `.p` tanpa signal senama di parent = undefined. Inti O2
+    // tetap: WAJIB ber-lokasi (snippet baris koneksi), bukan kode-nya.
     let width_diag = diags.iter().find(|d| {
-        d.message.contains("width computation failed for port")
-            && d.message.contains("u.p")
+        (d.message.contains("width computation failed for port")
+            && d.message.contains("u.p"))
+            || (d.message.contains("signal 'p' not found"))
     });
     assert!(
         width_diag.is_some(),
-        "harus ada diag E2003 width port u.p: {:?}",
+        "harus ada diag E2003 width port u.p atau E2001 signal p: {:?}",
         diags.iter().map(|d| (d.code.as_str(), d.message.as_ref())).collect::<Vec<_>>()
     );
     let snap = width_diag.unwrap().source_snippet.as_ref();
@@ -20485,9 +20489,10 @@ fn test_e2003_shorthand_port_conn_has_location() {
     let _ = elaborator2.elaborate(None, mivon_elaboration::elaborator::ElaborateMode::StrictSimulation);
     let diags2 = elaborator2.flush_diagnostics();
     let w2 = diags2.iter().find(|d| {
-        d.message.contains("width computation failed for port") && d.message.contains("u.p")
+        (d.message.contains("width computation failed for port") && d.message.contains("u.p"))
+            || d.message.contains("signal 'p' not found")
     });
-    assert!(w2.is_some(), "site spasi `.p` juga harus E2003 ber-lokasi");
+    assert!(w2.is_some(), "site spasi `.p` juga harus E2003/E2001 ber-lokasi");
     let s2 = w2.unwrap().source_snippet.as_ref().expect("site spasi wajib snippet");
     assert_eq!(s2.line, 5, "site spasi: snippet baris 5, got {}", s2.line);
 }

@@ -238,6 +238,7 @@ impl Elaborator {
             &self.pkg_const_arrays,
             &self.package_symbols,
             &self.pkg_struct_ref_index,
+            &self.pkg_array_structs,
         )
         .and_then(|v| mivon_ast::const_eval_ext::scalar(v).ok())?;
         let l = mivon_ast::const_eval_ext::eval_cval_full(
@@ -246,6 +247,7 @@ impl Elaborator {
             &self.pkg_const_arrays,
             &self.package_symbols,
             &self.pkg_struct_ref_index,
+            &self.pkg_array_structs,
         )
         .and_then(|v| mivon_ast::const_eval_ext::scalar(v).ok())?;
         Some((m.abs_diff(l) + 1) as usize)

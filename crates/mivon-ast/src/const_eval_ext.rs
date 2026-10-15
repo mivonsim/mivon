@@ -50,6 +50,7 @@ impl SField {
 
 pub type Scalars = HashMap<Symbol, i64>;
 pub type Arrays = HashMap<Symbol, Vec<i64>>;
+pub type ArrayStructs = HashMap<Symbol, Vec<Vec<SField>>>;
 
 pub struct PkgCtx<'a> {
     pub scalars: &'a Scalars,
@@ -60,6 +61,10 @@ pub struct PkgCtx<'a> {
     /// lalu `localparam int W = Info.size;` (pola `Info.size` di
     /// prim_generic_flash_bank / otp_ctrl_part_buf OpenTitan).
     pub structs: &'a HashMap<Symbol, Vec<SField>>,
+    /// Nilai array-of-struct package parameter (key qualified `pkg::name` →
+    /// vec of struct fields per element). Dipakai saat array indexing
+    /// `pkg::ARRAY[idx]` untuk mengembalikan struct utuh, bukan scalar 0.
+    pub array_structs: &'a ArrayStructs,
 }
 
 fn parse_base(s: &str, radix: u32) -> Result<CVal, String> {
@@ -79,9 +84,9 @@ pub fn flatten(a: &[CVal]) -> Vec<i64> {
             CVal::Scalar(s) => out.push(*s),
             CVal::Array(inner) => out.extend(flatten(inner)),
             // Struct tanpa layout: representasi nilai utuh tidak bisa di-pack
-            // di sini (butuh lebar field dari typedef). Nilai 0 (tanpa
-            // regresi — pola bernama sebelumnya di-discard jadi 0). Member
-            // access tetap benar lewat key `name[i].field` terdaftar.
+            // di sini (butuh lebar field dari typedef). Kembalikan 0 untuk
+            // kompatibilitas mundur (member access tetap benar lewat key
+            // `name[i].field` terdaftar). Array of struct disimpan terpisah.
             CVal::Struct(_) => out.push(0),
         }
     }
@@ -235,6 +240,10 @@ pub fn eval_expr(e: &Expr, ctx: &PkgCtx, cur_pkg: Option<&str>) -> Result<CVal, 
                 if let Some(s) = ctx.structs.get(&q) {
                     return Ok(CVal::Struct(s.clone()));
                 }
+                if let Some(as_arr) = ctx.array_structs.get(&q) {
+                    // Array of structs: convert to CVal::Array of CVal::Struct
+                    return Ok(CVal::Array(as_arr.iter().map(|fields| CVal::Struct(fields.clone())).collect()));
+                }
             }
             if let Some(&v) = ctx.scalars.get(name) {
                 Ok(CVal::Scalar(v))
@@ -242,6 +251,8 @@ pub fn eval_expr(e: &Expr, ctx: &PkgCtx, cur_pkg: Option<&str>) -> Result<CVal, 
                 Ok(CVal::Array(a.iter().map(|&x| CVal::Scalar(x)).collect()))
             } else if let Some(s) = ctx.structs.get(name) {
                 Ok(CVal::Struct(s.clone()))
+            } else if let Some(as_arr) = ctx.array_structs.get(name) {
+                return Ok(CVal::Array(as_arr.iter().map(|fields| CVal::Struct(fields.clone())).collect()));
             } else if name.as_str() == "1" {
                 Ok(CVal::Scalar(1))
             } else {
@@ -256,6 +267,8 @@ pub fn eval_expr(e: &Expr, ctx: &PkgCtx, cur_pkg: Option<&str>) -> Result<CVal, 
                 Ok(CVal::Array(a.iter().map(|&x| CVal::Scalar(x)).collect()))
             } else if let Some(s) = ctx.structs.get(&qname) {
                 Ok(CVal::Struct(s.clone()))
+            } else if let Some(as_arr) = ctx.array_structs.get(&qname) {
+                Ok(CVal::Array(as_arr.iter().map(|fields| CVal::Struct(fields.clone())).collect()))
             } else {
                 Err(format!("'{}' not found", qname.as_str()))
             }
@@ -571,13 +584,32 @@ pub fn eval_expr(e: &Expr, ctx: &PkgCtx, cur_pkg: Option<&str>) -> Result<CVal, 
                 )],
                 _ => Vec::new(),
             };
-            for key in &lookup_keys {
-                let key = Symbol::intern(key);
+            let mut found = false;
+            for key_str in &lookup_keys {
+                let key = Symbol::intern(key_str);
+                if std::env::var("MIVON_DBG_FUNC").is_ok() {
+                    eprintln!("[DBG-FUNC-MEM] lookup key: {}", key.as_str());
+                }
                 if let Some(&v) = ctx.scalars.get(&key) {
+                    if std::env::var("MIVON_DBG_FUNC").is_ok() {
+                        eprintln!("[DBG-FUNC-MEM] found in scalars: {} = {}", key.as_str(), v);
+                    }
                     return Ok(CVal::Scalar(v));
                 }
                 if let Some(a) = ctx.arrays.get(&key) {
+                    if std::env::var("MIVON_DBG_FUNC").is_ok() {
+                        eprintln!("[DBG-FUNC-MEM] found in arrays: {} = {:?}", key.as_str(), a);
+                    }
                     return Ok(CVal::Array(a.iter().map(|&x| CVal::Scalar(x)).collect()));
+                }
+            }
+            if std::env::var("MIVON_DBG_FUNC").is_ok() {
+                eprintln!("[DBG-FUNC-MEM] key not found, tried: {:?}", lookup_keys);
+                eprintln!("[DBG-FUNC-MEM] scalars has {} entries", ctx.scalars.len());
+                for (k, v) in ctx.scalars.iter() {
+                    if k.as_str().contains("FP_ENCODINGS") {
+                        eprintln!("[DBG-FUNC-MEM]   scalar: {} = {}", k.as_str(), v);
+                    }
                 }
             }
             match obj_val {
@@ -651,13 +683,28 @@ fn eval_func(
             Ok(CVal::Scalar(if a % b != 0 { a / b + 1 } else { a / b }))
         }
         _ => {
+            if std::env::var("MIVON_DBG_FUNC").is_ok() {
+                eprintln!("[DBG-FUNC] eval_func called: name='{}', package_symbols has {} packages", name, ctx.package_symbols.len());
+                for (pkg, items) in ctx.package_symbols {
+                    if items.contains_key(&Symbol::intern("fp_width")) {
+                        eprintln!("[DBG-FUNC]   found fp_width in package: {}", pkg.as_str());
+                    }
+                }
+            }
             let Some((pkg, func)) = find_package_func(ctx.package_symbols, name) else {
+                if std::env::var("MIVON_DBG_FUNC").is_ok() {
+                    eprintln!("[DBG-FUNC]   function '{}' not found in package_symbols", name);
+                }
                 return Err(format!("function '{}' not found", name));
             };
-            // Pakai package FUNGSI sendiri sebagai `cur_pkg` agar referensi
-            // const/typedef plain-name di tubuhnya (`FP_ENCODINGS`, typedef
-            // lokal) ter-qualify benar.
-            eval_function_body(func, args, ctx, Some(pkg))
+            if std::env::var("MIVON_DBG_FUNC").is_ok() {
+                eprintln!("[DBG-FUNC]   calling eval_function_body for '{}' in package '{}', args={}", name, pkg, args.len());
+            }
+            let result = eval_function_body(func, args, ctx, Some(pkg));
+            if std::env::var("MIVON_DBG_FUNC").is_ok() {
+                eprintln!("[DBG-FUNC]   result: {:?}", result);
+            }
+            result
         }
     }
 }
@@ -972,6 +1019,7 @@ fn eval_function_body_inner(
                     arrays: &local_arrays,
                     package_symbols: ctx.package_symbols,
                     structs: &local_structs,
+                    array_structs: ctx.array_structs,
                 };
                 if let Ok(v) = eval_expr(init, &local_ctx, cur_pkg) {
                     match v {
@@ -1007,6 +1055,7 @@ fn eval_function_body_inner(
     let mut stmts_scalars = local_scalars;
     let mut stmts_arrays = local_arrays;
     let mut stmts_structs = local_structs;
+    let array_structs = ctx.array_structs;
     for stmt in func.stmts.iter() {
         match eval_stmt(
             stmt,
@@ -1014,6 +1063,7 @@ fn eval_function_body_inner(
             &mut stmts_arrays,
             &mut stmts_structs,
             ctx.package_symbols,
+            array_structs,
             cur_pkg,
         ) {
             Ok(Some(v)) => return Ok(v),
@@ -1030,6 +1080,7 @@ fn eval_stmt(
     arrays: &mut Arrays,
     structs: &mut HashMap<Symbol, Vec<SField>>,
     package_symbols: &HashMap<Symbol, HashMap<Symbol, PackageItem>>,
+    array_structs: &ArrayStructs,
     cur_pkg: Option<&str>,
 ) -> Result<Option<CVal>, String> {
     macro_rules! eval_in_ctx {
@@ -1039,6 +1090,7 @@ fn eval_stmt(
                 arrays: &*arrays,
                 package_symbols,
                 structs: &*structs,
+                array_structs,
             };
             eval_expr($e, &pkg_ctx, cur_pkg)
         }};
@@ -1046,7 +1098,7 @@ fn eval_stmt(
     match stmt {
         Stmt::Block { stmts } | Stmt::NamedBlock { stmts, .. } => {
             for s in stmts {
-                if let Some(v) = eval_stmt(s, scalars, arrays, structs, package_symbols, cur_pkg)?
+                if let Some(v) = eval_stmt(s, scalars, arrays, structs, package_symbols, array_structs, cur_pkg)?
                 {
                     return Ok(Some(v));
                 }
@@ -1060,9 +1112,9 @@ fn eval_stmt(
         } => {
             let c = truthy(&eval_in_ctx!(cond)?)?;
             if c != 0 {
-                eval_stmt(true_branch, scalars, arrays, structs, package_symbols, cur_pkg)
+                eval_stmt(true_branch, scalars, arrays, structs, package_symbols, array_structs, cur_pkg)
             } else if let Some(fb) = false_branch {
-                eval_stmt(fb, scalars, arrays, structs, package_symbols, cur_pkg)
+                eval_stmt(fb, scalars, arrays, structs, package_symbols, array_structs, cur_pkg)
             } else {
                 Ok(None)
             }
@@ -1074,7 +1126,7 @@ fn eval_stmt(
             stmts,
         } => {
             if let Some(init) = init {
-                eval_stmt(init, scalars, arrays, structs, package_symbols, cur_pkg)?;
+                eval_stmt(init, scalars, arrays, structs, package_symbols, array_structs, cur_pkg)?;
             }
             let mut guard = 0usize;
             loop {
@@ -1088,13 +1140,13 @@ fn eval_stmt(
                     return Err("const loop exceeded iteration limit".to_string());
                 }
                 for s in stmts {
-                    if let Some(v) = eval_stmt(s, scalars, arrays, structs, package_symbols, cur_pkg)?
+                    if let Some(v) = eval_stmt(s, scalars, arrays, structs, package_symbols, array_structs, cur_pkg)?
                     {
                         return Ok(Some(v));
                     }
                 }
                 if let Some(st) = step {
-                    eval_stmt(st, scalars, arrays, structs, package_symbols, cur_pkg)?;
+                    eval_stmt(st, scalars, arrays, structs, package_symbols, array_structs, cur_pkg)?;
                 }
             }
             Ok(None)
@@ -1110,7 +1162,7 @@ fn eval_stmt(
                     return Err("const loop exceeded iteration limit".to_string());
                 }
                 for s in stmts {
-                    if let Some(v) = eval_stmt(s, scalars, arrays, structs, package_symbols, cur_pkg)?
+                    if let Some(v) = eval_stmt(s, scalars, arrays, structs, package_symbols, array_structs, cur_pkg)?
                     {
                         return Ok(Some(v));
                     }
@@ -1121,7 +1173,7 @@ fn eval_stmt(
             let n = scalar(eval_in_ctx!(count)?)?;
             for _ in 0..n {
                 for s in stmts {
-                    if let Some(v) = eval_stmt(s, scalars, arrays, structs, package_symbols, cur_pkg)?
+                    if let Some(v) = eval_stmt(s, scalars, arrays, structs, package_symbols, array_structs, cur_pkg)?
                     {
                         return Ok(Some(v));
                     }
@@ -1216,6 +1268,7 @@ fn eval_stmt(
                         arrays,
                         structs,
                         package_symbols,
+                        array_structs,
                         cur_pkg,
                     )? {
                         return Ok(Some(v));
@@ -1224,7 +1277,7 @@ fn eval_stmt(
                 }
             }
             if let Some(d) = default {
-                return eval_stmt(d, scalars, arrays, structs, package_symbols, cur_pkg);
+                return eval_stmt(d, scalars, arrays, structs, package_symbols, array_structs, cur_pkg);
             }
             Ok(None)
         }
@@ -1288,15 +1341,19 @@ fn eval_stmt(
 
 /// Evaluasi semua parameter package (key kualifikasi `pkg::name`).
 ///
-/// Mengembalikan `(scalars, arrays, structs)`. `structs` = nilai struct
+/// Mengembalikan `(scalars, arrays, structs, array_structs)`. `structs` = nilai struct
 /// package UTUH (key `pkg::name`) — termasuk field bernilai array/struct yang
 /// TIDAK terwakili di `scalars` (yang hanya menyimpan field skalar). Dipakai
 /// pemanggil untuk merekonstruksi argumen struct utuh (`build_config(cfg)`).
+/// `array_structs` = array-of-struct package parameter (key qualified `pkg::name` →
+/// vec of struct fields per element). Dipakai saat array indexing
+/// `pkg::ARRAY[idx]` untuk mengembalikan struct utuh.
 pub fn eval_package_constants(
     package_symbols: &HashMap<Symbol, HashMap<Symbol, PackageItem>>,
-) -> (Scalars, Arrays, HashMap<Symbol, Vec<SField>>) {
+) -> (Scalars, Arrays, HashMap<Symbol, Vec<SField>>, ArrayStructs) {
     let mut scalars: Scalars = HashMap::new();
     let mut arrays: Arrays = HashMap::new();
+    let mut array_structs: ArrayStructs = HashMap::new();
     // Nilai struct param package yang sudah dievaluasi (key qualified
     // `pkg::name`), agar param LAIN bisa mereferensikannya sebagai struct
     // (`TL_H2D_DEFAULT = '{... TL_A_USER_DEFAULT ...}`), bukan hanya member
@@ -1327,6 +1384,7 @@ pub fn eval_package_constants(
                         arrays: &arrays,
                         package_symbols,
                         structs: &structs,
+                        array_structs: &array_structs,
                     };
                     eval_expr(default, &ctx, Some(pkg_name.as_str()))
                 };
@@ -1342,11 +1400,36 @@ pub fn eval_package_constants(
                         if eval_debug {
                             eprintln!("[DBG-PKG] {} = array len {}", qname.as_str(), a.len());
                         }
+                        if qname.as_str().contains("FP_ENCODINGS") {
+                            eprintln!("[DBG-PKG] FP_ENCODINGS array elements: {:?}", a);
+                        }
                         arrays.insert(qname, flatten(&a));
                         // Struct member keys utk array-of-struct: `pkg::name[i].field`
                         // → nilai field skalar. Ini yang membuat `PartInfo[k].offset`
                         // bisa di-const-eval (member access di const_eval.rs cari
                         // key `base.field` di param_vals).
+                        // Also store array of structs for array indexing `pkg::ARRAY[idx]`.
+                        let mut array_struct_elems: Vec<Vec<SField>> = Vec::new();
+                        // Check if parameter has user-defined element type that is a struct typedef
+                        let elem_typedef_fields = if let Some(DataType::UserDefined(tname)) = &p.dtype {
+                            // Look up typedef in the same package
+                            package_symbols
+                                .get(pkg_name)
+                                .and_then(|items| items.get(tname))
+                                .and_then(|item| {
+                                    if let PackageItem::Typedef(td) = item {
+                                        if let DataType::StructType { members, .. } = &td.dtype {
+                                            Some(members.iter().map(|m| m.name).collect::<Vec<_>>())
+                                        } else {
+                                            None
+                                        }
+                                    } else {
+                                        None
+                                    }
+                                })
+                        } else {
+                            None
+                        };
                         for (i, elem) in a.iter().enumerate() {
                             if let CVal::Struct(fields) = elem {
                                 if eval_debug {
@@ -1356,6 +1439,7 @@ pub fn eval_package_constants(
                                         fields.len()
                                     );
                                 }
+                                array_struct_elems.push(fields.clone());
                                 for f in fields {
                                     if let Some(fname) = f.name {
                                         if let CVal::Scalar(v) = &f.val {
@@ -1372,11 +1456,54 @@ pub fn eval_package_constants(
                                         }
                                     }
                                 }
-                            } else {
+                            } else if let CVal::Array(inner) = elem {
+                                // Positional struct literal evaluated as array of scalars.
+                                // If we have typedef field names, convert to struct.
+                                if let Some(ref typedef_fields) = elem_typedef_fields {
+                                    if inner.len() == typedef_fields.len() {
+                                        let mut named_fields = Vec::new();
+                                        for (j, val) in inner.iter().enumerate() {
+                                            if let CVal::Scalar(v) = val {
+                                                named_fields.push(SField::named(
+                                                    typedef_fields[j],
+                                                    CVal::Scalar(*v),
+                                                ));
+                                            }
+                                        }
+                                        if !named_fields.is_empty() {
+                                            if eval_debug {
+                                                eprintln!(
+                                                    "[DBG-PKG]   elem[{}] converted to struct with fields: {:?}",
+                                                    i,
+                                                    typedef_fields
+                                                );
+                                            }
+                                            array_struct_elems.push(named_fields.clone());
+                                            for (j, fname) in typedef_fields.iter().enumerate() {
+                                                if let CVal::Scalar(v) = &inner[j] {
+                                                    scalars.insert(
+                                                        Symbol::intern(&format!(
+                                                            "{}::{}[{}].{}",
+                                                            pkg_name.as_str(),
+                                                            name.as_str(),
+                                                            i,
+                                                            fname.as_str()
+                                                        )),
+                                                        *v,
+                                                    );
+                                                }
+                                            }
+                                            continue;
+                                        }
+                                    }
+                                }
                                 if eval_debug {
                                     eprintln!("[DBG-PKG]   elem[{}] = NON-STRUCT {:?}", i, elem);
                                 }
                             }
+                        }
+                        if !array_struct_elems.is_empty() {
+                            array_structs.insert(qname, array_struct_elems);
                         }
                         changed = true;
                     }
@@ -1432,6 +1559,7 @@ pub fn eval_package_constants(
                                 arrays: &arrays,
                                 package_symbols,
                                 structs: no_structs(),
+                                array_structs: &HashMap::new(),
                             };
                             match eval_expr(e, &ctx, Some(pkg_name.as_str())) {
                                 Ok(CVal::Scalar(v)) => Some(v),
@@ -1455,7 +1583,7 @@ pub fn eval_package_constants(
             break;
         }
     }
-    (scalars, arrays, structs)
+    (scalars, arrays, structs, array_structs)
 }
 
 /// Flatten hasil evaluasi konstanta ke dalam ctx i64 untuk const_eval_with_params.
@@ -1547,6 +1675,7 @@ pub fn eval_body_param_default(
         arrays,
         package_symbols,
         structs: no_structs(),
+        array_structs: &HashMap::new(),
     };
     match eval_expr(expr, &ctx, None) {
         Ok(CVal::Scalar(v)) => Some(v),
@@ -1558,18 +1687,21 @@ pub fn eval_body_param_default(
 /// Evaluasi penuh sebuah ekspresi konstanta → `CVal` apa pun (skalar, array,
 /// atau struct). `structs` berisi nilai struct localparam/parameter yang sudah
 /// dievaluasi sebelumnya (fixed-point) agar `name.field` bisa di-const-eval.
+/// `array_structs` berisi array-of-struct package parameter untuk array indexing.
 pub fn eval_cval_full(
     expr: &Expr,
     merged: &Scalars,
     arrays: &Arrays,
     package_symbols: &HashMap<Symbol, HashMap<Symbol, PackageItem>>,
     structs: &HashMap<Symbol, Vec<SField>>,
+    array_structs: &ArrayStructs,
 ) -> Option<CVal> {
     let ctx = PkgCtx {
         scalars: merged,
         arrays,
         package_symbols,
         structs,
+        array_structs,
     };
     eval_expr(expr, &ctx, None).ok()
 }
@@ -1586,6 +1718,8 @@ pub fn eval_cval_full(
 /// (mis. `otbn_pkg::SecAddRandWidth`) — dua hal yang tidak bisa dilakukan
 /// evaluator skalar sederhana `const_eval_with_params`.
 ///
+/// `array_structs` berisi array-of-struct package parameter untuk array indexing.
+///
 /// Mengembalikan `Some(i64)` hanya untuk konstanta SKALAR (kontrak sama
 /// dengan `const_eval_with_params`); array/struct → None.
 pub fn eval_param_default_full(
@@ -1594,8 +1728,9 @@ pub fn eval_param_default_full(
     arrays: &Arrays,
     package_symbols: &HashMap<Symbol, HashMap<Symbol, PackageItem>>,
     structs: &HashMap<Symbol, Vec<SField>>,
+    array_structs: &ArrayStructs,
 ) -> Option<i64> {
-    match eval_cval_full(expr, merged, arrays, package_symbols, structs) {
+    match eval_cval_full(expr, merged, arrays, package_symbols, structs, array_structs) {
         Some(CVal::Scalar(v)) => Some(v),
         Some(CVal::Array(a)) => flatten(&a).first().copied(),
         _ => None,

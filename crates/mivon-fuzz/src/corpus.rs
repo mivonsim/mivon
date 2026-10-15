@@ -233,6 +233,12 @@ impl Corpus {
         self.seeds.get(idx).map(|v| &**v)
     }
 
+    /// Load + resolve seed by index (sama seperti `random_seed` tapi indeks
+    /// eksplisit). Dipakai seed-coverage plan agar tiap seed dijamah >=1x.
+    pub fn seed_by_index(&self, idx: usize) -> Option<SeedSource> {
+        self.seed_at_idx(idx)
+    }
+
     /// Gabung source dgn pasangan `tb_<stem>.sv` bila ada (arah design→tb).
     /// Dipakai verify iverilog: design tanpa stimulus → marker kosong →
     /// compare VAKUM (tidak bermakna). File tb (`tb_*`) diteruskan apa

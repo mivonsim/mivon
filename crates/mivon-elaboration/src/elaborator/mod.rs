@@ -219,6 +219,10 @@ pub struct Elaborator {
     /// Konstanta package ter-evaluasi (kualifikasi `pkg::name`): skalar & array.
     pub pkg_const_scalars: HashMap<Symbol, i64>,
     pub pkg_const_arrays: HashMap<Symbol, Vec<i64>>,
+    /// Array-of-struct package parameter (key qualified `pkg::name` →
+    /// vec of struct fields per element). Dipakai saat array indexing
+    /// `pkg::ARRAY[idx]` untuk mengembalikan struct utuh, bukan scalar 0.
+    pub pkg_array_structs: HashMap<Symbol, Vec<Vec<SField>>>,
     /// Index konstanta STRUCT package per base name (`name` → fields),
     /// dibangun SEKALI dari `pkg_const_scalars` (key `pkg::name.<field>`).
     /// Dipakai body-param loop untuk default param berbentuk ident
@@ -591,7 +595,7 @@ impl Elaborator {
 
         // Evaluate package constants once (scalars + arrays + struct utuh)
         // eval_package_constants menerima referensi — tidak perlu clone map.
-        let (pkg_const_scalars, pkg_const_arrays, pkg_struct_values) =
+        let (pkg_const_scalars, pkg_const_arrays, pkg_struct_values, pkg_array_structs) =
             mivon_ast::const_eval_ext::eval_package_constants(&package_symbols);
 
         // Index konstanta STRUCT package: key `pkg::name.<field>` di
@@ -707,6 +711,7 @@ impl Elaborator {
             package_symbols,
             pkg_const_scalars,
             pkg_const_arrays,
+            pkg_array_structs,
             pkg_struct_ref_index,
             pkg_param_ctx: HashMap::new(),
             unit_import_ctx: HashMap::new(),
@@ -1182,6 +1187,7 @@ impl Elaborator {
                 arrays: &self.pkg_const_arrays,
                 package_symbols: &self.package_symbols,
                 structs: &self.pkg_struct_ref_index,
+                array_structs: &self.pkg_array_structs,
             };
             let resolve_params_t0 = std::time::Instant::now();
             let param_vals = resolve_param_values_with_ctx(
@@ -1205,6 +1211,10 @@ impl Elaborator {
                     &self.diag_sink,
                     &self.source_lines,
                     &self.source_file,
+                    &self.pkg_const_arrays,
+                    &self.package_symbols,
+                    &self.pkg_struct_ref_index,
+                    &self.pkg_array_structs,
                 )
             };
             let expand_us = expand_t0.elapsed().as_micros();
@@ -1400,6 +1410,7 @@ impl Elaborator {
                         arrays: &self.pkg_const_arrays,
                         package_symbols: &self.package_symbols,
                         structs: &self.pkg_struct_ref_index,
+                        array_structs: &self.pkg_array_structs,
                     };
                     if let Ok(param_vals) = resolve_param_values_with_ctx(
                         &self.design.modules[i],
@@ -1416,6 +1427,10 @@ impl Elaborator {
                             &self.diag_sink,
                             &self.source_lines,
                             &self.source_file,
+                            &self.pkg_const_arrays,
+                            &self.package_symbols,
+                            &self.pkg_struct_ref_index,
+                            &self.pkg_array_structs,
                         );
                         expanded_set.insert(module.name);
                     }
@@ -1757,6 +1772,15 @@ impl Elaborator {
             .map(|m| m.name)
             .filter(|name| !instantiated_modules.contains(name))
             .collect();
+
+        if std::env::var("DBG_ELAB").is_ok() {
+            eprintln!("[DBG-ELAB] candidate_tops: {:?}", candidate_tops.iter().map(|s| s.as_str()).collect::<Vec<_>>());
+            for c in &candidate_tops {
+                let cone = topo::module_cone_size(*c, &inst_graph);
+                let score = topo::score_auto_top(*c, cone);
+                eprintln!("[DBG-ELAB]   candidate: {} cone={} score={}", c.as_str(), cone, score);
+            }
+        }
 
         let top_name = match top_module {
             Some(name) => {
@@ -3401,6 +3425,9 @@ impl Elaborator {
         loop {
             let mut changed = false;
             for (pname, expr) in &body_param_defaults {
+                if std::env::var("MIVON_DBG_LP").is_ok() && pname.as_str().contains("FP_WIDTH") {
+                    eprintln!("[DBG-LP-1ST] processing {}: {:?}", pname.as_str(), expr);
+                }
                 // Struct literal TETAP diproses meski sudah ada di
                 // effective_params sebagai skalar fallback 0 (hasil
                 // resolve_param_values yang tak paham struct) — kalau di-skip,
@@ -3449,6 +3476,7 @@ impl Elaborator {
                     &self.pkg_const_arrays,
                     &self.package_symbols,
                     &struct_vals,
+                    &self.pkg_array_structs,
                 ) {
                     if a.len() > 1 {
                         array_done.insert(*pname);
@@ -3464,7 +3492,11 @@ impl Elaborator {
                     &self.pkg_const_arrays,
                     &self.package_symbols,
                     &struct_vals,
+                    &self.pkg_array_structs,
                 ) {
+                    if std::env::var("MIVON_DBG_LP").is_ok() && pname.as_str().contains("FP_WIDTH") {
+                        eprintln!("[DBG-LP-1ST] evaluated {} = {}", pname.as_str(), val);
+                    }
                     effective_params.insert(*pname, val);
                     if is_struct_lit {
                         struct_lit_done.insert(*pname);
@@ -3479,6 +3511,7 @@ impl Elaborator {
                     &self.pkg_const_arrays,
                     &self.package_symbols,
                     &struct_vals,
+                    &self.pkg_array_structs,
                 ) {
                     struct_vals.insert(*pname, fields);
                     struct_lit_done.insert(*pname);
@@ -3555,6 +3588,9 @@ impl Elaborator {
         // (Concat multi-elemen) dan struct literal dikecualikan — keduanya
         // didaftarkan lewat jalur array/struct di atas.
         for (pname, expr) in &body_param_defaults {
+                if std::env::var("MIVON_DBG_LP").is_ok() && pname.as_str().contains("FP_WIDTH") {
+                    eprintln!("[DBG-LP-1ST] processing {}: {:?}", pname.as_str(), expr);
+                }
             if effective_params.contains_key(pname) || struct_vals.contains_key(pname) {
                 continue;
             }
@@ -3592,9 +3628,15 @@ impl Elaborator {
 
         let expanded_items: Vec<ModuleItem> = {
             let mut items = Vec::new();
+            if std::env::var("MIVON_DBG_LP").is_ok() {
+                eprintln!("[DBG-LP-EXP] module.items count={}", module.items.len());
+            }
             for item in &module.items {
                 match item {
                     ModuleItem::Generate(gen) => {
+                        if std::env::var("MIVON_DBG_LP").is_ok() {
+                            eprintln!("[DBG-LP-EXP] expanding Generate block");
+                        }
                         let expanded = match expand_generate_block(
                             gen,
                             &effective_params,
@@ -3603,6 +3645,10 @@ impl Elaborator {
                             &self.source_lines,
                             &self.source_file,
                             "",
+                            &self.pkg_const_arrays,
+                            &self.package_symbols,
+                            &self.pkg_struct_ref_index,
+                            &self.pkg_array_structs,
                         ) {
                             Ok(v) => v,
                             Err(e) => {
@@ -3642,6 +3688,7 @@ impl Elaborator {
                                                 &self.pkg_const_arrays,
                                                 &self.package_symbols,
                                                 &self.pkg_struct_ref_index,
+                                                &self.pkg_array_structs,
                                             )
                                         {
                                             // Localparam body-generate yang butuh
@@ -3684,6 +3731,178 @@ impl Elaborator {
         }
 
         // Update param_vals after generate expansion which may add body-level params
+        self.param_vals = effective_params.clone();
+
+        // ── Second pass: evaluate localparams from expanded generate blocks ───
+        // Localparams declared INSIDE generate-for/if blocks are added to
+        // expanded_items during generate expansion. They were not in the original
+        // module.items, so the first fixed-point loop (above) missed them.
+        // Collect them now and run fixed-point evaluation again.
+        let mut expanded_param_defaults: Vec<(Symbol, &Expr)> = Vec::new();
+        for item in &expanded_items {
+            if std::env::var("MIVON_DBG_LP").is_ok() {
+                match item {
+                    ModuleItem::Param(p) => {
+                        if p.name.as_str().contains("FP_WIDTH") {
+                            eprintln!("[DBG-LP-EXP] expanded_items has Param: {}", p.name.as_str());
+                        }
+                    }
+                    ModuleItem::Generate(_) => {
+                        eprintln!("[DBG-LP-EXP] expanded_items has Generate");
+                    }
+                    ModuleItem::Decl(_) => {
+                        // eprintln!("[DBG-LP-EXP] expanded_items has Decl");
+                    }
+                    ModuleItem::Instance(_) => {
+                        // eprintln!("[DBG-LP-EXP] expanded_items has Instance");
+                    }
+                    _ => {
+                        // eprintln!("[DBG-LP-EXP] expanded_items has Other: {:?}", std::mem::discriminant(item));
+                    }
+                }
+            }
+            if let ModuleItem::Param(p) = item {
+                if let Some(e) = &p.default {
+                    expanded_param_defaults.push((p.name, e));
+                }
+            }
+        }
+        if std::env::var("MIVON_DBG_LP").is_ok() {
+            eprintln!("[DBG-LP-EXP] expanded_param_defaults count={}", expanded_param_defaults.len());
+            for (name, _) in &expanded_param_defaults {
+                if name.as_str().contains("FP_WIDTH") {
+                    eprintln!("[DBG-LP-EXP]   found: {}", name.as_str());
+                }
+            }
+        }
+        if !expanded_param_defaults.is_empty() {
+            let mut struct_vals_expanded: HashMap<Symbol, Vec<SField>> = HashMap::new();
+            let mut struct_lit_done_expanded: HashSet<Symbol> = HashSet::new();
+            let mut array_done_expanded: HashSet<Symbol> = HashSet::new();
+            loop {
+                let mut changed = false;
+                for (pname, expr) in &expanded_param_defaults {
+                    let is_struct_lit = matches!(expr, Expr::StructLit { .. });
+                    let is_struct_ref = !is_struct_lit
+                        && matches!(expr, Expr::Ident { .. } | Expr::ScopedIdent { .. })
+                        && ident_refs_pkg_struct(expr, &self.pkg_struct_ref_index);
+                    let is_struct_like = is_struct_lit || is_struct_ref;
+                    let already_done = if is_struct_like {
+                        struct_lit_done_expanded.contains(pname) || struct_vals_expanded.contains_key(pname)
+                    } else {
+                        effective_params.contains_key(pname) || struct_vals_expanded.contains_key(pname)
+                    };
+                    if already_done || array_done_expanded.contains(pname) {
+                        continue;
+                    }
+                    if is_struct_ref {
+                        if let Some(fields) =
+                            pkg_struct_fields_for_ref(expr, &self.pkg_struct_ref_index)
+                        {
+                            struct_vals_expanded.insert(*pname, fields);
+                            struct_lit_done_expanded.insert(*pname);
+                            changed = true;
+                            continue;
+                        }
+                    }
+                    if let Some(CVal::Array(ref a)) = eval_cval_full(
+                        expr,
+                        &effective_params,
+                        &self.pkg_const_arrays,
+                        &self.package_symbols,
+                        &struct_vals_expanded,
+                        &self.pkg_array_structs,
+                    ) {
+                        if a.len() > 1 {
+                            array_done_expanded.insert(*pname);
+                            changed = true;
+                            continue;
+                        }
+                    }
+                    if let Some(val) = eval_param_default_full(
+                        expr,
+                        &effective_params,
+                        &self.pkg_const_arrays,
+                        &self.package_symbols,
+                        &struct_vals_expanded,
+                        &self.pkg_array_structs,
+                    ) {
+                        if std::env::var("MIVON_DBG_LP").is_ok() && pname.as_str().contains("FP_WIDTH") {
+                            eprintln!("[DBG-LP-EXP] evaluated {} = {}", pname.as_str(), val);
+                        }
+                        effective_params.insert(*pname, val);
+                        if is_struct_lit {
+                            struct_lit_done_expanded.insert(*pname);
+                        }
+                        changed = true;
+                        continue;
+                    }
+                    if let Some(CVal::Struct(fields)) = eval_cval_full(
+                        expr,
+                        &effective_params,
+                        &self.pkg_const_arrays,
+                        &self.package_symbols,
+                        &struct_vals_expanded,
+                        &self.pkg_array_structs,
+                    ) {
+                        struct_vals_expanded.insert(*pname, fields);
+                        struct_lit_done_expanded.insert(*pname);
+                        changed = true;
+                        continue;
+                    }
+                    if let Ok(val) = const_eval_with_params(expr, &effective_params) {
+                        effective_params.insert(*pname, val);
+                        if is_struct_lit {
+                            struct_lit_done_expanded.insert(*pname);
+                        }
+                        changed = true;
+                        continue;
+                    }
+                    if let Some(val) = super::util::width::eval_width_aware_param(
+                        expr,
+                        &signal_map,
+                        &signals,
+                        &effective_params,
+                        &self.package_symbols,
+                    ) {
+                        effective_params.insert(*pname, val);
+                        if is_struct_lit {
+                            struct_lit_done_expanded.insert(*pname);
+                        }
+                        changed = true;
+                        continue;
+                    }
+                    if std::env::var("MIVON_DBG_LP").is_ok() {
+                        eprintln!(
+                            "[DBG-LP-EXP] {} failed const-eval, default=1",
+                            pname.as_str()
+                        );
+                    }
+                    self.elab_warn_at(
+                        DiagCode::ModuleNotFound,
+                        format!(
+                            "expanded localparam '{}' gagal dievaluasi — fallback nilai 1",
+                            pname.as_str()
+                        ),
+                        0,
+                        0,
+                    );
+                    effective_params.insert(*pname, 1);
+                }
+                for sname in struct_vals_expanded.keys() {
+                    if !effective_params.contains_key(sname) {
+                        effective_params.insert(*sname, 0);
+                    }
+                }
+                if !changed {
+                    break;
+                }
+            }
+            // Merge struct_vals from expanded pass
+            for (k, v) in struct_vals_expanded {
+                struct_vals.entry(k).or_insert(v);
+            }
+        }
         self.param_vals = effective_params.clone();
 
         // LANG-40: kumpulkan `let` declaration module ini (items + hasil

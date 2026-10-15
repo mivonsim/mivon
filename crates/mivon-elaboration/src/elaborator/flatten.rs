@@ -223,6 +223,10 @@ impl Elaborator {
                                 &self.diag_sink,
                                 &self.source_lines,
                                 &self.source_file,
+                                &self.pkg_const_arrays,
+                                &self.package_symbols,
+                                &self.pkg_struct_ref_index,
+                                &self.pkg_array_structs,
                             )?;
                         }
                         let ir = self.elaborate_module_with_params_and_type(

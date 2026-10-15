@@ -63,6 +63,10 @@ pub struct PkgFullCtx<'a> {
     /// Nilai struct localparam/parameter (assignment pattern) agar
     /// `name.field` bisa di-const-eval (mis. `Info.size`).
     pub structs: &'a HashMap<Symbol, Vec<SField>>,
+    /// Array-of-struct package parameter (key qualified `pkg::name` →
+    /// vec of struct fields per element). Dipakai saat array indexing
+    /// `pkg::ARRAY[idx]` untuk mengembalikan struct utuh.
+    pub array_structs: &'a HashMap<Symbol, Vec<Vec<SField>>>,
 }
 
 /// Evaluasi default param menjadi `Some(i64)` hanya bila itu konstanta
@@ -120,6 +124,7 @@ fn eval_param_default(
                     p.arrays,
                     p.package_symbols,
                     p.structs,
+                    p.array_structs,
                 );
             }
             None
@@ -464,13 +469,13 @@ fn register_struct_member_keys(module: &Module, vals: &mut HashMap<Symbol, i64>,
                 }
             }
             Expr::StructLit { .. } => {
-                match eval_cval_full(&e, vals, p.arrays, p.package_symbols, &struct_ctx) {
+                match eval_cval_full(&e, vals, p.arrays, p.package_symbols, &struct_ctx, p.array_structs) {
                     Some(CVal::Struct(fs)) => Some(fs),
                     _ => None,
                 }
             }
             Expr::FuncCall { .. } => {
-                match eval_cval_full(&e, vals, p.arrays, p.package_symbols, &struct_ctx) {
+                match eval_cval_full(&e, vals, p.arrays, p.package_symbols, &struct_ctx, p.array_structs) {
                     Some(CVal::Struct(fs)) => Some(fs),
                     _ => None,
                 }

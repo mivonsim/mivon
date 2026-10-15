@@ -783,10 +783,11 @@ pub fn eval_width_aware_param(
         // inlining penuh via evaluator konstanta, bukan allowlist per-nama.
         // effective_params sudah memuat konstanta package + param module.
         Expr::FuncCall { .. } => {
-            use mivon_ast::const_eval_ext::{eval_cval_full, CVal, SField};
+            use mivon_ast::const_eval_ext::{eval_cval_full, CVal, SField, ArrayStructs};
             let arrays: HashMap<Symbol, Vec<i64>> = HashMap::new();
             let structs: HashMap<Symbol, Vec<SField>> = HashMap::new();
-            match eval_cval_full(expr, effective_params, &arrays, package_symbols, &structs) {
+            let array_structs: ArrayStructs = HashMap::new();
+            match eval_cval_full(expr, effective_params, &arrays, package_symbols, &structs, &array_structs) {
                 Some(CVal::Scalar(v)) => Some(v),
                 _ => None,
             }

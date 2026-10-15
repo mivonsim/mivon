@@ -34,6 +34,7 @@ impl Elaborator {
             arrays: &self.pkg_const_arrays,
             package_symbols: &self.package_symbols,
             structs: &self.pkg_struct_ref_index,
+            array_structs: &self.pkg_array_structs,
         };
         resolve_param_values_with_ctx(module, instance_overrides, &ctx, Some(&pkg_full))
             .map_err(|e| self.elab_diag(DiagCode::ParamMismatch, e))

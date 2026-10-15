@@ -2692,6 +2692,9 @@ impl Parser {
             }
             Token::Param | Token::Parameter | Token::LocalParam => {
                 let is_localparam = self.peek() == &Token::LocalParam;
+                if std::env::var("DBG_GEN").is_ok() {
+                    eprintln!("[DBG-PARSER] parse_module_item_body: found Param/LocalParam, is_localparam={}, depth={}", is_localparam, self.recursion_depth);
+                }
                 self.advance(); // consume param/localparam/parameter
                                 // Handle 'parameter type T = type_expr'
                 if self.peek() == &Token::Type {
