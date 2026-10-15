@@ -259,13 +259,28 @@ impl Corpus {
 
     /// Gabung source dgn pasangan `tb_<stem>.sv` bila ada (arah design→tb).
     /// Dipakai verify iverilog: design tanpa stimulus → marker kosong →
-    /// compare VAKUM (tidak bermakna). File tb (`tb_*`) diteruskan apa
-    /// adanya; tanpa pasangan → source apa adanya.
+    /// compare VAKUM (tidak bermakna). Tanpa pasangan → source apa adanya.
+    ///
+    /// Arah balik (tb→design): seed `tb_*` standalone tak memuat DUT →
+    /// iverilog gagal compile → RefUnavailable selamanya (separuh corpus
+    /// tak terverifikasi). Strip `tb_` → cari `<stem>.sv`/`.v` → prepend.
     pub fn pair_with_tb(&self, path: &std::path::Path, src: &str) -> String {
         let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
             return src.to_string();
         };
-        if stem.starts_with("tb_") {
+        if let Some(mod_stem) = stem.strip_prefix("tb_") {
+            for ext in ["sv", "v"] {
+                let mod_name = format!("{mod_stem}.{ext}");
+                for i in 0..self.len() {
+                    if let Some(p) = self.seed_at(i) {
+                        if p.file_name().and_then(|s| s.to_str()) == Some(mod_name.as_str()) {
+                            if let Ok(mod_src) = std::fs::read_to_string(p) {
+                                return format!("{mod_src}\n{src}");
+                            }
+                        }
+                    }
+                }
+            }
             return src.to_string();
         }
         let tb_name = format!("tb_{stem}.sv");
@@ -477,6 +492,31 @@ mod tests {
         let corpus = Corpus::load(Some(&dir));
         assert_eq!(corpus.len(), 2);
         assert_eq!(corpus.skipped_large, 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Pairing dua arah: design→tb DAN tb→design (dulu tb_* diteruskan
+    /// mentah tanpa DUT → verify iverilog RefUnavailable selamanya).
+    #[test]
+    fn pair_with_tb_bidirectional() {
+        let dir = std::env::temp_dir().join(format!("fzpair_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        std::fs::write(dir.join("01_counter.sv"), "module counter; endmodule").unwrap();
+        std::fs::write(dir.join("tb_01_counter.sv"), "module tb; endmodule").unwrap();
+        let corpus = Corpus::load(Some(&dir));
+        // design → tb ditempel di belakang.
+        let fwd = corpus.pair_with_tb(
+            &dir.join("01_counter.sv"),
+            "module counter; endmodule",
+        );
+        assert!(fwd.contains("module tb;"), "design harus ditempeli tb");
+        // tb → design di-prepend di depan.
+        let rev = corpus.pair_with_tb(&dir.join("tb_01_counter.sv"), "module tb; endmodule");
+        assert!(rev.contains("module counter;"), "tb harus ditempeli DUT");
+        assert!(rev.find("module counter;").unwrap() < rev.find("module tb;").unwrap());
+        // Tanpa pasangan → apa adanya.
+        let lone = corpus.pair_with_tb(&dir.join("tb_lone.sv"), "module tb_lone; endmodule");
+        assert_eq!(lone, "module tb_lone; endmodule");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
