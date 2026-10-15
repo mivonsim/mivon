@@ -751,6 +751,10 @@ fn simulate_in_thread(source: &str, timeout_ms: u64) -> Option<CaseResult> {
             let is_passive = ev.process_count == 0;
             let x_heavy = ev.signal_count > 0
                 && (ev.x_remain + ev.z_remain) * 100 >= ev.signal_count.max(1) * 60;
+            // Level bit: partial-X 31/32 per signal lolos ambang signal
+            // (0/1 all-X) padahal 97% bit = X. Ambang sama 60%.
+            let x_bit_heavy =
+                ev.bit_total > 0 && ev.x_bits * 100 >= ev.bit_total * 60;
 
             let detail = format!(
                 "sim verified: {} signals, {} trace entries ({} meaningful); \
@@ -769,17 +773,20 @@ fn simulate_in_thread(source: &str, timeout_ms: u64) -> Option<CaseResult> {
                     &format!("{detail} — design pasif (0 proses), X/Z wajar"),
                 );
             }
-            if x_heavy {
-                // Stimulus ada tapi signal dominan X → butuh perhatian:
-                // bisa wajar (X-latch) atau bukti state-propagation bug.
+            if x_heavy || x_bit_heavy {
+                // Stimulus ada tapi X dominan (level signal ATAU bit) →
+                // butuh perhatian: bisa wajar (X-latch) atau bukti
+                // state-propagation bug.
                 return mk_r(
                     Category::Suspicious,
                     Oracle::O1NoCrash,
                     &format!(
-                        "{detail} — stimulus ada ({}) namun X/Z dominan ({}/{})",
+                        "{detail} — stimulus ada ({}) namun X/Z dominan (sig {}/{}; bit {}/{})",
                         ev.process_count,
                         ev.x_remain + ev.z_remain,
-                        ev.signal_count
+                        ev.signal_count,
+                        ev.x_bits,
+                        ev.bit_total
                     ),
                 );
             }
