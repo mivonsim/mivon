@@ -582,21 +582,40 @@ fn strip_duplicate_modules(tb_src: &str, mod_src: &str) -> String {
     out
 }
 
-/// Bangun rencana indeks seed untuk satu kampanye: `cover =
-/// min(cases, candidates.len())` indeks PERTAMA = candidates terurut
-/// (setiap seed dijamah minimal sekali — "all seeds without skip"), sisa
-/// `cases - cover` diambil acak dari candidates. Fungsi murni (rng hanya
-/// untuk bagian acak) sehingga dapat diuji deterministik.
+/// Bangun rencana indeks seed untuk satu kampanye.
+///
+/// - `cases >= kandidat`: SEMUA kandidat dijamah minimal sekali (terurut),
+///   sisa `cases - n` diambil acak (setiap seed dijamin "tanpa skip").
+/// - `cases < kandidat`: budget disebar MERATA via stride ke SELURUH rentang
+///   kandidat (`idx = k*n/cases`), bukan hanya `cases` pertama. Tanpa ini
+///   proyek besar di ujung daftar (mis. opentitan ~3947 file) tak pernah
+///   dijamah dalam kampanye default. Offset acak per kampanye merotasi titik
+///   awal agar kampanye berulang mengakumulasi cakupan.
+///
+/// Fungsi murni (rng hanya untuk bagian acak) sehingga dapat diuji deterministik.
 pub(crate) fn build_seed_plan(candidates: &[usize], cases: usize, rng: &mut Rng) -> Vec<usize> {
-    if candidates.is_empty() {
+    if candidates.is_empty() || cases == 0 {
         return Vec::new();
     }
-    let cover = candidates.len().min(cases);
-    let mut plan: Vec<usize> = candidates[..cover].to_vec();
-    for _ in cover..cases {
-        plan.push(candidates[rng.below(candidates.len())]);
+    let n = candidates.len();
+    if n <= cases {
+        // Semua seed dijamah minimal sekali, sisanya acak.
+        let mut plan: Vec<usize> = candidates.to_vec();
+        for _ in n..cases {
+            plan.push(candidates[rng.below(n)]);
+        }
+        plan
+    } else {
+        // Lebih banyak seed dari kasus: sebar merata (stride) ke SELURUH
+        // kandidat + rotasi acak titik awal.
+        let start = rng.below(n);
+        let mut plan = Vec::with_capacity(cases);
+        for k in 0..cases {
+            let idx = (start + k * n / cases) % n;
+            plan.push(candidates[idx]);
+        }
+        plan
     }
-    plan
 }
 
 fn run_single(cfg: FuzzConfig) -> FuzzReport {
@@ -626,9 +645,10 @@ fn run_single(cfg: FuzzConfig) -> FuzzReport {
         );
     }
 
-    // Seed-coverage guarantee: tiap seed dijamah minimal sekali per
-    // kampanye (round-robin terurut di awal), sisanya acak. Menghindari
-    // seed langka tak pernah ter-sample ("all seeds without skip").
+    // Seed-coverage: bila kasus >= kandidat, tiap seed dijamah minimal
+    // sekali (terurut di awal, sisanya acak); bila kandidat > kasus, budget
+    // disebar merata (stride) ke SELURUH kandidat agar proyek besar di ujung
+    // daftar tetap dijamah ("all seeds without skip").
     let seed_plan: Vec<usize> = {
         let candidates: Vec<usize> = if cfg.target == Target::Mv {
             (0..corpus.len())
@@ -1035,5 +1055,26 @@ mod bugdb_tests {
     fn seed_plan_empty_when_no_candidates() {
         let plan: Vec<usize> = build_seed_plan(&[], 50, &mut Rng::new(1));
         assert!(plan.is_empty());
+    }
+
+    /// Anti-starvasi: saat kandidat > kasus, budget disebar ke SELURUH
+    /// rentang (bukan hanya `cases` pertama). Tanpa ini seed di ujung
+    /// daftar (proyek besar) tak pernah dijamah.
+    #[test]
+    fn seed_plan_spreads_when_candidates_exceed_cases() {
+        let cand: Vec<usize> = (0..100).collect();
+        let plan = build_seed_plan(&cand, 10, &mut Rng::new(1));
+        assert_eq!(plan.len(), 10);
+        // Semua indeks unik & valid.
+        let mut uniq = plan.clone();
+        uniq.sort_unstable();
+        uniq.dedup();
+        assert_eq!(uniq.len(), 10, "tak boleh duplikat: {plan:?}");
+        assert!(plan.iter().all(|&i| i < 100));
+        // Harus menjangkau paruh atas daftar (bukan hanya 0..10).
+        assert!(
+            plan.iter().any(|&i| i >= 50),
+            "harus menyentuh seed di ujung daftar: {plan:?}"
+        );
     }
 }
