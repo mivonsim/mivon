@@ -44,6 +44,21 @@ static WARN_FILTER_NO_WARN: std::sync::atomic::AtomicBool =
 static WARN_FILTER_ALLOW: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
 static WARN_FILTER_MAX: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
 
+/// Potong `s` ke maksimum `max` BYTE pada batas karakter UTF-8, lalu tambah
+/// `…`. Aman terhadap karakter multi-byte: byte index yang jatuh di tengah
+/// karakter (mis. `—` pada pesan diagnostik) dimundurkan ke batas sebelumnya
+/// — menghindari panic `not a char boundary` (temuan fuzz verify_bug_0228).
+fn truncate_ellipsis(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        return s.to_string();
+    }
+    let mut end = max;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &s[..end])
+}
+
 /// Initialize global warning filter from CLI args (call once at startup)
 fn init_warn_filter(cli: &Cli) {
     WARN_FILTER_NO_WARN.store(cli.no_warn, std::sync::atomic::Ordering::Relaxed);
@@ -2189,7 +2204,7 @@ fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), SimError> {
                 let loc = bl_diag_loc(d).unwrap_or_else(|| "?".into());
                 let msg = d.message.to_string();
                 let short = if msg.len() > 80 {
-                    format!("{}…", &msg[..77])
+                    truncate_ellipsis(&msg, 77)
                 } else {
                     msg
                 };
@@ -3613,7 +3628,7 @@ fn run_fast(
             // Potong message jika terlalu panjang
             let msg = d.message.to_string();
             let msg_short = if msg.len() > 80 {
-                format!("{}…", &msg[..77])
+                truncate_ellipsis(&msg, 77)
             } else {
                 msg
             };
@@ -5923,4 +5938,30 @@ fn dispatch_cov_closure(a: &crate::cli::McovClosureArgs) -> ! {
         Ok(())
     })();
     exit_tool(result);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::truncate_ellipsis;
+
+    /// Fuzz `verify_bug_0228`: pesan diagnostik >80 byte yang memuat karakter
+    /// multi-byte (`—`) tak boleh panic saat dipotong (byte index di tengah
+    /// karakter). Dulu `&msg[..77]` panic "not a char boundary".
+    #[test]
+    fn truncate_ellipsis_is_char_boundary_safe() {
+        // '—' = 3 byte. Susun string sehingga byte ke-77 jatuh di dalamnya.
+        let msg = format!("{}—{}", "x".repeat(76), "y".repeat(10));
+        assert_eq!(msg.len(), 76 + 3 + 10);
+        let out = truncate_ellipsis(&msg, 77);
+        assert!(out.ends_with('…'));
+        // 76 'x' (batas 76 aman) → dipotong ke 76 byte.
+        assert_eq!(out, format!("{}…", "x".repeat(76)));
+    }
+
+    #[test]
+    fn truncate_ellipsis_short_passthrough() {
+        // Tidak dipanggil utk pesan pendek di call-site, tapi helper harus
+        // mengembalikan utuh bila <= max.
+        assert_eq!(truncate_ellipsis("halo", 77), "halo");
+    }
 }
