@@ -133,6 +133,11 @@ impl Corpus {
         for entry in entries.flatten() {
             let p = entry.path();
             if p.is_dir() {
+                if let Some(name) = p.file_name().and_then(|s| s.to_str()) {
+                    if name.starts_with('.') || name == "database" || name == "cache" {
+                        continue;
+                    }
+                }
                 Self::walk_rtl(&p, seeds, depth + 1);
             } else if p.is_file() && Self::supported_ext(&p) {
                 seeds.push(p);
@@ -140,13 +145,26 @@ impl Corpus {
         }
     }
 
-    fn push_dir(seeds: &mut Vec<PathBuf>, dir: &Path, _depth: usize) {
-        if let Ok(entries) = std::fs::read_dir(dir) {
-            for entry in entries.flatten() {
-                let p = entry.path();
-                if p.is_file() && Self::supported_ext(&p) {
-                    seeds.push(p);
+    fn push_dir(seeds: &mut Vec<PathBuf>, dir: &Path, depth: usize) {
+        if depth > 8 {
+            return;
+        }
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                // Jangan seret cache/MICD ke corpus: `.mivon/`, dotdir,
+                // `database/`, `cache/` = artefak, bukan RTL.
+                if let Some(name) = p.file_name().and_then(|s| s.to_str()) {
+                    if name.starts_with('.') || name == "database" || name == "cache" {
+                        continue;
+                    }
                 }
+                Self::push_dir(seeds, &p, depth + 1);
+            } else if p.is_file() && Self::supported_ext(&p) {
+                seeds.push(p);
             }
         }
     }
