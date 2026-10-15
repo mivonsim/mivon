@@ -699,8 +699,8 @@ impl Elaborator {
                             sub_elem_width_from_packed(signals, *sid, sig.width).unwrap_or(1);
                         if elem_w > 1 {
                             if let Ok(idx) = const_eval_params(index, &self.param_vals) {
-                                let lsb = (idx as usize).saturating_mul(elem_w);
-                                let msb = lsb + elem_w - 1;
+                                let lsb = (idx.max(0) as usize).saturating_mul(elem_w);
+                                let msb = lsb.saturating_add(elem_w.saturating_sub(1));
                                 Ok(IrExpr::RangeSelect(*sid, msb, lsb))
                             } else {
                                 let index_expr = self.elaborate_expr(index, signal_map, signals)?;
@@ -716,7 +716,7 @@ impl Elaborator {
                                 ))
                             }
                         } else if let Ok(idx) = const_eval_params(index, &self.param_vals) {
-                            Ok(IrExpr::BitSelect(*sid, idx as usize))
+                            Ok(IrExpr::BitSelect(*sid, idx.max(0) as usize))
                         } else {
                             let index_expr = self.elaborate_expr(index, signal_map, signals)?;
                             Ok(IrExpr::ExprPartSelect(
