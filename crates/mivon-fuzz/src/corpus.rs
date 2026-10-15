@@ -5,7 +5,8 @@
 //! - `fuzz/corpus/mv/` — Mivon HDL DSL `.mv` (di-transpile on-the-fly ke SV)
 //! - Bila `fuzz/corpus/resources/` ada — project real yang di-copy
 //! - Project NYATA langsung (tanpa copy): `cva6/`, `openc910/`,
-//!   `opentitan/` — di-scan otomatis via filelist roda di corpus dir.
+//!   `opentitan/`, `rocket-chip/` — di-scan otomatis via filelist roda di
+//!   corpus dir.
 //!
 //! Project real punya dependensi lintas file (`include "pkg.svh"`) — seed
 //! di-resolve include-nya otomatis saat diambil (inline recursive), jadi
@@ -104,7 +105,8 @@ impl Corpus {
     }
 
     /// Project real RTL (tanpa copy): scan cva6/core, openc910/gen_rtl,
-    /// opentitan/hw. Skip dv/tb/verif untuk kurangi noise dependensi.
+    /// opentitan/hw, rocket-chip. Skip dv/tb/verif untuk kurangi noise
+    /// dependensi.
     fn push_real_projects(seeds: &mut Vec<PathBuf>) {
         // Cari workspace root (dir dengan Cargo.toml yang punya [workspace]):
         // test cwd = package dir, CLI cwd = root — konsisten naik ke root.
@@ -113,6 +115,12 @@ impl Corpus {
             ("cva6", "core"),
             ("openc910", "C910_RTL_FACTORY/gen_rtl"),
             ("opentitan", "hw"),
+            // rocket-chip: RTL hasil-generate Chisel ada di `out/**/compile.dest`
+            // (502 `.sv`), harness/TB Verilog di `src/main/resources/vsrc`.
+            // `out/` juga memuat artefak `.class` — `walk_rtl` memfilter
+            // ekstensi (.sv/.v/.svh/.vh) jadi hanya RTL yang masuk.
+            ("rocket-chip", "out"),
+            ("rocket-chip", "src/main/resources/vsrc"),
         ];
         for (proj, sub) in roots {
             let dir = root.join(proj).join(sub);
