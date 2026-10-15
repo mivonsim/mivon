@@ -261,8 +261,10 @@ fn kind_label(k: Kind) -> &'static str {
         Kind::Hang => "hang",
     }
 }
-/// Iverilog compile → vvp run, return (code, stdout, stderr).
-fn run_iverilog(source: &str, timeout_ms: u64) -> (Option<i32>, String, String) {
+/// Iverilog compile → vvp run, return (code, stdout, stderr, degraded).
+/// `degraded` = compile lolos dgn "sorry:" (unsupported) → sim reference
+/// mungkin menyimpang; pemanggil hanya menggugurkan MISMATCH (Match tetap sah).
+fn run_iverilog(source: &str, timeout_ms: u64) -> (Option<i32>, String, String, bool) {
     let base = std::env::temp_dir().clone();
     let stem = format!(
         "mivonic_{}_{}",
@@ -286,15 +288,22 @@ fn run_iverilog(source: &str, timeout_ms: u64) -> (Option<i32>, String, String) 
         timeout_ms,
     );
     let _ = std::fs::remove_file(&sv);
+    // `degraded`: iverilog "sorry:" (unsupported) tapi compile diteruskan —
+    // sim reference mungkin menyimpang; hanya gugurkan vonis MISMATCH
+    // (kesepakatan tetap sah), bukan Match.
+    let mut degraded = false;
     match c_run {
         // Compile GAGAL (exit != 0) → reference memang tak bisa pakai.
-        RefRun::Exited(0) => {}
-        RefRun::Exited(_) => return (None, String::new(), c_err),
+        RefRun::Exited(0) => {
+            degraded = is_degraded_reference(&c_err);
+        }
+        RefRun::Exited(_) => return (None, String::new(), c_err, false),
         RefRun::TimedOut => {
             return (
                 None,
                 String::new(),
                 format!("iverilog compile TIMEOUT > {timeout_ms}ms (reference tak pakai)"),
+                false,
             )
         }
         // Reference CRASH (segfault/abort/OOM). Versi lama melaporkan ini
@@ -306,6 +315,7 @@ fn run_iverilog(source: &str, timeout_ms: u64) -> (Option<i32>, String, String) 
                 None,
                 String::new(),
                 format!("iverilog ENGINE CRASH (sinyal {sig}) — reference rusak, bukan SV"),
+                false,
             )
         }
     }
@@ -317,18 +327,25 @@ fn run_iverilog(source: &str, timeout_ms: u64) -> (Option<i32>, String, String) 
     );
     let _ = std::fs::remove_file(&vvp);
     match v_run {
-        RefRun::Exited(code2) => (Some(code2), out, v_err),
+        RefRun::Exited(code2) => (Some(code2), out, v_err, degraded),
         RefRun::TimedOut => {
             // vvp hang — reference not reliable
-            (None, out, v_err)
+            (None, out, v_err, degraded)
         }
         RefRun::Signaled(sig) => (
             None,
             out,
             format!("vvp ENGINE CRASH (sinyal {sig}): {}", v_err),
+            degraded,
         ),
     }
 }
+/// iverilog "sorry:" di stderr compile = konstruksi tak didukung namun
+/// compile diteruskan → sim reference degraded (x palsu). Murni.
+fn is_degraded_reference(compile_stderr: &str) -> bool {
+    compile_stderr.contains("sorry:")
+}
+
 /// Injeksi marker differential otomatis utk source TANPA `ASRT_`.
 ///
 /// verify_mutated melewatkan source tanpa marker (`skipped_no_marker` —
@@ -493,7 +510,7 @@ pub fn evaluate_icarus(source: &str, timeout_ms: u64) -> IcarusResult {
     }
 
     // 2. reference marker
-    let (ref_code, ref_stdout, ref_stderr) = run_iverilog(source, timeout_ms);
+    let (ref_code, ref_stdout, ref_stderr, degraded) = run_iverilog(source, timeout_ms);
     if ref_code.is_none() {
         let reason = if ref_stderr.contains("Streaming") || ref_stderr.is_empty() {
             "iverilog compile gagal (SV-only feature, mis. streaming)".to_string()
@@ -549,14 +566,30 @@ pub fn evaluate_icarus(source: &str, timeout_ms: u64) -> IcarusResult {
     }
 
     IcarusResult {
-        verdict: Verdict::Mismatch,
-        category: crate::Category::Differential,
-        oracle: "O5-differential",
-        detail: format!(
-            "SEMANTIC MISMATCH vs iverilog:\n  ref : {}\n  mivon: {}",
-            ref_markers.join(" "),
-            mine.join(" ")
-        ),
+        verdict: if degraded {
+            Verdict::RefUnavailable
+        } else {
+            Verdict::Mismatch
+        },
+        category: if degraded {
+            crate::Category::CleanError
+        } else {
+            crate::Category::Differential
+        },
+        oracle: if degraded { "N/A" } else { "O5-differential" },
+        detail: if degraded {
+            format!(
+                "ref icarus DEGRADED (sorry, sim tak tepercaya) — mismatch diabaikan:\n  ref : {}\n  mivon: {}",
+                ref_markers.join(" "),
+                mine.join(" ")
+            )
+        } else {
+            format!(
+                "SEMANTIC MISMATCH vs iverilog:\n  ref : {}\n  mivon: {}",
+                ref_markers.join(" "),
+                mine.join(" ")
+            )
+        },
     }
 }
 
@@ -610,6 +643,17 @@ mod tests {
         assert!(inject_auto_markers("module m; initial $display(\"ASRT_X=<1>\"); endmodule").is_none());
         assert!(inject_auto_markers("@@@ {{{ ;;;").is_none());
         assert!(inject_auto_markers("").is_none());
+    }
+
+    /// Reference degraded (iverilog "sorry:") bukan Mismatch (bug_0018/0028:
+    /// constant selects → x palsu padahal mivon benar 10/10 pass).
+    #[test]
+    fn degraded_reference_detected() {
+        assert!(is_degraded_reference(
+            "file.sv:12: sorry: constant selects in always_* processes are not currently supported"
+        ));
+        assert!(!is_degraded_reference(""));
+        assert!(!is_degraded_reference("error: syntax error"));
     }
 
     /// Marker extraction: cross-sim token stream. Marker MUTLAK punya `=<val>`
