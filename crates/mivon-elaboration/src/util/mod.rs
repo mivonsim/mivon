@@ -14,6 +14,7 @@
 //!   - width.rs           — expression width computation
 //!   - type_subst.rs      — type parameter substitution
 //!   - opt_stats.rs       — statistik optimasi (const fold, loop unroll, eval)
+//!   - range_index.rs     — konversi indeks deklarasi packed vector → posisi bit
 //!
 //! ──────────────────────────────────────────────────────────────────────────────
 
@@ -46,6 +47,9 @@ pub use type_subst::*;
 
 pub mod opt_stats;
 pub use opt_stats::*;
+
+pub mod range_index;
+pub use range_index::*;
 
 pub mod hier_sensitivity;
 pub use hier_sensitivity::*;

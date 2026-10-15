@@ -25624,3 +25624,112 @@ fn test_repeat_huge_count_not_unrolled() {
     let cnt = sigs.iter().find(|(s, _)| s == "cnt").unwrap().1.to_u64();
     assert_eq!(cnt, 3, "repeat kecil tetap jalan");
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Regression: seleksi bit packed vector wajib memakai POSISI bit fisik, bukan
+// indeks mentah. Bug fuzz diferensial vs Icarus `verify_bad_0021` (adder4 dgn
+// `logic [0:3]`): `a[0]` pada rentang menaik `[0:3]` = MSB, tapi mivon
+// membacanya sebagai LSB → hasil salah. Rentang lsb != 0 (`[7:4]`) juga
+// membaca bit di luar batas → X. Cakupan: baca, tulis, range-select, `+:`/`-:`,
+// dan indeks dinamis.
+// ─────────────────────────────────────────────────────────────────────────────
+
+fn sig_u64(sigs: &[(String, mivon_ir::LogicVec)], name: &str) -> u64 {
+    sigs.iter()
+        .find(|(s, _)| s == name)
+        .unwrap_or_else(|| panic!("signal '{name}' tidak ada"))
+        .1
+        .to_u64()
+}
+
+#[test]
+fn test_bitselect_ascending_and_offset_range() {
+    // asc [0:3] = 4'b1100 → asc[0]=1 (MSB) … asc[3]=0 (LSB).
+    // d74 [7:4] = 4'b1010 → d74[7]=1 (MSB) … d74[4]=0 (LSB).
+    let source = r#"
+module tb;
+  logic [0:3] asc;
+  logic [7:4] d74;
+  logic b_asc0, b_asc3, b_d74_4, b_d74_7;
+  initial begin
+    asc = 4'b1100;
+    d74 = 4'b1010;
+    b_asc0  = asc[0];
+    b_asc3  = asc[3];
+    b_d74_4 = d74[4];
+    b_d74_7 = d74[7];
+  end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 10).unwrap();
+    assert_eq!(sig_u64(&sigs, "b_asc0"), 1, "asc[0] pada [0:3] = MSB (=1)");
+    assert_eq!(sig_u64(&sigs, "b_asc3"), 0, "asc[3] pada [0:3] = LSB (=0)");
+    assert_eq!(sig_u64(&sigs, "b_d74_4"), 0, "d74[4] pada [7:4] = LSB (=0)");
+    assert_eq!(sig_u64(&sigs, "b_d74_7"), 1, "d74[7] pada [7:4] = MSB (=1)");
+}
+
+#[test]
+fn test_rangeselect_and_partselect_positions() {
+    let source = r#"
+module tb;
+  logic [0:3] asc;
+  logic [7:4] d74;
+  logic [3:0] r_asc, r_d74;
+  logic [1:0] ps_d74a, ps_d74b, ps_asc;
+  initial begin
+    asc = 4'b1100;
+    d74 = 4'b1010;
+    r_asc   = asc[0:3];     // 1100 = 12
+    r_d74   = d74[7:4];     // 1010 = 10
+    ps_d74a = d74[4 +: 2];  // d74[5:4] = 10 = 2
+    ps_d74b = d74[6 -: 2];  // d74[6:5] = 01 = 1
+    ps_asc  = asc[0 +: 2];  // asc[0:1] = 11 = 3
+  end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 10).unwrap();
+    assert_eq!(sig_u64(&sigs, "r_asc"), 12, "asc[0:3] pada [0:3] = 1100");
+    assert_eq!(sig_u64(&sigs, "r_d74"), 10, "d74[7:4] pada [7:4] = 1010");
+    assert_eq!(sig_u64(&sigs, "ps_d74a"), 2, "d74[4 +: 2] = d74[5:4] = 10");
+    assert_eq!(sig_u64(&sigs, "ps_d74b"), 1, "d74[6 -: 2] = d74[6:5] = 01");
+    assert_eq!(sig_u64(&sigs, "ps_asc"), 3, "asc[0 +: 2] = asc[0:1] = 11");
+}
+
+#[test]
+fn test_bitselect_write_and_dynamic_index_positions() {
+    let source = r#"
+module tb;
+  logic [0:3] asc;
+  logic [7:4] d74;
+  logic [0:3] w_asc;
+  logic [7:4] w_d74;
+  logic [0:3] dw_asc;
+  logic [7:4] dw_d74;
+  logic d_asc0, d_d74_4, d_d74_7;
+  int i;
+  initial begin
+    asc = 4'b1100;
+    d74 = 4'b1010;
+    // Indeks dinamis.
+    i = 0; d_asc0  = asc[i];   // asc[0]=1
+    i = 4; d_d74_4 = d74[i];   // d74[4]=0
+    i = 7; d_d74_7 = d74[i];   // d74[7]=1
+    // Tulis statis.
+    w_asc = 4'b0000; w_asc[0] = 1'b1;   // MSB → 1000 = 8
+    w_d74 = 4'b0000; w_d74[4] = 1'b1;   // LSB → 0001 = 1
+    w_d74[7] = 1'b1;                    // MSB → 1001 = 9
+    // Tulis dinamis.
+    dw_asc = 4'b0000; i = 0; dw_asc[i] = 1'b1;  // MSB → 1000 = 8
+    dw_d74 = 4'b0000; i = 7; dw_d74[i] = 1'b1;  // MSB → 1000 = 8
+  end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 10).unwrap();
+    assert_eq!(sig_u64(&sigs, "d_asc0"), 1, "asc[i=0] = asc[0] = 1");
+    assert_eq!(sig_u64(&sigs, "d_d74_4"), 0, "d74[i=4] = d74[4] = 0");
+    assert_eq!(sig_u64(&sigs, "d_d74_7"), 1, "d74[i=7] = d74[7] = 1");
+    assert_eq!(sig_u64(&sigs, "w_asc"), 8, "w_asc[0]=1 pada [0:3] → 1000");
+    assert_eq!(sig_u64(&sigs, "w_d74"), 9, "w_d74[4]=1 & [7]=1 → 1001");
+    assert_eq!(sig_u64(&sigs, "dw_asc"), 8, "dw_asc[i=0]=1 → 1000");
+    assert_eq!(sig_u64(&sigs, "dw_d74"), 8, "dw_d74[i=7]=1 → 1000");
+}

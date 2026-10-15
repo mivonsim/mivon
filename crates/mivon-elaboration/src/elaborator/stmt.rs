@@ -2539,7 +2539,14 @@ impl Elaborator {
                     }
                 };
                 match inner_lv {
-                    IrLValue::Signal(sid, _) => Ok(IrLValue::RangeSelect(sid, msb_c, lsb_c)),
+                    IrLValue::Signal(sid, _) => {
+                        // Indeks deklarasi (`a[hi:lo] = …`) → POSISI bit fisik
+                        // (rentang menaik `[0:3]` / lsb != 0 `[7:4]`).
+                        let sig = &signals[sid];
+                        let msb_p = index_to_bitpos(msb_c, sig.msb, sig.lsb);
+                        let lsb_p = index_to_bitpos(lsb_c, sig.msb, sig.lsb);
+                        Ok(IrLValue::RangeSelect(sid, msb_p, lsb_p))
+                    }
                     IrLValue::RangeSelect(sid, outer_msb, outer_lsb) => {
                         let outer_start = if outer_msb > outer_lsb {
                             outer_lsb
@@ -2660,14 +2667,25 @@ impl Elaborator {
                                 })
                             }
                         } else if let Ok(idx) = const_eval_params(bs_index, &self.param_vals) {
-                            Ok(IrLValue::BitSelect(sid, idx as usize))
+                            // Indeks deklarasi → posisi bit fisik (rentang
+                            // menaik `[0:3]` / lsb != 0 `[7:4]`). Indeks negatif
+                            // → usize besar → posisi di luar lebar → X.
+                            let pos = index_to_bitpos(idx as usize, sig.msb, sig.lsb);
+                            Ok(IrLValue::BitSelect(sid, pos))
                         } else {
-                            // Dynamic index on a flat signal — treat as array index
+                            // Index dinamis pada sinyal FLAT → bit-select runtime
+                            // (mirror jalur baca). Bukan ArrayIndex: elem_width
+                            // sinyal flat = lebar penuh → menulis selebar sinyal
+                            // per index (offset i×width) → sinyal melebar/korup.
+                            // Indeks deklarasi → posisi bit fisik (rentang menaik
+                            // `[0:3]` / lsb != 0 `[7:4]`).
                             let index_expr = self.elaborate_expr(bs_index, signal_map, signals)?;
-                            Ok(IrLValue::ArrayIndex {
+                            let base_expr =
+                                decl_index_to_pos_expr(index_expr, sig.msb, sig.lsb);
+                            Ok(IrLValue::ExprPartSelect {
                                 sig_id: sid,
-                                index: Box::new(index_expr),
-                                elem_width: sig.elem_width,
+                                base: Box::new(base_expr),
+                                width: 1,
                             })
                         }
                     }
@@ -2828,10 +2846,26 @@ impl Elaborator {
                         let (base_c, width_c) = (b as usize, w as usize);
                         match inner_lv {
                             IrLValue::Signal(sid, _) => {
+                                let sig = &signals[sid];
                                 if width_c > 0 {
-                                    Ok(IrLValue::RangeSelect(sid, base_c + width_c - 1, base_c))
+                                    // `sig[base +: width] = …` menulis indeks
+                                    // base..base+width-1. MSB = indeks pertama
+                                    // dalam urutan deklarasi (menurun →
+                                    // base+width-1, menaik → base). Konversi
+                                    // indeks → posisi bit fisik (lsb != 0 /
+                                    // rentang menaik).
+                                    let hi_idx = base_c + width_c - 1;
+                                    let (msb_idx, lsb_idx) = if sig.msb >= sig.lsb {
+                                        (hi_idx, base_c)
+                                    } else {
+                                        (base_c, hi_idx)
+                                    };
+                                    let pos_msb = index_to_bitpos(msb_idx, sig.msb, sig.lsb);
+                                    let pos_lsb = index_to_bitpos(lsb_idx, sig.msb, sig.lsb);
+                                    Ok(IrLValue::RangeSelect(sid, pos_msb, pos_lsb))
                                 } else {
-                                    Ok(IrLValue::RangeSelect(sid, base_c, base_c))
+                                    let pos = index_to_bitpos(base_c, sig.msb, sig.lsb);
+                                    Ok(IrLValue::RangeSelect(sid, pos, pos))
                                 }
                             }
                             IrLValue::RangeSelect(sid, outer_msb, outer_lsb) => {

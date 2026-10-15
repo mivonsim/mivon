@@ -566,7 +566,12 @@ impl Elaborator {
                         }
                     }
                     if let IrExpr::Signal(sid, _) = &inner_expr {
-                        Ok(IrExpr::RangeSelect(*sid, msb_c, lsb_c))
+                        // Indeks deklarasi (`a[hi:lo]`) → POSISI bit fisik
+                        // (rentang menaik `[0:3]` & lsb != 0 `[7:4]` terbalik/geser).
+                        let sig = &signals[*sid];
+                        let msb_p = index_to_bitpos(msb_c, sig.msb, sig.lsb);
+                        let lsb_p = index_to_bitpos(lsb_c, sig.msb, sig.lsb);
+                        Ok(IrExpr::RangeSelect(*sid, msb_p, lsb_p))
                     } else {
                         Ok(IrExpr::ExprRangeSelect(Box::new(inner_expr), msb_c, lsb_c))
                     }
@@ -591,7 +596,12 @@ impl Elaborator {
                         (Some(m), Some(l)) => {
                             let (msb_c, lsb_c) = (m.max(0) as usize, l.max(0) as usize);
                             if let IrExpr::Signal(sid, _) = &inner_expr {
-                                Ok(IrExpr::RangeSelect(*sid, msb_c, lsb_c))
+                                // Indeks deklarasi → posisi bit fisik (lihat arm
+                                // di atas: rentang menaik / lsb != 0).
+                                let sig = &signals[*sid];
+                                let msb_p = index_to_bitpos(msb_c, sig.msb, sig.lsb);
+                                let lsb_p = index_to_bitpos(lsb_c, sig.msb, sig.lsb);
+                                Ok(IrExpr::RangeSelect(*sid, msb_p, lsb_p))
                             } else {
                                 Ok(IrExpr::ExprRangeSelect(Box::new(inner_expr), msb_c, lsb_c))
                             }
@@ -759,15 +769,24 @@ impl Elaborator {
                             elem_width: ew,
                         })
                     } else if let Ok(idx) = const_eval_params(index, &self.param_vals) {
-                        Ok(IrExpr::BitSelect(*sid, idx as usize))
+                        // Indeks deklarasi → posisi bit fisik (rentang menaik
+                        // `[0:3]` / lsb != 0 `[7:4]`). Indeks negatif dikonversi
+                        // ke usize besar → helper mengembalikan posisi di luar
+                        // lebar → engine mengembalikan X.
+                        let pos = index_to_bitpos(idx as usize, sig.msb, sig.lsb);
+                        Ok(IrExpr::BitSelect(*sid, pos))
                     } else {
                         // Index DINAMIS pada sinyal flat → bit-select runtime,
                         // BUKAN ArrayIndex (elem_width sinyal flat = lebar
                         // penuh → ArrayIndex membaca selebar sinyal per index).
+                        // Indeks deklarasi → posisi bit fisik (rentang menaik
+                        // `[0:3]` / lsb != 0 `[7:4]`).
                         let index_expr = self.elaborate_expr(index, signal_map, signals)?;
+                        let base_expr =
+                            decl_index_to_pos_expr(index_expr, sig.msb, sig.lsb);
                         Ok(IrExpr::ExprPartSelect(
                             Box::new(IrExpr::Signal(*sid, sig.width)),
-                            Box::new(index_expr),
+                            Box::new(base_expr),
                             Box::new(IrExpr::Const(LogicVec::from_u64(1, 32))),
                         ))
                     }
@@ -948,34 +967,37 @@ impl Elaborator {
             } => {
                 let inner_expr = self.elaborate_expr(inner, signal_map, signals)?;
                 if let IrExpr::Signal(sid, _) = &inner_expr {
-                    let sig_width = signals[*sid].width;
                     if let (Ok(base_c), Ok(width_c)) = (
                         const_eval_params(base, &self.param_vals),
                         const_eval_params(width, &self.param_vals),
                     ) {
                         let base = base_c as usize;
                         let width = width_c as usize;
+                        let sig = &signals[*sid];
                         if width > 0 {
-                            // Arbitrary slice statis `sig[base+:width]` / `sig[msb:lsb]`:
-                            // bila dalam batas → RangeSelect biasa.
-                            // bila OOB → tetap RangeSelect (bukan ExprPartSelect).
-                            // RangeSelect evaluator sudah menerapkan §11.5.1 dengan benar:
-                            // bit dalam batas = nilai asli, bit di luar batas = X.
-                            // Dulu ExprPartSelect dipakai sebagai anti-wrap guard, tapi
-                            // evaluator ExprPartSelect menghitung index dari base ke atas
-                            // (bukan LSB→MSB), sehingga arbitrary slice statis seperti
-                            // `a[3:0]` pada a 2-bit menghasilkan XXXX alih-alih xx01.
-                            // Bug ditemukan fuzzer EMI (dead-code mempengaruhi hasil).
-                            let msb = base.checked_add(width - 1).unwrap_or(base);
-                            if msb < sig_width {
-                                Ok(IrExpr::RangeSelect(*sid, msb, base))
+                            // `sig[base +: width]` memilih indeks base..base+width-1
+                            // (bentuk `-:` sudah di-rewrite parser ke `+:`).
+                            // MSB hasil = indeks yang muncul PERTAMA dalam urutan
+                            // deklarasi: menurun (`[msb:lsb]`) → base+width-1,
+                            // menaik (`msb<lsb`) → base. RangeSelect memakai
+                            // POSISI bit fisik → konversi indeks (lsb != 0 /
+                            // rentang menaik). Evaluator RangeSelect menerapkan
+                            // §11.5.1: bit OOB → X, bit dalam batas → nilai asli.
+                            // (Dulu indeks dipakai langsung sebagai posisi →
+                            // `[7:4]` OOB/X, ditemukan probe fuzz diferensial.)
+                            let hi_idx = base.checked_add(width - 1).unwrap_or(base);
+                            let (msb_idx, lsb_idx) = if sig.msb >= sig.lsb {
+                                (hi_idx, base)
                             } else {
-                                // Out-of-range: RangeSelect dengan msb OOB.
-                                // Evaluator akan isi bit dalam batas + X untuk OOB.
-                                Ok(IrExpr::RangeSelect(*sid, msb, base))
-                            }
+                                (base, hi_idx)
+                            };
+                            let pos_msb = index_to_bitpos(msb_idx, sig.msb, sig.lsb);
+                            let pos_lsb = index_to_bitpos(lsb_idx, sig.msb, sig.lsb);
+                            Ok(IrExpr::RangeSelect(*sid, pos_msb, pos_lsb))
                         } else {
-                            Ok(IrExpr::RangeSelect(*sid, base.min(sig_width), base))
+                            // width 0 (degenerate) → select 1-bit pada posisi base.
+                            let pos = index_to_bitpos(base, sig.msb, sig.lsb);
+                            Ok(IrExpr::RangeSelect(*sid, pos, pos))
                         }
                     } else {
                         let base_expr = self.elaborate_expr(base, signal_map, signals)?;
