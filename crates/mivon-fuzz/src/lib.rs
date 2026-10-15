@@ -677,13 +677,16 @@ fn run_single(cfg: FuzzConfig) -> FuzzReport {
             base_seed.text
         };
 
-        // Source raksasa: JANGAN di-skip. Tekan mutasi pengembang (n_mut=0,
-        // tanpa directed) agar tak ada blowup `duplicate_chunk` (dulu 267MB
-        // → false hang massal). Source dievaluasi apa adanya — tetap
-        // dijamah, coverage tak terbuang.
+        // Source raksasa: JANGAN di-skip. Mutasi PENUH dimatikan
+        // (`duplicate_chunk`/splice bisa meledak 267MB → false hang massal),
+        // TAPI 1x mutasi RINGAN tak-pengembang tetap jalan (dulu n_mut=0 =
+        // dievaluasi mentah tanpa variasi = coverage gap).
         let is_large = base_source.len() > SIZE_CAP;
-        let n_mut = if is_large { 0 } else { rng.below(5) };
-        {
+        if is_large {
+            let mut mutator = mutator::Mutator::new(&mut rng);
+            base_source = mutator.mutate_light(&base_source, &corpus);
+        } else {
+            let n_mut = rng.below(5);
             let mut mutator = mutator::Mutator::new(&mut rng);
             for _ in 0..n_mut {
                 base_source = mutator.mutate(&base_source, &corpus);

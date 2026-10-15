@@ -162,6 +162,26 @@ impl<'r> Mutator<'r> {
         }
     }
 
+    /// Mutasi RINGAN tak-pengembang utk source raksasa (>SIZE_CAP).
+    ///
+    /// Subset dari `mutate` yang dijamin tak meledakkan ukuran: tanpa
+    /// `splice`/`duplicate_chunk`/`insert_garbage`/`insert_directive`/
+    /// `inject_*`/`dup_*` (dulu large = `n_mut=0` total — dievaluasi mentah
+    /// tanpa variasi mutasi sama sekali = coverage gap). Ukuran output
+    /// <= input + 32B (`tweak_literal` ekstrem terpanjang).
+    pub fn mutate_light(&mut self, source: &str, _corpus: &Corpus) -> String {
+        if source.is_empty() {
+            return String::new();
+        }
+        match self.rng.below(5) {
+            0 => self.replace_keyword(source),
+            1 => self.delete_chunk(source),
+            2 => self.tweak_literal(source),
+            3 => self.remove_line(source),
+            _ => self.flip_char(source),
+        }
+    }
+
     /// Sisipkan directive preprocessor di posisi acak (`` `ifdef ``+`` `endif ``
     /// tak seimbang / `` `define `` baris tengah).
     fn insert_directive(&mut self, source: &str) -> String {
@@ -642,5 +662,27 @@ mod tests {
                 "seed {seed}: kata pecah di tengah: {out}"
             );
         }
+    }
+
+    /// Mutasi ringan large-seed: tak pernah blowup (<= input + 32B),
+    /// tak pernah panic, deterministik per seed.
+    #[test]
+    fn mutate_light_never_grows() {
+        let dir = std::env::temp_dir().join("fzlight_empty");
+        let _ = std::fs::create_dir_all(&dir);
+        let corpus = Corpus::load(Some(&dir));
+        let src = "module tb;\n  logic [7:0] a;\n  assign a = 8'hFF;\n  always_comb begin\n    a = a + 1;\n  end\nendmodule\n";
+        for seed in 0..200u64 {
+            let mut rng = crate::Rng::new(seed);
+            let mut m = Mutator::new(&mut rng);
+            let out = m.mutate_light(src, &corpus);
+            assert!(
+                out.len() <= src.len() + 32,
+                "seed {seed}: light membesar {} -> {}",
+                src.len(),
+                out.len()
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
