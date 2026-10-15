@@ -804,6 +804,44 @@ fn is_all_zero(lv: &mivon_ir::LogicVec) -> bool {
     lv.bits.iter().all(|b| *b == mivon_ir::LogicVal::Zero)
 }
 
+/// Format nilai signal sadar 4-state utk ringkasan differential.
+///
+/// `to_u64()` membutakan X/Z (X/Z -> 0) + memotong >64-bit: dua divergensi
+/// dgn pola X beda atau lebar beda runtuh jadi string sama -> dedup
+/// menelan bug kedua (temuan triage tahap 2). Aturan:
+/// - bersih <=64b: desimal polos (kompatibel format lama).
+/// - bersih >64b: desimal low64 + `[wN]`.
+/// - ada X/Z, <=32b: string bit penuh (`10x1z`) + `[wN]`.
+/// - ada X/Z, >32b: `known+x{X}z{Z}[wN]` (singkat, tetap diskriminatif).
+fn fmt_sigval(lv: &mivon_ir::LogicVec) -> String {
+    let w = lv.width;
+    let has_xz = lv
+        .bits
+        .iter()
+        .any(|b| *b == mivon_ir::LogicVal::X || *b == mivon_ir::LogicVal::Z);
+    if !has_xz {
+        if w <= 64 {
+            format!("{}", lv.to_u64())
+        } else {
+            format!("{}[w{}]", lv.to_u64(), w)
+        }
+    } else if w <= 32 {
+        format!("{}[w{}]", lv, w)
+    } else {
+        let xc = lv
+            .bits
+            .iter()
+            .filter(|b| **b == mivon_ir::LogicVal::X)
+            .count();
+        let zc = lv
+            .bits
+            .iter()
+            .filter(|b| **b == mivon_ir::LogicVal::Z)
+            .count();
+        format!("{}+x{}z{}[w{}]", lv.to_u64(), xc, zc, w)
+    }
+}
+
 /// Buat ringkasan signal untuk pesan error (nama + nilai non-zero).
 fn signal_summary(sigs: &[(String, mivon_ir::LogicVec)]) -> String {
     if sigs.is_empty() {
@@ -812,7 +850,7 @@ fn signal_summary(sigs: &[(String, mivon_ir::LogicVec)]) -> String {
     let nonzero: Vec<String> = sigs
         .iter()
         .filter(|(_, lv)| !is_all_zero(lv))
-        .map(|(name, lv)| format!("{}={}", name, lv.to_u64()))
+        .map(|(name, lv)| format!("{}={}", name, fmt_sigval(lv)))
         .take(5)
         .collect();
     if nonzero.is_empty() {
@@ -2750,5 +2788,33 @@ mod scan_tests {
     fn scan_strong_wins_over_weak() {
         let r = scan_hidden_diags("fallback line\ninternal error: boom").expect("ada");
         assert_eq!(r.0, Category::HiddenBug);
+    }
+
+    /// REGRESI dedup (triage tahap 2): `to_u64` membutakan X/Z + potong
+    /// >64-bit — dua divergensi beda pola X/lebar runtuh jadi signature
+    /// sama. `fmt_sigval` wajib membedakan: X vs nol bersih, lebar beda,
+    /// hitungan X beda.
+    #[test]
+    fn fmt_sigval_distinguishes_x_and_width() {
+        use mivon_ir::{LogicVal, LogicVec};
+        let zero8 = LogicVec::fill(LogicVal::Zero, 8);
+        let mut xbits = LogicVec::fill(LogicVal::Zero, 8);
+        xbits.bits[0] = LogicVal::X;
+        let mut allx = LogicVec::fill(LogicVal::X, 8);
+        let _ = &mut allx;
+        // X vs nol bersih: string beda (dulu dua-duanya "=0").
+        assert_ne!(fmt_sigval(&zero8), fmt_sigval(&xbits));
+        assert!(fmt_sigval(&xbits).contains('x'), "X harus terlihat");
+        // Lebar beda, nilai low64 sama: sufiks [wN] beda.
+        let clean64 = LogicVec::fill(LogicVal::Zero, 64);
+        let mut wide128 = LogicVec::fill(LogicVal::Zero, 128);
+        let _ = &mut wide128;
+        assert_ne!(fmt_sigval(&clean64), fmt_sigval(&wide128));
+        // Hitungan X beda pada vektor lebar: diskriminan.
+        let mut w1 = LogicVec::fill(LogicVal::X, 64);
+        let mut w2 = LogicVec::fill(LogicVal::X, 64);
+        w2.bits[0] = LogicVal::One;
+        let _ = &mut w1;
+        assert_ne!(fmt_sigval(&w1), fmt_sigval(&w2));
     }
 }
