@@ -134,7 +134,7 @@ fn eval_port_binding(
 /// SV-ELAB-HIER-001: nama instance unik di scope yang sama.
 fn eval_hierarchy_unique(
     rule: &LrmRule,
-    obs: &MivonObservation,
+    _obs: &MivonObservation,
     state: &LrmState,
 ) -> RuleResult {
     use std::collections::HashSet;

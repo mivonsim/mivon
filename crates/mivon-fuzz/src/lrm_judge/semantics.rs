@@ -71,10 +71,6 @@ fn eval_nba_region(
         };
     }
 
-    // Cek scheduling observations bila tersedia.
-    let nba_fired = obs.scheduling.iter()
-        .any(|s| s.region.contains("NBA") || s.region.contains("Nba"));
-
     RuleResult {
         rule: rule.id.clone(),
         verdict: RuleVerdict::Satisfied,

@@ -56,7 +56,7 @@ fn eval_diag_location(rule: &LrmRule, obs: &MivonObservation) -> RuleResult {
                     errors_without_loc.iter().take(3).cloned().collect::<Vec<_>>().join("; ")
                 ),
             },
-            evidence: errors_without_loc.iter().map(|msg| {
+            evidence: errors_without_loc.iter().map(|_msg| {
                 Evidence::mismatch(
                     "diagnostic.location",
                     "<tidak ada>",
