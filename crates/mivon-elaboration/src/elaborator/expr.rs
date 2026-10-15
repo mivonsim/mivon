@@ -781,8 +781,10 @@ impl Elaborator {
                     if let Some(elem_w) = elem_w {
                         if let Ok(idx) = const_eval_params(index, &self.param_vals) {
                             let base = (*outer_msb).min(*outer_lsb);
-                            let lsb = base + idx as usize * elem_w;
-                            let msb = lsb + elem_w - 1;
+                            let lsb = base.saturating_add(
+                                (idx.max(0) as usize).saturating_mul(elem_w),
+                            );
+                            let msb = lsb.saturating_add(elem_w.saturating_sub(1));
                             Ok(IrExpr::RangeSelect(*sid, msb, lsb))
                         } else {
                             let index_expr = self.elaborate_expr(index, signal_map, signals)?;

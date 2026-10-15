@@ -25506,3 +25506,27 @@ endmodule
     assert_eq!(wide.width, 32, "XLEN=32 dari build_config");
     assert_eq!(wide.to_u64(), 0xFFFF_FFFFu64, "wide='1 harus semua 1");
 }
+
+#[test]
+fn test_packed_chunk_negative_index_no_overflow_panic() {
+    // Temuan fuzz (bug_0472/cli-emu + synth panic):
+    // `expr.rs:784` `base + idx as usize * elem_w` overflow panic saat
+    // index konstanta negatif/besar pada chunk packed (`mem[0][-1]`).
+    // Fix: saturating + idx.max(0). Test kunci: elaborasi TAK BOLEH panic,
+    // hasil Ok (clean) atau Err ber-lokasi.
+    for src in [
+        "module tb;\n  logic [3:0][7:0] mem;\n  logic [7:0] out;\n  initial out = mem[0][-1];\nendmodule\n",
+        "module tb;\n  logic [3:0][7:0] mem;\n  logic [7:0] out;\n  initial out = mem[0][2147483647];\nendmodule\n",
+    ] {
+        let r = std::panic::catch_unwind(|| mivon_api::compile_str_quiet(src));
+        assert!(r.is_ok(), "compile_str_quiet tak boleh panic (overflow idx)");
+        // Ok(IrDesign) atau Err ber-lokasi sama-sama sah — yang dilarang panic.
+        if let Err(e) = r.unwrap() {
+            let msg = e.to_string();
+            assert!(
+                msg.contains(':'),
+                "error harus ber-lokasi file:line:col, dapat: {msg}"
+            );
+        }
+    }
+}
