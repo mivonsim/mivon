@@ -77,15 +77,63 @@ fn map_kind(kind: &Kind) -> ExitStatus {
 ///
 /// Format mivon: `error[E1002]: message → file:line:col`
 /// atau: `warning[WR0102]: message → file:line:col`
+///
+/// Render diagnostik RUNTIME (`error[RT7001]: assertion failed`) menaruh
+/// lokasi di baris SNIPPET berikut (`┌─ file.sv:53:13`), bukan sufiks
+/// baris yang sama — parser satu-baris buta lokasi → hakim LRM lapor
+/// pelanggaran DIAG-001 palsu (temuan fuzz bug_0084: lokasi ADA tapi
+/// tak terbaca). Lihat 4 baris ke depan bila lokasi inline absen.
 fn parse_diagnostics(stderr: &str) -> Vec<ObsDiagnostic> {
+    let lines: Vec<&str> = stderr.lines().collect();
     let mut out = Vec::new();
-    for line in stderr.lines() {
+    for (i, line) in lines.iter().enumerate() {
         let t = line.trim();
-        if let Some(d) = try_parse_diag_line(t) {
+        if let Some(mut d) = try_parse_diag_line(t) {
+            if d.location.is_none() {
+                for next in lines.iter().skip(i + 1).take(4) {
+                    let nt = next.trim();
+                    // Jangan colong lokasi milik diagnostik berikut.
+                    if nt.starts_with("error[")
+                        || nt.starts_with("warning[")
+                        || nt.starts_with("note[")
+                    {
+                        break;
+                    }
+                    if let Some(loc) = parse_snippet_location(nt) {
+                        d.location = Some(loc);
+                        break;
+                    }
+                }
+            }
             out.push(d);
         }
     }
     out
+}
+
+/// Lokasi gaya snippet render mivon: `┌─ file.sv:53:13` atau
+/// `--> file.sv:53:13` (baris header diagnostik multi-baris).
+fn parse_snippet_location(line: &str) -> Option<ObsLocation> {
+    let rest = line
+        .strip_prefix("┌─")
+        .or_else(|| line.strip_prefix("-->"))?
+        .trim();
+    let mut parts = rest.rsplitn(3, ':');
+    let (Some(col_s), Some(line_s), Some(file)) = (parts.next(), parts.next(), parts.next())
+    else {
+        return None;
+    };
+    let (Ok(col), Ok(line)) = (
+        col_s.trim().parse::<u32>(),
+        line_s.trim().parse::<u32>(),
+    ) else {
+        return None;
+    };
+    let file = file.trim().to_string();
+    if file.is_empty() {
+        return None;
+    }
+    Some(ObsLocation { file, line, col })
 }
 
 fn try_parse_diag_line(line: &str) -> Option<ObsDiagnostic> {
@@ -202,4 +250,32 @@ fn logicvec_to_lrm(lv: &mivon_ir::LogicVec) -> LrmValue {
     }).collect();
     let width = bits.len() as u32;
     LrmValue::FourState { bits, width }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Render runtime `error[RT7001]` + snippet `┌─ file:line:col` harus
+    /// terbaca ber-lokasi (temuan fuzz bug_0084: hakim lapor DIAG-001
+    /// palsu padahal lokasi ada di baris berikut).
+    #[test]
+    fn parse_snippet_location_after_error_line() {
+        let stderr = "  errors:  1\nerror[RT7001]: assertion failed\n\n   ┌─ tb.sv:53:13\n   │\n  53 │     assert (out == 8'h00);";
+        let diags = parse_diagnostics(stderr);
+        assert_eq!(diags.len(), 1);
+        let loc = diags[0].location.as_ref().expect("wajib lokasi");
+        assert_eq!(loc.file, "tb.sv");
+        assert_eq!((loc.line, loc.col), (53, 13));
+    }
+
+    /// Header `-->` juga diterima; error berikut tak boleh colong lokasi.
+    #[test]
+    fn parse_arrow_header_and_no_steal() {
+        let stderr = "error[E1002]: bad\n  --> a.sv:4:10\nerror[E1003]: worse\n  --> b.sv:7:2";
+        let diags = parse_diagnostics(stderr);
+        assert_eq!(diags.len(), 2);
+        assert_eq!(diags[0].location.as_ref().unwrap().file, "a.sv");
+        assert_eq!(diags[1].location.as_ref().unwrap().file, "b.sv");
+    }
 }
