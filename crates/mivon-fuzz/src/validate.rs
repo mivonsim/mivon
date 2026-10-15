@@ -25,6 +25,11 @@ pub struct SimEvidence {
     pub x_remain: usize,
     /// Signal yang masih Z di akhir sim.
     pub z_remain: usize,
+    /// Total BIT bernilai X di akhir sim (sensus per-bit — partial-X
+    /// 31/32 bit tak terlihat di `x_remain` yang hanya hitung all-X).
+    pub x_bits: usize,
+    /// Total bit seluruh signal (penyebut fraksi X).
+    pub bit_total: usize,
     /// Signal yang pernah berubah di tengah sim (aktivitas > 0 = ada kerja).
     pub active_signals: usize,
     /// Determinism: dua run identik hasil sama.
@@ -44,6 +49,8 @@ impl Default for SimEvidence {
             signal_count: 0,
             x_remain: 0,
             z_remain: 0,
+            x_bits: 0,
+            bit_total: 0,
             active_signals: 0,
             determinism_ok: true,
             differential_ok: true,
@@ -57,11 +64,13 @@ impl SimEvidence {
     /// Ringkasan satu baris untuk detail laporan.
     pub fn summary(&self) -> String {
         format!(
-            "proc={} sigs={} x={} z={} active={} det={} diff={} paths={} diffs=[{}]",
+            "proc={} sigs={} x={} z={} xb={}/{} active={} det={} diff={} paths={} diffs=[{}]",
             self.process_count,
             self.signal_count,
             self.x_remain,
             self.z_remain,
+            self.x_bits,
+            self.bit_total,
             self.active_signals,
             self.determinism_ok,
             self.differential_ok,
@@ -145,6 +154,18 @@ fn signal_map(sigs: &[(String, mivon_ir::LogicVec)]) -> std::collections::HashMa
         .collect()
 }
 
+/// Sensus per-bit: (jumlah bit X, total bit). Partial-X (31/32 bit X)
+/// tak terlihat di `all_x()` — celah audit X/stimulus.
+fn x_bit_census(v: &mivon_ir::LogicVec) -> (usize, usize) {
+    let mut x = 0usize;
+    for b in &v.bits {
+        if *b == mivon_ir::LogicVal::X {
+            x += 1;
+        }
+    }
+    (x, v.width)
+}
+
 /// Kumpulkan bukti simulasi untuk satu source.
 ///
 /// Semua error di-handle: kegagalan satu jalur engine tidak menggagalkan
@@ -182,13 +203,16 @@ pub fn collect(source: &str, max_time: u64) -> SimEvidence {
         }
         ev.active_signals = names.len();
 
-        // X/Z akhir.
+        // X/Z akhir (level signal) + sensus per-bit.
         for (_, v) in &sigs {
             if v.all_x() {
                 ev.x_remain += 1;
             } else if v.all_z() {
                 ev.z_remain += 1;
             }
+            let (xb, tb) = x_bit_census(v);
+            ev.x_bits += xb;
+            ev.bit_total += tb;
         }
     }
 
@@ -305,8 +329,32 @@ pub fn evidence_only(source: &str, max_time: u64) -> SimEvidence {
             } else if v.all_z() {
                 ev.z_remain += 1;
             }
+            let (xb, tb) = x_bit_census(v);
+            ev.x_bits += xb;
+            ev.bit_total += tb;
         }
     }
 
     ev
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Sensus per-bit menangkap partial-X yang `all_x()` lewatkan:
+    /// 31/32 bit X = 0 di `x_remain`, 31 di `x_bits`.
+    #[test]
+    fn x_bit_census_catches_partial_x() {
+        use mivon_ir::{LogicVal, LogicVec};
+        let mut v = LogicVec::fill(LogicVal::One, 32);
+        for b in v.bits.iter_mut().take(31) {
+            *b = LogicVal::X;
+        }
+        assert!(!v.all_x(), "31/32 X bukan all-X");
+        let (xb, tb) = x_bit_census(&v);
+        assert_eq!((xb, tb), (31, 32));
+        let clean = LogicVec::fill(LogicVal::Zero, 8);
+        assert_eq!(x_bit_census(&clean), (0, 8));
+    }
 }
