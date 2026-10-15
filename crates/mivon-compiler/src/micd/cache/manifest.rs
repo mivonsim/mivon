@@ -7,7 +7,8 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::super::{compiler_base_matches, COMPILER_VERSION};
+use super::super::manifest_compiler_version;
+use super::super::stored_compiler_version_matches;
 use super::super::verify::now_ns;
 
 /// Versi skema lapisan `cache/`. Naikkan bila struktur persistensi kategori
@@ -33,7 +34,7 @@ impl CacheManifest {
     pub fn fresh(config_hash: u64) -> Self {
         CacheManifest {
             schema_version: CACHE_SCHEMA_VERSION,
-            compiler_version: COMPILER_VERSION.to_string(),
+            compiler_version: manifest_compiler_version(),
             config_hash,
             created_ns: now_ns(),
             updated_ns: now_ns(),
@@ -45,9 +46,11 @@ impl CacheManifest {
     /// Apakah skema kompatibel dengan versi terkini. Fase 3 (Kritik C):
     /// bandingkan BASE compiler (bump `-p<N>` manual) — fingerprint binary
     /// tidak lagi me-rebuild; manifest legacy (base+suffix) tetap diterima.
+    /// DEBUG: cocok persis termasuk fingerprint (rebuild → rebuild cache,
+    /// anti-basi saat develop).
     pub fn valid(&self) -> bool {
         self.schema_version == CACHE_SCHEMA_VERSION
-            && compiler_base_matches(&self.compiler_version)
+            && stored_compiler_version_matches(&self.compiler_version)
     }
 }
 
@@ -56,6 +59,7 @@ impl CacheManifest {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::micd::COMPILER_VERSION;
 
     #[test]
     fn test_fresh_is_valid() {
@@ -63,6 +67,19 @@ mod tests {
         assert!(m.valid());
         assert_eq!(m.schema_version, CACHE_SCHEMA_VERSION);
         assert_eq!(m.config_hash, 42);
+    }
+
+    /// Manifest dari binary LAIN (fingerprint beda) ditolak di debug
+    /// (anti-basi saat develop), diterima di release (base sama).
+    #[test]
+    fn test_foreign_fingerprint_rejected_in_debug() {
+        let mut m = CacheManifest::fresh(0);
+        m.compiler_version = format!("{}-{}", COMPILER_VERSION, "0".repeat(16));
+        if cfg!(debug_assertions) {
+            assert!(!m.valid(), "fingerprint asing harus ditolak di debug");
+        } else {
+            assert!(m.valid());
+        }
     }
 
     #[test]

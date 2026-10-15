@@ -144,6 +144,28 @@ pub fn pipeline_revision() -> String {
     format!("{}-{:016x}", COMPILER_VERSION, binary_fingerprint())
 }
 
+/// Versi compiler yang DITULIS ke manifest: debug = revisi+fingerprint
+/// (setiap rebuild cargo → fingerprint beda → cache lama diabaikan —
+/// anti-basi saat develop), release = base (incremental tetap hidup).
+pub(crate) fn manifest_compiler_version() -> String {
+    if cfg!(debug_assertions) {
+        pipeline_revision()
+    } else {
+        COMPILER_VERSION.to_string()
+    }
+}
+
+/// Validasi versi tersimpan saat open: debug = cocok PERSIS (termasuk
+/// fingerprint → rebuild binary apa pun me-rebuild cache); release =
+/// [`compiler_base_matches`] (bump `-p<N>` manual).
+pub(crate) fn stored_compiler_version_matches(stored: &str) -> bool {
+    if cfg!(debug_assertions) {
+        stored == manifest_compiler_version()
+    } else {
+        compiler_base_matches(stored)
+    }
+}
+
 /// Apakah `compiler_version` tersimpan kompatibel dengan binary ini (Fase 3).
 ///
 /// Menerima format baru (`COMPILER_VERSION` telanjang) maupun legacy persis
@@ -604,7 +626,7 @@ impl MicdDatabase {
                 .and_then(|b| bincode::deserialize::<MetadataManifest>(&b).ok())
         });
         let base_ok = stored_manifest.as_ref().is_some_and(|m| {
-            m.schema_version == SCHEMA_VERSION && compiler_base_matches(&m.compiler_version)
+            m.schema_version == SCHEMA_VERSION && stored_compiler_version_matches(&m.compiler_version)
         });
         // Stage yang versinya beda dari current (Fase 5). Manifest tanpa
         // stage_schemas + base ok hanya dari tulisan tangan (produksi selalu
@@ -637,7 +659,7 @@ impl MicdDatabase {
             pid: pid.to_string(),
             registry: ProjectInfo::default(),
             flags_hash: 0,
-            compiler_version: COMPILER_VERSION.to_string(),
+            compiler_version: manifest_compiler_version(),
             created_ns: now_ns(),
             schema_version: 0,
             files: HashMap::new(),
@@ -1467,7 +1489,7 @@ impl MicdDatabase {
             let manifest = MetadataManifest {
                 paths: self.files.keys().cloned().collect(),
                 flags_hash: self.flags_hash,
-                compiler_version: COMPILER_VERSION.to_string(),
+                compiler_version: manifest_compiler_version(),
                 created_ns: self.created_ns,
                 schema_version: SCHEMA_VERSION,
                 stage_schemas: current_stage_schemas(),
@@ -2797,7 +2819,7 @@ mod tests {
         let mut stages = current_stage_schemas();
         let bumped = stages[0].0.clone();
         stages[0].1 += 1000;
-        write_manifest(COMPILER_VERSION, stages);
+        write_manifest(&manifest_compiler_version(), stages);
         {
             let mut db3 = MicdDatabase::open(&root);
             assert_eq!(db3.files.len(), 1, "Fase 5: state tetap di-load");
@@ -2983,7 +3005,7 @@ mod tests {
         let r = MdbReader::open(&state_dir(&root, "default").join(DB_METADATA)).unwrap();
         let m: MetadataManifest =
             bincode::deserialize(&r.get(KEY_SINGLETON).unwrap()).unwrap();
-        assert_eq!(m.compiler_version, COMPILER_VERSION, "tanpa suffix fingerprint");
+        assert_eq!(m.compiler_version, manifest_compiler_version(), "debug: suffix fingerprint anti-basi");
         assert_eq!(m.stage_schemas, current_stage_schemas());
         assert_eq!(m.schema_version, SCHEMA_VERSION);
         // Registry: fingerprint + revisi tercatat sebagai statistik.
