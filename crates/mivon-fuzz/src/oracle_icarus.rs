@@ -329,6 +329,131 @@ fn run_iverilog(source: &str, timeout_ms: u64) -> (Option<i32>, String, String) 
         ),
     }
 }
+/// Injeksi marker differential otomatis utk source TANPA `ASRT_`.
+///
+/// verify_mutated melewatkan source tanpa marker (`skipped_no_marker` —
+/// compare pasti vakum). Fungsi ini membuat source tanpa marker jadi
+/// TERBANDINGKAN: compile in-process → ambil ≤12 signal logika top →
+/// sisipkan `initial #1 $display("ASRT_AUTO_<n>=<%h>", <n>)` ke modul top.
+/// Kedua tool (mivon + iverilog) jalan di source SAMA → marker stream
+/// bermakna (bukan vakum). `None` bila: sudah ada marker, compile gagal,
+/// tak ada signal cocok, atau blok modul tak ditemukan — pemanggil jatuh
+/// ke perilaku lama. Injeksi selalu di-REVALIDASI via compile (surgery
+/// teks aman by-construction).
+pub fn inject_auto_markers(source: &str) -> Option<String> {
+    if source.contains("ASRT_") {
+        return None;
+    }
+    let ir = std::panic::catch_unwind(|| mivon_api::compile_str_quiet(source))
+        .ok()?
+        .ok()?;
+    // Kandidat: signal logika top (bukan string/real/synth-wire, ≤128b).
+    let mut names: Vec<String> = Vec::new();
+    for s in &ir.top.signals {
+        if s.is_string || s.is_real || s.width == 0 || s.width > 128 {
+            continue;
+        }
+        let n = s.name.as_str().to_string();
+        if n.starts_with("__") || n.is_empty() {
+            continue;
+        }
+        if !n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+            || n.chars().next().is_some_and(|c| c.is_ascii_digit())
+        {
+            continue;
+        }
+        if names.contains(&n) {
+            continue;
+        }
+        names.push(n);
+        if names.len() >= 12 {
+            break;
+        }
+    }
+    if names.is_empty() {
+        return None;
+    }
+    // Saring ke signal DRIVEN-bersih: undriven = `z` di iverilog vs `x`
+    // di mivon (beda default by-design, lazy-zero) → banjir mismatch palsu
+    // (temuan verify #19: 7/7 marker beda hanya z-vs-x). Penentu: sim
+    // in-process singkat — signal yang NILAI AKHIRnya masih ber-X/Z
+    // dikeluarkan (X-hunting tetap ranah oracle Suspicious, bukan icarus).
+    // Guard ukuran: sim in-process tanpa watchdog → hanya source kecil.
+    if source.len() <= 512_000 {
+        if let Ok(Ok(final_sigs)) = std::panic::catch_unwind(|| {
+            mivon_api::simulate_signals(source, 100)
+        }) {
+            let clean: std::collections::HashSet<String> = final_sigs
+                .iter()
+                .filter(|(_, lv)| {
+                    lv.bits
+                        .iter()
+                        .all(|b| *b == mivon_ir::LogicVal::Zero || *b == mivon_ir::LogicVal::One)
+                })
+                .map(|(n, _)| n.clone())
+                .collect();
+            names.retain(|n| clean.contains(n));
+        }
+    }
+    if names.is_empty() {
+        return None;
+    }
+    // Cari blok `module <top> ... endmodule` di teks.
+    let top_name = ir.top.name.as_str();
+    let lines: Vec<&str> = source.lines().collect();
+    let start = lines.iter().position(|l| {
+        let t = l.trim_start();
+        if t.starts_with("//") {
+            return false;
+        }
+        let Some(rest) = t.strip_prefix("module") else {
+            return false;
+        };
+        // `module` diikuti spasi/`(`/`#` — bukan `modulexyz`.
+        if !(rest.starts_with(char::is_whitespace) || rest.starts_with('(') || rest.starts_with('#'))
+        {
+            return false;
+        }
+        // Token nama pertama setelah `module`.
+        let tok: String = rest
+            .trim_start()
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '$')
+            .collect();
+        tok == top_name || (tok.is_empty() && rest.contains(top_name))
+    })?;
+    let rel_end = lines[start..].iter().position(|l| {
+        let t = l.trim_start();
+        !t.starts_with("//") && t.starts_with("endmodule")
+    })?;
+    let end = start + rel_end;
+    let mut block = String::from("  initial begin\n    #1;\n");
+    for n in &names {
+        block.push_str(&format!("    $display(\"ASRT_AUTO_{n}=<%h>\", {n});\n"));
+    }
+    block.push_str("  end\n");
+    let mut injected = String::with_capacity(source.len() + block.len() + 16);
+    for l in &lines[..end] {
+        injected.push_str(l);
+        injected.push('\n');
+    }
+    injected.push_str(&block);
+    for l in &lines[end..] {
+        injected.push_str(l);
+        injected.push('\n');
+    }
+    // Revalidasi: hasil suntik harus tetap ter-compile.
+    let ok = std::panic::catch_unwind(|| mivon_api::compile_str_quiet(&injected))
+        .ok()
+        .and_then(|r| r.ok())
+        .is_some();
+    if ok {
+        Some(injected)
+    } else {
+        None
+    }
+}
+
 /// Differential reference vs Icarus: jawab "hasil sim mivon CORRECT (== iverilog)?".
 pub fn evaluate_icarus(source: &str, timeout_ms: u64) -> IcarusResult {
     if !iverilog_available() {
@@ -339,6 +464,12 @@ pub fn evaluate_icarus(source: &str, timeout_ms: u64) -> IcarusResult {
             detail: "iverilog tidak terinstali — reference icarus unavailable".to_string(),
         };
     }
+
+    // Injeksi marker otomatis di SATU titik: semua pemanggil (verify seed-pair,
+    // verify-mutated, oracle sim) dapat differential bermakna atas source tanpa
+    // marker. No-op murah bila `ASRT_` sudah ada (cek string dulu di dalam).
+    let injected = inject_auto_markers(source);
+    let source = injected.as_deref().unwrap_or(source);
 
     // 1. mivon run (black-box via runner)
     let mivon = crate::runner::run_file(source, timeout_ms);
@@ -451,6 +582,35 @@ fn classify_markers(a: &[String], b: &[String]) -> Verdict {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Injeksi marker otomatis: design tanpa ASRT_ jadi terbandingkan —
+    /// suntik `initial #1 $display ASRT_AUTO_*` + tetap ter-compile.
+    /// Sudah-bermarker dan garbage → None (perilaku lama). Undriven semua
+    /// (filter driven) → None juga (z-vs-x by-design, bukan bug).
+    #[test]
+    fn inject_auto_markers_for_markerless_design() {
+        let src = "module tiny(input logic clk, output logic [7:0] cnt);\n  logic [7:0] c = 0;\n  always @(posedge clk) c <= c + 1;\n  assign cnt = c;\nendmodule\nmodule tb;\n  logic clk = 0;\n  logic [7:0] cnt;\n  tiny dut(.clk(clk), .cnt(cnt));\n  always #5 clk = ~clk;\n  initial begin #50; $finish; end\nendmodule\n";
+        let inj = inject_auto_markers(src).expect("design driven harus terinjeksi");
+        assert!(inj.contains("ASRT_AUTO_"), "marker otomatis ada");
+        assert!(inj.contains("$display"), "via $display");
+        assert!(inj.contains("endmodule"), "blok modul utuh");
+        // Hasil suntik valid: marker terekstrak oleh kontrak cross-sim.
+        assert!(extract_markers("ASRT_AUTO_b=<1>").iter().any(|t| t == "ASRT_AUTO_b=<1>"));
+    }
+
+    #[test]
+    fn inject_auto_markers_skips_undriven() {
+        // Input undriven → semua X → tak ada yang driven → None.
+        let src = "module tiny(input logic a, output logic b);\n  assign b = ~a;\nendmodule\n";
+        assert!(inject_auto_markers(src).is_none());
+    }
+
+    #[test]
+    fn inject_auto_markers_skips_marked_and_garbage() {
+        assert!(inject_auto_markers("module m; initial $display(\"ASRT_X=<1>\"); endmodule").is_none());
+        assert!(inject_auto_markers("@@@ {{{ ;;;").is_none());
+        assert!(inject_auto_markers("").is_none());
+    }
 
     /// Marker extraction: cross-sim token stream. Marker MUTLAK punya `=<val>`
     /// (`ASRT_...=<val>`) — token tanpa `=` ("ASRT_START tb") bukan bagian

@@ -539,7 +539,7 @@ fn verify_mutated(cases: usize, seed: u64, timeout_ms: u64) -> i32 {
         }
 
         // MV → transpile dulu (transpiled SV lah yang dibandingkan).
-        let source = if is_mv {
+        let mut source = if is_mv {
             let base_name = base_seed
                 .path
                 .file_stem()
@@ -553,14 +553,16 @@ fn verify_mutated(cases: usize, seed: u64, timeout_ms: u64) -> i32 {
             base_source
         };
 
-        // Jangan buang waktu icarus untuk source tanpa MARKER ASRT_ — tanpa
-        // marker di source, compare pasti vakum (RefUnavailable, tak bermakna).
-        // Filter: hanya source yang punya marker (TB fuzz) ATAU design
-        // berstimulus ($display) — untuk real RTL tanpa tb, compare vakum.
-        if !source.contains("ASRT_") && !source.contains("$display") && !source.contains("$finish")
-        {
-            n_clean += 1;
-            continue;
+        // Tanpa MARKER ASRT_ → coba injeksi otomatis (differential atas
+        // signal top di #1) sebelum menyerah vakum. Gagal injeksi + tanpa
+        // $display/$finish → skip murah (tanpa bakar 2× tool run).
+        if !source.contains("ASRT_") {
+            if let Some(injected) = mivon_fuzz::oracle_icarus::inject_auto_markers(&source) {
+                source = injected;
+            } else if !source.contains("$display") && !source.contains("$finish") {
+                n_clean += 1;
+                continue;
+            }
         }
 
         let r = mivon_fuzz::oracle_icarus::evaluate_icarus(&source, timeout_ms);
