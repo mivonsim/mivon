@@ -512,6 +512,9 @@ pub enum IrStmt {
     Fork {
         processes: Vec<Vec<IrStmt>>,
         join_type: IrJoinType,
+        /// Label dari `fork : label_name` — digunakan `disable label`
+        /// utk terminate branch ini (F47). None = tanpa label.
+        label: Option<Symbol>,
     },
     Assert {
         cond: IrExpr,

@@ -249,6 +249,9 @@ pub enum Stmt {
     Fork {
         processes: Vec<Stmt>,
         join_type: JoinType,
+        /// Label dari `fork : label_name` (F47) — None bila tanpa label.
+        /// Dipertahankan agar `disable <label>` bisa men-terminate fork group.
+        label: Option<Symbol>,
     },
     RandCase {
         items: Vec<RandCaseItem>,

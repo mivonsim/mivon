@@ -157,6 +157,11 @@ pub struct PendingEventControl {
     /// akuntansi ForkGroup → `join` tidak pernah selesai (probe v03:
     /// `fork @(ev) ... #5 -> ev ... join`).
     pub fork_id: Option<usize>,
+    /// Label `begin : <label>` yang terbuka saat suspend (snapshot — sejajar
+    /// `Continuation::named_labels`). Tanpa ini `disable <label>` dari branch
+    /// lain tak bisa membunuh branch yang suspend di `@(...)` → join_any
+    /// gantung (temuan fuzz seed 51: `disable workers` + `repeat @(posedge)`).
+    pub named_labels: Vec<Symbol>,
 }
 
 /// Blocking event control `@(...)` di jalur AST (class method/task UVM).
@@ -197,6 +202,10 @@ pub struct ForkGroup {
     /// Branch yang masih tertunda (ContinueBlock/ContinueAstBlock dengan
     /// fork_id ini) di-skip tanpa eksekusi dan langsung decrement.
     pub(super) disabled: bool,
+    /// F47: label `fork : <label>` (None bila tanpa label). Dipakai
+    /// `disable <label>` untuk men-terminate SELURUH branch group ini
+    /// (bukan hanya branch pemanggil) — dipetakan ke `disabled`.
+    pub(super) label: Option<Symbol>,
 }
 
 /// LANG-29: satu situs `wait fork;` yang sedang menunggu. Dipangkas di

@@ -722,12 +722,14 @@ pub(crate) fn rename_in_stmt(stmt: &Stmt, rename_map: &HashMap<Symbol, Symbol>) 
         Stmt::Fork {
             processes,
             join_type,
+            label,
         } => Stmt::Fork {
             processes: processes
                 .into_iter()
                 .map(|s| rename_in_stmt(&s, rename_map))
                 .collect(),
             join_type,
+            label,
         },
         Stmt::RandCase { items } => Stmt::RandCase {
             items: items

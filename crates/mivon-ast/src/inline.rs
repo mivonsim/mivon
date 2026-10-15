@@ -1554,6 +1554,7 @@ fn inline_funcs_in_stmt_inner(
         Stmt::Fork {
             processes,
             join_type,
+            label,
         } => Stmt::Fork {
             processes: processes
                 .into_iter()
@@ -1562,6 +1563,7 @@ fn inline_funcs_in_stmt_inner(
                 })
                 .collect(),
             join_type,
+            label,
         },
         Stmt::RandCase { items } => Stmt::RandCase {
             items: items

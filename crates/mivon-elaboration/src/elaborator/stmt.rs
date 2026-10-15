@@ -2404,6 +2404,7 @@ impl Elaborator {
             Stmt::Fork {
                 processes,
                 join_type,
+                label,
             } => {
                 let mut ir_processes = Vec::new();
                 for proc_stmt in processes {
@@ -2418,6 +2419,7 @@ impl Elaborator {
                 Ok(IrStmt::Fork {
                     processes: ir_processes,
                     join_type: ir_join,
+                    label: *label,
                 })
             }
             Stmt::RandCase { items } => {

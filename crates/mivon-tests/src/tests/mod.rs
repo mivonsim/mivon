@@ -25532,6 +25532,19 @@ fn test_packed_chunk_negative_index_no_overflow_panic() {
 }
 
 #[test]
+fn test_disable_fork_label_releases_join_any() {
+    // Temuan fuzz (seed 51 vs iverilog): `fork : workers ... join_any` +
+    // `disable workers` gantung — parser membuang label fork sehingga
+    // disable jatuh ke fallback kill-current. Kini label dipertahankan via
+    // NamedBlock: join_any lanjut, cnt tetap 0, done=1 (sama dgn iverilog).
+    let source = "module tb;\n  logic clk = 0;\n  logic [3:0] cnt = 0;\n  logic done = 0;\n  always #5 clk = ~clk;\n  initial begin\n    fork : workers\n      begin\n        repeat (4) @(posedge clk);\n        cnt = 4'd7;\n      end\n      begin\n        repeat (2) @(posedge clk);\n        disable workers;\n      end\n    join_any\n    #1;\n    done = 1;\n  end\nendmodule\n";
+    let sigs = simulate_signals(source, 200).unwrap();
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
+    assert_eq!(get("cnt"), 0, "branch ter-disable sebelum tulis");
+    assert_eq!(get("done"), 1, "join_any lanjut setelah disable");
+}
+
+#[test]
 fn test_empty_based_literal_is_located_parse_error() {
     // Temuan fuzz (bug_0012 DIAG-001): `'h;` (digit terhapus mutasi) lolos
     // jadi Hex{bits:""} lalu runtime error TANPA lokasi ("invalid hex ''").

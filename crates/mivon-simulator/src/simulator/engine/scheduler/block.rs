@@ -32,6 +32,15 @@ impl SimulationEngine {
     ///
     /// Return true = blok saat ini harus berhenti.
     pub(crate) fn mark_disable_label(&mut self, name: Symbol) -> bool {
+        if std::env::var("DBG_DIS").is_ok() {
+            eprintln!(
+                "[DBG-DIS] mark '{}' active={:?} known={} cross={:?}",
+                name.as_str(),
+                self.active_named_labels.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+                self.known_named_labels.contains(&name),
+                self.disable_cross.map(|s| s.as_str().to_string())
+            );
+        }
         if self.active_named_labels.contains(&name) {
             self.disable_pending = Some(name);
             true
@@ -419,6 +428,7 @@ impl SimulationEngine {
                         // Branch fork tempat @(...) berada — dipakai decrement
                         // ForkGroup saat resume (cegah join menggantung).
                         fork_id,
+                        named_labels: self.active_named_labels.clone(),
                     });
                     return Ok(false);
                 }
@@ -444,6 +454,11 @@ impl SimulationEngine {
                                 g.disabled = true;
                             }
                         }
+                    } else if self.disable_fork_by_label(*name) {
+                        // F47: `disable <label>` atas fork berlabel — SELURUH
+                        // branch group di-terminate. Pemanggil ada DI DALAM
+                        // group → blok ini juga berhenti.
+                        return Ok(true);
                     } else if self.mark_disable_label(*name) {
                         return Ok(true);
                     }
@@ -1039,6 +1054,7 @@ impl SimulationEngine {
                 IrStmt::Fork {
                     processes,
                     join_type,
+                    label,
                 } => {
                     let remaining: Vec<IrStmt> = stmts[i + 1..].to_vec();
                     let count = processes.len();
@@ -1049,11 +1065,27 @@ impl SimulationEngine {
                     } else {
                         remaining.clone()
                     };
+                    // F47: `fork : <label>` — daftarkan label sbg known agar
+                    // `disable <label>` menemukan & men-terminate SELURUH fork
+                    // group ini (ForkGroup.label → `disabled`; lihat
+                    // `mark_disable_label`). Tidak di-push ke active_named_labels
+                    // (itu utk NamedBlock `begin : label`); group-disable dipakai
+                    // agar SEMUA branch mati, bukan hanya branch pemanggil.
+                    if let Some(name) = label {
+                        self.known_named_labels.insert(*name);
+                    }
                     let reclaimable = !matches!(join_type, IrJoinType::JoinAny);
-                    let fid = self.alloc_fork_group(count, cont, reclaimable);
+                    let fid = self.alloc_fork_group(count, cont, reclaimable, *label);
                     match join_type {
                         IrJoinType::Join => {
                             for p in processes {
+                                // F47: group di-terminate oleh `disable <label>`
+                                // di branch sebelumnya → jangan mulai branch ini,
+                                // cukup decrement agar fork bisa finish.
+                                if self.fork_groups[fid].disabled {
+                                    self.fork_decrement(fid)?;
+                                    continue;
+                                }
                                 if p.is_empty() {
                                     self.fork_decrement(fid)?;
                                 } else {
@@ -1069,6 +1101,9 @@ impl SimulationEngine {
                             self.fork_groups[fid].remaining = 1;
                             let mut any_immediate = false;
                             for p in processes {
+                                if self.fork_groups[fid].disabled {
+                                    continue;
+                                }
                                 if p.is_empty() {
                                     any_immediate = true;
                                 } else {
@@ -1088,6 +1123,10 @@ impl SimulationEngine {
                         }
                         IrJoinType::JoinNone => {
                             for p in processes {
+                                if self.fork_groups[fid].disabled {
+                                    self.fork_decrement(fid)?;
+                                    continue;
+                                }
                                 if p.is_empty() {
                                     self.fork_decrement(fid)?;
                                 } else {
@@ -2242,6 +2281,10 @@ impl SimulationEngine {
                                 g.disabled = true;
                             }
                         }
+                    } else if self.disable_fork_by_label(*name) {
+                        // F47: `disable <label>` atas fork berlabel — seluruh
+                        // branch group di-terminate; pemanggil juga berhenti.
+                        return Ok(true);
                     } else if self.mark_disable_label(*name) {
                         return Ok(true);
                     }
@@ -2249,6 +2292,7 @@ impl SimulationEngine {
                 mivon_ast::Stmt::Fork {
                     processes,
                     join_type,
+                    label,
                 } => {
                     let mut remaining: Vec<mivon_ast::Stmt> = if i + 1 < stmts.len() {
                         stmts[i + 1..].to_vec()
@@ -2271,7 +2315,12 @@ impl SimulationEngine {
                     // Sebelumnya remaining dieksekusi LANGSUNG (join selalu
                     // dilewati — salah bila branch menunggu trigger/barrier).
                     let reclaimable = !matches!(join_type, mivon_ast::JoinType::JoinAny);
-                    let fid = self.alloc_fork_group(count, Vec::new(), reclaimable);
+                    // F47: `fork : <label>` — daftarkan label agar `disable <label>`
+                    // men-terminate seluruh fork group (lihat `disable_fork_by_label`).
+                    if let Some(name) = label {
+                        self.known_named_labels.insert(*name);
+                    }
+                    let fid = self.alloc_fork_group(count, Vec::new(), reclaimable, *label);
                     match join_type {
                         mivon_ast::JoinType::Join => {
                             self.ast_fork_cont.insert(fid, remaining);
@@ -2932,6 +2981,7 @@ impl SimulationEngine {
                         iff: iff.clone(),
                         // Konteks tanpa param fork_id eksplisit — pakai aktif.
                         fork_id: self.active_fork_id,
+                        named_labels: self.active_named_labels.clone(),
                     });
                     return Ok(());
                 }
@@ -3000,6 +3050,10 @@ impl SimulationEngine {
                                 g.disabled = true;
                             }
                         }
+                    } else if self.disable_fork_by_label(*name) {
+                        // F47: `disable <label>` atas fork berlabel — seluruh
+                        // branch group di-terminate; pemanggil juga berhenti.
+                        return Ok(());
                     } else if self.mark_disable_label(*name) {
                         return Ok(());
                     }
@@ -3033,6 +3087,7 @@ impl SimulationEngine {
                 IrStmt::Fork {
                     processes,
                     join_type,
+                    label,
                 } => {
                     let remaining: Vec<IrStmt> = stmts[i + 1..].to_vec();
                     let count = processes.len();
@@ -3041,8 +3096,13 @@ impl SimulationEngine {
                     } else {
                         remaining.clone()
                     };
+                    // F47: `fork : <label>` — daftarkan label agar `disable <label>`
+                    // men-terminate seluruh fork group (lihat `disable_fork_by_label`).
+                    if let Some(name) = label {
+                        self.known_named_labels.insert(*name);
+                    }
                     let reclaimable = !matches!(join_type, IrJoinType::JoinAny);
-                    let fid = self.alloc_fork_group(count, cont, reclaimable);
+                    let fid = self.alloc_fork_group(count, cont, reclaimable, *label);
                     match join_type {
                         IrJoinType::Join => {
                             for p in processes {

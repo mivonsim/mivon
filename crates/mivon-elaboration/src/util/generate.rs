@@ -1707,12 +1707,14 @@ fn scope_rename_stmt(stmt: &Stmt, map: &HashMap<Symbol, Symbol>) -> Stmt {
         Stmt::Fork {
             processes,
             join_type,
+            label,
         } => Stmt::Fork {
             processes: processes
                 .iter()
                 .map(|p| scope_rename_stmt(p, map))
                 .collect(),
             join_type: join_type.clone(),
+            label: *label,
         },
         Stmt::Break => Stmt::Break,
         Stmt::Continue => Stmt::Continue,

@@ -28,6 +28,7 @@ use super::Parser;
 use crate::lexer::*;
 use mivon_ast::types::const_eval_simple;
 use mivon_ast::*;
+
 use mivon_core::error::SimError;
 use mivon_core::intern::Symbol;
 
@@ -3175,10 +3176,15 @@ impl Parser {
 
     pub(crate) fn parse_fork_join(&mut self) -> Result<Stmt, SimError> {
         self.advance();
-        // Named fork: `fork : label_name begin ... end` — skip label
+        // Named fork `fork : workers ... join_any` — label DIPERTAHANKAN via
+        // NamedBlock (seperti `begin : foo`). Sebelumnya dibuang → `disable
+        // workers` jatuh ke fallback kill-current dan join_any gantung
+        // (temuan fuzz seed 51 vs iverilog yang lanjut).
+        let mut fork_label: Option<Symbol> = None;
         if self.peek() == &Token::Colon {
             self.advance(); // consume ':'
-            if matches!(self.peek(), Token::Ident(_)) {
+            if let Token::Ident(name) = self.peek().clone() {
+                fork_label = Some(name);
                 self.advance(); // consume label name
             }
         }
@@ -3197,6 +3203,7 @@ impl Parser {
                     return Ok(Stmt::Fork {
                         processes,
                         join_type: JoinType::Join,
+                        label: fork_label,
                     });
                 }
                 Token::JoinAny => {
@@ -3211,6 +3218,7 @@ impl Parser {
                     return Ok(Stmt::Fork {
                         processes,
                         join_type: JoinType::JoinAny,
+                        label: fork_label,
                     });
                 }
                 Token::JoinNone => {
@@ -3225,6 +3233,7 @@ impl Parser {
                     return Ok(Stmt::Fork {
                         processes,
                         join_type: JoinType::JoinNone,
+                        label: fork_label,
                     });
                 }
                 Token::Eof => return Err(self.err("unexpected EOF in fork block")),

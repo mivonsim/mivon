@@ -809,6 +809,7 @@ impl Elaborator {
             IrStmt::Fork {
                 processes,
                 join_type,
+                label,
             } => {
                 let new_proc = processes
                     .iter()
@@ -817,6 +818,7 @@ impl Elaborator {
                 Ok(IrStmt::Fork {
                     processes: new_proc,
                     join_type: join_type.clone(),
+                    label: *label,
                 })
             }
             IrStmt::Assert {

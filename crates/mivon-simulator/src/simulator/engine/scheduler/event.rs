@@ -142,6 +142,15 @@ impl SimulationEngine {
                 // loop-top guard menelan continuation `fork...join`.
                 if let Some(target) = self.disable_cross {
                     if cont.named_labels.contains(&target) {
+                        if std::env::var("DBG_DIS").is_ok() {
+                            eprintln!(
+                                "[DBG-DIS] consume-cross '{}' kills cont labels={:?} fork={:?} nstmts={}",
+                                target.as_str(),
+                                cont.named_labels.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+                                cont.fork_id,
+                                cont.stmts_to_exec.len()
+                            );
+                        }
                         self.disable_cross = None;
                         if let Some(fid) = cont.fork_id {
                             self.fork_decrement(fid)?;
@@ -362,6 +371,18 @@ impl SimulationEngine {
                     // selesai (bukan suspend lagi). Tanpa ini join menggantung
                     // (probe v03: @(ev) di branch fork).
                     let fid = pe.fork_id;
+                    // LANG-30/F47: branch fork yang sudah di-terminate
+                    // (`disable fork` / `disable <label>`) — JANGAN eksekusi
+                    // continuation saat event-nya fire; cukup decrement agar
+                    // group bisa finish. (Jalur ContinueBlock sudah menjaga ini,
+                    // tapi resume `@(edge)` lewat sini — tanpa guard, branch
+                    // yang ter-disable tetap menulis setelah disable.)
+                    if let Some(f) = fid {
+                        if f < self.fork_groups.len() && self.fork_groups[f].disabled {
+                            self.fork_decrement(f)?;
+                            continue;
+                        }
+                    }
                     let all_consumed =
                         self.evaluate_block_with_delay_fork(&pe.continuation, fid)?;
                     if let Some(f) = fid {

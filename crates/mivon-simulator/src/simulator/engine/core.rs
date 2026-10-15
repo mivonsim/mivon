@@ -607,6 +607,7 @@ impl SimulationEngine {
         remaining: usize,
         continuation: Vec<IrStmt>,
         reclaimable: bool,
+        label: Option<Symbol>,
     ) -> usize {
         let spawner = self.current_process_name.clone();
         if let Some(fid) = self.fork_free.pop() {
@@ -618,6 +619,7 @@ impl SimulationEngine {
                 reclaimable,
                 spawner,
                 disabled: false,
+                label,
             };
             fid
         } else {
@@ -630,9 +632,25 @@ impl SimulationEngine {
                 reclaimable,
                 spawner,
                 disabled: false,
+                label,
             });
             fid
         }
+    }
+
+    /// F47: `disable <label>` atas fork berlabel — tandai SEMUA fork group
+    /// aktif yang labelnya `name` sebagai `disabled` (seluruh branch mati saat
+    /// resume, bukan hanya branch pemanggil). Return true bila ada group yang
+    /// cocok (pemanggil harus berhenti juga — ia berada di dalam group itu).
+    pub(crate) fn disable_fork_by_label(&mut self, name: Symbol) -> bool {
+        let mut hit = false;
+        for g in self.fork_groups.iter_mut() {
+            if g.active && !g.disabled && g.label == Some(name) {
+                g.disabled = true;
+                hit = true;
+            }
+        }
+        hit
     }
 
     /// Retire ForkGroup yang sudah selesai: free continuation, tandai non-aktif,

@@ -804,6 +804,7 @@ mod tests {
             body: vec![IrStmt::Fork {
                 processes: vec![vec![IrStmt::Null]],
                 join_type: mivon_ir::IrJoinType::Join,
+                label: None,
             }],
         });
         let r = check(&ir);
