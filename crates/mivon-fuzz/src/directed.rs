@@ -30,7 +30,7 @@ impl<'r> DirectedMutator<'r> {
         if source.is_empty() {
             return String::new();
         }
-        match self.rng.below(12) {
+        match self.rng.below(14) {
             0 => self.del_end_keyword(source),
             1 => self.dup_end_keyword(source),
             2 => self.swap_operator(source),
@@ -42,6 +42,10 @@ impl<'r> DirectedMutator<'r> {
             8 => self.dup_begin(source),
             9 => self.swap_edge(source),
             10 => self.swap_assign_kind(source),
+            11 => self.remove_semi(source),
+            // ── Corner LRM deterministik (area rawan hasil fuzz) ──
+            12 => self.force_ascending_range(source),
+            13 => self.force_decl_init_zero(source),
             _ => self.remove_semi(source),
         }
     }
@@ -217,9 +221,99 @@ impl<'r> DirectedMutator<'r> {
         out.extend(&chars[at + 1..]);
         out
     }
+
+    /// Paksa SATU deklarasi range menurun `[N:0]` menjadi bentuk menaik
+    /// zero-lsb `[0:N]` (atau `[7:0]`→`[0:7]`). Menaik/lsb≠0 adalah area rawan
+    /// (posisi bit fisik vs indeks deklarasi, temuan fuzz `verify_bad_0021`).
+    /// Tanpa range menurun → no-op.
+    fn force_ascending_range(&mut self, source: &str) -> String {
+        let chars: Vec<char> = source.chars().collect();
+        let mut idx = 0usize;
+        while idx < chars.len() {
+            if chars[idx] == '[' {
+                let mut j = idx + 1;
+                while j < chars.len() && chars[j].is_ascii_digit() {
+                    j += 1;
+                }
+                if j > idx + 1 && j < chars.len() && chars[j] == ':' {
+                    let mut k = j + 1;
+                    while k < chars.len() && chars[k].is_ascii_digit() {
+                        k += 1;
+                    }
+                    if k > j + 1 && k < chars.len() && chars[k] == ']' {
+                        let hi: String = chars[idx + 1..j].iter().collect();
+                        let lo: String = chars[j + 1..k].iter().collect();
+                        // Hanya ubah bila menurun/zero-lsb (bukan sudah menaik).
+                        if let (Ok(hi_n), Ok(lo_n)) = (hi.parse::<i64>(), lo.parse::<i64>()) {
+                            if hi_n >= lo_n {
+                                let rep = if lo_n == 0 {
+                                    format!("[0:{hi}]")
+                                } else {
+                                    // lsb≠0 menaik: [lo:hi] (swap)
+                                    format!("[{lo}:{hi}]")
+                                };
+                                let mut out: String = chars[..idx].iter().collect();
+                                out.push_str(&rep);
+                                out.extend(&chars[k + 1..]);
+                                return out;
+                            }
+                        }
+                    }
+                }
+            }
+            idx += 1;
+        }
+        source.to_string()
+    }
+
+    /// Paksa initializer `= 0` pada SATU deklarasi variabel (deterministik
+    /// vs `inject_decl_init` acak). Menyerang edge-sensitivity t=0 (fuzz
+    /// `verify_bad_0586`). Lewati deklarasi yg sudah punya `=`.
+    fn force_decl_init_zero(&mut self, source: &str) -> String {
+        let decl_kw = ["logic", "reg", "bit", "integer", "int", "longint", "shortint", "byte"];
+        let mut out = String::new();
+        let mut done = false;
+        for line in source.lines() {
+            if !done {
+                let t = line.trim_start();
+                let kw = decl_kw.iter().find(|k| kw_at(t, k));
+                if let Some(_k) = kw {
+                    if !t.contains('=') {
+                        if let Some(semi) = line.rfind(';') {
+                            let mut l = String::from(&line[..semi]);
+                            l.push_str(" = 0");
+                            l.push(';');
+                            out.push_str(&l);
+                            out.push('\n');
+                            done = true;
+                            continue;
+                        }
+                    }
+                }
+            }
+            out.push_str(line);
+            out.push('\n');
+        }
+        if done {
+            out
+        } else {
+            source.to_string()
+        }
+    }
 }
 
 // ─── Helpers char-boundary safe ───
+
+/// Cek keyword `kw` di awal teks `t` dengan word-boundary setelahnya.
+fn kw_at(t: &str, kw: &str) -> bool {
+    if !t.starts_with(kw) {
+        return false;
+    }
+    match t.chars().nth(kw.len()) {
+        None => true,
+        Some(c) => !(c.is_alphanumeric() || c == '_' || c == '$'),
+    }
+}
 
 fn replace_first(source: &str, pat: &str, to: &str) -> String {
     match source.find(pat) {
@@ -313,5 +407,26 @@ mod tests {
             }
         }
         assert!(saw_eq && saw_le, "kedua arah harus tercapai");
+    }
+
+    /// `force_ascending_range` ubah `[N:0]`→`[0:N]` (menaik); sudah menaik →
+    /// no-op. `force_decl_init_zero` sisipkan `= 0` pada deklarasi pertama.
+    #[test]
+    fn ascending_range_and_decl_init_zero() {
+        let mut rng = crate::Rng::new(7);
+        let mut m = DirectedMutator::new(&mut rng);
+        let src = "module m;\n  logic [7:0] a;\n  logic b;\nendmodule\n";
+        let out = m.force_ascending_range(src);
+        assert!(out.contains("[0:7]"), "range jadi menaik: {out}");
+        // Sudah menaik → tak berubah.
+        assert_eq!(
+            m.force_ascending_range("module m; logic [0:3] x; endmodule"),
+            "module m; logic [0:3] x; endmodule"
+        );
+        let mut rng2 = crate::Rng::new(7);
+        let mut m2 = DirectedMutator::new(&mut rng2);
+        let out2 = m2.force_decl_init_zero(src);
+        assert!(out2.contains("= 0"), "decl-init disisipkan: {out2}");
+        assert!(!out2.contains("= ="), "tak dobel '=': {out2}");
     }
 }

@@ -138,7 +138,7 @@ impl<'r> Mutator<'r> {
         if source.is_empty() {
             return String::new();
         }
-        match self.rng.below(21) {
+        match self.rng.below(22) {
             0 => self.splice_from_corpus(source, corpus),
             1 => self.replace_keyword(source),
             2 => self.delete_chunk(source),
@@ -161,6 +161,10 @@ impl<'r> Mutator<'r> {
             // ── Area baru: range decl / timescale ──
             17 => self.tweak_range(source),
             18 => self.inject_timescale(source),
+            // ── Area baru: construct-aware (LSB bug fuzz verify_bad_0021 /
+            //    0586): initializer deklarasi + seleksi bit/range/part ──
+            19 => self.inject_decl_init(source),
+            20 => self.inject_bitselect(source),
             _ => source.to_string(), // no-op
         }
     }
@@ -681,6 +685,92 @@ impl<'r> Mutator<'r> {
         source.to_string()
     }
 
+    /// Sisipkan initializer konstanta pada SATU deklarasi variabel
+    /// (`logic x;` → `logic x = 0;`). Menyerang area initialization LRM §6.8 —
+    /// temuan fuzz `verify_bad_0586` (negedge palsu di t=0 dari initializer
+    /// yang memicu transisi X→0). Hanya terapkan bila deklarasi BELUM punya
+    /// `=` (hindari initializer ganda). Word-boundary aman utk keyword.
+    fn inject_decl_init(&mut self, source: &str) -> String {
+        let inits = [" = 0", " = '0", " = 1'b0", " = 4'b0", " = 8'h0"];
+        let decl_kw = [
+            "logic", "reg", "bit", "integer", "int", "longint", "shortint", "byte",
+        ];
+        let mut out = String::new();
+        let mut done = false;
+        for line in source.lines() {
+            if !done {
+                let t = line.trim_start();
+                let kw = decl_kw
+                    .iter()
+                    .find(|k| kw_at(t, k));
+                if let Some(_k) = kw {
+                    // Sudah punya initializer? lewati.
+                    if !t.contains('=') {
+                        if let Some(semi) = line.rfind(';') {
+                            let init = self.rng.pick(&inits);
+                            let mut l = String::from(&line[..semi]);
+                            l.push_str(init);
+                            l.push(';');
+                            out.push_str(&l);
+                            out.push('\n');
+                            done = true;
+                            continue;
+                        }
+                    }
+                }
+            }
+            out.push_str(line);
+            out.push('\n');
+        }
+        if done {
+            out
+        } else {
+            source.to_string()
+        }
+    }
+
+    /// Bungkus RHS assegna berupa identifier tunggal dgn bit/range/part-select
+    /// berbagai bentuk range: menurun `[3:0]`, menaik `[0:3]`, lsb≠0 `[7:4]`,
+    /// statis `[2]`, serta part-select `+:`/`-:`. Menyerang seleksi bit packed
+    /// (temuan fuzz `verify_bad_0021`): posisi bit fisik vs indeks deklarasi.
+    /// Hanya terapkan bila RHS murni identifier (huruf/`_`/`$` di awal) — RHS
+    /// literal (`8'hFF[3:0]` tak valid) sengaja dilewati.
+    fn inject_bitselect(&mut self, source: &str) -> String {
+        let sels = ["[3:0]", "[0:3]", "[7:4]", "[2]", "[0 +: 4]", "[3 -: 4]"];
+        let mut out = String::new();
+        let mut done = false;
+        for line in source.lines() {
+            let t = line.trim_start();
+            if !done && t.starts_with("assign") {
+                if let Some(eq) = t.find('=') {
+                    let rhs = t[eq + 1..].trim().trim_end_matches(';');
+                    let first = rhs.chars().next().unwrap_or(' ');
+                    if first.is_alphabetic() || first == '_' || first == '$' {
+                        let lhs = t["assign".len()..eq].trim();
+                        let indent: String = line
+                            .chars()
+                            .take_while(|c| *c == ' ' || *c == '\t')
+                            .collect();
+                        let sel = self.rng.pick(&sels);
+                        out.push_str(&format!(
+                            "{}assign {} = {}{};\n",
+                            indent, lhs, rhs, sel
+                        ));
+                        done = true;
+                        continue;
+                    }
+                }
+            }
+            out.push_str(line);
+            out.push('\n');
+        }
+        if done {
+            out
+        } else {
+            source.to_string()
+        }
+    }
+
     /// Sisipkan directive `` `timescale `` di baris pertama bila belum ada
     /// (timescale resolution stress; no-op bila sudah ada).
     fn inject_timescale(&mut self, source: &str) -> String {
@@ -689,6 +779,19 @@ impl<'r> Mutator<'r> {
         }
         let ts = self.rng.pick(&["`timescale 1ns/1ps\n", "`timescale 1ps/1ps\n"]);
         format!("{ts}{source}")
+    }
+}
+
+/// Cek keyword `kw` di awal teks `t` dengan word-boundary setelahnya
+/// (huruf/angka/`_`/`$` tak boleh langsung mengikuti). Mencegah
+/// `byte` cocok di `byte_enable`, dsb.
+fn kw_at(t: &str, kw: &str) -> bool {
+    if !t.starts_with(kw) {
+        return false;
+    }
+    match t.chars().nth(kw.len()) {
+        None => true,
+        Some(c) => !(c.is_alphanumeric() || c == '_' || c == '$'),
     }
 }
 
@@ -753,5 +856,61 @@ mod tests {
         let ts = m.inject_timescale(src);
         assert!(ts.starts_with("`timescale"), "prepend timescale: {ts}");
         assert_eq!(m.inject_timescale(&ts), ts, "ganda = no-op");
+    }
+
+    /// Regresi mutator construct-aware: `inject_decl_init` menyisipkan
+    /// initializer konstanta pada deklarasi (tanpa dobel `=`), dan
+    /// `inject_bitselect` membungkus RHS identifier dgn seleksi bit/range/
+    /// part. Keduanya deterministik per seed dan tak pernah panic.
+    #[test]
+    fn construct_aware_inject_decl_init_and_bitselect() {
+        let src = "module m;\n  logic a;\n  logic [7:0] b;\n  assign a = b;\nendmodule\n";
+        let mut saw_init = false;
+        let mut saw_sel = false;
+        for seed in 0..200u64 {
+            let mut rng = crate::Rng::new(seed);
+            let mut m = Mutator::new(&mut rng);
+            let init_out = m.inject_decl_init(src);
+            if init_out.contains("= 0")
+                || init_out.contains("= '0")
+                || init_out.contains("= 1'b0")
+            {
+                saw_init = true;
+                // Tak boleh ada deklarasi dobel '='.
+                assert!(
+                    init_out.matches('=').count() <= 2,
+                    "seed {seed}: initializer dobel: {init_out}"
+                );
+            }
+            let mut rng2 = crate::Rng::new(seed ^ 0xABC);
+            let mut m2 = Mutator::new(&mut rng2);
+            let sel_out = m2.inject_bitselect(src);
+            // Select harus diterapkan ke assegna RHS identifier (`b` → `b[...]`).
+            if sel_out
+                .lines()
+                .any(|l| l.trim_start().starts_with("assign") && l.contains("b["))
+            {
+                saw_sel = true;
+            }
+        }
+        assert!(saw_init, "inject_decl_init minimal sekali terpicu");
+        assert!(saw_sel, "inject_bitselect minimal sekali terpicu");
+        // Tanpa deklarasi → no-op (tak panic).
+        let mut rng3 = crate::Rng::new(99);
+        let mut m3 = Mutator::new(&mut rng3);
+        assert_eq!(
+            m3.inject_decl_init("module m; endmodule"),
+            "module m; endmodule"
+        );
+    }
+
+    /// `kw_at` menghargai word-boundary: `byte` tak cocok di `byte_enable`,
+    /// tapi cocok di `byte x;`.
+    #[test]
+    fn kw_at_word_boundary() {
+        assert!(kw_at("logic x;", "logic"));
+        assert!(!kw_at("logical x;", "logic"));
+        assert!(kw_at("byte x;", "byte"));
+        assert!(!kw_at("byte_enable x;", "byte"));
     }
 }
