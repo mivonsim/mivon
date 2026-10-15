@@ -25545,6 +25545,33 @@ fn test_disable_fork_label_releases_join_any() {
 }
 
 #[test]
+fn test_duplicate_instance_name_is_located_error() {
+    // Temuan fuzz (bug_2028 vs iverilog): dua instance bernama sama dalam
+    // satu module (`sub u1(...); sub u1(...);`) diterima mivon tanpa error —
+    // hierarki punya path duplikat. iverilog: "'u1' has already been declared
+    // in this scope". Kini elab ERROR ber-lokasi (LRM §23.3.2).
+    let source = "module sub(input logic a, output logic b);\n  assign b = a;\nendmodule\nmodule top(input logic x, output logic y);\n  sub u1(.a(x), .b(y));\n  sub u1(.a(x), .b(y));\nendmodule\n";
+    let r = std::panic::catch_unwind(|| mivon_api::compile_str_quiet(source));
+    assert!(r.is_ok(), "tak boleh panic");
+    let e = r.unwrap().expect_err("instance duplikat harus elab error");
+    let msg = e.to_string();
+    assert!(
+        msg.contains("u1") && msg.contains("sudah dideklarasikan") && msg.contains(':'),
+        "error ber-lokasi menyebut instance duplikat: {msg}"
+    );
+    // Pesan menyertakan lokasi deklarasi pertama (baris 5, 1-based) — pesan
+    // spesifik tidak lagi tersembunyi di balik "unresolved instantiation".
+    assert!(
+        msg.contains("5:3"),
+        "pesan menyebut lokasi deklarasi pertama: {msg}"
+    );
+    // Nama instance berbeda (unik) tetap legal.
+    let ok = "module sub(input logic a, output logic b);\n  assign b = a;\nendmodule\nmodule top(input logic x, output logic y);\n  sub u1(.a(x), .b(y));\n  sub u2(.a(x), .b(y));\nendmodule\n";
+    let r2 = std::panic::catch_unwind(|| mivon_api::compile_str_quiet(ok));
+    assert!(r2.is_ok() && r2.unwrap().is_ok(), "instance unik harus lolos");
+}
+
+#[test]
 fn test_empty_based_literal_is_located_parse_error() {
     // Temuan fuzz (bug_0012 DIAG-001): `'h;` (digit terhapus mutasi) lolos
     // jadi Hex{bits:""} lalu runtime error TANPA lokasi ("invalid hex ''").

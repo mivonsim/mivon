@@ -1528,12 +1528,19 @@ impl Elaborator {
         // elaborasi default bukan error fatal.
         let mut default_used: std::collections::HashSet<Symbol> =
             std::collections::HashSet::new();
+        // Modul yang di-instansiasi (param apa pun). Dipakai agar downgrade
+        // "hanya di-instansiasi dengan override" TIDAK berlaku untuk modul
+        // yang tak pernah di-instansiasi (mis. top) — error elaborasi top
+        // harus tetap error keras.
+        let mut instantiated: std::collections::HashSet<Symbol> =
+            std::collections::HashSet::new();
         for m in &self.design.modules {
             if !reachable.contains(&m.name) {
                 continue;
             }
             for item in &m.items {
                 if let ModuleItem::Instance(inst) = item {
+                    instantiated.insert(inst.module_name);
                     let child_params_empty = snapshot_map
                         .get(&inst.module_name)
                         .map(|cm| cm.params.is_empty())
@@ -1631,7 +1638,9 @@ impl Elaborator {
                                 mod_name, e
                             )
                             .into();
-                        } else if !default_used.contains(&mod_name) {
+                        } else if instantiated.contains(&mod_name)
+                            && !default_used.contains(&mod_name)
+                        {
                             // Modul hanya di-instansiasi dengan override param —
                             // IR default tak pernah dipakai; elaborasi ulang
                             // dengan param instance terjadi saat flatten.
@@ -1879,16 +1888,28 @@ impl Elaborator {
             Some(m) => m,
             None => {
                 if mode == ElaborateMode::StrictSimulation {
-                    return Err(self.elab_diag(
-                        DiagCode::TopResolutionFailed,
-                        format!(
-                            "Unable to determine top-level design.\n\
-                             Simulation cancelled.\n\n\
-                             Reason:\n\
-                             • unresolved instantiation or compilation error in top module '{}'",
-                            top_name.as_str()
-                        ),
-                    ));
+                    // Sertakan error elaborasi SPESIFIK module top (mis.
+                    // instance duplikat) — tanpa ini pesan generik
+                    // "unresolved instantiation" menyembunyikan penyebab asli.
+                    let marker = format!("module '{}' skipped", top_name.as_str());
+                    let specific: Option<String> = self
+                        .diag_sink
+                        .diagnostics()
+                        .into_iter()
+                        .rev()
+                        .find(|d| d.is_error() && d.message.contains(&marker))
+                        .map(|d| d.message.into_owned());
+                    let mut reason = format!(
+                        "Unable to determine top-level design.\n\
+                         Simulation cancelled.\n\n\
+                         Reason:\n\
+                         • unresolved instantiation or compilation error in top module '{}'",
+                        top_name.as_str()
+                    );
+                    if let Some(s) = specific {
+                        reason.push_str(&format!("\n   • {}", s));
+                    }
+                    return Err(self.elab_diag(DiagCode::TopResolutionFailed, reason));
                 }
 
                 // Fallback only for AnalysisRecovery (Rule 2)
@@ -2624,6 +2645,37 @@ impl Elaborator {
         // "port 'in_i'" atas nama interface JTAG_DV padahal port milik modul
         // lain yang sedang di-flatten).
         self.current_module = Some(module.name);
+        // LRM §23.3.2: nama instance harus UNIK dalam satu scope module.
+        // Dua instance bernama sama di module yang sama = illegal (iverilog:
+        // "'u1' has already been declared in this scope"). Cek HANYA instance
+        // LANGSUNG `module.items` — instance di dalam blok generate punya
+        // scope sendiri sehingga sah berulang (`g[0].u1`, `g[1].u1`).
+        // Temuan fuzz (seed 35 vs iverilog): `sub u1(...); sub u1(...);`
+        // dielaborasi tanpa error (hierarki punya path duplikat).
+        {
+            let mut seen: std::collections::HashMap<Symbol, (usize, usize)> =
+                std::collections::HashMap::new();
+            for item in &module.items {
+                if let ModuleItem::Instance(inst) = item {
+                    if let Some((line, col)) = seen.get(&inst.instance_name) {
+                        // `inst.line` = baris di MERGED source (preprocess
+                        // menambah `` `line `` directive) — remap ke baris file
+                        // asli untuk pesan agar akurat.
+                        let (_, disp_line) = self.resolve_source_location(*line);
+                        return Err(self.elab_diag_at(
+                            DiagCode::DuplicateDeclaration,
+                            format!(
+                                "instance '{}' sudah dideklarasikan di scope ini (deklarasi pertama di {}:{}) — nama instance harus unik dalam satu module (LRM §23.3.2)",
+                                inst.instance_name, disp_line, col
+                            ),
+                            inst.line,
+                            inst.col,
+                        ));
+                    }
+                    seen.insert(inst.instance_name, (inst.line, inst.col));
+                }
+            }
+        }
         use std::collections::HashSet;
         let dbg_step = std::env::var("DBG_ELAB_STEP").is_ok();
         let step_t0 = std::time::Instant::now();
