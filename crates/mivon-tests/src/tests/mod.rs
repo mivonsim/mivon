@@ -25532,6 +25532,23 @@ fn test_packed_chunk_negative_index_no_overflow_panic() {
 }
 
 #[test]
+fn test_scalar_port_field_write_is_located_elab_error() {
+    // Temuan fuzz (bug_0395 DIAG-001): `assign register_o.hartid = ...`
+    // dgn `register_o` port scalar → dulu warning + runtime error TANPA
+    // lokasi. Kini elab ERROR E2002 ber-lokasi (flatten tak bisa ciptakan
+    // `port.field` dari scalar; interface tetap defer).
+    let source = "module m(input logic clk, output logic [7:0] p);\n  assign p.hartid = 1'b1;\nendmodule\n";
+    let r = std::panic::catch_unwind(|| mivon_api::compile_str_quiet(source));
+    assert!(r.is_ok(), "tak boleh panic");
+    let e = r.unwrap().expect_err("field-write ke port scalar harus elab error");
+    let msg = e.to_string();
+    assert!(
+        msg.contains("hartid") && msg.contains(':'),
+        "error ber-lokasi menyebut field: {msg}"
+    );
+}
+
+#[test]
 fn test_repeat_huge_count_not_unrolled() {
     // Temuan fuzz (bug_0667 cb_filter_tb hang): `Stmt::Repeat` const
     // di-unroll PENUH tanpa batas — `repeat (10jt)` = 10jt IR node +

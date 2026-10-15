@@ -3100,8 +3100,32 @@ impl Elaborator {
                                 field: *field,
                             });
                         }
-                        // Signal NON-struct dijadikan target member access —
-                        // biasanya interface instance (`jtag_mst.tdo`, `tif.miso`)
+                        // Signal NON-struct dijadikan target member access.
+                        // Port SKALAR + field access tak pernah bisa resolve
+                        // (flatten tak menciptakan `port.field` dari scalar —
+                        // temuan fuzz bug_0395 `register_o.hartid`): elab ERROR
+                        // ber-lokasi di sini, bukan warning + runtime error
+                        // tanpa lokasi. Interface (iface_type) tetap defer
+                        // warning+HierRef (resolve post-flatten legitimate).
+                        if sig_info.iface_type.is_none()
+                            && matches!(
+                                sig_info.kind,
+                                SignalKind::Input | SignalKind::Output | SignalKind::Inout
+                            )
+                        {
+                            let (l, c) = expr_location(expr);
+                            return Err(self.elab_diag_at(
+                                DiagCode::TypeMismatch,
+                                format!(
+                                    "field '{}' tidak ada pada port scalar '{}' (tipe non-struct)",
+                                    field.as_str(),
+                                    sig_info.name.as_str()
+                                ),
+                                l,
+                                c,
+                            ));
+                        }
+                        // Biasanya interface instance (`jtag_mst.tdo`, `tif.miso`)
                         // atau sinyal testbench yang field-nya tidak ter-model.
                         // Degrade: warning + HierRef (engine resolve nama saat
                         // write) bila nama hierarkis tersedia, selain itu
