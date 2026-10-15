@@ -25532,6 +25532,26 @@ fn test_packed_chunk_negative_index_no_overflow_panic() {
 }
 
 #[test]
+fn test_empty_based_literal_is_located_parse_error() {
+    // Temuan fuzz (bug_0012 DIAG-001): `'h;` (digit terhapus mutasi) lolos
+    // jadi Hex{bits:""} lalu runtime error TANPA lokasi ("invalid hex ''").
+    // Kini parse ERROR ber-lokasi.
+    for src in [
+        "module m;\n  logic [7:0] x;\n  initial x = 8'h;\nendmodule\n",
+        "module m;\n  function int f(input int n);\n    'h;\n    return n;\n  endfunction\nendmodule\n",
+    ] {
+        let r = std::panic::catch_unwind(|| mivon_api::compile_str_quiet(src));
+        assert!(r.is_ok(), "tak boleh panic");
+        let e = r.unwrap().expect_err("literal berbasis kosong harus error");
+        let msg = e.to_string();
+        assert!(
+            msg.contains("tanpa digit") && msg.contains(':'),
+            "error ber-lokasi: {msg}"
+        );
+    }
+}
+
+#[test]
 fn test_scalar_port_field_write_is_located_elab_error() {
     // Temuan fuzz (bug_0395 DIAG-001): `assign register_o.hartid = ...`
     // dgn `register_o` port scalar → dulu warning + runtime error TANPA

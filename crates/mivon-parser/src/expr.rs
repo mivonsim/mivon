@@ -978,6 +978,15 @@ impl Parser {
                 width,
                 is_signed,
             } => {
+                // Digit kosong (`8'h`, `'h;` hasil mutasi) — dulu lolos jadi
+                // Hex{bits:""} lalu runtime error TANPA lokasi ("invalid hex
+                // ''", temuan fuzz bug_0012 DIAG-001). Literal berbasis wajib
+                // punya digit: tolak di parse selagi peek di token ini.
+                if matches!(base, Some(2) | Some(8) | Some(16)) && value.as_str().is_empty() {
+                    return Err(self.err(
+                        "literal berbasis `'b/`'o/`'h` tanpa digit (mis. `8'h`) tidak valid",
+                    ));
+                }
                 self.advance();
                 if self.peek() == &Token::Quote && self.peek_ahead(1) == &Token::LParen {
                     self.advance();
