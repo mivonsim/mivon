@@ -60,11 +60,14 @@ fn eval_scheduling_basic(
         };
     }
 
-    // Tanpa scheduling trace yang detail — dianggap satisfied.
-    // Evaluator penuh membutuhkan trace NBA region dari engine.
+    // Tanpa scheduling trace yang detail (region per event) — JANGAN klaim
+    // Satisfied: kita tak benar-benar memverifikasi urutan region. Jujur
+    // Inconclusive sampai trace NBA region tersedia dari engine.
     RuleResult {
         rule: rule.id.clone(),
-        verdict: RuleVerdict::Satisfied,
+        verdict: RuleVerdict::Inconclusive {
+            reason: "trace scheduling detail (region per event) belum tersedia".to_string(),
+        },
         evidence: vec![
             Evidence::matching(
                 "simulation_status",
@@ -76,7 +79,7 @@ fn eval_scheduling_basic(
             ),
         ],
         explanation: format!(
-            "Rule {} (§{}): simulasi selesai — trace detail belum tersedia",
+            "Rule {} (§{}): simulasi selesai tapi trace region belum tersedia",
             rule.id, rule.clause.section
         ),
     }

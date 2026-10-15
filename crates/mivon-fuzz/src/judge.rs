@@ -99,4 +99,23 @@ mod tests {
         assert!(!rep.should_save(), "InvalidTest bukan bug tersimpan");
         let _ = render_report(&rep);
     }
+
+    /// Hakim jujur: bila ada aturan yang belum dapat dievaluasi, verdict
+    /// BUKAN `Pass` (dulu catch-all `=> true` membuat hakim selalu Pass
+    /// walau ~25 aturan tak pernah dievaluasi).
+    #[test]
+    fn judge_does_not_claim_pass_with_unimplemented_rules() {
+        let src = "module tiny(input logic a, output logic b);\n  assign b = ~a;\nendmodule\n";
+        let rep = judge_single(src, 20_000);
+        let has_inconclusive = rep.rule_results.iter().any(|r| {
+            matches!(r.verdict, crate::verdict::RuleVerdict::Inconclusive { .. })
+        });
+        if has_inconclusive {
+            assert!(
+                !matches!(rep.verdict, crate::verdict::Verdict::Pass),
+                "ada rule Inconclusive tapi verdict Pass (tidak jujur): {:?}",
+                rep.verdict
+            );
+        }
+    }
 }

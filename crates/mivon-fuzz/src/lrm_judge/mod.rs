@@ -23,7 +23,7 @@ pub mod semantics;
 pub mod syntax;
 pub mod types;
 
-use crate::lrm_model::{LrmRule, LrmState};
+use crate::lrm_model::{CheckOutcome, LrmRule, LrmState, RuleCategory};
 use crate::lrm_rules::RuleRegistry;
 use crate::observer::MivonObservation;
 use crate::testcase::TestCase;
@@ -72,7 +72,7 @@ impl LrmJudge {
         let mut all_evidence: Vec<Evidence> = Vec::new();
 
         for rule in &applicable {
-            let result = evaluate_rule(rule, observation, state);
+            let result = evaluate_rule(rule, testcase, observation, state);
             all_evidence.extend(result.evidence.clone());
             rule_results.push(result);
         }
@@ -83,14 +83,19 @@ impl LrmJudge {
 }
 
 /// Evaluasi satu aturan LRM terhadap observasi.
+///
+/// Prioritas: evaluator DOMAIN spesifik (lrm_judge::syntax/semantics/types/
+/// elaboration/scheduling) bila ada & memberi verdict non-NotApplicable;
+/// fallback ke evaluator generik berbasis `Requirement`.
 fn evaluate_rule(
     rule: &LrmRule,
+    testcase: &TestCase,
     observation: &MivonObservation,
-    _state: &LrmState,
+    state: &LrmState,
 ) -> RuleResult {
     // Periksa applicability.
     let applicability = ApplicabilityProof::new(vec![
-        ("applies_when(state)", (rule.applies_when)(_state)),
+        ("applies_when(state)", (rule.applies_when)(state)),
     ]);
     if !applicability.applies {
         return RuleResult {
@@ -101,35 +106,79 @@ fn evaluate_rule(
         };
     }
 
-    // Evaluasi semua requirements.
-    let mut satisfied = true;
-    let mut reasons: Vec<String> = Vec::new();
-    let mut evidence: Vec<Evidence> = Vec::new();
-
-    for req in &rule.requires {
-        let (ok, reason) = req.check(observation);
-        if ok {
-            evidence.push(Evidence::matching(
-                format!("{:?}", req).split('{').next().unwrap_or("req"),
-                reason.clone(),
-            ));
-        } else {
-            satisfied = false;
-            evidence.push(Evidence::mismatch(
-                format!("{:?}", req).split('{').next().unwrap_or("req"),
-                &reason,
-                rule.expected_description,
-            ));
-            reasons.push(reason);
+    // Evaluator domain (logika lebih kaya daripada generik).
+    let domain = match rule.category {
+        RuleCategory::Syntax | RuleCategory::Grammar | RuleCategory::Legality => {
+            Some(syntax::evaluate(rule, testcase, observation, state))
+        }
+        RuleCategory::Semantics => Some(semantics::evaluate(rule, testcase, observation, state)),
+        RuleCategory::Typing => Some(types::evaluate(rule, testcase, observation, state)),
+        RuleCategory::Elaboration => Some(elaboration::evaluate(rule, testcase, observation, state)),
+        RuleCategory::Scheduling => Some(scheduling::evaluate(rule, testcase, observation, state)),
+        _ => None,
+    };
+    if let Some(r) = domain {
+        if !matches!(r.verdict, RuleVerdict::NotApplicable) {
+            return r;
         }
     }
 
-    let verdict = if satisfied {
-        RuleVerdict::Satisfied
-    } else {
-        RuleVerdict::Violated {
-            reason: reasons.join("; "),
+    evaluate_rule_generic(rule, observation)
+}
+
+/// Evaluator generik: jalankan setiap `Requirement` atas observasi.
+fn evaluate_rule_generic(rule: &LrmRule, observation: &MivonObservation) -> RuleResult {
+    // Rule tanpa requirement yang dapat dievaluasi = belum diimplementasi.
+    // Jujur Inconclusive (dulu `requires: vec![]` → Satisfied palsu).
+    if rule.requires.is_empty() {
+        return RuleResult {
+            rule: rule.id.clone(),
+            verdict: RuleVerdict::Inconclusive {
+                reason: "rule tanpa requirement yang dapat dievaluasi".to_string(),
+            },
+            evidence: Vec::new(),
+            explanation: format!(
+                "Rule {} (§{}) belum diimplementasi (tidak ada requirement checkable)",
+                rule.id, rule.clause.section
+            ),
+        };
+    }
+
+    let mut violated: Vec<String> = Vec::new();
+    let mut inconclusive: Vec<String> = Vec::new();
+    let mut evidence: Vec<Evidence> = Vec::new();
+
+    for req in &rule.requires {
+        let outcome = req.check(observation);
+        let label = format!("{:?}", req).split('{').next().unwrap_or("req").to_string();
+        match outcome {
+            CheckOutcome::Satisfied(reason) => {
+                evidence.push(Evidence::matching(label, reason));
+            }
+            CheckOutcome::Violated(reason) => {
+                evidence.push(Evidence::mismatch(
+                    label,
+                    &reason,
+                    rule.expected_description,
+                ));
+                violated.push(reason);
+            }
+            CheckOutcome::Inconclusive(reason) => {
+                inconclusive.push(reason);
+            }
         }
+    }
+
+    let verdict = if !violated.is_empty() {
+        RuleVerdict::Violated {
+            reason: violated.join("; "),
+        }
+    } else if !inconclusive.is_empty() {
+        RuleVerdict::Inconclusive {
+            reason: inconclusive.join("; "),
+        }
+    } else {
+        RuleVerdict::Satisfied
     };
 
     let explanation = match &verdict {
@@ -141,7 +190,11 @@ fn evaluate_rule(
             "Rule {} (§{}) dilanggar: {} — observed: {}",
             rule.id, rule.clause.section, rule.expected_description, reason
         ),
-        _ => String::new(),
+        RuleVerdict::Inconclusive { reason } => format!(
+            "Rule {} (§{}) belum dapat dievaluasi: {}",
+            rule.id, rule.clause.section, reason
+        ),
+        RuleVerdict::NotApplicable => String::new(),
     };
 
     RuleResult {
@@ -204,7 +257,28 @@ fn aggregate(
             None,
         )
     } else {
-        (Verdict::Pass, JudgeConfidence::Proven, None)
+        // Tidak ada pelanggaran, TAPI ada aturan yang belum dapat dievaluasi
+        // → jujur `JudgeInsufficient`, bukan `Pass` palsu.
+        let inconclusive: Vec<&str> = rule_results
+            .iter()
+            .filter(|r| matches!(r.verdict, RuleVerdict::Inconclusive { .. }))
+            .map(|r| r.rule.0)
+            .collect();
+        if !inconclusive.is_empty() {
+            (
+                Verdict::JudgeInsufficient {
+                    reason: format!(
+                        "{} aturan belum dapat dievaluasi",
+                        inconclusive.len()
+                    ),
+                    missing: inconclusive.iter().map(|s| s.to_string()).collect(),
+                },
+                JudgeConfidence::Insufficient,
+                None,
+            )
+        } else {
+            (Verdict::Pass, JudgeConfidence::Proven, None)
+        }
     };
 
     JudgeReport {

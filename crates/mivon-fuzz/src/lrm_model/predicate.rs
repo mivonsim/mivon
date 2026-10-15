@@ -30,10 +30,43 @@ pub enum Requirement {
     DiagnosticHasLocation,
 }
 
+/// Hasil evaluasi satu `Requirement`.
+///
+/// Tiga-nilai (bukan `bool`): aturan yang BELUM diimplementasi harus jujur
+/// `Inconclusive`, bukan `Satisfied` palsu. Tanpa ini hakim melaporkan
+/// `Pass` untuk aturan yang tak pernah dievaluasi (temuan review: 25/27
+/// aturan tak pernah bisa gagal karena catch-all `=> true`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CheckOutcome {
+    /// Requirement terpenuhi menurut observasi.
+    Satisfied(String),
+    /// Requirement dilanggar — kandidat bug kepatuhan.
+    Violated(String),
+    /// Tidak dapat dievaluasi (belum diimplementasi / data observasi kurang).
+    Inconclusive(String),
+}
+
+impl CheckOutcome {
+    pub fn is_satisfied(&self) -> bool {
+        matches!(self, CheckOutcome::Satisfied(_))
+    }
+
+    pub fn is_violated(&self) -> bool {
+        matches!(self, CheckOutcome::Violated(_))
+    }
+
+    pub fn reason(&self) -> &str {
+        match self {
+            CheckOutcome::Satisfied(r)
+            | CheckOutcome::Violated(r)
+            | CheckOutcome::Inconclusive(r) => r,
+        }
+    }
+}
+
 impl Requirement {
     /// Evaluasi requirement terhadap observasi mivon.
-    /// Mengembalikan (satisfied, reason).
-    pub fn check(&self, obs: &crate::observer::MivonObservation) -> (bool, String) {
+    pub fn check(&self, obs: &crate::observer::MivonObservation) -> CheckOutcome {
         match self {
             Requirement::DiagnosticHasLocation => {
                 let all_have_loc = obs.diagnostics.iter()
@@ -41,7 +74,7 @@ impl Requirement {
                     .filter(|d| !is_summary_error(&d.message))
                     .all(|d| d.location.is_some());
                 if all_have_loc {
-                    (true, "semua diagnostik error mempunyai lokasi".to_string())
+                    CheckOutcome::Satisfied("semua diagnostik error mempunyai lokasi".to_string())
                 } else {
                     let missing: Vec<_> = obs.diagnostics.iter()
                         .filter(|d| d.is_error() && d.location.is_none())
@@ -49,39 +82,48 @@ impl Requirement {
                         .map(|d| d.message.clone())
                         .take(3)
                         .collect();
-                    (false, format!("diagnostik tanpa lokasi: {}", missing.join("; ")))
+                    CheckOutcome::Violated(format!("diagnostik tanpa lokasi: {}", missing.join("; ")))
                 }
             }
             Requirement::ElaborationSucceeds => {
-                let _ok = obs.exit_status == crate::observer::ExitStatus::Ok
-                    || obs.exit_status == crate::observer::ExitStatus::CleanError;
                 let elaboration_failed = obs.diagnostics.iter()
                     .any(|d| d.is_error() && d.code.starts_with('E'));
                 if !elaboration_failed {
-                    (true, "elaborasi berhasil".to_string())
+                    CheckOutcome::Satisfied("elaborasi berhasil".to_string())
                 } else {
                     let codes: Vec<_> = obs.diagnostics.iter()
                         .filter(|d| d.is_error())
                         .map(|d| d.code.clone())
                         .take(3)
                         .collect();
-                    (false, format!("elaborasi gagal: {}", codes.join(", ")))
+                    CheckOutcome::Violated(format!("elaborasi gagal: {}", codes.join(", ")))
+                }
+            }
+            Requirement::ElaborationFails { code } => {
+                let found = obs.diagnostics.iter().any(|d| d.is_error() && d.code == *code);
+                if found {
+                    CheckOutcome::Satisfied(format!("elaborasi gagal dengan kode {}", code))
+                } else {
+                    CheckOutcome::Violated(format!(
+                        "elaborasi diharapkan gagal dengan kode {} — tidak ditemukan",
+                        code
+                    ))
                 }
             }
             Requirement::DiagnosticRequired { code, .. } => {
                 let found = obs.diagnostics.iter().any(|d| d.code == *code);
                 if found {
-                    (true, format!("diagnostik {} diterbitkan", code))
+                    CheckOutcome::Satisfied(format!("diagnostik {} diterbitkan", code))
                 } else {
-                    (false, format!("diagnostik {} tidak diterbitkan", code))
+                    CheckOutcome::Violated(format!("diagnostik {} tidak diterbitkan", code))
                 }
             }
             Requirement::DiagnosticForbidden { code } => {
                 let found = obs.diagnostics.iter().any(|d| d.code == *code);
                 if !found {
-                    (true, format!("diagnostik {} tidak muncul (benar)", code))
+                    CheckOutcome::Satisfied(format!("diagnostik {} tidak muncul (benar)", code))
                 } else {
-                    (false, format!("diagnostik {} muncul (dilarang)", code))
+                    CheckOutcome::Violated(format!("diagnostik {} muncul (dilarang)", code))
                 }
             }
             Requirement::SignalValueEquals { signal, expected } => {
@@ -90,13 +132,25 @@ impl Requirement {
                     .map(|v| v.value.display())
                     .unwrap_or_else(|| "<tidak ditemukan>".to_string());
                 if actual == *expected {
-                    (true, format!("{} = {} (sesuai LRM)", signal, expected))
+                    CheckOutcome::Satisfied(format!("{} = {} (sesuai LRM)", signal, expected))
                 } else {
-                    (false, format!("{}: expected={} observed={}", signal, expected, actual))
+                    CheckOutcome::Violated(format!("{}: expected={} observed={}", signal, expected, actual))
                 }
             }
-            // Requirement lain belum diimplementasi — inconclusive.
-            _ => (true, "requirement belum diimplementasi — dianggap satisfied".to_string()),
+            // Properti semantik (NBA region, fill literal, concat width, dll.)
+            // butuh trace/IR-level yang belum tersedia di observasi black-box.
+            // Jujur Inconclusive — JANGAN dianggap satisfied (dulu catch-all
+            // `=> true` membuat hakim selalu Pass untuk aturan ini).
+            Requirement::SemanticProperty(prop) => CheckOutcome::Inconclusive(format!(
+                "properti semantik {:?} belum dapat dievaluasi dari observasi black-box",
+                prop
+            )),
+            Requirement::GenerateIterationsMatch { instance, expected_count } => {
+                CheckOutcome::Inconclusive(format!(
+                    "generate iterations utk '{}' (expected {}) belum dievaluasi — snapshot elaborasi belum diisi",
+                    instance, expected_count
+                ))
+            }
         }
     }
 }
@@ -110,7 +164,8 @@ pub(crate) fn is_summary_error(msg: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::is_summary_error;
+    use super::{is_summary_error, CheckOutcome, Requirement, SemanticProp};
+    use crate::observer::MivonObservation;
 
     /// Summary $fatal/assert agregat bukan pelanggaran lokasi (bug_0227/0248).
     #[test]
@@ -120,6 +175,35 @@ mod tests {
         assert!(is_summary_error("3 assertion(s) gagal"));
         assert!(!is_summary_error("assertion failed"));
         assert!(!is_summary_error("signal 'p' not found"));
+    }
+
+    /// Properti semantik yang belum dapat dievaluasi → Inconclusive, BUKAN
+    /// Satisfied palsu (temuan review: catch-all `=> true` membuat hakim
+    /// selalu Pass untuk ~25 aturan yang tak pernah dievaluasi).
+    #[test]
+    fn semantic_property_is_inconclusive_not_satisfied() {
+        let obs = MivonObservation::default();
+        for prop in [
+            SemanticProp::NbaInNbaRegion,
+            SemanticProp::FillLiteralExpandsToTargetWidth,
+            SemanticProp::ConcatWidthIsSum,
+            SemanticProp::SignedExtensionPreservesSign,
+        ] {
+            let out = Requirement::SemanticProperty(prop).check(&obs);
+            assert!(
+                matches!(out, CheckOutcome::Inconclusive(_)),
+                "harus Inconclusive, dapat {out:?}"
+            );
+            assert!(!out.is_satisfied());
+        }
+    }
+
+    /// Requirement yang terimplementasi tetap menghasilkan Satisfied/Violated.
+    #[test]
+    fn implemented_requirements_still_decide() {
+        let obs = MivonObservation::default();
+        assert!(Requirement::ElaborationSucceeds.check(&obs).is_satisfied());
+        assert!(Requirement::DiagnosticHasLocation.check(&obs).is_satisfied());
     }
 }
 #[derive(Debug, Clone)]

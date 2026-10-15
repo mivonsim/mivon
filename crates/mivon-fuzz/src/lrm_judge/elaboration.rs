@@ -37,29 +37,19 @@ fn eval_param_override(
     // Cek elaborasi berhasil.
     if obs.has_errors() {
         let codes = obs.error_codes();
-        // E3006 / EL3001 = no top — bukan param error.
-        let is_param_error = codes.iter().any(|c| c.starts_with("EL") || c.contains("param"));
-        if is_param_error {
-            return RuleResult {
-                rule: rule.id.clone(),
-                verdict: RuleVerdict::Violated {
-                    reason: format!("elaborasi gagal dengan kode: {}", codes.join(", ")),
-                },
-                evidence: vec![Evidence::mismatch(
-                    "elaboration",
-                    &format!("error: {}", codes.join(", ")),
-                    "success",
-                )],
-                explanation: format!("Rule {}: elaborasi parameter gagal", rule.id),
-            };
-        }
+        // Error elaborasi SENDIRI tidak membuktikan pelanggaran LRM — kode
+        // mutasi bisa memang tak valid. Butuh referensi untuk memutuskan →
+        // Inconclusive (bukan Violated palsu).
         return RuleResult {
             rule: rule.id.clone(),
             verdict: RuleVerdict::Inconclusive {
-                reason: format!("elaborasi gagal ({}), tidak bisa mengevaluasi parameter", codes.join(", ")),
+                reason: format!(
+                    "elaborasi gagal ({}), tidak bisa memutuskan override parameter",
+                    codes.join(", ")
+                ),
             },
             evidence: Vec::new(),
-            explanation: format!("Rule {}: elaborasi gagal", rule.id),
+            explanation: format!("Rule {}: elaborasi gagal — inconclusive", rule.id),
         };
     }
 
@@ -105,13 +95,15 @@ fn eval_port_binding(
         let has_port_err = codes.iter().any(|c| c.contains("port") || c.contains("PORT")
             || *c == "E1003" || *c == "E1004");
         if has_port_err {
+            // Sama seperti param: error port SENDIRI bukan bukti pelanggaran
+            // (kode mutasi bisa memang invalid) → Inconclusive.
             return RuleResult {
                 rule: rule.id.clone(),
-                verdict: RuleVerdict::Violated {
-                    reason: format!("error port binding: {}", codes.join(", ")),
+                verdict: RuleVerdict::Inconclusive {
+                    reason: format!("error port binding: {} — butuh referensi", codes.join(", ")),
                 },
-                evidence: vec![Evidence::mismatch("port_binding", "error", "success")],
-                explanation: format!("Rule {}: port binding error", rule.id),
+                evidence: Vec::new(),
+                explanation: format!("Rule {}: port binding error — inconclusive", rule.id),
             };
         }
     }

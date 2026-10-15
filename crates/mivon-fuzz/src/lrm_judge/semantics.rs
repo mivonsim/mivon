@@ -71,9 +71,17 @@ fn eval_nba_region(
         };
     }
 
+    // Proxy "ada always_ff + simulasi selesai" TIDAK membuktikan NBA
+    // assignment benar-benar dieksekusi di region NBA — jujur Inconclusive
+    // sampai trace region tersedia (dulu klaim Satisfied = hakim berbohong).
     RuleResult {
         rule: rule.id.clone(),
-        verdict: RuleVerdict::Satisfied,
+        verdict: RuleVerdict::Inconclusive {
+            reason: format!(
+                "trace region NBA belum tersedia ({} blok always_ff terdeteksi)",
+                ff_count
+            ),
+        },
         evidence: vec![
             Evidence::matching(
                 "always_ff_count",
@@ -85,7 +93,7 @@ fn eval_nba_region(
             ),
         ],
         explanation: format!(
-            "Rule {} (§{}): {} blok always_ff, simulasi selesai tanpa error",
+            "Rule {} (§{}): {} blok always_ff, tapi region NBA belum diverifikasi",
             rule.id, rule.clause.section, ff_count
         ),
     }

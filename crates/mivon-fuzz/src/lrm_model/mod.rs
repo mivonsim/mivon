@@ -18,7 +18,7 @@ pub mod state;
 pub mod value;
 
 pub use clause::{ClauseRef, Standard};
-pub use predicate::{Requirement, SemanticProp};
+pub use predicate::{CheckOutcome, Requirement, SemanticProp};
 pub use state::{
     DesignModel, LrmState, ProcessModel, SchedulerModel, ScopeGraph, SymbolTable, TypeSystem,
 };
