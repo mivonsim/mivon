@@ -25530,3 +25530,20 @@ fn test_packed_chunk_negative_index_no_overflow_panic() {
         }
     }
 }
+
+#[test]
+fn test_repeat_huge_count_not_unrolled() {
+    // Temuan fuzz (bug_0667 cb_filter_tb hang): `Stmt::Repeat` const
+    // di-unroll PENUH tanpa batas — `repeat (10jt)` = 10jt IR node +
+    // GB/gantung. Fix: >256 → runtime IrStmt::Repeat. Elaborasi harus
+    // SELESAI CEPAT (bukan hang) + tetap mensimulasikan dgn benar.
+    let source = "module tb;\n  logic clk;\n  logic [1:0] cnt;\n  initial begin\n    cnt = 0;\n    repeat (10000000) @(posedge clk);\n    cnt = 1;\n  end\nendmodule\n";
+    let r = std::panic::catch_unwind(|| mivon_api::compile_str_quiet(source));
+    assert!(r.is_ok(), "repeat 10jt tak boleh panic");
+    assert!(r.unwrap().is_ok(), "repeat 10jt harus ter-elaborasi bersih");
+    // Kecil tetap di-unroll & jalan: repeat(3) → cnt=3 tercapai.
+    let small = "module tb;\n  logic [1:0] cnt;\n  initial begin\n    cnt = 0;\n    repeat (3) cnt = cnt + 1;\n  end\nendmodule\n";
+    let sigs = simulate_signals(small, 10).unwrap();
+    let cnt = sigs.iter().find(|(s, _)| s == "cnt").unwrap().1.to_u64();
+    assert_eq!(cnt, 3, "repeat kecil tetap jalan");
+}

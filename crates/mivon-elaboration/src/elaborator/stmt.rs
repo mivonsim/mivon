@@ -1990,7 +1990,22 @@ impl Elaborator {
             Stmt::Continue => Ok(IrStmt::Continue),
             Stmt::Disable { name } => Ok(IrStmt::Disable { name: *name }),
             Stmt::Repeat { count, stmts } => {
+                // Unroll HANYA bila kecil (<=256, sejajar guard loop_unroll):
+                // `repeat (10_000_000) @(posedge clk)` di-unroll penuh = 10jt
+                // IR node + GB/gantung (temuan fuzz bug_0667 cb_filter_tb).
+                // Besar/non-konstan → runtime IrStmt::Repeat (engine
+                // menanganinya).
                 if let Ok(n) = const_eval_params(count, &self.param_vals) {
+                    if n > 256 {
+                        let ir_count = self.elaborate_expr(count, signal_map, signals)?;
+                        let ir_body = self.elaborate_stmt_block(
+                            stmts, signal_map, known_modules, signals,
+                        )?;
+                        return Ok(IrStmt::Repeat {
+                            count: ir_count,
+                            body: ir_body,
+                        });
+                    }
                     let mut all = Vec::new();
                     for _ in 0..n {
                         all.extend(self.elaborate_stmt_block(
