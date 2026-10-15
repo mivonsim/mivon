@@ -6155,6 +6155,31 @@ impl Elaborator {
                             }
                         }
                     }
+                    // LRM §6.8: inisialisasi variabel pada deklarasi = nilai AWAL
+                    // (bukan assignment yang memicu event). Set `init_val` dari
+                    // initializer KONSTAN agar state t=0 sudah bernilai benar →
+                    // tak ada transisi X→nilai yang salah memicu `@(negedge rst_n)`
+                    // / `always_ff(... negedge rst_n)` di t=0 (temuan fuzz
+                    // verify_bad_0586; iverilog & verilator TIDAK memicu). decl_init
+                    // tetap di-push sebagai jaring aman (kini no-op utk kasus ini).
+                    // Nilai konstanta di balik wrapper `Signed`/`Cast` (literal
+                    // `0` di-wrap Signed oleh propagate_context_width) — bit-nya
+                    // identik untuk penyimpanan init_val.
+                    fn as_const(e: &IrExpr) -> Option<&LogicVec> {
+                        match e {
+                            IrExpr::Const(lv) => Some(lv),
+                            IrExpr::Signed(inner) => as_const(inner),
+                            IrExpr::Cast { expr, .. } => as_const(expr),
+                            _ => None,
+                        }
+                    }
+                    if let (IrLValue::Signal(sid, 0), Some(lv)) = (&lhs, as_const(&rhs)) {
+                        if let Some(sig) = signals.get_mut(*sid) {
+                            if sig.width == lv.width {
+                                sig.init_val = lv.clone();
+                            }
+                        }
+                    }
                     if decl.kind.is_net() {
                         let sensitivity = collect_sensitivity(init_expr, &signal_map)
                             .into_iter()

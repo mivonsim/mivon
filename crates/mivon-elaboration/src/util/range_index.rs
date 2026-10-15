@@ -118,7 +118,7 @@ mod tests {
     #[test]
     fn dynamic_pos_expr_shape() {
         use super::decl_index_to_pos_expr;
-        use mivon_ir::{BinaryIrOp, IrExpr, LogicVec};
+        use mivon_ir::{BinaryIrOp, IrExpr};
 
         // Menurun lsb == 0 → identitas (tidak dibungkus).
         let id = IrExpr::Signal(7, 8);
@@ -142,7 +142,5 @@ mod tests {
             }
             other => panic!("expected Sub, got {other:?}"),
         }
-        // (LogicVec diimpor agar tipe konsisten dgn pembentuk ekspresi.)
-        let _ = LogicVec::from_u64(0, 1);
     }
 }

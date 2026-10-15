@@ -25733,3 +25733,48 @@ endmodule
     assert_eq!(sig_u64(&sigs, "dw_asc"), 8, "dw_asc[i=0]=1 → 1000");
     assert_eq!(sig_u64(&sigs, "dw_d74"), 8, "dw_d74[i=7]=1 → 1000");
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Regression: initializer variabel pada deklarasi (LRM §6.8) = nilai AWAL, BUKAN
+// assignment pemicu event. `logic rst_n = 0;` (karena init_val ditetapkan dari
+// initializer konstanta) harus menyebabkan sinyal BERNILAI 0 sejak t=0 → tak
+// ada transisi X→0 yang salah memicu `@(negedge rst_n)` di t=0. Temuan fuzz
+// diferensial `verify_bad_0586`; Icarus & Verilator TIDAK memicu negedge di t=0.
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_decl_init_no_spurious_negedge() {
+    // `rst_n` diinisialisasi 0 di deklarasi; `clk` juga. Tak ada transisi
+    // sebenarnya di t=0, jadi penghitung negedge rst_n & posedge clk tetap 0
+    // sampai clk naik pertama kali.
+    let source = r#"
+module tb;
+  logic clk = 0;
+  logic rst_n = 0;
+  int n_negedge = 0;
+  int n_posedge = 0;
+  always @(negedge rst_n) n_negedge = n_negedge + 1;
+  always @(posedge clk)   n_posedge = n_posedge + 1;
+  initial begin
+    #5;
+    clk = 1;   // posedge pertama
+    #5;
+    clk = 0;   // negedge clk (tak dihitung)
+    #5;
+    rst_n = 1; #5;   // tidak ada negedge (naik)
+    rst_n = 0; #5;   // negedge rst_n pertama (nyata)
+  end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 100).unwrap();
+    // Hanya 1 negedge rst_n (saat rst_n=1→0 di akhir), BUKAN 2 (salah satunya
+    // pemicu palsu X→0 di t=0).
+    assert_eq!(
+        sig_u64(&sigs, "n_negedge"),
+        1,
+        "decl-init tidak boleh memicu negedge palsu di t=0"
+    );
+    // Satu posedge clk tercatat (clk:0→1).
+    assert_eq!(sig_u64(&sigs, "n_posedge"), 1, "posedge clk normal tetap jalan");
+}
+
