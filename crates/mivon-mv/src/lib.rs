@@ -1334,6 +1334,42 @@ module counter #(WIDTH = 8) {
     }
 
     #[test]
+    fn bare_sysname_operand_rejected() {
+        // REGRESI fuzz bug_0473: `$finis2 ** 31` — nama system tanpa `()`
+        // dipakai sebagai OPERAN ekspresi menghasilkan SV invalid
+        // (`$finis2 ** 31` → "expected Semi, found StarStar") saat
+        // di-transpile → roundtrip mismatch. MV harus menolaknya bersih.
+        let src = r#"
+module m {
+    out y : logic[7:0]
+    comb {
+        y = $finis2 ** 31
+    }
+}
+"#;
+        assert!(
+            transpile(src, "m").is_err(),
+            "bare system-name sebagai operan harus error bersih (bukan SV rusak)"
+        );
+
+        // System task ber-`()` tetap valid; bare `$finish` sebagai statement
+        // (bukan operan) tetap diizinkan. CATATAN: statement .mv tanpa `;`.
+        let ok = r#"
+module m {
+    out y : logic[7:0]
+    initial {
+        y = 8'hFF
+        $finish
+    }
+}
+"#;
+        match transpile(ok, "m") {
+            Ok(r) => assert!(r.sv.contains("$finish"), "sv harus berisi $finish: {}", r.sv),
+            Err(e) => panic!("bare $finish error: {e}"),
+        }
+    }
+
+    #[test]
     fn transpile_error_position() {
 
         let err = transpile("module {", "m").unwrap_err();

@@ -170,6 +170,19 @@ impl Parser {
             }
             self.advance();
             let rhs = self.parse_binary(prec + 1)?;
+            // Bare system-name (`$name` tanpa `()`) adalah system task —
+            // tak boleh jadi OPERAN ekspresi. `$finis2 ** 31` (fuzz) jadi
+            // invalid SV ("expected Semi, found StarStar") saat di-transpile.
+            // Tolak di sini → MV error bersih (bukan SV rusak). System
+            // function/syscall ber-`()` sudah berupa SysFunc/Call.
+            if let Some(bad) = bare_sysname_operand(&lhs).or_else(|| bare_sysname_operand(&rhs)) {
+                let (l, c) = self.pos_line();
+                return Err(MvError::new(
+                    l,
+                    c,
+                    format!("nama system `{bad}` tanpa `()` tak boleh jadi operan ekspresi"),
+                ));
+            }
             lhs = Expr::Binary(op.into(), Box::new(lhs), Box::new(rhs));
         }
         // `lhs inside { set }` / `lhs dist { items }` (F12) — hanya di level
@@ -611,5 +624,16 @@ pub(super) fn sub_one(e: Expr) -> Expr {
     match e {
         Expr::Int(v) => Expr::Int(v - 1),
         other => Expr::Binary("-".into(), Box::new(other), Box::new(Expr::Int(1))),
+    }
+}
+
+/// Operan berupa identifier telanjang yang diawali `$` — itu adalah
+/// system task/function tanpa `()`, yang tak valid sebagai operan
+/// ekspresi (akan menghasilkan SV rusak saat di-transpile, mis.
+/// `$finis2 ** 31`). System call ber-`()` sudah berupa `SysFunc`/`Call`.
+fn bare_sysname_operand(e: &Expr) -> Option<&str> {
+    match e {
+        Expr::Ident(s, ..) if s.starts_with('$') => Some(s.as_str()),
+        _ => None,
     }
 }
