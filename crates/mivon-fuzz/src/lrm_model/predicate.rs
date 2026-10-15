@@ -38,12 +38,14 @@ impl Requirement {
             Requirement::DiagnosticHasLocation => {
                 let all_have_loc = obs.diagnostics.iter()
                     .filter(|d| d.is_error())
+                    .filter(|d| !is_summary_error(&d.message))
                     .all(|d| d.location.is_some());
                 if all_have_loc {
                     (true, "semua diagnostik error mempunyai lokasi".to_string())
                 } else {
                     let missing: Vec<_> = obs.diagnostics.iter()
                         .filter(|d| d.is_error() && d.location.is_none())
+                        .filter(|d| !is_summary_error(&d.message))
                         .map(|d| d.message.clone())
                         .take(3)
                         .collect();
@@ -99,8 +101,29 @@ impl Requirement {
     }
 }
 
-/// Properti semantik yang harus terpenuhi.
+/// Ringkasan agregat pasca-sim: bukan diagnostik berlokasi (lokasi ada di
+/// tiap penyusunnya). Daftar sejajar `is_global_error` di oracle.
+/// Dipakai `DiagnosticHasLocation` + evaluator syntax DIAG-001.
+pub(crate) fn is_summary_error(msg: &str) -> bool {
+    msg.contains("simulasi dihentikan") || msg.contains("assertion(s) gagal")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_summary_error;
+
+    /// Summary $fatal/assert agregat bukan pelanggaran lokasi (bug_0227/0248).
+    #[test]
+    fn summary_errors_exempt_from_location() {
+        assert!(is_summary_error("$fatal: simulasi dihentikan (1 fatal)"));
+        assert!(is_summary_error("$fatal: simulasi dihentikan (1)"));
+        assert!(is_summary_error("3 assertion(s) gagal"));
+        assert!(!is_summary_error("assertion failed"));
+        assert!(!is_summary_error("signal 'p' not found"));
+    }
+}
 #[derive(Debug, Clone)]
+/// Properti semantik yang harus terpenuhi.
 pub enum SemanticProp {
     /// Iterasi generate harus sesuai nilai parameter override.
     GenerateIterationsMatchParam,
