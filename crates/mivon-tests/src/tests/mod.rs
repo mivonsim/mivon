@@ -14989,6 +14989,45 @@ endmodule
 }
 
 #[test]
+fn test_multi_driver_output_logic_resolution_consistent() {
+    // Fuzz differential (bug_d2919857ef6d): `output logic` didorong DUA
+    // continuous assign — jalur default vs DAG dulu beda (1 vs x). Kini
+    // sinyal Output/Logic multi-driver ikut ditandai → resolusi net aktif
+    // → semua jalur engine konvergen.
+    let source = r#"
+module m(output logic o, input logic a);
+  assign o = 1'b1;
+  assign o = a;
+endmodule
+"#;
+    let design = compile_str(source).unwrap();
+    let o = design
+        .top
+        .signals
+        .iter()
+        .find(|s| s.name.as_str() == "o")
+        .unwrap();
+    assert!(o.multi_driver, "output logic 2-driver harus multi_driver");
+    let a1 = simulate_signals_with_flags_quiet(source, 100, &EngineFlags::default()).unwrap();
+    let dag = EngineFlags {
+        use_dag_parallel: true,
+        ..EngineFlags::default()
+    };
+    let a2 = simulate_signals_with_flags_quiet(source, 100, &dag).unwrap();
+    let v1 = a1
+        .iter()
+        .find(|(n, _)| n == "o")
+        .map(|(_, v)| format!("{v}"))
+        .unwrap_or_default();
+    let v2 = a2
+        .iter()
+        .find(|(n, _)| n == "o")
+        .map(|(_, v)| format!("{v}"))
+        .unwrap_or_default();
+    assert_eq!(v1, v2, "default vs DAG harus identik");
+}
+
+#[test]
 fn test_tri_resolution() {
     let source = r#"
 module tb;

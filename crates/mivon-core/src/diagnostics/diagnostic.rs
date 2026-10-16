@@ -232,6 +232,10 @@ pub enum DiagCode {
     /// mendeklarasikan sinyal/vektor lebih lebar dari batas aman; menolak
     /// dengan diag bersih daripada hang/OOM/silent-clamp.
     PackedWidthTooLarge,
+    /// Multiple continuous assignments drive one VARIABLE (E3013) — ilegal
+    /// (LRM §10.5); jalur engine dapat memberi hasil berbeda (temuan fuzz
+    /// bug differential d2919857: sda_o=1 di default vs x di DAG).
+    MultipleContinuousDriver,
 
     // ── Runtime Memory: RT0xxx ──
     /// Null handle access (RT0001)
@@ -396,6 +400,7 @@ impl DiagCode {
             DiagCode::ExcludedByFilelist => "E3010",
             DiagCode::DuplicateDeclaration => "E3011",
             DiagCode::PackedWidthTooLarge => "E3012",
+            DiagCode::MultipleContinuousDriver => "E3013",
             // Runtime Memory
             DiagCode::NullHandle => "RT0001",
             DiagCode::InvalidReference => "RT0002",
@@ -492,6 +497,7 @@ impl DiagCode {
             DiagCode::ExcludedByFilelist => "excluded by filelist",
             DiagCode::DuplicateDeclaration => "duplicate definition",
             DiagCode::PackedWidthTooLarge => "packed width too large",
+            DiagCode::MultipleContinuousDriver => "multiple continuous drivers on variable",
             // Runtime Memory
             DiagCode::NullHandle => "null handle access",
             DiagCode::InvalidReference => "invalid object reference",
@@ -606,6 +612,8 @@ impl DiagCode {
                 "A module, interface, or package is defined more than once across the source files — duplicates are removed by keeping the most self-contained definition (fewest unresolved instances); a tie keeps the LAST definition in the file list.",
             DiagCode::PackedWidthTooLarge =>
                 "A packed vector or unpacked-array element width exceeds the implementation limit, which would make the design impractical to elaborate or simulate (hang/OOM/incorrect truncation).",
+            DiagCode::MultipleContinuousDriver =>
+                "A variable (logic/reg/integer) is driven by more than one continuous assignment. IEEE 1800 §10.5 allows only one continuous driver per variable; multiple drivers may be resolved differently by different simulators/engine paths.",
             DiagCode::NullHandle =>
                 "An object handle was used (method call or member access) but the handle is null.",
             DiagCode::InvalidReference =>
@@ -758,6 +766,8 @@ impl DiagCode {
                 "Remove the duplicate definition, or reorder the file list so the intended definition comes last.",
             DiagCode::PackedWidthTooLarge =>
                 "Reduce the vector width (e.g. parameterized width expression) below the limit, or restructure the design into smaller packed vectors.",
+            DiagCode::MultipleContinuousDriver =>
+                "Keep only one continuous assignment driving the variable: merge the assignments, or declare the signal as a net (wire/tri) if multiple drivers with resolution are intended.",
             DiagCode::NullHandle =>
                 "Initialize the object handle with 'new()' before accessing its members.",
             DiagCode::InvalidReference =>
@@ -888,7 +898,8 @@ impl DiagCode {
             | DiagCode::CircularHierarchy
             | DiagCode::ExcludedByFilelist
             | DiagCode::DuplicateDeclaration
-            | DiagCode::PackedWidthTooLarge => "Elaboration",
+            | DiagCode::PackedWidthTooLarge
+            | DiagCode::MultipleContinuousDriver => "Elaboration",
             DiagCode::NullHandle
             | DiagCode::InvalidReference
             | DiagCode::NullInterface

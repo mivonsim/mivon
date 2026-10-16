@@ -228,6 +228,8 @@ impl Elaborator {
                     if sig.kind == SignalKind::Wire
                         || sig.kind == SignalKind::Reg
                         || sig.kind == SignalKind::Inout
+                        || sig.kind == SignalKind::Logic
+                        || sig.kind == SignalKind::Output
                     {
                         sig.multi_driver = true;
                     }

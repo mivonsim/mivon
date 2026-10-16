@@ -4868,6 +4868,10 @@ impl Elaborator {
             }
         }
 
+        // LRM §10.5: variabel hanya boleh satu continuous driver — set id
+        // variabel yang sudah didorong `assign` di module ini.
+        let mut cont_driven_vars: std::collections::HashSet<usize> =
+            std::collections::HashSet::new();
         for item in &expanded_items {
             let item_kind = match item {
                 ModuleItem::Always(_) => "always",
@@ -5176,6 +5180,49 @@ impl Elaborator {
                                     rhs = c;
                                 } else {
                                     propagate_context_width(&mut rhs, lhs_w, &signals);
+                                }
+                            }
+                            // LRM §10.5: variabel hanya boleh SATU continuous
+                            // driver — dua assign ke variabel sama = error
+                            // ber-lokasi (dulu lolos diam-diam → hasil beda
+                            // antar jalur engine; temuan fuzz differential).
+                            {
+                                // Hanya SELURUH variabel (IrLValue::Signal):
+                                // bit/range select = driver parsial (legal —
+                                // mis. generate `assign vld[4] = ...`).
+                                if let IrLValue::Signal(id, _) = &lhs {
+                                    let id = *id;
+                                    let is_var = signals
+                                        .get(id)
+                                        .map(|s| {
+                                            // Hanya variabel internal — port
+                                            // dilewati: parser tak menyimpan
+                                            // keyword wire/logic di Port, jadi
+                                            // `output wire` yang legal
+                                            // multi-driver tak bisa dibedakan.
+                                            matches!(
+                                                s.kind,
+                                                SignalKind::Logic | SignalKind::Reg
+                                            )
+                                        })
+                                        .unwrap_or(false);
+                                    if is_var && !cont_driven_vars.insert(id) {
+                                        let (l, c) =
+                                            crate::util::generate::expr_location(&assign.lhs);
+                                        let sig_name = signals
+                                            .get(id)
+                                            .map(|s| s.name.to_string())
+                                            .unwrap_or_default();
+                                        let e = self.elab_diag_at(
+                                            DiagCode::MultipleContinuousDriver,
+                                            format!(
+                                                "variabel '{sig_name}' didorong lebih dari satu continuous assign (LRM §10.5)"
+                                            ),
+                                            l,
+                                            c,
+                                        );
+                                        self.diag_sink.push(e.to_diagnostic());
+                                    }
                                 }
                             }
                             let stmts = vec![IrStmt::BlockingAssign {
