@@ -56,12 +56,16 @@ impl Corpus {
             Some(d) => {
                 Self::push_dir(&mut seeds, d, 0);
             }
-            // Default: seeds/ + mv/ + project real (no-copy).
+            // Default: seeds/ + mv/ + corpus pertumbuhan (feedback coverage) +
+            // project real (no-copy).
             None => {
                 let root = workspace_root();
                 let base = root.join("crates/mivon-fuzz/fuzz/corpus");
                 Self::push_dir(&mut seeds, &base.join("seeds"), 0);
                 Self::push_dir(&mut seeds, &base.join("mv"), 0);
+                // Seed hasil pertumbuhan coverage-guided (bila ada) — relatif
+                // cwd (ditulis oleh feedback::save_interesting).
+                Self::push_dir(&mut seeds, &crate::feedback::grow_corpus_dir(), 0);
                 Self::push_real_projects(&mut seeds);
             }
         }

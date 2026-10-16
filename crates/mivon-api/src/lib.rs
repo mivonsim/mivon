@@ -1005,6 +1005,17 @@ pub fn simulate_signals_with_flags_quiet(
     Ok(simulate_signals_cfg_inner(source, max_time, true, flags)?.0)
 }
 
+/// Jalur fuzzer coverage-guided: sama dengan `..._with_flags_quiet` tapi
+/// ikut mengembalikan coverage keys (Line/Toggle/Branch/FSM) — key BARU
+/// antar-kasus = input menarik (umpan balik evolusioner, lihat feedback.rs).
+pub fn simulate_signals_with_flags_coverage(
+    source: &str,
+    max_time: u64,
+    flags: &EngineFlags,
+) -> Result<(Vec<(String, mivon_ir::LogicVec)>, Vec<String>), SimError> {
+    simulate_signals_cfg_inner(source, max_time, true, flags)
+}
+
 #[cfg(test)]
 #[macro_use]
 pub mod test_util;

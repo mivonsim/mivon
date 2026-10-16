@@ -13,6 +13,7 @@
 pub mod corpus;
 pub mod deps;
 pub mod directed;
+pub mod feedback;
 pub mod judge;
 pub mod ledger;
 pub mod minimize;
@@ -907,6 +908,7 @@ fn run_single(cfg: FuzzConfig, corpus: &corpus::Corpus) -> FuzzReport {
     if let Err(e) = ledger.save() {
         eprintln!("  (ledger: gagal simpan: {e})");
     }
+    crate::feedback::flush();
     eprintln!(
         "  (ledger: {} kunci total, +{} baru kampanye ini)",
         ledger.len(),

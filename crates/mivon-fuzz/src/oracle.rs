@@ -502,14 +502,14 @@ fn simulate_in_thread(source: &str, timeout_ms: u64) -> Option<CaseResult> {
     };
 
     let r1 = std::panic::catch_unwind(|| {
-        simulate_signals_with_flags_quiet(source, 1_000, &default_flags)
+        mivon_api::simulate_signals_with_flags_coverage(source, 1_000, &default_flags)
     });
     let r2 = std::panic::catch_unwind(|| {
         simulate_signals_with_flags_quiet(source, 1_000, &default_flags)
     });
 
     match (&r1, &r2) {
-        (Ok(Ok(sigs1)), Ok(Ok(sigs2))) => {
+        (Ok(Ok((sigs1, _cov))), Ok(Ok(sigs2))) => {
             // Compare sebagai MAP (nama→nilai) — urutan Vec bisa beda antar
             // run (iterasi HashMap) walau isi sama → false nondeterminism.
             let map1: std::collections::BTreeMap<&str, &mivon_ir::LogicVec> =
@@ -553,9 +553,9 @@ fn simulate_in_thread(source: &str, timeout_ms: u64) -> Option<CaseResult> {
         }
     }
 
-    // Ambil hasil valid dari run pertama
-    let sigs_default = match &r1 {
-        Ok(Ok(s)) => s.clone(),
+    // Ambil hasil valid dari run pertama (+ coverage keys utk feedback).
+    let (sigs_default, cov_keys) = match &r1 {
+        Ok(Ok((s, c))) => (s.clone(), c.clone()),
         _ => unreachable!("sudah di-handle di atas"),
     };
 
@@ -764,6 +764,22 @@ fn simulate_in_thread(source: &str, timeout_ms: u64) -> Option<CaseResult> {
                 meaningful_traces.len(),
                 ev.summary(),
             );
+            // Umpan balik coverage (evolusioner lite): key baru → simpan
+            // input sbg seed pertumbuhan; dicatat di detail.
+            let cov_note = {
+                let fresh = crate::feedback::record_keys(&cov_keys);
+                if fresh == 0 {
+                    String::new()
+                } else {
+                    let saved = crate::feedback::save_interesting(source).is_some();
+                    format!(
+                        " — cov+{} key baru{}",
+                        fresh,
+                        if saved { " (seed tumbuh)" } else { "" }
+                    )
+                }
+            };
+            let detail = format!("{detail}{cov_note}");
 
             if is_passive {
                 // Design TANPA blok prosedural — X/Z wajar (undriven).

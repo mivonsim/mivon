@@ -552,8 +552,10 @@ fn verify_mutated(cases: usize, seed: u64, timeout_ms: u64) -> i32 {
             base_source = corpus.pair_with_tb(&base_seed.path, &base_source);
         }
 
-        // Mutasi 0-2x
-        let n_mut = rng.below(3);
+        // Mutasi 0-4x (sama dgn kampanye utama) — dulu 0-2x, sinyal lebih
+        // dangkal daripada kampanye; differential eksternal justru oracle
+        // terkuat, jadi eksplorasi mutasi disamakan.
+        let n_mut = rng.below(5);
         if n_mut > 0 {
             let mut mutator = mivon_fuzz::mutator::Mutator::new(&mut rng);
             for _ in 0..n_mut {
