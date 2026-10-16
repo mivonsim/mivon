@@ -450,19 +450,31 @@ pub fn bugdb_path() -> PathBuf {
 }
 
 /// Run kampanye fuzz.
-pub fn run(cfg: FuzzConfig) -> FuzzReport {    match cfg.target {
+///
+/// Corpus di-load SEKALI untuk seluruh kampanye (dulu per-target = 14×
+/// rebuild deps-index yang membaca semua file corpus — memori/waktu
+/// terbuang; terukur swap-thrash di mesin 7GB).
+pub fn run(cfg: FuzzConfig) -> FuzzReport {
+    let corpus = corpus::Corpus::load(cfg.corpus_dir.as_deref());
+    if corpus.is_empty() {
+        eprintln!(
+            "WARNING: corpus kosong di {:?} — tidak ada seed nyata",
+            cfg.corpus_dir.clone().unwrap_or_else(default_corpus_dir)
+        );
+    }
+    match cfg.target {
         Target::All => {
             let mut merged = FuzzReport::default();
             for &target in Target::ALL {
                 let mut single_cfg = cfg.clone();
                 single_cfg.target = target;
-                let report = run_single(single_cfg);
+                let report = run_single(single_cfg, &corpus);
                 merged.bugs.extend(report.bugs);
                 merged.summaries.extend(report.summaries);
             }
             merged
         }
-        _ => run_single(cfg),
+        _ => run_single(cfg, &corpus),
     }
 }
 
@@ -657,20 +669,13 @@ pub(crate) fn build_prioritized_plan(
     plan
 }
 
-fn run_single(cfg: FuzzConfig) -> FuzzReport {
+fn run_single(cfg: FuzzConfig, corpus: &corpus::Corpus) -> FuzzReport {
     use std::collections::BTreeMap;
 
-    let corpus = corpus::Corpus::load(cfg.corpus_dir.as_deref());
     // Ledger seed ter-evaluasi (persisten lintas kampanye): kampanye
     // memprioritaskan seed yang BELUM pernah dijamah — target "semua seed
     // dijalankan tanpa ada yang di-skip" tercapai secara akumulatif.
     let mut ledger = crate::ledger::SeedLedger::load();
-    if corpus.is_empty() {
-        eprintln!(
-            "WARNING: corpus kosong di {:?} — tidak ada seed nyata",
-            cfg.corpus_dir.clone().unwrap_or_else(default_corpus_dir)
-        );
-    }
 
     let mut rng = Rng::new(cfg.seed);
 
@@ -722,6 +727,9 @@ fn run_single(cfg: FuzzConfig) -> FuzzReport {
         (unseen, seen)
     };
     let seed_plan = build_prioritized_plan(&unseen, &seen, cfg.cases, &mut rng);
+    // Kadens progres: kampanye kecil tetap terlihat di stderr (tiap 25
+    // kasus); kampanye besar tiap 500.
+    let progress_every = if cfg.cases <= 500 { 25 } else { 500 };
 
     for i in 0..cfg.cases {
         // Ambil seed nyata dari corpus via plan (100% — tanpa template
@@ -748,7 +756,7 @@ fn run_single(cfg: FuzzConfig) -> FuzzReport {
                 .map(|n| n.starts_with("tb_"))
                 .unwrap_or(false);
             if is_tb {
-                combine_tb_with_module(&base_seed.path, &base_seed.text, &corpus)
+                combine_tb_with_module(&base_seed.path, &base_seed.text, corpus)
             } else {
                 base_seed.text
             }
@@ -764,12 +772,12 @@ fn run_single(cfg: FuzzConfig) -> FuzzReport {
         let is_large = base_source.len() > SIZE_CAP;
         if is_large {
             let mut mutator = mutator::Mutator::new(&mut rng);
-            base_source = mutator.mutate_light(&base_source, &corpus);
+            base_source = mutator.mutate_light(&base_source, corpus);
         } else {
             let n_mut = rng.below(5);
             let mut mutator = mutator::Mutator::new(&mut rng);
             for _ in 0..n_mut {
-                base_source = mutator.mutate(&base_source, &corpus);
+                base_source = mutator.mutate(&base_source, corpus);
             }
         }
 
@@ -778,6 +786,15 @@ fn run_single(cfg: FuzzConfig) -> FuzzReport {
         if !is_large && rng.chance(30) {
             let mut dir = directed::DirectedMutator::new(&mut rng);
             base_source = dir.mutate(&base_source);
+        }
+
+        // CLAMP pasca-mutasi: rangkaian `duplicate_chunk`/splice pada seed
+        // hampir-2MB bisa meledak puluhan MB (terukur: swap-thrash mesin
+        // 7GB, kampanye merayap). Source hasil mutasi > SIZE_CAP → evaluasi
+        // versi light (tak berkembang) — tetap ada variasi, tanpa blowup.
+        if !is_large && base_source.len() > SIZE_CAP {
+            let mut clamp = mutator::Mutator::new(&mut rng);
+            base_source = clamp.mutate_light(&base_source, corpus);
         }
 
         // MV → transpile mutated MV ke SV sebelum evaluasi — KECUALI target
@@ -871,7 +888,7 @@ fn run_single(cfg: FuzzConfig) -> FuzzReport {
             }
         }
 
-        if (i + 1) % 500 == 0 {
+        if (i + 1) % progress_every == 0 {
             // Simpan ledger berkala: progres seed tidak hilang bila kampanye
             // dimatikan di tengah.
             let _ = ledger.save();
@@ -884,7 +901,7 @@ fn run_single(cfg: FuzzConfig) -> FuzzReport {
             );
         }
     }
-    if cfg.cases >= 500 {
+    if cfg.cases >= progress_every {
         eprintln!();
     }
     if let Err(e) = ledger.save() {

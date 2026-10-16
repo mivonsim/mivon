@@ -355,6 +355,10 @@ pub fn workspace_root() -> PathBuf {
         .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
 }
 
+/// Cap hasil inlining include: di atas ini berhenti me-resolve (baris
+/// berikutnya disalin apa adanya) — cegah blowup rantai include project.
+const INLINE_CAP_BYTES: usize = 8 * 1024 * 1024;
+
 /// Inline recursive `` `include "x.svh" `` dengan pencarian relatif terhadap
 /// file + ancestor. Depth guard 8. Baris include digantikan isi file include.
 fn resolve_includes(src: &str, file: &Path, depth: usize) -> String {
@@ -362,8 +366,13 @@ fn resolve_includes(src: &str, file: &Path, depth: usize) -> String {
         return src.to_string();
     }
     let base_dir = file.parent().unwrap_or(Path::new("."));
-    let mut out = String::with_capacity(src.len());
+    let mut out = String::with_capacity(src.len().min(4 * 1024 * 1024));
     for line in src.lines() {
+        if out.len() > INLINE_CAP_BYTES {
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        }
         let t = line.trim_start();
         if let Some(rest) = t.strip_prefix("`include") {
             if let Some(path) = extract_include_path(rest) {

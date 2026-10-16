@@ -29,11 +29,24 @@ pub struct DepsIndex {
     pub interfaces: HashMap<String, PathBuf>,
 }
 
+/// Baca hanya awalan file untuk index (deklarasi top-level ada di kepala;
+/// file project real besar tak perlu dibaca penuh → hemat I/O + memori).
+const INDEX_HEAD_BYTES: usize = 64 * 1024;
+
+fn read_head(path: &Path, max: usize) -> Option<String> {
+    use std::io::Read as _;
+    let mut f = std::fs::File::open(path).ok()?;
+    let mut buf = vec![0u8; max];
+    let n = f.read(&mut buf).ok()?;
+    buf.truncate(n);
+    Some(String::from_utf8_lossy(&buf).into_owned())
+}
+
 /// Ekstrak semua nama deklarasi top-level dari satu file (line-scan ringan:
 /// `package X;` / `module X` / `interface X` pada awal baris). Bukan parser
 /// penuh — cukup akurat utk index dependency.
 pub fn index_file(path: &Path, idx: &mut DepsIndex) {
-    let Ok(content) = std::fs::read_to_string(path) else {
+    let Some(content) = read_head(path, INDEX_HEAD_BYTES) else {
         return;
     };
     let mut in_comment = false;
@@ -167,10 +180,14 @@ fn has_module_or_interface(src: &str) -> bool {
     false
 }
 
+/// Batas hasil perakitan dependensi: di atas ini kembalikan source mentah
+/// (rantai include/instance project besar bisa meledak → swap-thrash).
+pub const MAX_RESOLVED_BYTES: usize = 8 * 1024 * 1024;
+
 /// Resolve dependensi seed secara rekursif (import prepend + instance append
 /// + ensure top module). Depth guard mencegah siklus.
 pub fn resolve(src: &str, idx: &DepsIndex, depth: usize) -> String {
-    if depth > 8 {
+    if depth > 8 || src.len() > MAX_RESOLVED_BYTES {
         return src.to_string();
     }
 
@@ -207,6 +224,11 @@ pub fn resolve(src: &str, idx: &DepsIndex, depth: usize) -> String {
     }
 
     let mut out = String::new();
+    if prefix.len() + src.len() + suffix.len() > MAX_RESOLVED_BYTES {
+        // Rakitan melebihi batas → pakai source asli (tanpa resolve) —
+        // hindari blowup memori dari fan-out deps project besar.
+        return src.to_string();
+    }
     if !prefix.is_empty() {
         out.push_str(&prefix);
         out.push('\n');

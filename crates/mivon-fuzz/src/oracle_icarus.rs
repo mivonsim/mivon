@@ -290,8 +290,9 @@ fn run_iverilog(source: &str, timeout_ms: u64) -> (Option<i32>, String, String, 
     let _ = std::fs::remove_file(&sv);
     // `degraded`: iverilog "sorry:" (unsupported) tapi compile diteruskan —
     // sim reference mungkin menyimpang; hanya gugurkan vonis MISMATCH
-    // (kesepakatan tetap sah), bukan Match.
-    let mut degraded = false;
+    // (kesepakatan tetap sah), bukan Match. Deferred init: semua arm match
+    // selain Exited(0) return lebih dulu.
+    let degraded;
     match c_run {
         // Compile GAGAL (exit != 0) → reference memang tak bisa pakai.
         RefRun::Exited(0) => {

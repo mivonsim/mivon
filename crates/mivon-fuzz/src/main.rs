@@ -601,8 +601,17 @@ fn verify_mutated(cases: usize, seed: u64, timeout_ms: u64) -> i32 {
                 let preview: Vec<&str> = r.detail.lines().take(5).collect();
                 eprintln!("  [MISMATCH] #{}: {}", i, preview.join("\n    "));
                 let _ = std::fs::create_dir_all(mivon_fuzz::bugs_dir());
-                let path = mivon_fuzz::bugs_dir().join(format!("verify_bad_{:04}.sv", i));
-                let _ = std::fs::write(&path, &source);
+                let sv_path = mivon_fuzz::bugs_dir().join(format!("verify_bad_{:04}.sv", i));
+                let _ = std::fs::write(&sv_path, &source);
+                // Metadata .txt wajib: tanpa ini `regress` men-skip artefak
+                // ("no metadata") → temuan verify tak pernah jadi test.
+                let detail = r.detail.lines().next().unwrap_or("");
+                let _ = std::fs::write(
+                    sv_path.with_extension("txt"),
+                    format!(
+                        "oracle: O5-icarus\ncategory: differential\ntarget: sim\nsignature: sim|O5-icarus|differential|{detail}|\ndetail: {detail}\niter: {i}\n",
+                    ),
+                );
             }
             mivon_fuzz::oracle_icarus::Verdict::RefUnavailable => {
                 n_ref_na += 1;
@@ -624,8 +633,20 @@ fn verify_mutated(cases: usize, seed: u64, timeout_ms: u64) -> i32 {
                             r.detail.lines().next().unwrap_or("")
                         );
                         let _ = std::fs::create_dir_all(mivon_fuzz::bugs_dir());
-                        let path = mivon_fuzz::bugs_dir().join(format!("verify_bug_{:04}.sv", i));
-                        let _ = std::fs::write(&path, &source);
+                        let sv_path =
+                            mivon_fuzz::bugs_dir().join(format!("verify_bug_{:04}.sv", i));
+                        let _ = std::fs::write(&sv_path, &source);
+                        // Metadata .txt (lihat catatan verify_bad) — kategori
+                        // asli Panic/Abort/Hang tersimpan apa adanya.
+                        let detail = r.detail.lines().next().unwrap_or("");
+                        let _ = std::fs::write(
+                            sv_path.with_extension("txt"),
+                            format!(
+                                "oracle: O1-no-crash\ncategory: {}\ntarget: sim\nsignature: sim|O1-no-crash|{}|{detail}|\ndetail: {detail}\niter: {i}\n",
+                                r.category.label(),
+                                r.category.label(),
+                            ),
+                        );
                     }
                     _ => {
                         n_clean += 1;
@@ -686,19 +707,59 @@ fn cmd_regress(args: &[String]) -> i32 {
     }
 
     let entries = mivon_fuzz::regression::collect_bugs(&dir);
+    // Fixture untuk artefak > EMBED_CAP: salin ke tests/fixtures/ agar tetap
+    // jadi test (`include_str!`) — bukan di-skip sebagai komentar.
+    let fixtures = mivon_fuzz::corpus::workspace_root().join("crates/mivon-fuzz/tests/fixtures");
+    let mut n_fixture = 0usize;
+    // Nama fixture content-addressed: sumber identik (artefak dup dari
+    // kampanye berbeda) hanya ditulis SEKALI — hemat ruang repo. Cap 16MB:
+    // artefak lebih besar (mis. blowup pre-clamp) tak di-embed — butuh
+    // minimize manual dulu supaya repo tidak membengkak ratusan MB.
+    const FIXTURE_MAX_BYTES: usize = 16 * 1024 * 1024;
+    let mut written: Vec<u64> = Vec::new();
+    for e in entries
+        .iter()
+        .filter(|e| e.skipped && e.skip_reason.starts_with("source "))
+    {
+        if e.source.len() > FIXTURE_MAX_BYTES {
+            continue;
+        }
+        let fp = mivon_fuzz::regression::content_fingerprint(&e.source);
+        if written.contains(&fp) {
+            continue;
+        }
+        let _ = std::fs::create_dir_all(&fixtures);
+        if std::fs::write(fixtures.join(mivon_fuzz::regression::fixture_name(&e.source)), &e.source)
+            .is_ok()
+        {
+            written.push(fp);
+            n_fixture += 1;
+        }
+    }
     let active = entries.iter().filter(|e| !e.skipped).count();
-    let skipped = entries.len() - active;
-    let code = mivon_fuzz::regression::emit_rust_tests(&entries);
+    // Skip sejati = tanpa metadata; entri ukuran-besar tertangani fixture.
+    let sized = entries
+        .iter()
+        .filter(|e| e.skipped && e.skip_reason.starts_with("source "))
+        .count();
+    let skipped = entries.len() - active - sized;
+    let code = mivon_fuzz::regression::emit_rust_tests(&entries, &fixtures);
 
     match std::fs::write(&out, &code) {
         Ok(()) => {
             eprintln!(
-                "regress: {} entri ({active} aktif, {skipped} skip) -> {}",
+                "regress: {} entri ({active} aktif, {n_fixture} fixture besar, {skipped} skip) -> {}",
                 entries.len(),
                 out
             );
-            // Statistik singkat ke stdout (machine-friendly).
-            println!("REGRESS: entries={} active={} skipped={}", entries.len(), active, skipped);
+            // Statistik machine-friendly.
+            println!(
+                "REGRESS: entries={} active={} fixture={} skipped={}",
+                entries.len(),
+                active,
+                n_fixture,
+                skipped
+            );
             0
         }
         Err(e) => {
