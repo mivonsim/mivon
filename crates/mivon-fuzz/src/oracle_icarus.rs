@@ -473,6 +473,27 @@ pub fn inject_auto_markers(source: &str) -> Option<String> {
 }
 
 /// Differential reference vs Icarus: jawab "hasil sim mivon CORRECT (== iverilog)?".
+/// Normalisasi default timescale: bila belum ada directive `timescale
+/// SEBELUM deklarasi module/interface/package pertama, prepend
+/// `` `timescale 1ns/1ps ``. Modul tanpa directive memakai default tool —
+/// iverilog default (1s/1s) vs mivon default berbeda → mismatch PALSU
+/// (verify_bad_0011: `#5` DUT efektif tak pernah berjalan di iverilog).
+fn normalize_timescale(source: &str) -> std::borrow::Cow<'_, str> {
+    for line in source.lines() {
+        let t = line.trim_start();
+        if t.starts_with("`timescale") {
+            return std::borrow::Cow::Borrowed(source);
+        }
+        if t.starts_with("module") || t.starts_with("interface") || t.starts_with("package") {
+            break;
+        }
+    }
+    let mut out = String::with_capacity(source.len() + 24);
+    out.push_str("`timescale 1ns/1ps\n");
+    out.push_str(source);
+    std::borrow::Cow::Owned(out)
+}
+
 pub fn evaluate_icarus(source: &str, timeout_ms: u64) -> IcarusResult {
     if !iverilog_available() {
         return IcarusResult {
@@ -482,6 +503,12 @@ pub fn evaluate_icarus(source: &str, timeout_ms: u64) -> IcarusResult {
             detail: "iverilog tidak terinstali — reference icarus unavailable".to_string(),
         };
     }
+
+    // Normalisasi default timescale (lihat normalize_timescale) — hilangkan
+    // mismatch palsu kelas verify_bad_0011 (DUT tanpa directive: default
+    // 1s/1s iverilog vs default mivon).
+    let normalized = normalize_timescale(source);
+    let source = normalized.as_ref();
 
     // Injeksi marker otomatis di SATU titik: semua pemanggil (verify seed-pair,
     // verify-mutated, oracle sim) dapat differential bermakna atas source tanpa
@@ -616,6 +643,30 @@ fn classify_markers(a: &[String], b: &[String]) -> Verdict {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Normalisasi timescale: modul tanpa directive sebelum module pertama
+    /// mendapat prepend `timescale 1ns/1ps`; yang sudah punya tidak diubah.
+    #[test]
+    fn timescale_normalized_when_missing_before_first_module() {
+        let with = "`timescale 1ps/1ps\nmodule m; endmodule\n";
+        assert!(
+            matches!(normalize_timescale(with), std::borrow::Cow::Borrowed(_)),
+            "sudah ada directive = tidak diubah"
+        );
+        let without = "// c\nmodule m;\n  initial #5;\nendmodule\n";
+        let n = normalize_timescale(without);
+        assert!(
+            n.starts_with("`timescale 1ns/1ps\n// c\nmodule m;"),
+            "prepend default: {n}"
+        );
+        // Directive SETELAH module pertama → tetap dinormalisasi (modul
+        // sebelum directive memakai default yang sama utk kedua tool).
+        let after = "module d; endmodule\n`timescale 1ns/1ps\nmodule tb; endmodule\n";
+        assert!(matches!(
+            normalize_timescale(after),
+            std::borrow::Cow::Owned(_)
+        ));
+    }
 
     /// Injeksi marker otomatis: design tanpa ASRT_ jadi terbandingkan —
     /// suntik `initial #1 $display ASRT_AUTO_*` + tetap ter-compile.
