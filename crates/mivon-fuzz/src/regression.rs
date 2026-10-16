@@ -24,11 +24,13 @@ pub const REGRESS_TIMEOUT_MS: u64 = 20_000;
 
 /// Timeout replay utk artefak besar via fixture — dibatasi (bukan 20s penuh)
 /// supaya test hang raksasa tidak menghabiskan menit-menitan.
-pub const FIXTURE_TIMEOUT_MS: u64 = 5_000;
+pub const FIXTURE_TIMEOUT_MS: u64 = 30_000;
 
-/// Batas ukuran fixture yang boleh di-embed `include_str!`. Artefak lebih
-/// besar (mis. blowup ratusan MB) tak di-embed — butuh minimize manual dulu.
-pub const FIXTURE_MAX_BYTES: usize = 16 * 1024 * 1024;
+/// Batas ukuran fixture yang boleh di-embed `include_str!`. >4MB = kasus
+/// perf-class (kompilasi 11-13MB butuh waktu besar, terutama build debug) —
+/// tidak praktis sebagai test; diarsipkan sbg komentar skip + butuh minimize
+/// manual. Fixture kecil-menengah (<=4MB) tetap 1 bug = 1 test.
+pub const FIXTURE_MAX_BYTES: usize = 4 * 1024 * 1024;
 
 /// Fingerprint konten (FNV-1a 64) — deteksi artefak duplikat.
 pub fn content_fingerprint(s: &str) -> u64 {

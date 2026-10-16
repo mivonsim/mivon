@@ -715,7 +715,7 @@ fn cmd_regress(args: &[String]) -> i32 {
     // kampanye berbeda) hanya ditulis SEKALI — hemat ruang repo. Cap 16MB:
     // artefak lebih besar (mis. blowup pre-clamp) tak di-embed — butuh
     // minimize manual dulu supaya repo tidak membengkak ratusan MB.
-    const FIXTURE_MAX_BYTES: usize = 16 * 1024 * 1024;
+    const FIXTURE_MAX_BYTES: usize = 4 * 1024 * 1024;
     let mut written: Vec<u64> = Vec::new();
     for e in entries
         .iter()

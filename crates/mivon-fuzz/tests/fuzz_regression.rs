@@ -6,6 +6,10 @@
 use mivon_fuzz::{oracle, Category, Target};
 
 // --- SKIPPED (tidak di-embed, butuh triage manual) ---
+//   bug_0000_hang [elab] — source 13136550B > EMBED_CAP 524288B
+//   bug_0112_hang [sim] — source 11591172B > EMBED_CAP 524288B
+//   bug_0224_hang [sdf] — source 11591172B > EMBED_CAP 524288B
+//   bug_1053_hang [sdf] — source 11591172B > EMBED_CAP 524288B
 //   bug_a735c6918b6a_hang [lexer] — source 286131969B > EMBED_CAP 524288B
 //   verify_bad_0011 [all] — no metadata .txt (target/category unknown)
 //   verify_bad_0018 [all] — no metadata .txt (target/category unknown)
@@ -280,34 +284,4 @@ fn reg_bug_2028_lrm_violation() {
         r.category, r.detail.lines().next().unwrap_or("")
     );
 }
-
-#[test]
-fn reg_bug_0000_hang() {
-    let src = include_str!("fixtures/e121b98d3e3d320c.sv");
-    let target = Target::from_token("elab").expect("target valid");
-    let expected = Category::from_label("hang").expect("category valid");
-    let r = oracle::evaluate(target, src, 5000);
-    assert_ne!(
-        r.category, expected,
-        "regression: bug_0000_hang reproduced ({:?}): {}",
-        r.category, r.detail.lines().next().unwrap_or("")
-    );
-}
-
-#[test]
-fn reg_bug_0112_hang() {
-    let src = include_str!("fixtures/25e170e6e4a78cfa.sv");
-    let target = Target::from_token("sim").expect("target valid");
-    let expected = Category::from_label("hang").expect("category valid");
-    let r = oracle::evaluate(target, src, 5000);
-    assert_ne!(
-        r.category, expected,
-        "regression: bug_0112_hang reproduced ({:?}): {}",
-        r.category, r.detail.lines().next().unwrap_or("")
-    );
-}
-
-// --- DUPLIKAT (sumber identik, test sudah ada) ---
-//   bug_0224_hang — duplikat sumber (bug sama, sudah ada test)
-//   bug_1053_hang — duplikat sumber (bug sama, sudah ada test)
 

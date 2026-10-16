@@ -1044,7 +1044,7 @@ pub(crate) fn scan_hidden_diags(output: &str) -> Option<(Category, String)> {
     for line in output.lines() {
         let lower = line.to_lowercase();
         for p in STRONG {
-            if lower.contains(p) {
+            if contains_word(&lower, p) {
                 return Some((
                     Category::HiddenBug,
                     format!(
@@ -1056,7 +1056,7 @@ pub(crate) fn scan_hidden_diags(output: &str) -> Option<(Category, String)> {
         }
         if degraded.is_none() {
             for p in WEAK {
-                if lower.contains(p) {
+                if contains_word(&lower, p) {
                     degraded = Some(format!("degradasi diam — pola '{p}': {}", line.trim()));
                     break;
                 }
@@ -1064,6 +1064,31 @@ pub(crate) fn scan_hidden_diags(output: &str) -> Option<(Category, String)> {
         }
     }
     degraded.map(|d| (Category::Degraded, d))
+}
+
+/// Pencarian pola dengan WORD BOUNDARY (batas alfanumerik/`_`): pola
+/// "corrupt" TIDAK boleh cocok di nama sinyal `..._corrupt` (temuan 0127:
+/// `masterNodeOut_d_bits_corrupt: 1 transitions` salah jadi HiddenBug).
+fn contains_word(lower: &str, pat: &str) -> bool {
+    let bytes = lower.as_bytes();
+    let is_word = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    let need_before = pat.as_bytes().first().map(|b| is_word(*b)).unwrap_or(false);
+    // Sufiks `[` sengaja bebas batas: pola prefix spt `error[wr` (severity
+    // terbalik) memang diikuti kode (`error[WR0102`).
+    let need_after = pat.as_bytes().last().map(|b| is_word(*b)).unwrap_or(false)
+        && !pat.contains('[');
+    let mut start = 0usize;
+    while let Some(pos) = lower[start..].find(pat) {
+        let abs = start + pos;
+        let before_ok = !need_before || abs == 0 || !is_word(bytes[abs - 1]);
+        let after = abs + pat.len();
+        let after_ok = !need_after || after >= bytes.len() || !is_word(bytes[after]);
+        if before_ok && after_ok {
+            return true;
+        }
+        start = abs + 1;
+    }
+    false
 }
 
 /// Subprocess selesai TAPI melewati ≥1 perpanjangan deadline progresif
@@ -2808,6 +2833,18 @@ mod scan_tests {
     fn scan_strong_wins_over_weak() {
         let r = scan_hidden_diags("fallback line\ninternal error: boom").expect("ada");
         assert_eq!(r.0, Category::HiddenBug);
+    }
+
+    /// REGRESI 0127: pola `corrupt` TIDAK boleh cocok di NAMA SINYAL
+    /// (word-boundary) — dulu `masterNodeOut_d_bits_corrupt: 1 transitions`
+    /// salah jadi HiddenBug (false positive).
+    #[test]
+    fn scan_ignores_corrupt_in_signal_name() {
+        assert!(
+            scan_hidden_diags("masterNodeOut_d_bits_corrupt: 1 transitions").is_none(),
+            "nama sinyal ber-'_corrupt' bukan bukti corrupt"
+        );
+        assert!(scan_hidden_diags("state corrupt after commit").is_some());
     }
 
     /// REGRESI dedup (triage tahap 2): `to_u64` membutakan X/Z + potong
