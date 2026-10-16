@@ -138,7 +138,7 @@ impl<'r> Mutator<'r> {
         if source.is_empty() {
             return String::new();
         }
-        match self.rng.below(22) {
+        match self.rng.below(26) {
             0 => self.splice_from_corpus(source, corpus),
             1 => self.replace_keyword(source),
             2 => self.delete_chunk(source),
@@ -165,6 +165,11 @@ impl<'r> Mutator<'r> {
             //    0586): initializer deklarasi + seleksi bit/range/part ──
             19 => self.inject_decl_init(source),
             20 => self.inject_bitselect(source),
+            // ── Area baru (tahap perluasan): concat/signed/index/terminasi ──
+            21 => self.inject_concat(source),
+            22 => self.toggle_signed(source),
+            23 => self.index_oob(source),
+            24 => self.inject_initial_finish(source),
             _ => source.to_string(), // no-op
         }
     }
@@ -780,6 +785,105 @@ impl<'r> Mutator<'r> {
         let ts = self.rng.pick(&["`timescale 1ns/1ps\n", "`timescale 1ps/1ps\n"]);
         format!("{ts}{source}")
     }
+
+    /// Bungkus RHS assegna bersih dgn concat `{...}` — stress resolusi
+    /// lebar/tipe pada konteks concatenation (LRM §11.4.12).
+    fn inject_concat(&mut self, source: &str) -> String {
+        let mut out = String::new();
+        let mut done = false;
+        for line in source.lines() {
+            let t = line.trim_start();
+            if !done && t.starts_with("assign") {
+                if let Some(eq) = t.find('=') {
+                    let rhs = t[eq + 1..].trim_end_matches(';').trim();
+                    if !rhs.is_empty() && !rhs.contains('{') {
+                        let lhs = t["assign".len()..eq].trim();
+                        let indent: String = line
+                            .chars()
+                            .take_while(|c| *c == ' ' || *c == '\t')
+                            .collect();
+                        out.push_str(&format!("{indent}assign {lhs} = {{{rhs}}};\n"));
+                        done = true;
+                        continue;
+                    }
+                }
+            }
+            out.push_str(line);
+            out.push('\n');
+        }
+        if done {
+            out
+        } else {
+            source.to_string()
+        }
+    }
+
+    /// Tambah `signed` pada satu deklarasi vektor (sign/width resolution
+    /// stress: `logic [7:0]` → `logic signed [7:0]`).
+    fn toggle_signed(&mut self, source: &str) -> String {
+        let kws = ["logic", "wire", "reg", "bit"];
+        let mut out = String::new();
+        let mut done = false;
+        for line in source.lines() {
+            let t = line.trim_start();
+            if !done && !t.contains("signed") {
+                if let Some(kw) = kws.iter().find(|k| kw_at(t, k)) {
+                    if t[kw.len()..].trim_start().starts_with('[') {
+                        let indent_len = line.len() - t.len();
+                        let insert_at = indent_len + kw.len();
+                        let mut l = line.to_string();
+                        l.insert_str(insert_at, " signed");
+                        out.push_str(&l);
+                        out.push('\n');
+                        done = true;
+                        continue;
+                    }
+                }
+            }
+            out.push_str(line);
+            out.push('\n');
+        }
+        if done {
+            out
+        } else {
+            source.to_string()
+        }
+    }
+
+    /// Naikkan satu indeks statis `x[7]` → `x[8]` (out-of-bounds/partial
+    /// select stress; hanya angka polos, range `[a:b]` dilewati).
+    fn index_oob(&mut self, source: &str) -> String {
+        let chars: Vec<char> = source.chars().collect();
+        let mut i = 0usize;
+        while i + 2 < chars.len() {
+            if chars[i] == '[' && chars[i + 1].is_ascii_digit() {
+                let mut j = i + 1;
+                while j < chars.len() && chars[j].is_ascii_digit() {
+                    j += 1;
+                }
+                if j < chars.len() && chars[j] == ']' {
+                    let n: String = chars[i + 1..j].iter().collect();
+                    if let Ok(v) = n.parse::<usize>() {
+                        let mut out: String = chars[..i + 1].iter().collect();
+                        out.push_str(&(v.saturating_add(1)).to_string());
+                        out.extend(&chars[j..]);
+                        return out;
+                    }
+                }
+            }
+            i += 1;
+        }
+        source.to_string()
+    }
+
+    /// Tambah `initial #100 $finish;` bila source belum punya `$finish` —
+    /// terminasi deterministik (cegah tb panjang membakar budget watchdog).
+    fn inject_initial_finish(&mut self, source: &str) -> String {
+        if source.contains("$finish") {
+            return source.to_string();
+        }
+        format!("{source}\ninitial #100 $finish;\n")
+    }
 }
 
 /// Cek keyword `kw` di awal teks `t` dengan word-boundary setelahnya
@@ -901,6 +1005,23 @@ mod tests {
         assert_eq!(
             m3.inject_decl_init("module m; endmodule"),
             "module m; endmodule"
+        );
+
+        // Mutasi baru (tahap perluasan): concat/signed/index/finish.
+        let base =
+            "module m;\n  logic [7:0] a;\n  logic [3:0] b;\n  assign a = b;\nendmodule\n";
+        let mut rng4 = crate::Rng::new(7);
+        let mut m4 = Mutator::new(&mut rng4);
+        assert!(m4.inject_concat(base).contains("assign a = {b};"));
+        assert!(m4.toggle_signed(base).contains("logic signed [7:0]"));
+        let idx = "module m;\n  logic [1:0] y;\n  assign y = a[2];\nendmodule\n";
+        assert!(m4.index_oob(idx).contains("[3]"));
+        let fin = m4.inject_initial_finish(base);
+        assert!(fin.contains("initial #100 $finish;"));
+        assert_eq!(
+            m4.inject_initial_finish(&fin),
+            fin,
+            "sudah ada $finish = no-op"
         );
     }
 
