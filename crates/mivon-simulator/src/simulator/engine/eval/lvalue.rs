@@ -604,9 +604,21 @@ impl SimulationEngine {
             // dispatch ulang ke write penuh (const check, race, resize, dll).
             IrLValue::HierRef(name) => {
                 let Some(sig_id) = self.find_signal(name.as_str()) else {
-                    return Err(self.diag_error(
+                    let (mut l, c) = self.cur_src_pos();
+                    if l == 0 {
+                        let leaf = name
+                            .as_str()
+                            .rsplit('.')
+                            .next()
+                            .unwrap_or(name.as_str())
+                            .to_string();
+                        l = self.find_source_line_containing(&leaf);
+                    }
+                    return Err(self.diag_error_at(
                         mivon_core::diagnostics::DiagCode::UndefinedSignal,
                         format!("hierarchical signal '{}' not found for write", name),
+                        l,
+                        c,
                     ));
                 };
                 self.write_lvalue(&IrLValue::Signal(sig_id, 0), val, is_blocking)?;
@@ -617,9 +629,21 @@ impl SimulationEngine {
             // elem_width; sinyal flat → offset = index (1 bit).
             IrLValue::HierRefIndex { name, index } => {
                 let Some(sig_id) = self.find_signal(name.as_str()) else {
-                    return Err(self.diag_error(
+                    let (mut l, c) = self.cur_src_pos();
+                    if l == 0 {
+                        let leaf = name
+                            .as_str()
+                            .rsplit('.')
+                            .next()
+                            .unwrap_or(name.as_str())
+                            .to_string();
+                        l = self.find_source_line_containing(&leaf);
+                    }
+                    return Err(self.diag_error_at(
                         mivon_core::diagnostics::DiagCode::UndefinedSignal,
                         format!("hierarchical signal '{}' not found for write", name),
+                        l,
+                        c,
                     ));
                 };
                 let idx_val = self.evaluate_expr(index)?;
