@@ -21,6 +21,7 @@
 **/.mdme_corpus
 **/.codegraph
 **/.mivon-fuzz-bugs
+**/.mivon-fuzz-state
 /obj_dir
 # Waveform artifacts (FST dari simulasi/test)
 *.fst

@@ -14,6 +14,7 @@ pub mod corpus;
 pub mod deps;
 pub mod directed;
 pub mod judge;
+pub mod ledger;
 pub mod minimize;
 pub mod mutator;
 pub mod oracle;
@@ -618,10 +619,52 @@ pub(crate) fn build_seed_plan(candidates: &[usize], cases: usize, rng: &mut Rng)
     }
 }
 
+/// Rencana kampanye sadar-ledger: seed BELUM pernah dievaluasi didahulukan.
+///
+/// - `unseen` dijamah lebih dulu (bila `cases < unseen.len()`, stride antar
+///   unseen + rotasi → kampanye berulang mengakumulasi cakupan sampai habis).
+/// - Sisa budget baru diisi dari `seen` (stride) — kampanye tetap penuh saat
+///   seluruh seed baru sudah dijamah.
+///
+/// Fungsi murni (RNG hanya untuk bagian acak) — teruji deterministik.
+pub(crate) fn build_prioritized_plan(
+    unseen: &[usize],
+    seen: &[usize],
+    cases: usize,
+    rng: &mut Rng,
+) -> Vec<usize> {
+    if unseen.is_empty() {
+        // Semua seed sudah pernah dijamah → pakai rencana biasa atas seen.
+        return build_seed_plan(seen, cases, rng);
+    }
+    if cases <= unseen.len() {
+        // Budget belum cukup menjamah semua unseen → stride antar unseen
+        // (rotasi titik awal; lintas kampanye mengakumulasi cakupan).
+        return build_seed_plan(unseen, cases, rng);
+    }
+    // Seluruh unseen dijamah SEKALI (terurut), sisa budget diisi dari seed
+    // yang sudah pernah — memperluas cakupan, bukan mengulang unseen.
+    let rest = cases - unseen.len();
+    let mut plan: Vec<usize> = unseen.to_vec();
+    let mut fill = build_seed_plan(seen, rest, rng);
+    if fill.len() < rest {
+        // `seen` kosong/habis (mis. kampanye pertama, corpus < cases) →
+        // ulang dari SEMUA kandidat supaya budget kampanye tetap penuh.
+        let all: Vec<usize> = unseen.iter().chain(seen.iter()).copied().collect();
+        fill.extend(build_seed_plan(&all, rest - fill.len(), rng));
+    }
+    plan.extend(fill);
+    plan
+}
+
 fn run_single(cfg: FuzzConfig) -> FuzzReport {
     use std::collections::BTreeMap;
 
     let corpus = corpus::Corpus::load(cfg.corpus_dir.as_deref());
+    // Ledger seed ter-evaluasi (persisten lintas kampanye): kampanye
+    // memprioritaskan seed yang BELUM pernah dijamah — target "semua seed
+    // dijalankan tanpa ada yang di-skip" tercapai secara akumulatif.
+    let mut ledger = crate::ledger::SeedLedger::load();
     if corpus.is_empty() {
         eprintln!(
             "WARNING: corpus kosong di {:?} — tidak ada seed nyata",
@@ -645,11 +688,10 @@ fn run_single(cfg: FuzzConfig) -> FuzzReport {
         );
     }
 
-    // Seed-coverage: bila kasus >= kandidat, tiap seed dijamah minimal
-    // sekali (terurut di awal, sisanya acak); bila kandidat > kasus, budget
-    // disebar merata (stride) ke SELURUH kandidat agar proyek besar di ujung
-    // daftar tetap dijamah ("all seeds without skip").
-    let seed_plan: Vec<usize> = {
+    // Seed-coverage + LEDGER: seed yang belum pernah dievaluasi (lintas
+    // kampanye) didahulukan; sisa budget diisi dari seed yang sudah pernah.
+    // Bila kasus >= kandidat, tiap seed tetap dijamah minimal sekali.
+    let (unseen, seen): (Vec<usize>, Vec<usize>) = {
         let candidates: Vec<usize> = if cfg.target == Target::Mv {
             (0..corpus.len())
                 .filter(|&i| {
@@ -662,8 +704,24 @@ fn run_single(cfg: FuzzConfig) -> FuzzReport {
         } else {
             (0..corpus.len()).collect()
         };
-        build_seed_plan(&candidates, cfg.cases, &mut rng)
+        let mut unseen = Vec::new();
+        let mut seen = Vec::new();
+        for &i in &candidates {
+            let key = corpus.seed_at(i).map(crate::ledger::seed_key);
+            match key {
+                Some(k) if ledger.is_seen(&k) => seen.push(i),
+                _ => unseen.push(i),
+            }
+        }
+        eprintln!(
+            "  (ledger: {} unseen, {} seen dari {} kandidat seed)",
+            unseen.len(),
+            seen.len(),
+            candidates.len()
+        );
+        (unseen, seen)
     };
+    let seed_plan = build_prioritized_plan(&unseen, &seen, cfg.cases, &mut rng);
 
     for i in 0..cfg.cases {
         // Ambil seed nyata dari corpus via plan (100% — tanpa template
@@ -676,6 +734,8 @@ fn run_single(cfg: FuzzConfig) -> FuzzReport {
             None => break,
         };
         let is_mv = base_seed.is_mv;
+        // Kunci ledger seed ini (path|size|mtime) — ditandai setelah evaluasi.
+        let ledger_key = crate::ledger::seed_key(&base_seed.path);
 
         // Siapkan base source:
         //   .sv + tb_pair → concat modul+tb
@@ -759,6 +819,9 @@ fn run_single(cfg: FuzzConfig) -> FuzzReport {
         };
 
         let mut result = oracle::evaluate(cfg.target, &source, eval_timeout);
+        // Ledger: seed ini sudah dijamah kampanye (mark SETELAH evaluasi —
+        // seed yang crash di tengah tetap dianggap belum selesai).
+        ledger.mark(&ledger_key);
         // O6 utk jalur IN-PROCESS (lexer/parser/elab/fmt/preproc/mv): tak ada
         // subprocess stdout utk di-scan — scan `detail` (pesan error/ok)
         // utk pola KUAT HiddenBug (mis. pesan ber-"internal error") — dulu
@@ -809,6 +872,9 @@ fn run_single(cfg: FuzzConfig) -> FuzzReport {
         }
 
         if (i + 1) % 500 == 0 {
+            // Simpan ledger berkala: progres seed tidak hilang bila kampanye
+            // dimatikan di tengah.
+            let _ = ledger.save();
             eprint!(
                 "\r  [{}/{}] bugs: {} large: {}",
                 i + 1,
@@ -821,6 +887,14 @@ fn run_single(cfg: FuzzConfig) -> FuzzReport {
     if cfg.cases >= 500 {
         eprintln!();
     }
+    if let Err(e) = ledger.save() {
+        eprintln!("  (ledger: gagal simpan: {e})");
+    }
+    eprintln!(
+        "  (ledger: {} kunci total, +{} baru kampanye ini)",
+        ledger.len(),
+        ledger.new_marks()
+    );
 
     let summary = TargetSummary {
         target: cfg.target,
@@ -844,21 +918,22 @@ fn save_crash(result: &CaseResult, iter: usize) {
 
     let seq = next_crash_seq();
     let kind = result.category.label();
-    let filename = format!("bug_{:04}_{}.sv", seq, kind);
-    let path = dir.join(&filename);
+    let stem = artifact_stem(&result.signature(), kind);
+    let path = dir.join(format!("{stem}.sv"));
     let _ = std::fs::write(&path, &result.source);
 
     // Metadata .txt — `target:` ditambahkan utk replay/auto-verify lanjutan
     // (dulu tak ada → reclassify hang butuh tebak target dari signature).
-    let meta_path = dir.join(format!("bug_{:04}_{}.txt", seq, kind));
+    let meta_path = dir.join(format!("{stem}.txt"));
     let meta = format!(
-        "oracle: {}\ncategory: {}\ntarget: {}\nsignature: {}\ndetail: {}\niter: {}\n",
+        "oracle: {}\ncategory: {}\ntarget: {}\nsignature: {}\ndetail: {}\niter: {}\nseq: {}\n",
         result.oracle,
         result.category.label(),
         result.target.as_str(),
         result.signature(),
         result.detail.lines().next().unwrap_or(""),
         iter,
+        seq,
     );
     let _ = std::fs::write(&meta_path, meta);
 
@@ -871,6 +946,25 @@ fn save_crash(result: &CaseResult, iter: usize) {
         result.detail.lines().next().unwrap_or(""),
         iter,
     );
+}
+
+/// Hash FNV-1a 64-bit (murni, tanpa dependency) — nama artefak bug.
+fn fnv1a(s: &str) -> u64 {
+    let mut h: u64 = 0xCBF29CE484222325;
+    for b in s.bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x100000001B3);
+    }
+    h
+}
+
+/// Nama dasar (stem) artefak bug: hash signature + kategori.
+///
+/// Stabil untuk temuan identik (re-find = file sama, tidak menumpuk) dan
+/// unik antar temuan berbeda. Menggantikan `bug_{seq}_{kind}` lama yang
+/// seq-nya reset tiap proses → artefak bisa tertimpa senyap.
+fn artifact_stem(signature: &str, kind: &str) -> String {
+    format!("bug_{:012x}_{}", fnv1a(signature) & 0xFFFF_FFFF_FFFF, kind)
 }
 
 /// Escape string → aman utk string JSON (quote/backslash/control char).
@@ -1076,5 +1170,59 @@ mod bugdb_tests {
             plan.iter().any(|&i| i >= 50),
             "harus menyentuh seed di ujung daftar: {plan:?}"
         );
+    }
+
+    /// Rencana sadar-ledger: seed BELUM dievaluasi didahulukan; sisa budget
+    /// diisi seed yang sudah pernah — tidak ada seed baru ter-skip saat
+    /// masih ada unseen.
+    #[test]
+    fn prioritized_plan_puts_unseen_first() {
+        let unseen: Vec<usize> = (100..110).collect();
+        let seen: Vec<usize> = (0..90).collect();
+        let plan = build_prioritized_plan(&unseen, &seen, 12, &mut Rng::new(3));
+        assert_eq!(plan.len(), 12);
+        // 10 slot pertama = seluruh unseen (terurut), 2 sisa dari seen.
+        assert_eq!(plan[..10], unseen[..]);
+        assert!(plan[10..].iter().all(|i| seen.contains(i)), "sisa harus dari seen");
+    }
+
+    /// Tanpa ledger (semua unseen) = perilaku lama: tiap kandidat dijamah.
+    #[test]
+    fn prioritized_plan_all_unseen_matches_plain_plan() {
+        let unseen: Vec<usize> = (0..5).collect();
+        let plan = build_prioritized_plan(&unseen, &[], 5, &mut Rng::new(9));
+        assert_eq!(plan, vec![0, 1, 2, 3, 4]);
+    }
+
+    /// Kampanye pertama corpus < cases (seen kosong): budget TETAP penuh —
+    /// sisa slot diisi ulang dari semua kandidat, bukan mengecil.
+    #[test]
+    fn prioritized_plan_keeps_budget_full_on_first_campaign() {
+        let unseen: Vec<usize> = (0..3).collect();
+        let plan = build_prioritized_plan(&unseen, &[], 10, &mut Rng::new(5));
+        assert_eq!(plan.len(), 10, "budget kampanye tak boleh mengecil");
+        assert_eq!(plan[..3], [0, 1, 2], "tiga unseen pertama dijamah");
+        assert!(plan[3..].iter().all(|&i| i < 3));
+    }
+
+    /// Semua sudah terlihat → budget tetap penuh dari `seen`.
+    #[test]
+    fn prioritized_plan_falls_back_to_seen_when_no_unseen() {
+        let seen: Vec<usize> = (0..50).collect();
+        let plan = build_prioritized_plan(&[], &seen, 7, &mut Rng::new(11));
+        assert_eq!(plan.len(), 7);
+        assert!(plan.iter().all(|i| seen.contains(i)));
+    }
+
+    /// Nama artefak bug: stabil untuk signature sama, unik untuk beda.
+    #[test]
+    fn artifact_stem_stable_and_unique() {
+        let a = artifact_stem("sim|O5-differential|differential|first|second", "differential");
+        let b = artifact_stem("sim|O5-differential|differential|first|second", "differential");
+        assert_eq!(a, b, "temuan identik = nama sama (idempoten)");
+        let c = artifact_stem("sim|O5-differential|differential|first|lain", "differential");
+        assert_ne!(a, c, "temuan beda = nama beda");
+        assert!(a.starts_with("bug_") && a.ends_with("_differential"));
+        assert_eq!(a.len(), 4 + 12 + 1 + "differential".len());
     }
 }

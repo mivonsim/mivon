@@ -39,7 +39,7 @@ fn print_help() {
         r#"mivon-fuzz {version} — fuzzer berbasis corpus project nyata (cva6/openc910/opentitan)
 
 USAGE:
-  mivon-fuzz run     [--target <t>] [-c <n>] [--seed <n>] [--timeout <ms>] [--corpus <dir>] [--no-save]
+  mivon-fuzz run     [--target <t>] [-c <n>] [--seed <n>] [--timeout <ms>] [--corpus <dir>] [--no-save] [--no-verify] [--verify-cases <n>] [--verify-seed <n>]
   mivon-fuzz replay  <file.sv> [--target <t>] [--timeout <ms>]
   mivon-fuzz judge   <file.sv> [--timeout <ms>]   # nilai LRM IEEE 1800 (lrm_judge)
   mivon-fuzz triage  <dir>
@@ -96,6 +96,8 @@ fn cmd_run(args: &[String]) -> i32 {
     let (seed_s, rest) = take_flag(&rest, "--seed");
     let (timeout_s, rest) = take_flag(&rest, "--timeout");
     let (corpus_s, rest) = take_flag(&rest, "--corpus");
+    let (verify_cases_s, rest) = take_flag(&rest, "--verify-cases");
+    let (verify_seed_s, rest) = take_flag(&rest, "--verify-seed");
     let no_save = rest.iter().any(|a| a == "--no-save");
     // Auto-verify vs iverilog (differential eksternal) bisa dimatikan:
     // `--no-verify`.
@@ -173,16 +175,37 @@ fn cmd_run(args: &[String]) -> i32 {
     // dijalankan → bug semantik "salah tapi konsisten antar jalur" tak
     // ketahuan — kasus prim_max_tree harus golden manual). 50 kasus mutasi
     // murah; dilewati bila iverilog tak terpasang atau `--no-verify`.
+    //
+    // Seed verify ROTASI tiap kampanye (time-based) — sebelumnya seed tetap
+    // `0x1CA_2026` membuat 50 kasus yang PERSIS SAMA diulang setiap
+    // kampanye, nol eksplorasi baru. Override via `--verify-seed` /
+    // `--verify-cases` (reproducible bila diinginkan).
+    let verify_cases: usize = verify_cases_s
+        .as_deref()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(50);
+    let verify_seed: u64 = verify_seed_s
+        .as_deref()
+        .and_then(parse_u64)
+        .unwrap_or_else(|| {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos() as u64)
+                .unwrap_or(0x1CA_2026)
+        });
     let mut verify_failed = false;
     if no_verify {
         eprintln!("verify: dilewati (--no-verify)");
     } else if !mivon_fuzz::oracle_icarus::iverilog_available() {
         eprintln!("verify: iverilog tak terpasang — differential eksternal dilewati");
     } else {
-        eprintln!("verify otomatis vs iverilog (50 kasus mutasi)...");
+        eprintln!(
+            "verify otomatis vs iverilog ({} kasus mutasi, seed {:#x})...",
+            verify_cases, verify_seed
+        );
         // Budget 20s: compile kasus mutasi besar terukur 4-5s (+sim+icarus)
         // → 8s menghasilkan MIVON-BUG hang PALSU (3-4 per kampanye).
-        verify_failed = verify_mutated(50, 0x1CA_2026, 20000) != 0;
+        verify_failed = verify_mutated(verify_cases, verify_seed, 20000) != 0;
     }
 
     if report.bugs.is_empty() && !verify_failed {
