@@ -182,6 +182,19 @@ pub struct PendingAstEventControl {
     pub iff: Option<mivon_ast::Expr>,
 }
 
+/// `wait (cond)` di jalur AST (task/method UVM): SUSPEND sampai cond benar
+/// (LRM §9.4.3 — wait memblokir, bukan di-skip). Diperiksa tiap delta saat
+/// ada sinyal berubah; resume memakai konteks method (this/locals/method).
+#[derive(Debug, Clone)]
+pub struct PendingAstWait {
+    pub cond: mivon_ast::Expr,
+    pub continuation: Vec<mivon_ast::Stmt>,
+    pub this: Option<ObjId>,
+    pub method: Option<Symbol>,
+    pub locals: Vec<HashMap<Symbol, LogicVec>>,
+    pub base_len: usize,
+}
+
 #[derive(Debug, Clone)]
 pub struct ForkGroup {
     pub(super) remaining: usize,

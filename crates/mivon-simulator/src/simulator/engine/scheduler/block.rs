@@ -1170,6 +1170,11 @@ impl SimulationEngine {
         fork_id: Option<usize>,
     ) -> Result<bool, SimError> {
         for (i, stmt) in stmts.iter().enumerate() {
+            // Propagasi suspensi method call (counter): statement yang
+            // memanggil task memblokir terdeteksi via perubahan counter
+            // → blok BELUM selesai, hentikan eksekusi lanjutan (loop tanpa
+            // delay = hang kelas bug_0029).
+            let suspend_before = self.method_suspend_count;
             // $fatal menghentikan blok seketika (final block tetap jalan
             // setelah $finish/$fatal — hanya flag fatal_hit yang abort).
             if self.fatal_hit {
@@ -1738,8 +1743,29 @@ impl SimulationEngine {
                             self.evaluate_ast_block_with_delay_fork(&stmts[i + 1..], fork_id)?;
                         }
                     } else {
-                        // Condition not met yet — skip
-                        return Ok(true);
+                        // LRM §9.4.3: `wait` MEMBLOKIR sampai cond benar —
+                        // dulu "skip" (lanjut seolah selesai) membuat
+                        // `forever collect_trans()` (wait palsu) berputar
+                        // tanpa delay = HANG (bug_0029). Suspend: daftarkan
+                        // pending AST wait dgn konteks method.
+                        let mut later: Vec<mivon_ast::Stmt> = Vec::new();
+                        if let Some(b) = body {
+                            later.push(*b.clone());
+                        }
+                        later.extend(stmts[i + 1..].iter().cloned());
+                        if let Some(lc) = &self.ast_loop_continuation {
+                            later.extend(lc.iter().cloned());
+                        }
+                        let base_len = self.method_locals.len();
+                        self.pending_ast_waits.push(PendingAstWait {
+                            cond: cond.clone(),
+                            continuation: later,
+                            this: self.current_this,
+                            method: self.current_method,
+                            locals: self.method_locals.clone(),
+                            base_len,
+                        });
+                        return Ok(false);
                     }
                 }
                 mivon_ast::Stmt::WaitFork => {
@@ -2434,6 +2460,10 @@ impl SimulationEngine {
                     // Unhandled statement types in task method context
                 }
             }
+            // Statement ini memanggil task yang suspend? → blok belum selesai.
+            if self.method_suspend_count != suspend_before {
+                return Ok(false);
+            }
         }
         Ok(true)
     }
@@ -2998,6 +3028,18 @@ impl SimulationEngine {
                     let cond_val = self.evaluate_expr(cond)?;
                     if cond_val.to_bool().unwrap_or(false) {
                         self.evaluate_stmt_block(body)?;
+                    } else {
+                        // LRM §9.4.3: wait memblokir sampai cond benar. Dulu
+                        // jatuh-lanjut (loop tanpa delay = hang kelas 0029).
+                        let deps = extract_signal_deps(cond);
+                        if !deps.is_empty() {
+                            let mut later: Vec<IrStmt> = body.clone();
+                            later.extend(stmts[i + 1..].to_vec());
+                            if !later.is_empty() {
+                                self.pending_waits.push((deps, later));
+                            }
+                        }
+                        return Ok(());
                     }
                 }
                 IrStmt::WaitFork => {

@@ -228,6 +228,10 @@ pub struct SimulationEngine {
     pub pending_events: Vec<PendingEventControl>,
     /// Versi AST untuk class method/task UVM (`run_phase` dkk), dengan konteks.
     pub pending_ast_events: Vec<PendingAstEventControl>,
+    /// `wait (cond)` AST yang SUSPEND sampai kondisinya benar (jalur task/
+    /// method UVM) — mencegah `wait` palsu-lanjut yang membuat loop tanpa
+    /// delay berputar (hang 0029).
+    pub pending_ast_waits: Vec<PendingAstWait>,
     pub pending_await_target: Option<ObjId>,
     pub pending_wait_orders: Vec<WaitOrderState>,
     pub loop_continuation: Option<Vec<IrStmt>>,
@@ -244,6 +248,12 @@ pub struct SimulationEngine {
     /// return false) — branch fork yang memanggil task TIDAK boleh decrement di
     /// titik ini; resume (ContinueAstBlock dgn fork_id) yang decrement.
     pub task_suspended: bool,
+    /// Penghitung suspensi task/method AST (naik tiap body task suspend).
+    /// Blok AST membandingkan sebelum/sesudah statement: berubah = statement
+    /// itu memanggil task yang memblokir → blok belum selesai, stop (cegah
+    /// loop tanpa delay = hang kelas bug_0029). Counter (bukan bool) supaya
+    /// tak bocor lintas continuation/resume.
+    pub method_suspend_count: u64,
     pub post_loop_tail: Vec<IrStmt>,
     pub current_time: u64,
     pub fork_groups: Vec<ForkGroup>,

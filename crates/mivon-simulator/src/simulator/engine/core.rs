@@ -99,12 +99,14 @@ impl SimulationEngine {
             pending_waits: Vec::new(),
             pending_events: Vec::new(),
             pending_ast_events: Vec::new(),
+            pending_ast_waits: Vec::new(),
             pending_await_target: None,
             pending_wait_orders: Vec::new(),
             loop_continuation: None,
             ast_loop_continuation: None,
             active_fork_id: None,
             task_suspended: false,
+            method_suspend_count: 0,
             post_loop_tail: Vec::new(),
             current_time: 0,
             fork_groups: Vec::new(),
@@ -1569,6 +1571,14 @@ impl SimulationEngine {
                     activity = true;
                 }
 
+                // Check pending `wait (cond)` AST (task/method UVM)
+                if !self.pending_ast_waits.is_empty()
+                    && !deltas.is_empty()
+                    && self.process_pending_ast_waits(&deltas)?
+                {
+                    activity = true;
+                }
+
                 // Check pending wait_order conditions
                 if !self.pending_wait_orders.is_empty()
                     && !deltas.is_empty()
@@ -1615,6 +1625,7 @@ impl SimulationEngine {
                 let needs_snapshot = !self.pending_events.is_empty()
                     || !self.pending_waits.is_empty()
                     || !self.pending_ast_events.is_empty()
+                    || !self.pending_ast_waits.is_empty()
                     || !self.pending_wait_orders.is_empty();
                 if needs_snapshot {
                     let num_sigs = self.state.signals.len();

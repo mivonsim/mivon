@@ -91,6 +91,10 @@ impl SimulationEngine {
                     if self.active_fork_id.is_some() {
                         self.task_suspended = true;
                     }
+                    // Propagasi suspensi ke pemanggil (counter — blok AST yang
+                    // memanggil method ini berhenti, bukan lanjut buta; hang
+                    // bug_0029).
+                    self.method_suspend_count = self.method_suspend_count.wrapping_add(1);
                     self.current_method = old_method;
                     return Ok(LogicVec::new(0));
                 }

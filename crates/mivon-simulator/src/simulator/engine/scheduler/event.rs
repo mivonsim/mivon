@@ -512,6 +512,61 @@ impl SimulationEngine {
         Ok(matched)
     }
 
+    /// Resume `wait (cond)` AST (task/method UVM) saat kondisinya menjadi
+    /// benar. Dipanggil tiap delta yang punya perubahan sinyal; cond
+    /// dievaluasi ulang penuh dengan konteks method tersimpan.
+    pub(crate) fn process_pending_ast_waits(
+        &mut self,
+        deltas: &[SignalId],
+    ) -> Result<bool, SimError> {
+        if deltas.is_empty() || self.pending_ast_waits.is_empty() {
+            return Ok(false);
+        }
+        let mut matched = false;
+        let mut remaining = Vec::new();
+        let waits = std::mem::take(&mut self.pending_ast_waits);
+        for pw in waits {
+            let saved_this = self.current_this;
+            let saved_method = self.current_method;
+            let saved_locals =
+                std::mem::replace(&mut self.method_locals, pw.locals.clone());
+            self.current_this = pw.this;
+            self.current_method = pw.method;
+            let ok = match self.evaluate_ast_expr(&pw.cond) {
+                Ok(v) => v.to_bool().unwrap_or(false),
+                Err(_) => false,
+            };
+            if !ok {
+                // Belum benar — restore konteks & tetap menunggu.
+                self.method_locals = saved_locals;
+                self.current_this = saved_this;
+                self.current_method = saved_method;
+                remaining.push(pw);
+                continue;
+            }
+            matched = true;
+            let completed =
+                self.evaluate_ast_block_with_delay_fork(&pw.continuation, None)?;
+            // F35: `return` di continuation (illegal SV) menandai
+            // ast_return_pending — clear di sini agar tidak bocor.
+            self.ast_return_pending = false;
+            if completed {
+                let keep = pw
+                    .base_len
+                    .saturating_sub(1)
+                    .min(self.method_locals.len());
+                self.method_locals.truncate(keep);
+                self.current_this = saved_this;
+                self.current_method = saved_method;
+            }
+            // Bila belum completed: task re-suspend — pertahankan locals task.
+        }
+        let newly_pushed = std::mem::take(&mut self.pending_ast_waits);
+        remaining.extend(newly_pushed);
+        self.pending_ast_waits = remaining;
+        Ok(matched)
+    }
+
     pub(crate) fn process_pending_wait_orders(
         &mut self,
         deltas: &[SignalId],
