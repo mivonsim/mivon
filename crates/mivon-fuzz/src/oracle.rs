@@ -517,13 +517,27 @@ fn simulate_in_thread(source: &str, timeout_ms: u64) -> Option<CaseResult> {
             let map2: std::collections::BTreeMap<&str, &mivon_ir::LogicVec> =
                 sigs2.iter().map(|(n, v)| (n.as_str(), v)).collect();
             if map1 != map2 {
+                let mut diffs: Vec<String> = Vec::new();
+                for (n, v1) in &map1 {
+                    match map2.get(n) {
+                        Some(v2) if v2 == v1 => {}
+                        Some(v2) => {
+                            diffs.push(format!("{n}: run1={} run2={}", fmt_sigval(v1), fmt_sigval(v2)));
+                        }
+                        None => diffs.push(format!("{n}: run1={} run2=<missing>", fmt_sigval(v1))),
+                    }
+                    if diffs.len() >= 5 {
+                        break;
+                    }
+                }
                 return mk_r(
                     Category::NonDeterministic,
                     Oracle::O4Determinism,
                     &format!(
-                        "sim non-deterministik: {} != {} signal values (2 run identik)",
+                        "sim non-deterministik: {} != {} signal values (2 run identik)\n  diff: {}",
                         signal_summary(sigs1),
-                        signal_summary(sigs2)
+                        signal_summary(sigs2),
+                        diffs.join(", ")
                     ),
                 );
             }
@@ -637,13 +651,41 @@ fn simulate_in_thread(source: &str, timeout_ms: u64) -> Option<CaseResult> {
                     m_def == m_alt
                 } => {}
             Ok(Ok(signals)) => {
+                let m_def: std::collections::BTreeMap<&str, &mivon_ir::LogicVec> =
+                    sigs_default.iter().map(|(n, v)| (n.as_str(), v)).collect();
+                let m_alt: std::collections::BTreeMap<&str, &mivon_ir::LogicVec> =
+                    signals.iter().map(|(n, v)| (n.as_str(), v)).collect();
+                let mut diffs: Vec<String> = Vec::new();
+                for (n, v_def) in &m_def {
+                    match m_alt.get(n) {
+                        Some(v_alt) if v_alt == v_def => {}
+                        Some(v_alt) => {
+                            diffs.push(format!("{n}: def={} {name}={}", fmt_sigval(v_def), fmt_sigval(v_alt)));
+                        }
+                        None => diffs.push(format!("{n}: def={} {name}=<missing>", fmt_sigval(v_def))),
+                    }
+                    if diffs.len() >= 5 {
+                        break;
+                    }
+                }
+                if diffs.len() < 5 {
+                    for (n, v_alt) in &m_alt {
+                        if !m_def.contains_key(n) {
+                            diffs.push(format!("{n}: def=<missing> {name}={}", fmt_sigval(v_alt)));
+                            if diffs.len() >= 5 {
+                                break;
+                            }
+                        }
+                    }
+                }
                 return mk_r(
                     Category::Differential,
                     Oracle::O5Differential,
                     &format!(
-                        "differential default vs {name}: {} != {}",
+                        "differential default vs {name}: {} != {}\n  diff: {}",
                         signal_summary(&sigs_default),
-                        signal_summary(&signals)
+                        signal_summary(&signals),
+                        diffs.join(", ")
                     ),
                 );
             }
