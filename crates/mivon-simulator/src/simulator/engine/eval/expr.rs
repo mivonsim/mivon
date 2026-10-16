@@ -6,7 +6,7 @@ use crate::simulator::types::*;
 use crate::simulator::util::*;
 use crate::simulator::value::*;
 use mivon_ast::*;
-use mivon_core::diagnostics::DiagCode;
+
 use mivon_core::error::SimError;
 use mivon_core::Symbol;
 use mivon_ir::*;
