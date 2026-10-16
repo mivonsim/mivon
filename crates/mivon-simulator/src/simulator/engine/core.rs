@@ -294,6 +294,22 @@ impl SimulationEngine {
         ctx
     }
 
+    /// Cari baris source pertama yang memuat `needle` (fallback lokasi
+    /// runtime saat ekspresi IR tak membawa posisi). 1-based; 0 = tak ada.
+    pub fn find_source_line_containing(&self, needle: &str) -> usize {
+        if needle.is_empty() {
+            return 0;
+        }
+        if let Some(ref lines) = self.design.source_lines {
+            for (i, l) in lines.iter().enumerate() {
+                if l.contains(needle) {
+                    return i + 1;
+                }
+            }
+        }
+        0
+    }
+
     /// Catat posisi source terakhir yang diketahui (dari evaluasi ekspresi
     /// berposisi). Diabaikan bila line==0 (posisi tidak tersedia).
     pub fn set_cur_src_pos(&self, line: usize, col: usize) {

@@ -2465,9 +2465,25 @@ impl SimulationEngine {
                     sanitize_for_2state(&self.design.top.signals, sig_id, &mut val);
                     Ok(val)
                 } else {
-                    Err(SimError::with_diag(
-                        DiagCode::NullHandle,
+                    // Lokasi: posisi terekam terakhir; bila kosong (ekspresi
+                    // IR HierRef tanpa posisi) → cari baris yang memuat nama
+                    // (segmen terakhir) sbg fallback — diagnostik runtime
+                    // wajib ber-lokasi (hakim LRM SV-SYN-DIAG-001).
+                    let (mut l, c) = self.cur_src_pos();
+                    if l == 0 {
+                        let leaf = name
+                            .as_str()
+                            .rsplit('.')
+                            .next()
+                            .unwrap_or(name.as_str())
+                            .to_string();
+                        l = self.find_source_line_containing(&leaf);
+                    }
+                    Err(self.diag_error_at(
+                        mivon_core::diagnostics::DiagCode::NullHandle,
                         format!("hierarchical signal '{}' not found", name),
+                        l,
+                        c,
                     ))
                 }
             }

@@ -42,6 +42,14 @@ pub fn cumulative_to_file_line(bp: usize, val: usize, cumulative_line: usize) ->
 /// Directive di index `i` (0-based) mendeklarasikan: baris berikutnya (merged)
 /// adalah baris `N` dari `file`. Untuk baris error `line` (1-based merged),
 /// baris relatif-file = N + line - (i+1) - 1. Fallback ke `default_file`.
+thread_local! {
+    /// Cache directive `line` terakhir per source (ptr, len, idx, file,
+    /// declared) — scan mundur penuh per diagnostik = O(n) dan menjadi
+    /// kuadratik pada source raksasa (temuan hang 3246a70845aa).
+    static LD_CACHE: std::cell::RefCell<Option<(usize, usize, usize, String, usize)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 pub fn resolve_source_location(
     source_lines: &[String],
     default_file: &str,
