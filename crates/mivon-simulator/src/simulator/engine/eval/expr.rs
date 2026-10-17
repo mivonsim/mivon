@@ -269,6 +269,13 @@ impl SimulationEngine {
                     }
                 }
                 let val: i32 = self.rng.gen();
+                // LRM: seed adalah inout — tulis balik nilai baru agar
+                // panggilan berikutnya menghasilkan urutan berbeda.
+                if let Some(IrExpr::Signal(sid, _)) = args.first() {
+                    let new_seed: u32 = self.rng.gen();
+                    self.state
+                        .write_signal(*sid, LogicVec::from_u64(new_seed as u64, 32));
+                }
                 Ok(LogicVec::from_u64(val as u64, 32))
             }
             "$urandom" => {

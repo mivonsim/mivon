@@ -7005,6 +7005,33 @@ endmodule
 }
 
 #[test]
+fn test_random_seed_is_inout() {
+    let source = r#"
+module tb;
+    integer s, r1, r2, s1, s2;
+    initial begin
+        s = 1;
+        r1 = $random(s);
+        s1 = s;
+        r2 = $random(s);
+        s2 = s;
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 10).unwrap();
+    let get = |name: &str| -> i64 {
+        sigs.iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, v)| v.to_i64())
+            .unwrap_or(i64::MIN)
+    };
+    assert_ne!(get("s1"), 1, "$random(seed) harus memperbarui seed");
+    assert_ne!(get("s2"), get("s1"), "seed berubah tiap panggilan");
+    assert_ne!(get("r1"), get("r2"), "dua panggilan dengan seed inout berbeda hasil");
+}
+
+#[test]
 fn test_countbits_with_control_bits() {
     let source = r#"
 module tb;
