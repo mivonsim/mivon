@@ -43,9 +43,9 @@ impl SimulationEngine {
         if self.evaluate_lang_syscall(name, ir_args)? {
             return Ok(true);
         }
-        if name == "display" || name == "write" {
-            let msg = self.format_display(ir_args);
-            if name == "display" {
+        if let Some((is_display, radix)) = crate::simulator::util::display_task_radix(name) {
+            let msg = self.format_display_radix(ir_args, radix);
+            if is_display {
                 println!("{}", msg);
             } else {
                 print!("{}", msg);
@@ -1130,9 +1130,9 @@ impl SimulationEngine {
         if self.evaluate_lang_syscall(name, ir_args)? {
             return Ok(());
         }
-        if name == "display" || name == "write" {
-            let msg = self.format_display(ir_args);
-            if name == "display" {
+        if let Some((is_display, radix)) = crate::simulator::util::display_task_radix(name) {
+            let msg = self.format_display_radix(ir_args, radix);
+            if is_display {
                 println!("{}", msg);
             } else {
                 print!("{}", msg);

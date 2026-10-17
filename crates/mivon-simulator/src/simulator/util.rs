@@ -364,6 +364,48 @@ impl SimulationEngine {
         self.format_display_fmt(fmt_str, value_args.into_iter())
     }
 
+    /// Seperti format_display, tetapi radix default untuk argumen tanpa format
+    /// string dapat diatur (untuk $displayb/$displayh/$displayo). Bila ada
+    /// format string, perilaku sama dengan format_display.
+    pub(crate) fn format_display_radix(
+        &mut self,
+        ir_args: &[IrExpr],
+        radix: Option<char>,
+    ) -> String {
+        if radix.is_none() || matches!(ir_args.first(), Some(IrExpr::String(_))) {
+            return self.format_display(ir_args);
+        }
+        let r = radix.unwrap();
+        let spec = match r {
+            'b' => "%b",
+            'h' => "%h",
+            _ => "%o",
+        };
+        let mut out = String::with_capacity(ir_args.len() * 8);
+        let mut first = true;
+        for arg in ir_args {
+            if let Ok(val) = self.evaluate_expr(arg) {
+                if !first {
+                    out.push(' ');
+                }
+                first = false;
+                let scope = self
+                    .current_instance_path
+                    .as_deref()
+                    .or(self.current_scope_name.as_deref())
+                    .unwrap_or_default();
+                out.push_str(&format_display_core_scoped(
+                    spec,
+                    std::iter::once((val, false, false)),
+                    0,
+                    &self.state.timeformat,
+                    scope,
+                ));
+            }
+        }
+        out
+    }
+
     /// F17: format `$display`/`$sformatf` di jalur AST (body method class) —
     /// argumen dievaluasi via `evaluate_ast_expr` (field class `it.addr` dkk
     /// ter-resolve via current_this), lalu format spec identik dengan jalur IR.
@@ -475,6 +517,22 @@ pub fn ast_expr_is_real(e: &mivon_ast::Expr) -> bool {
 /// `%d %b %o %h %H %x %X %c %s %f %e %E %g %G %t %%` + flag `%0` (zero-fill)
 /// dan `-` (rata kiri) + `%.Nf` (presisi real) + width.
 #[allow(clippy::too_many_lines)]
+/// Peta nama system task display/write (tanpa prefiks dolar) ke
+/// (apakah display, radix default). None = bukan task display/write.
+pub(crate) fn display_task_radix(name: &str) -> Option<(bool, Option<char>)> {
+    match name {
+        "display" => Some((true, None)),
+        "write" => Some((false, None)),
+        "displayb" => Some((true, Some('b'))),
+        "displayh" => Some((true, Some('h'))),
+        "displayo" => Some((true, Some('o'))),
+        "writeb" => Some((false, Some('b'))),
+        "writeh" => Some((false, Some('h'))),
+        "writeo" => Some((false, Some('o'))),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 fn format_display_core(
     fmt_str: &str,
@@ -1827,5 +1885,18 @@ mod tests {
             format_display_core("%G", vec![(real(3.5), false, true)].into_iter(), 0, &tf()),
             "3.5"
         );
+    }
+
+    #[test]
+    fn test_display_task_radix_mapping() {
+        assert_eq!(display_task_radix("display"), Some((true, None)));
+        assert_eq!(display_task_radix("write"), Some((false, None)));
+        assert_eq!(display_task_radix("displayb"), Some((true, Some('b'))));
+        assert_eq!(display_task_radix("displayh"), Some((true, Some('h'))));
+        assert_eq!(display_task_radix("displayo"), Some((true, Some('o'))));
+        assert_eq!(display_task_radix("writeb"), Some((false, Some('b'))));
+        assert_eq!(display_task_radix("writeh"), Some((false, Some('h'))));
+        assert_eq!(display_task_radix("writeo"), Some((false, Some('o'))));
+        assert_eq!(display_task_radix("finish"), None);
     }
 }

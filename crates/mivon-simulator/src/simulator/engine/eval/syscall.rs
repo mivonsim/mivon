@@ -1021,7 +1021,7 @@ impl SimulationEngine {
         name: &str,
         args: &[mivon_ast::Expr],
     ) -> Result<(), SimError> {
-        if name == "display" || name == "write" {
+        if let Some((is_display, radix)) = crate::simulator::util::display_task_radix(name) {
             let ir_args: Vec<IrExpr> = args
                 .iter()
                 .map(|a| match a {
@@ -1031,8 +1031,8 @@ impl SimulationEngine {
                     _ => IrExpr::Const(self.evaluate_ast_expr(a).unwrap_or(LogicVec::new(32))),
                 })
                 .collect();
-            let msg = self.format_display(&ir_args);
-            if name == "display" {
+            let msg = self.format_display_radix(&ir_args, radix);
+            if is_display {
                 println!("{}", msg);
             } else {
                 print!("{}", msg);
