@@ -405,7 +405,16 @@ impl SimulationEngine {
         fmt_str: &str,
         value_args: impl Iterator<Item = (LogicVec, bool, bool)>,
     ) -> String {
-        format_display_core(fmt_str, value_args, self.state.time, &self.state.timeformat)
+        format_display_core_scoped(
+            fmt_str,
+            value_args,
+            self.state.time,
+            &self.state.timeformat,
+            self.current_instance_path
+                .as_deref()
+                .or(self.current_scope_name.as_deref())
+                .unwrap_or(""),
+        )
     }
 }
 
@@ -466,11 +475,25 @@ pub fn ast_expr_is_real(e: &mivon_ast::Expr) -> bool {
 /// `%d %b %o %h %H %x %X %c %s %f %e %E %g %G %t %%` + flag `%0` (zero-fill)
 /// dan `-` (rata kiri) + `%.Nf` (presisi real) + width.
 #[allow(clippy::too_many_lines)]
+#[cfg(test)]
 fn format_display_core(
     fmt_str: &str,
     value_args: impl Iterator<Item = (LogicVec, bool, bool)>,
     sim_time: u64,
     timeformat: &TimeFormat,
+) -> String {
+    format_display_core_scoped(fmt_str, value_args, sim_time, timeformat, "")
+}
+
+/// Seperti format_display_core, tetapi membawa scope (nama hierarki
+/// instance aktif) untuk mendukung %m (dan %l). scope kosong bila
+/// tidak tersedia.
+fn format_display_core_scoped(
+    fmt_str: &str,
+    value_args: impl Iterator<Item = (LogicVec, bool, bool)>,
+    sim_time: u64,
+    timeformat: &TimeFormat,
+    scope: &str,
 ) -> String {
     let mut value_args = value_args;
     let mut result = String::with_capacity(fmt_str.len() + 8 * 16);
@@ -523,7 +546,7 @@ fn format_display_core(
             let spec = chars.next();
             let last_spec_upper = matches!(spec, Some('H') | Some('X'));
             match spec {
-                Some('o') => {
+                Some('o') | Some('O') => {
                     if let Some((val, _, is_real)) = value_args.next() {
                         let val = fmt_arg_as_int(&val, is_real);
                         // `%o` octal — leading '0' HANYA dibuang bila
@@ -587,7 +610,7 @@ fn format_display_core(
                         result.push_str(&s);
                     }
                 }
-                Some('d') => {
+                Some('d') | Some('D') | Some('i') | Some('I') => {
                     if let Some((val, is_signed, is_real)) = value_args.next() {
                         // Real → integer bulat (LRM §21.2.1.4).
                         let val = fmt_arg_as_int(&val, is_real);
@@ -651,7 +674,7 @@ fn format_display_core(
                         }
                     }
                 }
-                Some('b') => {
+                Some('b') | Some('B') | Some('z') | Some('Z') | Some('p') | Some('P') => {
                     if let Some((val, _, is_real)) = value_args.next() {
                         let val = fmt_arg_as_int(&val, is_real);
                         // `%0b` membuang leading '0'; `%b` plain mencetak
@@ -767,7 +790,7 @@ fn format_display_core(
                         push_padded(&mut result, &s, width, zero_fill, left_align);
                     }
                 }
-                Some('f') => {
+                Some('f') | Some('F') => {
                     if let Some((val, _, is_real)) = value_args.next() {
                         // `%f` default precision 6 (IEEE 1800 §21.2.1.4);
                         // `%.Nf`/`%0.Nf` → N digit presisi.
@@ -803,6 +826,11 @@ fn format_display_core(
                             }
                             s
                         };
+                        let s = if matches!(spec, Some('G')) {
+                            s.to_uppercase()
+                        } else {
+                            s
+                        };
                         push_padded(&mut result, &s, width, zero_fill, left_align);
                     }
                 }
@@ -814,10 +842,15 @@ fn format_display_core(
                             prec,
                             fmt_arg_as_real(&val, is_real, false)
                         ));
+                        let s = if matches!(spec, Some('E')) {
+                            s.to_uppercase()
+                        } else {
+                            s
+                        };
                         push_padded(&mut result, &s, width, zero_fill, left_align);
                     }
                 }
-                Some('t') => {
+                Some('t') | Some('T') => {
                     // %t: format time using $timeformat settings (IEEE 1800).
                     // Sim time advances 1 unit per step; base unit seeded from
                     // design `timescale (default 1ns = 10^-9 s).
@@ -841,14 +874,14 @@ fn format_display_core(
                     s.push_str(&timeformat.suffix);
                     push_padded(&mut result, &s, width, zero_fill, left_align);
                 }
-                Some('s') => {
+                Some('s') | Some('S') => {
                     if let Some((val, _, is_real)) = value_args.next() {
                         let val = fmt_arg_as_int(&val, is_real);
                         let s = logicvec_to_string(&val);
                         push_padded(&mut result, &s, width, zero_fill, left_align);
                     }
                 }
-                Some('c') => {
+                Some('c') | Some('C') => {
                     // `%c` — karakter dari 8 bit pertama nilai (LRM
                     // 1800 §21.2.1.2). Nilai 0 → NUL (tidak dicetak).
                     if let Some((val, _, is_real)) = value_args.next() {
@@ -859,8 +892,53 @@ fn format_display_core(
                         }
                     }
                 }
+                Some('u') | Some('U') => {
+                    // %u — 2-state unformatted (binary, x/z -> 0).
+                    if let Some((val, _, is_real)) = value_args.next() {
+                        let val = fmt_arg_as_int(&val, is_real);
+                        let mut chars_out: Vec<char> = Vec::new();
+                        if zero_fill {
+                            let mut seen_nonzero = false;
+                            for bit in val.bits.iter().rev() {
+                                if matches!(bit, LogicVal::Zero) && !seen_nonzero {
+                                    continue;
+                                }
+                                seen_nonzero = true;
+                                chars_out.push(if matches!(bit, LogicVal::One) { '1' } else { '0' });
+                            }
+                            if !seen_nonzero {
+                                chars_out.push('0');
+                            }
+                        } else if val.bits.is_empty() {
+                            chars_out.push('0');
+                        } else {
+                            for bit in val.bits.iter().rev() {
+                                chars_out.push(if matches!(bit, LogicVal::One) { '1' } else { '0' });
+                            }
+                        }
+                        let out_len = chars_out.len();
+                        if width > out_len {
+                            let pad = if zero_fill { '0' } else { ' ' };
+                            for _ in 0..(width - out_len) {
+                                result.push(pad);
+                            }
+                        }
+                        result.extend(chars_out);
+                    }
+                }
+                Some('m') | Some('M') | Some('l') | Some('L') => {
+                    // %m/%l — nama hierarki scope aktif (library ~ scope).
+                    push_padded(&mut result, scope, width, zero_fill, left_align);
+                }
+                Some('v') | Some('V') => {
+                    // %v — strength; mivon belum melacak strength per-net,
+                    // gunakan default Strong dan konsumsi argumennya.
+                    if value_args.next().is_some() {
+                        push_padded(&mut result, "Strong", width, zero_fill, left_align);
+                    }
+                }
                 Some('%') => {
-                    // `%%` — literal persen (LRM 1800 §21.2.1.2).
+                    // %% — literal persen (LRM 1800 §21.2.1.2).
                     result.push('%');
                 }
                 Some(c2) => {
@@ -1672,6 +1750,82 @@ mod tests {
         assert_eq!(
             format_display_core("100%%", std::iter::empty(), 0, &tf()),
             "100%"
+        );
+    }
+
+    #[test]
+    fn test_fmt_i_alias_decimal() {
+        assert_eq!(
+            format_display_core("%0i", vec![(LogicVec::from_u64(42, 32), false, false)].into_iter(), 0, &tf()),
+            "42"
+        );
+    }
+
+    #[test]
+    fn test_fmt_uppercase_variants() {
+        assert_eq!(
+            format_display_core("%0D", vec![(LogicVec::from_u64(42, 32), false, false)].into_iter(), 0, &tf()),
+            "42"
+        );
+        assert_eq!(
+            format_display_core("%0B", vec![(LogicVec::from_u64(5, 8), false, false)].into_iter(), 0, &tf()),
+            "101"
+        );
+        assert_eq!(
+            format_display_core("%0O", vec![(LogicVec::from_u64(8, 32), false, false)].into_iter(), 0, &tf()),
+            "10"
+        );
+    }
+
+    #[test]
+    fn test_fmt_u_2state_binary() {
+        assert_eq!(
+            format_display_core("%0u", vec![(LogicVec::from_u64(42, 32), false, false)].into_iter(), 0, &tf()),
+            "101010"
+        );
+    }
+
+    #[test]
+    fn test_fmt_z_and_p_binary() {
+        assert_eq!(
+            format_display_core("%0z", vec![(LogicVec::from_u64(5, 8), false, false)].into_iter(), 0, &tf()),
+            "101"
+        );
+        assert_eq!(
+            format_display_core("%0p", vec![(LogicVec::from_u64(5, 8), false, false)].into_iter(), 0, &tf()),
+            "101"
+        );
+    }
+
+    #[test]
+    fn test_fmt_m_scope() {
+        assert_eq!(
+            format_display_core_scoped("%m", std::iter::empty(), 0, &tf(), "top.u_sub"),
+            "top.u_sub"
+        );
+        assert_eq!(
+            format_display_core_scoped("%M", std::iter::empty(), 0, &tf(), "demo"),
+            "demo"
+        );
+    }
+
+    #[test]
+    fn test_fmt_v_strength() {
+        assert_eq!(
+            format_display_core("%v", vec![(LogicVec::from_u64(1, 8), false, false)].into_iter(), 0, &tf()),
+            "Strong"
+        );
+    }
+
+    #[test]
+    fn test_fmt_uppercase_exponent() {
+        assert_eq!(
+            format_display_core("%E", vec![(real(3.5), false, true)].into_iter(), 0, &tf()),
+            "3.500000E+00"
+        );
+        assert_eq!(
+            format_display_core("%G", vec![(real(3.5), false, true)].into_iter(), 0, &tf()),
+            "3.5"
         );
     }
 }
