@@ -10,6 +10,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use mivon_core::diagnostics::{DiagCode, DiagLevel, Diagnostic};
+
 /// Tingkat keparahan diagnostic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DiagSeverity {
@@ -103,6 +105,32 @@ impl DiagEntry {
             actions: Vec::new(),
         }
     }
+
+    /// Ubah ke Diagnostic core agar bisa dirender lewat renderer tunggal
+    /// format_diagnostic. Severity dipetakan ke DiagLevel; kode (string)
+    /// dan posisi dibawa ke pesan agar tidak hilang (ruang kode micd tidak
+    /// dipetakan ke enum DiagCode core).
+    pub fn to_diagnostic(&self) -> Diagnostic {
+        let level = match self.severity {
+            DiagSeverity::Error => DiagLevel::Error,
+            DiagSeverity::Warning => DiagLevel::Warning,
+            DiagSeverity::Hint => DiagLevel::Help,
+            DiagSeverity::Note => DiagLevel::Note,
+            DiagSeverity::Info => DiagLevel::Info,
+        };
+        let code = if self.code.is_empty() {
+            String::new()
+        } else {
+            format!("[{}] ", self.code)
+        };
+        let pos = if self.line > 0 {
+            format!("{}:{}: ", self.line, self.col)
+        } else {
+            String::new()
+        };
+        let message = format!("{}{}{}", pos, code, self.message);
+        Diagnostic::new(level, DiagCode::InvalidSyntax, message)
+    }
 }
 
 /// Diagnostic satu file.
@@ -140,6 +168,28 @@ impl FileDiags {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mivon_core::diagnostics::format_diagnostic;
+
+    #[test]
+    fn test_diag_entry_to_diagnostic_error() {
+        let e = DiagEntry::new(10, 4, DiagSeverity::Error, "bad port".to_string(), "E3005".to_string());
+        let d = e.to_diagnostic();
+        let s = format_diagnostic(&d);
+        assert!(s.contains("bad port"));
+        assert!(s.contains("E3005"));
+        assert!(s.contains("error"));
+        assert!(s.contains("10:4"));
+    }
+
+    #[test]
+    fn test_diag_entry_to_diagnostic_warning_no_code() {
+        let w = DiagEntry::new(2, 1, DiagSeverity::Warning, "unused".to_string(), String::new());
+        let d = w.to_diagnostic();
+        let s = format_diagnostic(&d);
+        assert!(s.contains("unused"));
+        assert!(s.contains("warning"));
+        assert!(!s.contains("[]"));
+    }
 
     #[test]
     fn test_diag_counts() {
