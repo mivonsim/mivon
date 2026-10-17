@@ -263,13 +263,11 @@ impl SimError {
     }
 
     /// Format error sebagai string dengan konteks.
-    /// Saat ini menggunakan format default dari `Display`.
-    /// Untuk format yang lebih kaya, gunakan `TerminalEmitter` dengan `Diagnostic`.
+    /// Render error lewat renderer tunggal `format_diagnostic` untuk SEMUA
+    /// varian (konsisten dengan jalur `Diagnostic`). `to_diagnostic` sudah
+    /// membangun `Diagnostic` kaya (source snippet + context) per varian.
     pub fn format_with_context(&self) -> String {
-        if let SimError::Diagnostic(diag) = self {
-            return format_diagnostic(diag);
-        }
-        self.to_string()
+        format_diagnostic(&self.to_diagnostic())
     }
 
     /// Get exit code for CI/CD integration (Rule 9).
@@ -395,5 +393,14 @@ mod tests {
         let e = SimError::Elaborate("module foo not found".into());
         assert_eq!(e.error_code(), "E3001");
         assert_eq!(e.exit_code(), 30);
+    }
+
+    #[test]
+    fn format_with_context_uses_unified_renderer() {
+        let e = SimError::Runtime("null handle access".into());
+        let s = e.format_with_context();
+        // Header kaya dari renderer tunggal: level + [code] + pesan.
+        assert!(s.contains("null handle access"));
+        assert!(s.contains("error["));
     }
 }
