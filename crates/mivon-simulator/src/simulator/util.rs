@@ -533,6 +533,19 @@ pub(crate) fn display_task_radix(name: &str) -> Option<(bool, Option<char>)> {
     }
 }
 
+/// Peta nama system task string-write (tanpa prefiks dolar) ke radix
+/// default. None = bukan task string-write.
+/// $swrite/$swriteb/h/o dan $sformat TIDAK menambah newline (LRM 21.3.3).
+pub(crate) fn swrite_task_radix(name: &str) -> Option<Option<char>> {
+    match name {
+        "swrite" | "sformat" => Some(None),
+        "swriteb" => Some(Some('b')),
+        "swriteh" => Some(Some('h')),
+        "swriteo" => Some(Some('o')),
+        _ => None,
+    }
+}
+
 /// Peta nama system task file-display (tanpa prefiks dolar) ke
 /// (tambahkan newline?, radix default). None = bukan task file-display.
 pub(crate) fn file_display_task_radix(name: &str) -> Option<(bool, Option<char>)> {
@@ -2026,6 +2039,16 @@ mod tests {
         assert_eq!(file_display_task_radix("fwriteh"), Some((false, Some('h'))));
         assert_eq!(file_display_task_radix("fwriteo"), Some((false, Some('o'))));
         assert_eq!(file_display_task_radix("fscanf"), None);
+    }
+
+    #[test]
+    fn test_swrite_task_radix_mapping() {
+        assert_eq!(swrite_task_radix("swrite"), Some(None));
+        assert_eq!(swrite_task_radix("sformat"), Some(None));
+        assert_eq!(swrite_task_radix("swriteb"), Some(Some('b')));
+        assert_eq!(swrite_task_radix("swriteh"), Some(Some('h')));
+        assert_eq!(swrite_task_radix("swriteo"), Some(Some('o')));
+        assert_eq!(swrite_task_radix("fwrite"), None);
     }
 
     #[test]

@@ -6757,6 +6757,55 @@ endmodule
     assert_eq!(v2, 10, "rsort: third should be 10");
 }
 #[test]
+fn test_swrite_radix_variants_no_newline() {
+    let source = r#"
+module tb;
+    string s;
+    reg [7:0] v;
+    initial begin
+        v = 8'h2a;
+        $swriteh(s, v);
+        #1;
+        $swriteb(s, v);
+        #1;
+        $swriteo(s, v);
+        #1 $finish;
+    end
+endmodule
+"#;
+    // Nilai akhir = hasil $swriteo terakhir; memastikan tanpa newline.
+    let sigs = simulate_signals(source, 10).unwrap();
+    let s = sigs
+        .iter()
+        .find(|(n, _)| n == "s")
+        .map(|(_, v)| logicvec_to_string(v))
+        .unwrap_or_default();
+    assert_eq!(s, "052", "$swriteo tanpa newline (LRM 21.3.3)");
+}
+
+#[test]
+fn test_swrite_hex_matches_iverilog() {
+    let source = r#"
+module tb;
+    string s;
+    reg [7:0] v;
+    initial begin
+        v = 8'h2a;
+        $swriteh(s, v);
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 10).unwrap();
+    let s = sigs
+        .iter()
+        .find(|(n, _)| n == "s")
+        .map(|(_, v)| logicvec_to_string(v))
+        .unwrap_or_default();
+    assert_eq!(s, "2a", "$swriteh hex tanpa newline");
+}
+
+#[test]
 fn test_sformatf_basic() {
     let source = r#"
 module tb;

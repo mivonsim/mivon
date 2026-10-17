@@ -865,13 +865,11 @@ impl SimulationEngine {
                     );
                 }
             }
-        } else if name == "swrite" || name == "sformat" {
+        } else if let Some(radix) = crate::simulator::util::swrite_task_radix(name) {
             if let Some(IrExpr::Signal(out_id, _)) = ir_args.first() {
                 let format_args = &ir_args[1..];
-                let mut msg = self.format_display(format_args);
-                if name == "swrite" {
-                    msg.push('\n');
-                }
+                // $swrite/$swriteb/h/o dan $sformat: tanpa newline (LRM 21.3.3).
+                let msg = self.format_display_radix(format_args, radix);
                 let mut bits = Vec::with_capacity(msg.len() * 8);
                 for c in msg.chars() {
                     let byte = c as u8;
@@ -1823,13 +1821,11 @@ impl SimulationEngine {
                     );
                 }
             }
-        } else if name == "swrite" || name == "sformat" {
+        } else if let Some(radix) = crate::simulator::util::swrite_task_radix(name) {
             if let Some(IrExpr::Signal(out_id, _)) = ir_args.first() {
                 let format_args = &ir_args[1..];
-                let mut msg = self.format_display(format_args);
-                if name == "swrite" {
-                    msg.push('\n');
-                }
+                // $swrite/$swriteb/h/o dan $sformat: tanpa newline (LRM 21.3.3).
+                let msg = self.format_display_radix(format_args, radix);
                 let mut bits = Vec::with_capacity(msg.len() * 8);
                 for c in msg.chars() {
                     let byte = c as u8;
