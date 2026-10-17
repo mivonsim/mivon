@@ -7032,6 +7032,30 @@ endmodule
 }
 
 #[test]
+fn test_countbits_literal_respects_width() {
+    // Literal 8-bit: zero-padding ke 64 bit TIDAK boleh ikut dihitung.
+    let source = r#"
+module tb;
+    reg [31:0] c1, c2;
+    initial begin
+        c1 = $countbits(8'b1010_0101, 1'b1);
+        c2 = $countbits(8'b1010_0101, 1'b0);
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 10).unwrap();
+    let get = |name: &str| -> u64 {
+        sigs.iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, v)| v.to_u64())
+            .unwrap_or(u64::MAX)
+    };
+    assert_eq!(get("c1"), 4, "4 bit bernilai 1 pada literal 8-bit");
+    assert_eq!(get("c2"), 4, "4 bit bernilai 0 pada literal 8-bit");
+}
+
+#[test]
 fn test_unpacked_dimensions() {
     let source = r#"
 module tb;

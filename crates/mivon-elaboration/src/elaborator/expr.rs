@@ -1637,10 +1637,21 @@ impl Elaborator {
                     let val = const_vals[0] as u64;
                     let controls: Vec<u64> =
                         const_vals[1..].iter().map(|v| (*v as u64) & 1).collect();
+                    // Batasi ke lebar operand (bukan 64) — literal 8-bit hanya
+                    // punya 8 bit yang dihitung.
+                    let width = match ir_args.first() {
+                        Some(IrExpr::Const(v)) => v.width,
+                        Some(IrExpr::Signal(id, _)) => signals
+                            .get(*id)
+                            .map(|s| s.width)
+                            .unwrap_or(64),
+                        _ => 64,
+                    }
+                    .clamp(1, 64);
                     let count = if controls.is_empty() {
                         0
                     } else {
-                        (0..64)
+                        (0..width)
                             .filter(|i| controls.contains(&((val >> i) & 1)))
                             .count() as u64
                     };
