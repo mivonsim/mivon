@@ -505,8 +505,21 @@ impl SimulationEngine {
             "$countbits" => {
                 if let Some(arg) = args.first() {
                     let val = self.evaluate_expr(arg)?;
-                    // $countbits counts non-zero bits (1, X, Z)
-                    let count = val.bits.iter().filter(|b| **b != LogicVal::Zero).count() as u64;
+                    // LRM 1800 §20.9: hitung bit yang cocok dengan salah satu
+                    // control_bit. Tanpa control bit → 0.
+                    let mut controls: Vec<LogicVal> = Vec::new();
+                    for a in &args[1..] {
+                        if let Ok(v) = self.evaluate_expr(a) {
+                            if let Some(b) = v.bits.first() {
+                                controls.push(*b);
+                            }
+                        }
+                    }
+                    let count = if controls.is_empty() {
+                        0
+                    } else {
+                        val.bits.iter().filter(|b| controls.contains(b)).count() as u64
+                    };
                     Ok(LogicVec::from_u64(count, 32))
                 } else {
                     Err(self.diag_error(
@@ -540,6 +553,35 @@ impl SimulationEngine {
                         "$dimensions expects 1 argument",
                     ))
                 }
+            }
+            "$unpacked_dimensions" => {
+                // Jumlah dimensi unpacked (array_dims), bukan packed.
+                if let Some(IrExpr::Signal(sig_id, _)) = args.first() {
+                    let dims = self
+                        .design
+                        .top
+                        .signals
+                        .get(*sig_id)
+                        .map(|s| s.array_dims.len())
+                        .unwrap_or(0);
+                    Ok(LogicVec::from_u64(dims as u64, 32))
+                } else {
+                    Ok(LogicVec::from_u64(0, 32))
+                }
+            }
+            "$isunbounded" => {
+                // Queue/dynamic array = dimensi tak terbatas.
+                let unbounded = match args.first() {
+                    Some(IrExpr::Signal(sig_id, _)) => self
+                        .design
+                        .top
+                        .signals
+                        .get(*sig_id)
+                        .map(|s| s.is_dynamic || s.is_queue)
+                        .unwrap_or(false),
+                    _ => false,
+                };
+                Ok(LogicVec::from_u64(if unbounded { 1 } else { 0 }, 1))
             }
             "$onehot0" => {
                 if let Some(arg) = args.first() {

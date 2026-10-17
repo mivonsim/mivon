@@ -5545,8 +5545,8 @@ module tb;
     initial begin
         a = 8'b10100101;  // 4 ones
         b = 16'hA5A5;      // 8 ones (A=1010, 5=0101)
-        result_a = $countbits(a);
-        result_b = $countbits(b);
+        result_a = $countbits(a, 1'b1);
+        result_b = $countbits(b, 1'b1);
         #1 $finish;
     end
 endmodule
@@ -7002,6 +7002,58 @@ endmodule
     let content = fs::read_to_string(test_file).unwrap_or_default();
     assert_eq!(content, "2a\n00101010052\n");
     let _ = fs::remove_file(test_file);
+}
+
+#[test]
+fn test_countbits_with_control_bits() {
+    let source = r#"
+module tb;
+    reg [7:0] v;
+    reg [31:0] c1, c2, c3;
+    initial begin
+        v = 8'b1010_0110;
+        c1 = $countbits(v, 1'b1);
+        c2 = $countbits(v, 1'b0);
+        c3 = $countbits(v);
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 10).unwrap();
+    let get = |name: &str| -> u64 {
+        sigs.iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, v)| v.to_u64())
+            .unwrap_or(u64::MAX)
+    };
+    assert_eq!(get("c1"), 4, "$countbits(v, 1)");
+    assert_eq!(get("c2"), 4, "$countbits(v, 0)");
+    assert_eq!(get("c3"), 0, "$countbits tanpa control bit");
+}
+
+#[test]
+fn test_unpacked_dimensions() {
+    let source = r#"
+module tb;
+    reg [7:0] m [0:3];
+    reg [7:0] scalar;
+    reg [31:0] d1, d2;
+    initial begin
+        d1 = $unpacked_dimensions(m);
+        d2 = $unpacked_dimensions(scalar);
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 10).unwrap();
+    let get = |name: &str| -> u64 {
+        sigs.iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, v)| v.to_u64())
+            .unwrap_or(u64::MAX)
+    };
+    assert_eq!(get("d1"), 1, "memori 1D punya 1 dimensi unpacked");
+    assert_eq!(get("d2"), 0, "scalar tidak punya dimensi unpacked");
 }
 
 #[test]

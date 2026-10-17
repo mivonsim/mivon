@@ -1610,22 +1610,48 @@ impl Elaborator {
                 }
             }
             "$countbits" => {
-                if let Some(arg) = args.first() {
-                    let ir_arg = self.elaborate_expr(arg, signal_map, signals)?;
-                    if let Ok(val) = const_eval_params(arg, &self.param_vals) {
-                        // $countbits counts non-zero bits (1, X, Z)
-                        let count = (0..64).filter(|i| ((val >> i) & 1) != 0).count() as u64;
-                        Ok(IrExpr::Const(LogicVec::from_u64(count, 32)))
-                    } else {
-                        Ok(IrExpr::SysFunc {
-                            name: Symbol::intern("$countbits"),
-                            args: vec![ir_arg],
-                            line: *line,
-                            col: *col,
-                        })
+                if args.is_empty() {
+                    return Err(self.elab_diag(
+                        DiagCode::ParamMismatch,
+                        "$countbits requires at least one argument",
+                    ));
+                }
+                let mut ir_args = Vec::with_capacity(args.len());
+                for a in args {
+                    ir_args.push(self.elaborate_expr(a, signal_map, signals)?);
+                }
+                // Constant-fold hanya bila semua arg konstanta: hitung bit yang
+                // cocok dengan salah satu control_bit (LRM 1800 §20.9).
+                let mut const_vals: Vec<i64> = Vec::with_capacity(args.len());
+                let mut all_const = true;
+                for a in args {
+                    match const_eval_params(a, &self.param_vals) {
+                        Ok(v) => const_vals.push(v),
+                        Err(_) => {
+                            all_const = false;
+                            break;
+                        }
                     }
+                }
+                if all_const {
+                    let val = const_vals[0] as u64;
+                    let controls: Vec<u64> =
+                        const_vals[1..].iter().map(|v| (*v as u64) & 1).collect();
+                    let count = if controls.is_empty() {
+                        0
+                    } else {
+                        (0..64)
+                            .filter(|i| controls.contains(&((val >> i) & 1)))
+                            .count() as u64
+                    };
+                    Ok(IrExpr::Const(LogicVec::from_u64(count, 32)))
                 } else {
-                    Err(self.elab_diag(DiagCode::ParamMismatch, "$countbits requires one argument"))
+                    Ok(IrExpr::SysFunc {
+                        name: Symbol::intern("$countbits"),
+                        args: ir_args,
+                        line: *line,
+                        col: *col,
+                    })
                 }
             }
             "$dimensions" => {
