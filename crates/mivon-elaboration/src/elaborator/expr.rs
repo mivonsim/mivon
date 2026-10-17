@@ -1576,10 +1576,23 @@ impl Elaborator {
                         )
                     })?;
                     let info = &signals[sig_id];
-                    // $size mengembalikan jumlah elemen pada dimensi pertama.
-                    // Prioritas: unpacked array (array_depth) > packed
-                    // multi-dimensi (packed_dims[0]) > lebar total.
-                    let size = if info.array_depth > 1 {
+                    // Dimensi: unpacked dulu, lalu packed (urutan LRM).
+                    let mut dims: Vec<usize> = Vec::new();
+                    dims.extend(info.array_dims.iter().copied());
+                    dims.extend(info.packed_dims.iter().copied());
+                    // packed_dims hanya terisi untuk packed multi-dimensi;
+                    // untuk range tunggal [7:0] pakai lebar elemen.
+                    if info.packed_dims.is_empty() && info.width > 1 {
+                        dims.push(info.elem_width.max(1));
+                    }
+                    // $size(arr[, dim]) — dim default 1.
+                    let dim = args
+                        .get(1)
+                        .and_then(|a| const_eval_params(a, &self.param_vals).ok())
+                        .unwrap_or(1);
+                    let size = if dim >= 1 && (dim as usize) <= dims.len() {
+                        dims[dim as usize - 1]
+                    } else if info.array_depth > 1 {
                         info.array_depth
                     } else if info.packed_dims.len() > 1 {
                         info.packed_dims[0]

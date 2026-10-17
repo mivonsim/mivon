@@ -7005,6 +7005,35 @@ endmodule
 }
 
 #[test]
+fn test_size_with_dimension_argument() {
+    let source = r#"
+module tb;
+    reg [7:0] m [0:3];
+    reg [3:0][7:0] p;
+    reg [31:0] m1, m2, p1, p2;
+    initial begin
+        m1 = $size(m, 1);
+        m2 = $size(m, 2);
+        p1 = $size(p, 1);
+        p2 = $size(p, 2);
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 10).unwrap();
+    let get = |name: &str| -> u64 {
+        sigs.iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, v)| v.to_u64())
+            .unwrap_or(u64::MAX)
+    };
+    assert_eq!(get("m1"), 4, "unpacked dim pertama");
+    assert_eq!(get("m2"), 8, "packed dim kedua");
+    assert_eq!(get("p1"), 4, "packed dim pertama");
+    assert_eq!(get("p2"), 8, "packed dim kedua");
+}
+
+#[test]
 fn test_random_seed_is_inout() {
     let source = r#"
 module tb;
