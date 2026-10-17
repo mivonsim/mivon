@@ -7252,6 +7252,30 @@ endmodule
 }
 
 #[test]
+fn test_writemem_range() {
+    use std::fs;
+    let file = "/tmp/test_mivon_writemem_range.hex";
+    let _ = fs::remove_file(file);
+    let source = format!(
+        r#"
+module tb;
+    reg [7:0] m [0:3];
+    initial begin
+        m[0]=8'h11; m[1]=8'h22; m[2]=8'h33; m[3]=8'h44;
+        $writememh("{f}", m, 1, 2);
+        $finish;
+    end
+endmodule
+"#,
+        f = file
+    );
+    let _ = simulate_signals(&source, 10).unwrap();
+    let content = fs::read_to_string(file).unwrap_or_default();
+    assert_eq!(content, "// 0x00000000\n22\n33\n", "start/end word");
+    let _ = fs::remove_file(file);
+}
+
+#[test]
 fn test_sreadmemh_and_bin() {
     let source = r#"
 module tb;

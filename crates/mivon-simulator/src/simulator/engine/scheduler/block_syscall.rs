@@ -341,13 +341,26 @@ impl SimulationEngine {
                 let ew = si.elem_width.max(1);
                 (ew, si.width / ew)
             };
-            let packed = self.state.read_signal(sig_id);
             let radix = if name == "writememb" { 'b' } else { 'h' };
+            // $writememh(file, mem [, start [, end]]).
+            let start = ir_args
+                .get(2)
+                .and_then(|a| self.evaluate_expr(a).ok().map(|v| v.to_u64() as usize))
+                .unwrap_or(0)
+                .min(n_words);
+            let end = ir_args
+                .get(3)
+                .and_then(|a| self.evaluate_expr(a).ok().map(|v| v.to_u64() as usize))
+                .unwrap_or_else(|| n_words.saturating_sub(1))
+                .min(n_words.saturating_sub(1));
+            let count = if end >= start { end - start + 1 } else { 0 };
+            let packed = self.state.read_signal(sig_id);
             let text = crate::simulator::util::mem_to_text(
                 &packed,
                 elem_w,
                 radix,
-                n_words,
+                start,
+                count,
                 &self.state.timeformat,
             );
             std::fs::write(&file_str, text)

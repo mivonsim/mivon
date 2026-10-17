@@ -585,14 +585,17 @@ pub(crate) fn mem_to_text(
     packed: &LogicVec,
     elem_w: usize,
     radix: char,
+    start_word: usize,
     n_words: usize,
     timeformat: &TimeFormat,
 ) -> String {
     let mut out = String::new();
     let spec = if radix == 'b' { "%b" } else { "%h" };
-    for k in 0..n_words {
-        if k % 16 == 0 {
-            out.push_str(&format!("// 0x{:08x}\n", k));
+    for k in start_word..start_word.saturating_add(n_words) {
+        // Header alamat relatif terhadap awal output (paritas iverilog).
+        let rel = k - start_word;
+        if rel % 16 == 0 {
+            out.push_str(&format!("// 0x{:08x}\n", rel));
         }
         let start = k * elem_w;
         if start >= packed.bits.len() {
@@ -2027,11 +2030,11 @@ mod tests {
         // word0 = 0xaa (low byte), word1 = 0x05
         let packed = LogicVec::from_u64(0x05aa, 16);
         assert_eq!(
-            mem_to_text(&packed, 8, 'h', 2, &tf()),
+            mem_to_text(&packed, 8, 'h', 0, 2, &tf()),
             "// 0x00000000\naa\n05\n"
         );
         assert_eq!(
-            mem_to_text(&packed, 8, 'b', 2, &tf()),
+            mem_to_text(&packed, 8, 'b', 0, 2, &tf()),
             "// 0x00000000\n10101010\n00000101\n"
         );
     }
@@ -2042,7 +2045,7 @@ mod tests {
             bits: vec![LogicVal::Zero; 17 * 8],
             width: 17 * 8,
         };
-        let text = mem_to_text(&packed, 8, 'h', 17, &tf());
+        let text = mem_to_text(&packed, 8, 'h', 0, 17, &tf());
         let headers: Vec<&str> = text.lines().filter(|l| l.starts_with("// 0x")).collect();
         assert_eq!(headers, vec!["// 0x00000000", "// 0x00000010"]);
         assert_eq!(text.lines().count(), 17 + 2);
