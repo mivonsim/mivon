@@ -6927,6 +6927,43 @@ endmodule
 }
 
 #[test]
+fn test_writemem_hex_and_bin() {
+    use std::fs;
+    let hex_file = "/tmp/test_mivon_writemem.hex";
+    let bin_file = "/tmp/test_mivon_writemem.bin";
+    let _ = fs::remove_file(hex_file);
+    let _ = fs::remove_file(bin_file);
+    let source = format!(
+        r#"
+module tb;
+    reg [7:0] m [0:3];
+    initial begin
+        m[0] = 8'haa;
+        m[1] = 8'hbb;
+        m[2] = 8'hcc;
+        m[3] = 8'hdd;
+        $writememh("{h}", m);
+        $writememb("{b}", m);
+        $finish;
+    end
+endmodule
+"#,
+        h = hex_file,
+        b = bin_file
+    );
+    let _ = simulate_signals(&source, 10).unwrap();
+    let hex = fs::read_to_string(hex_file).unwrap_or_default();
+    assert_eq!(hex, "// 0x00000000\naa\nbb\ncc\ndd\n");
+    let bin = fs::read_to_string(bin_file).unwrap_or_default();
+    assert_eq!(
+        bin,
+        "// 0x00000000\n10101010\n10111011\n11001100\n11011101\n"
+    );
+    let _ = fs::remove_file(hex_file);
+    let _ = fs::remove_file(bin_file);
+}
+
+#[test]
 fn test_fmonitor() {
     use std::fs;
     let test_file = "/tmp/test_mivon_fmonitor.txt";

@@ -218,6 +218,66 @@ impl SimulationEngine {
                 width: data.len() * elem_w,
             };
             self.state.write_signal(sig_id, packed);
+        } else if name == "writememh" || name == "writememb" {
+            let file_str = match ir_args.first() {
+                Some(IrExpr::String(s)) => s.clone(),
+                Some(IrExpr::Signal(sid, _)) => {
+                    let ok = self
+                        .design
+                        .top
+                        .signals
+                        .get(*sid)
+                        .map(|si| si.is_string)
+                        .unwrap_or(false);
+                    if ok {
+                        crate::simulator::util::logicvec_to_string(self.state.read_signal(*sid))
+                    } else {
+                        return Err(self.diag_error(
+                            DiagCode::DpiError,
+                            "writemem first argument must be a string (filename)",
+                        ));
+                    }
+                }
+                _ => {
+                    return Err(self.diag_error(
+                        DiagCode::DpiError,
+                        "writemem requires a filename argument",
+                    ));
+                }
+            };
+            let sig_id = ir_args
+                .get(1)
+                .and_then(|a| {
+                    if let IrExpr::Signal(id, _) = a {
+                        Some(*id)
+                    } else {
+                        None
+                    }
+                })
+                .ok_or_else(|| {
+                    self.diag_error(
+                        DiagCode::DpiError,
+                        "writemem requires a signal/memory argument",
+                    )
+                })?;
+            let (elem_w, n_words) = {
+                let si = self.design.top.signals.get(sig_id).ok_or_else(|| {
+                    self.diag_error(DiagCode::DpiError, "writemem: signal not found")
+                })?;
+                let ew = si.elem_width.max(1);
+                (ew, si.width / ew)
+            };
+            let packed = self.state.read_signal(sig_id);
+            let radix = if name == "writememb" { 'b' } else { 'h' };
+            let text = crate::simulator::util::mem_to_text(
+                &packed,
+                elem_w,
+                radix,
+                n_words,
+                &self.state.timeformat,
+            );
+            std::fs::write(&file_str, text)
+                .map_err(|e| self.diag_error(DiagCode::DpiError, format!("writemem: {}", e)))?;
         } else if name == "random" {
             self.rand_call_count += 1;
             if let Some(seed_arg) = ir_args.get(1) {

@@ -549,6 +549,44 @@ pub(crate) fn strobe_task(name: &str) -> Option<(bool, Option<char>)> {
     }
 }
 
+/// Render isi memori (packed LogicVec) ke teks, satu baris per word.
+/// radix: 'h' (hex) atau 'b' (binary).
+/// Header komentar alamat dicetak tiap 16 word (paritas iverilog).
+pub(crate) fn mem_to_text(
+    packed: &LogicVec,
+    elem_w: usize,
+    radix: char,
+    n_words: usize,
+    timeformat: &TimeFormat,
+) -> String {
+    let mut out = String::new();
+    let spec = if radix == 'b' { "%b" } else { "%h" };
+    for k in 0..n_words {
+        if k % 16 == 0 {
+            out.push_str(&format!("// 0x{:08x}\n", k));
+        }
+        let start = k * elem_w;
+        if start >= packed.bits.len() {
+            break;
+        }
+        let end = (start + elem_w).min(packed.bits.len());
+        let mut bits = packed.bits[start..end].to_vec();
+        while bits.len() < elem_w {
+            bits.push(LogicVal::Zero);
+        }
+        let word = LogicVec { bits, width: elem_w };
+        out.push_str(&format_display_core_scoped(
+            spec,
+            std::iter::once((word, false, false)),
+            0,
+            timeformat,
+            "",
+        ));
+        out.push('\n');
+    }
+    out
+}
+
 #[cfg(test)]
 fn format_display_core(
     fmt_str: &str,
@@ -1869,6 +1907,32 @@ mod tests {
             format_display_core("%0p", vec![(LogicVec::from_u64(5, 8), false, false)].into_iter(), 0, &tf()),
             "101"
         );
+    }
+
+    #[test]
+    fn test_mem_to_text_hex_and_bin() {
+        // word0 = 0xaa (low byte), word1 = 0x05
+        let packed = LogicVec::from_u64(0x05aa, 16);
+        assert_eq!(
+            mem_to_text(&packed, 8, 'h', 2, &tf()),
+            "// 0x00000000\naa\n05\n"
+        );
+        assert_eq!(
+            mem_to_text(&packed, 8, 'b', 2, &tf()),
+            "// 0x00000000\n10101010\n00000101\n"
+        );
+    }
+
+    #[test]
+    fn test_mem_to_text_address_header_every_16_words() {
+        let packed = LogicVec {
+            bits: vec![LogicVal::Zero; 17 * 8],
+            width: 17 * 8,
+        };
+        let text = mem_to_text(&packed, 8, 'h', 17, &tf());
+        let headers: Vec<&str> = text.lines().filter(|l| l.starts_with("// 0x")).collect();
+        assert_eq!(headers, vec!["// 0x00000000", "// 0x00000010"]);
+        assert_eq!(text.lines().count(), 17 + 2);
     }
 
     #[test]
