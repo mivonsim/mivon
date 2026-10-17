@@ -7086,6 +7086,34 @@ endmodule
 }
 
 #[test]
+fn test_shortreal_bit_conversions() {
+    let source = r#"
+module tb;
+    real r;
+    reg [31:0] b;
+    initial begin
+        r = $bitstoshortreal(32'h3fc00000);
+        b = $shortrealtobits(1.5);
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 10).unwrap();
+    let b = sigs
+        .iter()
+        .find(|(n, _)| n == "b")
+        .map(|(_, v)| v.to_u64())
+        .unwrap_or(0);
+    assert_eq!(b, 0x3FC0_0000, "$shortrealtobits(1.5)");
+    let r = sigs
+        .iter()
+        .find(|(n, _)| n == "r")
+        .map(|(_, v)| f64::from_bits(v.to_u64()))
+        .unwrap_or(f64::NAN);
+    assert!((r - 1.5).abs() < 1e-9, "$bitstoshortreal(0x3fc00000) = 1.5");
+}
+
+#[test]
 fn test_random_seed_is_inout() {
     let source = r#"
 module tb;

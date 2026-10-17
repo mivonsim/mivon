@@ -1731,6 +1731,24 @@ impl SimulationEngine {
                         }
                         return Ok(LogicVec::from_u64(0, 64));
                     }
+                    "$shortrealtobits" => {
+                        // f64 (real) → 32-bit shortreal bit-pattern.
+                        if let Some(a) = args.first() {
+                            let v = self.evaluate_expr(a)?;
+                            let f = f64::from_bits(v.to_u64());
+                            return Ok(LogicVec::from_u64((f as f32).to_bits() as u64, 32));
+                        }
+                        return Ok(LogicVec::from_u64(0, 32));
+                    }
+                    "$bitstoshortreal" => {
+                        // 32-bit shortreal bit-pattern → f64 (real).
+                        if let Some(a) = args.first() {
+                            let v = self.evaluate_expr(a)?;
+                            let f = f32::from_bits(v.to_u64() as u32) as f64;
+                            return Ok(LogicVec::from_u64(f.to_bits(), 64));
+                        }
+                        return Ok(LogicVec::from_u64(0, 64));
+                    }
                     "$realtobits" | "$bitstoreal" => {
                         // Bit-pattern bolak-balik: keduanya menyimpan
                         // f64 sebagai 64-bit → passthrough.
