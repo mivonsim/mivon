@@ -7203,6 +7203,48 @@ endmodule
 }
 
 #[test]
+fn test_readmemh_preserves_untouched_words_and_range() {
+    use std::fs;
+    let full = "/tmp/test_mivon_readmem_full.hex";
+    let part = "/tmp/test_mivon_readmem_part.hex";
+    let _ = fs::write(full, "aa\nbb\ncc\ndd\n");
+    let _ = fs::write(part, "aa\nbb\n");
+    let source = format!(
+        r#"
+module tb;
+    reg [7:0] m [0:3];
+    reg [7:0] n [0:3];
+    reg [7:0] a0, a1, a2, a3, b0, b1, b2, b3;
+    initial begin
+        m[0]=8'h11; m[1]=8'h22; m[2]=8'h33; m[3]=8'h44;
+        n[0]=8'h11; n[1]=8'h22; n[2]=8'h33; n[3]=8'h44;
+        $readmemh("{full}", m);          // 4 word penuh
+        $readmemh("{part}", n, 2, 3);    // isi word 2..3 saja
+        a0=m[0]; a1=m[1]; a2=m[2]; a3=m[3];
+        b0=n[0]; b1=n[1]; b2=n[2]; b3=n[3];
+        #1 $finish;
+    end
+endmodule
+"#,
+        full = full,
+        part = part
+    );
+    let sigs = simulate_signals(&source, 10).unwrap();
+    let get = |name: &str| -> u64 {
+        sigs.iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, v)| v.to_u64())
+            .unwrap_or(u64::MAX)
+    };
+    // File penuh → semua word terisi.
+    assert_eq!((get("a0"), get("a1"), get("a2"), get("a3")), (0xaa, 0xbb, 0xcc, 0xdd));
+    // start=2, end=3 → hanya word 2,3 yang berubah.
+    assert_eq!((get("b0"), get("b1"), get("b2"), get("b3")), (0x11, 0x22, 0xaa, 0xbb));
+    let _ = fs::remove_file(full);
+    let _ = fs::remove_file(part);
+}
+
+#[test]
 fn test_ferror_valid_handle_returns_zero() {
     use std::fs;
     let test_file = "/tmp/test_mivon_ferror.txt";

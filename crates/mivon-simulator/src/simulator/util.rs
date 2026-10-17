@@ -1360,7 +1360,10 @@ pub fn read_hex_text(
     end: Option<usize>,
 ) -> Result<Vec<LogicVec>, SimError> {
     let start_addr = start.unwrap_or(0);
-    let end_addr = end.unwrap_or(array_depth - 1);
+    let end_addr = end.unwrap_or(array_depth.saturating_sub(1));
+    if end_addr < start_addr {
+        return Ok(Vec::new());
+    }
     let len = end_addr - start_addr + 1;
     let mut data = Vec::new();
     'outer: for line in content.lines() {
@@ -1413,7 +1416,10 @@ pub fn read_bin_text(
     end: Option<usize>,
 ) -> Result<Vec<LogicVec>, SimError> {
     let start_addr = start.unwrap_or(0);
-    let end_addr = end.unwrap_or(array_depth - 1);
+    let end_addr = end.unwrap_or(array_depth.saturating_sub(1));
+    if end_addr < start_addr {
+        return Ok(Vec::new());
+    }
     let len = end_addr - start_addr + 1;
     let mut data = Vec::new();
     'outer: for line in content.lines() {
