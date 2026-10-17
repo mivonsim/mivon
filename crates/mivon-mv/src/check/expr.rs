@@ -117,11 +117,7 @@ fn check_signed_compare(
         return Ok(());
     };
     // Normalisasi arah: `C > x`  ==  `x < C` (dengan && dibalik).
-    let (rel, v) = if flipped {
-        (flip_rel(op), c)
-    } else {
-        (op, c)
-    };
+    let (rel, v) = if flipped { (flip_rel(op), c) } else { (op, c) };
     // Batas bawah: unsigned >= 0, jadi apa pun yang "melebihi 0" ke bawah
     // tidak akan pernah benar.
     let below = match rel {
@@ -436,10 +432,7 @@ pub(crate) fn check_expr<'a>(
             check_expr(b, ctx, scope, depth + 1)?;
         }
         Expr::PartSelect {
-            base,
-            from,
-            width,
-            ..
+            base, from, width, ..
         } => {
             check_expr(base, ctx, scope, depth + 1)?;
             check_expr(from, ctx, scope, depth + 1)?;
@@ -643,20 +636,16 @@ pub(crate) fn type_signed(ty: &MvType, ctx: &Ctx, scope: &Scope, depth: usize) -
                 return typedef_signed(td, ctx, scope, depth + 1);
             }
             let key = n.rsplit("::").next().unwrap_or(n.as_str());
-            ctx.types.get(key).copied().and_then(|td| {
-                typedef_signed(td, ctx, scope, depth + 1)
-            })
+            ctx.types
+                .get(key)
+                .copied()
+                .and_then(|td| typedef_signed(td, ctx, scope, depth + 1))
         }
     }
 }
 
 /// Signedness sebuah typedef.
-fn typedef_signed(
-    td: &Typedef,
-    ctx: &Ctx,
-    scope: &Scope,
-    depth: usize,
-) -> Option<bool> {
+fn typedef_signed(td: &Typedef, ctx: &Ctx, scope: &Scope, depth: usize) -> Option<bool> {
     match td {
         Typedef::Alias { ty, .. } => type_signed(ty, ctx, scope, depth + 1),
         // Enum unsigned kecuali ada base signed (LRM 1800 §6.9).
@@ -1050,12 +1039,7 @@ pub(crate) fn fold_const(e: &Expr, params: &Params, depth: usize) -> Option<i64>
 /// typedef lokal module, lalu global (file + package). Nilai eksplisit boleh
 /// merujuk konstanta lain (di-fold via `gen_const_value`, depth+1 agar
 /// siklus A↔B terminate di cap 8).
-pub(crate) fn enum_member_value(
-    name: &str,
-    ctx: &Ctx,
-    scope: &Scope,
-    depth: usize,
-) -> Option<i64> {
+pub(crate) fn enum_member_value(name: &str, ctx: &Ctx, scope: &Scope, depth: usize) -> Option<i64> {
     let mut found: Option<&Typedef> = None;
     for td in scope.local_types.values() {
         if let Typedef::Enum { members, .. } = td {
@@ -1191,13 +1175,7 @@ pub(crate) fn gen_const_value(e: &Expr, scope: &Scope, ctx: &Ctx, depth: usize) 
 
 /// F80 follow-up: nilai konstanta package (`const W = 8` dalam `package p`),
 /// di-fold rekursif (depth+1 per hop → siklus terminate di cap 8).
-fn pkg_const_value(
-    pkg: &str,
-    name: &str,
-    scope: &Scope,
-    ctx: &Ctx,
-    depth: usize,
-) -> Option<i64> {
+fn pkg_const_value(pkg: &str, name: &str, scope: &Scope, ctx: &Ctx, depth: usize) -> Option<i64> {
     let p = ctx.packages.get(pkg)?;
     let (_, _, value) = p.consts.iter().find(|(n, _, _)| n == name)?;
     gen_const_value(value, scope, ctx, depth + 1)
@@ -1215,31 +1193,31 @@ pub(crate) fn expr_uses(e: &Expr, name: &str) -> bool {
         | Expr::Paren(inner)
         | Expr::IncDec { expr: inner, .. }
         | Expr::NamedArg { expr: inner, .. } => expr_uses(inner, name),
-        Expr::Binary(_, l, r)
-        | Expr::Index(l, r)
-        | Expr::Replicate(l, r) => expr_uses(l, name) || expr_uses(r, name),
-        Expr::Ternary(c, t, f) => {
-            expr_uses(c, name) || expr_uses(t, name) || expr_uses(f, name)
+        Expr::Binary(_, l, r) | Expr::Index(l, r) | Expr::Replicate(l, r) => {
+            expr_uses(l, name) || expr_uses(r, name)
         }
-        Expr::Concat(parts) | Expr::ArrayLit(parts) => {
-            parts.iter().any(|p| expr_uses(p, name))
-        }
+        Expr::Ternary(c, t, f) => expr_uses(c, name) || expr_uses(t, name) || expr_uses(f, name),
+        Expr::Concat(parts) | Expr::ArrayLit(parts) => parts.iter().any(|p| expr_uses(p, name)),
         Expr::Call(_, args, ..) => args.iter().any(|a| expr_uses(a, name)),
-        Expr::SysFunc(_, args, ..) => args.as_ref().map(|a| a.iter().any(|a| expr_uses(a, name))).unwrap_or(false),
-        Expr::MethodCall { obj, args, with_clause, .. } => {
+        Expr::SysFunc(_, args, ..) => args
+            .as_ref()
+            .map(|a| a.iter().any(|a| expr_uses(a, name)))
+            .unwrap_or(false),
+        Expr::MethodCall {
+            obj,
+            args,
+            with_clause,
+            ..
+        } => {
             expr_uses(obj, name)
                 || args.iter().any(|a| expr_uses(a, name))
-                || with_clause
-                    .as_ref()
-                    .is_some_and(|wc| expr_uses(wc, name))
+                || with_clause.as_ref().is_some_and(|wc| expr_uses(wc, name))
         }
         Expr::Member(o, f, ..) => expr_uses(o, name) || f == name,
-        Expr::Range(o, hi, lo) => {
-            expr_uses(o, name) || expr_uses(hi, name) || expr_uses(lo, name)
-        }
-        Expr::PartSelect { base, from, width, .. } => {
-            expr_uses(base, name) || expr_uses(from, name) || expr_uses(width, name)
-        }
+        Expr::Range(o, hi, lo) => expr_uses(o, name) || expr_uses(hi, name) || expr_uses(lo, name),
+        Expr::PartSelect {
+            base, from, width, ..
+        } => expr_uses(base, name) || expr_uses(from, name) || expr_uses(width, name),
         Expr::Inside { expr, items } => {
             expr_uses(expr, name)
                 || items.iter().any(|it| match it {
@@ -1253,7 +1231,8 @@ pub(crate) fn expr_uses(e: &Expr, name: &str) -> bool {
             expr_uses(expr, name)
                 || items.iter().any(|it| {
                     expr_uses(&it.value, name)
-                        || it.range
+                        || it
+                            .range
                             .as_ref()
                             .is_some_and(|(lo, hi)| expr_uses(lo, name) || expr_uses(hi, name))
                         || expr_uses(&it.weight, name)

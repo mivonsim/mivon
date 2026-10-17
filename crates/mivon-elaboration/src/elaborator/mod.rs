@@ -1167,8 +1167,7 @@ impl Elaborator {
                     .iter()
                     .any(|it| matches!(it, ModuleItem::Generate(_)));
                 if has_gen && !m.params.is_empty() {
-                    self.pristine_param_modules
-                        .insert(m.name, m.clone());
+                    self.pristine_param_modules.insert(m.name, m.clone());
                 }
             }
             let mod_t0 = std::time::Instant::now();
@@ -1526,14 +1525,12 @@ impl Elaborator {
         // CVA6Cfg nyata; default `cva6_cfg_empty` → 0/0) akan di-elaborasi
         // ULANG saat flatten dengan param instance, sehingga kegagalan
         // elaborasi default bukan error fatal.
-        let mut default_used: std::collections::HashSet<Symbol> =
-            std::collections::HashSet::new();
+        let mut default_used: std::collections::HashSet<Symbol> = std::collections::HashSet::new();
         // Modul yang di-instansiasi (param apa pun). Dipakai agar downgrade
         // "hanya di-instansiasi dengan override" TIDAK berlaku untuk modul
         // yang tak pernah di-instansiasi (mis. top) — error elaborasi top
         // harus tetap error keras.
-        let mut instantiated: std::collections::HashSet<Symbol> =
-            std::collections::HashSet::new();
+        let mut instantiated: std::collections::HashSet<Symbol> = std::collections::HashSet::new();
         for m in &self.design.modules {
             if !reachable.contains(&m.name) {
                 continue;
@@ -1783,11 +1780,22 @@ impl Elaborator {
             .collect();
 
         if std::env::var("DBG_ELAB").is_ok() {
-            eprintln!("[DBG-ELAB] candidate_tops: {:?}", candidate_tops.iter().map(|s| s.as_str()).collect::<Vec<_>>());
+            eprintln!(
+                "[DBG-ELAB] candidate_tops: {:?}",
+                candidate_tops
+                    .iter()
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>()
+            );
             for c in &candidate_tops {
                 let cone = topo::module_cone_size(*c, &inst_graph);
                 let score = topo::score_auto_top(*c, cone);
-                eprintln!("[DBG-ELAB]   candidate: {} cone={} score={}", c.as_str(), cone, score);
+                eprintln!(
+                    "[DBG-ELAB]   candidate: {} cone={} score={}",
+                    c.as_str(),
+                    cone,
+                    score
+                );
             }
         }
 
@@ -1857,7 +1865,12 @@ impl Elaborator {
                     // ada pemenang unik; seri → perilaku lama (error/recovery).
                     let mut scored: Vec<(i64, Symbol)> = candidate_tops
                         .iter()
-                        .map(|c| (topo::score_auto_top(*c, topo::module_cone_size(*c, &inst_graph)), *c))
+                        .map(|c| {
+                            (
+                                topo::score_auto_top(*c, topo::module_cone_size(*c, &inst_graph)),
+                                *c,
+                            )
+                        })
                         .collect();
                     scored
                         .sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.as_str().cmp(b.1.as_str())));
@@ -3546,7 +3559,8 @@ impl Elaborator {
                     &struct_vals,
                     &self.pkg_array_structs,
                 ) {
-                    if std::env::var("MIVON_DBG_LP").is_ok() && pname.as_str().contains("FP_WIDTH") {
+                    if std::env::var("MIVON_DBG_LP").is_ok() && pname.as_str().contains("FP_WIDTH")
+                    {
                         eprintln!("[DBG-LP-1ST] evaluated {} = {}", pname.as_str(), val);
                     }
                     effective_params.insert(*pname, val);
@@ -3640,9 +3654,9 @@ impl Elaborator {
         // (Concat multi-elemen) dan struct literal dikecualikan — keduanya
         // didaftarkan lewat jalur array/struct di atas.
         for (pname, expr) in &body_param_defaults {
-                if std::env::var("MIVON_DBG_LP").is_ok() && pname.as_str().contains("FP_WIDTH") {
-                    eprintln!("[DBG-LP-1ST] processing {}: {:?}", pname.as_str(), expr);
-                }
+            if std::env::var("MIVON_DBG_LP").is_ok() && pname.as_str().contains("FP_WIDTH") {
+                eprintln!("[DBG-LP-1ST] processing {}: {:?}", pname.as_str(), expr);
+            }
             if effective_params.contains_key(pname) || struct_vals.contains_key(pname) {
                 continue;
             }
@@ -3820,7 +3834,10 @@ impl Elaborator {
             }
         }
         if std::env::var("MIVON_DBG_LP").is_ok() {
-            eprintln!("[DBG-LP-EXP] expanded_param_defaults count={}", expanded_param_defaults.len());
+            eprintln!(
+                "[DBG-LP-EXP] expanded_param_defaults count={}",
+                expanded_param_defaults.len()
+            );
             for (name, _) in &expanded_param_defaults {
                 if name.as_str().contains("FP_WIDTH") {
                     eprintln!("[DBG-LP-EXP]   found: {}", name.as_str());
@@ -3840,9 +3857,11 @@ impl Elaborator {
                         && ident_refs_pkg_struct(expr, &self.pkg_struct_ref_index);
                     let is_struct_like = is_struct_lit || is_struct_ref;
                     let already_done = if is_struct_like {
-                        struct_lit_done_expanded.contains(pname) || struct_vals_expanded.contains_key(pname)
+                        struct_lit_done_expanded.contains(pname)
+                            || struct_vals_expanded.contains_key(pname)
                     } else {
-                        effective_params.contains_key(pname) || struct_vals_expanded.contains_key(pname)
+                        effective_params.contains_key(pname)
+                            || struct_vals_expanded.contains_key(pname)
                     };
                     if already_done || array_done_expanded.contains(pname) {
                         continue;
@@ -3879,7 +3898,9 @@ impl Elaborator {
                         &struct_vals_expanded,
                         &self.pkg_array_structs,
                     ) {
-                        if std::env::var("MIVON_DBG_LP").is_ok() && pname.as_str().contains("FP_WIDTH") {
+                        if std::env::var("MIVON_DBG_LP").is_ok()
+                            && pname.as_str().contains("FP_WIDTH")
+                        {
                             eprintln!("[DBG-LP-EXP] evaluated {} = {}", pname.as_str(), val);
                         }
                         effective_params.insert(*pname, val);
@@ -4061,11 +4082,20 @@ impl Elaborator {
         self.param_vals = effective_params.clone();
 
         if std::env::var("DBG_DECL2").is_ok() {
-            eprintln!("DBG-DECL2 enter module={} decls={} items={}", module.name.as_str(), module.decls.len(), module.items.len());
+            eprintln!(
+                "DBG-DECL2 enter module={} decls={} items={}",
+                module.name.as_str(),
+                module.decls.len(),
+                module.items.len()
+            );
             for it in &module.items {
                 if let mivon_ast::ModuleItem::Decl(d) = it {
                     for v in &d.names {
-                        eprintln!("DBG-DECL2 item-decl {} ar={:?}", v.name.as_str(), v.array_range);
+                        eprintln!(
+                            "DBG-DECL2 item-decl {} ar={:?}",
+                            v.name.as_str(),
+                            v.array_range
+                        );
                     }
                 } else {
                     eprintln!("DBG-DECL2 item other");
@@ -4075,7 +4105,12 @@ impl Elaborator {
         if std::env::var("DBG_DECL").is_ok() {
             for d in &module.decls {
                 for v in &d.names {
-                    eprintln!("DBG-DECL module-decl {} dtype={:?} ar={:?}", v.name.as_str(), d.dtype, v.array_range);
+                    eprintln!(
+                        "DBG-DECL module-decl {} dtype={:?} ar={:?}",
+                        v.name.as_str(),
+                        d.dtype,
+                        v.array_range
+                    );
                 }
             }
         }
@@ -4367,7 +4402,11 @@ impl Elaborator {
                     if std::env::var("DBG_DECL").is_ok() {
                         eprintln!(
                             "DBG-DECL array name={} elem_w={} dims={:?} depth={} width={}",
-                            var.name.as_str(), elem_width, all_dims, total_depth, total_width
+                            var.name.as_str(),
+                            elem_width,
+                            all_dims,
+                            total_depth,
+                            total_width
                         );
                     }
                     let sid = get_or_create_signal(
@@ -4476,7 +4515,12 @@ impl Elaborator {
                     }
                 } else {
                     if std::env::var("DBG_DECL").is_ok() {
-                        eprintln!("DBG-DECL scalar name={} elem_w={} array_range={:?}", var.name.as_str(), elem_width, var.array_range.is_some());
+                        eprintln!(
+                            "DBG-DECL scalar name={} elem_w={} array_range={:?}",
+                            var.name.as_str(),
+                            elem_width,
+                            var.array_range.is_some()
+                        );
                     }
                     let sid = get_or_create_signal(
                         var.name,
@@ -5172,7 +5216,8 @@ impl Elaborator {
                                 // memperlakukan Ident sbg unsigned sehingga
                                 // `assign y = (N<0)` (N=-2) salah jadi 0
                                 // (probe p19).
-                                if sign::expr_refs_signed_param(&assign.rhs, &self.param_is_signed) {
+                                if sign::expr_refs_signed_param(&assign.rhs, &self.param_is_signed)
+                                {
                                     propagate_context_width(&mut rhs, lhs_w, &signals);
                                 } else if let Some(c) =
                                     try_fold_const_at_width(&assign.rhs, &self.param_vals, lhs_w)
@@ -5200,10 +5245,7 @@ impl Elaborator {
                                             // keyword wire/logic di Port, jadi
                                             // `output wire` yang legal
                                             // multi-driver tak bisa dibedakan.
-                                            matches!(
-                                                s.kind,
-                                                SignalKind::Logic | SignalKind::Reg
-                                            )
+                                            matches!(s.kind, SignalKind::Logic | SignalKind::Reg)
                                         })
                                         .unwrap_or(false);
                                     if is_var && !cont_driven_vars.insert(id) {
@@ -5646,9 +5688,9 @@ impl Elaborator {
                                     // me-resolve sebagai nilai maupun tipe:
                                     // pesannya menyebut alternatif tipe.
                                     let is_type_param = target_module.is_some_and(|tm| {
-                                        tm.params.iter().any(|p| {
-                                            p.is_type_param && p.name == *pname
-                                        })
+                                        tm.params
+                                            .iter()
+                                            .any(|p| p.is_type_param && p.name == *pname)
                                     });
                                     let expect = if is_type_param {
                                         "bukan ekspresi konstan maupun nama tipe yang dikenal"
@@ -5685,10 +5727,8 @@ impl Elaborator {
                             match pexpr {
                                 Expr::Ident { name, .. } => ref_bases.push(*name),
                                 Expr::ScopedIdent { package, item, .. } => {
-                                    ref_bases.push(Symbol::intern(&format!(
-                                        "{}::{}",
-                                        package, item
-                                    )));
+                                    ref_bases
+                                        .push(Symbol::intern(&format!("{}::{}", package, item)));
                                     ref_bases.push(*item);
                                 }
                                 _ => {}
@@ -5755,10 +5795,9 @@ impl Elaborator {
                             if let Some(members) = lit_members {
                                 for m in members {
                                     if let StructLitMember::Named(fname, fexpr) = m {
-                                        if let Ok(fv) = const_eval_with_params(
-                                            fexpr,
-                                            &effective_params,
-                                        ) {
+                                        if let Ok(fv) =
+                                            const_eval_with_params(fexpr, &effective_params)
+                                        {
                                             param_map.insert(
                                                 Symbol::intern(&format!(
                                                     "{}.{}",
@@ -5806,9 +5845,7 @@ impl Elaborator {
                         // (pname-nya bukan type param).
                         if let Some(tm) = target_module {
                             for p in &tm.params {
-                                if !p.is_type_param
-                                    || type_param_map.contains_key(&p.name)
-                                {
+                                if !p.is_type_param || type_param_map.contains_key(&p.name) {
                                     continue;
                                 }
                                 let type_name = match inst.param_assigns.get(&p.name) {
@@ -5816,11 +5853,7 @@ impl Elaborator {
                                         Some(name.as_str().to_string())
                                     }
                                     Some(Expr::ScopedIdent { package, item, .. }) => {
-                                        Some(format!(
-                                            "{}::{}",
-                                            package.as_str(),
-                                            item.as_str()
-                                        ))
+                                        Some(format!("{}::{}", package.as_str(), item.as_str()))
                                     }
                                     _ => None,
                                 };
@@ -6039,12 +6072,16 @@ impl Elaborator {
                         processes.push(process);
                     }
                 }
-                ModuleItem::SequenceDecl { name, args, expr, .. } => {
+                ModuleItem::SequenceDecl {
+                    name, args, expr, ..
+                } => {
                     // Register sequence declaration for reference in assertions
                     let seq_ir = self.elaborate_sva_seq_expr(expr, &signal_map, &signals)?;
                     self.sequence_decls.insert(*name, (args.clone(), seq_ir));
                 }
-                ModuleItem::PropertyDecl { name, args, expr, .. } => {
+                ModuleItem::PropertyDecl {
+                    name, args, expr, ..
+                } => {
                     // Register property declaration for reference in assertions
                     let prop_ir = self.elaborate_sva_prop_expr(expr, &signal_map, &signals)?;
                     self.property_decls.insert(*name, (args.clone(), prop_ir));

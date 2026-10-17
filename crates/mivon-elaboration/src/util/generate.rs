@@ -13,9 +13,9 @@
 
 use std::collections::{HashMap, HashSet};
 
+use mivon_ast::const_eval_ext::{eval_param_default_full, ArrayStructs, Arrays, SField};
 use mivon_ast::types::const_eval_simple;
 use mivon_ast::types::const_eval_with_params;
-use mivon_ast::const_eval_ext::{eval_param_default_full, Arrays, SField, ArrayStructs};
 use mivon_ast::*;
 
 const MAX_GENERATED_ITEMS: usize = 1_000_000;
@@ -171,6 +171,7 @@ pub(crate) fn expr_location(expr: &Expr) -> (usize, usize) {
 /// Perluas SEMUA generate block di module dengan nilai parameter tertentu.
 /// Block yang gagal diekspansi (mis. limit non-constant karena konstanta
 /// package tidak tersedia) menghasilkan error elaborasi.
+#[allow(clippy::too_many_arguments)]
 pub fn expand_all_generates(
     module: &mut Module,
     param_vals: &HashMap<Symbol, i64>,
@@ -207,7 +208,7 @@ pub fn expand_all_generates(
                 pkg_const_arrays,
                 package_symbols,
                 pkg_struct_ref_index,
-                            pkg_array_structs,
+                pkg_array_structs,
             ) {
                 Ok(expanded) => {
                     total_items += expanded.len();
@@ -425,6 +426,7 @@ fn gen_expr_is_signed(e: &Expr, signed_params: &std::collections::HashSet<Symbol
 }
 
 /// Perluas SATU generate block dengan nilai parameter tertentu.
+#[allow(clippy::too_many_arguments)]
 pub fn expand_generate_block(
     gen: &GenerateBlock,
     param_vals: &HashMap<Symbol, i64>,
@@ -737,7 +739,7 @@ pub fn expand_generate_block(
                                 pkg_const_arrays,
                                 package_symbols,
                                 pkg_struct_ref_index,
-                            pkg_array_structs,
+                                pkg_array_structs,
                             )?);
                         } else if let Some(default_items) = default {
                             result.extend(expand_item_list(
@@ -751,7 +753,7 @@ pub fn expand_generate_block(
                                 pkg_const_arrays,
                                 package_symbols,
                                 pkg_struct_ref_index,
-                            pkg_array_structs,
+                                pkg_array_structs,
                             )?);
                         }
                         continue;
@@ -780,7 +782,7 @@ pub fn expand_generate_block(
                                 pkg_const_arrays,
                                 package_symbols,
                                 pkg_struct_ref_index,
-                            pkg_array_structs,
+                                pkg_array_structs,
                             )?);
                             matched = true;
                             break;
@@ -820,7 +822,7 @@ pub fn expand_generate_block(
                     pkg_const_arrays,
                     package_symbols,
                     pkg_struct_ref_index,
-                            pkg_array_structs,
+                    pkg_array_structs,
                 )?);
             }
         }
@@ -831,6 +833,7 @@ pub fn expand_generate_block(
 /// Perluas daftar module items: evaluasi localparam yang didefinisikan di dalamnya
 /// (dipakai oleh generate sibling), lalu perluas generate block bersarang secara
 /// rekursif dengan param context yang diperpanjang.
+#[allow(clippy::too_many_arguments)]
 fn expand_item_list(
     items: &[ModuleItem],
     param_vals: &HashMap<Symbol, i64>,
@@ -872,7 +875,10 @@ fn expand_item_list(
     let mut result = Vec::new();
     for item in items {
         if std::env::var("DBG_GEN").is_ok() {
-            eprintln!("[DBG-GEN-EXP] processing item: {:?}", std::mem::discriminant(item));
+            eprintln!(
+                "[DBG-GEN-EXP] processing item: {:?}",
+                std::mem::discriminant(item)
+            );
             if let ModuleItem::Param(p) = item {
                 eprintln!("[DBG-GEN-EXP]   Param: {}", p.name.as_str());
             }
@@ -890,7 +896,7 @@ fn expand_item_list(
                     pkg_const_arrays,
                     package_symbols,
                     pkg_struct_ref_index,
-                            pkg_array_structs,
+                    pkg_array_structs,
                 )?);
             }
             other => result.push(other.clone()),
@@ -972,7 +978,7 @@ fn fold_localparams(
                                     pkg_const_arrays,
                                     package_symbols,
                                     pkg_struct_ref_index,
-                            pkg_array_structs,
+                                    pkg_array_structs,
                                 );
                             }
                         }
@@ -985,7 +991,7 @@ fn fold_localparams(
                                     pkg_const_arrays,
                                     package_symbols,
                                     pkg_struct_ref_index,
-                            pkg_array_structs,
+                                    pkg_array_structs,
                                 );
                             }
                             if let Some(d) = default {
@@ -996,7 +1002,7 @@ fn fold_localparams(
                                     pkg_const_arrays,
                                     package_symbols,
                                     pkg_struct_ref_index,
-                            pkg_array_structs,
+                                    pkg_array_structs,
                                 );
                             }
                         }
@@ -1025,7 +1031,7 @@ fn fold_localparams(
             pkg_const_arrays,
             package_symbols,
             pkg_struct_ref_index,
-                            pkg_array_structs,
+            pkg_array_structs,
         );
         if folded.is_empty() {
             break;

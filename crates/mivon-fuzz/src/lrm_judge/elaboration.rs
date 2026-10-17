@@ -14,9 +14,7 @@ pub fn evaluate(
     state: &LrmState,
 ) -> RuleResult {
     match rule.id.0 {
-        "SV-ELAB-PARAM-001" | "SV-ELAB-PARAM-002" => {
-            eval_param_override(rule, observation, state)
-        }
+        "SV-ELAB-PARAM-001" | "SV-ELAB-PARAM-002" => eval_param_override(rule, observation, state),
         "SV-ELAB-PORT-001" => eval_port_binding(rule, observation, state),
         "SV-ELAB-HIER-001" => eval_hierarchy_unique(rule, observation, state),
         _ => RuleResult {
@@ -29,11 +27,7 @@ pub fn evaluate(
 }
 
 /// SV-ELAB-PARAM-001/002: parameter override harus memengaruhi design.
-fn eval_param_override(
-    rule: &LrmRule,
-    obs: &MivonObservation,
-    state: &LrmState,
-) -> RuleResult {
+fn eval_param_override(rule: &LrmRule, obs: &MivonObservation, state: &LrmState) -> RuleResult {
     // Cek elaborasi berhasil.
     if obs.has_errors() {
         let codes = obs.error_codes();
@@ -53,7 +47,10 @@ fn eval_param_override(
         };
     }
 
-    let overridden: Vec<_> = state.elaborated_design.parameters.values()
+    let overridden: Vec<_> = state
+        .elaborated_design
+        .parameters
+        .values()
         .filter(|p| p.is_overridden)
         .collect();
 
@@ -66,12 +63,15 @@ fn eval_param_override(
         };
     }
 
-    let ev: Vec<Evidence> = overridden.iter().map(|p| {
-        Evidence::matching(
-            format!("{}.{}", p.instance_path, p.param_name),
-            p.override_value.clone().unwrap_or_default(),
-        )
-    }).collect();
+    let ev: Vec<Evidence> = overridden
+        .iter()
+        .map(|p| {
+            Evidence::matching(
+                format!("{}.{}", p.instance_path, p.param_name),
+                p.override_value.clone().unwrap_or_default(),
+            )
+        })
+        .collect();
 
     RuleResult {
         rule: rule.id.clone(),
@@ -79,21 +79,20 @@ fn eval_param_override(
         evidence: ev,
         explanation: format!(
             "Rule {} (§{}): {} parameter override tercatat di elaborated design",
-            rule.id, rule.clause.section, overridden.len()
+            rule.id,
+            rule.clause.section,
+            overridden.len()
         ),
     }
 }
 
 /// SV-ELAB-PORT-001: port binding valid.
-fn eval_port_binding(
-    rule: &LrmRule,
-    obs: &MivonObservation,
-    state: &LrmState,
-) -> RuleResult {
+fn eval_port_binding(rule: &LrmRule, obs: &MivonObservation, state: &LrmState) -> RuleResult {
     if obs.has_errors() {
         let codes = obs.error_codes();
-        let has_port_err = codes.iter().any(|c| c.contains("port") || c.contains("PORT")
-            || *c == "E1003" || *c == "E1004");
+        let has_port_err = codes
+            .iter()
+            .any(|c| c.contains("port") || c.contains("PORT") || *c == "E1003" || *c == "E1004");
         if has_port_err {
             // Sama seperti param: error port SENDIRI bukan bukti pelanggaran
             // (kode mutasi bisa memang invalid) → Inconclusive.
@@ -117,20 +116,20 @@ fn eval_port_binding(
         )],
         explanation: format!(
             "Rule {} (§{}): {} port binding tanpa error",
-            rule.id, rule.clause.section,
+            rule.id,
+            rule.clause.section,
             state.elaborated_design.port_bindings.len()
         ),
     }
 }
 
 /// SV-ELAB-HIER-001: nama instance unik di scope yang sama.
-fn eval_hierarchy_unique(
-    rule: &LrmRule,
-    _obs: &MivonObservation,
-    state: &LrmState,
-) -> RuleResult {
+fn eval_hierarchy_unique(rule: &LrmRule, _obs: &MivonObservation, state: &LrmState) -> RuleResult {
     use std::collections::HashSet;
-    let paths: Vec<&str> = state.elaborated_design.hierarchy.iter()
+    let paths: Vec<&str> = state
+        .elaborated_design
+        .hierarchy
+        .iter()
         .map(|n| n.instance_path.as_str())
         .collect();
     let unique: HashSet<&&str> = paths.iter().collect();
@@ -143,7 +142,7 @@ fn eval_hierarchy_unique(
             },
             evidence: vec![Evidence::mismatch(
                 "hierarchy.unique",
-                &format!("{} total, {} unique", paths.len(), unique.len()),
+                format!("{} total, {} unique", paths.len(), unique.len()),
                 "semua unique",
             )],
             explanation: format!("Rule {}: ada instance dengan nama duplikat", rule.id),
@@ -159,7 +158,9 @@ fn eval_hierarchy_unique(
         )],
         explanation: format!(
             "Rule {} (§{}): {} instance, semua unik",
-            rule.id, rule.clause.section, paths.len()
+            rule.id,
+            rule.clause.section,
+            paths.len()
         ),
     }
 }

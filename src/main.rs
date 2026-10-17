@@ -1059,7 +1059,10 @@ fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), SimError> {
                 .to_string();
             let src = std::fs::read_to_string(p)
                 .map_err(|e| SimError::with_diag(DiagCode::IoError, format!("{}: {}", p, e)))?;
-            let header = Path::new(p).extension().map(|e| e == "mvh").unwrap_or(false);
+            let header = Path::new(p)
+                .extension()
+                .map(|e| e == "mvh")
+                .unwrap_or(false);
             // `mivon run x.mv` (F8) memakai emisi default ($unit) — sama
             // dengan `mgen x.mv` tanpa `--package`.
             items.push(mivon_api::mv::MvItem::new(src, base).with_header(header));
@@ -1319,7 +1322,16 @@ fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), SimError> {
     // segmen dibutuhkan parser supaya delay tiap module diskalakan dengan
     // satuan modul SENDIRI (LRM §19.8), bukan satuan global.
     let mut pp_combined: Vec<
-        Option<Result<(String, Option<(String, String)>, Vec<(usize, (String, String))>), String>>,
+        Option<
+            Result<
+                (
+                    String,
+                    Option<(String, String)>,
+                    Vec<(usize, (String, String))>,
+                ),
+                String,
+            >,
+        >,
     > = vec![None; sources.len()];
     let mut micd_reused = 0usize;
     let mut need_preprocess: Vec<(usize, &String)> = Vec::new();

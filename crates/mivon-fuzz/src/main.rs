@@ -731,8 +731,11 @@ fn cmd_regress(args: &[String]) -> i32 {
             continue;
         }
         let _ = std::fs::create_dir_all(&fixtures);
-        if std::fs::write(fixtures.join(mivon_fuzz::regression::fixture_name(&e.source)), &e.source)
-            .is_ok()
+        if std::fs::write(
+            fixtures.join(mivon_fuzz::regression::fixture_name(&e.source)),
+            &e.source,
+        )
+        .is_ok()
         {
             written.push(fp);
             n_fixture += 1;

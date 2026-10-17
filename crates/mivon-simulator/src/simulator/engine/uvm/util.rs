@@ -606,7 +606,7 @@ impl SimulationEngine {
                         let key = self.eval_with_value(with_clause, &elem)?.to_u64();
                         keyed.push((key, elem));
                     }
-                    keyed.sort_by(|a, b| a.0.cmp(&b.0));
+                    keyed.sort_by_key(|a| a.0);
                     let mut new_bits = Vec::with_capacity(lv.width);
                     for (_, e) in &keyed {
                         new_bits.extend(e.bits.iter().copied());
@@ -637,7 +637,7 @@ impl SimulationEngine {
                         let key = self.eval_with_value(with_clause, &elem)?.to_u64();
                         keyed.push((key, elem));
                     }
-                    keyed.sort_by(|a, b| b.0.cmp(&a.0));
+                    keyed.sort_by_key(|a| std::cmp::Reverse(a.0));
                     let mut new_bits = Vec::with_capacity(lv.width);
                     for (_, e) in &keyed {
                         new_bits.extend(e.bits.iter().copied());

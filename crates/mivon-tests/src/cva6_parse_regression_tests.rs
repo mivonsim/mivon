@@ -23,7 +23,9 @@ fn lex_and_parse(src: &str) -> (mivon_ast::Design, Vec<mivon_core::diagnostics::
     let mut parser = Parser::new(tokens, "<test>")
         .with_source_lines(src)
         .with_file_line_map(file_line_map);
-    let design = parser.parse_design().expect("parse (recovery) harus sukses");
+    let design = parser
+        .parse_design()
+        .expect("parse (recovery) harus sukses");
     (design, parser.errors)
 }
 

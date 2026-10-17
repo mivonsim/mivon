@@ -34,7 +34,7 @@ mod tests;
 // site. Aman: per-thread (cargo test jalan paralel per-thread), dan tiap
 // pemanggilan `generate_*` menimpa nilai sebelumnya sebelum emisi.
 thread_local! {
-    static TYPE_MAP: RefCell<Option<HashMap<String, MvType>>> = RefCell::new(None);
+    static TYPE_MAP: RefCell<Option<HashMap<String, MvType>>> = const { RefCell::new(None) };
 }
 
 /// Bangun map nama typedef (alias) → tipe ter-resolusi. Mencakup typedef
@@ -92,7 +92,7 @@ pub(crate) fn is_queue_typedef(name: &str) -> bool {
         m.borrow()
             .as_ref()
             .and_then(|map| map.get(name))
-            .map_or(false, |t| matches!(t, MvType::Queue(_)))
+            .is_some_and(|t| matches!(t, MvType::Queue(_)))
     })
 }
 

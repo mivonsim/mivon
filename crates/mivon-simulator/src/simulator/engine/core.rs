@@ -2174,12 +2174,12 @@ impl SimulationEngine {
 
             match eval_result {
                 Ok(writes) => {
-                    // Apply writes back to state (no borrow conflicts, all data cloned)
-                    for (sig_id, val) in writes {
-                        if sig_id < self.state.signals.len() {
-                            self.state.write_signal(sig_id, val);
-                        }
-                    }
+                    // Apply writes back to state (no borrow conflicts, all data
+                    // cloned). Pakai `apply_parallel_writes` (bukan write_signal
+                    // langsung) agar net multi-driver di-RESOLVE sama seperti
+                    // jalur default — tanpa ini DAG last-write-wins → differential
+                    // vs default pada net 2-driver (fuzz bug 0366cd02200e).
+                    self.apply_parallel_writes(&writes);
                 }
                 Err(_) => {
                     // Fallback SERIAL per layer: ekspresi body ada yang tak
@@ -2574,7 +2574,9 @@ impl SimulationEngine {
 fn collect_named_labels_ir(stmts: &[IrStmt], out: &mut HashSet<Symbol>) {
     for stmt in stmts {
         match stmt {
-            IrStmt::NamedBlock { name, stmts: inner, .. } => {
+            IrStmt::NamedBlock {
+                name, stmts: inner, ..
+            } => {
                 out.insert(*name);
                 collect_named_labels_ir(inner, out);
             }
@@ -2625,9 +2627,7 @@ fn collect_named_labels_ir(stmts: &[IrStmt], out: &mut HashSet<Symbol>) {
                 collect_named_labels_ir(fail_stmt, out);
             }
             IrStmt::Cover { pass_stmt, .. } => collect_named_labels_ir(pass_stmt, out),
-            IrStmt::WaitOrder {
-                failure_stmts, ..
-            } => collect_named_labels_ir(failure_stmts, out),
+            IrStmt::WaitOrder { failure_stmts, .. } => collect_named_labels_ir(failure_stmts, out),
             IrStmt::RandCase { items } => {
                 for (_, body) in items {
                     collect_named_labels_ir(body, out);
@@ -2644,7 +2644,9 @@ fn collect_named_labels_ast(stmts: &[mivon_ast::Stmt], out: &mut HashSet<Symbol>
     use mivon_ast::Stmt;
     for stmt in stmts {
         match stmt {
-            Stmt::NamedBlock { name, stmts: inner, .. } => {
+            Stmt::NamedBlock {
+                name, stmts: inner, ..
+            } => {
                 out.insert(*name);
                 collect_named_labels_ast(inner, out);
             }
@@ -2679,14 +2681,14 @@ fn collect_named_labels_ast(stmts: &[mivon_ast::Stmt], out: &mut HashSet<Symbol>
             | Stmt::DoWhile { stmts: inner, .. }
             | Stmt::LoopFor { stmts: inner, .. }
             | Stmt::Repeat { stmts: inner, .. }
-            | Stmt::ForeachLoop { stmts: inner, .. } => {
-                collect_named_labels_ast(inner, out)
-            }
+            | Stmt::ForeachLoop { stmts: inner, .. } => collect_named_labels_ast(inner, out),
             Stmt::Delay { stmt: inner, .. }
-            | Stmt::Wait { stmt: Some(inner), .. }
-            | Stmt::EventControl { stmt: Some(inner), .. } => {
-                collect_named_labels_ast(std::slice::from_ref(inner), out)
+            | Stmt::Wait {
+                stmt: Some(inner), ..
             }
+            | Stmt::EventControl {
+                stmt: Some(inner), ..
+            } => collect_named_labels_ast(std::slice::from_ref(inner), out),
             Stmt::Fork { processes, .. } => collect_named_labels_ast(processes, out),
             Stmt::Assert {
                 pass_stmt,
@@ -2711,8 +2713,7 @@ fn collect_named_labels_ast(stmts: &[mivon_ast::Stmt], out: &mut HashSet<Symbol>
                 }
             }
             Stmt::WaitOrder {
-                fail_stmt: Some(f),
-                ..
+                fail_stmt: Some(f), ..
             } => collect_named_labels_ast(std::slice::from_ref(f), out),
             Stmt::RandCase { items } => {
                 for item in items {

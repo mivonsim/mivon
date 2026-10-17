@@ -266,7 +266,7 @@ fn spec_clock_known(scope: &Scope, clock: &str) -> bool {
         return true;
     }
     clock
-        .split(|c| c == ':' || c == '.')
+        .split([':', '.'])
         .filter(|s| !s.is_empty())
         .any(|seg| scope.known(seg))
 }
@@ -286,7 +286,9 @@ fn check_module_item<'a>(
         // ekspresi `.mv` yang bisa divalidasi.
         MItem::AssertProperty(_) | MItem::AssumeProperty(_) | MItem::CoverProperty(_) => Ok(()),
         // SVA Structured Assertions (F85) — konservatif, body SVA tidak dianalisis
-        MItem::AssertPropertyStruct { .. } | MItem::AssumePropertyStruct { .. } | MItem::CoverPropertyStruct { .. } => Ok(()),
+        MItem::AssertPropertyStruct { .. }
+        | MItem::AssumePropertyStruct { .. }
+        | MItem::CoverPropertyStruct { .. } => Ok(()),
         MItem::Sig {
             names, ty, init, ..
         }
@@ -305,7 +307,12 @@ fn check_module_item<'a>(
             Ok(())
         }
         MItem::Wire {
-            names, ty, init, line, col, ..
+            names,
+            ty,
+            init,
+            line,
+            col,
+            ..
         } => {
             check_type_scope(ty, ctx, Some(scope), 0)?;
             if !is_wireable(ty) {
@@ -382,7 +389,14 @@ fn check_module_item<'a>(
             for it in &spec.items {
                 match it {
                     SpecifyItem::Specparam { .. } => {}
-                    SpecifyItem::Setup { data, clock, limit, line, col, .. } => {
+                    SpecifyItem::Setup {
+                        data,
+                        clock,
+                        limit,
+                        line,
+                        col,
+                        ..
+                    } => {
                         check_expr(data, ctx, scope, 0)?;
                         if !spec_clock_known(scope, clock) {
                             // Cleanup sebelum return agar scope pemanggil utuh.
@@ -402,7 +416,14 @@ fn check_module_item<'a>(
                         }
                         check_expr(limit, ctx, scope, 0)?;
                     }
-                    SpecifyItem::Hold { clock, data, limit, line, col, .. } => {
+                    SpecifyItem::Hold {
+                        clock,
+                        data,
+                        limit,
+                        line,
+                        col,
+                        ..
+                    } => {
                         if !spec_clock_known(scope, clock) {
                             for n in &fresh {
                                 scope.sigs.remove(n);
@@ -430,7 +451,12 @@ fn check_module_item<'a>(
             }
             Ok(())
         }
-        MItem::Assign { lhs, rhs, line, col } => {
+        MItem::Assign {
+            lhs,
+            rhs,
+            line,
+            col,
+        } => {
             // Continuous assign: blocking semantik, bukan di seq.
             // Aturan sama seperti blocking di comb: E2003 (input port hanya
             // boleh di TB), E2001 via check_expr, E2010 lvalue const, E2002 width.
@@ -734,7 +760,10 @@ fn check_module_item<'a>(
             // hanya warning + ambil cabang pertama diam-diam.
             // Genvar tersubstitusi per iterasi oleh elaborator → E2014
             // dilewati bila kondisi merujuknya.
-            let uses_genvar = scope.genvars.iter().any(|g| super::expr::expr_uses(cond, g));
+            let uses_genvar = scope
+                .genvars
+                .iter()
+                .any(|g| super::expr::expr_uses(cond, g));
             if !uses_genvar && super::expr::gen_const_value(cond, scope, ctx, 0).is_none() {
                 return Err(err_at(
                     *line,
@@ -772,7 +801,10 @@ fn check_module_item<'a>(
             // F80: expr generate-case WAJIB konstan (LRM 1800 §27.5).
             // Genvar tersubstitusi per iterasi → E2014 dilewati bila
             // ekspresi merujuknya (lihat GenIf di atas).
-            let uses_genvar = scope.genvars.iter().any(|g| super::expr::expr_uses(expr, g));
+            let uses_genvar = scope
+                .genvars
+                .iter()
+                .any(|g| super::expr::expr_uses(expr, g));
             if !uses_genvar && super::expr::gen_const_value(expr, scope, ctx, 0).is_none() {
                 return Err(err_at(
                     *line,

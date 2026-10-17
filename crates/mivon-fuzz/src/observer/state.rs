@@ -26,14 +26,22 @@ fn build_scope_graph(design: &mivon_ir::IrDesign) -> ScopeGraph {
     graph.root = root_id.clone();
     graph.nodes.insert(
         root_id.clone(),
-        ScopeNode { id: root_id.clone(), kind: ScopeKind::Module, name: root_name },
+        ScopeNode {
+            id: root_id.clone(),
+            kind: ScopeKind::Module,
+            name: root_name,
+        },
     );
-    for (sym, _) in &design.modules {
+    for sym in design.modules.keys() {
         let name_s = sym.as_str().to_string();
         let id = ScopeId(name_s.clone());
         graph.nodes.insert(
             id.clone(),
-            ScopeNode { id: id.clone(), kind: ScopeKind::Module, name: name_s },
+            ScopeNode {
+                id: id.clone(),
+                kind: ScopeKind::Module,
+                name: name_s,
+            },
         );
         graph.parent.insert(id, root_id.clone());
     }
@@ -56,7 +64,9 @@ fn build_symbol_table(design: &mivon_ir::IrDesign) -> SymbolTable {
             width: signal.width as u32,
             is_signed: signal.is_signed,
         };
-        table.by_name.insert((root_scope.clone(), sig_name), id.clone());
+        table
+            .by_name
+            .insert((root_scope.clone(), sig_name), id.clone());
         table.entries.insert(id, entry);
     }
     table
@@ -96,7 +106,7 @@ fn build_design_model(design: &mivon_ir::IrDesign) -> DesignModel {
             );
         }
 
-        for (port_sym, _) in inst.port_map.iter() {
+        for port_sym in inst.port_map.keys() {
             model.port_bindings.push(PortBinding {
                 instance_path: format!("{}.{}", top_name, inst_name),
                 port_name: port_sym.as_str().to_string(),
@@ -137,10 +147,14 @@ fn build_process_model(design: &mivon_ir::IrDesign) -> ProcessModel {
                 });
             }
             Process::Initial { .. } => {
-                model.initial_blocks.push(InitialProcess { id: format!("initial_{}", i) });
+                model.initial_blocks.push(InitialProcess {
+                    id: format!("initial_{}", i),
+                });
             }
             Process::Final { .. } => {
-                model.final_blocks.push(FinalProcess { id: format!("final_{}", i) });
+                model.final_blocks.push(FinalProcess {
+                    id: format!("final_{}", i),
+                });
             }
         }
     }

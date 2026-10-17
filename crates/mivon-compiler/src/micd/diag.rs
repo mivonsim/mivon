@@ -172,7 +172,13 @@ mod tests {
 
     #[test]
     fn test_diag_entry_to_diagnostic_error() {
-        let e = DiagEntry::new(10, 4, DiagSeverity::Error, "bad port".to_string(), "E3005".to_string());
+        let e = DiagEntry::new(
+            10,
+            4,
+            DiagSeverity::Error,
+            "bad port".to_string(),
+            "E3005".to_string(),
+        );
         let d = e.to_diagnostic();
         let s = format_diagnostic(&d);
         assert!(s.contains("bad port"));
@@ -183,7 +189,13 @@ mod tests {
 
     #[test]
     fn test_diag_entry_to_diagnostic_warning_no_code() {
-        let w = DiagEntry::new(2, 1, DiagSeverity::Warning, "unused".to_string(), String::new());
+        let w = DiagEntry::new(
+            2,
+            1,
+            DiagSeverity::Warning,
+            "unused".to_string(),
+            String::new(),
+        );
         let d = w.to_diagnostic();
         let s = format_diagnostic(&d);
         assert!(s.contains("unused"));

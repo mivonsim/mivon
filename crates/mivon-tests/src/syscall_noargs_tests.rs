@@ -184,7 +184,8 @@ fn mv_transpile_output_with_nol_arg_syscall_compiles() {
         combined.contains("$display;"),
         "transpiler harus memancarkan `$display;` — dapat: {combined}"
     );
-    compile_str_quiet(&combined).unwrap_or_else(|e| panic!("output MV harus bisa dikompilasi: {e}"));
+    compile_str_quiet(&combined)
+        .unwrap_or_else(|e| panic!("output MV harus bisa dikompilasi: {e}"));
 }
 
 /// REGRESI: statement nol-argumen harus bertahan sampai elaborator, bukan

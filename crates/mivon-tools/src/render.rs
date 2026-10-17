@@ -5,7 +5,7 @@
 //! di tiap tool. Tool lain cukup `use crate::render::*;` atau memanggil
 //! `crate::section(...)` (di-re-export dari lib.rs).
 
-use mivon_ast::expr::{DistItem, Expr, StructLitMember, UnaryOp, Value, BinaryOp};
+use mivon_ast::expr::{BinaryOp, DistItem, Expr, StructLitMember, UnaryOp, Value};
 use mivon_ir::LogicVal;
 
 /// Cetak angka byte dalam bentuk manusia-readable (B/KB/MB/GB/TB).

@@ -14,10 +14,10 @@ pub fn evaluate(
     state: &LrmState,
 ) -> RuleResult {
     match rule.id.0 {
-        "SV-SCHED-NBA-001" | "SV-SCHED-DELTA-001"
-        | "SV-SCHED-RACE-001" | "SV-SCHED-POSEDGE-001" => {
-            eval_scheduling_basic(rule, observation, state)
-        }
+        "SV-SCHED-NBA-001"
+        | "SV-SCHED-DELTA-001"
+        | "SV-SCHED-RACE-001"
+        | "SV-SCHED-POSEDGE-001" => eval_scheduling_basic(rule, observation, state),
         _ => RuleResult {
             rule: rule.id.clone(),
             verdict: RuleVerdict::NotApplicable,
@@ -27,11 +27,7 @@ pub fn evaluate(
     }
 }
 
-fn eval_scheduling_basic(
-    rule: &LrmRule,
-    obs: &MivonObservation,
-    state: &LrmState,
-) -> RuleResult {
+fn eval_scheduling_basic(rule: &LrmRule, obs: &MivonObservation, state: &LrmState) -> RuleResult {
     // SV-SCHED-RACE-001 = implementation-defined → selalu Pass.
     if rule.id.0 == "SV-SCHED-RACE-001" {
         return RuleResult {
@@ -69,10 +65,7 @@ fn eval_scheduling_basic(
             reason: "trace scheduling detail (region per event) belum tersedia".to_string(),
         },
         evidence: vec![
-            Evidence::matching(
-                "simulation_status",
-                obs.exit_status.label(),
-            ),
+            Evidence::matching("simulation_status", obs.exit_status.label()),
             Evidence::matching(
                 "always_ff_blocks",
                 state.processes.always_blocks.len().to_string(),

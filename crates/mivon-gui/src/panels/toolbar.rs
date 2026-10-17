@@ -77,9 +77,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut GuiState) {
                 .unwrap_or(false);
             if ui
                 .add_enabled(active_is_mv, egui::Button::new("⚙ Generate"))
-                .on_hover_text(
-                    "Generate SV/SVH dari Mivon HDL (.mv/.mvh) — file aktif (Ctrl+G)",
-                )
+                .on_hover_text("Generate SV/SVH dari Mivon HDL (.mv/.mvh) — file aktif (Ctrl+G)")
                 .clicked()
             {
                 super::super::app::trigger_generate(state);

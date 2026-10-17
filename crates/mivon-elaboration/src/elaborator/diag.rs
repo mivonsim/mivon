@@ -231,7 +231,13 @@ impl Elaborator {
     }
 
     /// Emit warning dengan posisi source.
-    pub(crate) fn elab_warn_at(&self, code: DiagCode, message: impl Into<String>, line: usize, col: usize) {
+    pub(crate) fn elab_warn_at(
+        &self,
+        code: DiagCode,
+        message: impl Into<String>,
+        line: usize,
+        col: usize,
+    ) {
         let msg: String = message.into();
         let (line, col) = if line > 0 && col > 0 {
             (line, col)

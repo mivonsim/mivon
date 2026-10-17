@@ -44,8 +44,10 @@ fn elaborate(src: &str, tag: &str) -> mivon_ir::IrDesign {
     let d = dir(tag);
     let f = d.join("design.sv");
     std::fs::write(&f, src).unwrap();
-    let mut cfg = SessionConfig::default();
-    cfg.sources = vec![f];
+    let cfg = SessionConfig {
+        sources: vec![f],
+        ..Default::default()
+    };
     let mut session = CompileSession::new(cfg);
     let (_design, ir, _n) = session
         .compile_and_elaborate(None)
@@ -110,8 +112,10 @@ fn session_timescale_across_two_files() {
     )
     .unwrap();
 
-    let mut cfg = SessionConfig::default();
-    cfg.sources = vec![fa, fb];
+    let cfg = SessionConfig {
+        sources: vec![fa, fb],
+        ..Default::default()
+    };
     let mut session = CompileSession::new(cfg);
     let (_design, ir, _n) = session
         .compile_and_elaborate(None)

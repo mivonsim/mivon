@@ -540,7 +540,9 @@ impl CompileSession {
                 let base = base_offsets.get(*idx).copied().unwrap_or(0);
                 map.insert(
                     *idx,
-                    v.iter().map(|(from, ts)| (from + 1 + base, ts.clone())).collect(),
+                    v.iter()
+                        .map(|(from, ts)| (from + 1 + base, ts.clone()))
+                        .collect(),
                 );
             }
             map
@@ -682,8 +684,8 @@ impl CompileSession {
                     .with_source_lines(&combined)
                     .with_file_line_map(file_line_map)
                     .with_line_base(base); // token global = line + base (cumulative)
-                // F84: segmen `timescale file ini (koordinat global, sejajar
-                // token) → timescale per-module. Absen = file tanpa directive.
+                                           // F84: segmen `timescale file ini (koordinat global, sejajar
+                                           // token) → timescale per-module. Absen = file tanpa directive.
                 if let Some(segs) = ts_global.get(&file_idx) {
                     parser.timescale_segments = segs.clone();
                 }
@@ -2837,8 +2839,7 @@ mod tests {
         // resolution MEMBUANG diagnostik akar — tool hanya menampilkan
         // E3005 generik. Session harus menyimpan diagnostik via
         // take_elab_diagnostics().
-        let dir =
-            std::env::temp_dir().join(format!("mivon_eldiag_test_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("mivon_eldiag_test_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let top_path = dir.join("top.sv");
         std::fs::write(
@@ -2858,13 +2859,11 @@ mod tests {
         };
         let _ = err;
         let diags = session.take_elab_diagnostics();
+        assert!(!diags.is_empty(), "diagnostik elab gagal tak boleh hilang");
         assert!(
-            !diags.is_empty(),
-            "diagnostik elab gagal tak boleh hilang"
-        );
-        assert!(
-            diags.iter().any(|d| d.is_error()
-                && d.message.as_ref().contains("NO_SUCH_PARAM")),
+            diags
+                .iter()
+                .any(|d| d.is_error() && d.message.as_ref().contains("NO_SUCH_PARAM")),
             "harus ada error akar skip-module: {:?}",
             diags.iter().map(|d| d.message.as_ref()).collect::<Vec<_>>()
         );
@@ -3226,8 +3225,7 @@ mod tests {
         use crate::micd::MicdDatabase;
         use std::io::Write;
 
-        let dir =
-            std::env::temp_dir().join(format!("mivon_micd_libgate_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("mivon_micd_libgate_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let db_root = dir.join("db");
@@ -3324,12 +3322,7 @@ mod tests {
             writeln!(f, "endgroup").unwrap();
         }
         let sources = vec![ok.clone(), bad.clone()];
-        let count_err = |s: &CompileSession| {
-            s.parse_errors
-                .iter()
-                .filter(|d| d.is_error())
-                .count()
-        };
+        let count_err = |s: &CompileSession| s.parse_errors.iter().filter(|d| d.is_error()).count();
 
         // Sesi 1: cold — error dilaporkan tepat 1× (dedup dua-pass).
         {

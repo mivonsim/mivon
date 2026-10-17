@@ -210,15 +210,21 @@ pub fn sized_width(e: &Expr) -> Option<u64> {
             };
             Some(n.saturating_mul(sized_width(expr)?))
         }
-        Expr::Value(Value::Binary { bits, width, .. }) => {
-            Some(width.map(|w| w as u64).unwrap_or((bits.len() as u64).max(32)))
-        }
-        Expr::Value(Value::Hex { bits, width, .. }) => {
-            Some(width.map(|w| w as u64).unwrap_or((bits.len() as u64 * 4).max(32)))
-        }
-        Expr::Value(Value::Octal { bits, width, .. }) => {
-            Some(width.map(|w| w as u64).unwrap_or((bits.len() as u64 * 3).max(32)))
-        }
+        Expr::Value(Value::Binary { bits, width, .. }) => Some(
+            width
+                .map(|w| w as u64)
+                .unwrap_or((bits.len() as u64).max(32)),
+        ),
+        Expr::Value(Value::Hex { bits, width, .. }) => Some(
+            width
+                .map(|w| w as u64)
+                .unwrap_or((bits.len() as u64 * 4).max(32)),
+        ),
+        Expr::Value(Value::Octal { bits, width, .. }) => Some(
+            width
+                .map(|w| w as u64)
+                .unwrap_or((bits.len() as u64 * 3).max(32)),
+        ),
         // Self-determined width (IEEE 1800 §11.8.1):
         // - `!x` & semua reduction → 1 bit.
         // - `~x` / unary ± → lebar operand (ditemukan fuzzer seed=769558:
@@ -297,10 +303,7 @@ pub fn const_eval_with_params(
     })
 }
 
-fn const_eval_dispatch(
-    expr: &Expr,
-    param_vals: &HashMap<Symbol, i64>,
-) -> Result<i64, String> {
+fn const_eval_dispatch(expr: &Expr, param_vals: &HashMap<Symbol, i64>) -> Result<i64, String> {
     // Dispatcher tipis (bug #38). Sebelumnya fungsi ini adalah SATU match
     // raksasa (~944 baris) sehingga frame-nya ~ratusan KB dan bertumpuk di
     // tiap level rekursi rantai operator — rantai `&&` >=~17 operan menabrak
@@ -316,10 +319,7 @@ fn const_eval_dispatch(
 /// Helper BinaryOp/UnaryOp (bug #38): frame kecil agar rekursi rantai
 /// operator tidak menabrak stack. Body arm identik dengan sebelumnya.
 #[inline(never)]
-fn const_eval_ops(
-    expr: &Expr,
-    param_vals: &HashMap<Symbol, i64>,
-) -> Result<i64, String> {
+fn const_eval_ops(expr: &Expr, param_vals: &HashMap<Symbol, i64>) -> Result<i64, String> {
     match expr {
         Expr::UnaryOp {
             op: UnaryOp::Minus,
@@ -772,10 +772,7 @@ fn const_eval_ops(
 /// Helper arm non-operator (bug #38): Value/Ident/Ternary/Concat/FuncCall/...
 /// Body identik; hanya dipindah keluar dari jalur rekursi rantai operator.
 #[inline(never)]
-fn const_eval_deep(
-    expr: &Expr,
-    param_vals: &HashMap<Symbol, i64>,
-) -> Result<i64, String> {
+fn const_eval_deep(expr: &Expr, param_vals: &HashMap<Symbol, i64>) -> Result<i64, String> {
     match expr {
         Expr::Value(Value::Decimal(n)) => Ok(*n),
         Expr::Value(Value::Binary {

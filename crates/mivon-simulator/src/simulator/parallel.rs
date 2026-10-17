@@ -433,13 +433,19 @@ pub fn evaluate_expr_simple(
             for sl in slices {
                 vals.push(evaluate_expr_simple(sl, signals, sig_info)?);
             }
-            let msb_first: Vec<LogicVal> =
-                vals.iter().flat_map(|v| v.bits.iter().rev().copied()).collect();
+            let msb_first: Vec<LogicVal> = vals
+                .iter()
+                .flat_map(|v| v.bits.iter().rev().copied())
+                .collect();
             let slen = slice_size.unwrap_or(1).max(1);
             let packed_msb: Vec<LogicVal> = if op == ">>" {
                 msb_first
             } else {
-                msb_first.chunks(slen).rev().flat_map(|c| c.iter().copied()).collect()
+                msb_first
+                    .chunks(slen)
+                    .rev()
+                    .flat_map(|c| c.iter().copied())
+                    .collect()
             };
             let result: Vec<LogicVal> = packed_msb.into_iter().rev().collect();
             Ok(LogicVec {

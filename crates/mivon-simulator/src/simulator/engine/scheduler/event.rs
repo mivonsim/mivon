@@ -528,8 +528,7 @@ impl SimulationEngine {
         for pw in waits {
             let saved_this = self.current_this;
             let saved_method = self.current_method;
-            let saved_locals =
-                std::mem::replace(&mut self.method_locals, pw.locals.clone());
+            let saved_locals = std::mem::replace(&mut self.method_locals, pw.locals.clone());
             self.current_this = pw.this;
             self.current_method = pw.method;
             let ok = match self.evaluate_ast_expr(&pw.cond) {
@@ -545,16 +544,12 @@ impl SimulationEngine {
                 continue;
             }
             matched = true;
-            let completed =
-                self.evaluate_ast_block_with_delay_fork(&pw.continuation, None)?;
+            let completed = self.evaluate_ast_block_with_delay_fork(&pw.continuation, None)?;
             // F35: `return` di continuation (illegal SV) menandai
             // ast_return_pending — clear di sini agar tidak bocor.
             self.ast_return_pending = false;
             if completed {
-                let keep = pw
-                    .base_len
-                    .saturating_sub(1)
-                    .min(self.method_locals.len());
+                let keep = pw.base_len.saturating_sub(1).min(self.method_locals.len());
                 self.method_locals.truncate(keep);
                 self.current_this = saved_this;
                 self.current_method = saved_method;
@@ -614,11 +609,14 @@ impl SimulationEngine {
     /// hasil paralel (dipakai saat ≥`min_processes_parallel` proses comb) bisa
     /// beda dari serial (ditemukan mivon-fuzz: EMI dead-code menambah 1 proses →
     /// melewati ambang → multi-driver wire berubah nilai → mismatch EMI palsu).
-    fn apply_parallel_writes(&mut self, writes: &[(SignalId, LogicVec)]) {
+    pub(crate) fn apply_parallel_writes(&mut self, writes: &[(SignalId, LogicVec)]) {
         for (sig_id, val) in writes {
             if let Some(info) = self.design.top.signals.get(*sig_id) {
                 if info.multi_driver
-                    && (info.kind == SignalKind::Wire || info.kind == SignalKind::Inout)
+                    && matches!(
+                        info.kind,
+                        SignalKind::Wire | SignalKind::Inout | SignalKind::Output
+                    )
                 {
                     let current = self.state.read_signal(*sig_id).clone();
                     let resolved =
@@ -668,7 +666,11 @@ impl SimulationEngine {
                 || a.writes.iter().any(|sig| b.writes.contains(sig))
         };
 
-        let mut remaining: std::collections::HashSet<usize> =
+        // BTreeSet (bukan HashSet): urutan iterasi HARUS deterministik — urutan
+        // group menentukan urutan apply write, dan resolusi net multi-driver
+        // akumulatif terhadap nilai saat ini. HashSet ber-seed acak per-instance
+        // membuat io_deq_valid flip X/1 antar run (fuzz bug 7313335569a9).
+        let mut remaining: std::collections::BTreeSet<usize> =
             comb_indices.iter().copied().collect();
         let mut groups: Vec<Vec<usize>> = Vec::new();
         while !remaining.is_empty() {

@@ -493,9 +493,8 @@ mod tests {
         std::fs::write(&small, "module m; endmodule").unwrap();
         // Seed raksasa (> MAX_SEED_BYTES) — dulu dibuang senyap oleh `retain`.
         let large = dir.join("big.sv");
-        let _ = std::fs::File::create(&large).and_then(|mut f| {
-            f.write_all(&vec![b' '; MAX_SEED_BYTES as usize + 1024])
-        });
+        let _ = std::fs::File::create(&large)
+            .and_then(|mut f| f.write_all(&vec![b' '; MAX_SEED_BYTES as usize + 1024]));
         let corpus = Corpus::load(Some(&dir));
         assert_eq!(corpus.len(), 1, "seed kecil tetap dipertahankan");
         assert_eq!(
@@ -527,10 +526,7 @@ mod tests {
         std::fs::write(dir.join("tb_01_counter.sv"), "module tb; endmodule").unwrap();
         let corpus = Corpus::load(Some(&dir));
         // design → tb ditempel di belakang.
-        let fwd = corpus.pair_with_tb(
-            &dir.join("01_counter.sv"),
-            "module counter; endmodule",
-        );
+        let fwd = corpus.pair_with_tb(&dir.join("01_counter.sv"), "module counter; endmodule");
         assert!(fwd.contains("module tb;"), "design harus ditempeli tb");
         // tb → design di-prepend di depan.
         let rev = corpus.pair_with_tb(&dir.join("tb_01_counter.sv"), "module tb; endmodule");

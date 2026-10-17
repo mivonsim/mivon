@@ -4,8 +4,8 @@
 
 #![cfg(feature = "dev")]
 
-use crate::lrm_model::{ClauseRef, LrmRule, RuleCategory, RuleClassification, RuleId};
 use super::RuleRegistry;
+use crate::lrm_model::{ClauseRef, LrmRule, RuleCategory, RuleClassification, RuleId};
 
 pub fn register(reg: &mut RuleRegistry) {
     // SV-SCHED-NBA-001: NBA assignment harus terjadi di region NBA,
@@ -15,12 +15,9 @@ pub fn register(reg: &mut RuleRegistry) {
         clause: ClauseRef::sv2017("4.4.2"),
         category: RuleCategory::Scheduling,
         classification: RuleClassification::RequiredBehavior,
-        applies_when: Box::new(|state| {
-            !state.processes.always_blocks.is_empty()
-        }),
+        applies_when: Box::new(|state| !state.processes.always_blocks.is_empty()),
         requires: vec![],
-        expected_description:
-            "NBA assignment diselesaikan di region NBA setelah Active (§4.4.2)",
+        expected_description: "NBA assignment diselesaikan di region NBA setelah Active (§4.4.2)",
     });
 
     // SV-SCHED-DELTA-001: satu time step boleh mempunyai lebih dari satu
@@ -32,8 +29,7 @@ pub fn register(reg: &mut RuleRegistry) {
         classification: RuleClassification::RequiredBehavior,
         applies_when: Box::new(|_| true),
         requires: vec![],
-        expected_description:
-            "satu time step boleh mempunyai lebih dari satu delta cycle (§4.4)",
+        expected_description: "satu time step boleh mempunyai lebih dari satu delta cycle (§4.4)",
     });
 
     // SV-SCHED-RACE-001: dua blocking assignment ke sinyal yang sama di
@@ -44,9 +40,7 @@ pub fn register(reg: &mut RuleRegistry) {
         clause: ClauseRef::sv2017("4.7"),
         category: RuleCategory::Scheduling,
         classification: RuleClassification::ImplementationDefined,
-        applies_when: Box::new(|state| {
-            state.processes.always_blocks.len() > 1
-        }),
+        applies_when: Box::new(|state| state.processes.always_blocks.len() > 1),
         requires: vec![],
         expected_description:
             "race condition pada blocking assignment di Active = implementation-defined (§4.7)",
@@ -60,11 +54,13 @@ pub fn register(reg: &mut RuleRegistry) {
         category: RuleCategory::Scheduling,
         classification: RuleClassification::RequiredBehavior,
         applies_when: Box::new(|state| {
-            state.processes.always_blocks.iter()
+            state
+                .processes
+                .always_blocks
+                .iter()
                 .any(|p| p.sensitivity.iter().any(|s| s.contains("posedge")))
         }),
         requires: vec![],
-        expected_description:
-            "@(posedge clk) trigger pada transisi 0→1 atau x/z→1 (§9.4.2.1)",
+        expected_description: "@(posedge clk) trigger pada transisi 0→1 atau x/z→1 (§9.4.2.1)",
     });
 }

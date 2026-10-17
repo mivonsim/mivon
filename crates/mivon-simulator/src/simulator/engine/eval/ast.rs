@@ -781,12 +781,12 @@ impl SimulationEngine {
                 // ERROR keras (bukan null default 0): hasil 0 sunyi
                 // menyesatkan — simulasi terlihat lolos padahal salah hitung.
                 let (w_line, w_col) = self.cur_src_pos();
-                return Err(self.diag_error_at(
+                Err(self.diag_error_at(
                     DiagCode::NotImplemented,
                     format!("unknown function '{}' in method context", name.as_str()),
                     w_line,
                     w_col,
-                ));
+                ))
             }
             Expr::MethodCall {
                 obj,
@@ -804,7 +804,7 @@ impl SimulationEngine {
                         if let Some(sig) = self.design.top.signals.get(sig_id) {
                             if sig.is_string {
                                 let s_val = self.state.read_signal(sig_id);
-                                let s_str = logicvec_to_string(&s_val);
+                                let s_str = logicvec_to_string(s_val);
                                 let arg_vals: Vec<LogicVec> = args
                                     .iter()
                                     .map(|a| self.evaluate_ast_expr(a))
@@ -1021,8 +1021,10 @@ impl SimulationEngine {
                 }
                 // LRM 1800 §11.4.14 (mirror jalur IR): `>>` identitas;
                 // `<<` balik urutan slice, bit dalam slice tetap.
-                let msb_first: Vec<LogicVal> =
-                    vals.iter().flat_map(|v| v.bits.iter().rev().copied()).collect();
+                let msb_first: Vec<LogicVal> = vals
+                    .iter()
+                    .flat_map(|v| v.bits.iter().rev().copied())
+                    .collect();
                 let slen = if let Some(ss_expr) = slice_size {
                     let ss_val = self.evaluate_ast_expr(ss_expr)?;
                     let n = ss_val.to_u64() as usize;
@@ -1039,7 +1041,11 @@ impl SimulationEngine {
                 let packed_msb: Vec<LogicVal> = if op == ">>" {
                     msb_first
                 } else {
-                    msb_first.chunks(slen).rev().flat_map(|c| c.iter().copied()).collect()
+                    msb_first
+                        .chunks(slen)
+                        .rev()
+                        .flat_map(|c| c.iter().copied())
+                        .collect()
                 };
                 let result: Vec<LogicVal> = packed_msb.into_iter().rev().collect();
                 Ok(LogicVec {
@@ -1163,7 +1169,11 @@ impl SimulationEngine {
                 let old = self.evaluate_ast_expr(inner)?;
                 let one = LogicVec::from_u64(1, old.width);
                 let new = eval_binary(
-                    if *inc { BinaryIrOp::Add } else { BinaryIrOp::Sub },
+                    if *inc {
+                        BinaryIrOp::Add
+                    } else {
+                        BinaryIrOp::Sub
+                    },
                     &old,
                     &one,
                 );

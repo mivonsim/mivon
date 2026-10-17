@@ -303,7 +303,8 @@ impl MicdDatabase {
                 self.verify_semantic_index
                     .insert(v.semantic_hash, v.content_hash);
             }
-            self.verify_accessed.insert(v.content_hash, v.verified_at_ns);
+            self.verify_accessed
+                .insert(v.content_hash, v.verified_at_ns);
         }
         self.symbols = snap.symbols;
         self.diags = snap

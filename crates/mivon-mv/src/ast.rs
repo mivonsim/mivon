@@ -403,25 +403,55 @@ pub enum SvaSeqExpr {
     /// Boolean expression (base sequence)
     Expr(Expr),
     /// Delay: `seq1 ##N seq2` atau `seq1 ##[M:N] seq2`
-    Delay { left: Box<SvaSeqExpr>, right: Box<SvaSeqExpr>, min: Expr, max: Option<Expr> },
+    Delay {
+        left: Box<SvaSeqExpr>,
+        right: Box<SvaSeqExpr>,
+        min: Expr,
+        max: Option<Expr>,
+    },
     /// Repeat: `[*N]` atau `[*M:N]`
-    Repeat { expr: Box<SvaSeqExpr>, min: Expr, max: Option<Expr> },
+    Repeat {
+        expr: Box<SvaSeqExpr>,
+        min: Expr,
+        max: Option<Expr>,
+    },
     /// Overlapping implication: `seq1 |-> seq2`
-    Implies { left: Box<SvaSeqExpr>, right: Box<SvaSeqExpr> },
+    Implies {
+        left: Box<SvaSeqExpr>,
+        right: Box<SvaSeqExpr>,
+    },
     /// Non-overlapping implication: `seq1 |=> seq2`
-    NextImplies { left: Box<SvaSeqExpr>, right: Box<SvaSeqExpr> },
+    NextImplies {
+        left: Box<SvaSeqExpr>,
+        right: Box<SvaSeqExpr>,
+    },
     /// Or: `seq1 or seq2`
-    Or { left: Box<SvaSeqExpr>, right: Box<SvaSeqExpr> },
+    Or {
+        left: Box<SvaSeqExpr>,
+        right: Box<SvaSeqExpr>,
+    },
     /// And: `seq1 and seq2`
-    And { left: Box<SvaSeqExpr>, right: Box<SvaSeqExpr> },
+    And {
+        left: Box<SvaSeqExpr>,
+        right: Box<SvaSeqExpr>,
+    },
     /// Intersect: `seq1 intersect seq2`
-    Intersect { left: Box<SvaSeqExpr>, right: Box<SvaSeqExpr> },
+    Intersect {
+        left: Box<SvaSeqExpr>,
+        right: Box<SvaSeqExpr>,
+    },
     /// First match: `first_match(seq)`
     FirstMatch { expr: Box<SvaSeqExpr> },
     /// Throughout: `seq1 throughout seq2`
-    Throughout { left: Box<SvaSeqExpr>, right: Box<SvaSeqExpr> },
+    Throughout {
+        left: Box<SvaSeqExpr>,
+        right: Box<SvaSeqExpr>,
+    },
     /// Within: `seq1 within seq2`
-    Within { left: Box<SvaSeqExpr>, right: Box<SvaSeqExpr> },
+    Within {
+        left: Box<SvaSeqExpr>,
+        right: Box<SvaSeqExpr>,
+    },
 }
 
 /// SVA Property expression (F85) — LRM 1800 §16.12-16.16.
@@ -442,9 +472,15 @@ pub enum SvaPropExpr {
     /// Nexttime: `nexttime seq` / `s_nexttime seq`
     Nexttime { expr: Box<SvaSeqExpr>, strong: bool },
     /// Implication as property: `seq |-> prop`
-    Implies { seq: Box<SvaSeqExpr>, prop: Box<SvaPropExpr> },
+    Implies {
+        seq: Box<SvaSeqExpr>,
+        prop: Box<SvaPropExpr>,
+    },
     /// Non-overlapping implication as property: `seq |=> prop`
-    NextImplies { seq: Box<SvaSeqExpr>, prop: Box<SvaPropExpr> },
+    NextImplies {
+        seq: Box<SvaSeqExpr>,
+        prop: Box<SvaPropExpr>,
+    },
     /// Iff: `iff (cond) prop`
     Iff { cond: Expr, prop: Box<SvaPropExpr> },
     /// Disable iff: `disable iff (cond) prop`

@@ -67,9 +67,7 @@ module t;
 endmodule
 "#;
     let sigs = sim_all(src, 50);
-    let g = |n: &str| -> &mivon_ir::LogicVec {
-        &sigs.iter().find(|(s, _)| s == n).unwrap().1
-    };
+    let g = |n: &str| -> &mivon_ir::LogicVec { &sigs.iter().find(|(s, _)| s == n).unwrap().1 };
     // bits[] LSB-first. px0 = xxxx_0000 → bits[4..8] = X, bits[0..4] = 0.
     assert_eq!(g("px0").bits[4], LogicVal::X, "px0[7:4]=x, bukan 0");
     assert_eq!(g("px0").bits[0], LogicVal::Zero, "px0[3:0]=0");
@@ -98,9 +96,7 @@ module t;
 endmodule
 "#;
     let sigs = sim_all(src, 50);
-    let g = |n: &str| -> &mivon_ir::LogicVec {
-        &sigs.iter().find(|(s, _)| s == n).unwrap().1
-    };
+    let g = |n: &str| -> &mivon_ir::LogicVec { &sigs.iter().find(|(s, _)| s == n).unwrap().1 };
     assert_eq!(g("pz0").bits[4], LogicVal::Z, "pz0[7:4]=z");
     assert_eq!(g("pz0").bits[0], LogicVal::Zero, "pz0[3:0]=0");
     // x1z0 = x1z0_0000 → LSB-first: bit4=0, bit5=z, bit6=1, bit7=x.
@@ -203,9 +199,7 @@ module t;
 endmodule
 "#;
     let sigs = sim_all(src, 100);
-    let g = |n: &str| -> u64 {
-        sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64()
-    };
+    let g = |n: &str| -> u64 { sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64() };
     assert_eq!(g("p1"), 33, "17**2 truncated ke 8 bit = 33 (bukan 289)");
     assert_eq!(g("p2"), 0, "2**10 truncated ke 8 bit = 0 (bukan 1024)");
     assert_eq!(g("p3"), 9, "3**2 = 9");
@@ -233,9 +227,7 @@ module t;
 endmodule
 "#;
     let sigs = sim_all(src, 100);
-    let g = |n: &str| -> u64 {
-        sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64()
-    };
+    let g = |n: &str| -> u64 { sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64() };
     assert_eq!(g("w1"), 9);
     assert_eq!(g("w2"), 40000);
     assert_eq!(g("w3"), 1_000_000_000_000);
@@ -259,9 +251,7 @@ module t;
 endmodule
 "#;
     let sigs = sim_all(src, 100);
-    let g = |n: &str| -> u64 {
-        sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64()
-    };
+    let g = |n: &str| -> u64 { sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64() };
     assert_eq!(g("ru"), 9, "253**2 & 0xff = 9");
     assert_eq!(g("rs"), 9, "signed -3**2 = 9");
 }

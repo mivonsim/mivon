@@ -18,8 +18,8 @@ pub mod state;
 pub use collector::collect_from_runner;
 pub use state::build_lrm_state;
 
-use std::collections::HashMap;
 use crate::lrm_model::LrmValue;
+use std::collections::HashMap;
 
 /// Observasi lengkap dari satu eksekusi mivon.
 ///
@@ -68,7 +68,8 @@ impl MivonObservation {
 
     /// Semua kode error.
     pub fn error_codes(&self) -> Vec<&str> {
-        self.diagnostics.iter()
+        self.diagnostics
+            .iter()
             .filter(|d| d.is_error())
             .map(|d| d.code.as_str())
             .collect()

@@ -358,9 +358,7 @@ impl SimulationEngine {
             .filter_map(|a| {
                 let signed = is_signed_expr(a, &self.design.top.signals);
                 let real = ir_expr_is_real(a, &self.design.top.signals);
-                self.evaluate_expr(a)
-                    .ok()
-                    .map(|v| (v, signed, real))
+                self.evaluate_expr(a).ok().map(|v| (v, signed, real))
             })
             .collect();
         self.format_display_fmt(fmt_str, value_args.into_iter())
@@ -391,9 +389,7 @@ impl SimulationEngine {
             .filter_map(|a| {
                 let signed = ast_expr_is_signed(a);
                 let real = ast_expr_is_real(a);
-                self.evaluate_ast_expr(a)
-                    .ok()
-                    .map(|v| (v, signed, real))
+                self.evaluate_ast_expr(a).ok().map(|v| (v, signed, real))
             })
             .collect();
         self.format_display_fmt(fmt_str, value_args.into_iter())
@@ -476,437 +472,425 @@ fn format_display_core(
     sim_time: u64,
     timeformat: &TimeFormat,
 ) -> String {
-        let mut value_args = value_args;
-        let mut result = String::with_capacity(fmt_str.len() + 8 * 16);
-        let mut chars = fmt_str.chars().peekable();
-        while let Some(c) = chars.next() {
-            if c == '%' {
-                let mut zero_fill = false;
-                let mut width = 0usize;
-                // `%.Nf` — presisi desimal utk `%f`/`%e`/`%g` (LRM 1800
-                // §21.2.1.4). Default 6. `%0.Nf` = zero-fill + presisi N.
-                let mut precision: Option<usize> = None;
-                // Flag `-` = left-justify (`%-5d`, `%-10s`).
-                let mut left_align = false;
-                while let Some(&next) = chars.peek() {
-                    if next == '-' {
-                        left_align = true;
-                        chars.next();
-                    } else {
-                        break;
-                    }
-                }
-                if chars.peek() == Some(&'0') {
-                    zero_fill = true;
+    let mut value_args = value_args;
+    let mut result = String::with_capacity(fmt_str.len() + 8 * 16);
+    let mut chars = fmt_str.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '%' {
+            let mut zero_fill = false;
+            let mut width = 0usize;
+            // `%.Nf` — presisi desimal utk `%f`/`%e`/`%g` (LRM 1800
+            // §21.2.1.4). Default 6. `%0.Nf` = zero-fill + presisi N.
+            let mut precision: Option<usize> = None;
+            // Flag `-` = left-justify (`%-5d`, `%-10s`).
+            let mut left_align = false;
+            while let Some(&next) = chars.peek() {
+                if next == '-' {
+                    left_align = true;
                     chars.next();
+                } else {
+                    break;
                 }
+            }
+            if chars.peek() == Some(&'0') {
+                zero_fill = true;
+                chars.next();
+            }
+            while let Some(&next) = chars.peek() {
+                if next.is_ascii_digit() {
+                    width = width * 10 + next.to_digit(10).unwrap() as usize;
+                    chars.next();
+                } else {
+                    break;
+                }
+            }
+            if chars.peek() == Some(&'.') {
+                chars.next();
+                let mut p = 0usize;
                 while let Some(&next) = chars.peek() {
                     if next.is_ascii_digit() {
-                        width = width * 10 + next.to_digit(10).unwrap() as usize;
+                        p = p * 10 + next.to_digit(10).unwrap() as usize;
                         chars.next();
                     } else {
                         break;
                     }
                 }
-                if chars.peek() == Some(&'.') {
-                    chars.next();
-                    let mut p = 0usize;
-                    while let Some(&next) = chars.peek() {
-                        if next.is_ascii_digit() {
-                            p = p * 10 + next.to_digit(10).unwrap() as usize;
-                            chars.next();
-                        } else {
-                            break;
+                precision = Some(p);
+            }
+            let precision = precision.unwrap_or(6);
+            // Simpan specifier terakhir agar arm gabungan (`'h' | 'x' |
+            // 'X'`) bisa membedakan upper/lower.
+            let spec = chars.next();
+            let last_spec_upper = matches!(spec, Some('H') | Some('X'));
+            match spec {
+                Some('o') => {
+                    if let Some((val, _, is_real)) = value_args.next() {
+                        let val = fmt_arg_as_int(&val, is_real);
+                        // `%o` octal — leading '0' HANYA dibuang bila
+                        // zero-fill `%0o` (IEEE 1800 §21.2.1.3).
+                        let vw = val.width;
+                        let ndigits = vw.div_ceil(3);
+                        let mut s = String::new();
+                        let mut started = false;
+                        for i in (0..ndigits).rev() {
+                            let mut tri = 0u8;
+                            let mut has_x = false;
+                            let mut has_z = false;
+                            for j in 0..3 {
+                                let bi = i * 3 + j;
+                                if bi >= vw {
+                                    continue;
+                                }
+                                match val.bits[bi] {
+                                    LogicVal::One => tri |= 1 << j,
+                                    LogicVal::X => has_x = true,
+                                    LogicVal::Z => has_z = true,
+                                    LogicVal::Zero => {}
+                                }
+                            }
+                            if !started && tri == 0 && !has_x && !has_z && i > 0 && zero_fill {
+                                continue;
+                            }
+                            started = true;
+                            if has_x {
+                                // semua-X → 'x'; campuran dengan bit known
+                                // → 'X' (konvensi iverilog/VCS).
+                                let partial = (i * 3..i * 3 + 3).any(|bi| {
+                                    val.bits
+                                        .get(bi)
+                                        .map(|b| *b != LogicVal::X && *b != LogicVal::Z)
+                                        .unwrap_or(false)
+                                });
+                                s.push(if partial { 'X' } else { 'x' });
+                            } else if has_z {
+                                let partial = (i * 3..i * 3 + 3).any(|bi| {
+                                    val.bits
+                                        .get(bi)
+                                        .map(|b| *b != LogicVal::X && *b != LogicVal::Z)
+                                        .unwrap_or(false)
+                                });
+                                s.push(if partial { 'Z' } else { 'z' });
+                            } else {
+                                let tri_u32: u32 = tri as u32;
+                                s.push(char::from_digit(tri_u32, 8).unwrap_or('0'));
+                            }
                         }
+                        if !started {
+                            s.push('0'); // nilai "0"
+                        }
+                        if width > s.len() {
+                            let pad = if zero_fill { '0' } else { ' ' };
+                            for _ in 0..(width - s.len()) {
+                                result.push(pad);
+                            }
+                        }
+                        result.push_str(&s);
                     }
-                    precision = Some(p);
                 }
-                let precision = precision.unwrap_or(6);
-                // Simpan specifier terakhir agar arm gabungan (`'h' | 'x' |
-                // 'X'`) bisa membedakan upper/lower.
-                let spec = chars.next();
-                let last_spec_upper = matches!(spec, Some('H') | Some('X'));
-                match spec {
-                    Some('o') => {
-                        if let Some((val, _, is_real)) = value_args.next() {
-                            let val = fmt_arg_as_int(&val, is_real);
-                            // `%o` octal — leading '0' HANYA dibuang bila
-                            // zero-fill `%0o` (IEEE 1800 §21.2.1.3).
-                            let vw = val.width;
-                            let ndigits = vw.div_ceil(3);
-                            let mut s = String::new();
-                            let mut started = false;
-                            for i in (0..ndigits).rev() {
-                                let mut tri = 0u8;
-                                let mut has_x = false;
-                                let mut has_z = false;
-                                for j in 0..3 {
-                                    let bi = i * 3 + j;
-                                    if bi >= vw {
-                                        continue;
-                                    }
-                                    match val.bits[bi] {
-                                        LogicVal::One => tri |= 1 << j,
-                                        LogicVal::X => has_x = true,
-                                        LogicVal::Z => has_z = true,
-                                        LogicVal::Zero => {}
-                                    }
-                                }
-                                if !started && tri == 0 && !has_x && !has_z && i > 0 && zero_fill {
+                Some('d') => {
+                    if let Some((val, is_signed, is_real)) = value_args.next() {
+                        // Real → integer bulat (LRM §21.2.1.4).
+                        let val = fmt_arg_as_int(&val, is_real);
+                        let is_signed = is_signed || is_real;
+                        // Default field width = lebar representasi maksimum
+                        // tipe (LRM 1800 Tabel 21-3) — plain `%d` di-right-justify
+                        // ke field itu (iverilog: `%d` dari `integer 1` →
+                        // "          1"). Width eksplisit menang; `%0d` = minimal.
+                        let width = if width > 0 {
+                            width
+                        } else if zero_fill {
+                            0
+                        } else {
+                            default_dec_field_width(val.width, is_signed)
+                        };
+                        // DESIMAL utk nilai UNKNOWN = huruf, BUKAN angka 0
+                        // (X→0 = silent coercion menyesatkan — fuzzer
+                        // verify_bad_0039: `OUT_RST_BAD=<0>` padahal
+                        // out=X). Golden iverilog: semua-X → `x`,
+                        // semua-Z → `z`, partially-unknown → `X`;
+                        // space-pad utk `%Nd` (bukan zero-pad).
+                        let all_pred = |p: &LogicVal| matches!(p, LogicVal::X);
+                        let all_z = val.bits.iter().all(|b| *b == LogicVal::Z);
+                        let any_unknown = val
+                            .bits
+                            .iter()
+                            .any(|b| matches!(b, LogicVal::X | LogicVal::Z));
+                        let unknown_char = if any_unknown {
+                            if all_z {
+                                // semua-Z → 'z'; semua-X → 'x'; campuran →
+                                // huruf kapital sesuai unknowns yang ada
+                                // (konvensi iverilog/VCS: `x`/`z` untuk
+                                // unknown seragam, `X`/`Z` untuk parsial).
+                                Some('z')
+                            } else if val.bits.iter().all(&all_pred) {
+                                Some('x')
+                            } else if val.bits.iter().any(|b| matches!(b, LogicVal::X)) {
+                                Some('X')
+                            } else {
+                                Some('Z')
+                            }
+                        } else {
+                            None
+                        };
+                        if let Some(ch) = unknown_char {
+                            // Space-pad: `%4d` utk x → "   x"; `%0d` tanpa pad.
+                            for _ in 1..width {
+                                result.push(' ');
+                            }
+                            result.push(ch);
+                        } else if is_signed && val.width <= 64 {
+                            // Signed: cetak dua-complement sebagai negatif
+                            // (mis. int -5 = 0xFFFFFFFB → "-5").
+                            let n = val.to_i64();
+                            let s = i64_digits_str(n);
+                            push_padded(&mut result, &s, width, zero_fill, left_align);
+                        } else {
+                            let n = val.to_u64();
+                            let s = u64_digits_str(n);
+                            push_padded(&mut result, &s, width, zero_fill, left_align);
+                        }
+                    }
+                }
+                Some('b') => {
+                    if let Some((val, _, is_real)) = value_args.next() {
+                        let val = fmt_arg_as_int(&val, is_real);
+                        // `%0b` membuang leading '0'; `%b` plain mencetak
+                        // FULL width nilai (IEEE 1800 §21.2.1.3).
+                        let mut chars_out: Vec<char> = Vec::new();
+                        if zero_fill {
+                            let mut seen_nonzero = false;
+                            for bit in val.bits.iter().rev() {
+                                if *bit == LogicVal::Zero && !seen_nonzero {
                                     continue;
                                 }
-                                started = true;
-                                if has_x {
-                                    // semua-X → 'x'; campuran dengan bit known
-                                    // → 'X' (konvensi iverilog/VCS).
-                                    let partial = (i * 3..i * 3 + 3).any(|bi| {
-                                        val.bits
-                                            .get(bi)
-                                            .map(|b| *b != LogicVal::X && *b != LogicVal::Z)
-                                            .unwrap_or(false)
-                                    });
-                                    s.push(if partial { 'X' } else { 'x' });
-                                } else if has_z {
-                                    let partial = (i * 3..i * 3 + 3).any(|bi| {
-                                        val.bits
-                                            .get(bi)
-                                            .map(|b| *b != LogicVal::X && *b != LogicVal::Z)
-                                            .unwrap_or(false)
-                                    });
-                                    s.push(if partial { 'Z' } else { 'z' });
-                                } else {
-                                    let tri_u32: u32 = tri as u32;
-                                    s.push(char::from_digit(tri_u32, 8).unwrap_or('0'));
-                                }
+                                seen_nonzero = true;
+                                chars_out.push(match bit {
+                                    LogicVal::Zero => '0',
+                                    LogicVal::One => '1',
+                                    LogicVal::X => 'x',
+                                    LogicVal::Z => 'z',
+                                });
                             }
-                            if !started {
-                                s.push('0'); // nilai "0"
+                            if !seen_nonzero {
+                                chars_out.push('0'); // nilai "0"
                             }
-                            if width > s.len() {
-                                let pad = if zero_fill { '0' } else { ' ' };
-                                for _ in 0..(width - s.len()) {
-                                    result.push(pad);
-                                }
-                            }
-                            result.push_str(&s);
-                        }
-                    }
-                    Some('d') => {
-                        if let Some((val, is_signed, is_real)) = value_args.next() {
-                            // Real → integer bulat (LRM §21.2.1.4).
-                            let val = fmt_arg_as_int(&val, is_real);
-                            let is_signed = is_signed || is_real;
-                            // Default field width = lebar representasi maksimum
-                            // tipe (LRM 1800 Tabel 21-3) — plain `%d` di-right-justify
-                            // ke field itu (iverilog: `%d` dari `integer 1` →
-                            // "          1"). Width eksplisit menang; `%0d` = minimal.
-                            let width = if width > 0 {
-                                width
-                            } else if zero_fill {
-                                0
-                            } else {
-                                default_dec_field_width(val.width, is_signed)
-                            };
-                            // DESIMAL utk nilai UNKNOWN = huruf, BUKAN angka 0
-                            // (X→0 = silent coercion menyesatkan — fuzzer
-                            // verify_bad_0039: `OUT_RST_BAD=<0>` padahal
-                            // out=X). Golden iverilog: semua-X → `x`,
-                            // semua-Z → `z`, partially-unknown → `X`;
-                            // space-pad utk `%Nd` (bukan zero-pad).
-                            let all_pred = |p: &LogicVal| matches!(p, LogicVal::X);
-                            let all_z = val.bits.iter().all(|b| *b == LogicVal::Z);
-                            let any_unknown = val
-                                .bits
-                                .iter()
-                                .any(|b| matches!(b, LogicVal::X | LogicVal::Z));
-                            let unknown_char = if any_unknown {
-                                if all_z {
-                                    // semua-Z → 'z'; semua-X → 'x'; campuran →
-                                    // huruf kapital sesuai unknowns yang ada
-                                    // (konvensi iverilog/VCS: `x`/`z` untuk
-                                    // unknown seragam, `X`/`Z` untuk parsial).
-                                    Some('z')
-                                } else if val.bits.iter().all(&all_pred) {
-                                    Some('x')
-                                } else if val
-                                    .bits
-                                    .iter()
-                                    .any(|b| matches!(b, LogicVal::X))
-                                {
-                                    Some('X')
-                                } else {
-                                    Some('Z')
-                                }
-                            } else {
-                                None
-                            };
-                            if let Some(ch) = unknown_char {
-                                // Space-pad: `%4d` utk x → "   x"; `%0d` tanpa pad.
-                                for _ in 1..width {
-                                    result.push(' ');
-                                }
-                                result.push(ch);
-                            } else if is_signed && val.width <= 64 {
-                                // Signed: cetak dua-complement sebagai negatif
-                                // (mis. int -5 = 0xFFFFFFFB → "-5").
-                                let n = val.to_i64();
-                                let s = i64_digits_str(n);
-                                push_padded(&mut result, &s, width, zero_fill, left_align);
-                            } else {
-                                let n = val.to_u64();
-                                let s = u64_digits_str(n);
-                                push_padded(&mut result, &s, width, zero_fill, left_align);
+                        } else if val.bits.is_empty() {
+                            chars_out.push('0');
+                        } else {
+                            for bit in val.bits.iter().rev() {
+                                chars_out.push(match bit {
+                                    LogicVal::Zero => '0',
+                                    LogicVal::One => '1',
+                                    LogicVal::X => 'x',
+                                    LogicVal::Z => 'z',
+                                });
                             }
                         }
-                    }
-                    Some('b') => {
-                        if let Some((val, _, is_real)) = value_args.next() {
-                            let val = fmt_arg_as_int(&val, is_real);
-                            // `%0b` membuang leading '0'; `%b` plain mencetak
-                            // FULL width nilai (IEEE 1800 §21.2.1.3).
-                            let mut chars_out: Vec<char> = Vec::new();
-                            if zero_fill {
-                                let mut seen_nonzero = false;
-                                for bit in val.bits.iter().rev() {
-                                    if *bit == LogicVal::Zero && !seen_nonzero {
-                                        continue;
-                                    }
-                                    seen_nonzero = true;
-                                    chars_out.push(match bit {
-                                        LogicVal::Zero => '0',
-                                        LogicVal::One => '1',
-                                        LogicVal::X => 'x',
-                                        LogicVal::Z => 'z',
-                                    });
-                                }
-                                if !seen_nonzero {
-                                    chars_out.push('0'); // nilai "0"
-                                }
-                            } else if val.bits.is_empty() {
-                                chars_out.push('0');
-                            } else {
-                                for bit in val.bits.iter().rev() {
-                                    chars_out.push(match bit {
-                                        LogicVal::Zero => '0',
-                                        LogicVal::One => '1',
-                                        LogicVal::X => 'x',
-                                        LogicVal::Z => 'z',
-                                    });
-                                }
+                        let out_len = chars_out.len();
+                        if width > out_len {
+                            let pad = if zero_fill { '0' } else { ' ' };
+                            for _ in 0..(width - out_len) {
+                                result.push(pad);
                             }
-                            let out_len = chars_out.len();
-                            if width > out_len {
-                                let pad = if zero_fill { '0' } else { ' ' };
-                                for _ in 0..(width - out_len) {
-                                    result.push(pad);
-                                }
-                            }
-                            result.extend(chars_out);
                         }
+                        result.extend(chars_out);
                     }
-                    Some('h') | Some('H') | Some('x') | Some('X') => {
-                        // `%h`/`%x` = hex lower, `%H`/`%X` = hex upper
-                        // (LRM 1800 §21.2.1.3).
-                        let upper = last_spec_upper;
-                        if let Some((val, _, is_real)) = value_args.next() {
-                            // Real → integer bulat utk specifier integer (LRM §21.2.1.4).
-                            let val = fmt_arg_as_int(&val, is_real);
-                            // Format per-nibble dari pola bit — X/Z-aware.
-                            // (Bug render: to_u64() memetakan X/Z → 0 sehingga
-                            // `$display("%h", 8'hxx)` mencetak "0" — user
-                            // debugging propagasi X melihat nilai seolah known.
-                            // Kini: nibble ber-X → 'x', ber-Z (tanpa X) → 'z',
-                            // else digit hex. Berlaku juga >64-bit.)
-                            let vw = val.width;
-                            let ndigits = vw.div_ceil(4);
-                            let mut s = String::new();
-                            let mut started = false;
-                            for i in (0..ndigits).rev() {
-                                let mut nib = 0u8;
-                                let mut has_x = false;
-                                let mut has_z = false;
-                                for j in 0..4 {
-                                    let bi = i * 4 + j;
-                                    if bi >= vw {
-                                        continue;
-                                    }
-                                    match val.bits[bi] {
-                                        LogicVal::One => nib |= 1 << j,
-                                        LogicVal::X => has_x = true,
-                                        LogicVal::Z => has_z = true,
-                                        LogicVal::Zero => {}
-                                    }
-                                }
-                                // Skip leading zero nibble HANYA saat `%0h` trims
-                                // (IEEE 1800 §21.2.1.3) — plain `%h` mencetak
-                                // full width (iverilog differential: 8'h05 → "05").
-                                if zero_fill && !started && nib == 0 && !has_x && !has_z && i > 0 {
+                }
+                Some('h') | Some('H') | Some('x') | Some('X') => {
+                    // `%h`/`%x` = hex lower, `%H`/`%X` = hex upper
+                    // (LRM 1800 §21.2.1.3).
+                    let upper = last_spec_upper;
+                    if let Some((val, _, is_real)) = value_args.next() {
+                        // Real → integer bulat utk specifier integer (LRM §21.2.1.4).
+                        let val = fmt_arg_as_int(&val, is_real);
+                        // Format per-nibble dari pola bit — X/Z-aware.
+                        // (Bug render: to_u64() memetakan X/Z → 0 sehingga
+                        // `$display("%h", 8'hxx)` mencetak "0" — user
+                        // debugging propagasi X melihat nilai seolah known.
+                        // Kini: nibble ber-X → 'x', ber-Z (tanpa X) → 'z',
+                        // else digit hex. Berlaku juga >64-bit.)
+                        let vw = val.width;
+                        let ndigits = vw.div_ceil(4);
+                        let mut s = String::new();
+                        let mut started = false;
+                        for i in (0..ndigits).rev() {
+                            let mut nib = 0u8;
+                            let mut has_x = false;
+                            let mut has_z = false;
+                            for j in 0..4 {
+                                let bi = i * 4 + j;
+                                if bi >= vw {
                                     continue;
                                 }
-                                started = true;
-                                if has_x {
-                                    // semua-X → 'x'; campuran X+known → 'X'
-                                    // (konvensi iverilog/VCS, LRM §21.2.1.3).
-                                    let partial = val
-                                        .bits
-                                        .iter()
-                                        .enumerate()
-                                        .any(|(bi, b)| {
-                                            (i * 4..i * 4 + 4).contains(&bi)
-                                                && *b != LogicVal::X
-                                                && *b != LogicVal::Z
-                                        });
-                                    s.push(if partial || upper { 'X' } else { 'x' });
-                                } else if has_z {
-                                    let partial = val
-                                        .bits
-                                        .iter()
-                                        .enumerate()
-                                        .any(|(bi, b)| {
-                                            (i * 4..i * 4 + 4).contains(&bi)
-                                                && *b != LogicVal::X
-                                                && *b != LogicVal::Z
-                                        });
-                                    s.push(if partial || upper { 'Z' } else { 'z' });
-                                } else {
-                                    let digit = char::from_digit(nib as u32, 16).unwrap_or('0');
-                                    s.push(if upper {
-                                        digit.to_ascii_uppercase()
-                                    } else {
-                                        digit
-                                    });
+                                match val.bits[bi] {
+                                    LogicVal::One => nib |= 1 << j,
+                                    LogicVal::X => has_x = true,
+                                    LogicVal::Z => has_z = true,
+                                    LogicVal::Zero => {}
                                 }
                             }
-                            if !started {
-                                s.push('0');
+                            // Skip leading zero nibble HANYA saat `%0h` trims
+                            // (IEEE 1800 §21.2.1.3) — plain `%h` mencetak
+                            // full width (iverilog differential: 8'h05 → "05").
+                            if zero_fill && !started && nib == 0 && !has_x && !has_z && i > 0 {
+                                continue;
                             }
-                            push_padded(&mut result, &s, width, zero_fill, left_align);
-                        }
-                    }
-                    Some('f') => {
-                        if let Some((val, _, is_real)) = value_args.next() {
-                            // `%f` default precision 6 (IEEE 1800 §21.2.1.4);
-                            // `%.Nf`/`%0.Nf` → N digit presisi.
-                            let prec = precision.min(20);
-                            let s = format!("{:.*}", prec, fmt_arg_as_real(&val, is_real, false));
-                            push_padded(&mut result, &s, width, zero_fill, left_align);
-                        }
-                    }
-                    Some('g') | Some('G') => {
-                        // `%g` — representasi pendek (C printf): ekspon bila
-                        // eksponen di luar [-4, presisi), else desimal dengan
-                        // trailing nol dibuang (LRM 1800 §21.2.1.4).
-                        if let Some((val, _, is_real)) = value_args.next() {
-                            let v = fmt_arg_as_real(&val, is_real, false);
-                            let prec = precision.min(20);
-                            let exp = if v == 0.0 { 0 } else { v.abs().log10().floor() as i32 };
-                            let s = if exp < -4 || exp >= prec as i32 {
-                                normalize_exp(&format!("{:.*e}", prec.saturating_sub(1), v))
+                            started = true;
+                            if has_x {
+                                // semua-X → 'x'; campuran X+known → 'X'
+                                // (konvensi iverilog/VCS, LRM §21.2.1.3).
+                                let partial = val.bits.iter().enumerate().any(|(bi, b)| {
+                                    (i * 4..i * 4 + 4).contains(&bi)
+                                        && *b != LogicVal::X
+                                        && *b != LogicVal::Z
+                                });
+                                s.push(if partial || upper { 'X' } else { 'x' });
+                            } else if has_z {
+                                let partial = val.bits.iter().enumerate().any(|(bi, b)| {
+                                    (i * 4..i * 4 + 4).contains(&bi)
+                                        && *b != LogicVal::X
+                                        && *b != LogicVal::Z
+                                });
+                                s.push(if partial || upper { 'Z' } else { 'z' });
                             } else {
-                                let decimals = (prec as i32 - 1 - exp).max(0) as usize;
-                                let mut s = format!("{:.*}", decimals, v);
-                                if s.contains('.') {
-                                    while s.ends_with('0') {
-                                        s.pop();
-                                    }
-                                    if s.ends_with('.') {
-                                        s.pop();
-                                    }
-                                }
-                                s
-                            };
-                            push_padded(&mut result, &s, width, zero_fill, left_align);
+                                let digit = char::from_digit(nib as u32, 16).unwrap_or('0');
+                                s.push(if upper {
+                                    digit.to_ascii_uppercase()
+                                } else {
+                                    digit
+                                });
+                            }
                         }
-                    }
-                    Some('e') | Some('E') => {
-                        if let Some((val, _, is_real)) = value_args.next() {
-                            let prec = precision.min(20);
-                            let s = normalize_exp(&format!(
-                                "{:.*e}",
-                                prec,
-                                fmt_arg_as_real(&val, is_real, false)
-                            ));
-                            push_padded(&mut result, &s, width, zero_fill, left_align);
+                        if !started {
+                            s.push('0');
                         }
-                    }
-                    Some('t') => {
-                        // %t: format time using $timeformat settings (IEEE 1800).
-                        // Sim time advances 1 unit per step; base unit seeded from
-                        // design `timescale (default 1ns = 10^-9 s).
-                        let t = value_args
-                            .next()
-                            .map(|(v, _, _)| v.to_u64() as f64)
-                            .unwrap_or(sim_time as f64);
-                        // Skala relatif terhadap basis sim-time, bukan hardcode -9.
-                        // saturating_sub mencegah underflow i64 (panic di debug)
-                        // jika user memanggil $timeformat dengan units ekstrem.
-                        let scale = 10f64.powi(
-                            timeformat
-                                .base_units
-                                .saturating_sub(timeformat.units)
-                                as i32,
-                        );
-                        let scaled = t * scale;
-                        let precision = timeformat.precision.clamp(0, 20) as usize;
-                        let mut s = format!("{:.*}", precision, scaled);
-                        // Clamp min_field_width utk cegah alokasi " ".repeat(huge).
-                        let min_width = timeformat.min_field_width.min(128);
-                        if s.len() < min_width {
-                            s = format!("{}{}", " ".repeat(min_width - s.len()), s);
-                        }
-                        s.push_str(&timeformat.suffix);
                         push_padded(&mut result, &s, width, zero_fill, left_align);
                     }
-                    Some('s') => {
-                        if let Some((val, _, is_real)) = value_args.next() {
-                            let val = fmt_arg_as_int(&val, is_real);
-                            let s = logicvec_to_string(&val);
-                            push_padded(&mut result, &s, width, zero_fill, left_align);
-                        }
+                }
+                Some('f') => {
+                    if let Some((val, _, is_real)) = value_args.next() {
+                        // `%f` default precision 6 (IEEE 1800 §21.2.1.4);
+                        // `%.Nf`/`%0.Nf` → N digit presisi.
+                        let prec = precision.min(20);
+                        let s = format!("{:.*}", prec, fmt_arg_as_real(&val, is_real, false));
+                        push_padded(&mut result, &s, width, zero_fill, left_align);
                     }
-                    Some('c') => {
-                        // `%c` — karakter dari 8 bit pertama nilai (LRM
-                        // 1800 §21.2.1.2). Nilai 0 → NUL (tidak dicetak).
-                        if let Some((val, _, is_real)) = value_args.next() {
-                            let val = fmt_arg_as_int(&val, is_real);
-                            let code = val.to_u64() as u32;
-                            if let Some(ch) = char::from_u32(code) {
-                                push_padded(&mut result, &ch.to_string(), width, zero_fill, left_align);
+                }
+                Some('g') | Some('G') => {
+                    // `%g` — representasi pendek (C printf): ekspon bila
+                    // eksponen di luar [-4, presisi), else desimal dengan
+                    // trailing nol dibuang (LRM 1800 §21.2.1.4).
+                    if let Some((val, _, is_real)) = value_args.next() {
+                        let v = fmt_arg_as_real(&val, is_real, false);
+                        let prec = precision.min(20);
+                        let exp = if v == 0.0 {
+                            0
+                        } else {
+                            v.abs().log10().floor() as i32
+                        };
+                        let s = if exp < -4 || exp >= prec as i32 {
+                            normalize_exp(&format!("{:.*e}", prec.saturating_sub(1), v))
+                        } else {
+                            let decimals = (prec as i32 - 1 - exp).max(0) as usize;
+                            let mut s = format!("{:.*}", decimals, v);
+                            if s.contains('.') {
+                                while s.ends_with('0') {
+                                    s.pop();
+                                }
+                                if s.ends_with('.') {
+                                    s.pop();
+                                }
                             }
-                        }
-                    }
-                    Some('%') => {
-                        // `%%` — literal persen (LRM 1800 §21.2.1.2).
-                        result.push('%');
-                    }
-                    Some(c2) => {
-                        result.push('%');
-                        if zero_fill {
-                            result.push('0');
-                        }
-                        if width > 0 {
-                            let _ = write!(result, "{}", width);
-                        }
-                        result.push(c2);
-                    }
-                    None => {
-                        result.push('%');
+                            s
+                        };
+                        push_padded(&mut result, &s, width, zero_fill, left_align);
                     }
                 }
-            } else if c == '\\' {
-                match chars.next() {
-                    Some('n') => result.push('\n'),
-                    Some('t') => result.push('\t'),
-                    Some(c2) => {
-                        result.push('\\');
-                        result.push(c2);
+                Some('e') | Some('E') => {
+                    if let Some((val, _, is_real)) = value_args.next() {
+                        let prec = precision.min(20);
+                        let s = normalize_exp(&format!(
+                            "{:.*e}",
+                            prec,
+                            fmt_arg_as_real(&val, is_real, false)
+                        ));
+                        push_padded(&mut result, &s, width, zero_fill, left_align);
                     }
-                    None => result.push('\\'),
                 }
-            } else {
-                result.push(c);
+                Some('t') => {
+                    // %t: format time using $timeformat settings (IEEE 1800).
+                    // Sim time advances 1 unit per step; base unit seeded from
+                    // design `timescale (default 1ns = 10^-9 s).
+                    let t = value_args
+                        .next()
+                        .map(|(v, _, _)| v.to_u64() as f64)
+                        .unwrap_or(sim_time as f64);
+                    // Skala relatif terhadap basis sim-time, bukan hardcode -9.
+                    // saturating_sub mencegah underflow i64 (panic di debug)
+                    // jika user memanggil $timeformat dengan units ekstrem.
+                    let scale =
+                        10f64.powi(timeformat.base_units.saturating_sub(timeformat.units) as i32);
+                    let scaled = t * scale;
+                    let precision = timeformat.precision.clamp(0, 20) as usize;
+                    let mut s = format!("{:.*}", precision, scaled);
+                    // Clamp min_field_width utk cegah alokasi " ".repeat(huge).
+                    let min_width = timeformat.min_field_width.min(128);
+                    if s.len() < min_width {
+                        s = format!("{}{}", " ".repeat(min_width - s.len()), s);
+                    }
+                    s.push_str(&timeformat.suffix);
+                    push_padded(&mut result, &s, width, zero_fill, left_align);
+                }
+                Some('s') => {
+                    if let Some((val, _, is_real)) = value_args.next() {
+                        let val = fmt_arg_as_int(&val, is_real);
+                        let s = logicvec_to_string(&val);
+                        push_padded(&mut result, &s, width, zero_fill, left_align);
+                    }
+                }
+                Some('c') => {
+                    // `%c` — karakter dari 8 bit pertama nilai (LRM
+                    // 1800 §21.2.1.2). Nilai 0 → NUL (tidak dicetak).
+                    if let Some((val, _, is_real)) = value_args.next() {
+                        let val = fmt_arg_as_int(&val, is_real);
+                        let code = val.to_u64() as u32;
+                        if let Some(ch) = char::from_u32(code) {
+                            push_padded(&mut result, &ch.to_string(), width, zero_fill, left_align);
+                        }
+                    }
+                }
+                Some('%') => {
+                    // `%%` — literal persen (LRM 1800 §21.2.1.2).
+                    result.push('%');
+                }
+                Some(c2) => {
+                    result.push('%');
+                    if zero_fill {
+                        result.push('0');
+                    }
+                    if width > 0 {
+                        let _ = write!(result, "{}", width);
+                    }
+                    result.push(c2);
+                }
+                None => {
+                    result.push('%');
+                }
             }
+        } else if c == '\\' {
+            match chars.next() {
+                Some('n') => result.push('\n'),
+                Some('t') => result.push('\t'),
+                Some(c2) => {
+                    result.push('\\');
+                    result.push(c2);
+                }
+                None => result.push('\\'),
+            }
+        } else {
+            result.push(c);
         }
+    }
     result
 }
 
@@ -1480,33 +1464,68 @@ mod tests {
         // LRM 1800 Tabel 21-3: plain `%d` di-right-justify ke field selebar
         // representasi maksimum tipe. `%0d` = tanpa padding.
         assert_eq!(
-            format_display_core("[%d]", vec![(LogicVec::from_u64(1, 8), false, false)].into_iter(), 0, &tf()),
+            format_display_core(
+                "[%d]",
+                vec![(LogicVec::from_u64(1, 8), false, false)].into_iter(),
+                0,
+                &tf()
+            ),
             "[  1]"
         );
         assert_eq!(
-            format_display_core("[%d]", vec![(LogicVec::from_u64(1, 16), false, false)].into_iter(), 0, &tf()),
+            format_display_core(
+                "[%d]",
+                vec![(LogicVec::from_u64(1, 16), false, false)].into_iter(),
+                0,
+                &tf()
+            ),
             "[    1]"
         );
         assert_eq!(
-            format_display_core("[%d]", vec![(LogicVec::from_u64(1, 32), false, false)].into_iter(), 0, &tf()),
+            format_display_core(
+                "[%d]",
+                vec![(LogicVec::from_u64(1, 32), false, false)].into_iter(),
+                0,
+                &tf()
+            ),
             "[         1]"
         );
         assert_eq!(
-            format_display_core("[%d]", vec![(LogicVec::from_u64((-1i64) as u64, 32), true, false)].into_iter(), 0, &tf()),
+            format_display_core(
+                "[%d]",
+                vec![(LogicVec::from_u64((-1i64) as u64, 32), true, false)].into_iter(),
+                0,
+                &tf()
+            ),
             "[         -1]",
             "signed 32-bit → 10 digit + tanda"
         );
         assert_eq!(
-            format_display_core("[%d]", vec![(LogicVec::from_u64(1, 8), false, false)].into_iter(), 0, &tf()),
+            format_display_core(
+                "[%d]",
+                vec![(LogicVec::from_u64(1, 8), false, false)].into_iter(),
+                0,
+                &tf()
+            ),
             "[  1]"
         );
         assert_eq!(
-            format_display_core("[%0d]", vec![(LogicVec::from_u64(1, 32), false, false)].into_iter(), 0, &tf()),
+            format_display_core(
+                "[%0d]",
+                vec![(LogicVec::from_u64(1, 32), false, false)].into_iter(),
+                0,
+                &tf()
+            ),
             "[1]",
             "%0d tanpa padding"
         );
         assert_eq!(
-            format_display_core("[%2d]", vec![(LogicVec::from_u64(1, 32), false, false)].into_iter(), 0, &tf()),
+            format_display_core(
+                "[%2d]",
+                vec![(LogicVec::from_u64(1, 32), false, false)].into_iter(),
+                0,
+                &tf()
+            ),
             "[ 1]",
             "width eksplisit menang atas default"
         );
@@ -1519,35 +1538,73 @@ mod tests {
         // bits[0] = LSB → 8'b01x1_0000: b7=0,b6=1,b5=X,b4=1,b3..b0=0.
         let mixed_x = LogicVec {
             bits: vec![
-                LogicVal::Zero, LogicVal::Zero, LogicVal::Zero, LogicVal::Zero,
-                LogicVal::One, LogicVal::X, LogicVal::One, LogicVal::Zero,
+                LogicVal::Zero,
+                LogicVal::Zero,
+                LogicVal::Zero,
+                LogicVal::Zero,
+                LogicVal::One,
+                LogicVal::X,
+                LogicVal::One,
+                LogicVal::Zero,
             ],
             width: 8,
         };
         assert_eq!(
-            format_display_core("[%h][%o][%d]", vec![(mixed_x.clone(), false, false)].into_iter().cycle().take(3), 0, &tf()),
+            format_display_core(
+                "[%h][%o][%d]",
+                vec![(mixed_x.clone(), false, false)]
+                    .into_iter()
+                    .cycle()
+                    .take(3),
+                0,
+                &tf()
+            ),
             "[X0][1X0][  X]"
         );
         // bits[0] = LSB → 8'b01z1_0000.
         let mixed_z = LogicVec {
             bits: vec![
-                LogicVal::Zero, LogicVal::Zero, LogicVal::Zero, LogicVal::Zero,
-                LogicVal::One, LogicVal::Z, LogicVal::One, LogicVal::Zero,
+                LogicVal::Zero,
+                LogicVal::Zero,
+                LogicVal::Zero,
+                LogicVal::Zero,
+                LogicVal::One,
+                LogicVal::Z,
+                LogicVal::One,
+                LogicVal::Zero,
             ],
             width: 8,
         };
         assert_eq!(
-            format_display_core("[%h][%o][%d]", vec![(mixed_z.clone(), false, false)].into_iter().cycle().take(3), 0, &tf()),
+            format_display_core(
+                "[%h][%o][%d]",
+                vec![(mixed_z.clone(), false, false)]
+                    .into_iter()
+                    .cycle()
+                    .take(3),
+                0,
+                &tf()
+            ),
             "[Z0][1Z0][  Z]"
         );
         let all_x = LogicVec::fill(LogicVal::X, 8);
         assert_eq!(
-            format_display_core("[%h][%d]", vec![(all_x, false, false)].into_iter().cycle().take(2), 0, &tf()),
+            format_display_core(
+                "[%h][%d]",
+                vec![(all_x, false, false)].into_iter().cycle().take(2),
+                0,
+                &tf()
+            ),
             "[xx][  x]"
         );
         let all_z = LogicVec::fill(LogicVal::Z, 8);
         assert_eq!(
-            format_display_core("[%h][%d]", vec![(all_z, false, false)].into_iter().cycle().take(2), 0, &tf()),
+            format_display_core(
+                "[%h][%d]",
+                vec![(all_z, false, false)].into_iter().cycle().take(2),
+                0,
+                &tf()
+            ),
             "[zz][  z]"
         );
     }

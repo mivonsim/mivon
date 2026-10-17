@@ -105,8 +105,7 @@ impl CoverageLedger {
 }
 
 /// Ledger global proses — dimuat SEKALI (bukan per kasus; file bisa besar).
-static LEDGER: std::sync::OnceLock<std::sync::Mutex<CoverageLedger>> =
-    std::sync::OnceLock::new();
+static LEDGER: std::sync::OnceLock<std::sync::Mutex<CoverageLedger>> = std::sync::OnceLock::new();
 
 /// Catat keys satu kasus; return jumlah key BARU. Simpan tiap ~64 key baru.
 pub fn record_keys(keys: &[String]) -> usize {
@@ -166,7 +165,10 @@ mod tests {
         l.save().unwrap();
         let mut l2 = CoverageLedger::load_from(path);
         assert_eq!(l2.len(), 3);
-        assert!(l2.mark_new(&["a".into()]).is_empty(), "persisten antar load");
+        assert!(
+            l2.mark_new(&["a".into()]).is_empty(),
+            "persisten antar load"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -406,7 +406,12 @@ pub(crate) fn check_stmt<'a>(
         Stmt::Disable { .. } => Ok(()),
         // F46: `force lhs = rhs;` — blocking seperti `=` (E2004 di seq,
         // E2003 drive input, E2002 truncation).
-        Stmt::Force { lhs, rhs, line, col } => {
+        Stmt::Force {
+            lhs,
+            rhs,
+            line,
+            col,
+        } => {
             if kind == BlockKind::Seq {
                 return Err(err_at(
                     *line,
@@ -554,7 +559,9 @@ pub(crate) fn check_stmt<'a>(
         // `cover property (...)` — mirror `assert property` (RAW, konservatif).
         Stmt::CoverProperty(_) => Ok(()),
         // SVA Native Assertions (F85)
-        Stmt::AssertPropertyStruct { prop, pass, fail, .. } => {
+        Stmt::AssertPropertyStruct {
+            prop, pass, fail, ..
+        } => {
             check_sva_prop_expr(prop, ctx, scope, 0)?;
             if let Some(p) = pass {
                 check_stmt(p, ctx, scope, kind)?;
@@ -564,7 +571,9 @@ pub(crate) fn check_stmt<'a>(
             }
             Ok(())
         }
-        Stmt::AssumePropertyStruct { prop, pass, fail, .. } => {
+        Stmt::AssumePropertyStruct {
+            prop, pass, fail, ..
+        } => {
             check_sva_prop_expr(prop, ctx, scope, 0)?;
             if let Some(p) = pass {
                 check_stmt(p, ctx, scope, kind)?;
@@ -640,7 +649,9 @@ pub(crate) fn check_lvalue_not_const(
     line: usize,
     col: usize,
 ) -> Result<(), MvError> {
-    let Some(base) = base_ident(lhs) else { return Ok(()) };
+    let Some(base) = base_ident(lhs) else {
+        return Ok(());
+    };
     // `scope.params` berisi parameter module DAN konstanta module yang
     // ter-fold (lihat `check/module.rs` MItem::Const) — keduanya immutable.
     if scope.params.contains_key(base) || scope.local_consts.contains(base) {
@@ -669,8 +680,13 @@ fn check_sva_seq_expr(
 ) -> Result<(), MvError> {
     use crate::ast::SvaSeqExpr;
     match seq {
-        SvaSeqExpr::Expr(e) => super::expr::check_expr(e, ctx, scope, min_prec as usize),
-        SvaSeqExpr::Delay { left, right, min, max } => {
+        SvaSeqExpr::Expr(e) => super::expr::check_expr(e, ctx, scope, min_prec),
+        SvaSeqExpr::Delay {
+            left,
+            right,
+            min,
+            max,
+        } => {
             check_sva_seq_expr(left, ctx, scope, min_prec)?;
             check_sva_seq_expr(right, ctx, scope, min_prec)?;
             super::expr::check_expr(min, ctx, scope, 0)?;
@@ -712,21 +728,20 @@ fn check_sva_prop_expr(
 ) -> Result<(), MvError> {
     use crate::ast::SvaPropExpr;
     match prop {
-        SvaPropExpr::Seq(s) => check_sva_seq_expr(s, ctx, scope, min_prec as usize),
+        SvaPropExpr::Seq(s) => check_sva_seq_expr(s, ctx, scope, min_prec),
         SvaPropExpr::Always { expr } | SvaPropExpr::Never { expr } => {
-            check_sva_seq_expr(expr, ctx, scope, min_prec as usize)
+            check_sva_seq_expr(expr, ctx, scope, min_prec)
         }
         SvaPropExpr::Eventually { expr, .. } | SvaPropExpr::Nexttime { expr, .. } => {
-            check_sva_seq_expr(expr, ctx, scope, min_prec as usize)
+            check_sva_seq_expr(expr, ctx, scope, min_prec)
         }
-        SvaPropExpr::Implies { seq, prop }
-        | SvaPropExpr::NextImplies { seq, prop } => {
-            check_sva_seq_expr(seq, ctx, scope, min_prec as usize)?;
-            check_sva_prop_expr(prop, ctx, scope, min_prec as usize)
+        SvaPropExpr::Implies { seq, prop } | SvaPropExpr::NextImplies { seq, prop } => {
+            check_sva_seq_expr(seq, ctx, scope, min_prec)?;
+            check_sva_prop_expr(prop, ctx, scope, min_prec)
         }
         SvaPropExpr::Iff { cond, prop } | SvaPropExpr::DisableIff { cond, prop } => {
             super::expr::check_expr(cond, ctx, scope, 0)?;
-            check_sva_prop_expr(prop, ctx, scope, min_prec as usize)
+            check_sva_prop_expr(prop, ctx, scope, min_prec)
         }
         SvaPropExpr::Name(_) => Ok(()),
     }

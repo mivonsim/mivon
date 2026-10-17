@@ -4,11 +4,10 @@
 
 #![cfg(feature = "dev")]
 
-use crate::lrm_model::{
-    ClauseRef, LrmRule, RuleCategory, RuleClassification, RuleId,
-    predicate::Requirement,
-};
 use super::RuleRegistry;
+use crate::lrm_model::{
+    predicate::Requirement, ClauseRef, LrmRule, RuleCategory, RuleClassification, RuleId,
+};
 
 pub fn register(reg: &mut RuleRegistry) {
     // SV-SYN-DIAG-001: setiap diagnostik error harus menyertakan lokasi
@@ -23,8 +22,7 @@ pub fn register(reg: &mut RuleRegistry) {
             true
         }),
         requires: vec![Requirement::DiagnosticHasLocation],
-        expected_description:
-            "setiap diagnostik error harus menyertakan lokasi file:line:col",
+        expected_description: "setiap diagnostik error harus menyertakan lokasi file:line:col",
     });
 
     // SV-SYN-LEGAL-001: module harus diakhiri endmodule (LRM §23.2).
@@ -35,8 +33,7 @@ pub fn register(reg: &mut RuleRegistry) {
         classification: RuleClassification::RequiredBehavior,
         applies_when: Box::new(|_| true),
         requires: vec![],
-        expected_description:
-            "deklarasi module harus diakhiri dengan endmodule",
+        expected_description: "deklarasi module harus diakhiri dengan endmodule",
     });
 
     // SV-SYN-LEGAL-002: identifier tidak boleh sama dengan keyword reserved
@@ -48,7 +45,6 @@ pub fn register(reg: &mut RuleRegistry) {
         classification: RuleClassification::RequiredBehavior,
         applies_when: Box::new(|_| true),
         requires: vec![],
-        expected_description:
-            "identifier tidak boleh merupakan keyword reserved SV",
+        expected_description: "identifier tidak boleh merupakan keyword reserved SV",
     });
 }

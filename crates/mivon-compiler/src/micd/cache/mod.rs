@@ -37,7 +37,6 @@ use store::{DIR_BLOBS, DIR_OBJECTS, DIR_TEMP};
 /// Nama direktori lapisan cache di database root (`database/cache/`).
 pub const DIR_CACHE: &str = "cache";
 
-
 /// TTL default (7 hari — Kritik 6 db.md).
 pub const DEFAULT_TTL_NS: u64 = 7 * 24 * 3600 * 1_000_000_000;
 
@@ -475,7 +474,10 @@ mod tests {
                 let key = format!("key-{}", cat.name());
                 let expect = format!("val-{}", cat.name());
                 // Baca bertipe…
-                assert_eq!(layer.get_typed::<String, String>(cat, &key).unwrap(), expect);
+                assert_eq!(
+                    layer.get_typed::<String, String>(cat, &key).unwrap(),
+                    expect
+                );
                 // …dan mentah (kompatibel silang, byte identik).
                 assert_eq!(layer.get(cat, &key).unwrap(), expect.as_bytes());
             }
@@ -491,14 +493,18 @@ mod tests {
         {
             let mut layer = CacheLayer::open(&db, "pid1", 0).unwrap();
             let k = PathBuf::from("rtl/top.sv");
-            layer.put_typed(CacheCategory::Preprocess, &k, &12345u64).unwrap();
+            layer
+                .put_typed(CacheCategory::Preprocess, &k, &12345u64)
+                .unwrap();
             layer.save().unwrap();
         }
         {
             let mut layer = CacheLayer::open(&db, "pid1", 0).unwrap();
             let k = PathBuf::from("rtl/top.sv");
             assert_eq!(
-                layer.get_typed::<PathBuf, u64>(CacheCategory::Preprocess, &k).unwrap(),
+                layer
+                    .get_typed::<PathBuf, u64>(CacheCategory::Preprocess, &k)
+                    .unwrap(),
                 12345u64
             );
         }

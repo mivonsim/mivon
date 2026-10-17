@@ -136,8 +136,6 @@ fn markers_of(out: &Outcome) -> Vec<String> {
     ms
 }
 
-
-
 fn read_pipe<R: std::io::Read + Send + 'static>(pipe: Option<R>) -> String {
     let mut buf = String::new();
     if let Some(mut p) = pipe {
@@ -178,7 +176,11 @@ fn run_capture_classified(args: &[String], timeout_ms: u64) -> (RefRun, String, 
     let mut child: Child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
-            return (RefRun::Exited(-1), String::new(), format!("spawn gagal: {e}"));
+            return (
+                RefRun::Exited(-1),
+                String::new(),
+                format!("spawn gagal: {e}"),
+            );
         }
     };
 
@@ -358,6 +360,7 @@ fn is_degraded_reference(compile_stderr: &str) -> bool {
 /// tak ada signal cocok, atau blok modul tak ditemukan — pemanggil jatuh
 /// ke perilaku lama. Injeksi selalu di-REVALIDASI via compile (surgery
 /// teks aman by-construction).
+#[allow(clippy::result_large_err)]
 pub fn inject_auto_markers(source: &str) -> Option<String> {
     if source.contains("ASRT_") {
         return None;
@@ -398,9 +401,9 @@ pub fn inject_auto_markers(source: &str) -> Option<String> {
     // dikeluarkan (X-hunting tetap ranah oracle Suspicious, bukan icarus).
     // Guard ukuran: sim in-process tanpa watchdog → hanya source kecil.
     if source.len() <= 512_000 {
-        if let Ok(Ok(final_sigs)) = std::panic::catch_unwind(|| {
-            mivon_api::simulate_signals(source, 100)
-        }) {
+        if let Ok(Ok(final_sigs)) =
+            std::panic::catch_unwind(|| mivon_api::simulate_signals(source, 100))
+        {
             let clean: std::collections::HashSet<String> = final_sigs
                 .iter()
                 .filter(|(_, lv)| {
@@ -428,7 +431,9 @@ pub fn inject_auto_markers(source: &str) -> Option<String> {
             return false;
         };
         // `module` diikuti spasi/`(`/`#` — bukan `modulexyz`.
-        if !(rest.starts_with(char::is_whitespace) || rest.starts_with('(') || rest.starts_with('#'))
+        if !(rest.starts_with(char::is_whitespace)
+            || rest.starts_with('(')
+            || rest.starts_with('#'))
         {
             return false;
         }
@@ -586,7 +591,8 @@ pub fn evaluate_icarus(source: &str, timeout_ms: u64) -> IcarusResult {
                 verdict: Verdict::RefUnavailable,
                 category: crate::Category::CleanError,
                 oracle: "N/A",
-                detail: "tidak ada marker ASRT_=<val> di kedua sisi — compare vakum, bukan Match".to_string(),
+                detail: "tidak ada marker ASRT_=<val> di kedua sisi — compare vakum, bukan Match"
+                    .to_string(),
             };
         }
         Verdict::Mismatch => {}
@@ -680,7 +686,9 @@ mod tests {
         assert!(inj.contains("$display"), "via $display");
         assert!(inj.contains("endmodule"), "blok modul utuh");
         // Hasil suntik valid: marker terekstrak oleh kontrak cross-sim.
-        assert!(extract_markers("ASRT_AUTO_b=<1>").iter().any(|t| t == "ASRT_AUTO_b=<1>"));
+        assert!(extract_markers("ASRT_AUTO_b=<1>")
+            .iter()
+            .any(|t| t == "ASRT_AUTO_b=<1>"));
     }
 
     #[test]
@@ -692,7 +700,9 @@ mod tests {
 
     #[test]
     fn inject_auto_markers_skips_marked_and_garbage() {
-        assert!(inject_auto_markers("module m; initial $display(\"ASRT_X=<1>\"); endmodule").is_none());
+        assert!(
+            inject_auto_markers("module m; initial $display(\"ASRT_X=<1>\"); endmodule").is_none()
+        );
         assert!(inject_auto_markers("@@@ {{{ ;;;").is_none());
         assert!(inject_auto_markers("").is_none());
     }

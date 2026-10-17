@@ -167,10 +167,7 @@ impl Elaborator {
                         // sehingga instance ber-override akan me-clone generate
                         // yang ter-expand salah (bug: `gen_sub #(.W(8))` dengan
                         // `for (gi=0; gi<W; ...)` hanya ter-expand 4 iterasi).
-                        let pristine = self
-                            .pristine_param_modules
-                            .get(&inst.module_name)
-                            .cloned();
+                        let pristine = self.pristine_param_modules.get(&inst.module_name).cloned();
                         let ast_module: Module = match pristine {
                             Some(m) => m,
                             None => match inst_module {
@@ -196,9 +193,9 @@ impl Elaborator {
                                         return Err(self.elab_diag_at(
                                             DiagCode::ModuleNotFound,
                                             format!(
-                                                "module or interface '{}' not found for instance '{}'",
-                                                inst.module_name, inst.instance_name
-                                            ),
+                                            "module or interface '{}' not found for instance '{}'",
+                                            inst.module_name, inst.instance_name
+                                        ),
                                             inst.line,
                                             inst.col,
                                         ))

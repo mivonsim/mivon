@@ -16,15 +16,17 @@ use lsp_types::{
     Command as LspCommand, CompletionItem, CompletionItemKind, CompletionParams,
     CompletionResponse, Diagnostic, DiagnosticSeverity, DocumentSymbol, FoldingRange,
     FoldingRangeKind, FoldingRangeParams, GotoDefinitionParams, GotoDefinitionResponse, Hover,
-    HoverContents, InitializeParams, InitializeResult, InsertTextFormat, LanguageString, LinkedEditingRangeParams,
-    LinkedEditingRanges, Location, MarkedString, OneOf, Position, PublishDiagnosticsParams, Range,
-    ReferenceParams, RenameOptions, RenameParams, SelectionRange, SelectionRangeParams, SemanticToken,
-    SemanticTokens, SemanticTokensDelta, SemanticTokensDeltaParams, SemanticTokensEdit,
-    SemanticTokensFullDeltaResult, SemanticTokensLegend, SemanticTokensOptions, SemanticTokensParams,
-    SemanticTokensRangeParams, SemanticTokensRangeResult, SemanticTokensResult, ServerCapabilities, ServerInfo, SymbolInformation, SymbolKind,
-    TextDocumentPositionParams, TextDocumentSyncCapability, TextDocumentSyncKind, TypeHierarchyItem,
-    TypeHierarchyPrepareParams, TypeHierarchySubtypesParams, TypeHierarchySupertypesParams, Url,
-    WorkspaceEdit, WorkspaceSymbolParams, PrepareRenameResponse,
+    HoverContents, InitializeParams, InitializeResult, InsertTextFormat, LanguageString,
+    LinkedEditingRangeParams, LinkedEditingRanges, Location, MarkedString, OneOf, Position,
+    PrepareRenameResponse, PublishDiagnosticsParams, Range, ReferenceParams, RenameOptions,
+    RenameParams, SelectionRange, SelectionRangeParams, SemanticToken, SemanticTokens,
+    SemanticTokensDelta, SemanticTokensDeltaParams, SemanticTokensEdit,
+    SemanticTokensFullDeltaResult, SemanticTokensLegend, SemanticTokensOptions,
+    SemanticTokensParams, SemanticTokensRangeParams, SemanticTokensRangeResult,
+    SemanticTokensResult, ServerCapabilities, ServerInfo, SymbolInformation, SymbolKind,
+    TextDocumentPositionParams, TextDocumentSyncCapability, TextDocumentSyncKind,
+    TypeHierarchyItem, TypeHierarchyPrepareParams, TypeHierarchySubtypesParams,
+    TypeHierarchySupertypesParams, Url, WorkspaceEdit, WorkspaceSymbolParams,
 };
 use mivon_parser::lexer::Lexer;
 use mivon_parser::preprocessor::Preprocessor;
@@ -898,8 +900,7 @@ impl LspBackend {
         let lines: Vec<&str> = source.lines().collect();
         let mut out: Vec<String> = Vec::new();
         let mut i = def_line.checked_sub(1)? as usize;
-        loop {
-            let Some(l) = lines.get(i) else { break };
+        while let Some(l) = lines.get(i) {
             let t = l.trim();
             if t.is_empty() {
                 if i == 0 {
@@ -1183,6 +1184,7 @@ impl LspBackend {
     ///     sebagai token terakhir baris header; case sebagai token pertama),
     ///     ditutup bila baris memuat token `end` / `endcase`.
     ///     Return (start_line, end_line) urut.
+    ///
     /// LSP-14 tahap 2a: rantai supertype (langsung → akar) mengikuti
     /// `base` (`class A extends B`). Hanya base terdefinisi yang masuk
     /// rantai (unknown menghentikan). Cycle-guard. Non-class → kosong.
@@ -1280,11 +1282,20 @@ impl LspBackend {
                 uri: uri.clone(),
                 range: Range {
                     start: Position { line, character: 0 },
-                    end: Position { line, character: col + len },
+                    end: Position {
+                        line,
+                        character: col + len,
+                    },
                 },
                 selection_range: Range {
-                    start: Position { line, character: col },
-                    end: Position { line, character: col + len },
+                    start: Position {
+                        line,
+                        character: col,
+                    },
+                    end: Position {
+                        line,
+                        character: col + len,
+                    },
                 },
                 data: None,
             });
@@ -1441,7 +1452,6 @@ impl LspBackend {
             // `// regional` bukan marker).
             if let Some(c) = t.strip_prefix("//") {
                 let first = c
-                    .trim_start()
                     .split_whitespace()
                     .next()
                     .unwrap_or("")
@@ -1538,7 +1548,7 @@ impl LspBackend {
             .split_whitespace()
             .next()
             .unwrap_or("")
-            .trim_end_matches(|c| c == ':' || c == ';' || c == ',');
+            .trim_end_matches([':', ';', ',']);
         if matches!(first, "input" | "output" | "inout") {
             return "port";
         }
@@ -1861,10 +1871,7 @@ impl LspBackend {
         next: &[SemanticToken],
     ) -> Vec<SemanticTokensEdit> {
         let mut prefix = 0usize;
-        while prefix < prev.len()
-            && prefix < next.len()
-            && prev[prefix] == next[prefix]
-        {
+        while prefix < prev.len() && prefix < next.len() && prev[prefix] == next[prefix] {
             prefix += 1;
         }
         let mut suffix = 0usize;
@@ -2207,11 +2214,20 @@ impl LanguageServer for LspBackend {
             uri: uri.clone(),
             range: Range {
                 start: Position { line, character: 0 },
-                end: Position { line, character: col + len },
+                end: Position {
+                    line,
+                    character: col + len,
+                },
             },
             selection_range: Range {
-                start: Position { line, character: col },
-                end: Position { line, character: col + len },
+                start: Position {
+                    line,
+                    character: col,
+                },
+                end: Position {
+                    line,
+                    character: col + len,
+                },
             },
             data: None,
         }]))
@@ -2262,8 +2278,7 @@ impl LanguageServer for LspBackend {
         let Some(text) = self.document_text(uri) else {
             return Ok(None);
         };
-        let Some((line, s, e)) = Self::prepare_rename_range(&text, pos.line, pos.character)
-        else {
+        let Some((line, s, e)) = Self::prepare_rename_range(&text, pos.line, pos.character) else {
             return Ok(None);
         };
         let placeholder = text
@@ -2620,10 +2635,10 @@ impl LanguageServer for LspBackend {
             .and_then(|c| c.get(uri.as_str()).cloned());
         // Cache miss / id mismatch → full Tokens DENGAN result_id baru
         // (agar client bisa delta berikutnya; cache ikut diperbarui).
-        let matched = match &prev {
-            Some((prev_id, _)) if *prev_id == params.previous_result_id => true,
-            _ => false,
-        };
+        let matched = matches!(
+            &prev,
+            Some((prev_id, _)) if *prev_id == params.previous_result_id
+        );
         if !matched {
             let rid = self
                 .semantic_seq
@@ -2632,10 +2647,12 @@ impl LanguageServer for LspBackend {
             if let Ok(mut cache) = self.semantic_cache.lock() {
                 cache.insert(uri.as_str().to_string(), (rid.clone(), tokens.clone()));
             }
-            return Ok(Some(SemanticTokensFullDeltaResult::Tokens(SemanticTokens {
-                result_id: Some(rid),
-                data: tokens,
-            })));
+            return Ok(Some(SemanticTokensFullDeltaResult::Tokens(
+                SemanticTokens {
+                    result_id: Some(rid),
+                    data: tokens,
+                },
+            )));
         }
         let prev_tokens = prev.map(|(_, t)| t).unwrap_or_default();
         let edits = Self::semantic_tokens_delta(&prev_tokens, &tokens);
@@ -3820,10 +3837,13 @@ endmodule
             .unwrap()
             .find("enable")
             .unwrap() as u32;
-        let (l, s, e) = LspBackend::prepare_rename_range(SAMPLE, use_line, col)
-            .expect("range ketemu");
+        let (l, s, e) =
+            LspBackend::prepare_rename_range(SAMPLE, use_line, col).expect("range ketemu");
         assert_eq!(l, use_line);
-        assert_eq!(&SAMPLE.lines().nth(l as usize).unwrap()[s as usize..e as usize], "enable");
+        assert_eq!(
+            &SAMPLE.lines().nth(l as usize).unwrap()[s as usize..e as usize],
+            "enable"
+        );
         assert!(LspBackend::prepare_rename_range(SAMPLE, 7, 0).is_none());
         assert!(LspBackend::prepare_rename_range(SAMPLE, 999, 0).is_none());
     }
@@ -3947,7 +3967,11 @@ endmodule
         let syms = LspBackend::document_symbols(src);
         assert_eq!(syms.len(), 1);
         let m = &syms[0];
-        let f = m.children.iter().find(|c| c.name == "add").expect("function ada");
+        let f = m
+            .children
+            .iter()
+            .find(|c| c.name == "add")
+            .expect("function ada");
         assert_eq!(f.kind, DocSymbol::KIND_FUNCTION);
         assert!(f.children.iter().any(|c| c.name == "tmp"), "{f:?}");
         assert!(!m.children.iter().any(|c| c.name == "tmp"), "{m:?}");
@@ -3960,12 +3984,20 @@ endmodule
         let after = "module m;\n  function int add();\n    logic tmp;\n  endfunction\n  logic after;\nendmodule\n";
         let am = &LspBackend::document_symbols(after)[0];
         assert!(am.children.iter().any(|c| c.name == "after"), "{am:?}");
-        let af = am.children.iter().find(|c| c.name == "add").expect("fn ada");
+        let af = am
+            .children
+            .iter()
+            .find(|c| c.name == "add")
+            .expect("fn ada");
         assert!(!af.children.iter().any(|c| c.name == "after"), "{af:?}");
         // Task/endtask sama.
         let tsrc = "module m;\n  task run();\n    logic t;\n  endtask\nendmodule\n";
         let tm = &LspBackend::document_symbols(tsrc)[0];
-        let tf = tm.children.iter().find(|c| c.name == "run").expect("task ada");
+        let tf = tm
+            .children
+            .iter()
+            .find(|c| c.name == "run")
+            .expect("task ada");
         assert_eq!(tf.kind, DocSymbol::KIND_FUNCTION);
         assert!(tf.children.iter().any(|c| c.name == "t"), "{tf:?}");
     }
@@ -3975,7 +4007,10 @@ endmodule
         // LSP-14 tahap 2a: rantai extends + supertypes/subtypes.
         let src = "class base;\nendclass\nclass mid extends base;\nendclass\nclass leaf extends mid;\nendclass\nclass lone;\nendclass\n";
         let syms = LspBackend::document_symbols(src);
-        assert_eq!(LspBackend::type_supertypes(&syms, "leaf"), vec!["mid", "base"]);
+        assert_eq!(
+            LspBackend::type_supertypes(&syms, "leaf"),
+            vec!["mid", "base"]
+        );
         assert!(LspBackend::type_supertypes(&syms, "lone").is_empty());
         assert!(LspBackend::type_supertypes(&syms, "tak_ada").is_empty());
         let sub = LspBackend::type_subtypes(&syms, "base");
@@ -4004,7 +4039,11 @@ endmodule
         let items = LspBackend::hierarchy_items(&uri, &syms, &["mid".to_string()]);
         assert_eq!(items.len(), 1);
         let r = &items[0].selection_range;
-        assert_eq!((r.start.line, r.start.character, r.end.character), (2, 6, 9), "{r:?}");
+        assert_eq!(
+            (r.start.line, r.start.character, r.end.character),
+            (2, 6, 9),
+            "{r:?}"
+        );
         // col keyword vs name_col nama.
         let mid = syms.iter().find(|s| s.name == "mid").unwrap();
         assert_eq!((mid.col, mid.name_col), (0, 6));
@@ -4079,9 +4118,12 @@ endmodule
         let fu = LspBackend::compute_folding_ranges(unclosed);
         assert!(!fu.iter().any(|(s, _)| *s == 0), "{fu:?}");
         let unreg = "// #region x\nmodule m;\nendmodule\n";
-        assert!(!LspBackend::compute_folding_ranges(unreg)
-            .iter()
-            .any(|(s, e)| (*s, *e) == (0, 2)), "{unreg}");
+        assert!(
+            !LspBackend::compute_folding_ranges(unreg)
+                .iter()
+                .any(|(s, e)| (*s, *e) == (0, 2)),
+            "{unreg}"
+        );
         // Alias tanpa `#` + `// regional` bukan marker.
         let alias = "// region io\ninput clk;\n// endregion\n";
         let fa = LspBackend::compute_folding_ranges(alias);
@@ -4100,7 +4142,9 @@ endmodule
         assert!(f.contains(&(2, 3)), "{f:?}");
         // Tunggal tidak dilipat; baris kosong di dalam grup dilewati.
         let single = "import pkg_a::*;\nmodule m;\nendmodule\n";
-        assert!(!LspBackend::compute_folding_ranges(single).iter().any(|(s, _)| *s == 0));
+        assert!(!LspBackend::compute_folding_ranges(single)
+            .iter()
+            .any(|(s, _)| *s == 0));
         let gap = "import pkg_a::*;\n\nimport pkg_b::*;\nmodule m;\nendmodule\n";
         assert!(LspBackend::compute_folding_ranges(gap).contains(&(0, 2)));
         // Komentar di dalam grup ikut; grup di EOF ter-flush.
@@ -4172,7 +4216,9 @@ endmodule
         let s = LspBackend::snippet_for_keyword("module").expect("module punya snippet");
         assert!(s.contains("endmodule"), "{s}");
         assert!(s.contains("$1"), "{s}");
-        assert!(LspBackend::snippet_for_keyword("always_ff").unwrap().contains("posedge"));
+        assert!(LspBackend::snippet_for_keyword("always_ff")
+            .unwrap()
+            .contains("posedge"));
         assert!(LspBackend::snippet_for_keyword("endmodule").is_none());
         assert!(LspBackend::snippet_for_keyword("counter").is_none());
     }
@@ -4205,7 +4251,10 @@ endmodule
             cnames.iter().position(|n| *n == "logic").unwrap(),
             cnames.iter().position(|n| *n == "localparam").unwrap(),
         );
-        assert!(cpi < cli, "code: alfabet localparam sebelum logic: {cnames:?}");
+        assert!(
+            cpi < cli,
+            "code: alfabet localparam sebelum logic: {cnames:?}"
+        );
     }
 
     #[test]
@@ -4239,12 +4288,23 @@ endmodule
         // readonly; keyword 0.
         let src = "module counter #(parameter WIDTH = 8);\n  logic clk;\nendmodule\n";
         let toks = LspBackend::compute_semantic_tokens(src);
-        assert!(toks.iter().any(|t| t.token_modifiers_bitset
-            == LspBackend::MOD_DECLARATION | LspBackend::MOD_READONLY
-            && t.token_type == 6), "{toks:?}");
-        assert!(toks.iter().any(|t| t.token_modifiers_bitset == LspBackend::MOD_DECLARATION
-            && t.token_type == 5), "{toks:?}");
-        assert!(toks.iter().any(|t| t.token_modifiers_bitset == 0 && t.token_type == 7), "{toks:?}");
+        assert!(
+            toks.iter().any(|t| t.token_modifiers_bitset
+                == LspBackend::MOD_DECLARATION | LspBackend::MOD_READONLY
+                && t.token_type == 6),
+            "{toks:?}"
+        );
+        assert!(
+            toks.iter()
+                .any(|t| t.token_modifiers_bitset == LspBackend::MOD_DECLARATION
+                    && t.token_type == 5),
+            "{toks:?}"
+        );
+        assert!(
+            toks.iter()
+                .any(|t| t.token_modifiers_bitset == 0 && t.token_type == 7),
+            "{toks:?}"
+        );
     }
 
     #[test]
@@ -4253,7 +4313,10 @@ endmodule
         let full = LspBackend::compute_semantic_tokens(src);
         // Range baris 0..0 = subset tak-kosong dari full, tanpa token baris 3.
         let r0 = LspBackend::semantic_tokens_in_range(src, 0, 0);
-        assert!(!r0.is_empty() && r0.len() < full.len(), "{r0:?} vs {full:?}");
+        assert!(
+            !r0.is_empty() && r0.len() < full.len(),
+            "{r0:?} vs {full:?}"
+        );
         assert!(r0.iter().any(|t| t.delta_line == 0 && t.token_type == 0));
         // Delta rebase: token pertama range selalu delta_line 0.
         assert_eq!(r0[0].delta_line, 0);

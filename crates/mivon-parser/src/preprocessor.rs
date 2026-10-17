@@ -1821,9 +1821,6 @@ mod tests {
             out.contains("/* synopsys sync_set_reset */"),
             "escape harus jadi komentar valid: {out}"
         );
-        assert!(
-            !out.contains('`'),
-            "tak boleh ada backtick tersisa: {out}"
-        );
+        assert!(!out.contains('`'), "tak boleh ada backtick tersisa: {out}");
     }
 }

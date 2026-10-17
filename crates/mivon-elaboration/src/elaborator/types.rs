@@ -41,7 +41,10 @@ fn expr_has_funcall(e: &Expr) -> bool {
         Expr::Concat(items) => items.iter().any(expr_has_funcall),
         Expr::Replicate { count, expr } => expr_has_funcall(count) || expr_has_funcall(expr),
         Expr::MethodCall {
-            obj, args, with_clause, ..
+            obj,
+            args,
+            with_clause,
+            ..
         } => {
             expr_has_funcall(obj)
                 || args.iter().any(expr_has_funcall)
@@ -157,10 +160,9 @@ impl Elaborator {
                         "[DBG-WID] var={} err={} expr_range={:?} extra={}",
                         var.name.as_str(),
                         e,
-                        var.expr_range.as_ref().map(|er| format!(
-                            "{:?}:{:?}",
-                            er.msb, er.lsb
-                        )),
+                        var.expr_range
+                            .as_ref()
+                            .map(|er| format!("{:?}:{:?}", er.msb, er.lsb)),
                         var.extra_packed_dims.len()
                     );
                 }
@@ -721,7 +723,11 @@ mod tests {
         ctx.insert(Symbol::intern("A"), 1);
         // own menang atas global; None bila kosong.
         let ov = package_overlay(&ctx, Some(&[(Symbol::intern("A"), 9)]));
-        assert_eq!(ov.as_ref().and_then(|m| m.get(&Symbol::intern("A")).copied()), Some(9));
+        assert_eq!(
+            ov.as_ref()
+                .and_then(|m| m.get(&Symbol::intern("A")).copied()),
+            Some(9)
+        );
         assert!(package_overlay(&ctx, None).is_none());
         assert!(package_overlay(&ctx, Some(&[])).is_none());
     }

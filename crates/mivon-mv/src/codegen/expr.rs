@@ -113,7 +113,10 @@ pub(crate) fn emit_expr(e: &Expr) -> String {
             format!("{name}({})", a.join(", "))
         }
         Expr::SysFunc(name, args, ..) => {
-            let a = args.as_ref().map(|args| args.iter().map(emit_expr).collect::<Vec<_>>().join(", ")).unwrap_or_default();
+            let a = args
+                .as_ref()
+                .map(|args| args.iter().map(emit_expr).collect::<Vec<_>>().join(", "))
+                .unwrap_or_default();
             format!("${name}({a})")
         }
         // Named arg `f(10, factor = 4)` → SV `.factor(4)`.
@@ -144,7 +147,12 @@ pub(crate) fn emit_expr(e: &Expr) -> String {
             // Indexed part-select naik/turun (LRM 1800 §11.8.2). `width` emit
             // apa adanya — SV memang mengartikannya sebagai LEBAR.
             let op = if *plus { "+:" } else { "-:" };
-            format!("{}[{} {op} {}]", emit_expr(base), emit_expr(from), emit_expr(width))
+            format!(
+                "{}[{} {op} {}]",
+                emit_expr(base),
+                emit_expr(from),
+                emit_expr(width)
+            )
         }
         Expr::Concat(parts) => {
             let p: Vec<String> = parts.iter().map(emit_expr).collect();

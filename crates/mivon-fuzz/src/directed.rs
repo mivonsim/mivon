@@ -270,7 +270,9 @@ impl<'r> DirectedMutator<'r> {
     /// vs `inject_decl_init` acak). Menyerang edge-sensitivity t=0 (fuzz
     /// `verify_bad_0586`). Lewati deklarasi yg sudah punya `=`.
     fn force_decl_init_zero(&mut self, source: &str) -> String {
-        let decl_kw = ["logic", "reg", "bit", "integer", "int", "longint", "shortint", "byte"];
+        let decl_kw = [
+            "logic", "reg", "bit", "integer", "int", "longint", "shortint", "byte",
+        ];
         let mut out = String::new();
         let mut done = false;
         for line in source.lines() {

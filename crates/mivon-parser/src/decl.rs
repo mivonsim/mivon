@@ -1377,7 +1377,7 @@ impl Parser {
 
     pub(crate) fn parse_typedef(&mut self) -> Result<TypedefDecl, SimError> {
         self.advance(); // consume typedef
-        // Queue typedef yang `[$]`-nya dikonsumsi inline di cabang user-defined.
+                        // Queue typedef yang `[$]`-nya dikonsumsi inline di cabang user-defined.
         let mut typedef_is_queue = false;
         let (name, dtype, range, extra_packed_dims) = match self.peek() {
             // Forward class declaration: `typedef class foo;` (LRM 1800 §6.18).

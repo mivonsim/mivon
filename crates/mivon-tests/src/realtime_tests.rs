@@ -49,7 +49,10 @@ fn realtime_source_matches_iverilog_expectation() {
     // iverilog. Kalau golden berubah, test harus gagal di sini — bukan diam
     // saja asserting string yang sudah usang.
     let src = simtime_source("%f");
-    assert!(src.contains("$realtime"), "source test harus pakai $realtime");
+    assert!(
+        src.contains("$realtime"),
+        "source test harus pakai $realtime"
+    );
     assert!(
         GOLDEN_IVERILOG == "5.000000",
         "golden iverilog untuk #5 $realtime = 5.000000; ubah test kalau reference berubah"

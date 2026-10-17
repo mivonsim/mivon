@@ -12,8 +12,8 @@ pub mod syntax;
 pub mod system;
 pub mod types;
 
-use std::collections::HashMap;
 use crate::lrm_model::{LrmRule, LrmState, RuleCategory};
+use std::collections::HashMap;
 
 /// Registry semua aturan LRM yang terdaftar.
 pub struct RuleRegistry {
@@ -49,7 +49,10 @@ impl RuleRegistry {
     }
 
     pub fn for_category(&self, cat: RuleCategory) -> &[&'static str] {
-        self.by_category.get(&cat).map(|v| v.as_slice()).unwrap_or(&[])
+        self.by_category
+            .get(&cat)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
     }
 
     /// Kembalikan semua aturan yang `applies_when(&state)` = true.

@@ -206,7 +206,8 @@ module m {
     let file = parse(src).unwrap();
     let out = generate(&file, "m");
     assert!(
-        out.sv.contains("assume (a == 0) $info(\"ok\"); else $error(\"bad\");"),
+        out.sv
+            .contains("assume (a == 0) $info(\"ok\"); else $error(\"bad\");"),
         "sv: {}",
         out.sv
     );
@@ -300,7 +301,11 @@ module m {
         "head inside: {}",
         out.sv
     );
-    assert!(out.sv.contains("[1:10], 30:"), "rentang + multi: {}", out.sv);
+    assert!(
+        out.sv.contains("[1:10], 30:"),
+        "rentang + multi: {}",
+        out.sv
+    );
 }
 
 #[test]
@@ -325,8 +330,16 @@ module m {
     let file = parse(src).unwrap();
     let out = generate(&file, "m");
     assert!(out.sv.contains("unique if (a) begin"), "head: {}", out.sv);
-    assert!(out.sv.contains("end else if (b) begin"), "rantai: {}", out.sv);
-    assert!(!out.sv.contains("unique if (b)"), "lanjutan plain: {}", out.sv);
+    assert!(
+        out.sv.contains("end else if (b) begin"),
+        "rantai: {}",
+        out.sv
+    );
+    assert!(
+        !out.sv.contains("unique if (b)"),
+        "lanjutan plain: {}",
+        out.sv
+    );
 }
 
 #[test]
@@ -940,11 +953,7 @@ module tb {
         "typedef di-indent di dalam package: {}",
         out.svh
     );
-    assert!(
-        out.svh.contains("endpackage"),
-        "endpackage: {}",
-        out.svh
-    );
+    assert!(out.svh.contains("endpackage"), "endpackage: {}", out.svh);
     assert!(
         out.sv.contains("import chip_types::*;"),
         "sv harus import: {}",
@@ -978,8 +987,15 @@ module m {
         ..Default::default()
     };
     let out = generate_src_ext_opts(&file, "m", &[], "mv", &opts);
-    assert!(out.svh.contains("package p;"), "package sumber tetap: {}", out.svh);
-    assert!(!out.svh.contains("package chip_types"), "tak ada typedef → tak dibungkus");
+    assert!(
+        out.svh.contains("package p;"),
+        "package sumber tetap: {}",
+        out.svh
+    );
+    assert!(
+        !out.svh.contains("package chip_types"),
+        "tak ada typedef → tak dibungkus"
+    );
     assert!(!out.sv.contains("import chip_types"), "tak ada import");
 }
 
@@ -1228,9 +1244,16 @@ fn lang_binary_xnor_tildecaret_and_caret_tilde() {
     let src = "module xn { in a, b : logic[7:0]\n out y, z : logic[7:0]\n comb { y = a ~^ b  z = a ^~ b } }";
     let out = generate(&parse(src).unwrap(), "xn");
     assert!(out.sv.contains("y = a ~^ b;"), "sv: {}", out.sv);
-    assert!(out.sv.contains("z = a ~^ b;"), "ejaan ^~ dinormalkan: {}", out.sv);
+    assert!(
+        out.sv.contains("z = a ~^ b;"),
+        "ejaan ^~ dinormalkan: {}",
+        out.sv
+    );
     // `~` unary tetap berfungsi
-    let out2 = generate(&parse("module xn2 { in a : logic[7:0]\n out y : logic[7:0]\n comb { y = ~a } }").unwrap(), "xn2");
+    let out2 = generate(
+        &parse("module xn2 { in a : logic[7:0]\n out y : logic[7:0]\n comb { y = ~a } }").unwrap(),
+        "xn2",
+    );
     assert!(out2.sv.contains("y = ~a;"), "unary ~: {}", out2.sv);
 }
 
@@ -1254,9 +1277,20 @@ fn lang_indexed_part_select_plus_minus_colon() {
 #[test]
 fn lang_uint_int_bracket_width_and_unpacked_after() {
     // `uint[8]` = lebar 8-bit; dimensi unpacked setelah kurung lebar.
-    let out = generate(&parse("module t { in c : bit\n sig a : uint[8][4]\n sig b : int[16] }").unwrap(), "t");
-    assert!(out.sv.contains("logic [7:0] a [0:3];"), "uint[8][4]: {}", out.sv);
-    assert!(out.sv.contains("logic signed [15:0] b;"), "int[16]: {}", out.sv);
+    let out = generate(
+        &parse("module t { in c : bit\n sig a : uint[8][4]\n sig b : int[16] }").unwrap(),
+        "t",
+    );
+    assert!(
+        out.sv.contains("logic [7:0] a [0:3];"),
+        "uint[8][4]: {}",
+        out.sv
+    );
+    assert!(
+        out.sv.contains("logic signed [15:0] b;"),
+        "int[16]: {}",
+        out.sv
+    );
 }
 
 #[test]
@@ -1279,7 +1313,11 @@ module m {
     assert!(out.sv.contains("wire w;"), "wire 1-bit: {}", out.sv);
     assert!(out.sv.contains("wire [7:0] bv;"), "wire vektor: {}", out.sv);
     assert!(!out.sv.contains("wire bit"), "wire+bit INVALID: {}", out.sv);
-    assert!(!out.sv.contains("wire logic"), "wire+logic INVALID: {}", out.sv);
+    assert!(
+        !out.sv.contains("wire logic"),
+        "wire+logic INVALID: {}",
+        out.sv
+    );
     assert!(out.sv.contains("assign w = a & b;"), "assign: {}", out.sv);
     assert!(out.sv.contains("assign y = w;"), "assign y: {}", out.sv);
 }
@@ -1360,17 +1398,51 @@ module tb {
 }
 "#;
     let out = generate(&parse(src).unwrap(), "tb");
-    assert!(out.sv.contains("covergroup cg @(posedge clk);"), "header: {}", out.sv);
-    assert!(out.sv.contains("x: coverpoint x {"), "auto-label: {}", out.sv);
-    assert!(out.sv.contains("cp: coverpoint x + 1 {"), "label eksplisit: {}", out.sv);
-    assert!(out.sv.contains("bins lo = {0, 1};"), "bins nilai: {}", out.sv);
-    assert!(out.sv.contains("bins hi = {[2:10]};"), "bins range: {}", out.sv);
+    assert!(
+        out.sv.contains("covergroup cg @(posedge clk);"),
+        "header: {}",
+        out.sv
+    );
+    assert!(
+        out.sv.contains("x: coverpoint x {"),
+        "auto-label: {}",
+        out.sv
+    );
+    assert!(
+        out.sv.contains("cp: coverpoint x + 1 {"),
+        "label eksplisit: {}",
+        out.sv
+    );
+    assert!(
+        out.sv.contains("bins lo = {0, 1};"),
+        "bins nilai: {}",
+        out.sv
+    );
+    assert!(
+        out.sv.contains("bins hi = {[2:10]};"),
+        "bins range: {}",
+        out.sv
+    );
     assert!(out.sv.contains("endgroup"), "endgroup: {}", out.sv);
     // negedge + tanpa event
     let out2 = generate(&parse("module m2 {\n sig r : bit\n sig y : bit\n covergroup g @(negedge r) {\n coverpoint y {\n bins a = {1}\n }\n }\n}").unwrap(), "m2");
-    assert!(out2.sv.contains("covergroup g @(negedge r);"), "negedge: {}", out2.sv);
-    let out3 = generate(&parse("module m3 {\n sig y : bit\n covergroup g {\n coverpoint y {\n bins a = {1}\n }\n }\n}").unwrap(), "m3");
-    assert!(out3.sv.contains("covergroup g;"), "tanpa event: {}", out3.sv);
+    assert!(
+        out2.sv.contains("covergroup g @(negedge r);"),
+        "negedge: {}",
+        out2.sv
+    );
+    let out3 = generate(
+        &parse(
+            "module m3 {\n sig y : bit\n covergroup g {\n coverpoint y {\n bins a = {1}\n }\n }\n}",
+        )
+        .unwrap(),
+        "m3",
+    );
+    assert!(
+        out3.sv.contains("covergroup g;"),
+        "tanpa event: {}",
+        out3.sv
+    );
 }
 
 #[test]
@@ -1393,12 +1465,24 @@ module m #(SEL = 1) {
     let out = generate(&parse(src).unwrap(), "m");
     assert!(out.sv.contains("generate"), "generate: {}", out.sv);
     assert!(out.sv.contains("case (SEL)"), "case: {}", out.sv);
-    assert!(out.sv.contains("0: begin : gen_case"), "label cabang: {}", out.sv);
-    assert!(out.sv.contains("default: begin : gen_case_else"), "default: {}", out.sv);
+    assert!(
+        out.sv.contains("0: begin : gen_case"),
+        "label cabang: {}",
+        out.sv
+    );
+    assert!(
+        out.sv.contains("default: begin : gen_case_else"),
+        "default: {}",
+        out.sv
+    );
     assert!(out.sv.contains("endcase"), "endcase: {}", out.sv);
     // dua blok case → label unik deterministik
     let out2 = generate(&parse("module n #(A = 0, B = 1) {\n in clk : bit\n case (A) {\n 0: { comb { } }\n }\n case (B) {\n 0: { comb { } }\n }\n}").unwrap(), "n");
-    assert!(out2.sv.contains("begin : gen_case_1"), "uniquifier: {}", out2.sv);
+    assert!(
+        out2.sv.contains("begin : gen_case_1"),
+        "uniquifier: {}",
+        out2.sv
+    );
 }
 
 // ── Type-check (E2010/E2011/E2012/E2013) dipindah ke `check/tests.rs` ──

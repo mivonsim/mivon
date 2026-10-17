@@ -271,7 +271,18 @@ impl Parser {
                     col: c,
                 }))
             }
-            Tok::Sig | Tok::Reg | Tok::Wire | Tok::Wand | Tok::Wor | Tok::Tri | Tok::Tri0 | Tok::Tri1 | Tok::TriAnd | Tok::TriOr | Tok::Supply0 | Tok::Supply1 => {
+            Tok::Sig
+            | Tok::Reg
+            | Tok::Wire
+            | Tok::Wand
+            | Tok::Wor
+            | Tok::Tri
+            | Tok::Tri0
+            | Tok::Tri1
+            | Tok::TriAnd
+            | Tok::TriOr
+            | Tok::Supply0
+            | Tok::Supply1 => {
                 let (l, c) = self.pos_line();
                 let kind = self.peek().clone();
                 self.advance();
@@ -397,21 +408,22 @@ impl Parser {
                     // Also use raw if it starts with `@` (event control like `@(posedge clk)`).
                     if self.peek() == &Tok::LParen {
                         let save = self.pos;
-                        self.advance(); // consume `(` 
+                        self.advance(); // consume `(`
                         let use_raw = matches!(self.peek(), Tok::At);
                         self.pos = save; // restore position
-                        
+
                         if use_raw {
                             // Event control form: `@(posedge clk) ...` — use raw parsing
                             let raw = self.parse_assert_property_raw()?;
                             return Ok(MItem::AssertProperty(raw));
                         }
-                        
+
                         // Try structured parsing
                         self.advance();
                         let prop = self.parse_sva_prop_expr()?;
                         self.expect(&Tok::RParen)?;
-                        let pass = if matches!(self.peek(), Tok::Else) || matches!(self.peek(), Tok::RBrace)
+                        let pass = if matches!(self.peek(), Tok::Else)
+                            || matches!(self.peek(), Tok::RBrace)
                         {
                             None
                         } else {
@@ -423,7 +435,13 @@ impl Parser {
                             None
                         };
                         let (l, c) = self.pos_line();
-                        return Ok(MItem::AssertPropertyStruct { prop: Box::new(prop), pass, fail, line: l, col: c });
+                        return Ok(MItem::AssertPropertyStruct {
+                            prop: Box::new(prop),
+                            pass,
+                            fail,
+                            line: l,
+                            col: c,
+                        });
                     }
                     // Fallback to raw
                     let raw = self.parse_assert_property_raw()?;
@@ -447,19 +465,20 @@ impl Parser {
                     // Check if it's a structured SVA property expression (F85)
                     if self.peek() == &Tok::LParen {
                         let save = self.pos;
-                        self.advance(); // consume `(` 
+                        self.advance(); // consume `(`
                         let use_raw = matches!(self.peek(), Tok::At);
                         self.pos = save; // restore position
-                        
+
                         if use_raw {
                             let raw = self.parse_assert_property_raw()?;
                             return Ok(MItem::AssumeProperty(raw));
                         }
-                        
+
                         self.advance();
                         let prop = self.parse_sva_prop_expr()?;
                         self.expect(&Tok::RParen)?;
-                        let pass = if matches!(self.peek(), Tok::Else) || matches!(self.peek(), Tok::RBrace)
+                        let pass = if matches!(self.peek(), Tok::Else)
+                            || matches!(self.peek(), Tok::RBrace)
                         {
                             None
                         } else {
@@ -471,7 +490,13 @@ impl Parser {
                             None
                         };
                         let (l, c) = self.pos_line();
-                        return Ok(MItem::AssumePropertyStruct { prop: Box::new(prop), pass, fail, line: l, col: c });
+                        return Ok(MItem::AssumePropertyStruct {
+                            prop: Box::new(prop),
+                            pass,
+                            fail,
+                            line: l,
+                            col: c,
+                        });
                     }
                     let raw = self.parse_assert_property_raw()?;
                     return Ok(MItem::AssumeProperty(raw));
@@ -494,15 +519,15 @@ impl Parser {
                     // Check if it's a structured SVA property expression (F85)
                     if self.peek() == &Tok::LParen {
                         let save = self.pos;
-                        self.advance(); // consume `(` 
+                        self.advance(); // consume `(`
                         let use_raw = matches!(self.peek(), Tok::At);
                         self.pos = save; // restore position
-                        
+
                         if use_raw {
                             let raw = self.parse_assert_property_raw()?;
                             return Ok(MItem::CoverProperty(raw));
                         }
-                        
+
                         self.advance();
                         let prop = self.parse_sva_prop_expr()?;
                         self.expect(&Tok::RParen)?;
@@ -521,7 +546,12 @@ impl Parser {
                             Some(Box::new(self.parse_stmt()?))
                         };
                         let (l, c) = self.pos_line();
-                        return Ok(MItem::CoverPropertyStruct { prop: Box::new(prop), pass, line: l, col: c });
+                        return Ok(MItem::CoverPropertyStruct {
+                            prop: Box::new(prop),
+                            pass,
+                            line: l,
+                            col: c,
+                        });
                     }
                     let raw = self.parse_assert_property_raw()?;
                     return Ok(MItem::CoverProperty(raw));
@@ -950,7 +980,8 @@ impl Parser {
                     return Err(MvError::new(
                         l,
                         c,
-                        "event covergroup harus `posedge`/`negedge` (mis. `@(posedge clk)`)".to_string(),
+                        "event covergroup harus `posedge`/`negedge` (mis. `@(posedge clk)`)"
+                            .to_string(),
                     ));
                 }
             };
@@ -1063,7 +1094,12 @@ impl Parser {
                     }
                     self.expect(&Tok::BlockingAssign)?;
                     let value = self.parse_expr()?;
-                    items.push(SpecifyItem::Specparam { name, value, line: l, col: c });
+                    items.push(SpecifyItem::Specparam {
+                        name,
+                        value,
+                        line: l,
+                        col: c,
+                    });
                 }
                 Tok::Ident(s) if s == "setup" => {
                     let (l, c) = self.pos_line();
@@ -1075,7 +1111,14 @@ impl Parser {
                     self.expect(&Tok::Comma)?;
                     let limit = self.parse_expr()?;
                     self.expect(&Tok::RParen)?;
-                    items.push(SpecifyItem::Setup { data, posedge, clock, limit, line: l, col: c });
+                    items.push(SpecifyItem::Setup {
+                        data,
+                        posedge,
+                        clock,
+                        limit,
+                        line: l,
+                        col: c,
+                    });
                 }
                 Tok::Ident(s) if s == "hold" => {
                     let (l, c) = self.pos_line();
@@ -1087,7 +1130,14 @@ impl Parser {
                     self.expect(&Tok::Comma)?;
                     let limit = self.parse_expr()?;
                     self.expect(&Tok::RParen)?;
-                    items.push(SpecifyItem::Hold { posedge, clock, data, limit, line: l, col: c });
+                    items.push(SpecifyItem::Hold {
+                        posedge,
+                        clock,
+                        data,
+                        limit,
+                        line: l,
+                        col: c,
+                    });
                 }
                 _ => {
                     let (l, c) = self.pos_line();

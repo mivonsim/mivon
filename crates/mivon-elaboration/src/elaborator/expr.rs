@@ -143,11 +143,7 @@ impl Elaborator {
         // Path 2-level: coba lebar dari ekspresi koneksi port (param saat ini).
         if segs.len() == 2 {
             for conn in &inst0.port_conns {
-                if let PortConnection::Named {
-                    port,
-                    expr: cexpr,
-                } = conn
-                {
+                if let PortConnection::Named { port, expr: cexpr } = conn {
                     if *port == segs[1] {
                         if let Ok(w) = compute_expr_width(
                             cexpr,
@@ -192,7 +188,11 @@ impl Elaborator {
     }
 
     /// Cari deklarasi instance bernama `inst_name` di module/interface `mod_name`.
-    fn find_instance_in_module(&self, mod_name: Symbol, inst_name: Symbol) -> Option<&ModuleInstance> {
+    fn find_instance_in_module(
+        &self,
+        mod_name: Symbol,
+        inst_name: Symbol,
+    ) -> Option<&ModuleInstance> {
         let items = self
             .design
             .modules
@@ -281,25 +281,25 @@ impl Elaborator {
         signal_map: &HashMap<Symbol, SignalId>,
         signals: &[SignalInfo],
     ) -> Result<IrExpr, SimError> {
-                if let Some(folded) = self.try_fold_const(expr, signal_map)? {
-                    return Ok(folded);
-                }
-                // REAL literal fold: `1.5 + 2.25` — eval biner hanya kenal
-                // is_real utk operand SIGNAL; literal+literal jatuh jalur int
-                // → NaN. Fold real di sini (bug #6).
-                if let (Some(a), Some(b)) = (real_literal(lhs), real_literal(rhs)) {
-                    if let Some(v) = fold_binary_real(op, a, b) {
-                        return Ok(v);
-                    }
-                }
-                let lhs_expr = self.elaborate_expr(lhs, signal_map, signals)?;
-                let rhs_expr = self.elaborate_expr(rhs, signal_map, signals)?;
-                let ir_op = map_binary_op(op)?;
-                Ok(IrExpr::BinaryOp(
-                    ir_op,
-                    Box::new(lhs_expr),
-                    Box::new(rhs_expr),
-                ))
+        if let Some(folded) = self.try_fold_const(expr, signal_map)? {
+            return Ok(folded);
+        }
+        // REAL literal fold: `1.5 + 2.25` — eval biner hanya kenal
+        // is_real utk operand SIGNAL; literal+literal jatuh jalur int
+        // → NaN. Fold real di sini (bug #6).
+        if let (Some(a), Some(b)) = (real_literal(lhs), real_literal(rhs)) {
+            if let Some(v) = fold_binary_real(op, a, b) {
+                return Ok(v);
+            }
+        }
+        let lhs_expr = self.elaborate_expr(lhs, signal_map, signals)?;
+        let rhs_expr = self.elaborate_expr(rhs, signal_map, signals)?;
+        let ir_op = map_binary_op(op)?;
+        Ok(IrExpr::BinaryOp(
+            ir_op,
+            Box::new(lhs_expr),
+            Box::new(rhs_expr),
+        ))
     }
 
     /// UnaryOp (bug #38): body arm identik; dipisah agar bingkai kecil.
@@ -312,12 +312,12 @@ impl Elaborator {
         signal_map: &HashMap<Symbol, SignalId>,
         signals: &[SignalInfo],
     ) -> Result<IrExpr, SimError> {
-                if let Some(folded) = self.try_fold_const(expr, signal_map)? {
-                    return Ok(folded);
-                }
-                let inner_expr = self.elaborate_expr(inner, signal_map, signals)?;
-                let ir_op = map_unary_op(op)?;
-                Ok(IrExpr::UnaryOp(ir_op, Box::new(inner_expr)))
+        if let Some(folded) = self.try_fold_const(expr, signal_map)? {
+            return Ok(folded);
+        }
+        let inner_expr = self.elaborate_expr(inner, signal_map, signals)?;
+        let ir_op = map_unary_op(op)?;
+        Ok(IrExpr::UnaryOp(ir_op, Box::new(inner_expr)))
     }
 
     fn elaborate_expr_deep(
@@ -653,11 +653,7 @@ impl Elaborator {
                             if let Ok(idx) = const_eval_params(index, &self.param_vals) {
                                 let lsb = (idx.max(0) as usize).saturating_mul(ew);
                                 let msb = lsb + ew - 1;
-                                return Ok(IrExpr::ExprRangeSelect(
-                                    Box::new(inner_expr),
-                                    msb,
-                                    lsb,
-                                ));
+                                return Ok(IrExpr::ExprRangeSelect(Box::new(inner_expr), msb, lsb));
                             }
                             let index_expr = self.elaborate_expr(index, signal_map, signals)?;
                             let base_expr = IrExpr::BinaryOp(
@@ -744,13 +740,12 @@ impl Elaborator {
                         // `size-1` runtime via MethodCall (engine hitung dari
                         // lebar aktual). Sebelumnya `$` jadi SysFunc tak
                         // dikenal → 0 → elemen PERTAMA (bug vs iverilog).
-                        let index_expr = if Self::is_dollar_index(index)
-                            && (sig.is_dynamic || sig.is_queue)
-                        {
-                            Self::dollar_last_index(*sid, sig.width)
-                        } else {
-                            self.elaborate_expr(index, signal_map, signals)?
-                        };
+                        let index_expr =
+                            if Self::is_dollar_index(index) && (sig.is_dynamic || sig.is_queue) {
+                                Self::dollar_last_index(*sid, sig.width)
+                            } else {
+                                self.elaborate_expr(index, signal_map, signals)?
+                            };
                         // F39: multi-dim unpacked — index pertama memilih ROW
                         // (sub-array): lebar = elem_width × Π dims[1..].
                         // ArrayIndex engine: start = idx × elem_width → row
@@ -782,8 +777,7 @@ impl Elaborator {
                         // Indeks deklarasi → posisi bit fisik (rentang menaik
                         // `[0:3]` / lsb != 0 `[7:4]`).
                         let index_expr = self.elaborate_expr(index, signal_map, signals)?;
-                        let base_expr =
-                            decl_index_to_pos_expr(index_expr, sig.msb, sig.lsb);
+                        let base_expr = decl_index_to_pos_expr(index_expr, sig.msb, sig.lsb);
                         Ok(IrExpr::ExprPartSelect(
                             Box::new(IrExpr::Signal(*sid, sig.width)),
                             Box::new(base_expr),
@@ -800,9 +794,8 @@ impl Elaborator {
                     if let Some(elem_w) = elem_w {
                         if let Ok(idx) = const_eval_params(index, &self.param_vals) {
                             let base = (*outer_msb).min(*outer_lsb);
-                            let lsb = base.saturating_add(
-                                (idx.max(0) as usize).saturating_mul(elem_w),
-                            );
+                            let lsb =
+                                base.saturating_add((idx.max(0) as usize).saturating_mul(elem_w));
                             let msb = lsb.saturating_add(elem_w.saturating_sub(1));
                             Ok(IrExpr::RangeSelect(*sid, msb, lsb))
                         } else {
@@ -1162,7 +1155,9 @@ impl Elaborator {
         };
         if method.as_str() == "randomize" {
             let bound = self.bind_randomize_with(obj, method, wc, signal_map, signals);
-            return Ok(Some(Box::new(self.elaborate_expr(&bound, signal_map, signals)?)));
+            return Ok(Some(Box::new(
+                self.elaborate_expr(&bound, signal_map, signals)?,
+            )));
         }
         if Self::is_array_with_method(method.as_str()) {
             let saved = self.with_item_bound.get();
@@ -1175,7 +1170,9 @@ impl Elaborator {
             self.with_item_fields.replace(saved_fields);
             return Ok(Some(Box::new(r?)));
         }
-        Ok(Some(Box::new(self.elaborate_expr(wc, signal_map, signals)?)))
+        Ok(Some(Box::new(
+            self.elaborate_expr(wc, signal_map, signals)?,
+        )))
     }
 
     /// Field struct dari TIPE ELEMEN receiver sebuah array manipulation method
@@ -1247,12 +1244,7 @@ impl Elaborator {
             depth += 1;
             // Samakan dgn merged_rand_fields: `extends pkg::B` di-strip ke `B`.
             let key = cn.as_str().split("::").last().unwrap_or(cn.as_str());
-            let Some(decl) = self
-                .design
-                .classes
-                .iter()
-                .find(|c| c.name.as_str() == key)
-            else {
+            let Some(decl) = self.design.classes.iter().find(|c| c.name.as_str() == key) else {
                 break;
             };
             for m in &decl.members {
@@ -1302,16 +1294,23 @@ impl Elaborator {
                 op: op.clone(),
                 expr: Box::new(self.bind_with_fields(inner, obj, fields, signal_map)),
             },
-            Expr::Paren(inner) => {
-                Expr::Paren(Box::new(self.bind_with_fields(inner, obj, fields, signal_map)))
-            }
-            Expr::TernaryOp { cond, true_expr, false_expr } => Expr::TernaryOp {
+            Expr::Paren(inner) => Expr::Paren(Box::new(
+                self.bind_with_fields(inner, obj, fields, signal_map),
+            )),
+            Expr::TernaryOp {
+                cond,
+                true_expr,
+                false_expr,
+            } => Expr::TernaryOp {
                 cond: Box::new(self.bind_with_fields(cond, obj, fields, signal_map)),
                 true_expr: Box::new(self.bind_with_fields(true_expr, obj, fields, signal_map)),
                 false_expr: Box::new(self.bind_with_fields(false_expr, obj, fields, signal_map)),
             },
             Expr::Concat(items) => Expr::Concat(
-                items.iter().map(|e| self.bind_with_fields(e, obj, fields, signal_map)).collect(),
+                items
+                    .iter()
+                    .map(|e| self.bind_with_fields(e, obj, fields, signal_map))
+                    .collect(),
             ),
             Expr::RangeSelect { expr: b, msb, lsb } => Expr::RangeSelect {
                 expr: Box::new(self.bind_with_fields(b, obj, fields, signal_map)),
@@ -1326,25 +1325,44 @@ impl Elaborator {
                 dtype: *dtype,
                 expr: Box::new(self.bind_with_fields(inner, obj, fields, signal_map)),
             },
-            Expr::Inside { expr: inner, range_list } => Expr::Inside {
+            Expr::Inside {
+                expr: inner,
+                range_list,
+            } => Expr::Inside {
                 expr: Box::new(self.bind_with_fields(inner, obj, fields, signal_map)),
                 range_list: range_list
                     .iter()
                     .map(|e| self.bind_with_fields(e, obj, fields, signal_map))
                     .collect(),
             },
-            Expr::FuncCall { name, args, line, col } => Expr::FuncCall {
+            Expr::FuncCall {
+                name,
+                args,
+                line,
+                col,
+            } => Expr::FuncCall {
                 name: *name,
-                args: args.iter().map(|a| self.bind_with_fields(a, obj, fields, signal_map)).collect(),
+                args: args
+                    .iter()
+                    .map(|a| self.bind_with_fields(a, obj, fields, signal_map))
+                    .collect(),
                 line: *line,
                 col: *col,
             },
             // MethodCall bersarang: obj+args ikut scope luar; with-block
             // dalamnya milik receiver lain — biarkan (perilaku lama).
-            Expr::MethodCall { obj: inner_obj, method, args, with_clause } => Expr::MethodCall {
+            Expr::MethodCall {
+                obj: inner_obj,
+                method,
+                args,
+                with_clause,
+            } => Expr::MethodCall {
                 obj: Box::new(self.bind_with_fields(inner_obj, obj, fields, signal_map)),
                 method: *method,
-                args: args.iter().map(|a| self.bind_with_fields(a, obj, fields, signal_map)).collect(),
+                args: args
+                    .iter()
+                    .map(|a| self.bind_with_fields(a, obj, fields, signal_map))
+                    .collect(),
                 with_clause: with_clause.clone(),
             },
             _ => expr.clone(),
@@ -2140,7 +2158,11 @@ impl Elaborator {
                     if let Expr::Value(Value::Real(f)) = strip_parens(inner) {
                         // Constant real → bulat saat elaborasi ( Deterministik ).
                         return Ok(IrExpr::Const(LogicVec::from_u64(
-                            if f.is_finite() { f.round() as i64 as u64 } else { 0 },
+                            if f.is_finite() {
+                                f.round() as i64 as u64
+                            } else {
+                                0
+                            },
                             cast_width.max(32),
                         )));
                     }
@@ -3589,7 +3611,7 @@ impl Elaborator {
     pub(crate) fn typedef_kind(&self, name: Symbol) -> (bool, bool) {
         let base = name
             .as_str()
-            .rsplit(|c| c == ':' || c == '.')
+            .rsplit([':', '.'])
             .next()
             .unwrap_or(name.as_str());
         let base_sym = Symbol::intern(base);

@@ -56,8 +56,12 @@ impl LrmJudge {
                 testcase_id: testcase.id.clone(),
                 verdict: Verdict::MivonInternalFailure {
                     kind,
-                    detail: observation.raw_stderr.lines().next()
-                        .unwrap_or("internal failure").to_string(),
+                    detail: observation
+                        .raw_stderr
+                        .lines()
+                        .next()
+                        .unwrap_or("internal failure")
+                        .to_string(),
                 },
                 confidence: JudgeConfidence::Proven,
                 rule_results: Vec::new(),
@@ -94,9 +98,8 @@ fn evaluate_rule(
     state: &LrmState,
 ) -> RuleResult {
     // Periksa applicability.
-    let applicability = ApplicabilityProof::new(vec![
-        ("applies_when(state)", (rule.applies_when)(state)),
-    ]);
+    let applicability =
+        ApplicabilityProof::new(vec![("applies_when(state)", (rule.applies_when)(state))]);
     if !applicability.applies {
         return RuleResult {
             rule: rule.id.clone(),
@@ -113,7 +116,9 @@ fn evaluate_rule(
         }
         RuleCategory::Semantics => Some(semantics::evaluate(rule, testcase, observation, state)),
         RuleCategory::Typing => Some(types::evaluate(rule, testcase, observation, state)),
-        RuleCategory::Elaboration => Some(elaboration::evaluate(rule, testcase, observation, state)),
+        RuleCategory::Elaboration => {
+            Some(elaboration::evaluate(rule, testcase, observation, state))
+        }
         RuleCategory::Scheduling => Some(scheduling::evaluate(rule, testcase, observation, state)),
         _ => None,
     };
@@ -150,7 +155,11 @@ fn evaluate_rule_generic(rule: &LrmRule, observation: &MivonObservation) -> Rule
 
     for req in &rule.requires {
         let outcome = req.check(observation);
-        let label = format!("{:?}", req).split('{').next().unwrap_or("req").to_string();
+        let label = format!("{:?}", req)
+            .split('{')
+            .next()
+            .unwrap_or("req")
+            .to_string();
         match outcome {
             CheckOutcome::Satisfied(reason) => {
                 evidence.push(Evidence::matching(label, reason));
@@ -213,9 +222,9 @@ fn aggregate(
     _state: &LrmState,
 ) -> JudgeReport {
     // Cari violation pertama yang paling kuat.
-    let first_violation = rule_results.iter().find(|r| {
-        matches!(r.verdict, RuleVerdict::Violated { .. })
-    });
+    let first_violation = rule_results
+        .iter()
+        .find(|r| matches!(r.verdict, RuleVerdict::Violated { .. }));
 
     let (verdict, confidence, provenance) = if let Some(viol) = first_violation {
         // Tentukan confidence berdasarkan jumlah bukti dan kejelasan aturan.
@@ -267,10 +276,7 @@ fn aggregate(
         if !inconclusive.is_empty() {
             (
                 Verdict::JudgeInsufficient {
-                    reason: format!(
-                        "{} aturan belum dapat dievaluasi",
-                        inconclusive.len()
-                    ),
+                    reason: format!("{} aturan belum dapat dievaluasi", inconclusive.len()),
                     missing: inconclusive.iter().map(|s| s.to_string()).collect(),
                 },
                 JudgeConfidence::Insufficient,

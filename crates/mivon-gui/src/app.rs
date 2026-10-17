@@ -520,7 +520,9 @@ pub fn trigger_generate(state: &mut GuiState) {
             }
             if is_header {
                 if r.svh.is_empty() {
-                    state.log("⚠ Generate: .mvh tidak punya package/typedef/interface — tidak ada output");
+                    state.log(
+                        "⚠ Generate: .mvh tidak punya package/typedef/interface — tidak ada output",
+                    );
                 } else {
                     state.log(format!(
                         "✅ Generate: {} ({} baris)",

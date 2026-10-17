@@ -307,7 +307,11 @@ pub fn contains_signal_ref(expr: &Expr, signal_map: &HashMap<Symbol, SignalId>) 
         Expr::BitSelect { expr: inner, index } => {
             contains_signal_ref(inner, signal_map) || contains_signal_ref(index, signal_map)
         }
-        Expr::RangeSelect { expr: inner, msb, lsb } => {
+        Expr::RangeSelect {
+            expr: inner,
+            msb,
+            lsb,
+        } => {
             contains_signal_ref(inner, signal_map)
                 || contains_signal_ref(msb, signal_map)
                 || contains_signal_ref(lsb, signal_map)
@@ -332,7 +336,7 @@ pub fn contains_signal_ref(expr: &Expr, signal_map: &HashMap<Symbol, SignalId>) 
                 || args.iter().any(|e| contains_signal_ref(e, signal_map))
                 || with_clause
                     .as_ref()
-                    .map_or(false, |w| contains_signal_ref(w, signal_map))
+                    .is_some_and(|w| contains_signal_ref(w, signal_map))
         }
         Expr::Inside {
             expr: inner,
@@ -348,7 +352,7 @@ pub fn contains_signal_ref(expr: &Expr, signal_map: &HashMap<Symbol, SignalId>) 
         } => {
             slice_size
                 .as_ref()
-                .map_or(false, |s| contains_signal_ref(s, signal_map))
+                .is_some_and(|s| contains_signal_ref(s, signal_map))
                 || slices.iter().any(|e| contains_signal_ref(e, signal_map))
         }
         Expr::Dist { expr: inner, items } => {

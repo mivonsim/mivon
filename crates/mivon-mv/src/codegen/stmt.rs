@@ -48,13 +48,21 @@ pub(crate) fn emit_stmt(out: &mut String, indent: usize, stmt: &Stmt) {
             }
         }
         Stmt::If {
-            cond, then, els, qual, ..
+            cond,
+            then,
+            els,
+            qual,
+            ..
         } => {
             let head = match qual {
                 Some(q) => format!("{} if", q),
                 None => "if".to_string(),
             };
-            line(out, indent, &format!("{} ({}) begin", head, emit_expr(cond)));
+            line(
+                out,
+                indent,
+                &format!("{} ({}) begin", head, emit_expr(cond)),
+            );
             emit_body(out, indent + 1, then);
             emit_else_chain(out, indent, els.as_deref());
         }
@@ -100,7 +108,11 @@ pub(crate) fn emit_stmt(out: &mut String, indent: usize, stmt: &Stmt) {
                 Some(q) => format!("{} case", q),
                 None => "case".to_string(),
             };
-            line(out, indent, &format!("{} ({}) inside", head, emit_expr(expr)));
+            line(
+                out,
+                indent,
+                &format!("{} ({}) inside", head, emit_expr(expr)),
+            );
             for (vals, body) in items {
                 let vs: Vec<String> = vals.iter().map(emit_inside_item).collect();
                 line(out, indent + 1, &format!("{}: begin", vs.join(", ")));
@@ -210,22 +222,20 @@ pub(crate) fn emit_stmt(out: &mut String, indent: usize, stmt: &Stmt) {
         Stmt::Release { target } => {
             line(out, indent, &format!("release {};", emit_expr(target)));
         }
-        Stmt::Event { expr, body } => {
-            match body {
-                Some(b) => {
-                    if let Some(s) = single_line_stmt(b) {
-                        line(out, indent, &format!("@({}) {s}", emit_expr(expr)));
-                    } else {
-                        line(out, indent, &format!("@({}) begin", emit_expr(expr)));
-                        emit_body(out, indent + 1, b);
-                        line(out, indent, "end");
-                    }
-                }
-                None => {
-                    line(out, indent, &format!("@({});", emit_expr(expr)));
+        Stmt::Event { expr, body } => match body {
+            Some(b) => {
+                if let Some(s) = single_line_stmt(b) {
+                    line(out, indent, &format!("@({}) {s}", emit_expr(expr)));
+                } else {
+                    line(out, indent, &format!("@({}) begin", emit_expr(expr)));
+                    emit_body(out, indent + 1, b);
+                    line(out, indent, "end");
                 }
             }
-        }
+            None => {
+                line(out, indent, &format!("@({});", emit_expr(expr)));
+            }
+        },
         Stmt::Delay { amt, body } => {
             if let Some(s) = single_line_stmt(body) {
                 line(out, indent, &format!("#{} {s}", emit_expr(amt)));
@@ -313,7 +323,9 @@ pub(crate) fn emit_stmt(out: &mut String, indent: usize, stmt: &Stmt) {
             line(out, indent, &format!("cover property {raw};"));
         }
         // SVA Native Assertions (F85)
-        Stmt::AssertPropertyStruct { prop, pass, fail, .. } => {
+        Stmt::AssertPropertyStruct {
+            prop, pass, fail, ..
+        } => {
             let prop_str = emit_sva_prop_expr(prop);
             if let Some(p) = pass {
                 line(out, indent, &format!("assert property ({prop_str})"));
@@ -327,7 +339,9 @@ pub(crate) fn emit_stmt(out: &mut String, indent: usize, stmt: &Stmt) {
                 line(out, indent, ";");
             }
         }
-        Stmt::AssumePropertyStruct { prop, pass, fail, .. } => {
+        Stmt::AssumePropertyStruct {
+            prop, pass, fail, ..
+        } => {
             let prop_str = emit_sva_prop_expr(prop);
             if let Some(p) = pass {
                 line(out, indent, &format!("assume property ({prop_str})"));
@@ -353,8 +367,16 @@ pub(crate) fn emit_stmt(out: &mut String, indent: usize, stmt: &Stmt) {
         // Escape hatch `@sv { ... }` — emit body SV mentah verbatim.
         Stmt::RawSvh(text) => emit_raw(out, indent, text),
         // SVA Sequence/Property expressions as standalone statements
-        Stmt::Sequence(seq) => line(out, indent, &format!("sequence ({});", emit_sva_seq_expr(seq))),
-        Stmt::Property(prop) => line(out, indent, &format!("property ({});", emit_sva_prop_expr(prop))),
+        Stmt::Sequence(seq) => line(
+            out,
+            indent,
+            &format!("sequence ({});", emit_sva_seq_expr(seq)),
+        ),
+        Stmt::Property(prop) => line(
+            out,
+            indent,
+            &format!("property ({});", emit_sva_prop_expr(prop)),
+        ),
     }
 }
 
@@ -378,13 +400,23 @@ pub(crate) fn emit_sva_seq_expr(seq: &crate::ast::SvaSeqExpr) -> String {
     use crate::ast::SvaSeqExpr;
     match seq {
         SvaSeqExpr::Expr(e) => emit_expr(e),
-        SvaSeqExpr::Delay { left, right, min, max } => {
+        SvaSeqExpr::Delay {
+            left,
+            right,
+            min,
+            max,
+        } => {
             let m = if let Some(max) = max {
                 format!("{}:{}", emit_expr(min), emit_expr(max))
             } else {
                 emit_expr(min)
             };
-            format!("{} ##[{}] {}", emit_sva_seq_expr(left), m, emit_sva_seq_expr(right))
+            format!(
+                "{} ##[{}] {}",
+                emit_sva_seq_expr(left),
+                m,
+                emit_sva_seq_expr(right)
+            )
         }
         SvaSeqExpr::Repeat { expr, min, max } => {
             let m = if let Some(max) = max {
@@ -395,28 +427,56 @@ pub(crate) fn emit_sva_seq_expr(seq: &crate::ast::SvaSeqExpr) -> String {
             format!("[*{}] {}", m, emit_sva_seq_expr(expr))
         }
         SvaSeqExpr::Implies { left, right } => {
-            format!("{} |-> {}", emit_sva_seq_expr(left), emit_sva_seq_expr(right))
+            format!(
+                "{} |-> {}",
+                emit_sva_seq_expr(left),
+                emit_sva_seq_expr(right)
+            )
         }
         SvaSeqExpr::NextImplies { left, right } => {
-            format!("{} |=> {}", emit_sva_seq_expr(left), emit_sva_seq_expr(right))
+            format!(
+                "{} |=> {}",
+                emit_sva_seq_expr(left),
+                emit_sva_seq_expr(right)
+            )
         }
         SvaSeqExpr::Or { left, right } => {
-            format!("{} or {}", emit_sva_seq_expr(left), emit_sva_seq_expr(right))
+            format!(
+                "{} or {}",
+                emit_sva_seq_expr(left),
+                emit_sva_seq_expr(right)
+            )
         }
         SvaSeqExpr::And { left, right } => {
-            format!("{} and {}", emit_sva_seq_expr(left), emit_sva_seq_expr(right))
+            format!(
+                "{} and {}",
+                emit_sva_seq_expr(left),
+                emit_sva_seq_expr(right)
+            )
         }
         SvaSeqExpr::Intersect { left, right } => {
-            format!("{} intersect {}", emit_sva_seq_expr(left), emit_sva_seq_expr(right))
+            format!(
+                "{} intersect {}",
+                emit_sva_seq_expr(left),
+                emit_sva_seq_expr(right)
+            )
         }
         SvaSeqExpr::FirstMatch { expr } => {
             format!("first_match({})", emit_sva_seq_expr(expr))
         }
         SvaSeqExpr::Throughout { left, right } => {
-            format!("{} throughout {}", emit_sva_seq_expr(left), emit_sva_seq_expr(right))
+            format!(
+                "{} throughout {}",
+                emit_sva_seq_expr(left),
+                emit_sva_seq_expr(right)
+            )
         }
         SvaSeqExpr::Within { left, right } => {
-            format!("{} within {}", emit_sva_seq_expr(left), emit_sva_seq_expr(right))
+            format!(
+                "{} within {}",
+                emit_sva_seq_expr(left),
+                emit_sva_seq_expr(right)
+            )
         }
     }
 }
@@ -437,16 +497,28 @@ pub(crate) fn emit_sva_prop_expr(prop: &crate::ast::SvaPropExpr) -> String {
             format!("{}nexttime {}", s, emit_sva_seq_expr(expr))
         }
         SvaPropExpr::Implies { seq, prop } => {
-            format!("{} |-> {}", emit_sva_seq_expr(seq), emit_sva_prop_expr(prop))
+            format!(
+                "{} |-> {}",
+                emit_sva_seq_expr(seq),
+                emit_sva_prop_expr(prop)
+            )
         }
         SvaPropExpr::NextImplies { seq, prop } => {
-            format!("{} |=> {}", emit_sva_seq_expr(seq), emit_sva_prop_expr(prop))
+            format!(
+                "{} |=> {}",
+                emit_sva_seq_expr(seq),
+                emit_sva_prop_expr(prop)
+            )
         }
         SvaPropExpr::Iff { cond, prop } => {
             format!("iff ({}) {}", emit_expr(cond), emit_sva_prop_expr(prop))
         }
         SvaPropExpr::DisableIff { cond, prop } => {
-            format!("disable iff ({}) {}", emit_expr(cond), emit_sva_prop_expr(prop))
+            format!(
+                "disable iff ({}) {}",
+                emit_expr(cond),
+                emit_sva_prop_expr(prop)
+            )
         }
         SvaPropExpr::Name(n) => n.clone(),
     }
@@ -571,7 +643,9 @@ pub(crate) fn single_line_stmt(stmt: &Stmt) -> Option<String> {
             }
         }
         // SVA Native Assertions (F85) — compact single-line forms
-        Stmt::AssertPropertyStruct { prop, pass, fail, .. } => {
+        Stmt::AssertPropertyStruct {
+            prop, pass, fail, ..
+        } => {
             let prop_str = emit_sva_prop_expr(prop);
             let p = match pass.as_ref().map(|s| assert_branch_stmt(s)) {
                 Some(Some(s)) => Some(s),
@@ -590,7 +664,9 @@ pub(crate) fn single_line_stmt(stmt: &Stmt) -> Option<String> {
                 (None, None) => Some(format!("assert property ({prop_str});")),
             }
         }
-        Stmt::AssumePropertyStruct { prop, pass, fail, .. } => {
+        Stmt::AssumePropertyStruct {
+            prop, pass, fail, ..
+        } => {
             let prop_str = emit_sva_prop_expr(prop);
             let p = match pass.as_ref().map(|s| assert_branch_stmt(s)) {
                 Some(Some(s)) => Some(s),
@@ -655,7 +731,9 @@ fn assert_branch_stmt(stmt: &Stmt) -> Option<String> {
 fn emit_else_chain(out: &mut String, indent: usize, els: Option<&Stmt>) {
     match els {
         // `else if` lanjutan selalu plain — qualifier hanya di head rantai.
-        Some(Stmt::If { cond, then, els, .. }) => {
+        Some(Stmt::If {
+            cond, then, els, ..
+        }) => {
             line(
                 out,
                 indent,

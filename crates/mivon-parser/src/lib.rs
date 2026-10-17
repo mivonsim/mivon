@@ -95,9 +95,7 @@ pub struct Parser {
 /// `timescale` dengan satuan TERHALUS (eksponen terkecil) di daftar segmen
 /// (F84, LRM §19.8). Ini basis tick elaborator — harus sehalus mungkin
 /// supaya tidak ada delay yang terpotong.
-fn finest_timescale(
-    segments: &[(usize, (String, String))],
-) -> Option<(String, String)> {
+fn finest_timescale(segments: &[(usize, (String, String))]) -> Option<(String, String)> {
     let mut best: Option<(i32, &(String, String))> = None;
     for (_, ts) in segments {
         let Some(exp) = timescale_unit_exponent(&ts.0) else {
@@ -148,14 +146,13 @@ fn timescale_unit_exponent(unit: &str) -> Option<i32> {
     Some(exp)
 }
 
-/// Sama seperti `mivon_elaboration::util::generate::time_unit_exponent` dan
-/// `mivon_compiler::frontend::compile_session::timescale_unit_exponent` —
-/// tiga salinan karena ketiga crate berada pada posisi dependensi berbeda
-/// (parser tidak bergantung ke elaborator/compiler, dan sebaliknya). Semua
-/// tiga harus menghasilkan nilai sama; `timescale_tests` di mivon-tests
-/// menguji hasil akhirnya, dan ketiga sisi diuji lewat test yang sama itu
-/// (nilai delay yang benar hanya mungkin bila ketiganya sepakat).
-
+// Sama seperti `mivon_elaboration::util::generate::time_unit_exponent` dan
+// `mivon_compiler::frontend::compile_session::timescale_unit_exponent` —
+// tiga salinan karena ketiga crate berada pada posisi dependensi berbeda
+// (parser tidak bergantung ke elaborator/compiler, dan sebaliknya). Semua
+// tiga harus menghasilkan nilai sama; `timescale_tests` di mivon-tests
+// menguji hasil akhirnya, dan ketiga sisi diuji lewat test yang sama itu
+// (nilai delay yang benar hanya mungkin bila ketiganya sepakat).
 impl Parser {
     /// Batas advance per token (budget amat luas untuk backtracking normal,
     /// yang memanggil advance berkali-kali per token). Dihitung dinamis dari
@@ -1797,9 +1794,10 @@ impl Parser {
                         .borrow_mut()
                         .push(ModuleItem::Assign(extra));
                 }
-                let first = assigns.into_iter().next().ok_or_else(|| {
-                    self.err("expected assignment after 'assign'")
-                })?;
+                let first = assigns
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| self.err("expected assignment after 'assign'"))?;
                 Ok(Some(ModuleItem::Assign(first)))
             }
             Token::Dollar => {

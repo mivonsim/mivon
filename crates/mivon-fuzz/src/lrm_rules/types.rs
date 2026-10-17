@@ -4,11 +4,11 @@
 
 #![cfg(feature = "dev")]
 
-use crate::lrm_model::{
-    ClauseRef, LrmRule, RuleCategory, RuleClassification, RuleId,
-    predicate::{Requirement, SemanticProp},
-};
 use super::RuleRegistry;
+use crate::lrm_model::{
+    predicate::{Requirement, SemanticProp},
+    ClauseRef, LrmRule, RuleCategory, RuleClassification, RuleId,
+};
 
 pub fn register(reg: &mut RuleRegistry) {
     // SV-TYPE-SIGN-001: operasi relasional (< <= > >=) signed bila SALAH SATU
@@ -19,11 +19,10 @@ pub fn register(reg: &mut RuleRegistry) {
         category: RuleCategory::Typing,
         classification: RuleClassification::RequiredBehavior,
         applies_when: Box::new(|_| true),
-        requires: vec![
-            Requirement::SemanticProperty(SemanticProp::SignedExtensionPreservesSign),
-        ],
-        expected_description:
-            "operasi relasional signed bila salah satu operand signed (§11.6.1)",
+        requires: vec![Requirement::SemanticProperty(
+            SemanticProp::SignedExtensionPreservesSign,
+        )],
+        expected_description: "operasi relasional signed bila salah satu operand signed (§11.6.1)",
     });
 
     // SV-TYPE-CONV-001: konversi implicit ke tipe lebih sempit harus truncate
@@ -35,8 +34,7 @@ pub fn register(reg: &mut RuleRegistry) {
         classification: RuleClassification::RequiredBehavior,
         applies_when: Box::new(|_| true),
         requires: vec![],
-        expected_description:
-            "konversi implicit ke tipe lebih sempit: truncate MSB (§6.24.1)",
+        expected_description: "konversi implicit ke tipe lebih sempit: truncate MSB (§6.24.1)",
     });
 
     // SV-TYPE-CONV-002: konversi implicit ke tipe lebih lebar dari signed
@@ -74,8 +72,7 @@ pub fn register(reg: &mut RuleRegistry) {
         classification: RuleClassification::RequiredBehavior,
         applies_when: Box::new(|_| true),
         requires: vec![],
-        expected_description:
-            "AND dengan X: X & 0 = 0, X & 1 = X, X & X = X (LRM tabel §11.4.8)",
+        expected_description: "AND dengan X: X & 0 = 0, X & 1 = X, X & X = X (LRM tabel §11.4.8)",
     });
 
     // SV-TYPE-WIDTH-001: lebar ekspresi integer biner ditentukan oleh operand
@@ -87,7 +84,6 @@ pub fn register(reg: &mut RuleRegistry) {
         classification: RuleClassification::RequiredBehavior,
         applies_when: Box::new(|_| true),
         requires: vec![],
-        expected_description:
-            "lebar ekspresi biner = max(lebar operand kiri, kanan) (§11.6.2)",
+        expected_description: "lebar ekspresi biner = max(lebar operand kiri, kanan) (§11.6.2)",
     });
 }

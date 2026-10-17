@@ -522,7 +522,11 @@ fn simulate_in_thread(source: &str, timeout_ms: u64) -> Option<CaseResult> {
                     match map2.get(n) {
                         Some(v2) if v2 == v1 => {}
                         Some(v2) => {
-                            diffs.push(format!("{n}: run1={} run2={}", fmt_sigval(v1), fmt_sigval(v2)));
+                            diffs.push(format!(
+                                "{n}: run1={} run2={}",
+                                fmt_sigval(v1),
+                                fmt_sigval(v2)
+                            ));
                         }
                         None => diffs.push(format!("{n}: run1={} run2=<missing>", fmt_sigval(v1))),
                     }
@@ -660,9 +664,15 @@ fn simulate_in_thread(source: &str, timeout_ms: u64) -> Option<CaseResult> {
                     match m_alt.get(n) {
                         Some(v_alt) if v_alt == v_def => {}
                         Some(v_alt) => {
-                            diffs.push(format!("{n}: def={} {name}={}", fmt_sigval(v_def), fmt_sigval(v_alt)));
+                            diffs.push(format!(
+                                "{n}: def={} {name}={}",
+                                fmt_sigval(v_def),
+                                fmt_sigval(v_alt)
+                            ));
                         }
-                        None => diffs.push(format!("{n}: def={} {name}=<missing>", fmt_sigval(v_def))),
+                        None => {
+                            diffs.push(format!("{n}: def={} {name}=<missing>", fmt_sigval(v_def)))
+                        }
                     }
                     if diffs.len() >= 5 {
                         break;
@@ -795,8 +805,7 @@ fn simulate_in_thread(source: &str, timeout_ms: u64) -> Option<CaseResult> {
                 && (ev.x_remain + ev.z_remain) * 100 >= ev.signal_count.max(1) * 60;
             // Level bit: partial-X 31/32 per signal lolos ambang signal
             // (0/1 all-X) padahal 97% bit = X. Ambang sama 60%.
-            let x_bit_heavy =
-                ev.bit_total > 0 && ev.x_bits * 100 >= ev.bit_total * 60;
+            let x_bit_heavy = ev.bit_total > 0 && ev.x_bits * 100 >= ev.bit_total * 60;
 
             let detail = format!(
                 "sim verified: {} signals, {} trace entries ({} meaningful); \
@@ -1133,8 +1142,8 @@ fn contains_word(lower: &str, pat: &str) -> bool {
     let need_before = pat.as_bytes().first().map(|b| is_word(*b)).unwrap_or(false);
     // Sufiks `[` sengaja bebas batas: pola prefix spt `error[wr` (severity
     // terbalik) memang diikuti kode (`error[WR0102`).
-    let need_after = pat.as_bytes().last().map(|b| is_word(*b)).unwrap_or(false)
-        && !pat.contains('[');
+    let need_after =
+        pat.as_bytes().last().map(|b| is_word(*b)).unwrap_or(false) && !pat.contains('[');
     let mut start = 0usize;
     while let Some(pos) = lower[start..].find(pat) {
         let abs = start + pos;
@@ -2794,13 +2803,14 @@ fn judge_in_thread(source: &str, timeout_ms: u64) -> CaseResult {
         let first = report
             .rule_results
             .iter()
-            .find(|r| {
-                matches!(
-                    r.verdict,
-                    crate::verdict::RuleVerdict::Violated { .. }
+            .find(|r| matches!(r.verdict, crate::verdict::RuleVerdict::Violated { .. }))
+            .map(|r| {
+                format!(
+                    "{}: {}",
+                    (r.rule.0),
+                    r.explanation.lines().next().unwrap_or("")
                 )
             })
-            .map(|r| format!("{}: {}", (r.rule.0), r.explanation.lines().next().unwrap_or("")))
             .unwrap_or_else(|| format!("{:?}", report.verdict));
         return mk_j(Category::LrmViolation, Oracle::O6LrmJudge, &first);
     }
@@ -2905,10 +2915,9 @@ mod scan_tests {
         assert!(scan_hidden_diags("state corrupt after commit").is_some());
     }
 
-    /// REGRESI dedup (triage tahap 2): `to_u64` membutakan X/Z + potong
-    /// >64-bit — dua divergensi beda pola X/lebar runtuh jadi signature
-    /// sama. `fmt_sigval` wajib membedakan: X vs nol bersih, lebar beda,
-    /// hitungan X beda.
+    /// REGRESI dedup (triage tahap 2): `to_u64` membutakan X/Z + potong >64-bit
+    /// — dua divergensi beda pola X/lebar runtuh jadi signature sama.
+    /// `fmt_sigval` wajib membedakan: X vs nol bersih, lebar beda, hitungan X beda.
     #[test]
     fn fmt_sigval_distinguishes_x_and_width() {
         use mivon_ir::{LogicVal, LogicVec};

@@ -1191,8 +1191,16 @@ endmodule
     // x = byte tinggi, y = byte rendah: elemen e = (x<<8)|y.
     assert_eq!(get("n"), 2, "find with (item.x > 3) → 2 elemen");
     assert_eq!(get("s"), 60, "sum with (item.y) = 10+20+30");
-    assert_eq!(get("mn"), 266, "min with (item.x) → elemen pemenang x=1 (266)");
-    assert_eq!(get("mx"), 2334, "max with (item.y) → elemen pemenang y=30 (2334)");
+    assert_eq!(
+        get("mn"),
+        266,
+        "min with (item.x) → elemen pemenang x=1 (266)"
+    );
+    assert_eq!(
+        get("mx"),
+        2334,
+        "max with (item.y) → elemen pemenang y=30 (2334)"
+    );
     assert_eq!(get("i0"), 2, "find_index with (item.x == 9) → 2");
 }
 
@@ -1323,7 +1331,11 @@ endmodule
     assert_eq!(get("lower"), 0, "q[5:9] indeks awal di luar batas → kosong");
     assert_eq!(get("desc"), 0, "q[3:0] descending → queue kosong");
     assert_eq!(get("emptyq"), 0, "slice pada queue kosong → kosong");
-    assert_eq!(get("cleared"), 0, "slice kosong mengosongkan target (bukan zero-extend)");
+    assert_eq!(
+        get("cleared"),
+        0,
+        "slice kosong mengosongkan target (bukan zero-extend)"
+    );
     assert_eq!(get("keep"), 2, "slice in-range tetap benar");
 }
 
@@ -1438,7 +1450,11 @@ endmodule
     let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
     assert_eq!(get("mn"), 1, "min tanpa clause = elemen minimum");
     assert_eq!(get("mx"), 100, "max tanpa clause = elemen maksimum");
-    assert_eq!(get("mnk"), 100, "min with (100-item) -> ELEMEN dgn kunci min");
+    assert_eq!(
+        get("mnk"),
+        100,
+        "min with (100-item) -> ELEMEN dgn kunci min"
+    );
     assert_eq!(get("mxk"), 1, "max with (100-item) -> ELEMEN dgn kunci max");
     assert_eq!(get("rn"), 1, "find_last -> tepat 1 elemen");
     assert_eq!(get("rv"), 5, "find_last -> nilai 5");
@@ -1748,9 +1764,17 @@ module tb_wa {
 "#;
     let r = mivon_mv::transpile(src, "wire_assign").expect("transpile .mv OK");
     assert!(r.sv.contains("wire w_and;"), "emit wire net: {}", r.sv);
-    assert!(r.sv.contains("wire [7:0] wv;"), "emit wire vektor: {}", r.sv);
+    assert!(
+        r.sv.contains("wire [7:0] wv;"),
+        "emit wire vektor: {}",
+        r.sv
+    );
     assert!(!r.sv.contains("wire bit"), "wire+bit INVALID: {}", r.sv);
-    assert!(r.sv.contains("assign w_and = a & b;"), "emit assign: {}", r.sv);
+    assert!(
+        r.sv.contains("assign w_and = a & b;"),
+        "emit assign: {}",
+        r.sv
+    );
     let sigs = simulate_signals(&r.sv, 20).unwrap();
     let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
     assert_eq!(get("y"), 0, "a=1,b=0 → w=0 → y=0^0=0");
@@ -1871,7 +1895,11 @@ module tb_gc2 {
 "#;
     let r = mivon_mv::transpile(src, "gen_case").expect("transpile .mv OK");
     assert!(r.sv.contains("case (SEL)"), "emit case: {}", r.sv);
-    assert!(r.sv.contains("1, 2: begin : gen_case_1"), "multi-label: {}", r.sv);
+    assert!(
+        r.sv.contains("1, 2: begin : gen_case_1"),
+        "multi-label: {}",
+        r.sv
+    );
     let sigs = simulate_signals(&r.sv, 20).unwrap();
     let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
     assert_eq!(get("y"), 20, "cabang SEL=1 (multi-label 1,2) terpilih");
@@ -1905,7 +1933,11 @@ module tb_cov {
 }
 "#;
     let r = mivon_mv::transpile(src, "cover").expect("transpile .mv OK");
-    assert!(r.sv.contains("covergroup cg @(posedge clk);"), "emit: {}", r.sv);
+    assert!(
+        r.sv.contains("covergroup cg @(posedge clk);"),
+        "emit: {}",
+        r.sv
+    );
     let design = mivon_api::compile_str(&r.sv).expect("compile SV hasil generate");
     let mut engine = mivon_simulator::simulator::SimulationEngine::new(design, 200);
     engine.run().expect("sim harus jalan");
@@ -6142,7 +6174,11 @@ endmodule
     );
     assert_eq!(get("g"), b"abc".to_vec(), "putc(-3,..) no-op -> \"abc\"");
     assert_eq!(flen, 6, "len() setelah putc extend = 6");
-    assert_eq!(get("y"), b"9".to_vec(), "assignment-form y = z.itoa(9) -> \"9\"");
+    assert_eq!(
+        get("y"),
+        b"9".to_vec(),
+        "assignment-form y = z.itoa(9) -> \"9\""
+    );
     assert_eq!(
         get("z"),
         b"9".to_vec(),
@@ -7401,7 +7437,10 @@ endmodule
         .find(|(n, _)| n == "out")
         .map(|(_, v)| v.to_u64())
         .unwrap_or(0);
-    assert_eq!(out_val, 0xB0, "priority casez 3'b011 should match 3'b01? => 0xB0");
+    assert_eq!(
+        out_val, 0xB0,
+        "priority casez 3'b011 should match 3'b01? => 0xB0"
+    );
 }
 
 /// `unique casez` juga memakai wildcard (combo UniqueZ).
@@ -7429,7 +7468,10 @@ endmodule
         .find(|(n, _)| n == "out")
         .map(|(_, v)| v.to_u64())
         .unwrap_or(0);
-    assert_eq!(out_val, 0xA0, "unique casez 3'b100 should match 3'b1?? => 0xA0");
+    assert_eq!(
+        out_val, 0xA0,
+        "unique casez 3'b100 should match 3'b1?? => 0xA0"
+    );
 }
 
 /// Default `parameter type T = logic [7:0]` memberi lebar 8 (bukan 1).
@@ -20460,7 +20502,8 @@ fn test_e2003_shorthand_port_conn_has_location() {
     // elab (elaborator/expr.rs) teruskan posisi expr ke elab_diag_at.
     // Pipeline lengkap seperti compile_str tapi tangkap diags agar pesan
     // E2003 asli (bukan wrapper top-fail) bisa diperiksa lokasinya.
-    let source = "module child(input logic [7:0] p);\nendmodule\nmodule tb;\nchild u(.p);\nendmodule\n";
+    let source =
+        "module child(input logic [7:0] p);\nendmodule\nmodule tb;\nchild u(.p);\nendmodule\n";
     let mut pp = mivon_parser::preprocessor::Preprocessor::new();
     let preprocessed = pp.preprocess(source, None).unwrap();
     let mut lexer = mivon_parser::lexer::Lexer::new(&preprocessed);
@@ -20477,20 +20520,25 @@ fn test_e2003_shorthand_port_conn_has_location() {
     let source_lines: Vec<String> = preprocessed.lines().map(|s| s.to_string()).collect();
     let mut elaborator =
         mivon_elaboration::Elaborator::with_source(design, source_lines, "<string>".to_string());
-    let _ = elaborator.elaborate(None, mivon_elaboration::elaborator::ElaborateMode::StrictSimulation);
+    let _ = elaborator.elaborate(
+        None,
+        mivon_elaboration::elaborator::ElaborateMode::StrictSimulation,
+    );
     let diags = elaborator.flush_diagnostics();
     // E2001 "signal 'p' not found" juga sah (lebih presisi dari E2003):
     // shorthand `.p` tanpa signal senama di parent = undefined. Inti O2
     // tetap: WAJIB ber-lokasi (snippet baris koneksi), bukan kode-nya.
     let width_diag = diags.iter().find(|d| {
-        (d.message.contains("width computation failed for port")
-            && d.message.contains("u.p"))
+        (d.message.contains("width computation failed for port") && d.message.contains("u.p"))
             || (d.message.contains("signal 'p' not found"))
     });
     assert!(
         width_diag.is_some(),
         "harus ada diag E2003 width port u.p atau E2001 signal p: {:?}",
-        diags.iter().map(|d| (d.code.as_str(), d.message.as_ref())).collect::<Vec<_>>()
+        diags
+            .iter()
+            .map(|d| (d.code.as_str(), d.message.as_ref()))
+            .collect::<Vec<_>>()
     );
     let snap = width_diag.unwrap().source_snippet.as_ref();
     assert!(
@@ -20498,7 +20546,11 @@ fn test_e2003_shorthand_port_conn_has_location() {
         "E2003 shorthand port WAJIB punya source snippet (file:line:col)"
     );
     let s = snap.unwrap();
-    assert_eq!(s.line, 4, "snippet harus menunjuk baris koneksi `.p`, got {}", s.line);
+    assert_eq!(
+        s.line, 4,
+        "snippet harus menunjuk baris koneksi `.p`, got {}",
+        s.line
+    );
     assert!(
         s.source_line.contains(".p"),
         "snippet harus menunjuk koneksi `.p`: {:?}",
@@ -20520,19 +20572,30 @@ fn test_e2003_shorthand_port_conn_has_location() {
         }
         tokens2.push((tok, line, col));
     }
-    let mut parser2 = mivon_parser::Parser::new(tokens2, "<string>").with_source_lines(&preprocessed2);
+    let mut parser2 =
+        mivon_parser::Parser::new(tokens2, "<string>").with_source_lines(&preprocessed2);
     let design2 = parser2.parse_design().unwrap();
     let source_lines2: Vec<String> = preprocessed2.lines().map(|s| s.to_string()).collect();
     let mut elaborator2 =
         mivon_elaboration::Elaborator::with_source(design2, source_lines2, "<string>".to_string());
-    let _ = elaborator2.elaborate(None, mivon_elaboration::elaborator::ElaborateMode::StrictSimulation);
+    let _ = elaborator2.elaborate(
+        None,
+        mivon_elaboration::elaborator::ElaborateMode::StrictSimulation,
+    );
     let diags2 = elaborator2.flush_diagnostics();
     let w2 = diags2.iter().find(|d| {
         (d.message.contains("width computation failed for port") && d.message.contains("u.p"))
             || d.message.contains("signal 'p' not found")
     });
-    assert!(w2.is_some(), "site spasi `.p` juga harus E2003/E2001 ber-lokasi");
-    let s2 = w2.unwrap().source_snippet.as_ref().expect("site spasi wajib snippet");
+    assert!(
+        w2.is_some(),
+        "site spasi `.p` juga harus E2003/E2001 ber-lokasi"
+    );
+    let s2 = w2
+        .unwrap()
+        .source_snippet
+        .as_ref()
+        .expect("site spasi wajib snippet");
     assert_eq!(s2.line, 5, "site spasi: snippet baris 5, got {}", s2.line);
 }
 
@@ -24183,11 +24246,7 @@ module tb_cv {
         "emisi cover: {}",
         r.sv
     );
-    assert!(
-        !r.sv.contains("cover(a"),
-        "cover bukan call: {}",
-        r.sv
-    );
+    assert!(!r.sv.contains("cover(a"), "cover bukan call: {}", r.sv);
     assert!(
         r.sv.contains("cover property (@(posedge a) a |-> b);"),
         "cover property module item: {}",
@@ -24223,11 +24282,7 @@ module tb_ci {
 }
 "#;
     let r = mivon_mv::transpile(src, "ci").expect("transpile .mv OK");
-    assert!(
-        r.sv.contains("case (sel) inside"),
-        "emisi inside: {}",
-        r.sv
-    );
+    assert!(r.sv.contains("case (sel) inside"), "emisi inside: {}", r.sv);
     assert!(r.sv.contains("[1:10]:"), "rentang: {}", r.sv);
     let sigs = simulate_signals(&r.sv, 50).expect("simulasi harus jalan");
     let y = sigs.iter().find(|(s, _)| s == "y").unwrap().1.to_u64();
@@ -24445,8 +24500,7 @@ fn test_mv_array_method_with_clause_end_to_end() {
     let src = include_str!("../../../../examples/mv/array_methods.mv");
     let r = mivon_mv::transpile(src, "array_methods").expect("transpile .mv OK");
     let combined = format!("{}\n{}", r.svh, r.sv);
-    let sigs =
-        simulate_signals(&combined, 100).expect("array_methods harus simulasi bersih");
+    let sigs = simulate_signals(&combined, 100).expect("array_methods harus simulasi bersih");
     let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
     assert_eq!(get("n"), 2, "find with (item>3)");
     assert_eq!(get("i"), 2, "find_index with (item==3)");
@@ -24470,8 +24524,7 @@ fn test_mv_array_item_field_end_to_end() {
     let src = include_str!("../../../../examples/mv/array_item_field.mv");
     let r = mivon_mv::transpile(src, "array_item_field").expect("transpile .mv OK");
     let combined = format!("{}\n{}", r.svh, r.sv);
-    let sigs =
-        simulate_signals(&combined, 100).expect("array_item_field harus simulasi bersih");
+    let sigs = simulate_signals(&combined, 100).expect("array_item_field harus simulasi bersih");
     let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
     assert_eq!(get("n"), 2, "find with (item.x > 3)");
     assert_eq!(get("s"), 60, "sum with (item.y)");
@@ -24488,8 +24541,7 @@ fn test_mv_struct_field_width_end_to_end() {
     let src = include_str!("../../../../examples/mv/struct_field_width.mv");
     let r = mivon_mv::transpile(src, "struct_field_width").expect("transpile .mv OK");
     let combined = format!("{}\n{}", r.svh, r.sv);
-    let sigs =
-        simulate_signals(&combined, 10).expect("struct_field_width harus simulasi bersih");
+    let sigs = simulate_signals(&combined, 10).expect("struct_field_width harus simulasi bersih");
     let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
     assert_eq!(get("sx"), 7, "e.x = 7 (member MSB)");
     assert_eq!(get("sy"), 42, "e.y = 42 (member LSB, 32-bit)");
@@ -24559,8 +24611,7 @@ fn test_mv_string_mutate_end_to_end() {
     let src = include_str!("../../../../examples/mv/string_mutate.mv");
     let r = mivon_mv::transpile(src, "string_mutate").expect("transpile .mv OK");
     let combined = format!("{}\n{}", r.svh, r.sv);
-    let sigs =
-        simulate_signals(&combined, 100).expect("string_mutate harus simulasi bersih");
+    let sigs = simulate_signals(&combined, 100).expect("string_mutate harus simulasi bersih");
     let get = |n: &str| sigs.iter().find(|(s, _)| s == n).unwrap().1.to_u64();
     let get_s = |n: &str| -> Vec<u8> {
         sigs.iter()
@@ -24583,7 +24634,11 @@ fn test_mv_string_mutate_end_to_end() {
     );
     assert_eq!(get_s("g"), b"abc".to_vec(), "g.putc(-3,..) no-op = \"abc\"");
     assert_eq!(get("flen"), 6, "f.len() setelah putc extend = 6");
-    assert_eq!(get_s("y"), b"9".to_vec(), "assignment-form y = z.itoa(9) = \"9\"");
+    assert_eq!(
+        get_s("y"),
+        b"9".to_vec(),
+        "assignment-form y = z.itoa(9) = \"9\""
+    );
     assert_eq!(get_s("z"), b"9".to_vec(), "itoa mutating: z ikut \"9\"");
 }
 
@@ -24994,7 +25049,10 @@ endmodule
     assert!(r3.is_ok(), "shadowing harus lolos: {diags3:?}");
     let sigs3 = mivon_api::simulate_signals(shadow, 10).unwrap();
     let s3 = sigs3.iter().find(|(n, _)| n == "s3").unwrap().1.to_u64();
-    assert_eq!(s3, 1, "param package (1) menang atas global (3), bukan sebaliknya");
+    assert_eq!(
+        s3, 1,
+        "param package (1) menang atas global (3), bukan sebaliknya"
+    );
 }
 
 /// Override parameter instance dengan ekspresi NON-konstan (sinyal) adalah
@@ -25048,7 +25106,8 @@ endmodule
     assert!(r.is_err(), "override non-konstan harus gagal");
     let msgs: Vec<&str> = diags.iter().map(|d| d.message.as_ref()).collect();
     assert!(
-        msgs.iter().any(|m| m.contains("konstan") && m.contains("'W'") && m.contains("'u'")),
+        msgs.iter()
+            .any(|m| m.contains("konstan") && m.contains("'W'") && m.contains("'u'")),
         "diagnostic harus menyebut param + instance: {msgs:?}"
     );
     // Posisi type-param tak dikenal: pesan menyebut alternatif tipe.
@@ -25065,7 +25124,10 @@ endmodule
     assert!(r_tp.is_err(), "type tak dikenal harus gagal");
     let msgs_tp: Vec<&str> = diags_tp.iter().map(|d| d.message.as_ref()).collect();
     assert!(
-        msgs_tp.iter().any(|m| m.contains("nama tipe") && m.contains("'T'") && m.contains("'u'") && m.contains("konstan")),
+        msgs_tp.iter().any(|m| m.contains("nama tipe")
+            && m.contains("'T'")
+            && m.contains("'u'")
+            && m.contains("konstan")),
         "pesan type-param: {msgs_tp:?}"
     );
     // Override konstan (param lain) tetap sah.
@@ -25080,7 +25142,10 @@ module top;
 endmodule
 "#;
     let (r2, diags2) = elaborate(ok);
-    assert!(r2.is_ok(), "override param-dengan-param harus lolos: {diags2:?}");
+    assert!(
+        r2.is_ok(),
+        "override param-dengan-param harus lolos: {diags2:?}"
+    );
 }
 
 /// Lebar replikasi non-konstan ilegal LRM — error eksplisit (count selalu
@@ -25142,7 +25207,10 @@ module top;
 endmodule
 "#;
     let (r2, diags2) = elaborate(ps);
-    assert!(r2.is_ok(), "part-select dinamis didukung runtime: {diags2:?}");
+    assert!(
+        r2.is_ok(),
+        "part-select dinamis didukung runtime: {diags2:?}"
+    );
     // Kontrol: keduanya konstan tetap sah.
     let ok = r#"
 module top;
@@ -25547,6 +25615,7 @@ endmodule
 }
 
 #[test]
+#[allow(clippy::result_large_err)]
 fn test_packed_chunk_negative_index_no_overflow_panic() {
     // Temuan fuzz (bug_0472/cli-emu + synth panic):
     // `expr.rs:784` `base + idx as usize * elem_w` overflow panic saat
@@ -25584,6 +25653,7 @@ fn test_disable_fork_label_releases_join_any() {
 }
 
 #[test]
+#[allow(clippy::result_large_err)]
 fn test_duplicate_instance_name_is_located_error() {
     // Temuan fuzz (bug_2028 vs iverilog): dua instance bernama sama dalam
     // satu module (`sub u1(...); sub u1(...);`) diterima mivon tanpa error —
@@ -25607,10 +25677,14 @@ fn test_duplicate_instance_name_is_located_error() {
     // Nama instance berbeda (unik) tetap legal.
     let ok = "module sub(input logic a, output logic b);\n  assign b = a;\nendmodule\nmodule top(input logic x, output logic y);\n  sub u1(.a(x), .b(y));\n  sub u2(.a(x), .b(y));\nendmodule\n";
     let r2 = std::panic::catch_unwind(|| mivon_api::compile_str_quiet(ok));
-    assert!(r2.is_ok() && r2.unwrap().is_ok(), "instance unik harus lolos");
+    assert!(
+        r2.is_ok() && r2.unwrap().is_ok(),
+        "instance unik harus lolos"
+    );
 }
 
 #[test]
+#[allow(clippy::result_large_err)]
 fn test_empty_based_literal_is_located_parse_error() {
     // Temuan fuzz (bug_0012 DIAG-001): `'h;` (digit terhapus mutasi) lolos
     // jadi Hex{bits:""} lalu runtime error TANPA lokasi ("invalid hex ''").
@@ -25631,15 +25705,19 @@ fn test_empty_based_literal_is_located_parse_error() {
 }
 
 #[test]
+#[allow(clippy::result_large_err)]
 fn test_scalar_port_field_write_is_located_elab_error() {
     // Temuan fuzz (bug_0395 DIAG-001): `assign register_o.hartid = ...`
     // dgn `register_o` port scalar → dulu warning + runtime error TANPA
     // lokasi. Kini elab ERROR E2002 ber-lokasi (flatten tak bisa ciptakan
     // `port.field` dari scalar; interface tetap defer).
-    let source = "module m(input logic clk, output logic [7:0] p);\n  assign p.hartid = 1'b1;\nendmodule\n";
+    let source =
+        "module m(input logic clk, output logic [7:0] p);\n  assign p.hartid = 1'b1;\nendmodule\n";
     let r = std::panic::catch_unwind(|| mivon_api::compile_str_quiet(source));
     assert!(r.is_ok(), "tak boleh panic");
-    let e = r.unwrap().expect_err("field-write ke port scalar harus elab error");
+    let e = r
+        .unwrap()
+        .expect_err("field-write ke port scalar harus elab error");
     let msg = e.to_string();
     assert!(
         msg.contains("hartid") && msg.contains(':'),
@@ -25648,6 +25726,7 @@ fn test_scalar_port_field_write_is_located_elab_error() {
 }
 
 #[test]
+#[allow(clippy::result_large_err)]
 fn test_repeat_huge_count_not_unrolled() {
     // Temuan fuzz (bug_0667 cb_filter_tb hang): `Stmt::Repeat` const
     // di-unroll PENUH tanpa batas — `repeat (10jt)` = 10jt IR node +
@@ -25814,6 +25893,9 @@ endmodule
         "decl-init tidak boleh memicu negedge palsu di t=0"
     );
     // Satu posedge clk tercatat (clk:0→1).
-    assert_eq!(sig_u64(&sigs, "n_posedge"), 1, "posedge clk normal tetap jalan");
+    assert_eq!(
+        sig_u64(&sigs, "n_posedge"),
+        1,
+        "posedge clk normal tetap jalan"
+    );
 }
-

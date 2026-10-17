@@ -22,6 +22,7 @@ use crate::verdict::{JudgeConfidence, JudgeReport, Verdict};
 ///    rule `applies_when = |_| true` sehingga state kosong tetap
 ///    applicable dan jatuh ke `Pass` palsu).
 /// 3. `LrmJudge::judge` atas registry penuh.
+#[allow(clippy::result_large_err)]
 pub fn judge_single(source: &str, timeout_ms: u64) -> JudgeReport {
     let tc = TestCase::new("judge-single", source);
     let outcome = crate::oracle::with_micd_isolated(|| crate::runner::run_file(source, timeout_ms));
@@ -58,7 +59,12 @@ pub fn render_report(report: &JudgeReport) -> String {
     ));
     for r in &report.rule_results {
         let first = r.explanation.lines().next().unwrap_or("");
-        out.push_str(&format!("  - {} [{:?}]: {}\n", (r.rule.0), r.verdict, first));
+        out.push_str(&format!(
+            "  - {} [{:?}]: {}\n",
+            (r.rule.0),
+            r.verdict,
+            first
+        ));
     }
     out
 }
@@ -107,9 +113,10 @@ mod tests {
     fn judge_does_not_claim_pass_with_unimplemented_rules() {
         let src = "module tiny(input logic a, output logic b);\n  assign b = ~a;\nendmodule\n";
         let rep = judge_single(src, 20_000);
-        let has_inconclusive = rep.rule_results.iter().any(|r| {
-            matches!(r.verdict, crate::verdict::RuleVerdict::Inconclusive { .. })
-        });
+        let has_inconclusive = rep
+            .rule_results
+            .iter()
+            .any(|r| matches!(r.verdict, crate::verdict::RuleVerdict::Inconclusive { .. }));
         if has_inconclusive {
             assert!(
                 !matches!(rep.verdict, crate::verdict::Verdict::Pass),

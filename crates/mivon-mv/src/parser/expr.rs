@@ -367,14 +367,16 @@ impl Parser {
                             line: l,
                             col: c,
                             ..
-                        } => e = Expr::MethodCall {
-                            obj,
-                            method,
-                            args,
-                            with_clause: None,
-                            line: l,
-                            col: c,
-                        },
+                        } => {
+                            e = Expr::MethodCall {
+                                obj,
+                                method,
+                                args,
+                                with_clause: None,
+                                line: l,
+                                col: c,
+                            }
+                        }
                         _ => {
                             let (l, c) = self.pos_line();
                             return Err(MvError::new(

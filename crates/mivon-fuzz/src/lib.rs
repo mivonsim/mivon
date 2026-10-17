@@ -25,13 +25,13 @@ pub mod triage;
 pub mod validate;
 
 // ── LRM Judge system ────────────────────────────────────────────────────────
+pub mod lrm_judge;
 pub mod lrm_model;
 pub mod lrm_rules;
-pub mod lrm_judge;
 pub mod observer;
+pub mod regression;
 pub mod testcase;
 pub mod verdict;
-pub mod regression;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -78,8 +78,8 @@ pub enum Target {
     /// HashSet-iteration di render (SYN-9-class nondeterminisme kembali masuk
     /// lewat pintu lain).
     Astdiff,
-    /// Hakim LRM IEEE 1800 (`judge_single`): seed mutasi → observasi black-box
-    /// + state struktural → registry aturan penuh. `Violation` /
+    /// Hakim LRM IEEE 1800 (`judge_single`): seed mutasi → observasi black-box +
+    /// state struktural → registry aturan penuh. `Violation` /
     /// `MivonInternalFailure` yang layak-simpan = bug (kepatuhan LRM, bukan
     /// sekadar no-crash/konsistensi internal O1-O5).
     Judge,
@@ -1113,10 +1113,13 @@ mod bugdb_tests {
     /// runtuh jadi satu grup, bug kedua terkubur tak tersimpan.
     #[test]
     fn signature_separates_same_header_different_signals() {
-        let a = mk_case("SEMANTIC MISMATCH vs iverilog:\n  ref : ASRT_Q=<15>\n  mivon: ASRT_Q=<31>");
-        let b = mk_case("SEMANTIC MISMATCH vs iverilog:\n  ref : ASRT_D=<17>\n  mivon: ASRT_D=<34>");
+        let a =
+            mk_case("SEMANTIC MISMATCH vs iverilog:\n  ref : ASRT_Q=<15>\n  mivon: ASRT_Q=<31>");
+        let b =
+            mk_case("SEMANTIC MISMATCH vs iverilog:\n  ref : ASRT_D=<17>\n  mivon: ASRT_D=<34>");
         assert_ne!(a.signature(), b.signature(), "sinyal beda = grup beda");
-        let a2 = mk_case("SEMANTIC MISMATCH vs iverilog:\n  ref : ASRT_Q=<15>\n  mivon: ASRT_Q=<31>");
+        let a2 =
+            mk_case("SEMANTIC MISMATCH vs iverilog:\n  ref : ASRT_Q=<15>\n  mivon: ASRT_Q=<31>");
         assert_eq!(a.signature(), a2.signature(), "detail identik = grup sama");
     }
 
@@ -1136,8 +1139,14 @@ mod bugdb_tests {
         assert_eq!(Target::from_token("judge"), Some(Target::Judge));
         assert_eq!(Target::from_token("lrm"), Some(Target::Judge));
         assert_eq!(Target::Judge.as_str(), "judge");
-        assert!(Target::ALL.contains(&Target::Judge), "judge ikut kampanye all");
-        assert_eq!(Category::from_label("lrm_violation"), Some(Category::LrmViolation));
+        assert!(
+            Target::ALL.contains(&Target::Judge),
+            "judge ikut kampanye all"
+        );
+        assert_eq!(
+            Category::from_label("lrm_violation"),
+            Some(Category::LrmViolation)
+        );
         assert_eq!(Category::LrmViolation.label(), "lrm_violation");
         assert!(Category::LrmViolation.is_bug(), "violasi LRM = bug");
         assert_eq!(Oracle::O6LrmJudge.as_str(), "O6-lrm-judge");
@@ -1202,7 +1211,10 @@ mod bugdb_tests {
         assert_eq!(plan.len(), 12);
         // 10 slot pertama = seluruh unseen (terurut), 2 sisa dari seen.
         assert_eq!(plan[..10], unseen[..]);
-        assert!(plan[10..].iter().all(|i| seen.contains(i)), "sisa harus dari seen");
+        assert!(
+            plan[10..].iter().all(|i| seen.contains(i)),
+            "sisa harus dari seen"
+        );
     }
 
     /// Tanpa ledger (semua unseen) = perilaku lama: tiap kandidat dijamah.
@@ -1236,10 +1248,19 @@ mod bugdb_tests {
     /// Nama artefak bug: stabil untuk signature sama, unik untuk beda.
     #[test]
     fn artifact_stem_stable_and_unique() {
-        let a = artifact_stem("sim|O5-differential|differential|first|second", "differential");
-        let b = artifact_stem("sim|O5-differential|differential|first|second", "differential");
+        let a = artifact_stem(
+            "sim|O5-differential|differential|first|second",
+            "differential",
+        );
+        let b = artifact_stem(
+            "sim|O5-differential|differential|first|second",
+            "differential",
+        );
         assert_eq!(a, b, "temuan identik = nama sama (idempoten)");
-        let c = artifact_stem("sim|O5-differential|differential|first|lain", "differential");
+        let c = artifact_stem(
+            "sim|O5-differential|differential|first|lain",
+            "differential",
+        );
         assert_ne!(a, c, "temuan beda = nama beda");
         assert!(a.starts_with("bug_") && a.ends_with("_differential"));
         assert_eq!(a.len(), 4 + 12 + 1 + "differential".len());

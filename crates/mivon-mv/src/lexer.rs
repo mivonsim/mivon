@@ -444,9 +444,7 @@ pub fn tokenize(src: &str) -> Result<Vec<(Tok, usize, usize)>, MvError> {
                     i += 2;
                     col += 2;
                     let dstart = i;
-                    while i < chars.len()
-                        && (chars[i].is_ascii_alphanumeric() || chars[i] == '_')
-                    {
+                    while i < chars.len() && (chars[i].is_ascii_alphanumeric() || chars[i] == '_') {
                         i += 1;
                         col += 1;
                     }
@@ -1106,7 +1104,6 @@ mod tests {
 
     #[test]
     fn lex_net_kind_keywords() {
-
         // F76: varian net (LRM §6.5) — reserved, bukan Ident.
         let t = toks("wand a wor b tri c tri0 d tri1 e triand f trior g supply0 h supply1 i");
         assert!(t.contains(&Tok::Wand), "{t:?}");
@@ -1201,7 +1198,11 @@ mod literal_tests {
     fn lex_binary_xnor_both_spellings() {
         // `~^` dan `^~` → token sama (LRM 1800 §11.13).
         let t = toks_of("a ~^ b a ^~ b");
-        assert_eq!(t.iter().filter(|x| **x == Tok::TildeCaret).count(), 2, "{t:?}");
+        assert_eq!(
+            t.iter().filter(|x| **x == Tok::TildeCaret).count(),
+            2,
+            "{t:?}"
+        );
         // `~` unary tetap tokenizer sendiri
         assert!(t.contains(&Tok::Ident("a".into())), "{t:?}");
     }

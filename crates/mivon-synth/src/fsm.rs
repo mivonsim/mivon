@@ -190,12 +190,19 @@ fn collect_rhs_signals(expr: &IrExpr, out: &mut Vec<usize>) {
                 collect_rhs_signals(p, out);
             }
         }
-        IrExpr::SysFunc { args, .. } | IrExpr::DpiCall { args, .. } | IrExpr::NewCall { args, .. } => {
+        IrExpr::SysFunc { args, .. }
+        | IrExpr::DpiCall { args, .. }
+        | IrExpr::NewCall { args, .. } => {
             for a in args {
                 collect_rhs_signals(a, out);
             }
         }
-        IrExpr::MethodCall { obj, args, with_clause, .. } => {
+        IrExpr::MethodCall {
+            obj,
+            args,
+            with_clause,
+            ..
+        } => {
             collect_rhs_signals(obj, out);
             for a in args {
                 collect_rhs_signals(a, out);
@@ -309,7 +316,11 @@ fn collect_writes(stmts: &[IrStmt], out: &mut Vec<(usize, IrExpr, Vec<usize>)>) 
                 }
                 collect_writes(default, out);
             }
-            IrStmt::If { true_branch, false_branch, .. } => {
+            IrStmt::If {
+                true_branch,
+                false_branch,
+                ..
+            } => {
                 collect_writes(true_branch, out);
                 collect_writes(false_branch, out);
             }
@@ -359,7 +370,10 @@ fn extract_from_case(
                 push_state(&mut states, *to);
                 push_trans(
                     &mut transitions,
-                    FsmTransition { from: Some(from_v), to: *to },
+                    FsmTransition {
+                        from: Some(from_v),
+                        to: *to,
+                    },
                 );
             }
         }
@@ -373,7 +387,13 @@ fn extract_from_case(
         push_state(&mut states, *to);
         for &from in states.clone().iter() {
             if from != *to && !transitions.iter().any(|t| t.from == Some(from)) {
-                push_trans(&mut transitions, FsmTransition { from: Some(from), to: *to });
+                push_trans(
+                    &mut transitions,
+                    FsmTransition {
+                        from: Some(from),
+                        to: *to,
+                    },
+                );
             }
         }
     }
@@ -403,7 +423,11 @@ fn extract_from_case(
             }
             None => outputs.push(FsmOutput {
                 signal: name,
-                kind: if mealy { FsmOutputKind::Mealy } else { FsmOutputKind::Moore },
+                kind: if mealy {
+                    FsmOutputKind::Mealy
+                } else {
+                    FsmOutputKind::Moore
+                },
             }),
         }
     }
@@ -472,17 +496,20 @@ pub fn extract_fsms(design: &IrDesign) -> Vec<FsmInfo> {
             for stmt in stmts {
                 match stmt {
                     IrStmt::NonBlockingAssign { lhs, rhs, .. } => {
-                        if let (Some(id), IrExpr::Signal(next, _)) =
-                            (lvalue_sig_id(lhs), rhs)
-                        {
+                        if let (Some(id), IrExpr::Signal(next, _)) = (lvalue_sig_id(lhs), rhs) {
                             if *next != id && !out.contains(&(id, *next)) {
                                 out.push((id, *next));
                             }
                         }
                     }
-                    IrStmt::Block { stmts: inner }
-                    | IrStmt::NamedBlock { stmts: inner, .. } => find_nba_copies(inner, out),
-                    IrStmt::If { true_branch, false_branch, .. } => {
+                    IrStmt::Block { stmts: inner } | IrStmt::NamedBlock { stmts: inner, .. } => {
+                        find_nba_copies(inner, out)
+                    }
+                    IrStmt::If {
+                        true_branch,
+                        false_branch,
+                        ..
+                    } => {
                         find_nba_copies(true_branch, out);
                         find_nba_copies(false_branch, out);
                     }
@@ -503,7 +530,7 @@ pub fn extract_fsms(design: &IrDesign) -> Vec<FsmInfo> {
                     .top
                     .signals
                     .get(*state_sig)
-                    .map(|s| s.name.to_string() == f.state_signal)
+                    .map(|s| s.name == f.state_signal)
                     .unwrap_or(false)
             }) {
                 continue;
@@ -515,7 +542,13 @@ pub fn extract_fsms(design: &IrDesign) -> Vec<FsmInfo> {
                     _ => continue,
                 };
                 for stmt in body {
-                    let IrStmt::Case { expr, items, default, .. } = stmt else {
+                    let IrStmt::Case {
+                        expr,
+                        items,
+                        default,
+                        ..
+                    } = stmt
+                    else {
                         continue;
                     };
                     let IrExpr::Signal(sel, _) = expr else {
@@ -632,7 +665,11 @@ pub fn render_fsm_report(fsms: &[FsmInfo]) -> String {
                     .map(|o| format!(
                         "{}({})",
                         o.signal,
-                        if o.kind == FsmOutputKind::Mealy { "Mealy" } else { "Moore" }
+                        if o.kind == FsmOutputKind::Mealy {
+                            "Mealy"
+                        } else {
+                            "Moore"
+                        }
                     ))
                     .collect::<Vec<_>>()
                     .join(", ")
@@ -787,17 +824,23 @@ mod tests {
             state_width: 3,
             states: vec![0, 1, 2, 5, 9],
             transitions: vec![
-                FsmTransition { from: Some(0), to: 1 },
-                FsmTransition { from: Some(1), to: 2 },
-                FsmTransition { from: Some(2), to: 5 },
+                FsmTransition {
+                    from: Some(0),
+                    to: 1,
+                },
+                FsmTransition {
+                    from: Some(1),
+                    to: 2,
+                },
+                FsmTransition {
+                    from: Some(2),
+                    to: 5,
+                },
             ],
             outputs: vec![],
         };
         assert_eq!(minimized_states(&f), vec![0, 1, 2, 5]);
-        assert_eq!(
-            compact_encoding(&f),
-            vec![(0, 0), (1, 1), (2, 2), (5, 3)]
-        );
+        assert_eq!(compact_encoding(&f), vec![(0, 0), (1, 1), (2, 2), (5, 3)]);
         let report = render_fsm_report(&[f]);
         assert!(report.contains("minimized (4): 0, 1, 2, 5"));
         assert!(report.contains("encoding: 0->0, 1->1, 2->2, 5->3"));
@@ -847,11 +890,31 @@ mod tests {
         let mut design = IrDesign::default();
         design.top.name = Symbol::from("fsm_mo");
         design.top.signals = vec![
-            SignalInfo { name: Symbol::from("state"), width: 2, ..Default::default() },
-            SignalInfo { name: Symbol::from("inp"), width: 1, ..Default::default() },
-            SignalInfo { name: Symbol::from("out_moore"), width: 1, ..Default::default() },
-            SignalInfo { name: Symbol::from("out_mealy"), width: 1, ..Default::default() },
-            SignalInfo { name: Symbol::from("out_const"), width: 1, ..Default::default() },
+            SignalInfo {
+                name: Symbol::from("state"),
+                width: 2,
+                ..Default::default()
+            },
+            SignalInfo {
+                name: Symbol::from("inp"),
+                width: 1,
+                ..Default::default()
+            },
+            SignalInfo {
+                name: Symbol::from("out_moore"),
+                width: 1,
+                ..Default::default()
+            },
+            SignalInfo {
+                name: Symbol::from("out_mealy"),
+                width: 1,
+                ..Default::default()
+            },
+            SignalInfo {
+                name: Symbol::from("out_const"),
+                width: 1,
+                ..Default::default()
+            },
         ];
         design.top.processes = vec![Process::Sequential {
             name: Symbol::from("sm"),
@@ -870,17 +933,33 @@ mod tests {
         let f = &fsms[0];
         // out_moore ditulis Moore di item 1 lalu Mealy (FuncCall atas inp)
         // di item 2 → Mealy menang.
-        let moore = f.outputs.iter().find(|o| o.signal == "out_moore").expect("moore ada");
+        let moore = f
+            .outputs
+            .iter()
+            .find(|o| o.signal == "out_moore")
+            .expect("moore ada");
         assert_eq!(moore.kind, FsmOutputKind::Mealy);
-        let mealy = f.outputs.iter().find(|o| o.signal == "out_mealy").expect("mealy ada");
+        let mealy = f
+            .outputs
+            .iter()
+            .find(|o| o.signal == "out_mealy")
+            .expect("mealy ada");
         assert_eq!(mealy.kind, FsmOutputKind::Mealy);
         // State reg bukan output; urutan sort by nama.
         assert!(!f.outputs.iter().any(|o| o.signal == "state"));
         let names: Vec<&str> = f.outputs.iter().map(|o| o.signal.as_str()).collect();
-        assert_eq!(names, vec!["out_const", "out_mealy", "out_moore"], "{names:?}");
-        let oc = f.outputs.iter().find(|o| o.signal == "out_const").expect("const ada");
+        assert_eq!(
+            names,
+            vec!["out_const", "out_mealy", "out_moore"],
+            "{names:?}"
+        );
+        let oc = f
+            .outputs
+            .iter()
+            .find(|o| o.signal == "out_const")
+            .expect("const ada");
         assert_eq!(oc.kind, FsmOutputKind::Moore);
-        let report = render_fsm_report(&[f.clone()]);
+        let report = render_fsm_report(std::slice::from_ref(f));
         assert!(report.contains("out_moore(Mealy)"), "{report}");
         assert!(report.contains("out_mealy(Mealy)"), "{report}");
     }
@@ -901,8 +980,16 @@ mod tests {
         let mut design = IrDesign::default();
         design.top.name = Symbol::from("fsm_2p");
         design.top.signals = vec![
-            SignalInfo { name: Symbol::from("state"), width: 2, ..Default::default() },
-            SignalInfo { name: Symbol::from("next"), width: 2, ..Default::default() },
+            SignalInfo {
+                name: Symbol::from("state"),
+                width: 2,
+                ..Default::default()
+            },
+            SignalInfo {
+                name: Symbol::from("next"),
+                width: 2,
+                ..Default::default()
+            },
         ];
         design.top.processes = vec![
             Process::Sequential {
@@ -932,8 +1019,20 @@ mod tests {
         let f = &fsms[0];
         assert_eq!(f.state_signal, "state");
         assert_eq!(f.states, vec![0, 1, 2]);
-        assert!(f.transitions.contains(&FsmTransition { from: Some(0), to: 1 }), "{f:?}");
-        assert!(f.transitions.contains(&FsmTransition { from: Some(1), to: 2 }), "{f:?}");
+        assert!(
+            f.transitions.contains(&FsmTransition {
+                from: Some(0),
+                to: 1
+            }),
+            "{f:?}"
+        );
+        assert!(
+            f.transitions.contains(&FsmTransition {
+                from: Some(1),
+                to: 2
+            }),
+            "{f:?}"
+        );
         // Tanpa copy `state <= next`, comb saja bukan FSM.
         let mut design2 = design.clone();
         design2.top.processes.remove(0);

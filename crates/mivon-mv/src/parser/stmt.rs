@@ -532,21 +532,22 @@ impl Parser {
                     if self.peek() == &Tok::LParen {
                         // Peek ahead to see if it's an event control `@(...)`
                         let save = self.pos;
-                        self.advance(); // consume `(` 
+                        self.advance(); // consume `(`
                         let use_raw = matches!(self.peek(), Tok::At);
                         self.pos = save; // restore position
-                        
+
                         if use_raw {
                             // Event control form: `@(posedge clk) ...` — use raw parsing
                             let raw = self.parse_assert_property_raw()?;
                             return Ok(Stmt::AssertProperty(raw));
                         }
-                        
+
                         // Try structured parsing
                         self.advance();
                         let prop = self.parse_sva_prop_expr()?;
                         self.expect(&Tok::RParen)?;
-                        let pass = if matches!(self.peek(), Tok::Else) || matches!(self.peek(), Tok::RBrace)
+                        let pass = if matches!(self.peek(), Tok::Else)
+                            || matches!(self.peek(), Tok::RBrace)
                         {
                             None
                         } else {
@@ -558,7 +559,13 @@ impl Parser {
                             None
                         };
                         let (l, c) = self.pos_line();
-                        return Ok(Stmt::AssertPropertyStruct { prop: Box::new(prop), pass, fail, line: l, col: c });
+                        return Ok(Stmt::AssertPropertyStruct {
+                            prop: Box::new(prop),
+                            pass,
+                            fail,
+                            line: l,
+                            col: c,
+                        });
                     }
                     // Fallback to raw
                     let raw = self.parse_assert_property_raw()?;
@@ -593,16 +600,17 @@ impl Parser {
                         self.advance();
                         let use_raw = matches!(self.peek(), Tok::At);
                         self.pos = save;
-                        
+
                         if use_raw {
                             let raw = self.parse_assert_property_raw()?;
                             return Ok(Stmt::AssumeProperty(raw));
                         }
-                        
+
                         self.advance();
                         let prop = self.parse_sva_prop_expr()?;
                         self.expect(&Tok::RParen)?;
-                        let pass = if matches!(self.peek(), Tok::Else) || matches!(self.peek(), Tok::RBrace)
+                        let pass = if matches!(self.peek(), Tok::Else)
+                            || matches!(self.peek(), Tok::RBrace)
                         {
                             None
                         } else {
@@ -614,7 +622,13 @@ impl Parser {
                             None
                         };
                         let (l, c) = self.pos_line();
-                        return Ok(Stmt::AssumePropertyStruct { prop: Box::new(prop), pass, fail, line: l, col: c });
+                        return Ok(Stmt::AssumePropertyStruct {
+                            prop: Box::new(prop),
+                            pass,
+                            fail,
+                            line: l,
+                            col: c,
+                        });
                     }
                     let raw = self.parse_assert_property_raw()?;
                     return Ok(Stmt::AssumeProperty(raw));
@@ -648,12 +662,12 @@ impl Parser {
                         self.advance();
                         let use_raw = matches!(self.peek(), Tok::At);
                         self.pos = save;
-                        
+
                         if use_raw {
                             let raw = self.parse_assert_property_raw()?;
                             return Ok(Stmt::CoverProperty(raw));
                         }
-                        
+
                         self.advance();
                         let prop = self.parse_sva_prop_expr()?;
                         self.expect(&Tok::RParen)?;
@@ -672,7 +686,12 @@ impl Parser {
                             Some(Box::new(self.parse_stmt()?))
                         };
                         let (l, c) = self.pos_line();
-                        return Ok(Stmt::CoverPropertyStruct { prop: Box::new(prop), pass, line: l, col: c });
+                        return Ok(Stmt::CoverPropertyStruct {
+                            prop: Box::new(prop),
+                            pass,
+                            line: l,
+                            col: c,
+                        });
                     }
                     // Fallback to raw
                     let raw = self.parse_assert_property_raw()?;
@@ -688,7 +707,8 @@ impl Parser {
                     return Err(MvError::new(
                         l,
                         c,
-                        "'cover' tidak memakai 'else' (tak ada cabang gagal) — hapus 'else'".to_string(),
+                        "'cover' tidak memakai 'else' (tak ada cabang gagal) — hapus 'else'"
+                            .to_string(),
                     ));
                 }
                 let pass = if matches!(self.peek(), Tok::RBrace) {
@@ -704,7 +724,8 @@ impl Parser {
                     return Err(MvError::new(
                         l,
                         c,
-                        "'cover' tidak memakai 'else' (tak ada cabang gagal) — hapus 'else'".to_string(),
+                        "'cover' tidak memakai 'else' (tak ada cabang gagal) — hapus 'else'"
+                            .to_string(),
                     ));
                 }
                 Ok(Stmt::Cover { cond, pass })
@@ -856,7 +877,7 @@ impl Parser {
     /// Parse SVA Sequence expression (F85) — reusable by module parser.
     pub(crate) fn parse_sva_seq_expr(&mut self) -> Result<crate::ast::SvaSeqExpr, MvError> {
         use crate::ast::SvaSeqExpr;
-        
+
         // Handle leading delay: `##N seq` or `##[M:N] seq`
         let mut left = if matches!(self.peek(), Tok::HashHash | Tok::HashHashLBrack) {
             // Leading delay: `##N seq` or `##[M:N] seq`
@@ -882,7 +903,7 @@ impl Parser {
         } else {
             SvaSeqExpr::Expr(self.parse_expr()?)
         };
-        
+
         loop {
             match self.peek() {
                 Tok::HashHash | Tok::HashHashLBrack => {
@@ -967,7 +988,9 @@ impl Parser {
                     self.expect(&Tok::LParen)?;
                     let expr = self.parse_sva_seq_expr()?;
                     self.expect(&Tok::RParen)?;
-                    left = SvaSeqExpr::FirstMatch { expr: Box::new(expr) };
+                    left = SvaSeqExpr::FirstMatch {
+                        expr: Box::new(expr),
+                    };
                 }
                 Tok::Throughout => {
                     self.advance();
@@ -994,19 +1017,38 @@ impl Parser {
     /// Parse SVA Property expression (F85).
     pub(crate) fn parse_sva_prop_expr(&mut self) -> Result<crate::ast::SvaPropExpr, MvError> {
         use crate::ast::SvaPropExpr;
-        
+
         // Property name reference: `property_name` — only if standalone
         // (not followed by sequence/property operators like |->, |=>, ##, [*,
         // throughout, within, or, and, intersect, first_match)
         if let Tok::Ident(name) = self.peek().clone() {
             let name_str = name.as_str();
-            if !matches!(name_str, "always" | "never" | "eventually" | "s_eventually" | "nexttime" | "s_nexttime" | "iff" | "disable") {
+            if !matches!(
+                name_str,
+                "always"
+                    | "never"
+                    | "eventually"
+                    | "s_eventually"
+                    | "nexttime"
+                    | "s_nexttime"
+                    | "iff"
+                    | "disable"
+            ) {
                 // Look ahead to see if followed by sequence/property operators
                 let next = self.peek_at(1).clone();
-                let is_operator = matches!(next, 
-                    Tok::PipeArrow | Tok::PipeFatArrow | Tok::HashHash | Tok::HashHashLBrack
-                    | Tok::LBrackStar | Tok::Throughout | Tok::Within
-                    | Tok::Or | Tok::And | Tok::Intersect | Tok::FirstMatch
+                let is_operator = matches!(
+                    next,
+                    Tok::PipeArrow
+                        | Tok::PipeFatArrow
+                        | Tok::HashHash
+                        | Tok::HashHashLBrack
+                        | Tok::LBrackStar
+                        | Tok::Throughout
+                        | Tok::Within
+                        | Tok::Or
+                        | Tok::And
+                        | Tok::Intersect
+                        | Tok::FirstMatch
                 );
                 if !is_operator {
                     self.advance();
@@ -1014,27 +1056,37 @@ impl Parser {
                 }
             }
         }
-        
+
         match self.peek() {
             Tok::Always => {
                 self.advance();
                 let expr = self.parse_sva_seq_expr()?;
-                return Ok(SvaPropExpr::Always { expr: Box::new(expr) });
+                return Ok(SvaPropExpr::Always {
+                    expr: Box::new(expr),
+                });
             }
             Tok::Never => {
                 self.advance();
                 let expr = self.parse_sva_seq_expr()?;
-                return Ok(SvaPropExpr::Never { expr: Box::new(expr) });
+                return Ok(SvaPropExpr::Never {
+                    expr: Box::new(expr),
+                });
             }
             Tok::Eventually => {
                 self.advance();
                 let expr = self.parse_sva_seq_expr()?;
-                return Ok(SvaPropExpr::Eventually { expr: Box::new(expr), strong: false });
+                return Ok(SvaPropExpr::Eventually {
+                    expr: Box::new(expr),
+                    strong: false,
+                });
             }
             Tok::Nexttime => {
                 self.advance();
                 let expr = self.parse_sva_seq_expr()?;
-                return Ok(SvaPropExpr::Nexttime { expr: Box::new(expr), strong: false });
+                return Ok(SvaPropExpr::Nexttime {
+                    expr: Box::new(expr),
+                    strong: false,
+                });
             }
             Tok::Iff => {
                 self.advance();
@@ -1042,7 +1094,10 @@ impl Parser {
                 let cond = self.parse_expr()?;
                 self.expect(&Tok::RParen)?;
                 let prop = self.parse_sva_prop_expr()?;
-                return Ok(SvaPropExpr::Iff { cond, prop: Box::new(prop) });
+                return Ok(SvaPropExpr::Iff {
+                    cond,
+                    prop: Box::new(prop),
+                });
             }
             Tok::Disable => {
                 self.advance();
@@ -1052,14 +1107,17 @@ impl Parser {
                     let cond = self.parse_expr()?;
                     self.expect(&Tok::RParen)?;
                     let prop = self.parse_sva_prop_expr()?;
-                    return Ok(SvaPropExpr::DisableIff { cond, prop: Box::new(prop) });
+                    return Ok(SvaPropExpr::DisableIff {
+                        cond,
+                        prop: Box::new(prop),
+                    });
                 }
             }
             _ => {}
         }
-        
+
         let seq = self.parse_sva_seq_expr()?;
-        
+
         match self.peek() {
             Tok::PipeArrow => {
                 self.advance();
@@ -1079,7 +1137,7 @@ impl Parser {
             }
             _ => {}
         }
-        
+
         Ok(SvaPropExpr::Seq(Box::new(seq)))
     }
 }
@@ -1094,12 +1152,15 @@ impl Parser {
 fn check_expr_stmt(e: &crate::ast::Expr, line: usize, col: usize) -> Result<(), MvError> {
     use crate::ast::Expr;
     match e {
-        Expr::Call(..) | Expr::SysFunc(..) | Expr::MethodCall { .. } | Expr::IncDec { .. } => Ok(()),
+        Expr::Call(..) | Expr::SysFunc(..) | Expr::MethodCall { .. } | Expr::IncDec { .. } => {
+            Ok(())
+        }
         Expr::Ident(s, ..) if s.starts_with('$') => Ok(()),
         _ => Err(MvError::new(
             line,
             col,
-            "ekspresi tak valid sebagai statement tunggal (hanya call/method/incdec/system-task)".to_string(),
+            "ekspresi tak valid sebagai statement tunggal (hanya call/method/incdec/system-task)"
+                .to_string(),
         )),
     }
 }

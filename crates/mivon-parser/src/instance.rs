@@ -1151,10 +1151,8 @@ impl Parser {
     > {
         let mut param_assigns: std::collections::HashMap<Symbol, mivon_ast::Expr> =
             std::collections::HashMap::new();
-        let mut type_param_assigns: std::collections::HashMap<
-            Symbol,
-            mivon_ast::TypeParamAssign,
-        > = std::collections::HashMap::new();
+        let mut type_param_assigns: std::collections::HashMap<Symbol, mivon_ast::TypeParamAssign> =
+            std::collections::HashMap::new();
 
         self.advance(); // consume '#'
         self.expect(Token::LParen)?;
@@ -1183,10 +1181,8 @@ impl Parser {
                         // override ter-resolve di elaborasi.
                         let (dt, range) = self.parse_type_expr_with_range()?;
                         self.expect(Token::RParen)?;
-                        type_param_assigns.insert(
-                            pname,
-                            mivon_ast::TypeParamAssign { dtype: dt, range },
-                        );
+                        type_param_assigns
+                            .insert(pname, mivon_ast::TypeParamAssign { dtype: dt, range });
                     } else {
                         let val = self.parse_expr(0)?;
                         self.expect(Token::RParen)?;

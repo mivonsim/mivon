@@ -141,9 +141,7 @@ pub fn run(args: &GenArgs) -> Result<(), SimError> {
             // konsisten dengan skip .svh kosong.
             // F43: sumber `.mvh` tidak pernah menghasilkan `.sv` — abaikan
             // sisi `.sv` (file `.sv` basi bukan urusan header).
-            let sv_ok = is_header
-                || result.sv.is_empty()
-                || file_matches(&sv_path, &result.sv);
+            let sv_ok = is_header || result.sv.is_empty() || file_matches(&sv_path, &result.sv);
             let ok = if args.svh_only {
                 svh_ok
             } else if args.sv_only && !is_header {

@@ -246,10 +246,7 @@ pub fn design_timescale(design: &Design) -> Option<(String, String)> {
     if let Some(ts) = design.timescale.clone() {
         return Some(ts);
     }
-    design
-        .modules
-        .iter()
-        .find_map(|m| m.timescale.clone())
+    design.modules.iter().find_map(|m| m.timescale.clone())
 }
 
 /// Populator lapisan `cache/` dari data compile.
@@ -645,8 +642,14 @@ mod tests {
         // Fase 2b: HANYA kategori dibaca tools yang terisi (elaborate dari
         // fallback AST + generate). 12 kategori tak-terbaca + verify/profile
         // (mirror write-through) tetap kosong.
-        assert!(layer.entry_count(CacheCategory::Elaborate) >= 1, "elaborate terisi");
-        assert!(layer.entry_count(CacheCategory::Generate) >= 1, "generate terisi");
+        assert!(
+            layer.entry_count(CacheCategory::Elaborate) >= 1,
+            "elaborate terisi"
+        );
+        assert!(
+            layer.entry_count(CacheCategory::Generate) >= 1,
+            "generate terisi"
+        );
         for cat in [
             CacheCategory::Preprocess,
             CacheCategory::Lexer,
@@ -662,7 +665,12 @@ mod tests {
             CacheCategory::Hierarchy,
             CacheCategory::Profile,
         ] {
-            assert_eq!(layer.entry_count(cat), 0, "{} harus kosong (tak diisi)", cat.name());
+            assert_eq!(
+                layer.entry_count(cat),
+                0,
+                "{} harus kosong (tak diisi)",
+                cat.name()
+            );
         }
 
         // Periksa isi elaborate fallback AST: 1 instance alu.
@@ -697,7 +705,8 @@ mod tests {
             let mut layer = CacheLayer::open(&db, "pid", 0).unwrap();
             assert!(layer.contains(CacheCategory::Generate, "counter"));
             let gen: GeneratePayload =
-                bincode::deserialize(&layer.get(CacheCategory::Generate, "counter").unwrap()).unwrap();
+                bincode::deserialize(&layer.get(CacheCategory::Generate, "counter").unwrap())
+                    .unwrap();
             assert_eq!(gen, GeneratePayload::default());
         }
         let _ = std::fs::remove_dir_all(&root);

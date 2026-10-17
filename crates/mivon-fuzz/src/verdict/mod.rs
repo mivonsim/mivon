@@ -41,17 +41,11 @@ pub enum Verdict {
 
     /// LRM tidak mendefinisikan perilaku untuk kasus ini.
     /// Mivon boleh berperilaku apa saja — bukan bug.
-    UndefinedByLrm {
-        rule: RuleId,
-        clause: ClauseRef,
-    },
+    UndefinedByLrm { rule: RuleId, clause: ClauseRef },
 
     /// LRM memberi kebebasan ke implementasi.
     /// Mivon tidak salah meski berbeda dari simulator lain.
-    ImplementationDependent {
-        rule: RuleId,
-        clause: ClauseRef,
-    },
+    ImplementationDependent { rule: RuleId, clause: ClauseRef },
 
     /// Klausul LRM ambigu. Membutuhkan interpretasi manusia.
     LrmAmbiguous {
@@ -66,10 +60,7 @@ pub enum Verdict {
     },
 
     /// Mivon crash/panic/hang — bukan masalah conformance tapi tetap bug.
-    MivonInternalFailure {
-        kind: FailureKind,
-        detail: String,
-    },
+    MivonInternalFailure { kind: FailureKind, detail: String },
 }
 
 impl Verdict {
@@ -114,8 +105,7 @@ impl JudgeReport {
     /// Apakah laporan ini harus disimpan sebagai bug.
     /// Violation + Insufficient TIDAK disimpan.
     pub fn should_save(&self) -> bool {
-        self.verdict.is_bug()
-            && !matches!(self.confidence, JudgeConfidence::Insufficient)
+        self.verdict.is_bug() && !matches!(self.confidence, JudgeConfidence::Insufficient)
     }
 }
 

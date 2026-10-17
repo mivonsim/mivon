@@ -4,11 +4,10 @@
 
 #![cfg(feature = "dev")]
 
-use crate::lrm_model::{
-    ClauseRef, LrmRule, RuleCategory, RuleClassification, RuleId,
-    predicate::Requirement,
-};
 use super::RuleRegistry;
+use crate::lrm_model::{
+    predicate::Requirement, ClauseRef, LrmRule, RuleCategory, RuleClassification, RuleId,
+};
 
 pub fn register(reg: &mut RuleRegistry) {
     // SV-ELAB-PARAM-001: parameter override harus memengaruhi semua
@@ -19,7 +18,10 @@ pub fn register(reg: &mut RuleRegistry) {
         category: RuleCategory::Elaboration,
         classification: RuleClassification::RequiredBehavior,
         applies_when: Box::new(|state| {
-            state.elaborated_design.parameters.values()
+            state
+                .elaborated_design
+                .parameters
+                .values()
                 .any(|p| p.is_overridden)
         }),
         requires: vec![],
@@ -35,7 +37,11 @@ pub fn register(reg: &mut RuleRegistry) {
         category: RuleCategory::Elaboration,
         classification: RuleClassification::RequiredBehavior,
         applies_when: Box::new(|state| {
-            state.elaborated_design.parameters.values().any(|p| p.is_overridden)
+            state
+                .elaborated_design
+                .parameters
+                .values()
+                .any(|p| p.is_overridden)
                 && !state.elaborated_design.generates.is_empty()
         }),
         requires: vec![],
@@ -50,9 +56,7 @@ pub fn register(reg: &mut RuleRegistry) {
         clause: ClauseRef::sv2017("23.3.2"),
         category: RuleCategory::Elaboration,
         classification: RuleClassification::RequiredBehavior,
-        applies_when: Box::new(|state| {
-            !state.elaborated_design.port_bindings.is_empty()
-        }),
+        applies_when: Box::new(|state| !state.elaborated_design.port_bindings.is_empty()),
         requires: vec![Requirement::ElaborationSucceeds],
         expected_description:
             "koneksi port by-name harus cocok dengan deklarasi port module (§23.3.2)",
@@ -65,12 +69,9 @@ pub fn register(reg: &mut RuleRegistry) {
         clause: ClauseRef::sv2017("27.4"),
         category: RuleCategory::Elaboration,
         classification: RuleClassification::RequiredBehavior,
-        applies_when: Box::new(|state| {
-            !state.elaborated_design.generates.is_empty()
-        }),
+        applies_when: Box::new(|state| !state.elaborated_design.generates.is_empty()),
         requires: vec![],
-        expected_description:
-            "genvar hanya boleh dipakai di dalam blok generate (§27.4)",
+        expected_description: "genvar hanya boleh dipakai di dalam blok generate (§27.4)",
     });
 
     // SV-ELAB-HIER-001: nama instance dalam hierarki harus unik di scope
@@ -80,11 +81,8 @@ pub fn register(reg: &mut RuleRegistry) {
         clause: ClauseRef::sv2017("23.8"),
         category: RuleCategory::Elaboration,
         classification: RuleClassification::RequiredBehavior,
-        applies_when: Box::new(|state| {
-            state.elaborated_design.hierarchy.len() > 1
-        }),
+        applies_when: Box::new(|state| state.elaborated_design.hierarchy.len() > 1),
         requires: vec![],
-        expected_description:
-            "nama instance harus unik di scope yang sama (§23.8)",
+        expected_description: "nama instance harus unik di scope yang sama (§23.8)",
     });
 }

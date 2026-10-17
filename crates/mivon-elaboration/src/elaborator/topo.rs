@@ -204,10 +204,7 @@ pub(crate) fn compute_module_checksum(module: &Module) -> u64 {
                 h = combine_checksum(h, compute_str_checksum(f.name.as_str()));
             }
             ModuleItem::Generate(g) => {
-                h = combine_checksum(
-                    h,
-                    compute_checksum(&(g.items.len() as u64).to_le_bytes()),
-                );
+                h = combine_checksum(h, compute_checksum(&(g.items.len() as u64).to_le_bytes()));
             }
             ModuleItem::Import { package, item } => {
                 h = combine_checksum(h, compute_str_checksum(package.as_str()));

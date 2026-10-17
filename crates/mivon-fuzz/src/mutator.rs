@@ -674,8 +674,7 @@ impl<'r> Mutator<'r> {
                         let rep = if self.rng.below(2) == 0 {
                             format!("[{b}:{a}]")
                         } else {
-                            let widened: usize =
-                                a.parse::<usize>().unwrap_or(7).saturating_add(8);
+                            let widened: usize = a.parse::<usize>().unwrap_or(7).saturating_add(8);
                             format!("[{widened}:{b}]")
                         };
                         let mut out: String = chars[..idx].iter().collect();
@@ -705,9 +704,7 @@ impl<'r> Mutator<'r> {
         for line in source.lines() {
             if !done {
                 let t = line.trim_start();
-                let kw = decl_kw
-                    .iter()
-                    .find(|k| kw_at(t, k));
+                let kw = decl_kw.iter().find(|k| kw_at(t, k));
                 if let Some(_k) = kw {
                     // Sudah punya initializer? lewati.
                     if !t.contains('=') {
@@ -757,10 +754,7 @@ impl<'r> Mutator<'r> {
                             .take_while(|c| *c == ' ' || *c == '\t')
                             .collect();
                         let sel = self.rng.pick(&sels);
-                        out.push_str(&format!(
-                            "{}assign {} = {}{};\n",
-                            indent, lhs, rhs, sel
-                        ));
+                        out.push_str(&format!("{}assign {} = {}{};\n", indent, lhs, rhs, sel));
                         done = true;
                         continue;
                     }
@@ -782,7 +776,9 @@ impl<'r> Mutator<'r> {
         if source.contains("timescale") {
             return source.to_string();
         }
-        let ts = self.rng.pick(&["`timescale 1ns/1ps\n", "`timescale 1ps/1ps\n"]);
+        let ts = self
+            .rng
+            .pick(&["`timescale 1ns/1ps\n", "`timescale 1ps/1ps\n"]);
         format!("{ts}{source}")
     }
 
@@ -975,9 +971,7 @@ mod tests {
             let mut rng = crate::Rng::new(seed);
             let mut m = Mutator::new(&mut rng);
             let init_out = m.inject_decl_init(src);
-            if init_out.contains("= 0")
-                || init_out.contains("= '0")
-                || init_out.contains("= 1'b0")
+            if init_out.contains("= 0") || init_out.contains("= '0") || init_out.contains("= 1'b0")
             {
                 saw_init = true;
                 // Tak boleh ada deklarasi dobel '='.
@@ -1008,8 +1002,7 @@ mod tests {
         );
 
         // Mutasi baru (tahap perluasan): concat/signed/index/finish.
-        let base =
-            "module m;\n  logic [7:0] a;\n  logic [3:0] b;\n  assign a = b;\nendmodule\n";
+        let base = "module m;\n  logic [7:0] a;\n  logic [3:0] b;\n  assign a = b;\nendmodule\n";
         let mut rng4 = crate::Rng::new(7);
         let mut m4 = Mutator::new(&mut rng4);
         assert!(m4.inject_concat(base).contains("assign a = {b};"));

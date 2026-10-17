@@ -197,9 +197,9 @@ pub fn compute_expr_width(
         Expr::Replicate { count, expr: inner } => {
             // Jumlah replikasi WAJIB konstan (LRM) — tebak 1 diam-diam
             // menghasilkan lebar salah (pola buglog #32).
-            let c = const_eval_with_params(count, param_vals).map_err(|_| {
-                "replication count not computable at compile time".to_string()
-            })? as usize;
+            let c = const_eval_with_params(count, param_vals)
+                .map_err(|_| "replication count not computable at compile time".to_string())?
+                as usize;
             let w = compute_expr_width(inner, signal_map, signals, param_vals, package_symbols)?;
             Ok(c.saturating_mul(w))
         }
@@ -783,11 +783,18 @@ pub fn eval_width_aware_param(
         // inlining penuh via evaluator konstanta, bukan allowlist per-nama.
         // effective_params sudah memuat konstanta package + param module.
         Expr::FuncCall { .. } => {
-            use mivon_ast::const_eval_ext::{eval_cval_full, CVal, SField, ArrayStructs};
+            use mivon_ast::const_eval_ext::{eval_cval_full, ArrayStructs, CVal, SField};
             let arrays: HashMap<Symbol, Vec<i64>> = HashMap::new();
             let structs: HashMap<Symbol, Vec<SField>> = HashMap::new();
             let array_structs: ArrayStructs = HashMap::new();
-            match eval_cval_full(expr, effective_params, &arrays, package_symbols, &structs, &array_structs) {
+            match eval_cval_full(
+                expr,
+                effective_params,
+                &arrays,
+                package_symbols,
+                &structs,
+                &array_structs,
+            ) {
                 Some(CVal::Scalar(v)) => Some(v),
                 _ => None,
             }

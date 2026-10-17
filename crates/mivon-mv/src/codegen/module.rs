@@ -188,7 +188,11 @@ pub(crate) fn emit_module_kw(out: &mut String, m: &Module, kw: &str, iface_names
                 }
             }
             MItem::Wire {
-                net, names, ty, init, ..
+                net,
+                names,
+                ty,
+                init,
+                ..
             } => {
                 let fresh: Vec<String> = names
                     .iter()
@@ -200,12 +204,20 @@ pub(crate) fn emit_module_kw(out: &mut String, m: &Module, kw: &str, iface_names
                     line(
                         out,
                         1,
-                        &format!("{}{};", super::emit_wire_decl_multi(net.as_str(), ty, &fresh), init_s),
+                        &format!(
+                            "{}{};",
+                            super::emit_wire_decl_multi(net.as_str(), ty, &fresh),
+                            init_s
+                        ),
                     );
                 }
             }
             MItem::Assign { lhs, rhs, .. } => {
-                line(out, 1, &format!("assign {} = {};", emit_expr(lhs), emit_expr(rhs)));
+                line(
+                    out,
+                    1,
+                    &format!("assign {} = {};", emit_expr(lhs), emit_expr(rhs)),
+                );
             }
             MItem::Const {
                 name, ty, value, ..
@@ -238,7 +250,9 @@ pub(crate) fn emit_module_kw(out: &mut String, m: &Module, kw: &str, iface_names
                 line(out, 1, &format!("cover property {raw};"));
             }
             // SVA Structured Assertions (F85)
-            MItem::AssertPropertyStruct { prop, pass, fail, .. } => {
+            MItem::AssertPropertyStruct {
+                prop, pass, fail, ..
+            } => {
                 let prop_str = super::stmt::emit_sva_prop_expr(prop);
                 if let Some(p) = pass {
                     line(out, 1, &format!("assert property ({prop_str})"));
@@ -252,7 +266,9 @@ pub(crate) fn emit_module_kw(out: &mut String, m: &Module, kw: &str, iface_names
                     line(out, 1, ";");
                 }
             }
-            MItem::AssumePropertyStruct { prop, pass, fail, .. } => {
+            MItem::AssumePropertyStruct {
+                prop, pass, fail, ..
+            } => {
                 let prop_str = super::stmt::emit_sva_prop_expr(prop);
                 if let Some(p) = pass {
                     line(out, 1, &format!("assume property ({prop_str})"));
@@ -277,7 +293,9 @@ pub(crate) fn emit_module_kw(out: &mut String, m: &Module, kw: &str, iface_names
             }
             // SVA Sequence/Property declarations (F85) — hoisted to file scope,
             // but we emit them here for module context (they're allowed in modules)
-            MItem::SequenceDecl { name, args, expr, .. } => {
+            MItem::SequenceDecl {
+                name, args, expr, ..
+            } => {
                 let arg_str = args
                     .iter()
                     .map(|p| {
@@ -286,9 +304,20 @@ pub(crate) fn emit_module_kw(out: &mut String, m: &Module, kw: &str, iface_names
                     })
                     .collect::<Vec<_>>()
                     .join(", ");
-                line(out, 1, &format!("sequence {}({}) = {};", name, arg_str, super::stmt::emit_sva_seq_expr(expr)));
+                line(
+                    out,
+                    1,
+                    &format!(
+                        "sequence {}({}) = {};",
+                        name,
+                        arg_str,
+                        super::stmt::emit_sva_seq_expr(expr)
+                    ),
+                );
             }
-            MItem::PropertyDecl { name, args, expr, .. } => {
+            MItem::PropertyDecl {
+                name, args, expr, ..
+            } => {
                 let arg_str = args
                     .iter()
                     .map(|p| {
@@ -297,7 +326,16 @@ pub(crate) fn emit_module_kw(out: &mut String, m: &Module, kw: &str, iface_names
                     })
                     .collect::<Vec<_>>()
                     .join(", ");
-                line(out, 1, &format!("property {}({}) = {};", name, arg_str, super::stmt::emit_sva_prop_expr(expr)));
+                line(
+                    out,
+                    1,
+                    &format!(
+                        "property {}({}) = {};",
+                        name,
+                        arg_str,
+                        super::stmt::emit_sva_prop_expr(expr)
+                    ),
+                );
             }
             MItem::Seq(spec, body) => {
                 line(out, 0, "");
@@ -396,7 +434,9 @@ pub(crate) fn emit_module_kw(out: &mut String, m: &Module, kw: &str, iface_names
                 line(out, 1, "end");
                 line(out, 0, "endgenerate");
             }
-            MItem::GenIf { cond, then, els, .. } => {
+            MItem::GenIf {
+                cond, then, els, ..
+            } => {
                 let lbl = labels.uniq("gen_cond");
                 let lbl_else = labels.uniq("gen_cond_else");
                 line(out, 0, "");
@@ -415,7 +455,13 @@ pub(crate) fn emit_module_kw(out: &mut String, m: &Module, kw: &str, iface_names
                 }
                 line(out, 0, "endgenerate");
             }
-            MItem::GenCase { expr, items, default, kind, .. } => {
+            MItem::GenCase {
+                expr,
+                items,
+                default,
+                kind,
+                ..
+            } => {
                 // F79: generate case (LRM 1800 §27.5) — cabang ber-label unik.
                 line(out, 0, "");
                 line(out, 0, "generate");
@@ -490,17 +536,29 @@ pub(crate) fn emit_module_item_at(
             );
         }
         MItem::Wire {
-            net, names, ty, init, ..
+            net,
+            names,
+            ty,
+            init,
+            ..
         } => {
             let init_s = super::emit_init(init);
             line(
                 out,
                 indent,
-                &format!("{}{};", super::emit_wire_decl_multi(net.as_str(), ty, names), init_s),
+                &format!(
+                    "{}{};",
+                    super::emit_wire_decl_multi(net.as_str(), ty, names),
+                    init_s
+                ),
             );
         }
         MItem::Assign { lhs, rhs, .. } => {
-            line(out, indent, &format!("assign {} = {};", emit_expr(lhs), emit_expr(rhs)));
+            line(
+                out,
+                indent,
+                &format!("assign {} = {};", emit_expr(lhs), emit_expr(rhs)),
+            );
         }
         MItem::Const {
             name, ty, value, ..
@@ -535,7 +593,9 @@ pub(crate) fn emit_module_item_at(
             line(out, indent, &format!("cover property {raw};"));
         }
         // SVA Structured Assertions (F85)
-        MItem::AssertPropertyStruct { prop, pass, fail, .. } => {
+        MItem::AssertPropertyStruct {
+            prop, pass, fail, ..
+        } => {
             let prop_str = super::stmt::emit_sva_prop_expr(prop);
             if let Some(p) = pass {
                 line(out, indent, &format!("assert property ({prop_str})"));
@@ -549,7 +609,9 @@ pub(crate) fn emit_module_item_at(
                 line(out, indent, ";");
             }
         }
-        MItem::AssumePropertyStruct { prop, pass, fail, .. } => {
+        MItem::AssumePropertyStruct {
+            prop, pass, fail, ..
+        } => {
             let prop_str = super::stmt::emit_sva_prop_expr(prop);
             if let Some(p) = pass {
                 line(out, indent, &format!("assume property ({prop_str})"));
@@ -573,7 +635,9 @@ pub(crate) fn emit_module_item_at(
             }
         }
         // SVA Sequence/Property declarations (F85)
-        MItem::SequenceDecl { name, args, expr, .. } => {
+        MItem::SequenceDecl {
+            name, args, expr, ..
+        } => {
             let arg_str = args
                 .iter()
                 .map(|p| {
@@ -582,9 +646,20 @@ pub(crate) fn emit_module_item_at(
                 })
                 .collect::<Vec<_>>()
                 .join(", ");
-            line(out, indent, &format!("sequence {}({}) = {};", name, arg_str, super::stmt::emit_sva_seq_expr(expr)));
+            line(
+                out,
+                indent,
+                &format!(
+                    "sequence {}({}) = {};",
+                    name,
+                    arg_str,
+                    super::stmt::emit_sva_seq_expr(expr)
+                ),
+            );
         }
-        MItem::PropertyDecl { name, args, expr, .. } => {
+        MItem::PropertyDecl {
+            name, args, expr, ..
+        } => {
             let arg_str = args
                 .iter()
                 .map(|p| {
@@ -593,7 +668,16 @@ pub(crate) fn emit_module_item_at(
                 })
                 .collect::<Vec<_>>()
                 .join(", ");
-            line(out, indent, &format!("property {}({}) = {};", name, arg_str, super::stmt::emit_sva_prop_expr(expr)));
+            line(
+                out,
+                indent,
+                &format!(
+                    "property {}({}) = {};",
+                    name,
+                    arg_str,
+                    super::stmt::emit_sva_prop_expr(expr)
+                ),
+            );
         }
         MItem::Seq(spec, body) => emit_seq(out, indent, spec, body),
         MItem::Comb(body) => {
@@ -673,7 +757,13 @@ pub(crate) fn emit_module_item_at(
             line(out, indent + 1, "end");
             line(out, indent, "endgenerate");
         }
-        MItem::GenCase { expr, items, default, kind, .. } => {
+        MItem::GenCase {
+            expr,
+            items,
+            default,
+            kind,
+            ..
+        } => {
             // F79: generate case (LRM 1800 §27.5) — tiap cabang dibungkus
             // `begin : <label unik>` (label deterministik via GenLabels).
             line(out, indent, "generate");
@@ -681,7 +771,11 @@ pub(crate) fn emit_module_item_at(
             for (labels_, body) in items {
                 let lbl = labels.uniq("gen_case");
                 let ls: Vec<String> = labels_.iter().map(emit_expr).collect();
-                line(out, indent + 1, &format!("{}: begin : {lbl}", ls.join(", ")));
+                line(
+                    out,
+                    indent + 1,
+                    &format!("{}: begin : {lbl}", ls.join(", ")),
+                );
                 for i in body {
                     emit_module_item_at(out, indent + 2, i, iface_names, labels);
                 }
@@ -698,7 +792,9 @@ pub(crate) fn emit_module_item_at(
             line(out, indent + 1, "endcase");
             line(out, indent, "endgenerate");
         }
-        MItem::GenIf { cond, then, els, .. } => {
+        MItem::GenIf {
+            cond, then, els, ..
+        } => {
             let lbl = labels.uniq("gen_cond");
             let lbl_else = labels.uniq("gen_cond_else");
             line(out, indent, "generate");
@@ -775,6 +871,7 @@ pub(crate) fn emit_inst(
 
 /// F78: `bind <target> <module> [#(params)] <name>[dims] [(conns)];`
 /// (LRM 1800 §23.11). Head sama seperti `inst` dengan prefix target.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn emit_bind(
     out: &mut String,
     indent: usize,
@@ -827,7 +924,11 @@ pub(crate) fn emit_covergroup(out: &mut String, indent: usize, cg: &Covergroup) 
                 _ => format!("{}_cp", cg.name),
             },
         };
-        line(out, indent + 1, &format!("{label}: coverpoint {} {{", emit_expr(&cp.expr)));
+        line(
+            out,
+            indent + 1,
+            &format!("{label}: coverpoint {} {{", emit_expr(&cp.expr)),
+        );
         for b in &cp.bins {
             let items: Vec<String> = b
                 .items
@@ -839,7 +940,11 @@ pub(crate) fn emit_covergroup(out: &mut String, indent: usize, cg: &Covergroup) 
                     }
                 })
                 .collect();
-            line(out, indent + 2, &format!("bins {} = {{{}}};", b.name, items.join(", ")));
+            line(
+                out,
+                indent + 2,
+                &format!("bins {} = {{{}}};", b.name, items.join(", ")),
+            );
         }
         line(out, indent + 1, "}");
     }
@@ -853,9 +958,19 @@ pub(crate) fn emit_specify(out: &mut String, indent: usize, spec: &Specify) {
     for it in &spec.items {
         match it {
             SpecifyItem::Specparam { name, value, .. } => {
-                line(out, indent + 1, &format!("specparam {name} = {};", emit_expr(value)));
+                line(
+                    out,
+                    indent + 1,
+                    &format!("specparam {name} = {};", emit_expr(value)),
+                );
             }
-            SpecifyItem::Setup { data, posedge, clock, limit, .. } => {
+            SpecifyItem::Setup {
+                data,
+                posedge,
+                clock,
+                limit,
+                ..
+            } => {
                 let edge = if *posedge { "posedge" } else { "negedge" };
                 line(
                     out,
@@ -868,7 +983,13 @@ pub(crate) fn emit_specify(out: &mut String, indent: usize, spec: &Specify) {
                     ),
                 );
             }
-            SpecifyItem::Hold { posedge, clock, data, limit, .. } => {
+            SpecifyItem::Hold {
+                posedge,
+                clock,
+                data,
+                limit,
+                ..
+            } => {
                 let edge = if *posedge { "posedge" } else { "negedge" };
                 line(
                     out,

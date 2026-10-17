@@ -119,14 +119,10 @@ fn parse_snippet_location(line: &str) -> Option<ObsLocation> {
         .or_else(|| line.strip_prefix("-->"))?
         .trim();
     let mut parts = rest.rsplitn(3, ':');
-    let (Some(col_s), Some(line_s), Some(file)) = (parts.next(), parts.next(), parts.next())
-    else {
+    let (Some(col_s), Some(line_s), Some(file)) = (parts.next(), parts.next(), parts.next()) else {
         return None;
     };
-    let (Ok(col), Ok(line)) = (
-        col_s.trim().parse::<u32>(),
-        line_s.trim().parse::<u32>(),
-    ) else {
+    let (Ok(col), Ok(line)) = (col_s.trim().parse::<u32>(), line_s.trim().parse::<u32>()) else {
         return None;
     };
     let file = file.trim().to_string();
@@ -179,14 +175,20 @@ fn extract_location(msg: &str) -> (String, Option<ObsLocation>) {
     if let (Some(col_s), Some(line_s), Some(rest)) = (parts.next(), parts.next(), parts.next()) {
         if let (Ok(col), Ok(line)) = (col_s.trim().parse::<u32>(), line_s.trim().parse::<u32>()) {
             // rest mungkin diakhiri nama file setelah "→" atau spasi
-            let file_start = rest.rfind(|c: char| c == ' ' || c == '→')
-                .map(|i| i + 1)
-                .unwrap_or(0);
+            let file_start = rest.rfind([' ', '→']).map(|i| i + 1).unwrap_or(0);
             let file = rest[file_start..].trim().to_string();
-            if !file.is_empty() && (file.ends_with(".sv") || file.ends_with(".svh") || file.ends_with(".v")) {
-                let message = rest[..file_start].trim_end_matches([' ', '→', ':']).to_string();
+            if !file.is_empty()
+                && (file.ends_with(".sv") || file.ends_with(".svh") || file.ends_with(".v"))
+            {
+                let message = rest[..file_start]
+                    .trim_end_matches([' ', '→', ':'])
+                    .to_string();
                 return (
-                    if message.is_empty() { msg.to_string() } else { message },
+                    if message.is_empty() {
+                        msg.to_string()
+                    } else {
+                        message
+                    },
                     Some(ObsLocation { file, line, col }),
                 );
             }
@@ -242,12 +244,16 @@ fn parse_lrm_value(s: &str) -> Option<LrmValue> {
 fn logicvec_to_lrm(lv: &mivon_ir::LogicVec) -> LrmValue {
     use crate::lrm_model::LogicBit;
     use mivon_ir::LogicVal;
-    let bits: Vec<LogicBit> = lv.bits.iter().map(|b| match b {
-        LogicVal::Zero => LogicBit::Zero,
-        LogicVal::One => LogicBit::One,
-        LogicVal::X => LogicBit::X,
-        LogicVal::Z => LogicBit::Z,
-    }).collect();
+    let bits: Vec<LogicBit> = lv
+        .bits
+        .iter()
+        .map(|b| match b {
+            LogicVal::Zero => LogicBit::Zero,
+            LogicVal::One => LogicBit::One,
+            LogicVal::X => LogicBit::X,
+            LogicVal::Z => LogicBit::Z,
+        })
+        .collect();
     let width = bits.len() as u32;
     LrmValue::FourState { bits, width }
 }

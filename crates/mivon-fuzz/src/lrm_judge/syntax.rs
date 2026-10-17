@@ -30,7 +30,9 @@ fn eval_diag_location(rule: &LrmRule, obs: &MivonObservation) -> RuleResult {
     // Exempt summary agregat: definisi tunggal di
     // `lrm_model::predicate::is_summary_error` (jalur hidup verdict).
     use crate::lrm_model::predicate::is_summary_error;
-    let errors_without_loc: Vec<&str> = obs.diagnostics.iter()
+    let errors_without_loc: Vec<&str> = obs
+        .diagnostics
+        .iter()
         .filter(|d| d.is_error() && d.location.is_none())
         // Ringkasan AGREGAT pasca-sim tak punya lokasi tunggal BY DESIGN
         // ("$fatal: simulasi dihentikan (N)", "N assertion(s) gagal" —
@@ -62,16 +64,20 @@ fn eval_diag_location(rule: &LrmRule, obs: &MivonObservation) -> RuleResult {
                 reason: format!(
                     "{} diagnostik error tanpa lokasi: {}",
                     errors_without_loc.len(),
-                    errors_without_loc.iter().take(3).cloned().collect::<Vec<_>>().join("; ")
+                    errors_without_loc
+                        .iter()
+                        .take(3)
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join("; ")
                 ),
             },
-            evidence: errors_without_loc.iter().map(|_msg| {
-                Evidence::mismatch(
-                    "diagnostic.location",
-                    "<tidak ada>",
-                    "file:line:col",
-                )
-            }).collect(),
+            evidence: errors_without_loc
+                .iter()
+                .map(|_msg| {
+                    Evidence::mismatch("diagnostic.location", "<tidak ada>", "file:line:col")
+                })
+                .collect(),
             explanation: format!(
                 "Rule {} (§{}) dilanggar: {} diagnostik tanpa lokasi",
                 rule.id,

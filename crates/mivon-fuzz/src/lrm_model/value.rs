@@ -6,7 +6,10 @@
 #[derive(Debug, Clone, PartialEq)]
 pub enum LrmValue {
     /// Integer 4-state: bit per bit 0/1/X/Z, lebar eksplisit.
-    FourState { bits: Vec<LogicBit>, width: u32 },
+    FourState {
+        bits: Vec<LogicBit>,
+        width: u32,
+    },
     Real(f64),
     Str(String),
     /// Nilai tidak terdefinisi oleh LRM untuk kasus ini.

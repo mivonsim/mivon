@@ -36,7 +36,10 @@ impl SimulationEngine {
             eprintln!(
                 "[DBG-DIS] mark '{}' active={:?} known={} cross={:?}",
                 name.as_str(),
-                self.active_named_labels.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+                self.active_named_labels
+                    .iter()
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>(),
                 self.known_named_labels.contains(&name),
                 self.disable_cross.map(|s| s.as_str().to_string())
             );
@@ -987,7 +990,7 @@ impl SimulationEngine {
                             // octtoa/putc MUTATING → write-back ke receiver).
                             if sig.is_string {
                                 let lv = self.state.read_signal(*id);
-                                let s = logicvec_to_string(&lv);
+                                let s = logicvec_to_string(lv);
                                 let arg_vals: Vec<LogicVec> = args
                                     .iter()
                                     .map(|a| self.evaluate_expr(a))
@@ -2898,7 +2901,7 @@ impl SimulationEngine {
                             // octtoa/putc MUTATING → write-back ke receiver).
                             if sig.is_string {
                                 let lv = self.state.read_signal(*id);
-                                let s = logicvec_to_string(&lv);
+                                let s = logicvec_to_string(lv);
                                 let arg_vals: Vec<LogicVec> = args
                                     .iter()
                                     .map(|a| self.evaluate_expr(a))

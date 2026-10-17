@@ -78,7 +78,9 @@ fn reads_paths(e: &Expr, out: &mut Vec<String>) {
             reads_paths(hi, out);
             reads_paths(lo, out);
         }
-        Expr::PartSelect { base, from, width, .. } => {
+        Expr::PartSelect {
+            base, from, width, ..
+        } => {
             if let Some(p) = read_path(base) {
                 out.push(p);
             }
@@ -103,7 +105,12 @@ fn reads_paths(e: &Expr, out: &mut Vec<String>) {
             }
         }
         Expr::NamedArg { expr, .. } => reads_paths(expr, out),
-        Expr::MethodCall { obj, args, with_clause, .. } => {
+        Expr::MethodCall {
+            obj,
+            args,
+            with_clause,
+            ..
+        } => {
             reads_paths(obj, out);
             for a in args {
                 reads_paths(a, out);
@@ -181,7 +188,9 @@ fn reads_expr(e: &Expr, out: &mut Vec<String>) {
             reads_expr(hi, out);
             reads_expr(lo, out);
         }
-        Expr::PartSelect { base, from, width, .. } => {
+        Expr::PartSelect {
+            base, from, width, ..
+        } => {
             reads_expr(base, out);
             reads_expr(from, out);
             reads_expr(width, out);
@@ -204,7 +213,12 @@ fn reads_expr(e: &Expr, out: &mut Vec<String>) {
             }
         }
         Expr::NamedArg { expr, .. } => reads_expr(expr, out),
-        Expr::MethodCall { obj, args, with_clause, .. } => {
+        Expr::MethodCall {
+            obj,
+            args,
+            with_clause,
+            ..
+        } => {
             reads_expr(obj, out);
             for a in args {
                 reads_expr(a, out);
@@ -311,11 +325,7 @@ fn drivers_stmt(s: &Stmt, out: &mut Vec<(String, usize, usize)>) {
         Stmt::Repeat { body, .. } => drivers_stmt(body, out),
         Stmt::Forever(b) => drivers_stmt(b, out),
         Stmt::Wait { body, .. } => drivers_stmt(body, out),
-        Stmt::Event { body, .. } => {
-            if let Some(b) = body {
-                drivers_stmt(b, out);
-            }
-        }
+        Stmt::Event { body: Some(b), .. } => drivers_stmt(b, out),
         Stmt::Delay { body, .. } => drivers_stmt(body, out),
         Stmt::Fork { branches, .. } => {
             for b in branches {
@@ -331,11 +341,7 @@ fn drivers_stmt(s: &Stmt, out: &mut Vec<(String, usize, usize)>) {
                 drivers_stmt(f, out);
             }
         }
-        Stmt::Cover { pass, .. } => {
-            if let Some(p) = pass {
-                drivers_stmt(p, out);
-            }
-        }
+        Stmt::Cover { pass: Some(p), .. } => drivers_stmt(p, out),
         // Statement-level `x++` kadang ter-parse sebagai `ExprStmt(IncDec)`
         // (jalur fallback parser) — IncDec di dalamnya tetap driver.
         Stmt::ExprStmt(e) => drivers_expr(e, out),
@@ -369,7 +375,12 @@ fn drivers_expr(e: &Expr, out: &mut Vec<(String, usize, usize)>) {
             }
         }
         Expr::NamedArg { expr, .. } => drivers_expr(expr, out),
-        Expr::MethodCall { obj, args, with_clause, .. } => {
+        Expr::MethodCall {
+            obj,
+            args,
+            with_clause,
+            ..
+        } => {
             drivers_expr(obj, out);
             for a in args {
                 drivers_expr(a, out);
@@ -388,7 +399,9 @@ fn drivers_expr(e: &Expr, out: &mut Vec<(String, usize, usize)>) {
             drivers_expr(hi, out);
             drivers_expr(lo, out);
         }
-        Expr::PartSelect { base, from, width, .. } => {
+        Expr::PartSelect {
+            base, from, width, ..
+        } => {
             drivers_expr(base, out);
             drivers_expr(from, out);
             drivers_expr(width, out);
@@ -446,7 +459,9 @@ fn reads_lhs_noroot(e: &Expr, out: &mut Vec<String>) {
             reads_expr(hi, out);
             reads_expr(lo, out);
         }
-        Expr::PartSelect { base, from, width, .. } => {
+        Expr::PartSelect {
+            base, from, width, ..
+        } => {
             reads_lhs_noroot(base, out);
             reads_expr(from, out);
             reads_expr(width, out);
@@ -492,14 +507,21 @@ fn reads_stmt(s: &Stmt, out: &mut Vec<String>) {
                 reads_stmt(x, out);
             }
         }
-        Stmt::If { cond, then, els, .. } => {
+        Stmt::If {
+            cond, then, els, ..
+        } => {
             reads_expr(cond, out);
             reads_stmt(then, out);
             if let Some(e) = els {
                 reads_stmt(e, out);
             }
         }
-        Stmt::Case { expr, items, default, .. } => {
+        Stmt::Case {
+            expr,
+            items,
+            default,
+            ..
+        } => {
             reads_expr(expr, out);
             for (vs, b) in items {
                 for v in vs {
@@ -511,7 +533,12 @@ fn reads_stmt(s: &Stmt, out: &mut Vec<String>) {
                 reads_stmt(d, out);
             }
         }
-        Stmt::CaseInside { expr, items, default, .. } => {
+        Stmt::CaseInside {
+            expr,
+            items,
+            default,
+            ..
+        } => {
             reads_expr(expr, out);
             for (vs, b) in items {
                 for v in vs {
@@ -529,7 +556,13 @@ fn reads_stmt(s: &Stmt, out: &mut Vec<String>) {
                 reads_stmt(d, out);
             }
         }
-        Stmt::For { from, to, step, body, .. } => {
+        Stmt::For {
+            from,
+            to,
+            step,
+            body,
+            ..
+        } => {
             reads_expr(from, out);
             reads_expr(to, out);
             if let Some(s) = step {
@@ -561,16 +594,8 @@ fn reads_stmt(s: &Stmt, out: &mut Vec<String>) {
             reads_expr(amt, out);
             reads_stmt(body, out);
         }
-        Stmt::VarDecl { init, .. } => {
-            if let Some(e) = init {
-                reads_expr(e, out);
-            }
-        }
-        Stmt::Return(v, ..) => {
-            if let Some(e) = v {
-                reads_expr(e, out);
-            }
-        }
+        Stmt::VarDecl { init: Some(e), .. } => reads_expr(e, out),
+        Stmt::Return(Some(e), ..) => reads_expr(e, out),
         Stmt::Fork { branches, .. } => {
             for b in branches {
                 reads_stmt(b, out);
@@ -686,7 +711,12 @@ fn collect_srcs(
             }
             MItem::Initial(b) => push_stmt_src(SrcKind::Initial, b, 0, 0, branch, out),
             MItem::Final(b) => push_stmt_src(SrcKind::Final, b, 0, 0, branch, out),
-            MItem::Assign { lhs, rhs, line, col } => {
+            MItem::Assign {
+                lhs,
+                rhs,
+                line,
+                col,
+            } => {
                 let mut drivers = Vec::new();
                 if let Some(k) = lhs_key(lhs) {
                     drivers.push((k, *line, *col));
@@ -953,8 +983,18 @@ fn find_latch(s: &Stmt, safe: &HashSet<String>) -> Option<(usize, usize)> {
 /// `case`/`case inside` tanpa `default` di body `seq` → W3005.
 fn find_case_no_default(s: &Stmt, out: &mut Vec<(usize, usize)>) {
     match s {
-        Stmt::Case { default: None, line, col, .. }
-        | Stmt::CaseInside { default: None, line, col, .. } => {
+        Stmt::Case {
+            default: None,
+            line,
+            col,
+            ..
+        }
+        | Stmt::CaseInside {
+            default: None,
+            line,
+            col,
+            ..
+        } => {
             out.push((*line, *col));
         }
         Stmt::Case { items, default, .. } => {
@@ -996,11 +1036,8 @@ fn find_case_no_default(s: &Stmt, out: &mut Vec<(usize, usize)>) {
         | Stmt::Forever(body)
         | Stmt::Foreach { body, .. } => find_case_no_default(body, out),
         Stmt::Wait { body, .. } => find_case_no_default(body, out),
-        Stmt::Event { body, .. } => {
-            if let Some(b) = body {
-                find_case_no_default(b, out);
-            }
-        }
+        Stmt::Event { body: Some(b), .. } => find_case_no_default(b, out),
+        Stmt::Event { body: None, .. } => {}
         Stmt::Delay { body, .. } => find_case_no_default(body, out),
         _ => {}
     }
@@ -1017,11 +1054,9 @@ fn max_if_depth(s: &Stmt, cur: usize) -> usize {
             }
             m
         }
-        Stmt::Block(ss) | Stmt::Fork { branches: ss, .. } => ss
-            .iter()
-            .map(|x| max_if_depth(x, cur))
-            .max()
-            .unwrap_or(cur),
+        Stmt::Block(ss) | Stmt::Fork { branches: ss, .. } => {
+            ss.iter().map(|x| max_if_depth(x, cur)).max().unwrap_or(cur)
+        }
         Stmt::NamedBlock { stmts, .. } => stmts
             .iter()
             .map(|x| max_if_depth(x, cur))
@@ -1054,10 +1089,7 @@ fn max_if_depth(s: &Stmt, cur: usize) -> usize {
         | Stmt::Forever(body)
         | Stmt::Foreach { body, .. } => max_if_depth(body, cur),
         Stmt::Wait { body, .. } => max_if_depth(body, cur),
-        Stmt::Event { body, .. } => body
-            .as_ref()
-            .map(|b| max_if_depth(b, cur))
-            .unwrap_or(cur),
+        Stmt::Event { body, .. } => body.as_ref().map(|b| max_if_depth(b, cur)).unwrap_or(cur),
         Stmt::Delay { body, .. } => max_if_depth(body, cur),
         Stmt::Assert { pass, fail, .. } | Stmt::Assume { pass, fail, .. } => {
             let mut m = cur;
@@ -1069,10 +1101,7 @@ fn max_if_depth(s: &Stmt, cur: usize) -> usize {
             }
             m
         }
-        Stmt::Cover { pass, .. } => pass
-            .as_ref()
-            .map(|p| max_if_depth(p, cur))
-            .unwrap_or(cur),
+        Stmt::Cover { pass, .. } => pass.as_ref().map(|p| max_if_depth(p, cur)).unwrap_or(cur),
         _ => cur,
     }
 }
@@ -1205,9 +1234,10 @@ pub(crate) fn hazard_check_module(m: &Module) -> Result<(), MvError> {
                 }
                 groups.push(vec![*cand]);
             }
-            if let Some(g) = groups.iter().find(|g| {
-                g.iter().map(|(i, _, _)| *i).collect::<HashSet<_>>().len() > 1
-            }) {
+            if let Some(g) = groups
+                .iter()
+                .find(|g| g.iter().map(|(i, _, _)| *i).collect::<HashSet<_>>().len() > 1)
+            {
                 let (_, l, c) = g[1];
                 let n = g.iter().map(|(i, _, _)| *i).collect::<HashSet<_>>().len();
                 return Err(err_at(
@@ -1237,9 +1267,7 @@ pub(crate) fn hazard_check_module(m: &Module) -> Result<(), MvError> {
                             l,
                             c,
                             "E3002",
-                            format!(
-                                "comb tanpa else/default meng-infer latch — di '{mname}'"
-                            ),
+                            format!("comb tanpa else/default meng-infer latch — di '{mname}'"),
                         ));
                     }
                 }
@@ -1267,7 +1295,12 @@ pub(crate) fn hazard_check_module(m: &Module) -> Result<(), MvError> {
         fn check_assign_items(items: &[MItem], mname: &str) -> Result<(), MvError> {
             for it in items {
                 match it {
-                    MItem::Assign { lhs, rhs, line, col } => {
+                    MItem::Assign {
+                        lhs,
+                        rhs,
+                        line,
+                        col,
+                    } => {
                         if let Some(k) = lhs_key(lhs) {
                             let mut reads = Vec::new();
                             reads_paths(rhs, &mut reads);
@@ -1304,8 +1337,20 @@ pub(crate) fn hazard_check_module(m: &Module) -> Result<(), MvError> {
         // comb/always self-read: `comb { y = y & 1 }`, `comb { q++ }`
         fn check_comb_self(s: &Stmt, mname: &str) -> Result<(), MvError> {
             match s {
-                Stmt::Assign { lhs, rhs, line, col, .. }
-                | Stmt::CompoundAssign { lhs, rhs, line, col, .. } => {
+                Stmt::Assign {
+                    lhs,
+                    rhs,
+                    line,
+                    col,
+                    ..
+                }
+                | Stmt::CompoundAssign {
+                    lhs,
+                    rhs,
+                    line,
+                    col,
+                    ..
+                } => {
                     if let Some(k) = lhs_key(lhs) {
                         let mut reads = Vec::new();
                         reads_paths(rhs, &mut reads);
@@ -1314,10 +1359,7 @@ pub(crate) fn hazard_check_module(m: &Module) -> Result<(), MvError> {
                                 *line,
                                 *col,
                                 "E3003",
-                                format!(
-                                    "combinational loop pada '{}' — di '{mname}'",
-                                    root_of(&k)
-                                ),
+                                format!("combinational loop pada '{}' — di '{mname}'", root_of(&k)),
                             ));
                         }
                     }
@@ -1330,10 +1372,7 @@ pub(crate) fn hazard_check_module(m: &Module) -> Result<(), MvError> {
                             *line,
                             *col,
                             "E3003",
-                            format!(
-                                "combinational loop pada '{}' — di '{mname}'",
-                                root_of(&k)
-                            ),
+                            format!("combinational loop pada '{}' — di '{mname}'", root_of(&k)),
                         ));
                     }
                     Ok(())
@@ -1440,10 +1479,7 @@ pub(crate) fn hazard_check_module(m: &Module) -> Result<(), MvError> {
                         p.line,
                         p.col,
                         "E3004",
-                        format!(
-                            "output '{n}' tidak pernah di-drive — di '{}'",
-                            m.name
-                        ),
+                        format!("output '{n}' tidak pernah di-drive — di '{}'", m.name),
                     ));
                 }
             }
@@ -1536,9 +1572,15 @@ fn decls_of(m: &Module) -> Vec<(String, usize, usize)> {
     fn walk(items: &[MItem], out: &mut Vec<(String, usize, usize)>) {
         for it in items {
             match it {
-                MItem::Sig { names, line, col, .. }
-                | MItem::Reg { names, line, col, .. }
-                | MItem::Wire { names, line, col, .. } => {
+                MItem::Sig {
+                    names, line, col, ..
+                }
+                | MItem::Reg {
+                    names, line, col, ..
+                }
+                | MItem::Wire {
+                    names, line, col, ..
+                } => {
                     for n in names {
                         out.push((n.clone(), *line, *col));
                     }
@@ -1651,8 +1693,12 @@ fn extra_reads(items: &[MItem], read: &mut HashSet<String>) {
                                 read.insert(x);
                             }
                         }
-                        SpecifyItem::Setup { data, clock, limit, .. }
-                        | SpecifyItem::Hold { data, clock, limit, .. } => {
+                        SpecifyItem::Setup {
+                            data, clock, limit, ..
+                        }
+                        | SpecifyItem::Hold {
+                            data, clock, limit, ..
+                        } => {
                             let mut r = Vec::new();
                             reads_expr(data, &mut r);
                             reads_expr(limit, &mut r);
@@ -1781,14 +1827,20 @@ pub(crate) fn hazard_warnings_module(m: &Module) -> Vec<MvWarning> {
                     l,
                     c,
                     "W3003",
-                    format!("sinyal '{n}' ditulis tapi tak pernah dibaca — di '{}'", m.name),
+                    format!(
+                        "sinyal '{n}' ditulis tapi tak pernah dibaca — di '{}'",
+                        m.name
+                    ),
                 ));
             } else if r && !w {
                 out.push(MvWarning::new(
                     l,
                     c,
                     "W3004",
-                    format!("sinyal '{n}' dibaca tapi tak pernah di-drive — di '{}'", m.name),
+                    format!(
+                        "sinyal '{n}' dibaca tapi tak pernah di-drive — di '{}'",
+                        m.name
+                    ),
                 ));
             }
         }
@@ -1807,7 +1859,9 @@ pub(crate) fn hazard_warnings_module(m: &Module) -> Vec<MvWarning> {
                                 l,
                                 c,
                                 "W3005",
-                                format!("case tanpa default di seq — rawan X-propagation di '{mname}'"),
+                                format!(
+                                    "case tanpa default di seq — rawan X-propagation di '{mname}'"
+                                ),
                             ));
                         }
                     }
@@ -1841,9 +1895,7 @@ pub(crate) fn hazard_warnings_module(m: &Module) -> Vec<MvWarning> {
                     | MItem::Initial(b)
                     | MItem::Final(b) => max_if_depth(b, 0),
                     MItem::GenFor { body, .. } => walk_depth(body),
-                    MItem::GenIf { then, els, .. } => {
-                        walk_depth(then).max(walk_depth(els))
-                    }
+                    MItem::GenIf { then, els, .. } => walk_depth(then).max(walk_depth(els)),
                     MItem::GenCase { items, default, .. } => {
                         let mut mm = walk_depth(default);
                         for (_, b) in items {
@@ -1863,7 +1915,10 @@ pub(crate) fn hazard_warnings_module(m: &Module) -> Vec<MvWarning> {
                 m.line,
                 m.col,
                 "W3006",
-                format!("nesting if kedalaman {d} (>4) — pertimbangkan case di '{}'", m.name),
+                format!(
+                    "nesting if kedalaman {d} (>4) — pertimbangkan case di '{}'",
+                    m.name
+                ),
             ));
         }
     }

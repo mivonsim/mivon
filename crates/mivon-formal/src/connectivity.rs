@@ -80,7 +80,9 @@ fn collect_assignments(processes: &[Process], include_seq: bool) -> Vec<(usize, 
             Process::Combinational { body, .. }
             | Process::CombReactive { body, .. }
             | Process::Initial { name: _, body } => walk(body, include_seq, false, &mut out),
-            Process::Sequential { body, .. } if include_seq => walk(body, include_seq, true, &mut out),
+            Process::Sequential { body, .. } if include_seq => {
+                walk(body, include_seq, true, &mut out)
+            }
             _ => {}
         }
     }

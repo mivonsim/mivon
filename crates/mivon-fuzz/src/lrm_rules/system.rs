@@ -4,8 +4,8 @@
 
 #![cfg(feature = "dev")]
 
-use crate::lrm_model::{ClauseRef, LrmRule, RuleCategory, RuleClassification, RuleId};
 use super::RuleRegistry;
+use crate::lrm_model::{ClauseRef, LrmRule, RuleCategory, RuleClassification, RuleId};
 
 pub fn register(reg: &mut RuleRegistry) {
     // SV-SYS-CLOG2-001: $clog2(0) = 0, $clog2(1) = 0, $clog2(2) = 1
@@ -43,8 +43,7 @@ pub fn register(reg: &mut RuleRegistry) {
         classification: RuleClassification::RequiredBehavior,
         applies_when: Box::new(|_| true),
         requires: vec![],
-        expected_description:
-            "$rtoi(x): round to nearest integer, ties away from zero (§20.7.1)",
+        expected_description: "$rtoi(x): round to nearest integer, ties away from zero (§20.7.1)",
     });
 
     // SV-SYS-FINISH-001: $finish harus mengakhiri simulasi (LRM §20.2).
@@ -55,8 +54,7 @@ pub fn register(reg: &mut RuleRegistry) {
         classification: RuleClassification::RequiredBehavior,
         applies_when: Box::new(|_| true),
         requires: vec![],
-        expected_description:
-            "$finish harus mengakhiri simulasi (§20.2)",
+        expected_description: "$finish harus mengakhiri simulasi (§20.2)",
     });
 
     // SV-SYS-BITS-001: $bits(T) mengembalikan lebar total tipe T dalam bit
@@ -68,7 +66,6 @@ pub fn register(reg: &mut RuleRegistry) {
         classification: RuleClassification::RequiredBehavior,
         applies_when: Box::new(|_| true),
         requires: vec![],
-        expected_description:
-            "$bits(T) = lebar total tipe T dalam bit (§20.6.2)",
+        expected_description: "$bits(T) = lebar total tipe T dalam bit (§20.6.2)",
     });
 }

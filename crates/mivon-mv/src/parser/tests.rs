@@ -704,9 +704,18 @@ fn parse_case_inside_values_ranges_default() {
         })
         .expect("harus ada Stmt::CaseInside");
     assert_eq!(ci.0.len(), 2, "2 branch: {ci:?}");
-    assert!(matches!(ci.0[0].0[0], InsideItem::Value(_)), "label 0 nilai");
-    assert!(matches!(ci.0[1].0[0], InsideItem::Range(_, _)), "label [1:10] rentang");
-    assert!(matches!(ci.0[1].0[1], InsideItem::Value(_)), "label 30 nilai");
+    assert!(
+        matches!(ci.0[0].0[0], InsideItem::Value(_)),
+        "label 0 nilai"
+    );
+    assert!(
+        matches!(ci.0[1].0[0], InsideItem::Range(_, _)),
+        "label [1:10] rentang"
+    );
+    assert!(
+        matches!(ci.0[1].0[1], InsideItem::Value(_)),
+        "label 30 nilai"
+    );
     assert!(ci.1.is_some(), "default ada");
 }
 
@@ -717,13 +726,9 @@ fn parse_case_inside_with_qualifier() {
     let f = parse(src).expect("parse priority case inside");
     let stmts = first_comb(&f);
     assert!(
-        stmts.iter().any(|s| matches!(
-            s,
-            Stmt::CaseInside {
-                qual: Some(_),
-                ..
-            }
-        )),
+        stmts
+            .iter()
+            .any(|s| matches!(s, Stmt::CaseInside { qual: Some(_), .. })),
         "qualifier dipertahankan: {stmts:?}"
     );
 }
@@ -738,12 +743,18 @@ fn parse_case_inside_bracket_without_colon_rejected() {
 #[test]
 fn parse_unique_if_keeps_qualifier() {
     // `unique if` / `priority if` / `unique0 if` — qualifier di head.
-    for (kw, want) in [("unique", "unique"), ("priority", "priority"), ("unique0", "unique0")] {
+    for (kw, want) in [
+        ("unique", "unique"),
+        ("priority", "priority"),
+        ("unique0", "unique0"),
+    ] {
         let src = format!("module m {{\n sig a : bit\n sig y : bit\n comb {{\n {kw} if (a) {{ y = 1 }} else {{ y = 0 }}\n }}\n}}\n");
         let f = parse(&src).expect("parse qualified if");
         let stmts = first_comb(&f);
         assert!(
-            stmts.iter().any(|s| matches!(s, Stmt::If { qual: Some(q), .. } if q == want)),
+            stmts
+                .iter()
+                .any(|s| matches!(s, Stmt::If { qual: Some(q), .. } if q == want)),
             "{kw}: qualifier dipertahankan: {stmts:?}"
         );
     }
@@ -912,10 +923,14 @@ module m {
     assert!(has_wire, "wire harus ter-parse");
     assert!(has_assign, "assign harus ter-parse");
     // multi-nama wire
-    let wires: Vec<_> = m.items.iter().filter_map(|i| match i {
-        MItem::Wire { names, .. } => Some(names.clone()),
-        _ => None,
-    }).collect();
+    let wires: Vec<_> = m
+        .items
+        .iter()
+        .filter_map(|i| match i {
+            MItem::Wire { names, .. } => Some(names.clone()),
+            _ => None,
+        })
+        .collect();
     assert_eq!(wires.len(), 2);
     assert_eq!(wires[1].len(), 2, "wire multi-nama");
 }
@@ -983,9 +998,13 @@ module tb {
         .items
         .iter()
         .filter_map(|i| match i {
-            MItem::Bind { target, module, name, conns, .. } => {
-                Some((target.clone(), module.clone(), name.clone(), conns.len()))
-            }
+            MItem::Bind {
+                target,
+                module,
+                name,
+                conns,
+                ..
+            } => Some((target.clone(), module.clone(), name.clone(), conns.len())),
             _ => None,
         })
         .collect();
@@ -1022,10 +1041,14 @@ module tb {
 "#;
     let f = parse(src).expect("parse covergroup");
     let m = &f.modules[0];
-    let cgs: Vec<_> = m.items.iter().filter_map(|i| match i {
-        MItem::Covergroup(c) => Some(c),
-        _ => None,
-    }).collect();
+    let cgs: Vec<_> = m
+        .items
+        .iter()
+        .filter_map(|i| match i {
+            MItem::Covergroup(c) => Some(c),
+            _ => None,
+        })
+        .collect();
     assert_eq!(cgs.len(), 2);
     assert_eq!(cgs[0].name, "cg");
     assert_eq!(cgs[0].event, Some((true, "clk".to_string())));
@@ -1033,7 +1056,11 @@ module tb {
     assert_eq!(cgs[0].points[0].label, None, "auto-label");
     assert_eq!(cgs[0].points[0].bins.len(), 2);
     assert_eq!(cgs[0].points[0].bins[1].items.len(), 2, "nilai + range");
-    assert_eq!(cgs[0].points[1].label.as_deref(), Some("cp"), "label eksplisit");
+    assert_eq!(
+        cgs[0].points[1].label.as_deref(),
+        Some("cp"),
+        "label eksplisit"
+    );
     assert_eq!(cgs[1].event, None, "tanpa event");
     assert!(cgs[1].points[0].bins[0].items.is_empty(), "bins kosong");
 }
@@ -1073,10 +1100,19 @@ module m #(SEL = 1) {
 "#;
     let f = parse(src).expect("parse generate case");
     let m = &f.modules[0];
-    let cases: Vec<_> = m.items.iter().filter_map(|i| match i {
-        MItem::GenCase { kind, items, default, .. } => Some((kind.clone(), items.len(), default.len())),
-        _ => None,
-    }).collect();
+    let cases: Vec<_> = m
+        .items
+        .iter()
+        .filter_map(|i| match i {
+            MItem::GenCase {
+                kind,
+                items,
+                default,
+                ..
+            } => Some((kind.clone(), items.len(), default.len())),
+            _ => None,
+        })
+        .collect();
     assert_eq!(cases.len(), 2);
     assert_eq!(cases[0].0, "case");
     assert_eq!(cases[0].1, 2, "dua branch nilai");

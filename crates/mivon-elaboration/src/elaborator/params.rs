@@ -180,9 +180,7 @@ impl Elaborator {
                     let mut last: Option<i64> = Some(0);
                     for (member_name, member_expr) in members {
                         let val = match member_expr {
-                            Some(expr) => {
-                                eval_enum_member_value(expr, &ctx, overlay.as_ref())
-                            }
+                            Some(expr) => eval_enum_member_value(expr, &ctx, overlay.as_ref()),
                             None => last,
                         };
                         if let Some(v) = val {
@@ -218,8 +216,7 @@ impl Elaborator {
         // sebelumnya ditebak diam-diam dari counter `last` (silent wrong).
         self.verify_enum_members(&unit_enums, "lingkup $unit", &ctx, None);
         for (pkg_name, enums) in &pkg_enums {
-            let own: Option<&[(Symbol, i64)]> =
-                pkg_param_cache.get(pkg_name).map(|v| v.as_slice());
+            let own: Option<&[(Symbol, i64)]> = pkg_param_cache.get(pkg_name).map(|v| v.as_slice());
             let overlay = package_overlay(&ctx, own);
             for members in enums {
                 self.verify_enum_members(
@@ -482,10 +479,7 @@ impl Elaborator {
                 let mut last: Option<i64> = Some(0);
                 for (member_name, member_expr) in members {
                     let val = match member_expr {
-                        Some(expr) => match const_eval_with_params(expr, &ctx) {
-                            Ok(v) => Some(v),
-                            Err(_) => None,
-                        },
+                        Some(expr) => const_eval_with_params(expr, &ctx).ok(),
                         None => last,
                     };
                     if let Some(v) = val {

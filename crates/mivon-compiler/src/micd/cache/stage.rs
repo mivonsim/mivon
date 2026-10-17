@@ -68,7 +68,7 @@ impl StageKey for PathBuf {
                 .iter()
                 .map(|b| format!("{:02x}", b))
                 .collect();
-            return format!("__nonutf8__:{hex}");
+            format!("__nonutf8__:{hex}")
         }
         #[cfg(not(unix))]
         {
@@ -170,11 +170,7 @@ impl<K: StageKey, V: StageValue> StageStore<K, V> {
 
     /// Buka stage `category` dari root layer (`<db>/cache/<pid>/`):
     /// join nama stage otomatis (konvensi [`super::CacheLayer::open`]).
-    pub fn open_at_layer(
-        layer_root: &Path,
-        category: CacheCategory,
-        config_hash: u64,
-    ) -> Self {
+    pub fn open_at_layer(layer_root: &Path, category: CacheCategory, config_hash: u64) -> Self {
         Self::open(&layer_root.join(category.name()), category, config_hash)
     }
 
@@ -272,8 +268,7 @@ mod tests {
     use crate::micd::format::{MdbWriter, KIND_STRING};
 
     fn test_root(name: &str) -> PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("mivon_stage_{}_{}", std::process::id(), name));
+        let dir = std::env::temp_dir().join(format!("mivon_stage_{}_{}", std::process::id(), name));
         let _ = std::fs::remove_dir_all(&dir);
         dir
     }
@@ -321,10 +316,12 @@ mod tests {
     #[test]
     fn test_typed_u64_value() {
         let root = test_root("u64val");
-        let mut st: StageStore<String, u64> =
-            StageStore::open(&root, CacheCategory::Type, 0);
+        let mut st: StageStore<String, u64> = StageStore::open(&root, CacheCategory::Type, 0);
         st.put_typed(&"sig".to_string(), &0xDEAD_BEEF_CAFE_1234);
-        assert_eq!(st.get_typed(&"sig".to_string()).unwrap(), 0xDEAD_BEEF_CAFE_1234);
+        assert_eq!(
+            st.get_typed(&"sig".to_string()).unwrap(),
+            0xDEAD_BEEF_CAFE_1234
+        );
         // Bytes corrupt (panjang salah) → decode gagal → None, bukan panic.
         st.inner_mut().put("bad", &[1, 2, 3]);
         let mut st2: StageStore<String, u64> = StageStore::wrap(st.into_inner());
@@ -338,7 +335,7 @@ mod tests {
         let root = test_root("unicode");
         let mut st: StageStore<String, Vec<u8>> =
             StageStore::open(&root, CacheCategory::Resolve, 0);
-        let keys = vec![
+        let keys = [
             "modul_αβγ.sv".to_string(),
             "x".repeat(4096),
             "spasi dan/simbol-!@#$.sv".to_string(),
@@ -351,7 +348,12 @@ mod tests {
         let mut st2: StageStore<String, Vec<u8>> =
             StageStore::open(&root, CacheCategory::Resolve, 0);
         for (i, k) in keys.iter().enumerate() {
-            assert_eq!(st2.get_typed(k).unwrap(), vec![i as u8; 8], "key {:?}", &k[..k.len().min(32)]);
+            assert_eq!(
+                st2.get_typed(k).unwrap(),
+                vec![i as u8; 8],
+                "key {:?}",
+                &k[..k.len().min(32)]
+            );
         }
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -380,7 +382,10 @@ mod tests {
         let mut st2: StageStore<String, Vec<u8>> =
             StageStore::open(&root, CacheCategory::Elaborate, 0);
         assert!(st2.contains_typed(&"ir:top".to_string()), "index tetap ada");
-        assert!(st2.get_typed(&"ir:top".to_string()).is_none(), "objek hilang → miss");
+        assert!(
+            st2.get_typed(&"ir:top".to_string()).is_none(),
+            "objek hilang → miss"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -444,8 +449,7 @@ mod tests {
     fn test_empty_payload_ditolak_engine() {
         // Perilaku warisan didokumentasikan: bytes kosong → None (miss).
         let root = test_root("empty");
-        let mut st: StageStore<String, Vec<u8>> =
-            StageStore::open(&root, CacheCategory::Parser, 0);
+        let mut st: StageStore<String, Vec<u8>> = StageStore::open(&root, CacheCategory::Parser, 0);
         assert!(st.put_typed(&"e".to_string(), &Vec::new()).is_none());
         assert!(st.get_typed(&"e".to_string()).is_none());
         let _ = std::fs::remove_dir_all(&root);
@@ -455,8 +459,7 @@ mod tests {
     fn test_u64_key_roundtrip_dan_persist() {
         let root = test_root("u64key");
         {
-            let mut st: StageStore<u64, String> =
-                StageStore::open(&root, CacheCategory::Verify, 0);
+            let mut st: StageStore<u64, String> = StageStore::open(&root, CacheCategory::Verify, 0);
             st.put_typed(&0x1234_5678_9ABC_DEF0, &"hasil".to_string());
             assert_eq!(st.get_typed(&0x1234_5678_9ABC_DEF0).unwrap(), "hasil");
             assert!(st.contains_typed(&0x1234_5678_9ABC_DEF0));
@@ -464,8 +467,7 @@ mod tests {
             st.save().unwrap();
         }
         {
-            let mut st: StageStore<u64, String> =
-                StageStore::open(&root, CacheCategory::Verify, 0);
+            let mut st: StageStore<u64, String> = StageStore::open(&root, CacheCategory::Verify, 0);
             assert_eq!(st.get_typed(&0x1234_5678_9ABC_DEF0).unwrap(), "hasil");
         }
         let _ = std::fs::remove_dir_all(&root);
@@ -475,15 +477,16 @@ mod tests {
     fn test_u64_value_persist_lewat_reopen() {
         let root = test_root("u64persist");
         {
-            let mut st: StageStore<String, u64> =
-                StageStore::open(&root, CacheCategory::Type, 0);
+            let mut st: StageStore<String, u64> = StageStore::open(&root, CacheCategory::Type, 0);
             st.put_typed(&"sig".to_string(), &0xCAFE_F00D_DEAD_BEEF);
             st.save().unwrap();
         }
         {
-            let mut st: StageStore<String, u64> =
-                StageStore::open(&root, CacheCategory::Type, 0);
-            assert_eq!(st.get_typed(&"sig".to_string()).unwrap(), 0xCAFE_F00D_DEAD_BEEF);
+            let mut st: StageStore<String, u64> = StageStore::open(&root, CacheCategory::Type, 0);
+            assert_eq!(
+                st.get_typed(&"sig".to_string()).unwrap(),
+                0xCAFE_F00D_DEAD_BEEF
+            );
         }
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -492,16 +495,14 @@ mod tests {
     fn test_salah_tipe_baca_gagal_aman() {
         // Tulis sebagai String, baca sebagai u64 → None (bukan panic/data sampah).
         let root = test_root("mistype");
-        let mut st: StageStore<String, String> =
-            StageStore::open(&root, CacheCategory::Lint, 0);
+        let mut st: StageStore<String, String> = StageStore::open(&root, CacheCategory::Lint, 0);
         st.put_typed(&"k".to_string(), &"bukan-angka".to_string());
         let raw = st.inner_mut().get("k");
         drop(st);
         assert!(raw.is_some());
         assert!(u64::decode_value(&raw.unwrap()).is_none());
         // Via facade beda V: get_typed<u64> atas bytes String pendek → None.
-        let mut st2: StageStore<String, u64> =
-            StageStore::open(&root, CacheCategory::Lint, 0);
+        let mut st2: StageStore<String, u64> = StageStore::open(&root, CacheCategory::Lint, 0);
         // "bukan-angka" = 11 bytes ≠ 8 → decode gagal.
         assert!(st2.get_typed(&"k".to_string()).is_none());
         let _ = std::fs::remove_dir_all(&root);
@@ -510,8 +511,7 @@ mod tests {
     #[test]
     fn test_remove_typed() {
         let root = test_root("remove_t");
-        let mut st: StageStore<String, Vec<u8>> =
-            StageStore::open(&root, CacheCategory::Macro, 0);
+        let mut st: StageStore<String, Vec<u8>> = StageStore::open(&root, CacheCategory::Macro, 0);
         st.put_typed(&"d".to_string(), &b"v".to_vec());
         assert!(st.contains_typed(&"d".to_string()));
         assert!(st.remove_typed(&"d".to_string()));
@@ -551,16 +551,10 @@ mod tests {
         let layer_root = test_root("atlayer");
         std::fs::create_dir_all(&layer_root).unwrap();
         {
-            let mut a: StageStore<String, Vec<u8>> = StageStore::open_at_layer(
-                &layer_root,
-                CacheCategory::Parser,
-                0,
-            );
-            let mut b: StageStore<String, Vec<u8>> = StageStore::open_at_layer(
-                &layer_root,
-                CacheCategory::Lexer,
-                0,
-            );
+            let mut a: StageStore<String, Vec<u8>> =
+                StageStore::open_at_layer(&layer_root, CacheCategory::Parser, 0);
+            let mut b: StageStore<String, Vec<u8>> =
+                StageStore::open_at_layer(&layer_root, CacheCategory::Lexer, 0);
             a.put_typed(&"k".to_string(), &b"parser".to_vec());
             b.put_typed(&"k".to_string(), &b"lexer".to_vec());
             a.save().unwrap();
@@ -569,16 +563,10 @@ mod tests {
         assert!(layer_root.join("parser").is_dir());
         assert!(layer_root.join("lexer").is_dir());
         {
-            let mut a: StageStore<String, Vec<u8>> = StageStore::open_at_layer(
-                &layer_root,
-                CacheCategory::Parser,
-                0,
-            );
-            let mut b: StageStore<String, Vec<u8>> = StageStore::open_at_layer(
-                &layer_root,
-                CacheCategory::Lexer,
-                0,
-            );
+            let mut a: StageStore<String, Vec<u8>> =
+                StageStore::open_at_layer(&layer_root, CacheCategory::Parser, 0);
+            let mut b: StageStore<String, Vec<u8>> =
+                StageStore::open_at_layer(&layer_root, CacheCategory::Lexer, 0);
             assert_eq!(a.get_typed(&"k".to_string()).unwrap(), b"parser");
             assert_eq!(b.get_typed(&"k".to_string()).unwrap(), b"lexer");
         }

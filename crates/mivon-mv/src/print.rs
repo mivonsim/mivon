@@ -164,7 +164,10 @@ pub fn print_expr(e: &Expr) -> String {
             format!("{name}({})", a.join(", "))
         }
         Expr::SysFunc(name, args, ..) => {
-            let a = args.as_ref().map(|args| args.iter().map(wrap).collect::<Vec<_>>().join(", ")).unwrap_or_default();
+            let a = args
+                .as_ref()
+                .map(|args| args.iter().map(wrap).collect::<Vec<_>>().join(", "))
+                .unwrap_or_default();
             format!("${name}({a})")
         }
         Expr::NamedArg { name, expr } => format!("{name} = {}", wrap(expr)),
@@ -321,7 +324,11 @@ fn print_stmt_b(b: &mut StrB, indent: usize, s: &Stmt) {
             }
         }
         Stmt::If {
-            cond, then, els, qual, ..
+            cond,
+            then,
+            els,
+            qual,
+            ..
         } => {
             let q = qual.as_ref().map(|s| format!("{s} ")).unwrap_or_default();
             b.line(
@@ -440,7 +447,11 @@ fn print_stmt_b(b: &mut StrB, indent: usize, s: &Stmt) {
             match body {
                 Some(stmt) => b.line(
                     indent,
-                    &format!("@({}) {}", print_expr(expr), print_stmt(indent, stmt.as_ref())),
+                    &format!(
+                        "@({}) {}",
+                        print_expr(expr),
+                        print_stmt(indent, stmt.as_ref())
+                    ),
                 ),
                 None => b.line(indent, &format!("@({});", print_expr(expr))),
             };
@@ -532,8 +543,13 @@ fn print_stmt_b(b: &mut StrB, indent: usize, s: &Stmt) {
         }
         Stmt::CoverProperty(raw) => b.line(indent, &format!("cover property {raw}")),
         // SVA Native Assertions (F85)
-        Stmt::AssertPropertyStruct { prop, pass, fail, .. } => {
-            b.line(indent, &format!("assert property ({})", print_sva_prop_expr(prop)));
+        Stmt::AssertPropertyStruct {
+            prop, pass, fail, ..
+        } => {
+            b.line(
+                indent,
+                &format!("assert property ({})", print_sva_prop_expr(prop)),
+            );
             if let Some(p) = pass {
                 print_stmt_b(b, indent + 1, p);
             }
@@ -543,8 +559,13 @@ fn print_stmt_b(b: &mut StrB, indent: usize, s: &Stmt) {
                 b.line(indent, ";");
             }
         }
-        Stmt::AssumePropertyStruct { prop, pass, fail, .. } => {
-            b.line(indent, &format!("assume property ({})", print_sva_prop_expr(prop)));
+        Stmt::AssumePropertyStruct {
+            prop, pass, fail, ..
+        } => {
+            b.line(
+                indent,
+                &format!("assume property ({})", print_sva_prop_expr(prop)),
+            );
             if let Some(p) = pass {
                 print_stmt_b(b, indent + 1, p);
             }
@@ -555,13 +576,18 @@ fn print_stmt_b(b: &mut StrB, indent: usize, s: &Stmt) {
             }
         }
         Stmt::CoverPropertyStruct { prop, pass, .. } => {
-            b.line(indent, &format!("cover property ({})", print_sva_prop_expr(prop)));
+            b.line(
+                indent,
+                &format!("cover property ({})", print_sva_prop_expr(prop)),
+            );
             if let Some(p) = pass {
                 print_stmt_b(b, indent + 1, p);
             }
         }
         Stmt::Sequence(seq) => b.line(indent, &format!("sequence ({})", print_sva_seq_expr(seq))),
-        Stmt::Property(prop) => b.line(indent, &format!("property ({})", print_sva_prop_expr(prop))),
+        Stmt::Property(prop) => {
+            b.line(indent, &format!("property ({})", print_sva_prop_expr(prop)))
+        }
         Stmt::RawSvh(body) => {
             b.line(indent, "@sv {");
             // Body mentah — trim baris & buang baris kosong (boundary newline
@@ -746,8 +772,13 @@ fn print_m_item(b: &mut StrB, indent: usize, item: &MItem) {
         MItem::CoverProperty(raw) => {
             b.line(indent, &format!("cover property {raw}"));
         }
-        MItem::AssertPropertyStruct { prop, pass, fail, .. } => {
-            b.line(indent, &format!("assert property ({})", print_sva_prop_expr(prop)));
+        MItem::AssertPropertyStruct {
+            prop, pass, fail, ..
+        } => {
+            b.line(
+                indent,
+                &format!("assert property ({})", print_sva_prop_expr(prop)),
+            );
             if let Some(p) = pass {
                 print_stmt_b(b, indent + 1, p);
             }
@@ -757,8 +788,13 @@ fn print_m_item(b: &mut StrB, indent: usize, item: &MItem) {
                 b.line(indent, ";");
             }
         }
-        MItem::AssumePropertyStruct { prop, pass, fail, .. } => {
-            b.line(indent, &format!("assume property ({})", print_sva_prop_expr(prop)));
+        MItem::AssumePropertyStruct {
+            prop, pass, fail, ..
+        } => {
+            b.line(
+                indent,
+                &format!("assume property ({})", print_sva_prop_expr(prop)),
+            );
             if let Some(p) = pass {
                 print_stmt_b(b, indent + 1, p);
             }
@@ -769,7 +805,10 @@ fn print_m_item(b: &mut StrB, indent: usize, item: &MItem) {
             }
         }
         MItem::CoverPropertyStruct { prop, pass, .. } => {
-            b.line(indent, &format!("cover property ({})", print_sva_prop_expr(prop)));
+            b.line(
+                indent,
+                &format!("cover property ({})", print_sva_prop_expr(prop)),
+            );
             if let Some(p) = pass {
                 print_stmt_b(b, indent + 1, p);
             }
@@ -817,7 +856,11 @@ fn print_m_item(b: &mut StrB, indent: usize, item: &MItem) {
             );
         }
         MItem::Wire {
-            net, names, ty, init, ..
+            net,
+            names,
+            ty,
+            init,
+            ..
         } => {
             let i = init
                 .as_ref()
@@ -825,11 +868,19 @@ fn print_m_item(b: &mut StrB, indent: usize, item: &MItem) {
                 .unwrap_or_default();
             b.line(
                 indent,
-                &format!("{} {} : {}{i}", net.as_str(), names.join(", "), print_type(ty)),
+                &format!(
+                    "{} {} : {}{i}",
+                    net.as_str(),
+                    names.join(", "),
+                    print_type(ty)
+                ),
             );
         }
         MItem::Assign { lhs, rhs, .. } => {
-            b.line(indent, &format!("assign {} = {}", print_expr(lhs), print_expr(rhs)));
+            b.line(
+                indent,
+                &format!("assign {} = {}", print_expr(lhs), print_expr(rhs)),
+            );
         }
         MItem::Const {
             name, ty, value, ..
@@ -952,11 +1003,16 @@ fn print_m_item(b: &mut StrB, indent: usize, item: &MItem) {
                     .as_ref()
                     .map(|l| format!("{l} : "))
                     .unwrap_or_default();
-                b.line(indent + 1, &format!("coverpoint {lbl}{} {{", print_expr(&cp.expr)));
+                b.line(
+                    indent + 1,
+                    &format!("coverpoint {lbl}{} {{", print_expr(&cp.expr)),
+                );
                 for bn in &cp.bins {
-                    let items: Vec<String> =
-                        bn.items.iter().map(print_inside_item).collect();
-                    b.line(indent + 2, &format!("bins {} = {{{}}}", bn.name, items.join(", ")));
+                    let items: Vec<String> = bn.items.iter().map(print_inside_item).collect();
+                    b.line(
+                        indent + 2,
+                        &format!("bins {} = {{{}}}", bn.name, items.join(", ")),
+                    );
                 }
                 b.line(indent + 1, "}");
             }
@@ -967,9 +1023,18 @@ fn print_m_item(b: &mut StrB, indent: usize, item: &MItem) {
             for it in &spec.items {
                 match it {
                     SpecifyItem::Specparam { name, value, .. } => {
-                        b.line(indent + 1, &format!("specparam {name} = {}", print_expr(value)));
+                        b.line(
+                            indent + 1,
+                            &format!("specparam {name} = {}", print_expr(value)),
+                        );
                     }
-                    SpecifyItem::Setup { data, posedge, clock, limit, .. } => {
+                    SpecifyItem::Setup {
+                        data,
+                        posedge,
+                        clock,
+                        limit,
+                        ..
+                    } => {
                         let edge = if *posedge { "posedge" } else { "negedge" };
                         b.line(
                             indent + 1,
@@ -981,7 +1046,13 @@ fn print_m_item(b: &mut StrB, indent: usize, item: &MItem) {
                             ),
                         );
                     }
-                    SpecifyItem::Hold { posedge, clock, data, limit, .. } => {
+                    SpecifyItem::Hold {
+                        posedge,
+                        clock,
+                        data,
+                        limit,
+                        ..
+                    } => {
                         let edge = if *posedge { "posedge" } else { "negedge" };
                         b.line(
                             indent + 1,
@@ -1021,7 +1092,9 @@ fn print_m_item(b: &mut StrB, indent: usize, item: &MItem) {
             }
             b.line(indent, "}");
         }
-        MItem::GenIf { cond, then, els, .. } => {
+        MItem::GenIf {
+            cond, then, els, ..
+        } => {
             b.line(indent, &format!("if ({}) {{", print_expr(cond)));
             for it in then {
                 print_m_item(b, indent + 1, it);
@@ -1035,7 +1108,13 @@ fn print_m_item(b: &mut StrB, indent: usize, item: &MItem) {
                 b.line(indent, "}");
             }
         }
-        MItem::GenCase { expr, items, default, kind, .. } => {
+        MItem::GenCase {
+            expr,
+            items,
+            default,
+            kind,
+            ..
+        } => {
             b.line(indent, &format!("{kind} ({}) {{", print_expr(expr)));
             for (vals, body) in items {
                 let v: Vec<String> = vals.iter().map(print_expr).collect();
@@ -1068,7 +1147,9 @@ fn print_m_item(b: &mut StrB, indent: usize, item: &MItem) {
                 b.line(indent, l);
             }
         }
-        MItem::SequenceDecl { name, args, expr, .. } => {
+        MItem::SequenceDecl {
+            name, args, expr, ..
+        } => {
             let arg_str = args
                 .iter()
                 .map(|p| {
@@ -1077,9 +1158,19 @@ fn print_m_item(b: &mut StrB, indent: usize, item: &MItem) {
                 })
                 .collect::<Vec<_>>()
                 .join(", ");
-            b.line(indent, &format!("sequence {}({}) = {};", name, arg_str, print_sva_seq_expr(expr)));
+            b.line(
+                indent,
+                &format!(
+                    "sequence {}({}) = {};",
+                    name,
+                    arg_str,
+                    print_sva_seq_expr(expr)
+                ),
+            );
         }
-        MItem::PropertyDecl { name, args, expr, .. } => {
+        MItem::PropertyDecl {
+            name, args, expr, ..
+        } => {
             let arg_str = args
                 .iter()
                 .map(|p| {
@@ -1088,7 +1179,15 @@ fn print_m_item(b: &mut StrB, indent: usize, item: &MItem) {
                 })
                 .collect::<Vec<_>>()
                 .join(", ");
-            b.line(indent, &format!("property {}({}) = {};", name, arg_str, print_sva_prop_expr(expr)));
+            b.line(
+                indent,
+                &format!(
+                    "property {}({}) = {};",
+                    name,
+                    arg_str,
+                    print_sva_prop_expr(expr)
+                ),
+            );
         }
     }
 }
@@ -1175,13 +1274,23 @@ fn print_sva_seq_expr(seq: &crate::ast::SvaSeqExpr) -> String {
     use crate::ast::SvaSeqExpr;
     match seq {
         SvaSeqExpr::Expr(e) => print_expr(e),
-        SvaSeqExpr::Delay { left, right, min, max } => {
+        SvaSeqExpr::Delay {
+            left,
+            right,
+            min,
+            max,
+        } => {
             let m = if let Some(max) = max {
                 format!("{}:{}", print_expr(min), print_expr(max))
             } else {
                 print_expr(min)
             };
-            format!("{} ##[{}] {}", print_sva_seq_expr(left), m, print_sva_seq_expr(right))
+            format!(
+                "{} ##[{}] {}",
+                print_sva_seq_expr(left),
+                m,
+                print_sva_seq_expr(right)
+            )
         }
         SvaSeqExpr::Repeat { expr, min, max } => {
             let m = if let Some(max) = max {
@@ -1192,28 +1301,56 @@ fn print_sva_seq_expr(seq: &crate::ast::SvaSeqExpr) -> String {
             format!("[*{}] {}", m, print_sva_seq_expr(expr))
         }
         SvaSeqExpr::Implies { left, right } => {
-            format!("{} |-> {}", print_sva_seq_expr(left), print_sva_seq_expr(right))
+            format!(
+                "{} |-> {}",
+                print_sva_seq_expr(left),
+                print_sva_seq_expr(right)
+            )
         }
         SvaSeqExpr::NextImplies { left, right } => {
-            format!("{} |=> {}", print_sva_seq_expr(left), print_sva_seq_expr(right))
+            format!(
+                "{} |=> {}",
+                print_sva_seq_expr(left),
+                print_sva_seq_expr(right)
+            )
         }
         SvaSeqExpr::Or { left, right } => {
-            format!("{} or {}", print_sva_seq_expr(left), print_sva_seq_expr(right))
+            format!(
+                "{} or {}",
+                print_sva_seq_expr(left),
+                print_sva_seq_expr(right)
+            )
         }
         SvaSeqExpr::And { left, right } => {
-            format!("{} and {}", print_sva_seq_expr(left), print_sva_seq_expr(right))
+            format!(
+                "{} and {}",
+                print_sva_seq_expr(left),
+                print_sva_seq_expr(right)
+            )
         }
         SvaSeqExpr::Intersect { left, right } => {
-            format!("{} intersect {}", print_sva_seq_expr(left), print_sva_seq_expr(right))
+            format!(
+                "{} intersect {}",
+                print_sva_seq_expr(left),
+                print_sva_seq_expr(right)
+            )
         }
         SvaSeqExpr::FirstMatch { expr } => {
             format!("first_match({})", print_sva_seq_expr(expr))
         }
         SvaSeqExpr::Throughout { left, right } => {
-            format!("{} throughout {}", print_sva_seq_expr(left), print_sva_seq_expr(right))
+            format!(
+                "{} throughout {}",
+                print_sva_seq_expr(left),
+                print_sva_seq_expr(right)
+            )
         }
         SvaSeqExpr::Within { left, right } => {
-            format!("{} within {}", print_sva_seq_expr(left), print_sva_seq_expr(right))
+            format!(
+                "{} within {}",
+                print_sva_seq_expr(left),
+                print_sva_seq_expr(right)
+            )
         }
     }
 }
@@ -1234,16 +1371,28 @@ fn print_sva_prop_expr(prop: &crate::ast::SvaPropExpr) -> String {
             format!("{}nexttime {}", s, print_sva_seq_expr(expr))
         }
         SvaPropExpr::Implies { seq, prop } => {
-            format!("{} |-> {}", print_sva_seq_expr(seq), print_sva_prop_expr(prop))
+            format!(
+                "{} |-> {}",
+                print_sva_seq_expr(seq),
+                print_sva_prop_expr(prop)
+            )
         }
         SvaPropExpr::NextImplies { seq, prop } => {
-            format!("{} |=> {}", print_sva_seq_expr(seq), print_sva_prop_expr(prop))
+            format!(
+                "{} |=> {}",
+                print_sva_seq_expr(seq),
+                print_sva_prop_expr(prop)
+            )
         }
         SvaPropExpr::Iff { cond, prop } => {
             format!("iff ({}) {}", print_expr(cond), print_sva_prop_expr(prop))
         }
         SvaPropExpr::DisableIff { cond, prop } => {
-            format!("disable iff ({}) {}", print_expr(cond), print_sva_prop_expr(prop))
+            format!(
+                "disable iff ({}) {}",
+                print_expr(cond),
+                print_sva_prop_expr(prop)
+            )
         }
         SvaPropExpr::Name(n) => n.clone(),
     }
@@ -1590,7 +1739,6 @@ module m {
 
     #[test]
     fn roundtrip_net_kinds() {
-
         // F76: print semua varian net re-parse + stabil (alias ternormalisasi
         // wand/wor — teks kedua stabil).
         let src = r#"

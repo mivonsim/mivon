@@ -1021,8 +1021,16 @@ mod tests {
             top: IrModule {
                 name: Symbol::from("t"),
                 signals: vec![
-                    SignalInfo { name: Symbol::from("d"), width: 1, ..Default::default() },
-                    SignalInfo { name: Symbol::from("q"), width: 1, ..Default::default() },
+                    SignalInfo {
+                        name: Symbol::from("d"),
+                        width: 1,
+                        ..Default::default()
+                    },
+                    SignalInfo {
+                        name: Symbol::from("q"),
+                        width: 1,
+                        ..Default::default()
+                    },
                 ],
                 inputs: vec![],
                 outputs: vec![],

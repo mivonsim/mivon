@@ -291,19 +291,14 @@ impl PipeProgress {
             self.err.lock().unwrap_or_else(|e| e.into_inner())
         };
         buf.push_str(text);
-        self.bytes.fetch_add(
-            text.len() as u64,
-            std::sync::atomic::Ordering::Relaxed,
-        );
+        self.bytes
+            .fetch_add(text.len() as u64, std::sync::atomic::Ordering::Relaxed);
     }
 
     fn take(&self) -> (String, String) {
         let mut out = self.out.lock().unwrap_or_else(|e| e.into_inner());
         let mut err = self.err.lock().unwrap_or_else(|e| e.into_inner());
-        (
-            std::mem::take(&mut *out),
-            std::mem::take(&mut *err),
-        )
+        (std::mem::take(&mut *out), std::mem::take(&mut *err))
     }
 }
 
@@ -533,16 +528,16 @@ mod tests {
     /// pesan panic Rust = `panicked at`, bukan `panic`).
     #[test]
     fn classify_exit_1_with_panic_text_is_panic_not_clean_error() {
-        assert_eq!(
-            classify(Some(1), "panicked at src/x.rs:5:9").0,
-            Kind::Panic
-        );
+        assert_eq!(classify(Some(1), "panicked at src/x.rs:5:9").0, Kind::Panic);
         assert_eq!(
             classify(Some(1), "thread 'main' panicked at 1:1\nRUST_BACKTRACE").0,
             Kind::Panic
         );
         // Tanpa teks panic yang sah → error bersih (perilaku dipertahankan).
-        assert_eq!(classify(Some(1), "error: syntax di 3:2").0, Kind::CleanError);
+        assert_eq!(
+            classify(Some(1), "error: syntax di 3:2").0,
+            Kind::CleanError
+        );
         // Kata `panic` polos BUKAN bukti panic (false positive jadi bug palsu).
         assert_eq!(classify(Some(1), "no panic detected").0, Kind::CleanError);
     }
@@ -663,7 +658,12 @@ mod tests {
         // nominal ~1.6s > basis 1500ms (wajib lewat ≥1 perpanjangan → slow),
         // tetap jauh di bawah plafon 4.5s walau melambat ~2.5× saat load.
         let out = spawn(&mut cmd, 500);
-        assert_eq!(out.kind, Kind::Ok, "berprogres harus selesai Ok, dapat {:?}", out.kind);
+        assert_eq!(
+            out.kind,
+            Kind::Ok,
+            "berprogres harus selesai Ok, dapat {:?}",
+            out.kind
+        );
         assert!(out.slow, "harus tandai slow (lewat perpanjangan)");
         assert!(out.stdout.contains("tick19"), "output progres wajib utuh");
     }
@@ -679,7 +679,12 @@ mod tests {
             .stderr(Stdio::piped())
             .stdin(Stdio::null());
         let out = spawn(&mut cmd, 200);
-        assert_eq!(out.kind, Kind::Hang, "spin senyap = hang, dapat {:?}", out.kind);
+        assert_eq!(
+            out.kind,
+            Kind::Hang,
+            "spin senyap = hang, dapat {:?}",
+            out.kind
+        );
         assert!(!out.slow, "hang tak boleh tandai slow");
     }
 
@@ -687,8 +692,14 @@ mod tests {
     /// progres baru + di bawah cap → perpanjang; senyap / cap habis → kill.
     #[test]
     fn deadline_extension_decision_is_pure() {
-        assert!(should_extend_deadline(0, 100, 0), "progres pertama → perpanjang");
-        assert!(should_extend_deadline(2, 500, 100), "progres lanjut → perpanjang");
+        assert!(
+            should_extend_deadline(0, 100, 0),
+            "progres pertama → perpanjang"
+        );
+        assert!(
+            should_extend_deadline(2, 500, 100),
+            "progres lanjut → perpanjang"
+        );
         assert!(!should_extend_deadline(0, 0, 0), "senyap total → kill");
         assert!(
             !should_extend_deadline(1, 100, 100),
@@ -717,8 +728,16 @@ mod tests {
             .stdin(Stdio::null());
         // timeout 200ms: basis 600ms + maks 3×200ms ekstensi ≈ 1.2s.
         let out = spawn(&mut cmd, 200);
-        assert_eq!(out.kind, Kind::Hang, "burst-lalu-spin = hang, dapat {:?}", out.kind);
-        assert!(!out.slow, "kill tak boleh tandai slow walau sempat berprogres");
+        assert_eq!(
+            out.kind,
+            Kind::Hang,
+            "burst-lalu-spin = hang, dapat {:?}",
+            out.kind
+        );
+        assert!(
+            !out.slow,
+            "kill tak boleh tandai slow walau sempat berprogres"
+        );
         assert!(out.stdout.contains("boot"), "output sebelum spin wajib ada");
     }
 }

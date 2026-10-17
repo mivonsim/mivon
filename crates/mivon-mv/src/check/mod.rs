@@ -625,18 +625,10 @@ fn collect_ctx<'a>(files: impl IntoIterator<Item = &'a MvFile>) -> Ctx<'a> {
         for c in &file.classes {
             classes.insert(c.name.as_str());
             for f in &c.funcs {
-                insert_arity(
-                    &mut method_arity,
-                    f.name.as_str(),
-                    arity_of(&f.args),
-                );
+                insert_arity(&mut method_arity, f.name.as_str(), arity_of(&f.args));
             }
             for t in &c.tasks {
-                insert_arity(
-                    &mut method_arity,
-                    t.name.as_str(),
-                    arity_of(&t.args),
-                );
+                insert_arity(&mut method_arity, t.name.as_str(), arity_of(&t.args));
             }
         }
     }

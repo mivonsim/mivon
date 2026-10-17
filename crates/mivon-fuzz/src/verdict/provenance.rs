@@ -59,7 +59,11 @@ impl Provenance {
             self.rule.0,
             self.clause.revision,
             self.clause.section,
-            if self.applicability.applies { "YES" } else { "NO" },
+            if self.applicability.applies {
+                "YES"
+            } else {
+                "NO"
+            },
             cond_lines,
             self.expected,
             self.observed,

@@ -40,11 +40,7 @@ pub fn evaluate(
 ///
 /// Proxy sederhana: bila ada always_ff dan simulasi berhasil tanpa race
 /// pada output, dianggap satisfied. Evaluator penuh butuh trace NBA region.
-fn eval_nba_region(
-    rule: &LrmRule,
-    obs: &MivonObservation,
-    state: &LrmState,
-) -> RuleResult {
+fn eval_nba_region(rule: &LrmRule, obs: &MivonObservation, state: &LrmState) -> RuleResult {
     // Bila simulasi gagal — tidak bisa mengevaluasi.
     if obs.has_errors() {
         return RuleResult {
@@ -57,7 +53,10 @@ fn eval_nba_region(
         };
     }
 
-    let ff_count = state.processes.always_blocks.iter()
+    let ff_count = state
+        .processes
+        .always_blocks
+        .iter()
         .filter(|p| p.kind == crate::lrm_model::state::AlwaysKind::Ff)
         .count();
 
@@ -83,14 +82,8 @@ fn eval_nba_region(
             ),
         },
         evidence: vec![
-            Evidence::matching(
-                "always_ff_count",
-                ff_count.to_string(),
-            ),
-            Evidence::matching(
-                "simulation_completed",
-                "ok",
-            ),
+            Evidence::matching("always_ff_count", ff_count.to_string()),
+            Evidence::matching("simulation_completed", "ok"),
         ],
         explanation: format!(
             "Rule {} (§{}): {} blok always_ff, tapi region NBA belum diverifikasi",

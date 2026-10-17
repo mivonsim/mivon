@@ -9,7 +9,10 @@ pub enum Requirement {
     SignalValueEquals { signal: String, expected: String },
 
     /// Diagnostik dengan kode tertentu wajib diterbitkan.
-    DiagnosticRequired { code: String, severity: DiagSeverity },
+    DiagnosticRequired {
+        code: String,
+        severity: DiagSeverity,
+    },
 
     /// Diagnostik dengan kode tertentu tidak boleh diterbitkan.
     DiagnosticForbidden { code: String },
@@ -24,7 +27,10 @@ pub enum Requirement {
     SemanticProperty(SemanticProp),
 
     /// Jumlah iterasi generate harus sesuai nilai parameter.
-    GenerateIterationsMatch { instance: String, expected_count: usize },
+    GenerateIterationsMatch {
+        instance: String,
+        expected_count: usize,
+    },
 
     /// Diagnostik harus menyertakan lokasi file:line:col.
     DiagnosticHasLocation,
@@ -203,7 +209,9 @@ mod tests {
     fn implemented_requirements_still_decide() {
         let obs = MivonObservation::default();
         assert!(Requirement::ElaborationSucceeds.check(&obs).is_satisfied());
-        assert!(Requirement::DiagnosticHasLocation.check(&obs).is_satisfied());
+        assert!(Requirement::DiagnosticHasLocation
+            .check(&obs)
+            .is_satisfied());
     }
 }
 #[derive(Debug, Clone)]

@@ -5,11 +5,11 @@
 
 #![cfg(feature = "dev")]
 
-use crate::lrm_model::{
-    ClauseRef, LrmRule, RuleCategory, RuleClassification, RuleId,
-    predicate::{Requirement, SemanticProp},
-};
 use super::RuleRegistry;
+use crate::lrm_model::{
+    predicate::{Requirement, SemanticProp},
+    ClauseRef, LrmRule, RuleCategory, RuleClassification, RuleId,
+};
 
 pub fn register(reg: &mut RuleRegistry) {
     // SV-SEM-NBA-001: non-blocking assignment (<=) diselesaikan di region NBA,
@@ -23,11 +23,8 @@ pub fn register(reg: &mut RuleRegistry) {
             // Berlaku bila ada proses always_ff (NBA paling sering di sini).
             !state.processes.always_blocks.is_empty()
         }),
-        requires: vec![
-            Requirement::SemanticProperty(SemanticProp::NbaInNbaRegion),
-        ],
-        expected_description:
-            "non-blocking assignment harus diselesaikan di region NBA (§10.4.2)",
+        requires: vec![Requirement::SemanticProperty(SemanticProp::NbaInNbaRegion)],
+        expected_description: "non-blocking assignment harus diselesaikan di region NBA (§10.4.2)",
     });
 
     // SV-SEM-FILL-001: fill literal ('0,'1,'x,'z) harus diexpand sesuai
@@ -38,11 +35,10 @@ pub fn register(reg: &mut RuleRegistry) {
         category: RuleCategory::Semantics,
         classification: RuleClassification::RequiredBehavior,
         applies_when: Box::new(|_| true),
-        requires: vec![
-            Requirement::SemanticProperty(SemanticProp::FillLiteralExpandsToTargetWidth),
-        ],
-        expected_description:
-            "fill literal ('0,'1,'x,'z) harus diexpand sesuai lebar target",
+        requires: vec![Requirement::SemanticProperty(
+            SemanticProp::FillLiteralExpandsToTargetWidth,
+        )],
+        expected_description: "fill literal ('0,'1,'x,'z) harus diexpand sesuai lebar target",
     });
 
     // SV-SEM-CONCAT-001: lebar concat harus sama dengan jumlah lebar semua
@@ -53,11 +49,10 @@ pub fn register(reg: &mut RuleRegistry) {
         category: RuleCategory::Semantics,
         classification: RuleClassification::RequiredBehavior,
         applies_when: Box::new(|_| true),
-        requires: vec![
-            Requirement::SemanticProperty(SemanticProp::ConcatWidthIsSum),
-        ],
-        expected_description:
-            "lebar ekspresi concat harus = jumlah lebar semua operand",
+        requires: vec![Requirement::SemanticProperty(
+            SemanticProp::ConcatWidthIsSum,
+        )],
+        expected_description: "lebar ekspresi concat harus = jumlah lebar semua operand",
     });
 
     // SV-SEM-BLOCK-001: blocking assignment (=) dalam always_ff menghasilkan
@@ -68,7 +63,10 @@ pub fn register(reg: &mut RuleRegistry) {
         category: RuleCategory::Semantics,
         classification: RuleClassification::ImplementationDefined,
         applies_when: Box::new(|state| {
-            state.processes.always_blocks.iter()
+            state
+                .processes
+                .always_blocks
+                .iter()
                 .any(|p| p.kind == crate::lrm_model::state::AlwaysKind::Ff)
         }),
         requires: vec![],

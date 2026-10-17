@@ -454,7 +454,9 @@ fn register_struct_member_keys(module: &Module, vals: &mut HashMap<Symbol, i64>,
     for (pname, e) in struct_defaults {
         let fields: Option<Vec<SField>> = match &e {
             Expr::Ident { name, .. } => struct_ctx.get(&Symbol::intern(name.as_str())).cloned(),
-            Expr::ScopedIdent { item, .. } => struct_ctx.get(&Symbol::intern(item.as_str())).cloned(),
+            Expr::ScopedIdent { item, .. } => {
+                struct_ctx.get(&Symbol::intern(item.as_str())).cloned()
+            }
             Expr::BitSelect { expr: inner, index } => {
                 if let Expr::Ident { name, .. } = inner.as_ref() {
                     if let Ok(idx) = const_eval_with_params(index, vals) {
@@ -469,13 +471,27 @@ fn register_struct_member_keys(module: &Module, vals: &mut HashMap<Symbol, i64>,
                 }
             }
             Expr::StructLit { .. } => {
-                match eval_cval_full(&e, vals, p.arrays, p.package_symbols, &struct_ctx, p.array_structs) {
+                match eval_cval_full(
+                    &e,
+                    vals,
+                    p.arrays,
+                    p.package_symbols,
+                    &struct_ctx,
+                    p.array_structs,
+                ) {
                     Some(CVal::Struct(fs)) => Some(fs),
                     _ => None,
                 }
             }
             Expr::FuncCall { .. } => {
-                match eval_cval_full(&e, vals, p.arrays, p.package_symbols, &struct_ctx, p.array_structs) {
+                match eval_cval_full(
+                    &e,
+                    vals,
+                    p.arrays,
+                    p.package_symbols,
+                    &struct_ctx,
+                    p.array_structs,
+                ) {
                     Some(CVal::Struct(fs)) => Some(fs),
                     _ => None,
                 }
@@ -491,8 +507,8 @@ fn register_struct_member_keys(module: &Module, vals: &mut HashMap<Symbol, i64>,
                 if let CVal::Scalar(v) = f.val {
                     let key = format!("{}.{}", pname.as_str(), fname.as_str());
                     let key_sym = Symbol::intern(&key);
-                    if !vals.contains_key(&key_sym) {
-                        vals.insert(key_sym, v);
+                    if let std::collections::hash_map::Entry::Vacant(e) = vals.entry(key_sym) {
+                        e.insert(v);
                         key_created = true;
                     }
                 }

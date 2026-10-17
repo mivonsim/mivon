@@ -58,9 +58,7 @@ pub use ast::{deserialize_design, serialize_design, AST_FORMAT_VERSION};
 pub use cache::{CacheCategory, CacheLayer, CacheLayerStats};
 pub use diag::{DiagEntry, DiagSeverity, FileDiags};
 pub use format::{MdbReader, MdbWriter};
-pub use gc::{
-    run_cache_gc, run_gc, GcConfig, GcStats, ReclaimConfig, GLOBAL_CACHE_BUDGET_BYTES,
-};
+pub use gc::{run_cache_gc, run_gc, GcConfig, GcStats, ReclaimConfig, GLOBAL_CACHE_BUDGET_BYTES};
 pub use graph::FileGraph;
 pub use lock::{acquire_write_lock, is_writer_locked, WriteLock};
 pub use metadata::{flags_hash, path_hash, FileMeta, FileStatus, MetadataManifest};
@@ -186,12 +184,7 @@ pub fn compiler_base_matches(stored: &str) -> bool {
 pub fn current_stage_schemas() -> Vec<(String, u64)> {
     cache::CacheCategory::ALL
         .iter()
-        .map(|c| {
-            (
-                c.name().to_string(),
-                cache::stage_schema_version(*c),
-            )
-        })
+        .map(|c| (c.name().to_string(), cache::stage_schema_version(*c)))
         .collect()
 }
 
@@ -390,10 +383,7 @@ pub struct MicdDatabase {
 ///
 /// Fase 0 (Kritik B): pakai `get_slice` zero-copy (tanpa memcpy) untuk store
 /// tanpa kompresi; fallback ke `get` (copy + decompress) untuk store LZ4.
-fn read_mdb_singleton<T: serde::de::DeserializeOwned>(
-    dir: &Path,
-    filename: &str,
-) -> Option<T> {
+fn read_mdb_singleton<T: serde::de::DeserializeOwned>(dir: &Path, filename: &str) -> Option<T> {
     let r = MdbReader::open(&dir.join(filename)).ok()?;
     if let Some(slice) = r.get_slice(KEY_SINGLETON) {
         if let Ok(v) = bincode::deserialize(slice) {
@@ -408,10 +398,7 @@ fn read_mdb_singleton<T: serde::de::DeserializeOwned>(
 ///
 /// Fase 0 (Kritik B): sama seperti singleton — `get_slice` dulu, fallback
 /// `get` untuk entry terkompresi.
-fn read_mdb_entries<T: serde::de::DeserializeOwned>(
-    dir: &Path,
-    filename: &str,
-) -> Vec<T> {
+fn read_mdb_entries<T: serde::de::DeserializeOwned>(dir: &Path, filename: &str) -> Vec<T> {
     let Ok(r) = MdbReader::open(&dir.join(filename)) else {
         return Vec::new();
     };
@@ -430,10 +417,7 @@ fn read_mdb_entries<T: serde::de::DeserializeOwned>(
 }
 
 /// Serialisasi satu objek singleton ke bytes MDB (belum ditulis ke disk).
-fn serialize_mdb_singleton<T: serde::Serialize>(
-    obj: &T,
-    kind: u8,
-) -> io::Result<Vec<u8>> {
+fn serialize_mdb_singleton<T: serde::Serialize>(obj: &T, kind: u8) -> io::Result<Vec<u8>> {
     let mut w = MdbWriter::new();
     w.put(
         KEY_SINGLETON,
@@ -626,7 +610,8 @@ impl MicdDatabase {
                 .and_then(|b| bincode::deserialize::<MetadataManifest>(&b).ok())
         });
         let base_ok = stored_manifest.as_ref().is_some_and(|m| {
-            m.schema_version == SCHEMA_VERSION && stored_compiler_version_matches(&m.compiler_version)
+            m.schema_version == SCHEMA_VERSION
+                && stored_compiler_version_matches(&m.compiler_version)
         });
         // Stage yang versinya beda dari current (Fase 5). Manifest tanpa
         // stage_schemas + base ok hanya dari tulisan tangan (produksi selalu
@@ -704,9 +689,7 @@ impl MicdDatabase {
         // manifest rusak/jahat).
         for stage in &mismatched_stages {
             if cache::CacheCategory::from_name(stage).is_some() {
-                let _ = std::fs::remove_dir_all(
-                    root.join(cache::DIR_CACHE).join(pid).join(stage),
-                );
+                let _ = std::fs::remove_dir_all(root.join(cache::DIR_CACHE).join(pid).join(stage));
             }
         }
 
@@ -833,7 +816,8 @@ impl MicdDatabase {
                             .map(|m| m.compiled_at_ns)
                             .unwrap_or_else(now_ns);
                         db.ast_accessed.insert(p.clone(), at);
-                        db.ast_cache.insert(p.clone(), (meta.content_hash, Arc::from(bytes)));
+                        db.ast_cache
+                            .insert(p.clone(), (meta.content_hash, Arc::from(bytes)));
                     }
                 }
             }
@@ -961,11 +945,7 @@ impl MicdDatabase {
     /// Jalur panas (`attach_micd`) hanya butuh `combined` — pakai ini lalu
     /// clone `&str`-nya saja, tanpa clone `timescale_segments` (Vec) yang
     /// bisa besar. `None` bila path tak ada / hash beda.
-    pub fn get_preprocessed_ref(
-        &self,
-        path: &Path,
-        content_hash: u64,
-    ) -> Option<&PreprocEntry> {
+    pub fn get_preprocessed_ref(&self, path: &Path, content_hash: u64) -> Option<&PreprocEntry> {
         let e = self.preproc_cache.get(path)?;
         if e.content_hash == content_hash {
             Some(e)
@@ -976,11 +956,7 @@ impl MicdDatabase {
 
     /// Fase 0 (Kritik B): referensi `&str` ke combined source (tanpa clone).
     /// Dipakai jalur panas restore + debug check.
-    pub fn get_preprocessed_combined(
-        &self,
-        path: &Path,
-        content_hash: u64,
-    ) -> Option<&str> {
+    pub fn get_preprocessed_combined(&self, path: &Path, content_hash: u64) -> Option<&str> {
         self.get_preprocessed_ref(path, content_hash)
             .map(|e| e.combined.as_str())
     }
@@ -1373,7 +1349,11 @@ impl MicdDatabase {
         let _ = layer.put(CacheCategory::Elaborate, &key, &bytes);
         // Fase 6: sidecar (sidik input, konteks mode) — restore wajib cocok
         // (anti stale IR saat input berubah tanpa mengubah hitungan file).
-        let sidecar = format!("irinputs:v{}:{}", crate::micd::ast::IR_FORMAT_VERSION, ir.top.name.as_str());
+        let sidecar = format!(
+            "irinputs:v{}:{}",
+            crate::micd::ast::IR_FORMAT_VERSION,
+            ir.top.name.as_str()
+        );
         if let Ok(sb) = bincode::serialize(&(inputs_hash, context)) {
             let _ = layer.put(CacheCategory::Elaborate, &sidecar, &sb);
         }
@@ -2514,7 +2494,10 @@ mod tests {
             let r = db.get_preprocessed_ref(&path, 55).unwrap();
             assert_eq!(r.combined, "module a; endmodule");
             assert_eq!(r.timescale_segments.len(), 16);
-            assert_eq!(db.get_preprocessed_combined(&path, 55).unwrap(), "module a; endmodule");
+            assert_eq!(
+                db.get_preprocessed_combined(&path, 55).unwrap(),
+                "module a; endmodule"
+            );
             assert!(db.has_valid_preproc(&path, 55));
             assert!(!db.has_valid_preproc(&path, 999));
             assert!(db.get_preprocessed_ref(&path, 999).is_none());
@@ -2523,9 +2506,15 @@ mod tests {
         {
             let db = MicdDatabase::open(&root);
             // Setelah reload, ref tetap valid + combined sama.
-            assert_eq!(db.get_preprocessed_combined(&path, 55).unwrap(), "module a; endmodule");
+            assert_eq!(
+                db.get_preprocessed_combined(&path, 55).unwrap(),
+                "module a; endmodule"
+            );
             // Jalur lama (clone) tetap kompatibel.
-            assert_eq!(db.get_preprocessed(&path, 55).unwrap().combined, "module a; endmodule");
+            assert_eq!(
+                db.get_preprocessed(&path, 55).unwrap().combined,
+                "module a; endmodule"
+            );
         }
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -2553,7 +2542,15 @@ mod tests {
             let id = db.snapshot("s1".into()).unwrap();
             assert_eq!(id, 1);
             // Ubah semua store setelah snapshot.
-            db.record_file(path.clone(), 200, vec![], FileStatus::Recompiled, 0, 5, vec![]);
+            db.record_file(
+                path.clone(),
+                200,
+                vec![],
+                FileStatus::Recompiled,
+                0,
+                5,
+                vec![],
+            );
             db.save().unwrap();
             // Rollback → semua dirty flag terkait harus menyala.
             db.rollback(1).unwrap();
@@ -2563,23 +2560,29 @@ mod tests {
             assert!(db.dirty_symbol, "symbol di-restore → dirty_symbol");
             assert!(db.dirty_diag, "diag di-restore → dirty_diag");
             // Indeks verify dibangun ulang → reuse via ast/semantic jalan.
-            assert!(db.reuse_verify(999, 0xAAA, 0).is_some(), "ast index rollback");
-            assert!(db.reuse_verify(999, 0, 0xBBB).is_some(), "semantic index rollback");
+            assert!(
+                db.reuse_verify(999, 0xAAA, 0).is_some(),
+                "ast index rollback"
+            );
+            assert!(
+                db.reuse_verify(999, 0, 0xBBB).is_some(),
+                "semantic index rollback"
+            );
             db.save().unwrap();
         }
         {
             let db = MicdDatabase::open(&root);
             assert_eq!(db.get_file_meta(&path).unwrap().content_hash, 100);
-            assert!(db.reuse_verify(999, 0xAAA, 0).is_some(), "index persist setelah save");
+            assert!(
+                db.reuse_verify(999, 0xAAA, 0).is_some(),
+                "index persist setelah save"
+            );
             // Review Fase 0: graph/symbol/diag hasil rollback harus persist.
             assert!(
                 db.symbols.locate("top", "module").is_some(),
                 "symbol rollback harus persist"
             );
-            assert!(
-                db.get_diags(&path).is_some(),
-                "diag rollback harus persist"
-            );
+            assert!(db.get_diags(&path).is_some(), "diag rollback harus persist");
             assert!(
                 db.get_verify(100).is_some(),
                 "verify rollback harus persist"
@@ -2636,7 +2639,8 @@ mod tests {
     }
 
     #[test]
-    fn test_fase2_mirror_profile_last() {        // set_stats mencerminkan BuildProfile ke cache/profile "last".
+    fn test_fase2_mirror_profile_last() {
+        // set_stats mencerminkan BuildProfile ke cache/profile "last".
         let root = test_root("fase2_profile");
         {
             let mut db = MicdDatabase::open(&root);
@@ -2704,7 +2708,15 @@ mod tests {
         let pid = "default";
         {
             let mut db = MicdDatabase::open(&root);
-            db.record_file(PathBuf::from("a.sv"), 9, vec![], FileStatus::New, 0, 5, vec![]);
+            db.record_file(
+                PathBuf::from("a.sv"),
+                9,
+                vec![],
+                FileStatus::New,
+                0,
+                5,
+                vec![],
+            );
             db.save().unwrap();
         }
         let st = state_dir(&root, pid);
@@ -2745,7 +2757,10 @@ mod tests {
     #[test]
     fn test_fase3_compiler_base_matches() {
         assert!(compiler_base_matches(COMPILER_VERSION));
-        assert!(compiler_base_matches(&pipeline_revision()), "legacy suffix diterima");
+        assert!(
+            compiler_base_matches(&pipeline_revision()),
+            "legacy suffix diterima"
+        );
         assert!(!compiler_base_matches("Mivon 0.0.0-p99"));
         assert!(!compiler_base_matches("acak-tanpa-arti-kecuali-base"));
         assert!(!compiler_base_matches(""));
@@ -2800,7 +2815,11 @@ mod tests {
         // Legacy: suffix fingerprint + stage current → reuse.
         write_manifest(&pipeline_revision(), current_stage_schemas());
         let db = MicdDatabase::open(&root);
-        assert_eq!(db.files.len(), 1, "manifest legacy harus di-reuse (bukan wipe)");
+        assert_eq!(
+            db.files.len(),
+            1,
+            "manifest legacy harus di-reuse (bukan wipe)"
+        );
         // Bump -p → wipe.
         write_manifest("Mivon 0.0.0-p99", vec![]);
         let db2 = MicdDatabase::open(&root);
@@ -2853,8 +2872,7 @@ mod tests {
             db.save().unwrap();
         }
         let r = MdbReader::open(&st.join(DB_METADATA)).unwrap();
-        let mut m: MetadataManifest =
-            bincode::deserialize(&r.get(KEY_SINGLETON).unwrap()).unwrap();
+        let mut m: MetadataManifest = bincode::deserialize(&r.get(KEY_SINGLETON).unwrap()).unwrap();
         m.stage_schemas = current_stage_schemas()
             .into_iter()
             .map(|(n, v)| if n == "verify" { (n, v + 1) } else { (n, v) })
@@ -2877,7 +2895,10 @@ mod tests {
         {
             let db = MicdDatabase::open(&root);
             assert_eq!(db.files.len(), 1, "metadata selamat");
-            assert!(db.verify.is_empty(), "verify digugurkan saat stage verify bump");
+            assert!(
+                db.verify.is_empty(),
+                "verify digugurkan saat stage verify bump"
+            );
             assert!(db.dirty_verify, "save berikutnya menimpa verify.mdb basi");
         }
         let _ = std::fs::remove_dir_all(&root);
@@ -2903,8 +2924,7 @@ mod tests {
         stages.push(("../sentinel_dir".to_string(), 999));
         // Tulis ulang manifest: baca yang tersimpan, ganti stage_schemas.
         let r = MdbReader::open(&st.join(DB_METADATA)).unwrap();
-        let mut m: MetadataManifest =
-            bincode::deserialize(&r.get(KEY_SINGLETON).unwrap()).unwrap();
+        let mut m: MetadataManifest = bincode::deserialize(&r.get(KEY_SINGLETON).unwrap()).unwrap();
         m.stage_schemas = stages;
         let mut w = MdbWriter::new();
         w.put(
@@ -2935,7 +2955,15 @@ mod tests {
         let root = test_root("fase6_sidecar");
         {
             let mut db = MicdDatabase::open(&root);
-            db.record_file(PathBuf::from("a.sv"), 7, vec![], FileStatus::New, 0, 3, vec![]);
+            db.record_file(
+                PathBuf::from("a.sv"),
+                7,
+                vec![],
+                FileStatus::New,
+                0,
+                3,
+                vec![],
+            );
             let ir = mivon_ir::IrDesign::default();
             let top = ir.top.name.as_str().to_string();
             let ih = db.elaboration_inputs_hash(&top);
@@ -2949,9 +2977,15 @@ mod tests {
             let ih = db.elaboration_inputs_hash(&top);
             let hit = db.restore_elaborate_ir(&top, ih, "StrictSimulation");
             assert!(hit.is_some(), "sidik+mode cocok → hit");
-            assert!(db.restore_elaborate_ir(&top, ih + 1, "StrictSimulation").is_none());
-            assert!(db.restore_elaborate_ir(&top, ih, "AnalysisRecovery").is_none());
-            assert!(db.restore_elaborate_ir("top_lain", ih, "StrictSimulation").is_none());
+            assert!(db
+                .restore_elaborate_ir(&top, ih + 1, "StrictSimulation")
+                .is_none());
+            assert!(db
+                .restore_elaborate_ir(&top, ih, "AnalysisRecovery")
+                .is_none());
+            assert!(db
+                .restore_elaborate_ir("top_lain", ih, "StrictSimulation")
+                .is_none());
         }
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -2964,12 +2998,19 @@ mod tests {
         let st = state_dir(&root, "default");
         {
             let mut db = MicdDatabase::open(&root);
-            db.record_file(PathBuf::from("a.sv"), 7, vec![], FileStatus::New, 0, 3, vec![]);
+            db.record_file(
+                PathBuf::from("a.sv"),
+                7,
+                vec![],
+                FileStatus::New,
+                0,
+                3,
+                vec![],
+            );
             db.save().unwrap();
         }
         let r = MdbReader::open(&st.join(DB_METADATA)).unwrap();
-        let mut m: MetadataManifest =
-            bincode::deserialize(&r.get(KEY_SINGLETON).unwrap()).unwrap();
+        let mut m: MetadataManifest = bincode::deserialize(&r.get(KEY_SINGLETON).unwrap()).unwrap();
         m.stage_schemas = Vec::new();
         let mut w = MdbWriter::new();
         w.put(
@@ -2998,14 +3039,25 @@ mod tests {
         let root = test_root("fase3_stats");
         {
             let mut db = MicdDatabase::open(&root);
-            db.record_file(PathBuf::from("a.sv"), 3, vec![], FileStatus::New, 0, 5, vec![]);
+            db.record_file(
+                PathBuf::from("a.sv"),
+                3,
+                vec![],
+                FileStatus::New,
+                0,
+                5,
+                vec![],
+            );
             db.save().unwrap();
         }
         // Manifest menyimpan stage_schemas current.
         let r = MdbReader::open(&state_dir(&root, "default").join(DB_METADATA)).unwrap();
-        let m: MetadataManifest =
-            bincode::deserialize(&r.get(KEY_SINGLETON).unwrap()).unwrap();
-        assert_eq!(m.compiler_version, manifest_compiler_version(), "debug: suffix fingerprint anti-basi");
+        let m: MetadataManifest = bincode::deserialize(&r.get(KEY_SINGLETON).unwrap()).unwrap();
+        assert_eq!(
+            m.compiler_version,
+            manifest_compiler_version(),
+            "debug: suffix fingerprint anti-basi"
+        );
         assert_eq!(m.stage_schemas, current_stage_schemas());
         assert_eq!(m.schema_version, SCHEMA_VERSION);
         // Registry: fingerprint + revisi tercatat sebagai statistik.
@@ -3020,7 +3072,8 @@ mod tests {
     }
 
     #[test]
-    fn test_fase0_singleton_terkompresi_fallback_get() {        // Review Fase 0: satu-satunya store terkompresi adalah graph.mdb
+    fn test_fase0_singleton_terkompresi_fallback_get() {
+        // Review Fase 0: satu-satunya store terkompresi adalah graph.mdb
         // (LZ4) — get_slice mengembalikan None, helper harus fallback ke get.
         use crate::micd::format::{Compression, MdbReader, MdbWriter, KIND_GRAPH};
         let dir = test_root("fase0_lz4");
@@ -3029,11 +3082,7 @@ mod tests {
         g.set_deps(PathBuf::from("cpu.sv"), vec![PathBuf::from("uart.sv")]);
         g.rebuild();
         let mut w = MdbWriter::with_compression(Compression::Lz4);
-        w.put(
-            KEY_SINGLETON,
-            KIND_GRAPH,
-            bincode::serialize(&g).unwrap(),
-        );
+        w.put(KEY_SINGLETON, KIND_GRAPH, bincode::serialize(&g).unwrap());
         w.write_to(&dir.join(DB_GRAPH)).unwrap();
         // Bukti premis: store terkompresi → get_slice None.
         let r = MdbReader::open(&dir.join(DB_GRAPH)).unwrap();
@@ -3683,15 +3732,7 @@ mod tests {
         let path = PathBuf::from("a.sv");
         {
             let mut db = MicdDatabase::open(&root);
-            db.record_file(
-                path.clone(),
-                42,
-                vec![],
-                FileStatus::New,
-                0,
-                5,
-                vec![],
-            );
+            db.record_file(path.clone(), 42, vec![], FileStatus::New, 0, 5, vec![]);
             db.save().unwrap();
         }
         // Simpan checksum metadata.mdb awal.

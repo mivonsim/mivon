@@ -114,8 +114,10 @@ mod tests {
     use mivon_ast::types::Design;
 
     fn elab_ts(ts: Option<(&str, &str)>) -> Elaborator {
-        let mut d = Design::default();
-        d.timescale = ts.map(|(u, p)| (u.to_string(), p.to_string()));
+        let d = Design {
+            timescale: ts.map(|(u, p)| (u.to_string(), p.to_string())),
+            ..Design::default()
+        };
         Elaborator::with_source(d, vec![], String::new())
     }
 
@@ -125,8 +127,14 @@ mod tests {
         // Basis = 1us (-6); 1ns (-9) di bawah basis → faktor 1.
         assert_eq!(e.design_base_exp(), -6);
         assert_eq!(e.delay_scale_for_unit(None), 1);
-        assert_eq!(e.delay_scale_for_unit(Some(&("bogus".to_string(), "1ns".to_string()))), 1);
-        assert_eq!(e.delay_scale_for_unit(Some(&("1ns".to_string(), "1ps".to_string()))), 1);
+        assert_eq!(
+            e.delay_scale_for_unit(Some(&("bogus".to_string(), "1ns".to_string()))),
+            1
+        );
+        assert_eq!(
+            e.delay_scale_for_unit(Some(&("1ns".to_string(), "1ps".to_string()))),
+            1
+        );
         // Tanpa directive: basis default -9.
         assert_eq!(elab_ts(None).design_base_exp(), -9);
         // current tanpa module → 1.
@@ -146,26 +154,37 @@ mod tests {
             items: vec![],
             timescale: ts.map(|(u, p)| (u.to_string(), p.to_string())),
         };
-        let mut d = Design::default();
-        d.modules = vec![
-            mk("a", Some(("1us", "1ns"))),
-            mk("b", Some(("1ns", "1ps"))),
-            mk("c", None),
-        ];
-        d.interfaces = vec![Interface {
-            name: Symbol::intern("ifc"),
-            params: vec![],
-            ports: vec![],
-            decls: vec![],
-            items: vec![],
-            modports: vec![],
-            timescale: Some(("1us".to_string(), "1ns".to_string())),
-        }];
+        let d = Design {
+            modules: vec![
+                mk("a", Some(("1us", "1ns"))),
+                mk("b", Some(("1ns", "1ps"))),
+                mk("c", None),
+            ],
+            interfaces: vec![Interface {
+                name: Symbol::intern("ifc"),
+                params: vec![],
+                ports: vec![],
+                decls: vec![],
+                items: vec![],
+                modports: vec![],
+                timescale: Some(("1us".to_string(), "1ns".to_string())),
+            }],
+            ..Design::default()
+        };
         let mut e = Elaborator::with_source(d, vec![], String::new());
         e.compute_module_delay_scales();
-        assert_eq!(e.module_delay_scale.get(&Symbol::intern("a")).copied(), Some(1000));
-        assert_eq!(e.module_delay_scale.get(&Symbol::intern("b")).copied(), Some(1));
+        assert_eq!(
+            e.module_delay_scale.get(&Symbol::intern("a")).copied(),
+            Some(1000)
+        );
+        assert_eq!(
+            e.module_delay_scale.get(&Symbol::intern("b")).copied(),
+            Some(1)
+        );
         assert!(!e.module_delay_scale.contains_key(&Symbol::intern("c")));
-        assert_eq!(e.module_delay_scale.get(&Symbol::intern("ifc")).copied(), Some(1000));
+        assert_eq!(
+            e.module_delay_scale.get(&Symbol::intern("ifc")).copied(),
+            Some(1000)
+        );
     }
 }

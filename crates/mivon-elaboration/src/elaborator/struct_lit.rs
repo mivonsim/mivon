@@ -191,7 +191,10 @@ impl Elaborator {
         let mut cursor = total_width;
         for (offset, width, val) in entries {
             if cursor > offset + width {
-                parts.push(IrExpr::Const(LogicVec::from_u64(0, cursor - (offset + width))));
+                parts.push(IrExpr::Const(LogicVec::from_u64(
+                    0,
+                    cursor - (offset + width),
+                )));
             }
             parts.push(val);
             cursor = offset;
@@ -201,7 +204,9 @@ impl Elaborator {
         }
         Ok(match parts.len() {
             0 => IrExpr::Const(LogicVec::from_u64(0, total_width.max(1))),
-            1 => parts.pop().unwrap_or(IrExpr::Const(LogicVec::from_u64(0, 1))),
+            1 => parts
+                .pop()
+                .unwrap_or(IrExpr::Const(LogicVec::from_u64(0, 1))),
             _ => IrExpr::Concat(parts),
         })
     }

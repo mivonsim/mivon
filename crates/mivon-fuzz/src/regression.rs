@@ -96,7 +96,12 @@ fn safe_ident(name: &str) -> String {
         }
     }
     // Pastikan prefix huruf/underscore (Rust ident tak boleh angka di awal).
-    if out.chars().next().map(|c| c.is_alphanumeric() && c.is_numeric()).unwrap_or(true) {
+    if out
+        .chars()
+        .next()
+        .map(|c| c.is_alphanumeric() && c.is_numeric())
+        .unwrap_or(true)
+    {
         out.insert(0, '_');
     }
     out
@@ -141,7 +146,10 @@ pub fn collect_bugs(dir: &Path) -> Vec<BugEntry> {
             }
         };
         let (skipped, reason) = if source.len() > EMBED_CAP {
-            (true, format!("source {}B > EMBED_CAP {}B", source.len(), EMBED_CAP))
+            (
+                true,
+                format!("source {}B > EMBED_CAP {}B", source.len(), EMBED_CAP),
+            )
         } else {
             (false, String::new())
         };
@@ -213,7 +221,9 @@ pub fn emit_rust_tests(entries: &[BugEntry], fixtures: &Path) -> String {
         for e in &skipped {
             out.push_str(&format!(
                 "//   {} [{}] — {}\n",
-                e.name, e.target.as_str(), e.skip_reason
+                e.name,
+                e.target.as_str(),
+                e.skip_reason
             ));
         }
         out.push('\n');
@@ -255,7 +265,10 @@ pub fn emit_rust_tests(entries: &[BugEntry], fixtures: &Path) -> String {
     for e in &fixture_ready {
         let fp = content_fingerprint(&e.source);
         if seen_fp.contains(&fp) {
-            dup_comments.push(format!("//   {} — duplikat sumber (bug sama, sudah ada test)", e.name));
+            dup_comments.push(format!(
+                "//   {} — duplikat sumber (bug sama, sudah ada test)",
+                e.name
+            ));
             continue;
         }
         seen_fp.push(fp);
@@ -318,8 +331,14 @@ mod tests {
 
     #[test]
     fn safe_ident_replaces_non_alnum() {
-        assert_eq!(safe_ident("bug_0000.roundtrip-mismatch"), "bug_0000_roundtrip_mismatch");
-        assert!(safe_ident("123abc").starts_with('_'), "awalan angka → prefix _");
+        assert_eq!(
+            safe_ident("bug_0000.roundtrip-mismatch"),
+            "bug_0000_roundtrip_mismatch"
+        );
+        assert!(
+            safe_ident("123abc").starts_with('_'),
+            "awalan angka → prefix _"
+        );
     }
 
     #[test]
@@ -348,7 +367,10 @@ mod tests {
 
         let entries = collect_bugs(&dir);
         assert_eq!(entries.len(), 3);
-        let x = entries.iter().find(|e| e.name == "bug_x_roundtrip").unwrap();
+        let x = entries
+            .iter()
+            .find(|e| e.name == "bug_x_roundtrip")
+            .unwrap();
         assert!(!x.skipped);
         assert_eq!(x.target, Target::Fmt);
         assert_eq!(x.category, Category::RoundtripMismatch);
@@ -404,11 +426,7 @@ mod tests {
         let big = "x".repeat(EMBED_CAP + 10);
         let sv = dir.join("bug_big_hang.sv");
         std::fs::write(&sv, &big).unwrap();
-        std::fs::write(
-            sv.with_extension("txt"),
-            "category: hang\ntarget: sim\n",
-        )
-        .unwrap();
+        std::fs::write(sv.with_extension("txt"), "category: hang\ntarget: sim\n").unwrap();
         // Fixture belum tersedia → tetap skip (komentar).
         let entries = collect_bugs(&dir);
         let code = emit_rust_tests(&entries, &fx);

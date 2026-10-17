@@ -156,7 +156,7 @@ pub enum Token {
     CaretTilde, // ^~ or ~^
     AmpAmp,
     PipePipe,
-    PipeArrow, // |-> (overlap implication SVA)
+    PipeArrow,    // |-> (overlap implication SVA)
     PipeFatArrow, // |=> (non-overlapping implication SVA)
     Shl,
     Shr,
@@ -1582,4 +1582,3 @@ impl Lexer {
         }
     }
 }
-

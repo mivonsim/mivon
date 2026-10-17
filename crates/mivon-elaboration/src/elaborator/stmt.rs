@@ -295,10 +295,30 @@ fn expr_approx_width(expr: &IrExpr, signals: &[SignalInfo]) -> usize {
         IrExpr::SysFunc { name, .. }
             if matches!(
                 name.as_str(),
-                "$itor" | "$bitstoreal" | "$ln" | "$log10" | "$exp" | "$sqrt" | "$pow"
-                    | "$floor" | "$ceil" | "$round" | "$sin" | "$cos" | "$tan"
-                    | "$asin" | "$acos" | "$atan" | "$atan2" | "$hypot" | "$sinh"
-                    | "$cosh" | "$tanh" | "$asinh" | "$acosh" | "$atanh"
+                "$itor"
+                    | "$bitstoreal"
+                    | "$ln"
+                    | "$log10"
+                    | "$exp"
+                    | "$sqrt"
+                    | "$pow"
+                    | "$floor"
+                    | "$ceil"
+                    | "$round"
+                    | "$sin"
+                    | "$cos"
+                    | "$tan"
+                    | "$asin"
+                    | "$acos"
+                    | "$atan"
+                    | "$atan2"
+                    | "$hypot"
+                    | "$sinh"
+                    | "$cosh"
+                    | "$tanh"
+                    | "$asinh"
+                    | "$acosh"
+                    | "$atanh"
             ) =>
         {
             64
@@ -1998,9 +2018,8 @@ impl Elaborator {
                 if let Ok(n) = const_eval_params(count, &self.param_vals) {
                     if n > 256 {
                         let ir_count = self.elaborate_expr(count, signal_map, signals)?;
-                        let ir_body = self.elaborate_stmt_block(
-                            stmts, signal_map, known_modules, signals,
-                        )?;
+                        let ir_body =
+                            self.elaborate_stmt_block(stmts, signal_map, known_modules, signals)?;
                         return Ok(IrStmt::Repeat {
                             count: ir_count,
                             body: ir_body,
@@ -2680,8 +2699,7 @@ impl Elaborator {
                             // Indeks deklarasi → posisi bit fisik (rentang menaik
                             // `[0:3]` / lsb != 0 `[7:4]`).
                             let index_expr = self.elaborate_expr(bs_index, signal_map, signals)?;
-                            let base_expr =
-                                decl_index_to_pos_expr(index_expr, sig.msb, sig.lsb);
+                            let base_expr = decl_index_to_pos_expr(index_expr, sig.msb, sig.lsb);
                             Ok(IrLValue::ExprPartSelect {
                                 sig_id: sid,
                                 base: Box::new(base_expr),
