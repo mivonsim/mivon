@@ -814,8 +814,11 @@ impl SimulationEngine {
                     .and_then(|a| self.evaluate_expr(a).ok().map(|v| v.to_u64() as u32));
                 if let Some(h) = handle {
                     let msg = self.format_display(&args[1..]);
-                    if let Some(f) = self.file_handles.get_mut(&h) {
-                        let _ = write!(f, "{}", msg);
+                    if h == 1 {
+                        println!("{}", msg);
+                    } else if let Some(f) = self.file_handles.get_mut(&h) {
+                        // $fdisplay = $fwrite + newline (LRM).
+                        let _ = writeln!(f, "{}", msg);
                     }
                 }
                 Ok(LogicVec::from_u64(0, 1))
@@ -963,6 +966,8 @@ impl SimulationEngine {
                     .first()
                     .and_then(|a| self.evaluate_expr(a).ok().map(|v| v.to_u64() as u32));
                 match handle {
+                    // fd 1 = stdout selalu valid.
+                    Some(1) => Ok(LogicVec::from_u64(0, 32)),
                     Some(h) if self.file_handles.contains_key(&h) => {
                         Ok(LogicVec::from_u64(0, 32))
                     }

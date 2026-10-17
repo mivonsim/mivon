@@ -6976,6 +6976,33 @@ endmodule
 }
 
 #[test]
+fn test_fdisplay_expression_form_adds_newline() {
+    use std::fs;
+    let test_file = "/tmp/test_mivon_fdisplay_expr.txt";
+    let _ = fs::remove_file(test_file);
+    let source = format!(
+        r#"
+module tb;
+    integer fd;
+    integer r;
+    initial begin
+        fd = $fopen("{f}", "w");
+        r = $fdisplay(fd, "a");
+        $fdisplay(fd, "b");
+        $fclose(fd);
+        #1 $finish;
+    end
+endmodule
+"#,
+        f = test_file
+    );
+    let _ = simulate_signals(&source, 10).unwrap();
+    let content = fs::read_to_string(test_file).unwrap_or_default();
+    assert_eq!(content, "a\nb\n", "bentuk ekspresi $fdisplay juga menambah newline");
+    let _ = fs::remove_file(test_file);
+}
+
+#[test]
 fn test_fopen_append_mode() {
     use std::fs;
     let test_file = "/tmp/test_mivon_fopen_append.txt";

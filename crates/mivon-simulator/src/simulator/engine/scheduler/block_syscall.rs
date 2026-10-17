@@ -565,7 +565,14 @@ impl SimulationEngine {
                 .and_then(|a| self.evaluate_expr(a).ok().map(|v| v.to_u64() as u32));
             if let Some(h) = handle {
                 let msg = self.format_display_radix(&ir_args[1..], radix);
-                if let Some(f) = self.file_handles.get_mut(&h) {
+                if h == 1 {
+                    // fd 1 = stdout (LRM MCD), bukan file.
+                    if newline {
+                        println!("{}", msg);
+                    } else {
+                        print!("{}", msg);
+                    }
+                } else if let Some(f) = self.file_handles.get_mut(&h) {
                     // LRM: $fdisplay = $fwrite + newline (VCS/iverilog patuh;
                     // mivon sebelumnya concat tanpa '\n' — artefak differential).
                     if newline {
@@ -1576,7 +1583,14 @@ impl SimulationEngine {
                 .and_then(|a| self.evaluate_expr(a).ok().map(|v| v.to_u64() as u32));
             if let Some(h) = handle {
                 let msg = self.format_display_radix(&ir_args[1..], radix);
-                if let Some(f) = self.file_handles.get_mut(&h) {
+                if h == 1 {
+                    // fd 1 = stdout (LRM MCD), bukan file.
+                    if newline {
+                        println!("{}", msg);
+                    } else {
+                        print!("{}", msg);
+                    }
+                } else if let Some(f) = self.file_handles.get_mut(&h) {
                     // LRM: $fdisplay = $fwrite + newline (VCS/iverilog patuh;
                     // mivon sebelumnya concat tanpa '\n' — artefak differential).
                     if newline {

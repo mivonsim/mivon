@@ -85,7 +85,8 @@ impl SimulationEngine {
             file_handles: HashMap::new(),
             file_ungetc_buf: HashMap::new(),
             file_read_pos: HashMap::new(),
-            next_file_handle: 1,
+            // 1 = stdout, 2 = stderr (MCD); handle file mulai dari 3.
+            next_file_handle: 3,
             monitor_args: None,
             monitor_last_values: None,
             monitor_enabled: true,
