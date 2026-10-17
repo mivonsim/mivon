@@ -178,6 +178,14 @@ impl TerminalEmitter {
             writeln!(self.writer)?;
         }
 
+        // Example
+        if let Some(example) = &diag.example {
+            writeln!(self.writer, "{}{}Example{}", BOLD, CYAN, RESET)?;
+            writeln!(self.writer)?;
+            writeln!(self.writer, "   {}", example)?;
+            writeln!(self.writer)?;
+        }
+
         // Notes
         for note in &diag.notes {
             writeln!(self.writer, "   {}note:{} {}", CYAN, RESET, note.message)?;
@@ -279,6 +287,14 @@ impl TerminalEmitter {
             writeln!(self.writer, "Explanation")?;
             writeln!(self.writer)?;
             writeln!(self.writer, "   {}", explanation)?;
+            writeln!(self.writer)?;
+        }
+
+        // Example
+        if let Some(example) = &diag.example {
+            writeln!(self.writer, "Example")?;
+            writeln!(self.writer)?;
+            writeln!(self.writer, "   {}", example)?;
             writeln!(self.writer)?;
         }
 
@@ -585,6 +601,11 @@ pub fn format_diagnostic(diag: &Diagnostic) -> String {
         output.push_str(&format!("Explanation\n\n   {}\n\n", explanation));
     }
 
+    // Example
+    if let Some(example) = &diag.example {
+        output.push_str(&format!("Example\n\n   {}\n\n", example));
+    }
+
     // Notes
     for note in &diag.notes {
         output.push_str(&format!("  = note: {}\n", note.message));
@@ -686,6 +707,15 @@ mod tests {
         assert!(output.contains("ganti nama sinyal"));
         assert!(output.contains("uart.sv:5:3-5:8"));
         assert!(output.contains("-> 'ready'"));
+    }
+
+    #[test]
+    fn test_format_diagnostic_renders_example() {
+        let d = Diagnostic::error(DiagCode::UnexpectedToken, "missing semicolon")
+            .with_example("assign a = b;");
+        let output = format_diagnostic(&d);
+        assert!(output.contains("Example"), "harus ada header Example");
+        assert!(output.contains("assign a = b;"), "isi example harus tampil");
     }
 
     #[test]
