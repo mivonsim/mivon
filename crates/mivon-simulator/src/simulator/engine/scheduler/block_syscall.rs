@@ -225,6 +225,71 @@ impl SimulationEngine {
                 width: data.len() * elem_w,
             };
             self.state.write_signal(sig_id, packed);
+        } else if name == "sreadmemh" || name == "sreadmemb" {
+            // $sreadmemh/$sreadmemb (IEEE 1800 §21.4): sumber data adalah
+            // STRING, bukan nama file.
+            let content = match ir_args.first() {
+                Some(IrExpr::String(s)) => s.clone(),
+                Some(IrExpr::Signal(sid, _)) => {
+                    let ok = self
+                        .design
+                        .top
+                        .signals
+                        .get(*sid)
+                        .map(|si| si.is_string)
+                        .unwrap_or(false);
+                    if ok {
+                        crate::simulator::util::logicvec_to_string(self.state.read_signal(*sid))
+                    } else {
+                        return Err(self.diag_error(
+                            DiagCode::DpiError,
+                            "sreadmem first argument must be a string (data source)",
+                        ));
+                    }
+                }
+                _ => {
+                    return Err(self.diag_error(
+                        DiagCode::DpiError,
+                        "sreadmem requires a string data source",
+                    ));
+                }
+            };
+            let sig_id = ir_args
+                .get(1)
+                .and_then(|a| {
+                    if let IrExpr::Signal(id, _) = a {
+                        Some(*id)
+                    } else {
+                        None
+                    }
+                })
+                .ok_or_else(|| {
+                    self.diag_error(
+                        DiagCode::DpiError,
+                        "sreadmem requires a signal/memory argument",
+                    )
+                })?;
+            let (elem_w, max_words) = {
+                let si = self.design.top.signals.get(sig_id).ok_or_else(|| {
+                    self.diag_error(DiagCode::DpiError, "sreadmem: signal not found")
+                })?;
+                let ew = si.elem_width.max(1);
+                (ew, si.width / ew)
+            };
+            let data = if name == "sreadmemh" {
+                crate::simulator::util::read_hex_text(&content, elem_w, max_words, None, None)?
+            } else {
+                crate::simulator::util::read_bin_text(&content, elem_w, max_words, None, None)?
+            };
+            let mut all_bits = Vec::new();
+            for d in &data {
+                all_bits.extend(d.bits.iter().cloned());
+            }
+            let packed = LogicVec {
+                bits: all_bits,
+                width: data.len() * elem_w,
+            };
+            self.state.write_signal(sig_id, packed);
         } else if name == "writememh" || name == "writememb" {
             let file_str = match ir_args.first() {
                 Some(IrExpr::String(s)) => s.clone(),
@@ -419,6 +484,13 @@ impl SimulationEngine {
         } else if name == "dumpoff" {
             if let Some(ref mut vcd) = self.vcd {
                 vcd.enabled = false;
+            }
+        } else if name == "dumpflush" {
+            if let Some(ref mut vcd) = self.vcd {
+                let _ = vcd.flush();
+            }
+            if let Some(ref mut fst) = self.fst {
+                let _ = fst.flush();
             }
         } else if name == "fopen" {
             let fname = ir_args.first().and_then(|a| {
@@ -1375,6 +1447,13 @@ impl SimulationEngine {
         } else if name == "dumpoff" {
             if let Some(ref mut vcd) = self.vcd {
                 vcd.enabled = false;
+            }
+        } else if name == "dumpflush" {
+            if let Some(ref mut vcd) = self.vcd {
+                let _ = vcd.flush();
+            }
+            if let Some(ref mut fst) = self.fst {
+                let _ = fst.flush();
             }
         } else if name == "fopen" {
             let fname = ir_args.first().and_then(|a| {

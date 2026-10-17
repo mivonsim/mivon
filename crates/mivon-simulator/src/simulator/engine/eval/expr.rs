@@ -772,6 +772,28 @@ impl SimulationEngine {
                 }
                 Ok(LogicVec::from_u64(1, 1))
             }
+            "$ferror" => {
+                // $ferror(fd, str) — mivon tidak melacak error state per-handle:
+                // handle valid → 0 dan str dikosongkan; handle tak dikenal → 1.
+                if let Some(IrExpr::Signal(sid, _)) = args.get(1) {
+                    self.state.write_signal(
+                        *sid,
+                        LogicVec {
+                            bits: Vec::new(),
+                            width: 0,
+                        },
+                    );
+                }
+                let handle = args
+                    .first()
+                    .and_then(|a| self.evaluate_expr(a).ok().map(|v| v.to_u64() as u32));
+                match handle {
+                    Some(h) if self.file_handles.contains_key(&h) => {
+                        Ok(LogicVec::from_u64(0, 32))
+                    }
+                    _ => Ok(LogicVec::from_u64(1, 32)),
+                }
+            }
             "$rewind" => {
                 // $rewind(fd) — rewind file to beginning (same as $fseek(fd, 0, 0))
                 let handle = args

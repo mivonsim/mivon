@@ -7005,6 +7005,68 @@ endmodule
 }
 
 #[test]
+fn test_sreadmemh_and_bin() {
+    let source = r#"
+module tb;
+    reg [7:0] m [0:3];
+    reg [7:0] n [0:1];
+    reg [7:0] a0, a1, a2, a3, b0, b1;
+    initial begin
+        $sreadmemh("aa bb cc dd", m);
+        $sreadmemb("00000001 00000010", n);
+        a0 = m[0]; a1 = m[1]; a2 = m[2]; a3 = m[3];
+        b0 = n[0]; b1 = n[1];
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 10).unwrap();
+    let get = |name: &str| -> u64 {
+        sigs.iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, v)| v.to_u64())
+            .unwrap_or(0)
+    };
+    assert_eq!(get("a0"), 0xaa);
+    assert_eq!(get("a1"), 0xbb);
+    assert_eq!(get("a2"), 0xcc);
+    assert_eq!(get("a3"), 0xdd);
+    assert_eq!(get("b0"), 1);
+    assert_eq!(get("b1"), 2);
+}
+
+#[test]
+fn test_ferror_valid_handle_returns_zero() {
+    use std::fs;
+    let test_file = "/tmp/test_mivon_ferror.txt";
+    let _ = fs::remove_file(test_file);
+    let source = format!(
+        r#"
+module tb;
+    integer fd;
+    reg [31:0] err;
+    string msg;
+    initial begin
+        fd = $fopen("{f}", "w");
+        err = $ferror(fd, msg);
+        $fclose(fd);
+        #1 $finish;
+    end
+endmodule
+"#,
+        f = test_file
+    );
+    let sigs = simulate_signals(&source, 10).unwrap();
+    let err = sigs
+        .iter()
+        .find(|(n, _)| n == "err")
+        .map(|(_, v)| v.to_u64())
+        .unwrap_or(999);
+    assert_eq!(err, 0, "$ferror pada handle valid harus 0");
+    let _ = fs::remove_file(test_file);
+}
+
+#[test]
 fn test_writemem_hex_and_bin() {
     use std::fs;
     let hex_file = "/tmp/test_mivon_writemem.hex";
