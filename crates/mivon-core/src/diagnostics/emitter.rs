@@ -600,6 +600,28 @@ pub fn format_diagnostic(diag: &Diagnostic) -> String {
         output.push_str(&format!("  = help: {}\n", hint));
     }
 
+    // Fix-it hints (parity dengan TerminalEmitter::emit)
+    if !diag.fix_its.is_empty() {
+        output.push_str("\nFix-it suggestions:\n");
+        for fix_it in &diag.fix_its {
+            output.push_str(&format!(
+                "   = fix-it: {} ({}:{}:{}-{}:{})\n",
+                fix_it.description,
+                fix_it.file,
+                fix_it.start_line,
+                fix_it.start_col,
+                fix_it.end_line,
+                fix_it.end_col
+            ));
+            if !fix_it.replacement.is_empty() {
+                output.push_str(&format!(
+                    "       -> '{}'\n",
+                    fix_it.replacement.escape_debug()
+                ));
+            }
+        }
+    }
+
     output
 }
 
@@ -608,7 +630,7 @@ pub fn format_diagnostic(diag: &Diagnostic) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::diagnostics::diagnostic::{DiagCode, DiagSpan, RuntimeContext, SourceSnippet};
+    use crate::diagnostics::diagnostic::{DiagCode, DiagSpan, FixItHint, RuntimeContext, SourceSnippet};
     use crate::intern::Symbol;
 
     #[test]
@@ -650,6 +672,20 @@ mod tests {
         assert!(output.contains("125 ns"));
         assert!(output.contains("AXI interface was never connected"));
         assert!(output.contains("Initialize the interface"));
+    }
+
+    #[test]
+    fn test_format_diagnostic_renders_fix_its() {
+        let file = Symbol::intern("uart.sv");
+        let fix = FixItHint::replace("uart.sv", 5, 3, 5, 8, "ready", "ganti nama sinyal");
+        let d = Diagnostic::error(DiagCode::UnexpectedToken, "unknown identifier")
+            .with_span(DiagSpan::new(file, 5, 3).with_label("here"))
+            .with_fix_it(fix);
+        let output = format_diagnostic(&d);
+        assert!(output.contains("Fix-it suggestions"));
+        assert!(output.contains("ganti nama sinyal"));
+        assert!(output.contains("uart.sv:5:3-5:8"));
+        assert!(output.contains("-> 'ready'"));
     }
 
     #[test]
