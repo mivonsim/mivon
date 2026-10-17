@@ -26,19 +26,21 @@ impl SimulationEngine {
 
     /// Check $monitor and $fmonitor for value changes and print/output them.
     pub(crate) fn check_monitor(&mut self) -> Result<(), SimError> {
-        if let Some(ref args) = self.monitor_args.clone() {
-            let new_vals: Vec<LogicVec> = args
-                .iter()
-                .map(|a| self.evaluate_expr(a).unwrap_or(LogicVec::from_u64(0, 32)))
-                .collect();
-            let changed = match self.monitor_last_values {
-                Some(ref old) => new_vals != *old,
-                None => true,
-            };
-            if changed {
-                let msg = self.format_display(args);
-                print!("{}", msg);
-                self.monitor_last_values = Some(new_vals);
+        if self.monitor_enabled {
+            if let Some(ref args) = self.monitor_args.clone() {
+                let new_vals: Vec<LogicVec> = args
+                    .iter()
+                    .map(|a| self.evaluate_expr(a).unwrap_or(LogicVec::from_u64(0, 32)))
+                    .collect();
+                let changed = match self.monitor_last_values {
+                    Some(ref old) => new_vals != *old,
+                    None => true,
+                };
+                if changed {
+                    let msg = self.format_display(args);
+                    print!("{}", msg);
+                    self.monitor_last_values = Some(new_vals);
+                }
             }
         }
         let fmonitor: Vec<(u32, Vec<IrExpr>, Vec<LogicVec>)> = self

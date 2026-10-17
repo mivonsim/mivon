@@ -89,6 +89,13 @@ impl SimulationEngine {
                 .collect();
             self.monitor_args = Some(ir_args.to_vec());
             self.monitor_last_values = Some(vals);
+        } else if name == "monitoroff" {
+            self.monitor_enabled = false;
+        } else if name == "monitoron" {
+            self.monitor_enabled = true;
+            // LRM: $monitoron mencetak nilai saat ini segera.
+            self.monitor_last_values = None;
+            self.check_monitor()?;
         } else if name == "readmemh" {
             let file = ir_args.first().ok_or_else(|| {
                 self.diag_error(
@@ -1234,6 +1241,13 @@ impl SimulationEngine {
                 .collect();
             self.monitor_args = Some(ir_args.to_vec());
             self.monitor_last_values = Some(vals);
+        } else if name == "monitoroff" {
+            self.monitor_enabled = false;
+        } else if name == "monitoron" {
+            self.monitor_enabled = true;
+            // LRM: $monitoron mencetak nilai saat ini segera.
+            self.monitor_last_values = None;
+            self.check_monitor()?;
         } else if name == "urandom" {
             self.rand_call_count += 1;
             let val: u32 = self.rng.gen();

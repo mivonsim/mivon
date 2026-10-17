@@ -1426,6 +1426,25 @@ mod tests {
     }
 
     #[test]
+    fn test_monitoronoff_toggle() {
+        let design = crate::test_util::compile_str(
+            "module top; initial begin $monitoroff; #1 $monitoron; $finish; end endmodule",
+        )
+        .unwrap();
+        let mut e = SimulationEngine::new(design, 100);
+        e.run().unwrap();
+        assert!(e.monitor_enabled, "$monitoron harus mengaktifkan kembali monitor");
+
+        let design = crate::test_util::compile_str(
+            "module top; initial begin $monitoron; #1 $monitoroff; $finish; end endmodule",
+        )
+        .unwrap();
+        let mut e = SimulationEngine::new(design, 100);
+        e.run().unwrap();
+        assert!(!e.monitor_enabled, "$monitoroff harus menonaktifkan monitor");
+    }
+
+    #[test]
     fn test_format_display_hex_xz_aware() {
         let mut e = test_engine();
         // IEEE 1800 & konvensi simulator: nibble ber-X → 'x', ber-Z (tanpa X)

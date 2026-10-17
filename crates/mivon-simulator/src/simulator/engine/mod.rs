@@ -181,6 +181,8 @@ pub struct SimulationEngine {
     pub next_file_handle: u32,
     pub monitor_args: Option<Vec<IrExpr>>,
     pub monitor_last_values: Option<Vec<LogicVec>>,
+    /// $monitoron / $monitoroff state (default aktif).
+    pub monitor_enabled: bool,
     pub disable_pending: Option<Symbol>,
     /// `disable <label>` target di LUAR stack eksekusi saat ini (branch lain
     /// yang suspend / belum masuk). TERPISAH dari `disable_pending`: tidak

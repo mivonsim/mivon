@@ -88,6 +88,7 @@ impl SimulationEngine {
             next_file_handle: 1,
             monitor_args: None,
             monitor_last_values: None,
+            monitor_enabled: true,
             control_flow: None,
             expr_recursion_depth: 0,
             forced_signals: HashSet::new(),
