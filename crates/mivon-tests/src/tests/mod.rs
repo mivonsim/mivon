@@ -7283,6 +7283,29 @@ endmodule
 }
 
 #[test]
+fn test_readmemh_missing_file_continues() {
+    let source = r#"
+module tb;
+    reg [7:0] m [0:3];
+    reg [7:0] a0;
+    initial begin
+        m[0]=8'h11;
+        $readmemh("/tmp/mivon_does_not_exist_xyz.hex", m);
+        a0 = m[0];
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 10).unwrap();
+    let a0 = sigs
+        .iter()
+        .find(|(n, _)| n == "a0")
+        .map(|(_, v)| v.to_u64())
+        .unwrap_or(u64::MAX);
+    assert_eq!(a0, 0x11, "file hilang: peringatan, memori tidak berubah, simulasi lanjut");
+}
+
+#[test]
 fn test_readmemh_address_directive() {
     use std::fs;
     let file = "/tmp/test_mivon_readmem_at.hex";

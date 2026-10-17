@@ -157,7 +157,14 @@ impl SimulationEngine {
             let end = ir_args
                 .get(3)
                 .and_then(|a| self.evaluate_expr(a).ok().map(|v| v.to_u64() as usize));
-            let data = read_hex_file(&file_str, elem_w, max_words, start, end)?;
+            let data = match read_hex_file(&file_str, elem_w, max_words, start, end) {
+                Ok(d) => d,
+                Err(e) => {
+                    // iverilog: laporkan lalu LANJUT tanpa mengubah memori.
+                    self.emit_warning(DiagCode::IoError, format!("$readmemh: {}", e));
+                    return Ok(true);
+                }
+            };
             self.write_mem_words(sig_id, &data, elem_w, max_words);
         } else if name == "readmemb" {
             let file = ir_args.first().ok_or_else(|| {
@@ -219,7 +226,14 @@ impl SimulationEngine {
             let end = ir_args
                 .get(3)
                 .and_then(|a| self.evaluate_expr(a).ok().map(|v| v.to_u64() as usize));
-            let data = read_bin_file(&file_str, elem_w, max_words, start, end)?;
+            let data = match read_bin_file(&file_str, elem_w, max_words, start, end) {
+                Ok(d) => d,
+                Err(e) => {
+                    // iverilog: laporkan lalu LANJUT tanpa mengubah memori.
+                    self.emit_warning(DiagCode::IoError, format!("$readmemb: {}", e));
+                    return Ok(true);
+                }
+            };
             self.write_mem_words(sig_id, &data, elem_w, max_words);
         } else if name == "sreadmemh" || name == "sreadmemb" {
             // $sreadmemh/$sreadmemb (IEEE 1800 §21.4): sumber data adalah
