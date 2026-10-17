@@ -7203,6 +7203,37 @@ endmodule
 }
 
 #[test]
+fn test_readmemh_address_directive() {
+    use std::fs;
+    let file = "/tmp/test_mivon_readmem_at.hex";
+    let _ = fs::write(file, "aa\n@2\ncc\n");
+    let source = format!(
+        r#"
+module tb;
+    reg [7:0] m [0:3];
+    reg [7:0] a0, a1, a2, a3;
+    initial begin
+        m[0]=8'h11; m[1]=8'h22; m[2]=8'h33; m[3]=8'h44;
+        $readmemh("{f}", m);
+        a0=m[0]; a1=m[1]; a2=m[2]; a3=m[3];
+        #1 $finish;
+    end
+endmodule
+"#,
+        f = file
+    );
+    let sigs = simulate_signals(&source, 10).unwrap();
+    let get = |name: &str| -> u64 {
+        sigs.iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, v)| v.to_u64())
+            .unwrap_or(u64::MAX)
+    };
+    assert_eq!((get("a0"), get("a1"), get("a2"), get("a3")), (0xaa, 0x22, 0xcc, 0x44));
+    let _ = fs::remove_file(file);
+}
+
+#[test]
 fn test_readmemh_preserves_untouched_words_and_range() {
     use std::fs;
     let full = "/tmp/test_mivon_readmem_full.hex";

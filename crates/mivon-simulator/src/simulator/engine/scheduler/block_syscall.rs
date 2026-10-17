@@ -158,7 +158,7 @@ impl SimulationEngine {
                 .get(3)
                 .and_then(|a| self.evaluate_expr(a).ok().map(|v| v.to_u64() as usize));
             let data = read_hex_file(&file_str, elem_w, max_words, start, end)?;
-            self.write_mem_words(sig_id, &data, elem_w, start.unwrap_or(0), max_words);
+            self.write_mem_words(sig_id, &data, elem_w, max_words);
         } else if name == "readmemb" {
             let file = ir_args.first().ok_or_else(|| {
                 self.diag_error(
@@ -220,7 +220,7 @@ impl SimulationEngine {
                 .get(3)
                 .and_then(|a| self.evaluate_expr(a).ok().map(|v| v.to_u64() as usize));
             let data = read_bin_file(&file_str, elem_w, max_words, start, end)?;
-            self.write_mem_words(sig_id, &data, elem_w, start.unwrap_or(0), max_words);
+            self.write_mem_words(sig_id, &data, elem_w, max_words);
         } else if name == "sreadmemh" || name == "sreadmemb" {
             // $sreadmemh/$sreadmemb (IEEE 1800 §21.4): sumber data adalah
             // STRING, bukan nama file.
@@ -277,7 +277,7 @@ impl SimulationEngine {
             } else {
                 crate::simulator::util::read_bin_text(&content, elem_w, max_words, None, None)?
             };
-            self.write_mem_words(sig_id, &data, elem_w, 0, max_words);
+            self.write_mem_words(sig_id, &data, elem_w, max_words);
         } else if name == "writememh" || name == "writememb" {
             let file_str = match ir_args.first() {
                 Some(IrExpr::String(s)) => s.clone(),
@@ -1052,14 +1052,13 @@ impl SimulationEngine {
     /// $sdf_annotate. Dipanggil dari evaluate_syscall dan evaluate_syscall_stmt.
     /// Returns Ok(true) jika syscall ditangani di sini (synced, tidak yield),
     /// Ok(false) jika bukan tanggung jawab handler ini.
-    /// Tulis word hasil readmem ke memori pada offset start_addr,
+    /// Tulis word hasil readmem ke memori pada alamat masing-masing,
     /// mempertahankan word di luar rentang (LRM: tidak diubah).
     fn write_mem_words(
         &mut self,
         sig_id: usize,
-        data: &[LogicVec],
+        data: &[(usize, LogicVec)],
         elem_w: usize,
-        start_addr: usize,
         max_words: usize,
     ) {
         let mut packed = self.state.read_signal(sig_id).clone();
@@ -1067,8 +1066,8 @@ impl SimulationEngine {
         if packed.bits.len() < total {
             packed.bits.resize(total, LogicVal::X);
         }
-        for (i, d) in data.iter().enumerate() {
-            let base = (start_addr + i) * elem_w;
+        for (addr, d) in data.iter() {
+            let base = addr * elem_w;
             for j in 0..elem_w.min(d.bits.len()) {
                 if base + j < packed.bits.len() {
                     packed.bits[base + j] = d.bits[j];
