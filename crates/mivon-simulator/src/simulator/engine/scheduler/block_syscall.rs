@@ -498,6 +498,26 @@ impl SimulationEngine {
                 });
                 let open_result = match mode {
                     Some("r") | Some("rb") => std::fs::File::open(&fname),
+                    // "a"/"ab" = append (jangan truncate).
+                    Some("a") | Some("ab") => std::fs::OpenOptions::new()
+                        .append(true)
+                        .create(true)
+                        .open(&fname),
+                    Some("a+") | Some("ab+") | Some("a+b") => std::fs::OpenOptions::new()
+                        .read(true)
+                        .append(true)
+                        .create(true)
+                        .open(&fname),
+                    Some("r+") | Some("rb+") | Some("r+b") => std::fs::OpenOptions::new()
+                        .read(true)
+                        .write(true)
+                        .open(&fname),
+                    Some("w+") | Some("wb+") | Some("w+b") => std::fs::OpenOptions::new()
+                        .read(true)
+                        .write(true)
+                        .create(true)
+                        .truncate(true)
+                        .open(&fname),
                     _ => std::fs::OpenOptions::new()
                         .read(true)
                         .write(true)
@@ -1489,6 +1509,26 @@ impl SimulationEngine {
                 });
                 let open_result = match mode {
                     Some("r") | Some("rb") => std::fs::File::open(&fname),
+                    // "a"/"ab" = append (jangan truncate).
+                    Some("a") | Some("ab") => std::fs::OpenOptions::new()
+                        .append(true)
+                        .create(true)
+                        .open(&fname),
+                    Some("a+") | Some("ab+") | Some("a+b") => std::fs::OpenOptions::new()
+                        .read(true)
+                        .append(true)
+                        .create(true)
+                        .open(&fname),
+                    Some("r+") | Some("rb+") | Some("r+b") => std::fs::OpenOptions::new()
+                        .read(true)
+                        .write(true)
+                        .open(&fname),
+                    Some("w+") | Some("wb+") | Some("w+b") => std::fs::OpenOptions::new()
+                        .read(true)
+                        .write(true)
+                        .create(true)
+                        .truncate(true)
+                        .open(&fname),
                     _ => std::fs::OpenOptions::new()
                         .read(true)
                         .write(true)

@@ -6976,6 +6976,31 @@ endmodule
 }
 
 #[test]
+fn test_fopen_append_mode() {
+    use std::fs;
+    let test_file = "/tmp/test_mivon_fopen_append.txt";
+    let _ = fs::write(test_file, "old\n");
+    let source = format!(
+        r#"
+module tb;
+    integer fd;
+    initial begin
+        fd = $fopen("{f}", "a");
+        $fdisplay(fd, "new");
+        $fclose(fd);
+        #1 $finish;
+    end
+endmodule
+"#,
+        f = test_file
+    );
+    let _ = simulate_signals(&source, 10).unwrap();
+    let content = fs::read_to_string(test_file).unwrap_or_default();
+    assert_eq!(content, "old\nnew\n", "mode \"a\" harus append, bukan truncate");
+    let _ = fs::remove_file(test_file);
+}
+
+#[test]
 fn test_fdisplay_radix_variants() {
     use std::fs;
     let test_file = "/tmp/test_mivon_fdisplay_radix.txt";
