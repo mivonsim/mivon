@@ -7005,6 +7005,41 @@ endmodule
 }
 
 #[test]
+fn test_dist_functions_ranges_and_seed_update() {
+    let source = r#"
+module tb;
+    integer s;
+    reg [31:0] u, e, p, c, er, n;
+    initial begin
+        s = 1;
+        u  = $dist_uniform(s, 5, 10);
+        e  = $dist_exponential(s, 100);
+        p  = $dist_poisson(s, 4);
+        c  = $dist_chi_square(s, 3);
+        er = $dist_erlang(s, 2, 100);
+        n  = $dist_normal(s, 100, 10);
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 10).unwrap();
+    let get = |name: &str| -> u64 {
+        sigs.iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, v)| v.to_u64())
+            .unwrap_or(u64::MAX)
+    };
+    let u = get("u");
+    assert!((5..=10).contains(&u), "$dist_uniform di [5,10], dapat {}", u);
+    assert!(get("e") <= 100_000, "$dist_exponential wajar");
+    assert!(get("p") <= 10_000, "$dist_poisson wajar");
+    assert!(get("c") <= 100_000, "$dist_chi_square wajar");
+    assert!(get("er") <= 100_000, "$dist_erlang wajar");
+    assert!(get("n") <= 1_000, "$dist_normal wajar");
+    assert_ne!(get("s"), 1, "seed harus diperbarui (inout)");
+}
+
+#[test]
 fn test_sreadmemh_and_bin() {
     let source = r#"
 module tb;

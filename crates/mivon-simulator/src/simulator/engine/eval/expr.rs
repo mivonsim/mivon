@@ -296,6 +296,112 @@ impl SimulationEngine {
                     Ok(LogicVec::from_u64(val, 32))
                 }
             }
+            "$dist_uniform" | "$dist_normal" | "$dist_exponential" | "$dist_poisson"
+            | "$dist_chi_square" | "$dist_t" | "$dist_erlang" => {
+                // Distribusi statistik Verilog (LRM 1364-2005 §17.9).
+                // Arg pertama = seed (inout), sisanya parameter distribusi.
+                let a: Vec<LogicVec> = args
+                    .iter()
+                    .map(|x| self.evaluate_expr(x))
+                    .collect::<Result<_, _>>()?;
+                let p1 = a.get(1).map(|v| v.to_i64()).unwrap_or(0);
+                let p2 = a.get(2).map(|v| v.to_i64()).unwrap_or(0);
+                let normal = |rng: &mut rand::rngs::StdRng| -> f64 {
+                    let u1: f64 = rng.gen::<f64>().max(1e-12);
+                    let u2: f64 = rng.gen::<f64>();
+                    (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos()
+                };
+                let val: i64 = match name.as_str() {
+                    "$dist_uniform" => {
+                        if p2 <= p1 {
+                            p1
+                        } else {
+                            p1 + (self.rng.gen::<u64>() % ((p2 - p1 + 1) as u64)) as i64
+                        }
+                    }
+                    "$dist_normal" => {
+                        let mean = p1 as f64;
+                        let sd = p2 as f64;
+                        if sd <= 0.0 {
+                            mean as i64
+                        } else {
+                            (mean + normal(&mut self.rng) * sd).round() as i64
+                        }
+                    }
+                    "$dist_exponential" => {
+                        let mean = p1 as f64;
+                        if mean <= 0.0 {
+                            0
+                        } else {
+                            let u: f64 = 1.0 - self.rng.gen::<f64>();
+                            (-mean * u.ln()).round() as i64
+                        }
+                    }
+                    "$dist_poisson" => {
+                        let mean = p1 as f64;
+                        if mean <= 0.0 {
+                            0
+                        } else {
+                            let l = (-mean).exp();
+                            let mut k = 0i64;
+                            let mut p = 1.0f64;
+                            loop {
+                                p *= self.rng.gen::<f64>();
+                                if p <= l || k > 1_000_000 {
+                                    break;
+                                }
+                                k += 1;
+                            }
+                            k
+                        }
+                    }
+                    "$dist_chi_square" => {
+                        let df = p1.max(1);
+                        let mut sum = 0.0f64;
+                        for _ in 0..df {
+                            let z = normal(&mut self.rng);
+                            sum += z * z;
+                        }
+                        sum.round() as i64
+                    }
+                    "$dist_t" => {
+                        let df = p1.max(1);
+                        let mut sum = 0.0f64;
+                        for _ in 0..df {
+                            let z = normal(&mut self.rng);
+                            sum += z * z;
+                        }
+                        let z = normal(&mut self.rng);
+                        let denom = (sum / df as f64).sqrt();
+                        if denom <= 0.0 {
+                            0
+                        } else {
+                            (z / denom).round() as i64
+                        }
+                    }
+                    _ => {
+                        // $dist_erlang(seed, k, mean)
+                        let k = p1.max(1);
+                        let mean = p2 as f64;
+                        if mean <= 0.0 {
+                            0
+                        } else {
+                            let mut sum = 0.0f64;
+                            for _ in 0..k {
+                                let u: f64 = 1.0 - self.rng.gen::<f64>();
+                                sum += -u.ln();
+                            }
+                            (sum * (mean / k as f64)).round() as i64
+                        }
+                    }
+                };
+                if let Some(IrExpr::Signal(sid, _)) = args.first() {
+                    let s: u32 = self.rng.gen();
+                    self.state
+                        .write_signal(*sid, LogicVec::from_u64(s as u64, 32));
+                }
+                Ok(LogicVec::from_u64(val as u64, 32))
+            }
             "$urandom_seed" => {
                 let prev_seed = self.rand_seed;
                 let seed = args
