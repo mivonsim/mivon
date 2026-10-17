@@ -7252,6 +7252,62 @@ endmodule
 }
 
 #[test]
+fn test_fread_memory_start_count() {
+    use std::fs;
+    let file = "/tmp/test_mivon_fread.bin";
+    let _ = fs::write(file, [0x11u8, 0x22, 0x33, 0x44]);
+    let source = format!(
+        r#"
+module tb;
+    reg [7:0] m [0:3];
+    integer fd;
+    integer r;
+    initial begin
+        m[0]=8'h00; m[1]=8'h00; m[2]=8'h00; m[3]=8'h00;
+        fd = $fopen("{f}", "rb");
+        r = $fread(m, fd, 1, 2);
+        $fclose(fd);
+        #1 $finish;
+    end
+endmodule
+"#,
+        f = file
+    );
+    let sigs = simulate_signals(&source, 10).unwrap();
+    let get = |name: &str| -> u64 {
+        sigs.iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, v)| v.to_u64())
+            .unwrap_or(u64::MAX)
+    };
+    assert_eq!(get("r"), 2, "jumlah word terbaca");
+    // m[1], m[2] terisi; m[0], m[3] tetap.
+    let m = sigs
+        .iter()
+        .find(|(n, _)| n == "m")
+        .map(|(_, v)| v.clone())
+        .unwrap();
+    assert_eq!(
+        m.bits[0..8]
+            .iter()
+            .filter(|b| **b == mivon_ir::LogicVal::One)
+            .count(),
+        0
+    );
+    let word1: u64 = (0..8)
+        .filter(|i| m.bits[8 + i] == mivon_ir::LogicVal::One)
+        .map(|i| 1u64 << i)
+        .sum();
+    let word2: u64 = (0..8)
+        .filter(|i| m.bits[16 + i] == mivon_ir::LogicVal::One)
+        .map(|i| 1u64 << i)
+        .sum();
+    assert_eq!(word1, 0x11);
+    assert_eq!(word2, 0x22);
+    let _ = fs::remove_file(file);
+}
+
+#[test]
 fn test_writemem_range() {
     use std::fs;
     let file = "/tmp/test_mivon_writemem_range.hex";

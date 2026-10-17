@@ -853,8 +853,53 @@ impl SimulationEngine {
                     None
                 };
                 if let (Some(sid), Some(bytes)) = (target, data) {
+                    let (elem_w, total_words, is_mem) = match self.design.top.signals.get(sid) {
+                        Some(si) => {
+                            let ew = si.elem_width.max(1);
+                            (ew, si.width / ew, si.elem_width > 0 && si.width > si.elem_width)
+                        }
+                        None => (0, 0, false),
+                    };
+                    if is_mem {
+                        // $fread(mem, fd [, start [, count]]) — start/count dalam word.
+                        let elem_bytes = elem_w.div_ceil(8);
+                        let start = args
+                            .get(2)
+                            .and_then(|a| self.evaluate_expr(a).ok().map(|v| v.to_u64() as usize))
+                            .unwrap_or(0);
+                        let count = args
+                            .get(3)
+                            .and_then(|a| self.evaluate_expr(a).ok().map(|v| v.to_u64() as usize))
+                            .unwrap_or_else(|| total_words.saturating_sub(start));
+                        let mut packed = self.state.read_signal(sid).clone();
+                        let mut read = 0usize;
+                        for i in 0..count {
+                            let off = i * elem_bytes;
+                            if off >= bytes.len() {
+                                break;
+                            }
+                            let end = (off + elem_bytes).min(bytes.len());
+                            let base = (start + i) * elem_w;
+                            for (bi, byte) in bytes[off..end].iter().enumerate() {
+                                for b in 0..8 {
+                                    let idx = base + bi * 8 + b;
+                                    if idx < packed.bits.len() {
+                                        packed.bits[idx] = if (byte >> b) & 1 == 1 {
+                                            LogicVal::One
+                                        } else {
+                                            LogicVal::Zero
+                                        };
+                                    }
+                                }
+                            }
+                            read += 1;
+                        }
+                        self.state.write_signal(sid, packed);
+                        return Ok(LogicVec::from_u64(read as u64, 32));
+                    }
+                    // Register/vector: isi dari byte stream.
                     let mut bits = Vec::with_capacity(bytes.len() * 8);
-                    for byte in bytes {
+                    for byte in bytes.iter() {
                         for i in 0..8 {
                             bits.push(if (byte >> i) & 1 == 1 {
                                 LogicVal::One
@@ -870,8 +915,9 @@ impl SimulationEngine {
                             bits,
                         },
                     );
+                    return Ok(LogicVec::from_u64(bytes.len() as u64, 32));
                 }
-                Ok(LogicVec::from_u64(0, 1))
+                Ok(LogicVec::from_u64(0, 32))
             }
             "$fclose" => {
                 let handle = args
