@@ -153,9 +153,9 @@ pub fn run(args: &SynthArgs) -> Result<(), SimError> {
                 }
             }
             if args.dump_netlist && !args.quiet {
-                println!("\n── netlist.v ──");
+                section("netlist.v");
                 print!("{}", mivon_netlist::emit_verilog(&nl));
-                println!("\n── .mvnet ──");
+                section(".mvnet");
                 print!("{}", mivon_netlist::emit_mvnet(&nl));
             }
             if args.emit_netlist {

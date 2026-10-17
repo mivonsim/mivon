@@ -24,9 +24,14 @@ pub fn human_bytes(n: u64) -> String {
     }
 }
 
+/// Bangun string header section yang konsisten (pure, dapat diuji).
+pub fn format_section(title: &str) -> String {
+    format!("\n── {} ──", title)
+}
+
 /// Cetak header section yang konsisten.
 pub fn section(title: &str) {
-    println!("\n── {} ──", title);
+    println!("{}", format_section(title));
 }
 
 /// Cetak satu baris bullet.
@@ -284,6 +289,11 @@ mod tests {
             rhs: Box::new(Expr::Value(Value::Decimal(2))),
         };
         assert_eq!(expr_to_string(&e), "1 + 2");
+    }
+
+    #[test]
+    fn test_format_section() {
+        assert_eq!(format_section("Stats"), "\n── Stats ──");
     }
 
     #[test]
