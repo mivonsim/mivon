@@ -60,14 +60,16 @@ impl SimulationEngine {
                 .collect();
             let test_name = arg_vals.first().map(logicvec_to_string).unwrap_or_default();
             self.run_uvm_test(&test_name)?;
-        } else if name == "strobe" {
-            self.strobe_events.push(ir_args.to_vec());
-        } else if name == "fstrobe" {
-            let handle = ir_args
-                .first()
-                .and_then(|a| self.evaluate_expr(a).ok().map(|v| v.to_u64() as u32));
-            if let Some(h) = handle {
-                self.fstrobe_events.push((h, ir_args[1..].to_vec()));
+        } else if let Some((is_fstrobe, radix)) = crate::simulator::util::strobe_task(name) {
+            if is_fstrobe {
+                let handle = ir_args
+                    .first()
+                    .and_then(|a| self.evaluate_expr(a).ok().map(|v| v.to_u64() as u32));
+                if let Some(h) = handle {
+                    self.fstrobe_events.push((h, radix, ir_args[1..].to_vec()));
+                }
+            } else {
+                self.strobe_events.push((radix, ir_args.to_vec()));
             }
         } else if name == "fmonitor" {
             let handle = ir_args
@@ -1147,14 +1149,16 @@ impl SimulationEngine {
                 .collect();
             let test_name = arg_vals.first().map(logicvec_to_string).unwrap_or_default();
             self.run_uvm_test(&test_name)?;
-        } else if name == "strobe" {
-            self.strobe_events.push(ir_args.to_vec());
-        } else if name == "fstrobe" {
-            let handle = ir_args
-                .first()
-                .and_then(|a| self.evaluate_expr(a).ok().map(|v| v.to_u64() as u32));
-            if let Some(h) = handle {
-                self.fstrobe_events.push((h, ir_args[1..].to_vec()));
+        } else if let Some((is_fstrobe, radix)) = crate::simulator::util::strobe_task(name) {
+            if is_fstrobe {
+                let handle = ir_args
+                    .first()
+                    .and_then(|a| self.evaluate_expr(a).ok().map(|v| v.to_u64() as u32));
+                if let Some(h) = handle {
+                    self.fstrobe_events.push((h, radix, ir_args[1..].to_vec()));
+                }
+            } else {
+                self.strobe_events.push((radix, ir_args.to_vec()));
             }
         } else if name == "fmonitor" {
             let handle = ir_args

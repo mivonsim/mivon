@@ -65,15 +65,15 @@ impl SimulationEngine {
     /// Process $strobe and $fstrobe events in the postponed region.
     pub(crate) fn process_strobe(&mut self) -> Result<(), SimError> {
         let events = std::mem::take(&mut self.strobe_events);
-        for args in &events {
-            let msg = self.format_display(args);
-            print!("{}", msg);
+        for (radix, args) in &events {
+            let msg = self.format_display_radix(args, *radix);
+            println!("{}", msg);
         }
         let fstrobe = std::mem::take(&mut self.fstrobe_events);
-        for (handle, args) in &fstrobe {
-            let msg = self.format_display(args);
+        for (handle, radix, args) in &fstrobe {
+            let msg = self.format_display_radix(args, *radix);
             if let Some(f) = self.file_handles.get_mut(handle) {
-                let _ = write!(f, "{}", msg);
+                let _ = writeln!(f, "{}", msg);
             }
         }
         Ok(())

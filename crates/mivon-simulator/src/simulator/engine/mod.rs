@@ -265,8 +265,10 @@ pub struct SimulationEngine {
     /// semua fid yang ditunggu sudah selesai.
     pub pending_wait_forks: Vec<WaitForkState>,
     pub reactive_events: Vec<EventKind>,
-    pub strobe_events: Vec<Vec<IrExpr>>,
-    pub fstrobe_events: Vec<(u32, Vec<IrExpr>)>,
+    /// (radix default opsional, argumen) — radix utk $strobeb/$strobeh/$strobeo.
+    pub strobe_events: Vec<(Option<char>, Vec<IrExpr>)>,
+    /// (handle, radix default opsional, argumen) — utk varian $fstrobe*.
+    pub fstrobe_events: Vec<(u32, Option<char>, Vec<IrExpr>)>,
     pub fmonitor_map: HashMap<u32, (Vec<IrExpr>, Vec<LogicVec>)>,
     pub mailbox_queues: HashMap<usize, VecDeque<LogicVec>>,
     /// LANG-24: batas kapasitas per mailbox (bounded mode). Absen/0 = unbounded.

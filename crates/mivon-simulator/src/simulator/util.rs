@@ -533,6 +533,22 @@ pub(crate) fn display_task_radix(name: &str) -> Option<(bool, Option<char>)> {
     }
 }
 
+/// Peta nama system task strobe (tanpa prefiks dolar) ke (apakah fstrobe,
+/// radix default). None = bukan task strobe.
+pub(crate) fn strobe_task(name: &str) -> Option<(bool, Option<char>)> {
+    match name {
+        "strobe" => Some((false, None)),
+        "fstrobe" => Some((true, None)),
+        "strobeb" => Some((false, Some('b'))),
+        "strobeh" => Some((false, Some('h'))),
+        "strobeo" => Some((false, Some('o'))),
+        "fstrobeb" => Some((true, Some('b'))),
+        "fstrobeh" => Some((true, Some('h'))),
+        "fstrobeo" => Some((true, Some('o'))),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 fn format_display_core(
     fmt_str: &str,
@@ -1898,5 +1914,18 @@ mod tests {
         assert_eq!(display_task_radix("writeh"), Some((false, Some('h'))));
         assert_eq!(display_task_radix("writeo"), Some((false, Some('o'))));
         assert_eq!(display_task_radix("finish"), None);
+    }
+
+    #[test]
+    fn test_strobe_task_mapping() {
+        assert_eq!(strobe_task("strobe"), Some((false, None)));
+        assert_eq!(strobe_task("fstrobe"), Some((true, None)));
+        assert_eq!(strobe_task("strobeb"), Some((false, Some('b'))));
+        assert_eq!(strobe_task("strobeh"), Some((false, Some('h'))));
+        assert_eq!(strobe_task("strobeo"), Some((false, Some('o'))));
+        assert_eq!(strobe_task("fstrobeb"), Some((true, Some('b'))));
+        assert_eq!(strobe_task("fstrobeh"), Some((true, Some('h'))));
+        assert_eq!(strobe_task("fstrobeo"), Some((true, Some('o'))));
+        assert_eq!(strobe_task("display"), None);
     }
 }
