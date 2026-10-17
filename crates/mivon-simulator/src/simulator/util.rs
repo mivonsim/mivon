@@ -533,6 +533,22 @@ pub(crate) fn display_task_radix(name: &str) -> Option<(bool, Option<char>)> {
     }
 }
 
+/// Peta nama system task file-display (tanpa prefiks dolar) ke
+/// (tambahkan newline?, radix default). None = bukan task file-display.
+pub(crate) fn file_display_task_radix(name: &str) -> Option<(bool, Option<char>)> {
+    match name {
+        "fdisplay" => Some((true, None)),
+        "fwrite" => Some((false, None)),
+        "fdisplayb" => Some((true, Some('b'))),
+        "fdisplayh" => Some((true, Some('h'))),
+        "fdisplayo" => Some((true, Some('o'))),
+        "fwriteb" => Some((false, Some('b'))),
+        "fwriteh" => Some((false, Some('h'))),
+        "fwriteo" => Some((false, Some('o'))),
+        _ => None,
+    }
+}
+
 /// Peta nama system task strobe (tanpa prefiks dolar) ke (apakah fstrobe,
 /// radix default). None = bukan task strobe.
 pub(crate) fn strobe_task(name: &str) -> Option<(bool, Option<char>)> {
@@ -1978,6 +1994,19 @@ mod tests {
         assert_eq!(display_task_radix("writeh"), Some((false, Some('h'))));
         assert_eq!(display_task_radix("writeo"), Some((false, Some('o'))));
         assert_eq!(display_task_radix("finish"), None);
+    }
+
+    #[test]
+    fn test_file_display_task_radix_mapping() {
+        assert_eq!(file_display_task_radix("fdisplay"), Some((true, None)));
+        assert_eq!(file_display_task_radix("fwrite"), Some((false, None)));
+        assert_eq!(file_display_task_radix("fdisplayb"), Some((true, Some('b'))));
+        assert_eq!(file_display_task_radix("fdisplayh"), Some((true, Some('h'))));
+        assert_eq!(file_display_task_radix("fdisplayo"), Some((true, Some('o'))));
+        assert_eq!(file_display_task_radix("fwriteb"), Some((false, Some('b'))));
+        assert_eq!(file_display_task_radix("fwriteh"), Some((false, Some('h'))));
+        assert_eq!(file_display_task_radix("fwriteo"), Some((false, Some('o'))));
+        assert_eq!(file_display_task_radix("fscanf"), None);
     }
 
     #[test]

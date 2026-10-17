@@ -6927,6 +6927,35 @@ endmodule
 }
 
 #[test]
+fn test_fdisplay_radix_variants() {
+    use std::fs;
+    let test_file = "/tmp/test_mivon_fdisplay_radix.txt";
+    let _ = fs::remove_file(test_file);
+    let source = format!(
+        r#"
+module tb;
+    integer fd;
+    reg [7:0] v;
+    initial begin
+        v = 8'h2a;
+        fd = $fopen("{f}", "w");
+        $fdisplayh(fd, v);
+        $fwriteb(fd, v);
+        $fdisplayo(fd, v);
+        $fclose(fd);
+        $finish;
+    end
+endmodule
+"#,
+        f = test_file
+    );
+    let _ = simulate_signals(&source, 10).unwrap();
+    let content = fs::read_to_string(test_file).unwrap_or_default();
+    assert_eq!(content, "2a\n00101010052\n");
+    let _ = fs::remove_file(test_file);
+}
+
+#[test]
 fn test_writemem_hex_and_bin() {
     use std::fs;
     let hex_file = "/tmp/test_mivon_writemem.hex";

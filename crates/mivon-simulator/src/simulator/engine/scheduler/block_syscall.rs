@@ -470,26 +470,22 @@ impl SimulationEngine {
                     }
                 }
             }
-        } else if name == "fdisplay" {
+        } else if let Some((newline, radix)) =
+            crate::simulator::util::file_display_task_radix(name)
+        {
             let handle = ir_args
                 .first()
                 .and_then(|a| self.evaluate_expr(a).ok().map(|v| v.to_u64() as u32));
             if let Some(h) = handle {
-                let msg = self.format_display(&ir_args[1..]);
+                let msg = self.format_display_radix(&ir_args[1..], radix);
                 if let Some(f) = self.file_handles.get_mut(&h) {
                     // LRM: $fdisplay = $fwrite + newline (VCS/iverilog patuh;
                     // mivon sebelumnya concat tanpa '\n' — artefak differential).
-                    let _ = writeln!(f, "{}", msg);
-                }
-            }
-        } else if name == "fwrite" {
-            let handle = ir_args
-                .first()
-                .and_then(|a| self.evaluate_expr(a).ok().map(|v| v.to_u64() as u32));
-            if let Some(h) = handle {
-                let msg = self.format_display(&ir_args[1..]);
-                if let Some(f) = self.file_handles.get_mut(&h) {
-                    let _ = write!(f, "{}", msg);
+                    if newline {
+                        let _ = writeln!(f, "{}", msg);
+                    } else {
+                        let _ = write!(f, "{}", msg);
+                    }
                 }
             }
         } else if name == "fscanf" {
@@ -1425,26 +1421,22 @@ impl SimulationEngine {
                     }
                 }
             }
-        } else if name == "fdisplay" {
+        } else if let Some((newline, radix)) =
+            crate::simulator::util::file_display_task_radix(name)
+        {
             let handle = ir_args
                 .first()
                 .and_then(|a| self.evaluate_expr(a).ok().map(|v| v.to_u64() as u32));
             if let Some(h) = handle {
-                let msg = self.format_display(&ir_args[1..]);
+                let msg = self.format_display_radix(&ir_args[1..], radix);
                 if let Some(f) = self.file_handles.get_mut(&h) {
                     // LRM: $fdisplay = $fwrite + newline (VCS/iverilog patuh;
                     // mivon sebelumnya concat tanpa '\n' — artefak differential).
-                    let _ = writeln!(f, "{}", msg);
-                }
-            }
-        } else if name == "fwrite" {
-            let handle = ir_args
-                .first()
-                .and_then(|a| self.evaluate_expr(a).ok().map(|v| v.to_u64() as u32));
-            if let Some(h) = handle {
-                let msg = self.format_display(&ir_args[1..]);
-                if let Some(f) = self.file_handles.get_mut(&h) {
-                    let _ = write!(f, "{}", msg);
+                    if newline {
+                        let _ = writeln!(f, "{}", msg);
+                    } else {
+                        let _ = write!(f, "{}", msg);
+                    }
                 }
             }
         } else if name == "fscanf" {
