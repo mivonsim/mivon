@@ -606,15 +606,33 @@ impl Elaborator {
                                 Ok(IrExpr::ExprRangeSelect(Box::new(inner_expr), msb_c, lsb_c))
                             }
                         }
-                        _ => Err(self.elab_diag_at(
-                            DiagCode::NotImplemented,
-                            format!(
-                                "dynamic range select not supported: bounds [{:?}:{:?}] are not constant at elaboration",
-                                msb, lsb
-                            ),
-                            expr_location(expr).0,
-                            expr_location(expr).1,
-                        )),
+                        _ => {
+                            // Fallback: try to get width from signal info
+                            // when bounds can't be const-evaluated.
+                            if let Some(msb_v) = msb_v {
+                                if let Some(lsb_v) = lsb_v {
+                                    let (msb_c, lsb_c) = (msb_v.max(0) as usize, lsb_v.max(0) as usize);
+                                    if let IrExpr::Signal(sid, _) = &inner_expr {
+                                        let sig = &signals[*sid];
+                                        let msb_p = index_to_bitpos(msb_c, sig.msb, sig.lsb);
+                                        let lsb_p = index_to_bitpos(lsb_c, sig.msb, sig.lsb);
+                                        return Ok(IrExpr::RangeSelect(*sid, msb_p, lsb_p));
+                                    } else {
+                                        return Ok(IrExpr::ExprRangeSelect(Box::new(inner_expr), msb_c, lsb_c));
+                                    }
+                                }
+                            }
+                            // If we still can't determine width, emit error as before
+                            Err(self.elab_diag_at(
+                                DiagCode::NotImplemented,
+                                format!(
+                                    "dynamic range select not supported: bounds [{:?}:{:?}] are not constant at elaboration",
+                                    msb, lsb
+                                ),
+                                expr_location(expr).0,
+                                expr_location(expr).1,
+                            ))
+                        }
                     }
                 }
             }
