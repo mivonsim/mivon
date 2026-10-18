@@ -1004,82 +1004,8 @@ impl SimulationEngine {
                 );
             }
         } else if name == "sscanf" {
-            if let Some(input_arg) = ir_args.first() {
-                let input_str = if let IrExpr::String(s) = input_arg {
-                    s.clone()
-                } else if let Ok(val) = self.evaluate_expr(input_arg) {
-                    logicvec_to_string(&val)
-                } else {
-                    String::new()
-                };
-                let fmt = ir_args.get(1).and_then(|a| {
-                    if let IrExpr::String(s) = a {
-                        Some(s.clone())
-                    } else {
-                        None
-                    }
-                });
-                if let Some(ref fmt_str) = fmt {
-                    let tokens: Vec<&str> = input_str.split_whitespace().collect();
-                    let mut ti = 0;
-                    let mut ai = 0;
-                    let mut chars = fmt_str.chars().peekable();
-                    while let Some(c) = chars.next() {
-                        if c == '%' {
-                            if let Some(spec) = chars.next() {
-                                if spec == 'd' || spec == 'h' || spec == 'b' || spec == 'o' {
-                                    if let Some(tok) = tokens.get(ti) {
-                                        let radix = if spec == 'h' {
-                                            16
-                                        } else if spec == 'o' {
-                                            8
-                                        } else if spec == 'b' {
-                                            2
-                                        } else {
-                                            10
-                                        };
-                                        if let Ok(val) = i64::from_str_radix(tok, radix) {
-                                            if let Some(IrExpr::Signal(sid, _)) =
-                                                ir_args.get(2 + ai)
-                                            {
-                                                self.state.write_signal(
-                                                    *sid,
-                                                    LogicVec::from_u64(val as u64, 32),
-                                                );
-                                            }
-                                            ai += 1;
-                                        }
-                                    }
-                                    ti += 1;
-                                } else if spec == 's' {
-                                    if let Some(IrExpr::Signal(sid, _)) = ir_args.get(2 + ai) {
-                                        let s = tokens[ti..].join(" ");
-                                        let mut bits = Vec::with_capacity(s.len() * 8);
-                                        for c in s.chars() {
-                                            let byte = c as u8;
-                                            for i in 0..8 {
-                                                bits.push(if (byte >> i) & 1 == 1 {
-                                                    LogicVal::One
-                                                } else {
-                                                    LogicVal::Zero
-                                                });
-                                            }
-                                        }
-                                        self.state.write_signal(
-                                            *sid,
-                                            LogicVec {
-                                                width: bits.len(),
-                                                bits,
-                                            },
-                                        );
-                                    }
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            // $sscanf: tulis ke argumen, return value diabaikan.
+            let _ = self.sscanf_impl(ir_args);
         } else if name == "test$plusargs" {
             // $test$plusargs in statement context — return value ignored
         } else if name == "coverage_merge" {
@@ -2022,82 +1948,8 @@ impl SimulationEngine {
                 );
             }
         } else if name == "sscanf" {
-            if let Some(input_arg) = ir_args.first() {
-                let input_str = if let IrExpr::String(s) = input_arg {
-                    s.clone()
-                } else if let Ok(val) = self.evaluate_expr(input_arg) {
-                    logicvec_to_string(&val)
-                } else {
-                    String::new()
-                };
-                let fmt = ir_args.get(1).and_then(|a| {
-                    if let IrExpr::String(s) = a {
-                        Some(s.clone())
-                    } else {
-                        None
-                    }
-                });
-                if let Some(ref fmt_str) = fmt {
-                    let tokens: Vec<&str> = input_str.split_whitespace().collect();
-                    let mut ti = 0;
-                    let mut ai = 0;
-                    let mut chars = fmt_str.chars().peekable();
-                    while let Some(c) = chars.next() {
-                        if c == '%' {
-                            if let Some(spec) = chars.next() {
-                                if spec == 'd' || spec == 'h' || spec == 'b' || spec == 'o' {
-                                    if let Some(tok) = tokens.get(ti) {
-                                        let radix = if spec == 'h' {
-                                            16
-                                        } else if spec == 'o' {
-                                            8
-                                        } else if spec == 'b' {
-                                            2
-                                        } else {
-                                            10
-                                        };
-                                        if let Ok(val) = i64::from_str_radix(tok, radix) {
-                                            if let Some(IrExpr::Signal(sid, _)) =
-                                                ir_args.get(2 + ai)
-                                            {
-                                                self.state.write_signal(
-                                                    *sid,
-                                                    LogicVec::from_u64(val as u64, 32),
-                                                );
-                                            }
-                                            ai += 1;
-                                        }
-                                    }
-                                    ti += 1;
-                                } else if spec == 's' {
-                                    if let Some(IrExpr::Signal(sid, _)) = ir_args.get(2 + ai) {
-                                        let s = tokens[ti..].join(" ");
-                                        let mut bits = Vec::with_capacity(s.len() * 8);
-                                        for c in s.chars() {
-                                            let byte = c as u8;
-                                            for i in 0..8 {
-                                                bits.push(if (byte >> i) & 1 == 1 {
-                                                    LogicVal::One
-                                                } else {
-                                                    LogicVal::Zero
-                                                });
-                                            }
-                                        }
-                                        self.state.write_signal(
-                                            *sid,
-                                            LogicVec {
-                                                width: bits.len(),
-                                                bits,
-                                            },
-                                        );
-                                    }
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            // $sscanf: tulis ke argumen, return value diabaikan.
+            let _ = self.sscanf_impl(ir_args);
         } else if name == "test$plusargs" {
             // $test$plusargs in statement context — return value ignored
         } else if name == "coverage_merge" {

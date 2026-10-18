@@ -1121,6 +1121,105 @@ impl SimulationEngine {
     /// pertama yang berupa konstanta kecil (finish_number 0–2 per LRM §20.2,
     /// mis. `$fatal(1, "msg")`) di-skip — finish number bukan bagian pesan.
     /// Sisanya diformat persis seperti $display.
+    /// Parse ala $sscanf: tulis ke argumen signal, kembalikan jumlah
+    /// assignment yang berhasil. Dipakai jalur IR (statement) & AST/ekspresi.
+    pub(crate) fn sscanf_impl(&mut self, ir_args: &[IrExpr]) -> usize {
+        let input_str = match ir_args.first() {
+            Some(IrExpr::String(s)) => s.clone(),
+            Some(a) => match self.evaluate_expr(a) {
+                Ok(v) => logicvec_to_string(&v),
+                Err(_) => return 0,
+            },
+            None => return 0,
+        };
+        let fmt = match ir_args.get(1) {
+            Some(IrExpr::String(s)) => s.clone(),
+            Some(a) => match self.evaluate_expr(a) {
+                Ok(v) => logicvec_to_string(&v),
+                Err(_) => return 0,
+            },
+            None => return 0,
+        };
+        let tokens: Vec<&str> = input_str.split_whitespace().collect();
+        let mut ti = 0usize;
+        let mut ai = 0usize;
+        let mut count = 0usize;
+        let mut chars = fmt.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c != '%' {
+                continue;
+            }
+            let mut spec = None;
+            for ch in chars.by_ref() {
+                if ch.is_ascii_digit() {
+                    continue;
+                }
+                spec = Some(ch);
+                break;
+            }
+            let spec = match spec {
+                Some(s) => s,
+                None => break,
+            };
+            if spec == '%' {
+                continue;
+            }
+            let tok = match tokens.get(ti) {
+                Some(t) => *t,
+                None => break,
+            };
+            match spec {
+                'd' | 'i' | 'h' | 'x' | 'X' | 'o' | 'b' => {
+                    let radix = match spec {
+                        'h' | 'x' | 'X' => 16,
+                        'o' => 8,
+                        'b' => 2,
+                        _ => 10,
+                    };
+                    let cleaned = tok.trim_start_matches("0x").trim_start_matches("0X");
+                    if let Ok(val) = i64::from_str_radix(cleaned, radix) {
+                        if let Some(IrExpr::Signal(sid, _)) = ir_args.get(2 + ai) {
+                            let w = self.design.top.signals.get(*sid).map(|s| s.width.max(1)).unwrap_or(32);
+                            self.state.write_signal(*sid, LogicVec::from_u64(val as u64, w));
+                            count += 1;
+                        }
+                        ai += 1;
+                    }
+                    ti += 1;
+                }
+                's' => {
+                    if let Some(IrExpr::Signal(sid, _)) = ir_args.get(2 + ai) {
+                        let s = tokens[ti..].join(" ");
+                        self.state.write_signal(*sid, string_to_logicvec(&s));
+                        count += 1;
+                    }
+                    break;
+                }
+                'c' => {
+                    if let Some(IrExpr::Signal(sid, _)) = ir_args.get(2 + ai) {
+                        let b = tok.as_bytes().first().copied().unwrap_or(0);
+                        self.state.write_signal(*sid, LogicVec::from_u64(b as u64, 8));
+                        count += 1;
+                    }
+                    ti += 1;
+                    ai += 1;
+                }
+                'f' | 'e' | 'g' => {
+                    if let Ok(f) = tok.parse::<f64>() {
+                        if let Some(IrExpr::Signal(sid, _)) = ir_args.get(2 + ai) {
+                            self.state.write_signal(*sid, LogicVec::from_u64(f.to_bits(), 64));
+                            count += 1;
+                        }
+                        ai += 1;
+                    }
+                    ti += 1;
+                }
+                _ => {}
+            }
+        }
+        count
+    }
+
     pub(crate) fn format_severity_message(&mut self, ir_args: &[IrExpr]) -> String {
         let args = match ir_args.first() {
             Some(IrExpr::Const(v)) if v.to_u64() <= 2 => &ir_args[1..],

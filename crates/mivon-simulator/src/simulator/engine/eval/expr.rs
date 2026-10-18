@@ -1179,6 +1179,12 @@ impl SimulationEngine {
                 }
                 Ok(LogicVec::from_u64(0, 32))
             }
+            "$sscanf" => {
+                // $sscanf(str, fmt, out...) sebagai ekspresi: kembalikan
+                // jumlah assignment yang berhasil (paritas iverilog).
+                let count = self.sscanf_impl(args);
+                Ok(LogicVec::from_u64(count as u64, 32))
+            }
             "$sformatf" => {
                 if args.is_empty() {
                     return Ok(LogicVec::new(0));

@@ -7332,6 +7332,34 @@ endmodule
 }
 
 #[test]
+fn test_sscanf_parses_d_h_c() {
+    let source = r#"
+module tb;
+    integer n;
+    reg [31:0] v, a, b;
+    reg [7:0] c;
+    initial begin
+        n = $sscanf("42", "%d", v);
+        n = $sscanf("dead beef", "%h %h", a, b);
+        n = $sscanf("X", "%c", c);
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 10).unwrap();
+    let get = |name: &str| -> u64 {
+        sigs.iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, v)| v.to_u64())
+            .unwrap_or(u64::MAX)
+    };
+    assert_eq!(get("v"), 42);
+    assert_eq!(get("a"), 0xdead);
+    assert_eq!(get("b"), 0xbeef);
+    assert_eq!(get("c"), 0x58); // 'X' = 0x58
+}
+
+#[test]
 fn test_sreadmemh_and_bin() {
     let source = r#"
 module tb;
