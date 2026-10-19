@@ -329,19 +329,22 @@ impl<'a> Builder<'a> {
                     items,
                     default,
                 } => {
-                    if matches!(case_type, mivon_ir::CaseType::Inside) {
-                        self.skipped.push(
-                            "case inside (label rentang [lo:hi]) belum didukung SIR fase 1".into(),
-                        );
-                    }
+                    // `case inside`: label bisa rentang `[lo:hi]` → bandingkan
+                    // dengan GE & LE, bukan EQ (label tunggal tetap EQ).
+                    let is_inside = matches!(case_type, mivon_ir::CaseType::Inside);
                     let sel = self.lower_expr(expr);
                     let mut cur = self.lower_stmts(default, holds, &out, is_seq);
                     // Priority chain: item terakhir = prioritas terendah.
                     for item in items.iter().rev() {
                         let body = self.lower_stmts(&item.body, holds, &out, is_seq);
                         for label in item.labels.iter().rev() {
-                            let lv = self.lower_expr(label);
-                            let eq = self.node(SirNodeKind::Eq, vec![sel, lv], 1);
+                            let eq = if is_inside {
+                                self.lower_inside_item(sel, label)
+                            } else {
+                                let lv = self.lower_expr(label);
+                                let (a, b) = self.align_consts(sel, lv);
+                                self.node(SirNodeKind::Eq, vec![a, b], 1)
+                            };
                             cur = self.merge_branches(eq, &body, &cur, &out, holds);
                         }
                     }
@@ -511,6 +514,23 @@ impl<'a> Builder<'a> {
                     }
                 }
             }
+            // `x inside {a, b, [lo:hi]}` — OR dari perbandingan (sintesizable).
+            IrExpr::Inside { expr, list } => {
+                let v = self.lower_expr(expr);
+                let mut acc: Option<ValueId> = None;
+                for item in list {
+                    let cmp = self.lower_inside_item(v, item);
+                    acc = Some(match acc {
+                        None => cmp,
+                        Some(a) => self.node(SirNodeKind::Or, vec![a, cmp], 1),
+                    });
+                }
+                acc.unwrap_or_else(|| self.const_zero(1))
+            }
+            IrExpr::InsideRange { expr, lo, hi } => {
+                let v = self.lower_expr(expr);
+                self.lower_range_check(v, lo, hi)
+            }
             IrExpr::BinaryOp(op, a, b) => {
                 let av = self.lower_expr(a);
                 let bv = self.lower_expr(b);
@@ -519,6 +539,20 @@ impl<'a> Builder<'a> {
                 let (av, bv) = self.align_consts(av, bv);
                 let aw = self.value_width(av);
                 let bw = self.value_width(bv);
+                // `**` dengan eksponen KONSTAN → rantai MUL (sintesizable).
+                // Eksponen non-konstan butuh barrel multiplier — non-sintesis.
+                if matches!(op, BinaryIrOp::Power) {
+                    if let Some(exp) = self.const_u64(bv) {
+                        let mut acc = self.const_val(1, aw);
+                        for _ in 0..exp.min(64) {
+                            acc = self.node(SirNodeKind::Mul, vec![acc, av], aw);
+                        }
+                        return acc;
+                    }
+                    self.skipped
+                        .push("** dengan eksponen non-konstan (non-sintesis)".into());
+                    return self.const_zero(aw);
+                }
                 let kind = match op {
                     BinaryIrOp::Add => SirNodeKind::Add,
                     BinaryIrOp::Sub => SirNodeKind::Sub,
@@ -644,6 +678,29 @@ impl<'a> Builder<'a> {
     fn slice_of(&mut self, base: ValueId, msb: usize, lsb: usize) -> ValueId {
         let w = msb.saturating_sub(lsb) + 1;
         self.node(SirNodeKind::Slice { msb, lsb }, vec![base], w)
+    }
+
+    /// Satu item `inside {...}`: nilai tunggal → EQ, rentang → GE & LE.
+    fn lower_inside_item(&mut self, v: ValueId, item: &IrExpr) -> ValueId {
+        match item {
+            IrExpr::InsideRange { lo, hi, .. } => self.lower_range_check(v, lo, hi),
+            other => {
+                let x = self.lower_expr(other);
+                let (a, b) = self.align_consts(v, x);
+                self.node(SirNodeKind::Eq, vec![a, b], 1)
+            }
+        }
+    }
+
+    /// `lo <= v <= hi` (inklusif).
+    fn lower_range_check(&mut self, v: ValueId, lo: &IrExpr, hi: &IrExpr) -> ValueId {
+        let lo_v = self.lower_expr(lo);
+        let hi_v = self.lower_expr(hi);
+        let (a, b) = self.align_consts(v, lo_v);
+        let ge = self.node(SirNodeKind::Ge, vec![a, b], 1);
+        let (c, d) = self.align_consts(v, hi_v);
+        let le = self.node(SirNodeKind::Le, vec![c, d], 1);
+        self.node(SirNodeKind::And, vec![ge, le], 1)
     }
 
     /// Tulis `ew` bit pada `offset` di dalam sinyal `sig` tanpa mengubah bit
