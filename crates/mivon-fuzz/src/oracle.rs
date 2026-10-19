@@ -2931,7 +2931,12 @@ pub(crate) fn first_num_pair(msg: &str) -> Option<(u64, u64)> {
             let path = &msg[p..epath];
             if let Some(ext) = path.rsplit_once('.') {
                 let ext = ext.1;
-                if !ext.is_empty() && ext != "sv" && ext != "mv" {
+                // Ext banding case-insensitive (review T4 nit 5: `.SV` dulu
+                // salah-skip sbg file include).
+                if !ext.is_empty()
+                    && !ext.eq_ignore_ascii_case("sv")
+                    && !ext.eq_ignore_ascii_case("mv")
+                {
                     i = hi + 1;
                     continue;
                 }

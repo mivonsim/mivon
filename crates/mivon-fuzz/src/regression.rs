@@ -1,10 +1,12 @@
 //! Auto-regression: ubah temuan `.mivon-fuzz-bugs/*.sv` (+ `.txt`) menjadi
 //! regression test — mewujudkan "1 bug = 1 test baru".
 //!
-//! Alur: `collect_bugs()` baca artefak bug → `emit_rust_tests()` hasilkan modul//! test Rust (satu `#[test]` per bug) yang mem-replay source via
+//! Alur: `collect_bugs()` baca artefak bug → `emit_rust_tests()` hasilkan
+//! modul test Rust (satu `#[test]` per bug) yang mem-replay source via
 //! `oracle::evaluate` dan menegaskan kategori bug tercatat TIDAK lagi
-//! mereproduksi. Setelah dev memperbaiki bug, test ini menjaga agar tidak
-//! regresi.
+//! mereproduksi (bug ter-fix), atau canary `assert_eq` bila bug MASIH hidup
+//! (hijau kini, merah saat perilaku berubah → sinyal regenerasi). Setelah
+//! dev memperbaiki bug, test ini menjaga agar tidak regresi.
 //!
 //! File hasil (default `crates/mivon-fuzz/tests/fuzz_regression.rs`) di-gate
 //! `#![cfg(feature = "dev")]` supaya `cargo test --workspace` (tanpa dev) tak
@@ -338,7 +340,7 @@ pub fn emit_rust_tests(
 
 /// Deteksi LIVE: artefak bug yang masih mereproduksi kategori tercatat
 /// (bug BELUM diperbaiki). Pemanggil `oracle::evaluate` per entri dengan
-/// timeout REGRESS_EMIT — kelas hasil ≥ timeout dianggap live juga (hang
+/// timeout REGRESS_TIMEOUT_MS — kelas hasil ≥ timeout dianggap live juga (hang
 /// replay dapat berubah Slow, tapi hang jadul tetap bermakna live).
 ///
 /// Canary vs regresi: live → `assert_eq!` (test hijau, merah saat
@@ -348,13 +350,25 @@ pub fn emit_rust_tests(
 pub fn compute_live(entries: &[BugEntry]) -> std::collections::HashSet<String> {
     let mut live = std::collections::HashSet::new();
     for e in entries {
-        if e.skipped {
+        // Fixture-eligible (skipped EMBED_CAP tapi <= FIXTURE_MAX_BYTES)
+        // JUGA dinilai — dulu selalu assert_ne walau bug hidup → suite
+        // merah saat artefak hidup dijadikan fixture (review T4 nit 1).
+        let fixture_eligible = e.skipped
+            && e.skip_reason.starts_with("source ")
+            && e.source.len() <= FIXTURE_MAX_BYTES;
+        if e.skipped && !fixture_eligible {
             continue;
         }
         let Some(target) = Target::from_token(e.target.as_str()) else {
             continue;
         };
-        let r = crate::oracle::evaluate(target, &e.source, REGRESS_TIMEOUT_MS);
+        // Timeout fixture utk artefak besar; biasa utk inline.
+        let t_ms = if e.source.len() > EMBED_CAP {
+            FIXTURE_TIMEOUT_MS
+        } else {
+            REGRESS_TIMEOUT_MS
+        };
+        let r = crate::oracle::evaluate(target, &e.source, t_ms);
         if r.category == e.category {
             live.insert(e.name.clone());
         }

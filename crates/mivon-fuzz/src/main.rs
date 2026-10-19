@@ -713,17 +713,15 @@ fn cmd_regress(args: &[String]) -> i32 {
     // jadi test (`include_str!`) — bukan di-skip sebagai komentar.
     let fixtures = mivon_fuzz::corpus::workspace_root().join("crates/mivon-fuzz/tests/fixtures");
     let mut n_fixture = 0usize;
-    // Nama fixture content-addressed: sumber identik (artefak dup dari
-    // kampanye berbeda) hanya ditulis SEKALI — hemat ruang repo. Cap 16MB:
-    // artefak lebih besar (mis. blowup pre-clamp) tak di-embed — butuh
-    // minimize manual dulu supaya repo tidak membengkak ratusan MB.
-    const FIXTURE_MAX_BYTES: usize = 4 * 1024 * 1024;
+    // Comment kini penyimpanan tunggal mivon-fuzz::regression::FIXTURE_MAX_BYTES
+    // (dulu salinan lokal = 2 mata sumber nilai, review T4 nit 4).
     let mut written: Vec<u64> = Vec::new();
+    let fix_cap = mivon_fuzz::regression::FIXTURE_MAX_BYTES;
     for e in entries
         .iter()
         .filter(|e| e.skipped && e.skip_reason.starts_with("source "))
     {
-        if e.source.len() > FIXTURE_MAX_BYTES {
+        if e.source.len() > fix_cap {
             continue;
         }
         let fp = mivon_fuzz::regression::content_fingerprint(&e.source);
