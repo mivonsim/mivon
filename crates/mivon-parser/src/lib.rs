@@ -2173,18 +2173,38 @@ impl Parser {
                     return Ok(None);
                 }
                 // Bentuk berlabel: `SigintCheck0_A: assert property (...) else ...`
-                // (dihasilkan macro `ASSERT`). Deteksi label + kata kunci assertion
-                // sebelum instance/decl logic diproses.
+                // (dihasilkan macro `ASSERT`). LABEL TIDAK MEMBUANG assertion:
+                // label di-consume lalu body assertion di-parse penuh sama
+                // seperti bentuk tanpa label — elaborator (LANG-04) mengubahnya
+                // jadi always block ber-clock, engine men-track attempts.
+                // Bila body memakai konstruk yang belum bisa di-parse
+                // (operator PSL dll), rollback ke posisi label + skip penuh
+                // (perilaku lama dipertahankan sebagai fallback).
                 if matches!(self.peek_ahead(1), Token::Colon)
                     && matches!(
                         self.peek_ahead(2),
                         Token::Assert | Token::Assume | Token::Cover | Token::Property
                     )
                 {
+                    let save_pos = self.pos.get();
+                    let save_errs = self.errors.len();
+                    let save_steps = self.parse_steps;
+                    let save_peek = self.peek_count.get();
                     self.advance(); // label
                     self.advance(); // ':'
-                    self.skip_assert_item();
-                    return Ok(None);
+                    match self.parse_immediate_assertion() {
+                        Ok(stmt) => return Ok(Some(ModuleItem::PropertyAssert(Box::new(stmt)))),
+                        Err(_) => {
+                            // Rollback: kembalikan posisi token + hapus error
+                            // parsing yang ditambahkan, lalu skip seluruh item.
+                            self.pos.set(save_pos);
+                            self.errors.truncate(save_errs);
+                            self.parse_steps = save_steps;
+                            self.peek_count.set(save_peek);
+                            self.skip_assert_item();
+                            return Ok(None);
+                        }
+                    }
                 }
                 if std::env::var("MIVON_DEBUG_PARSE").is_ok() && name.as_str() == "my_class" {
                     eprintln!(

@@ -14924,6 +14924,66 @@ endmodule
 }
 
 #[test]
+fn test_sva_labeled_assertion() {
+    // LANG-48: assertion berlabel `lbl: assert property (...)` di level
+    // module TIDAK boleh dibuang — label di-consume, body di-parse penuh,
+    // assertion terelaborasi dan ter-evaluate (pass & fail terhitung).
+    //
+    // Pass: tidak berlabel ini pass + berlabel this pass.
+    let pass_src = r#"
+module tb_label_pass;
+  reg clk = 0;
+  reg a = 0;
+  reg b = 0;
+  always #5 clk = ~clk;
+  labeled_ok: assert property (@(posedge clk) a |-> (a == b));
+  unlabeled_ok: assert property (@(posedge clk) b |-> (b == a));
+  initial begin
+    @(posedge clk) a = 1;
+    @(posedge clk) b = 1;   // b==a dari sini → kedua assertion pass
+    @(posedge clk) a = 0;
+    #20; $finish;
+  end
+endmodule
+"#;
+    let design = compile_str(pass_src).expect("compile labeled pass");
+    let mut engine = crate::simulator::SimulationEngine::new(design, 80);
+    let _ = engine.run();
+    let total_pass: u64 = engine.assertion_stats.values().map(|(p, _)| *p).sum();
+    let total_fail: u64 = engine.assertion_stats.values().map(|(_, f)| *f).sum();
+    // 2 assertion (labeled + unlabeled) keduanya harus ter-evaluate.
+    assert!(
+        total_pass >= 2,
+        "labeled assertion pass: pass={} fail={}",
+        total_pass,
+        total_fail
+    );
+
+    // Fail: labeled assertion harus mencatat fail (done tidak terpenuhi).
+    let fail_src = r#"
+module tb_label_fail;
+  reg clk = 0;
+  reg req = 1;   // req true sejak t=0
+  reg done = 0;  // done tidak pernah true
+  always #5 clk = ~clk;
+  as_req_done: assert property (@(posedge clk) req |-> done);
+  initial begin
+    #40; $finish;
+  end
+endmodule
+"#;
+    let design = compile_str(fail_src).expect("compile labeled fail");
+    let mut engine = crate::simulator::SimulationEngine::new(design, 60);
+    let _ = engine.run();
+    let total_fail: u64 = engine.assertion_stats.values().map(|(_, f)| *f).sum();
+    assert!(
+        total_fail >= 1,
+        "labeled assertion fail belum terdeteksi: fail={}",
+        total_fail
+    );
+}
+
+#[test]
 fn test_checker_construct_instance() {
     // LANG-10: checker construct (IEEE 1800-2017 §17.8) — `checker name
     // (ports); assert property... endchecker` dideklarasikan, diinstansiasi
