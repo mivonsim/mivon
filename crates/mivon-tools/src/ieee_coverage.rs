@@ -90,8 +90,8 @@ impl CoverageReport {
         features.push(FeatureEntry {
             section: "4.5".into(),
             name: "Program execution model".into(),
-            status: SupportStatus::Partial,
-            notes: Some("basic initial/always; full program block partial".into()),
+            status: SupportStatus::Full,
+            notes: Some("program dgn port + clock hierarkis via instance conn (LANG-51)".into()),
         });
 
         // ── 6. Modules ──
@@ -264,8 +264,8 @@ impl CoverageReport {
         features.push(FeatureEntry {
             section: "15.5".into(),
             name: "Properties (always, never, iff, disable iff)".into(),
-            status: SupportStatus::Partial,
-            notes: Some("basic property; temporal partial".into()),
+            status: SupportStatus::Full,
+            notes: Some("always/never temporal per-cycle, iff XNOR, disable iff (LANG-49)".into()),
         });
 
         // ── 16. Checker ──
