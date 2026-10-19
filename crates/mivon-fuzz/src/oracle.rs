@@ -230,6 +230,15 @@ fn compile_in_thread(target: Target, source: &str) -> CaseResult {
                     source,
                 );
             }
+            if !diag_loc_in_range(&msg, source) {
+                return mk(
+                    target,
+                    Oracle::O2DiagLocation,
+                    Category::DiagLocRange,
+                    &format!("lokasi diagnostik di luar rentang sumber: {msg}"),
+                    source,
+                );
+            }
             return mk(
                 target,
                 Oracle::O1NoCrash,
@@ -2854,6 +2863,56 @@ fn has_num_colon(msg: &str) -> bool {
     false
 }
 
+/// O2+: verifikasi lokasi diagnostik DALAM RENTANG sumber.
+///
+/// Aturan project: line/col diag wajib 100% akurat menunjuk lokasi masalah.
+/// Compiler bisa melaporkan `file.sv:99999:1:` di sumber 40 baris — dulu
+/// lolos sbg CleanError karena `extract_loc` hanya cek ADA pola
+/// `digit:digit`. Asumsi format mivon: loc SELALU leading (`file:line:col:`
+/// pesan) → pair `digit:digit` PERTAMA = lokasi; range `[a:b]` berawalan
+/// `[` di-skip agar range decl `[8:0]` tidak diperlakukan lokasi.
+///
+/// Line legal 1..=jumlah_baris+1 (+1 = error-EOF sah); col >= 1. TANPA
+/// pair → ok (kendali tetap DiagMissing).
+pub(crate) fn diag_loc_in_range(msg: &str, source: &str) -> bool {
+    match first_num_pair(msg) {
+        Some((line, col)) => {
+            let max_line = source.lines().count() as u64 + 1;
+            (1..=max_line).contains(&line) && col >= 1
+        }
+        None => true,
+    }
+}
+
+/// Pair angka `N:M` pertama di teks: scan pola `digit ':' digit`, expand
+/// digit kiri/kanan. Pair berawalan `[` → range spec, skip.
+pub(crate) fn first_num_pair(msg: &str) -> Option<(u64, u64)> {
+    let b = msg.as_bytes();
+    let n = b.len();
+    let mut i = 0;
+    while i + 2 < n {
+        if b[i].is_ascii_digit() && b[i + 1] == b':' && b[i + 2].is_ascii_digit() {
+            let mut lo = i;
+            while lo > 0 && b[lo - 1].is_ascii_digit() {
+                lo -= 1;
+            }
+            if lo > 0 && b[lo - 1] == b'[' {
+                i += 2;
+                continue;
+            }
+            let mut hi = i + 1;
+            while hi + 1 < n && b[hi + 1].is_ascii_digit() {
+                hi += 1;
+            }
+            let line: u64 = msg[lo..=i].parse().ok()?;
+            let col: u64 = msg[i + 2..=hi].parse().ok()?;
+            return Some((line, col));
+        }
+        i += 1;
+    }
+    None
+}
+
 #[cfg(test)]
 mod scan_tests {
     use super::*;
@@ -2913,6 +2972,40 @@ mod scan_tests {
             "nama sinyal ber-'_corrupt' bukan bukti corrupt"
         );
         assert!(scan_hidden_diags("state corrupt after commit").is_some());
+    }
+
+    /// O2+: line di luar rentang sumber (sumber 40 baris → line 999) = bug.
+    #[test]
+    fn scan_loc_range_rejects_out_of_range() {
+        let src = "module m; endmodule\n"; // 1 baris
+        assert!(
+            !diag_loc_in_range("x.sv:999:1: error: boom", src),
+            "line 999 di sumber 1 baris = DiagLocRange"
+        );
+        assert!(
+            diag_loc_in_range("x.sv:2:1: error: boom", src),
+            "line 2 = 1+1 EOF → sah"
+        );
+        assert!(
+            !diag_loc_in_range("x.sv:1:0: error: boom", src),
+            "col 0 ilegal"
+        );
+        // Loc legal: line = jumlah baris + 1 (EOF) → sah.
+        let five = "a\nb\nc\nd\n";
+        assert!(diag_loc_in_range("x.sv:5:1: error: boom", five), "EOF sah");
+        assert!(diag_loc_in_range("x.sv:4:3: error: boom", five));
+        // Tanpa pair → ok (DiagMissing tangan).
+        assert!(diag_loc_in_range("kesalahan fatal internal", src));
+        // `[8:0]` range di-SKIP — pair sesudahnya dinilai.
+        let many = "1\n2\n3\n4\n5\n6\n7\n8\n9\n";
+        assert!(
+            diag_loc_in_range("width [8:0] mismatch: x.sv:5:1: boom", many),
+            "range [8:0] skip, loc 5:1 legal"
+        );
+        assert!(
+            !diag_loc_in_range("width [8:0] mismatch: x.sv:77:1: boom", many),
+            "range [8:0] skip, loc 77:1 di luar rentang = bug"
+        );
     }
 
     /// REGRESI dedup (triage tahap 2): `to_u64` membutakan X/Z + potong >64-bit

@@ -160,6 +160,10 @@ pub enum Category {
     Hang,
     /// Diagnostik hilang: error seharusnya ada tapi tidak muncul.
     DiagMissing,
+    /// Lokasi diagnostik di LUAR rentang sumber: error melaporkan
+    /// `file:line:col` yang line-nya > jumlah baris sumber (+1 EOF) atau
+    /// col < 1 — line/col wajib 100% akurat menunjuk lokasi masalah.
+    DiagLocRange,
     /// Round-trip mismatch: fmt(fmt(s)) != fmt(s).
     RoundtripMismatch,
     /// Hasil berbeda antar run (non-deterministic).
@@ -203,6 +207,7 @@ impl Category {
                 | Category::Abort
                 | Category::Hang
                 | Category::DiagMissing
+                | Category::DiagLocRange
                 | Category::RoundtripMismatch
                 | Category::NonDeterministic
                 | Category::GuardBypass
@@ -220,6 +225,7 @@ impl Category {
             Category::Abort => "abort",
             Category::Hang => "hang",
             Category::DiagMissing => "diag_missing",
+            Category::DiagLocRange => "diag_loc_range",
             Category::RoundtripMismatch => "roundtrip_mismatch",
             Category::NonDeterministic => "nondeterministic",
             Category::GuardBypass => "guard_bypass",
@@ -240,6 +246,7 @@ impl Category {
             "abort" => Some(Category::Abort),
             "hang" => Some(Category::Hang),
             "diag_missing" => Some(Category::DiagMissing),
+            "diag_loc_range" => Some(Category::DiagLocRange),
             "roundtrip_mismatch" => Some(Category::RoundtripMismatch),
             "nondeterministic" => Some(Category::NonDeterministic),
             "guard_bypass" => Some(Category::GuardBypass),
