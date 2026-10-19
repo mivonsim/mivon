@@ -202,6 +202,10 @@ fn apply_bin(op: BinaryOp, l: i64, r: i64) -> Result<i64, String> {
         }
         BinaryOp::Eq => (l == r) as i64,
         BinaryOp::Neq => (l != r) as i64,
+        BinaryOp::CaseEq => (l == r) as i64,
+        BinaryOp::CaseNeq => (l != r) as i64,
+        BinaryOp::EqWild => (l == r) as i64,
+        BinaryOp::NeqWild => (l != r) as i64,
         BinaryOp::Lt => (l < r) as i64,
         BinaryOp::Le => (l <= r) as i64,
         BinaryOp::Gt => (l > r) as i64,
@@ -215,7 +219,6 @@ fn apply_bin(op: BinaryOp, l: i64, r: i64) -> Result<i64, String> {
         BinaryOp::Shl | BinaryOp::Sshl => l.wrapping_shl((r & 63) as u32),
         BinaryOp::Shr => l.wrapping_shr((r & 63) as u32),
         BinaryOp::Sshr => l >> (r & 63),
-        _ => return Err(format!("unsupported const binary op {:?}", op)),
     })
 }
 
