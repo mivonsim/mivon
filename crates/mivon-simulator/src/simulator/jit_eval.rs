@@ -438,13 +438,13 @@ mod tests {
         if !eval.is_available() {
             return;
         }
-        // Div is not supported by JIT
+        // EqWild (wildcard equality) is not supported by JIT
         let result = eval.eval_binary(
-            &BinaryIrOp::Div,
+            &BinaryIrOp::EqWild,
             &LogicVec::from_u64(10, 32),
             &LogicVec::from_u64(2, 32),
         );
-        assert!(result.is_none(), "Div should fallback");
+        assert!(result.is_none(), "EqWild should fallback");
     }
 
     #[test]
@@ -504,10 +504,10 @@ mod tests {
             &LogicVec::from_u64(3, 32),
             &LogicVec::from_u64(4, 32),
         );
-        // Unsupported ops (like Div) return None without incrementing fallback —
+        // Unsupported ops (like EqWild) return None without incrementing fallback —
         // fallback only counts X/Z data that COULD be JIT but was not
         let _ = eval.eval_binary(
-            &BinaryIrOp::Div,
+            &BinaryIrOp::EqWild,
             &LogicVec::from_u64(1, 32),
             &LogicVec::from_u64(2, 32),
         ); // unsupported -> None, no fallback count
@@ -516,7 +516,7 @@ mod tests {
         assert_eq!(jit, 2, "2 JIT evals");
         assert_eq!(
             fallback, 0,
-            "0 fallbacks (Div is unsupported, not a fallback)"
+            "0 fallbacks (EqWild is unsupported, not a fallback)"
         );
     }
 }
