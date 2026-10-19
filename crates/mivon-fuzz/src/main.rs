@@ -748,22 +748,28 @@ fn cmd_regress(args: &[String]) -> i32 {
         .filter(|e| e.skipped && e.skip_reason.starts_with("source "))
         .count();
     let skipped = entries.len() - active - sized;
-    let code = mivon_fuzz::regression::emit_rust_tests(&entries, &fixtures);
+    // Deteksi LIVE (bug masi reproduksi) → canary assert_eq bukan assert_ne
+    // (suite tetap hijau; kantong bug muncul merah saat perilaku berubah).
+    eprintln!("regress: deteksi live ({active} entri, replay tiap bug ~s)");
+    let live = mivon_fuzz::regression::compute_live(&entries);
+    let code = mivon_fuzz::regression::emit_rust_tests(&entries, &fixtures, &live);
 
     match std::fs::write(&out, &code) {
         Ok(()) => {
             eprintln!(
-                "regress: {} entri ({active} aktif, {n_fixture} fixture besar, {skipped} skip) -> {}",
+                "regress: {} entri ({active} aktif, {n_fixture} fixture besar, {skipped} skip, {} live-canary) -> {}",
                 entries.len(),
+                live.len(),
                 out
             );
             // Statistik machine-friendly.
             println!(
-                "REGRESS: entries={} active={} fixture={} skipped={}",
+                "REGRESS: entries={} active={} fixture={} skipped={} live={}",
                 entries.len(),
                 active,
                 n_fixture,
-                skipped
+                skipped,
+                live.len()
             );
             0
         }

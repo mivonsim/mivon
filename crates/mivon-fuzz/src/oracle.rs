@@ -2885,10 +2885,12 @@ pub(crate) fn diag_loc_in_range(msg: &str, source: &str) -> bool {
 }
 
 /// Pair angka `N:M` pertama di teks: scan pola `digit ':' digit`, expand
-/// digit kiri/kanan. Pair berawalan `[` → range spec, skip. Digit-run
-/// >19 (junk mutasi `99999…:1`) → pair di-skip, scan lanjut — dulu
-/// `parse().ok()?` memutus seluruh scan (review A1: false-negative,
-/// bug out-of-range di belakang junk lolos).
+/// digit kiri/kanan. Skip: (1) pair berawalan `[` — range spec `[8:0]`;
+/// (2) pair berawalan path-file NON-sumber (`.svh`/`.v`/`.pkg`: loc di
+/// dalam FILE INCLUDE sah — line-nya tak boleh dinilai terhadap sumber
+/// utama; temuan kampanye elab: `uvm_macros.svh:148:1` di tb 40 baris);
+/// (3) digit-run >19 (junk mutasi) — dulu `parse().ok()?` memutus seluruh
+/// scan (review A1: false-negative).
 pub(crate) fn first_num_pair(msg: &str) -> Option<(u64, u64)> {
     let b = msg.as_bytes();
     let n = b.len();
@@ -2911,6 +2913,28 @@ pub(crate) fn first_num_pair(msg: &str) -> Option<(u64, u64)> {
             if i - lo >= 19 || hi - (i + 1) >= 19 {
                 i = hi + 1;
                 continue;
+            }
+            // Path-file token: walk kiri atas [A-Za-z0-9_./-], dengan SATU
+            // dipun `:` pemisah path↔line (`file.sv:12:3`). Tanpa ini
+            // `<file>:digit` terbaca tanpa path (`:` bukan char path) →
+            // loc file include tak ter-skip (temuan test .svh).
+            let mut epath = lo;
+            if epath > 0 && b[epath - 1] == b':' {
+                epath -= 1;
+            }
+            let mut p = epath;
+            while p > 0 && (b[p - 1].is_ascii_alphanumeric() || b[p - 1] == b'.' || b[p - 1] == b'_'
+                || b[p - 1] == b'/' || b[p - 1] == b'-')
+            {
+                p -= 1;
+            }
+            let path = &msg[p..epath];
+            if let Some(ext) = path.rsplit_once('.') {
+                let ext = ext.1;
+                if !ext.is_empty() && ext != "sv" && ext != "mv" {
+                    i = hi + 1;
+                    continue;
+                }
             }
             let line: u64 = msg[lo..=i].parse().ok()?;
             let col: u64 = msg[i + 2..=hi].parse().ok()?;
@@ -3021,6 +3045,24 @@ mod scan_tests {
                 many
             ),
             "junk memutus scan = adalah false-negative (A1)"
+        );
+        // Loc file INCLUDE (.svh) = sah (line-nya milik file lain) → skip.
+        assert!(
+            diag_loc_in_range("uvm_macros.svh:148:1: error: boom", src),
+            "loc di dalam include .svh bukan bug range-sumber"
+        );
+        assert!(
+            diag_loc_in_range("dv_macros.svh:12:3, fpga_ram.v:9:2: boom", src),
+            "loc include .svh/.v di-skip semua"
+        );
+        assert!(
+            !diag_loc_in_range("uvm_macros.svh:148:1 lalu x.sv:999:1: boom", src),
+            "pair .svh skip, pair SPUTAR .sv dinilai"
+        );
+        // Path <string>-mentah (compile_str): tanpa ext → pair dinilai.
+        assert!(
+            !diag_loc_in_range("<string>:999:1: error: boom", src),
+            "loc sumber in-memory tetap dinilai"
         );
     }
 
