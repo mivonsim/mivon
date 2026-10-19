@@ -1375,6 +1375,134 @@ impl Parser {
         })
     }
 
+
+    /// LANG-41: `nettype <base> [range] <name> [with ...];` (IEEE 1800-2017
+    /// §6.10). Dipakai baik di module scope maupun compilation-unit scope.
+    pub(crate) fn parse_nettype_decl(&mut self) -> Result<NettypeDecl, SimError> {
+        // parse_type_expr MEMBUANG range `[7:0]` — nettype butuh range untuk
+        // lebar tipe, jadi base + range diparse manual.
+        self.advance(); // consume 'nettype'
+        let base = match self.peek() {
+            Token::Bit => {
+                self.advance();
+                DataType::Bit
+            }
+            Token::Logic => {
+                self.advance();
+                DataType::Logic
+            }
+            Token::Int => {
+                self.advance();
+                DataType::Int
+            }
+            Token::Integer => {
+                self.advance();
+                DataType::Integer
+            }
+            Token::Byte => {
+                self.advance();
+                DataType::Byte
+            }
+            Token::Shortint => {
+                self.advance();
+                DataType::Shortint
+            }
+            Token::Longint => {
+                self.advance();
+                DataType::Longint
+            }
+            Token::Real => {
+                self.advance();
+                DataType::Real
+            }
+            Token::Ident(name) => {
+                let name = *name;
+                self.advance();
+                DataType::UserDefined(name)
+            }
+            _ => return Err(self.err("expected base type after nettype")),
+        };
+        let range = if self.peek() == &Token::LBrack {
+            self.parse_range()?
+        } else {
+            None
+        };
+        let name = self.expect_ident()?;
+        if matches!(self.peek(), Token::Ident(s) if s.as_str() == "with") {
+            self.advance();
+            while !matches!(self.peek(), Token::Semi | Token::Eof) {
+                self.advance();
+            }
+        }
+        self.skip_semi();
+        self.module_type_params.insert(name);
+        Ok(NettypeDecl { name, base, range })
+    }
+
+    /// LANG-41: `checker <name> (<ports>); <items> endchecker` (IEEE
+    /// 1800-2017 §17.8). Dipakai di module scope maupun unit scope.
+    pub(crate) fn parse_checker_decl(&mut self) -> Result<CheckerDecl, SimError> {
+        self.advance(); // consume 'checker'
+        let name = self.expect_ident()?;
+        let mut ports: Vec<Symbol> = Vec::new();
+        if self.peek() == &Token::LParen {
+            self.advance();
+            while self.peek() != &Token::RParen && self.peek() != &Token::Eof {
+                match self.peek() {
+                    Token::Input
+                    | Token::Output
+                    | Token::Inout
+                    | Token::Wire
+                    | Token::Logic
+                    | Token::Reg
+                    | Token::Bit
+                    | Token::Int
+                    | Token::Integer
+                    | Token::Byte
+                    | Token::Shortint
+                    | Token::Longint
+                    | Token::Tri
+                    | Token::Tri0
+                    | Token::Tri1
+                    | Token::Wand
+                    | Token::Wor => {
+                        self.advance();
+                    }
+                    Token::Comma => {
+                        self.advance();
+                    }
+                    Token::Ident(s) => {
+                        ports.push(*s);
+                        self.advance();
+                    }
+                    Token::Semi => break,
+                    _ => {
+                        self.advance();
+                    }
+                }
+            }
+            if self.peek() == &Token::RParen {
+                self.advance();
+            }
+        }
+        self.skip_semi();
+        let mut items: Vec<ModuleItem> = Vec::new();
+        loop {
+            if matches!(self.peek(), Token::EndChecker | Token::Eof) {
+                self.advance();
+                break;
+            }
+            if let Some(item) = self.parse_module_item()? {
+                items.push(item)
+            }
+        }
+        Ok(CheckerDecl {
+            name,
+            ports,
+            items,
+        })
+    }
+
     pub(crate) fn parse_typedef(&mut self) -> Result<TypedefDecl, SimError> {
         self.advance(); // consume typedef
                         // Queue typedef yang `[$]`-nya dikonsumsi inline di cabang user-defined.

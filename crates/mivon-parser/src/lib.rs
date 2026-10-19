@@ -871,6 +871,9 @@ impl Parser {
         let mut unit_tasks: Vec<TaskDecl> = Vec::new();
         let mut unit_typedefs: Vec<TypedefDecl> = Vec::new();
         let mut unit_params: Vec<ParamDecl> = Vec::new();
+        // LANG-41: item compilation-unit scope (nettype/checker/let/sequence/
+        // property) — di-seed ke setiap module oleh elaborator.
+        let mut unit_items: Vec<ModuleItem> = Vec::new();
         let mut binds = Vec::new();
         let mut clocking_blocks = Vec::new();
         let mut configs = Vec::new();
@@ -1070,6 +1073,25 @@ impl Parser {
                     self.advance();
                 }
                 if self.peek() == &Token::EndSequence {
+                    self.advance();
+                }
+            } else if self.peek() == &Token::Checker {
+                // LANG-41: checker di compilation-unit scope — body di-skip
+                // di first pass (hanya mengumpulkan nama class), diparse
+                // penuh di second pass.
+                self.advance(); // consume 'checker'
+                while self.peek() != &Token::EndChecker && self.peek() != &Token::Eof {
+                    self.advance();
+                }
+                if self.peek() == &Token::EndChecker {
+                    self.advance();
+                }
+            } else if self.peek() == &Token::Nettype {
+                // LANG-41: `nettype` unit scope — skip sampai `;`.
+                while self.peek() != &Token::Semi && self.peek() != &Token::Eof {
+                    self.advance();
+                }
+                if self.peek() == &Token::Semi {
                     self.advance();
                 }
             } else if self.peek() == &Token::Function {
@@ -1445,11 +1467,40 @@ impl Parser {
                     }
                 },
                 Token::Let => {
-                    // LANG-40: let di level unit (package) — parse & discard
-                    // (belum disimpan; module & class didukung).
-                    let _ = self.parse_let_decl();
-                    false
+                    // LANG-40/41: `let` di compilation-unit scope — disimpan
+                    // sebagai unit item agar terlihat oleh setiap module
+                    // (IEEE 1800-2017 §11.12.2).
+                    match self.parse_let_decl() {
+                        Ok(ld) => {
+                            unit_items.push(ModuleItem::Let(ld));
+                            false
+                        }
+                        Err(e) => {
+                            self.errors.push(e.to_diagnostic());
+                            true
+                        }
+                    }
                 }
+                Token::Nettype => match self.parse_nettype_decl() {
+                    Ok(nt) => {
+                        unit_items.push(ModuleItem::Nettype(nt));
+                        false
+                    }
+                    Err(e) => {
+                        self.errors.push(e.to_diagnostic());
+                        true
+                    }
+                },
+                Token::Checker => match self.parse_checker_decl() {
+                    Ok(cd) => {
+                        unit_items.push(ModuleItem::Checker(cd));
+                        false
+                    }
+                    Err(e) => {
+                        self.errors.push(e.to_diagnostic());
+                        true
+                    }
+                },
                 Token::Parameter | Token::LocalParam => {
                     let is_local = self.peek() == &Token::LocalParam;
                     self.advance();
@@ -1641,6 +1692,7 @@ impl Parser {
             unit_tasks,
             unit_typedefs,
             unit_params,
+            unit_items,
             // F84: `timescale global` = satuan TERHALUS di design (basis tick
             // elaborator). Nilai per-module tetap menempel di tiap `Module`;
             // yang di sini cuma penentu basis. Mengambil TERAKHIR (seperti
@@ -2544,69 +2596,10 @@ impl Parser {
                 Ok(Some(ModuleItem::Let(ld)))
             }
             Token::Checker => {
-                // LANG-10: `checker name (ports); items endchecker` (IEEE
-                // 1800-2017 §17.8) — unit assertion terinstansiasi.
-                self.advance(); // consume 'checker'
-                let name = self.expect_ident()?;
-                let mut ports: Vec<Symbol> = Vec::new();
-                if self.peek() == &Token::LParen {
-                    self.advance();
-                    while self.peek() != &Token::RParen && self.peek() != &Token::Eof {
-                        // Port bisa `input a`, `a` (direction optional).
-                        // Skip direction/type keywords.
-                        match self.peek() {
-                            Token::Input
-                            | Token::Output
-                            | Token::Inout
-                            | Token::Wire
-                            | Token::Logic
-                            | Token::Reg
-                            | Token::Bit
-                            | Token::Int
-                            | Token::Integer
-                            | Token::Byte
-                            | Token::Shortint
-                            | Token::Longint
-                            | Token::Tri
-                            | Token::Tri0
-                            | Token::Tri1
-                            | Token::Wand
-                            | Token::Wor => {
-                                self.advance();
-                            }
-                            Token::Comma => {
-                                self.advance();
-                            }
-                            Token::Ident(s) => {
-                                ports.push(*s);
-                                self.advance();
-                            }
-                            Token::Semi => break,
-                            _ => {
-                                self.advance();
-                            }
-                        }
-                    }
-                    if self.peek() == &Token::RParen {
-                        self.advance();
-                    }
-                }
-                self.skip_semi();
-                let mut items: Vec<ModuleItem> = Vec::new();
-                loop {
-                    if matches!(self.peek(), Token::EndChecker | Token::Eof) {
-                        self.advance();
-                        break;
-                    }
-                    if let Some(item) = self.parse_module_item()? {
-                        items.push(item)
-                    }
-                }
-                Ok(Some(ModuleItem::Checker(CheckerDecl {
-                    name,
-                    ports,
-                    items,
-                })))
+                // LANG-10/41: `checker name (ports); items endchecker` —
+                // deklarasi checker (module scope & compilation-unit scope).
+                let cd = self.parse_checker_decl()?;
+                Ok(Some(ModuleItem::Checker(cd)))
             }
             Token::Alias => {
                 // LANG-08: `alias a = b = c;` (IEEE 1800-2017 §10.9) — semua
@@ -2626,67 +2619,9 @@ impl Parser {
                 Ok(Some(ModuleItem::NetAlias(pairs)))
             }
             Token::Nettype => {
-                // LANG-08: `nettype <type> <name>;` (IEEE 1800-2017 §6.10).
-                // parse_type_expr MEMBUANG range `[7:0]` (decl.rs:1495) —
-                // nettype butuh range utk lebar tipe. Parse base + range
-                // MANUAL (tanpa parse_type_expr).
-                self.advance(); // consume 'nettype'
-                let base = match self.peek() {
-                    Token::Bit => {
-                        self.advance();
-                        DataType::Bit
-                    }
-                    Token::Logic => {
-                        self.advance();
-                        DataType::Logic
-                    }
-                    Token::Int => {
-                        self.advance();
-                        DataType::Int
-                    }
-                    Token::Integer => {
-                        self.advance();
-                        DataType::Integer
-                    }
-                    Token::Byte => {
-                        self.advance();
-                        DataType::Byte
-                    }
-                    Token::Shortint => {
-                        self.advance();
-                        DataType::Shortint
-                    }
-                    Token::Longint => {
-                        self.advance();
-                        DataType::Longint
-                    }
-                    Token::Real => {
-                        self.advance();
-                        DataType::Real
-                    }
-                    Token::Ident(name) => {
-                        let name = *name;
-                        self.advance();
-                        DataType::UserDefined(name)
-                    }
-                    _ => return Err(self.err("expected base type after nettype")),
-                };
-                // Range packed `[msb:lsb]` — `nettype logic [7:0] mynet;`.
-                let range = if self.peek() == &Token::LBrack {
-                    self.parse_range()?
-                } else {
-                    None
-                };
-                let name = self.expect_ident()?;
-                if matches!(self.peek(), Token::Ident(s) if s.as_str() == "with") {
-                    self.advance();
-                    while !matches!(self.peek(), Token::Semi | Token::Eof) {
-                        self.advance();
-                    }
-                }
-                self.skip_semi();
-                self.module_type_params.insert(name);
-                Ok(Some(ModuleItem::Nettype(NettypeDecl { name, base, range })))
+                // LANG-08/41: `nettype <type> <name>;` (IEEE 1800-2017 §6.10).
+                let nt = self.parse_nettype_decl()?;
+                Ok(Some(ModuleItem::Nettype(nt)))
             }
             Token::Param | Token::Parameter | Token::LocalParam => {
                 let is_localparam = self.peek() == &Token::LocalParam;

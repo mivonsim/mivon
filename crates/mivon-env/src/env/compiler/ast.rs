@@ -17,6 +17,7 @@ pub fn merge_designs(mut target: Design, other: &mut Design) -> Design {
     target.unit_typedefs.append(&mut other.unit_typedefs);
     target.unit_params.append(&mut other.unit_params);
     target.unit_decls.append(&mut other.unit_decls);
+    target.unit_items.append(&mut other.unit_items);
     target
 }
 

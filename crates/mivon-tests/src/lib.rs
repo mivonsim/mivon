@@ -104,6 +104,8 @@ mod cva6_struct_param_regression_tests;
 // REGRESI Tahap 1: nested bit/part-select pada lvalue.
 #[cfg(test)]
 mod nested_select_tests;
+#[cfg(test)]
+mod unit_scope_tests;
 
 // Guided structure-aware fuzzer (metode test fuzzing "tidak buta"):
 // grammar-aware generation + coverage feedback + differential oracle.

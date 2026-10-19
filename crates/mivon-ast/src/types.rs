@@ -24,6 +24,12 @@ pub struct Design {
     pub unit_tasks: Vec<TaskDecl>,
     pub unit_typedefs: Vec<TypedefDecl>,
     pub unit_params: Vec<ParamDecl>,
+    /// LANG-41: deklarasi pada compilation-unit scope (di luar module/package):
+    /// `nettype`, `checker`, `let`, `sequence`, `property`. Disimpan apa adanya
+    /// sebagai `ModuleItem` dan di-seed ke elaborator untuk SETIAP module,
+    /// sesuai IEEE 1800-2017 §3.2 (compilation-unit items terlihat di seluruh
+    /// compilation unit).
+    pub unit_items: Vec<ModuleItem>,
     pub timescale: Option<(String, String)>,
 }
 

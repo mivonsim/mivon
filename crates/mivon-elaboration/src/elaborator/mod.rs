@@ -800,6 +800,16 @@ impl Elaborator {
         // Delay module `1us` = 1000 tick bila basis design `1ns`.
         self.compute_module_delay_scales();
 
+        // LANG-41: checker di compilation-unit scope terlihat oleh semua
+        // module (IEEE 1800-2017 §3.2). Seed dulu sebelum checker per-module.
+        for item in &self.design.unit_items {
+            if let ModuleItem::Checker(cd) = item {
+                self.checker_decls
+                    .entry(cd.name)
+                    .or_insert_with(|| cd.clone());
+            }
+        }
+
         // LANG-10: kumpulkan deklarasi checker dari SEMUA module (pre-pass)
         // agar instance checker (di module mana pun) ter-resolve. Checker
         // bisa dideklarasikan sebelum/ sesudah instance-nya di file yang sama.
@@ -2931,6 +2941,23 @@ impl Elaborator {
                 self.store_typedef_fields(td.name, &td.dtype);
             }
         }
+        // LANG-41: `nettype` di compilation-unit scope — daftarkan sebagai
+        // tipe (lebar = base type × range) agar `mynet x;` di module mana pun
+        // ter-resolve, sama seperti nettype di dalam module.
+        let unit_items = self.design.unit_items.clone();
+        for item in &unit_items {
+            if let ModuleItem::Nettype(nt) = item {
+                let width = self.resolve_typedef_width_dims(
+                    &nt.base,
+                    nt.range.as_ref(),
+                    &[],
+                    &effective_params,
+                );
+                self.typedef_map.insert(nt.name, width);
+                self.typedef_dims
+                    .insert(nt.name, (nt.range.clone(), vec![]));
+            }
+        }
         // Pre-pass: process $unit imports for typedefs.
         // `typedef_map` adalah cache GLOBAL (keyed by nama typedef) — typedef
         // package tidak bergantung pada param module, jadi cukup di-resolve
@@ -3983,6 +4010,13 @@ impl Elaborator {
         // ekspresi (IEEE 1800-2017 §11.12.2). Scope per-module: setiap module
         // menimpa map.
         let mut let_decls: HashMap<Symbol, LetDecl> = HashMap::new();
+        // LANG-41: `let` di compilation-unit scope terlihat di setiap module
+        // (IEEE 1800-2017 §11.12.2); deklarasi module menimpa nama yang sama.
+        for item in &self.design.unit_items {
+            if let ModuleItem::Let(ld) = item {
+                let_decls.insert(ld.name, ld.clone());
+            }
+        }
         for item in &module.items {
             if let ModuleItem::Let(ld) = item {
                 let_decls.insert(ld.name, ld.clone());
