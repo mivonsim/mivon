@@ -267,6 +267,7 @@ pub fn eval_expr(e: &Expr, ctx: &PkgCtx, cur_pkg: Option<&str>) -> Result<CVal, 
         Expr::Value(Value::Binary { bits, .. }) => parse_base(bits, 2),
         Expr::Value(Value::Hex { bits, .. }) => parse_base(bits, 16),
         Expr::Value(Value::Octal { bits, .. }) => parse_base(bits, 8),
+        Expr::Value(Value::Real(r)) => Ok(CVal::Scalar(*r as i64)),
         Expr::String(s) => Ok(CVal::Scalar(string_to_i64(s))),
         Expr::FillLit(_) | Expr::Null => Ok(CVal::Scalar(0)),
         Expr::Ident { name, .. } => {
@@ -714,7 +715,73 @@ pub fn eval_expr(e: &Expr, ctx: &PkgCtx, cur_pkg: Option<&str>) -> Result<CVal, 
                 _ => Err("member access on non-struct constant".to_string()),
             }
         }
-        _ => Err("unsupported const expr".to_string()),
+        Expr::Inside {
+            expr,
+            range_list,
+        } => {
+            let val = scalar(eval_expr(expr, ctx, cur_pkg)?)?;
+            for item in range_list {
+                if let Expr::RangeSelect { expr: base, msb, lsb } = item {
+                    if matches!(base.as_ref(), Expr::Value(Value::Decimal(0))) {
+                        let lo = scalar(eval_expr(msb, ctx, cur_pkg)?)?;
+                        let hi = scalar(eval_expr(lsb, ctx, cur_pkg)?)?;
+                        if val >= lo && val <= hi {
+                            return Ok(CVal::Scalar(1));
+                        }
+                    } else if scalar(eval_expr(item, ctx, cur_pkg)?)? == val {
+                        return Ok(CVal::Scalar(1));
+                    }
+                } else if scalar(eval_expr(item, ctx, cur_pkg)?)? == val {
+                    return Ok(CVal::Scalar(1));
+                }
+            }
+            Ok(CVal::Scalar(0))
+        }
+        Expr::IncDec { expr, inc, pre } => {
+            let v = scalar(eval_expr(expr, ctx, cur_pkg)?)?;
+            let new = if *inc { v.wrapping_add(1) } else { v.wrapping_sub(1) };
+            Ok(CVal::Scalar(if *pre { new } else { v }))
+        }
+        Expr::Dist { expr, .. } => eval_expr(expr, ctx, cur_pkg),
+        Expr::StreamingConcat {
+            op,
+            slice_size: _,
+            slices,
+        } => {
+            let mut out = Vec::new();
+            for s in slices {
+                out.push(eval_expr(s, ctx, cur_pkg)?);
+            }
+            if op.as_str() == "<<" {
+                out.reverse();
+            }
+            Ok(CVal::Array(out))
+        }
+        Expr::MethodCall {
+            obj,
+            method,
+            args,
+            with_clause: _,
+        } => {
+            match method.as_str() {
+                "size" | "len" | "num" => {
+                    if let Expr::String(s) = obj.as_ref() {
+                        return Ok(CVal::Scalar(s.chars().count() as i64));
+                    }
+                    match eval_expr(obj, ctx, cur_pkg)? {
+                        CVal::Array(a) => Ok(CVal::Scalar(a.len() as i64)),
+                        CVal::Struct(s) => Ok(CVal::Scalar(s.len() as i64)),
+                        CVal::Scalar(_) => Ok(CVal::Scalar(1)),
+                    }
+                }
+                _ => {
+                    for a in args {
+                        let _ = eval_expr(a, ctx, cur_pkg)?;
+                    }
+                    Ok(CVal::Scalar(0))
+                }
+            }
+        }
     }
 }
 
