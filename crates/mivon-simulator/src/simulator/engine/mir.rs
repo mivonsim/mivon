@@ -389,9 +389,9 @@ impl SimulationEngine {
                     width,
                 });
             }
-            _ => {
-                unreachable!("ir_expr_to_mir called on unsupported expr variant");
-            }
+            // Pre-check `is_expr_jit_safe` menyaring semua varian yang tidak
+            // di-lower ke MIR; sisanya dieksekusi lewat interpreter (fallback).
+            _ => unreachable!("ir_expr_to_mir: variant filtered by is_expr_jit_safe"),
         }
     }
 
