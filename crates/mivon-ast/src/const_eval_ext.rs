@@ -113,6 +113,20 @@ fn is_zero_val(v: &CVal) -> bool {
     }
 }
 
+/// Bit-exact equality of two `CVal::Array` (packed vector > 64-bit),
+/// recursive so it stays correct under any nesting. Element width is not
+/// tracked, but element order is consistent between operands produced by the
+/// same code path, so `==`/`!=` is valid without width info.
+fn array_eq(a: &CVal, b: &CVal) -> bool {
+    match (a, b) {
+        (CVal::Array(x), CVal::Array(y)) => {
+            x.len() == y.len() && x.iter().zip(y.iter()).all(|(p, q)| array_eq(p, q))
+        }
+        (CVal::Scalar(s1), CVal::Scalar(s2)) => s1 == s2,
+        _ => false,
+    }
+}
+
 /// Truthiness untuk konteks kondisi (`if`, loop, `?:`, `&&`, `||`, `!`).
 /// Skalar: != 0. Array (packed vector > 64 bit): true bila ada bit/elemen
 /// bukan nol — terdefinisi tanpa lebar elemen. Struct tidak valid di sini.
@@ -366,7 +380,26 @@ pub fn eval_expr(e: &Expr, ctx: &PkgCtx, cur_pkg: Option<&str>) -> Result<CVal, 
                     }
                 }
                 if l_is_arr && r_is_arr {
-                    return Err("comparison of wide packed vectors not supported".to_string());
+                    // Wide packed vector vs wide packed vector (both > 64-bit).
+                    // `==`/`!=` compare element-wise (bit-exact; element order is
+                    // consistent between operands from the same code path, so it
+                    // is valid without element-width info). Relational ops
+                    // (<,<=,>,>=) need the element order (which is MSB) that is
+                    // not tracked -> still error to avoid a silent-wrong compile.
+                    match op {
+                        BinaryOp::Eq => {
+                            return Ok(CVal::Scalar(array_eq(&lv, &rv) as i64));
+                        }
+                        BinaryOp::Neq => {
+                            return Ok(CVal::Scalar((!array_eq(&lv, &rv)) as i64));
+                        }
+                        _ => {
+                            return Err(
+                                "relational comparison of wide packed vectors not supported"
+                                    .to_string(),
+                            );
+                        }
+                    }
                 }
             }
             let l = scalar(lv)?;
