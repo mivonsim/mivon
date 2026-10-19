@@ -2594,6 +2594,73 @@ impl Elaborator {
                         let end = base_bit + msb_c.max(lsb_c);
                         Ok(IrLValue::RangeSelect(sid, end, start))
                     }
+                    // Range-select di atas ArrayRangeSelect (`mem[i][15:8][2:0]`).
+                    IrLValue::ArrayRangeSelect { sig_id, index, elem_width, msb, lsb } => {
+                        let inner_min = msb.min(lsb);
+                        let sub_min = msb_c.min(lsb_c);
+                        let sub_max = msb_c.max(lsb_c);
+                        Ok(IrLValue::ArrayRangeSelect {
+                            sig_id,
+                            index,
+                            elem_width,
+                            msb: inner_min + sub_max,
+                            lsb: inner_min + sub_min,
+                        })
+                    }
+                    // Range-select di atas ArrayBitSelect (`mem[i][j][2:0]`).
+                    IrLValue::ArrayBitSelect { sig_id, index, elem_width, bit } => {
+                        let sub_min = msb_c.min(lsb_c);
+                        let sub_count = msb_c.max(lsb_c) - msb_c.min(lsb_c) + 1;
+                        match *bit {
+                            IrExpr::Const(lv) => {
+                                let b = lv.to_u64() as usize;
+                                Ok(IrLValue::ArrayRangeSelect {
+                                    sig_id,
+                                    index,
+                                    elem_width,
+                                    msb: b + msb_c.max(lsb_c),
+                                    lsb: b + msb_c.min(lsb_c),
+                                })
+                            }
+                            other => {
+                                let elem_off = IrExpr::BinaryOp(
+                                    BinaryIrOp::Mul,
+                                    index.clone(),
+                                    Box::new(IrExpr::Const(LogicVec::from_u64(elem_width as u64, 32))),
+                                );
+                                let base = IrExpr::BinaryOp(
+                                    BinaryIrOp::Add,
+                                    Box::new(elem_off),
+                                    Box::new(other),
+                                );
+                                let new_base = IrExpr::BinaryOp(
+                                    BinaryIrOp::Add,
+                                    Box::new(base),
+                                    Box::new(IrExpr::Const(LogicVec::from_u64(sub_min as u64, 32))),
+                                );
+                                Ok(IrLValue::ExprPartSelect {
+                                    sig_id,
+                                    base: Box::new(new_base),
+                                    width: sub_count,
+                                })
+                            }
+                        }
+                    }
+                    // Range-select di atas ExprPartSelect dinamis (`sig[b+:8][2:0]`).
+                    IrLValue::ExprPartSelect { sig_id, base, width: _ } => {
+                        let sub_min = msb_c.min(lsb_c);
+                        let sub_count = msb_c.max(lsb_c) - msb_c.min(lsb_c) + 1;
+                        let new_base = IrExpr::BinaryOp(
+                            BinaryIrOp::Add,
+                            base,
+                            Box::new(IrExpr::Const(LogicVec::from_u64(sub_min as u64, 32))),
+                        );
+                        Ok(IrLValue::ExprPartSelect {
+                            sig_id,
+                            base: Box::new(new_base),
+                            width: sub_count,
+                        })
+                    }
                     _ => {
                         // F45: nested range select tak ter-model (hier
                         // interface / array dinamis) — degrade warning + write
@@ -2843,6 +2910,90 @@ impl Elaborator {
                             })
                         }
                     }
+                    // Bit-select di atas ArrayRangeSelect (`mem[i][7:0][k]`):
+                    // `k` relatif thd base elemen slice (offset = min(msb,lsb)).
+                    IrLValue::ArrayRangeSelect { sig_id, index, elem_width, msb, lsb } => {
+                        let inner_base = msb.min(lsb);
+                        if let Ok(idx) = const_eval_params(bs_index, &self.param_vals) {
+                            Ok(IrLValue::ArrayBitSelect {
+                                sig_id,
+                                index,
+                                elem_width,
+                                bit: Box::new(IrExpr::Const(LogicVec::from_u64(
+                                    (inner_base + idx as usize) as u64,
+                                    64,
+                                ))),
+                            })
+                        } else {
+                            let index_expr = self.elaborate_expr(bs_index, signal_map, signals)?;
+                            let bit_expr = IrExpr::BinaryOp(
+                                BinaryIrOp::Add,
+                                Box::new(IrExpr::Const(LogicVec::from_u64(inner_base as u64, 64))),
+                                Box::new(index_expr),
+                            );
+                            Ok(IrLValue::ArrayBitSelect {
+                                sig_id,
+                                index,
+                                elem_width,
+                                bit: Box::new(bit_expr),
+                            })
+                        }
+                    }
+                    // Bit-select di atas ArrayBitSelect (`arr[i][j][k]`):
+                    // akumulasi offset bit dalam elemen.
+                    IrLValue::ArrayBitSelect { sig_id, index, elem_width, bit } => {
+                        if let Ok(idx) = const_eval_params(bs_index, &self.param_vals) {
+                            let new_bit = match *bit {
+                                IrExpr::Const(lv) => IrExpr::Const(LogicVec::from_u64(
+                                    lv.to_u64().wrapping_add(idx as u64),
+                                    64,
+                                )),
+                                other => IrExpr::BinaryOp(
+                                    BinaryIrOp::Add,
+                                    Box::new(other),
+                                    Box::new(IrExpr::Const(LogicVec::from_u64(idx as u64, 64))),
+                                ),
+                            };
+                            Ok(IrLValue::ArrayBitSelect {
+                                sig_id,
+                                index,
+                                elem_width,
+                                bit: Box::new(new_bit),
+                            })
+                        } else {
+                            let index_expr = self.elaborate_expr(bs_index, signal_map, signals)?;
+                            let new_bit = IrExpr::BinaryOp(BinaryIrOp::Add, bit, Box::new(index_expr));
+                            Ok(IrLValue::ArrayBitSelect {
+                                sig_id,
+                                index,
+                                elem_width,
+                                bit: Box::new(new_bit),
+                            })
+                        }
+                    }
+                    // Bit-select di atas ExprPartSelect dinamis (`sig[base+:w][k]`).
+                    IrLValue::ExprPartSelect { sig_id, base, width: _ } => {
+                        if let Ok(idx) = const_eval_params(bs_index, &self.param_vals) {
+                            let new_base = IrExpr::BinaryOp(
+                                BinaryIrOp::Add,
+                                base,
+                                Box::new(IrExpr::Const(LogicVec::from_u64(idx as u64, 64))),
+                            );
+                            Ok(IrLValue::ExprPartSelect {
+                                sig_id,
+                                base: Box::new(new_base),
+                                width: 1,
+                            })
+                        } else {
+                            let index_expr = self.elaborate_expr(bs_index, signal_map, signals)?;
+                            let new_base = IrExpr::BinaryOp(BinaryIrOp::Add, base, Box::new(index_expr));
+                            Ok(IrLValue::ExprPartSelect {
+                                sig_id,
+                                base: Box::new(new_base),
+                                width: 1,
+                            })
+                        }
+                    }
                     _ => Err(self.elab_diag_at(
                         DiagCode::NotImplemented,
                         "nested bit select not supported",
@@ -2921,6 +3072,59 @@ impl Elaborator {
                                         lsb: base_c,
                                     })
                                 }
+                            }
+                            // Part-select di atas BitSelect (`sig[p][base+:w]`).
+                            IrLValue::BitSelect(sid, p) => {
+                                let hi = base_c + width_c - 1;
+                                Ok(IrLValue::RangeSelect(sid, p + hi, p + base_c))
+                            }
+                            // Part-select di atas ArrayBitSelect (`arr[i][j][base+:w]`).
+                            // physical = idx*elem_width + bit + base_c .. + (w-1).
+                            IrLValue::ArrayBitSelect { sig_id, index, elem_width, bit } => {
+                                let elem_off = IrExpr::BinaryOp(
+                                    BinaryIrOp::Mul,
+                                    index.clone(),
+                                    Box::new(IrExpr::Const(LogicVec::from_u64(elem_width as u64, 32))),
+                                );
+                                let total = IrExpr::BinaryOp(
+                                    BinaryIrOp::Add,
+                                    Box::new(IrExpr::BinaryOp(
+                                        BinaryIrOp::Add,
+                                        Box::new(elem_off),
+                                        bit,
+                                    )),
+                                    Box::new(IrExpr::Const(LogicVec::from_u64(base_c as u64, 32))),
+                                );
+                                Ok(IrLValue::ExprPartSelect {
+                                    sig_id,
+                                    base: Box::new(total),
+                                    width: width_c,
+                                })
+                            }
+                            // Part-select di atas ArrayRangeSelect (`mem[i][7:0][base+:w]`).
+                            IrLValue::ArrayRangeSelect { sig_id, index, elem_width, msb, lsb } => {
+                                let inner_base = msb.min(lsb);
+                                let hi = base_c + width_c - 1;
+                                Ok(IrLValue::ArrayRangeSelect {
+                                    sig_id,
+                                    index,
+                                    elem_width,
+                                    msb: inner_base + hi,
+                                    lsb: inner_base + base_c,
+                                })
+                            }
+                            // Part-select di atas ExprPartSelect (`sig[b+:w2][base+:w]`).
+                            IrLValue::ExprPartSelect { sig_id, base, width: _ } => {
+                                let new_base = IrExpr::BinaryOp(
+                                    BinaryIrOp::Add,
+                                    base,
+                                    Box::new(IrExpr::Const(LogicVec::from_u64(base_c as u64, 64))),
+                                );
+                                Ok(IrLValue::ExprPartSelect {
+                                    sig_id,
+                                    base: Box::new(new_base),
+                                    width: width_c,
+                                })
                             }
                             _ => Err(self.elab_diag_at(
                                 DiagCode::NotImplemented,
@@ -3050,6 +3254,82 @@ impl Elaborator {
                                     c,
                                 );
                                 Ok(IrLValue::ObjectField { sig_id, field })
+                            }
+                            // Part-select dinamis di atas BitSelect (`sig[p][base+:w]`, base runtime).
+                            IrLValue::BitSelect(sid, p) => {
+                                let off = IrExpr::Const(LogicVec::from_u64(p as u64, 32));
+                                let base_adj = IrExpr::BinaryOp(
+                                    BinaryIrOp::Add,
+                                    Box::new(base_ir),
+                                    Box::new(off),
+                                );
+                                Ok(IrLValue::ExprPartSelect {
+                                    sig_id: sid,
+                                    base: Box::new(base_adj),
+                                    width: width_c,
+                                })
+                            }
+                            // Part-select dinamis di atas ArrayBitSelect (`arr[i][j][base+:w]`).
+                            IrLValue::ArrayBitSelect { sig_id, index, elem_width, bit } => {
+                                let elem_off = IrExpr::BinaryOp(
+                                    BinaryIrOp::Mul,
+                                    index.clone(),
+                                    Box::new(IrExpr::Const(LogicVec::from_u64(elem_width as u64, 32))),
+                                );
+                                let bit_off = match *bit {
+                                    IrExpr::Const(lv) => IrExpr::Const(LogicVec::from_u64(lv.to_u64(), 32)),
+                                    other => other,
+                                };
+                                let total = IrExpr::BinaryOp(
+                                    BinaryIrOp::Add,
+                                    Box::new(IrExpr::BinaryOp(
+                                        BinaryIrOp::Add,
+                                        Box::new(elem_off),
+                                        Box::new(bit_off),
+                                    )),
+                                    Box::new(base_ir),
+                                );
+                                Ok(IrLValue::ExprPartSelect {
+                                    sig_id,
+                                    base: Box::new(total),
+                                    width: width_c,
+                                })
+                            }
+                            // Part-select dinamis di atas ArrayRangeSelect.
+                            IrLValue::ArrayRangeSelect { sig_id, index, elem_width, msb, lsb } => {
+                                let inner_base = msb.min(lsb) as u64;
+                                let elem_off = IrExpr::BinaryOp(
+                                    BinaryIrOp::Mul,
+                                    index.clone(),
+                                    Box::new(IrExpr::Const(LogicVec::from_u64(elem_width as u64, 32))),
+                                );
+                                let total = IrExpr::BinaryOp(
+                                    BinaryIrOp::Add,
+                                    Box::new(IrExpr::BinaryOp(
+                                        BinaryIrOp::Add,
+                                        Box::new(elem_off),
+                                        Box::new(IrExpr::Const(LogicVec::from_u64(inner_base, 32))),
+                                    )),
+                                    Box::new(base_ir),
+                                );
+                                Ok(IrLValue::ExprPartSelect {
+                                    sig_id,
+                                    base: Box::new(total),
+                                    width: width_c,
+                                })
+                            }
+                            // Part-select dinamis di atas ExprPartSelect.
+                            IrLValue::ExprPartSelect { sig_id, base, width: _ } => {
+                                let total = IrExpr::BinaryOp(
+                                    BinaryIrOp::Add,
+                                    base,
+                                    Box::new(base_ir),
+                                );
+                                Ok(IrLValue::ExprPartSelect {
+                                    sig_id,
+                                    base: Box::new(total),
+                                    width: width_c,
+                                })
                             }
                             _ => Err(self.elab_diag_at(
                                 DiagCode::NotImplemented,
