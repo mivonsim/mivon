@@ -15155,6 +15155,42 @@ endmodule
 }
 
 #[test]
+fn test_assoc_iterator_methods() {
+    // LANG-55: iterator associative array LRM 1800 §7.10.6 — first/next/
+    // last/prev menulis var index (out-arg) dan mengembalikan 1 sukses /
+    // 0 gagal. Urutan kunci ascending deterministik.
+    let src = r#"
+module tb_assoc_iter;
+  reg ok_all = 0;
+  initial begin
+    int aa [string];
+    string k;
+    reg [31:0] vals;
+    reg [31:0] vi;
+    aa["a"]=1; aa["b"]=2; aa["c"]=3;
+    vi=0;
+    if (aa.first(k) && k=="a" && aa[k]==1) vi=vi|1;
+    if (aa.next(k) && k=="b" && aa[k]==2) vi=vi|2;
+    if (aa.next(k) && k=="c" && aa[k]==3) vi=vi|4;
+    if (!aa.next(k)) vi=vi|8; // habis abis → rc 0
+    if (aa.last(k) && k=="c" && aa[k]==3) vi=vi|16;
+    if (aa.prev(k) && k=="b" && aa[k]==2) vi=vi|32;
+    if (aa.prev(k) && k=="a" && aa[k]==1) vi=vi|64;
+    if (!aa.prev(k)) vi=vi|128; // diawal kuli → rc 0, k tak berubah
+    ok_all = (vi == 32'd255);
+  end
+endmodule
+"#;
+    let sigs = crate::simulate_signals(src, 60).expect("sim assoc iterator");
+    let ok = sigs
+        .iter()
+        .find(|(n, _)| n == "ok_all")
+        .map(|(_, v)| v.to_bool() == Some(true))
+        .unwrap_or(false);
+    assert!(ok, "assoc first/next/last/prev LRM: ok_all harus 1 (vi=255)");
+}
+
+#[test]
 fn test_checker_construct_instance() {
     // LANG-10: checker construct (IEEE 1800-2017 §17.8) — `checker name
     // (ports); assert property... endchecker` dideklarasikan, diinstansiasi

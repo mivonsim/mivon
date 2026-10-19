@@ -6,6 +6,18 @@ use mivon_core::Symbol;
 use mivon_ir::*;
 use std::collections::HashMap;
 
+/// LANG-55: pembanding kunci associative array — urutan lexicographic pada
+/// bit-kanonik (width asc, lalu bit-string MSB→LSB). HashMap engine unordered,
+/// sedangkan LRM §7.10.6 mensyaratkan iterator `first/next/last/prev`
+/// ascending — tanpa sort ini urutan rawak antar-run.
+pub(crate) fn assoc_key_cmp(a: &LogicVec, b: &LogicVec) -> std::cmp::Ordering {
+    a.width.cmp(&b.width).then_with(|| {
+        let sa = format!("{}", a);
+        let sb = format!("{}", b);
+        sa.cmp(&sb)
+    })
+}
+
 impl SimulationEngine {
     pub(crate) fn execute_method_body(
         &mut self,
@@ -334,47 +346,72 @@ impl SimulationEngine {
                     let found = assoc_map.contains_key(&args_eval[0]);
                     return Ok(LogicVec::from_u64(if found { 1 } else { 0 }, 1));
                 }
-                "first" => {
-                    if let Some(key) = assoc_map.keys().next() {
-                        return Ok(key.clone());
+                // LANG-55: iterator assoc array (LRM 1800 §7.10.6) —
+                // `f = aa.first(idx)` dsb: arg = var index (out-arg). Sukses →
+                // var DITULIS kunci target, nilai balik 1; array kosong / var
+                // bukan signal → var tak berubah, balik 0.
+                "first" | "last" => {
+                    let mut keys: Vec<&LogicVec> = assoc_map.keys().collect();
+                    keys.sort_by(|a, b| assoc_key_cmp(a, b));
+                    let target = match method {
+                        "first" => keys.first().map(|k| (*k).clone()),
+                        _ => keys.last().map(|k| (*k).clone()),
+                    };
+                    if let Some(arg) = args.first() {
+                        if let Some(idx_key) = target.clone() {
+                            if let IrExpr::Signal(id, _) = arg {
+                                self.state.write_signal(*id, idx_key);
+                                return Ok(LogicVec::from_u64(1, 1));
+                            }
+                        }
                     }
-                    return Ok(LogicVec::new(0));
-                }
-                "last" => {
-                    if let Some(key) = assoc_map.keys().last() {
-                        return Ok(key.clone());
+                    if let Some(idx_key) = target {
+                        // Fallback LRM-compat: bila arg bukan signal (mis.
+                        // konstanta), balik kunci sebagai result (praktik lama).
+                        return Ok(idx_key);
                     }
-                    return Ok(LogicVec::new(0));
+                    return Ok(LogicVec::from_u64(0, 1));
                 }
                 "next" => {
-                    if let Some(key) = args_eval.first() {
-                        let mut found = false;
-                        let mut next_val = LogicVec::new(0);
-                        for k in assoc_map.keys() {
-                            if found {
-                                next_val = k.clone();
-                                break;
-                            }
-                            if *k == *key {
-                                found = true;
-                            }
+                    let mut keys: Vec<&LogicVec> = assoc_map.keys().collect();
+                    keys.sort_by(|a, b| assoc_key_cmp(a, b));
+                    let cur = match args.first() {
+                        Some(IrExpr::Signal(id, _)) => self.state.read_signal(*id).clone(),
+                        _ => args_eval.first().cloned().unwrap_or_default(),
+                    };
+                    // next: kunci pertama yang > cur (sudah ada idx: pasangan
+                    // langsung; cur tak ada: smallest key > cur — LRM §7.10.6).
+                    if let Some(k) = keys.iter().find(|k| assoc_key_cmp(k, &cur) == std::cmp::Ordering::Greater) {
+                        let k = (*k).clone();
+                        if let Some(IrExpr::Signal(id, _)) = args.first() {
+                            self.state.write_signal(*id, k.clone());
+                            return Ok(LogicVec::from_u64(1, 1));
                         }
-                        return Ok(next_val);
+                        return Ok(k);
                     }
-                    return Ok(LogicVec::new(0));
+                    return Ok(LogicVec::from_u64(0, 1));
                 }
                 "prev" => {
-                    if let Some(key) = args_eval.first() {
-                        let mut prev_val = LogicVec::new(0);
-                        for k in assoc_map.keys() {
-                            if *k == *key {
-                                return Ok(prev_val);
-                            }
-                            prev_val = k.clone();
+                    let mut keys: Vec<&LogicVec> = assoc_map.keys().collect();
+                    keys.sort_by(|a, b| assoc_key_cmp(a, b));
+                    let cur = match args.first() {
+                        Some(IrExpr::Signal(id, _)) => self.state.read_signal(*id).clone(),
+                        _ => args_eval.first().cloned().unwrap_or_default(),
+                    };
+                    // prev: kunci terbesar yang < cur (LRM §7.10.6).
+                    if let Some(k) = keys
+                        .iter()
+                        .rev()
+                        .find(|k| assoc_key_cmp(k, &cur) == std::cmp::Ordering::Less)
+                    {
+                        let k = (*k).clone();
+                        if let Some(IrExpr::Signal(id, _)) = args.first() {
+                            self.state.write_signal(*id, k.clone());
+                            return Ok(LogicVec::from_u64(1, 1));
                         }
-                        return Ok(LogicVec::new(0));
+                        return Ok(k);
                     }
-                    return Ok(LogicVec::new(0));
+                    return Ok(LogicVec::from_u64(0, 1));
                 }
                 _ => {
                     // Fall through to default array methods (like push_back, etc.)

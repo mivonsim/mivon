@@ -71,7 +71,7 @@ impl CoverageReport {
             section: "3.6".into(),
             name: "Aggregate types (array, struct, union, enum)".into(),
             status: SupportStatus::Full,
-            notes: Some("struct/enum full; associative/packed partial".into()),
+            notes: Some("struct/enum/assoc (num/exists/delete/first/next/last/prev) penuh (LANG-55)".into()),
         });
         features.push(FeatureEntry {
             section: "3.10".into(),
