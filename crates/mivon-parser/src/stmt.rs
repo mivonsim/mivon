@@ -269,8 +269,50 @@ impl Parser {
                 }
                 sequence = Some(seq);
             } else {
-                let expr = self.parse_expr(0)?;
-                if self.peek() == &Token::PipeArrow {
+                // LANG-49: operator temporal property `always (p)` / `never (p)`
+                // di awal body (IEEE 1800-2017 §16.14), tanpa antecedent.
+                // Translasi per-cycle: always = kondisi boolean per edge;
+                // never = kondisi dibalik (Not). Bila clock hanya tertulis di
+                // belakang (bentuk PSL `never (x) @(posedge clk)`), event
+                // di belakang meneropong export setEAR (timpa bila tidak ada).
+                let is_always = self.peek() == &Token::Always;
+                let is_never = matches!(self.peek(), Token::Ident(s) if s.as_str() == "never");
+                if is_always || is_never {
+                    self.advance();
+                    self.expect(Token::LParen)?;
+                    let inner = self.parse_expr(0)?;
+                    self.expect(Token::RParen)?;
+                    if self.peek() == &Token::At {
+                        self.advance();
+                        self.expect(Token::LParen)?;
+                        let ce = if self.peek() == &Token::PosEdge {
+                            self.advance();
+                            let sig = self.expect_ident()?;
+                            ClockEvent::Posedge(sig)
+                        } else if self.peek() == &Token::NegEdge {
+                            self.advance();
+                            let sig = self.expect_ident()?;
+                            ClockEvent::Negedge(sig)
+                        } else {
+                            let sig = self.expect_ident()?;
+                            ClockEvent::Edge(sig)
+                        };
+                        self.expect(Token::RParen)?;
+                        if clock_event.is_none() {
+                            clock_event = Some(ce);
+                        }
+                    }
+                    expr_opt = Some(if is_never {
+                        Expr::UnaryOp {
+                            op: UnaryOp::Not,
+                            expr: Box::new(inner),
+                        }
+                    } else {
+                        inner
+                    });
+                } else {
+                    let expr = self.parse_expr(0)?;
+                    if self.peek() == &Token::PipeArrow {
                     // `expr |-> consequent` — overlap implication (SVA §16.9.2)
                     self.advance(); // consume |->
                     let cons = self.parse_sequence_after_consequent()?;
@@ -312,8 +354,21 @@ impl Parser {
                         );
                     }
                     sequence = Some(seq);
-                } else {
-                    expr_opt = Some(expr);
+                    } else if matches!(self.peek(), Token::Ident(s) if s.as_str() == "iff") {
+                        // LANG-49: property connective `left iff right`
+                        // (IEEE 1800-2017 §16.10): true ketika kedua sisi
+                        // identik (1&1 atau 0&0) — di-translate sebagai
+                        // XNOR boolean 1-bit.
+                        self.advance();
+                        let right = self.parse_expr(0)?;
+                        expr_opt = Some(Expr::BinaryOp {
+                            op: BinaryOp::BitXnor,
+                            lhs: Box::new(expr),
+                            rhs: Box::new(right),
+                        });
+                    } else {
+                        expr_opt = Some(expr);
+                    }
                 }
             }
             self.expect(Token::RParen)?;
