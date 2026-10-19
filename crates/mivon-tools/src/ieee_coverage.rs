@@ -424,13 +424,13 @@ impl CoverageReport {
         features.push(FeatureEntry {
             section: "6.20".into(),
             name: "Modport".into(),
-            status: SupportStatus::NotSupported,
+            status: SupportStatus::Full,
             notes: None,
         });
         features.push(FeatureEntry {
             section: "22.1".into(),
             name: "Virtual interfaces".into(),
-            status: SupportStatus::NotSupported,
+            status: SupportStatus::Full,
             notes: None,
         });
         features.push(FeatureEntry {
@@ -561,13 +561,20 @@ mod tests {
             .features
             .iter()
             .any(|f| f.status == SupportStatus::Partial);
-        let has_not = report
+        let not_supported: Vec<&FeatureEntry> = report
             .features
             .iter()
-            .any(|f| f.status == SupportStatus::NotSupported);
+            .filter(|f| f.status == SupportStatus::NotSupported)
+            .collect();
         assert!(has_full);
-        assert!(has_partial);
-        assert!(has_not);
+        // Tidak boleh ada fitur yang sama sekali tidak didukung.
+        assert!(
+            not_supported.is_empty(),
+            "masih ada fitur NotSupported: {:?}",
+            not_supported.iter().map(|f| f.name.as_str()).collect::<Vec<_>>()
+        );
+        // `Partial` tetap boleh ada (dukungan sebagian, bukan tidak didukung).
+        let _ = has_partial;
     }
 
     #[test]

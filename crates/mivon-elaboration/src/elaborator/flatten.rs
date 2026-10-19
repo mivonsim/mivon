@@ -86,15 +86,32 @@ impl Elaborator {
             let Some(iface) = self.design.interfaces.iter().find(|i| i.name == iface_name) else {
                 continue;
             };
-            for d in &iface.decls {
-                for n in &d.names {
-                    let child_key = format!("{}.{}", port_name, n.name);
-                    let parent_key = format!("{}.{}", inst_path, n.name);
-                    if let Some(field_sid) = top
-                        .signals
-                        .iter()
-                        .position(|s| s.name.as_str() == parent_key)
-                    {
+            // LANG-45: field interface mencakup PORT interface (`input logic
+            // clk`) — bukan hanya deklarasi di body — agar `port.clk` ikut
+            // ter-alias ke `inst.clk`.
+            let field_names: Vec<Symbol> = iface
+                .decls
+                .iter()
+                .flat_map(|d| d.names.iter().map(|n| n.name))
+                .chain(iface.ports.iter().map(|p| p.name))
+                .collect();
+            for field_name in field_names {
+                {
+                    let child_key = format!("{}.{}", port_name, field_name);
+                    let parent_key = format!("{}.{}", inst_path, field_name);
+                    // LANG-45: field yang merupakan PORT interface terikat ke
+                    // sinyal PARENT (tidak ada sinyal bernama `inst.field`),
+                    // jadi cari dulu di hier_signal_map hasil flatten, baru
+                    // fallback ke daftar sinyal top.
+                    let field_sid = map
+                        .get(&Symbol::intern(&parent_key))
+                        .copied()
+                        .or_else(|| {
+                            top.signals
+                                .iter()
+                                .position(|s| s.name.as_str() == parent_key)
+                        });
+                    if let Some(field_sid) = field_sid {
                         map.insert(Symbol::intern(&child_key), field_sid);
                     }
                 }

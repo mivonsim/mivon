@@ -5567,11 +5567,24 @@ impl Elaborator {
                             .module_idx
                             .get(&inst.module_name)
                             .and_then(|&i| self.design.modules.get(i));
+                        // LANG-45: instance interface (`bus_if b(clk)`) tidak
+                        // ada di `design.modules` (hanya `design.interfaces`),
+                        // jadi daftar port diambil dari interface agar koneksi
+                        // positional/named ikut ter-wire saat flatten.
+                        let target_ports: Option<&Vec<Port>> = target_module
+                            .map(|m| &m.ports)
+                            .or_else(|| {
+                                self.design
+                                    .interfaces
+                                    .iter()
+                                    .find(|i| i.name == inst.module_name)
+                                    .map(|i| &i.ports)
+                            });
                         for (i, conn) in inst.port_conns.iter().enumerate() {
                             match conn {
                                 PortConnection::Positional(expr) => {
-                                    if let Some(tm) = target_module {
-                                        if let Some(port) = tm.ports.get(i) {
+                                    if let Some(ports) = target_ports {
+                                        if let Some(port) = ports.get(i) {
                                             // Verilog-2001 implicit net: ident tak
                                             // dikenal dalam koneksi OUTPUT/INOUT port
                                             // jadi wire 1-bit (prim_diff_encode
@@ -5614,9 +5627,8 @@ impl Elaborator {
                                     // eksplisit (campuran `.a(x), .*`) dipertahankan.
                                     // Input tanpa signal bernama sama → skip
                                     // (unconnected, tanpa error — konservatif).
-                                    if let Some(tm) = target_module {
-                                        let star_ports: Vec<(Symbol, bool)> = tm
-                                            .ports
+                                    if let Some(ports) = target_ports {
+                                        let star_ports: Vec<(Symbol, bool)> = ports
                                             .iter()
                                             .map(|p| {
                                                 (
@@ -5665,8 +5677,8 @@ impl Elaborator {
                                 PortConnection::Named { port, expr } => {
                                     // Implicit net hanya untuk output/inout port
                                     // (aturan Verilog-2001).
-                                    let is_output_like = target_module
-                                        .and_then(|tm| tm.ports.iter().find(|p| p.name == *port))
+                                    let is_output_like = target_ports
+                                        .and_then(|ps| ps.iter().find(|p| p.name == *port))
                                         .map(|p| {
                                             matches!(
                                                 p.direction,
