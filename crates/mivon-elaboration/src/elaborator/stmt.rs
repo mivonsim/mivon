@@ -2831,6 +2831,49 @@ impl Elaborator {
                             width: sub_count,
                         })
                     }
+                    // Range-select di atas lvalue hierarkis (`u.data[3:0]`,
+                    // `sif.sd_out[7:4]`): nama baru resolve saat write, jadi
+                    // dekomposisi ke concat HierRefIndex (MSB-first) — lebar
+                    // elemen (bit vs word) dihitung engine dari SignalInfo.
+                    IrLValue::HierRef(name) => {
+                        let start = msb_c.min(lsb_c);
+                        let count = msb_c.max(lsb_c) - start + 1;
+                        let mut parts: Vec<IrLValue> = Vec::with_capacity(count);
+                        for k in (0..count).rev() {
+                            parts.push(IrLValue::HierRefIndex {
+                                name,
+                                index: Box::new(IrExpr::Const(LogicVec::from_u64(
+                                    (start + k) as u64,
+                                    64,
+                                ))),
+                            });
+                        }
+                        Ok(IrLValue::Concat(parts))
+                    }
+                    IrLValue::HierRefIndex { name, index } => {
+                        let start = msb_c.min(lsb_c);
+                        let count = msb_c.max(lsb_c) - start + 1;
+                        let mut parts: Vec<IrLValue> = Vec::with_capacity(count);
+                        for k in (0..count).rev() {
+                            let idx = if start + k == 0 {
+                                (*index).clone()
+                            } else {
+                                IrExpr::BinaryOp(
+                                    BinaryIrOp::Add,
+                                    index.clone(),
+                                    Box::new(IrExpr::Const(LogicVec::from_u64(
+                                        (start + k) as u64,
+                                        64,
+                                    ))),
+                                )
+                            };
+                            parts.push(IrLValue::HierRefIndex {
+                                name,
+                                index: Box::new(idx),
+                            });
+                        }
+                        Ok(IrLValue::Concat(parts))
+                    }
                     _ => {
                         // F45: nested range select tak ter-model (hier
                         // interface / array dinamis) — degrade warning + write
@@ -3341,6 +3384,12 @@ impl Elaborator {
                                 Ok(IrLValue::ObjectField { sig_id, field })
                             }
                             IrLValue::HierRef(name) | IrLValue::HierRefIndex { name, .. } => {
+                                // Part-select pada referensi hierarkis. width == 1
+                                // tetap memakai HierRefIndex (bit/word select);
+                                // width > 1 didekomposisi menjadi concat lvalue
+                                // MSB-first — tiap elemen memakai HierRefIndex
+                                // sehingga lebar elemen (bit vs word array)
+                                // di-resolve engine dari SignalInfo.
                                 if width_c == 1 {
                                     let index_expr =
                                         self.elaborate_expr(base, signal_map, signals)?;
@@ -3349,18 +3398,33 @@ impl Elaborator {
                                         index: Box::new(index_expr),
                                     })
                                 } else {
-                                    Err(self.elab_diag_at(
-                                        DiagCode::NotImplemented,
-                                        "hierarchical part-select width>1 belum didukung",
-                                        expr_location(expr).0,
-                                        expr_location(expr).1,
-                                    ))
+                                    let base_ir =
+                                        self.elaborate_expr(base, signal_map, signals)?;
+                                    let mut parts: Vec<IrLValue> =
+                                        Vec::with_capacity(width_c);
+                                    for k in (0..width_c).rev() {
+                                        let idx = if k == 0 {
+                                            base_ir.clone()
+                                        } else {
+                                            IrExpr::BinaryOp(
+                                                BinaryIrOp::Add,
+                                                Box::new(base_ir.clone()),
+                                                Box::new(IrExpr::Const(
+                                                    LogicVec::from_u64(k as u64, 64),
+                                                )),
+                                            )
+                                        };
+                                        parts.push(IrLValue::HierRefIndex {
+                                            name,
+                                            index: Box::new(idx),
+                                        });
+                                    }
+                                    Ok(IrLValue::Concat(parts))
                                 }
                             }
                         }
                     }
                     _ => {
-                        // Base ATAU width tidak konstanta → part-select dinamis
                         // `sig[base +: width]` dengan base runtime. Simpan base
                         // sebagai ekspresi (dievaluasi saat write) dan width yang
                         // di-resolve best-effort (param/konstan biasanya).
@@ -3436,36 +3500,54 @@ impl Elaborator {
                                 })
                             }
                             // Lvalue hierarkis / field object yang sudah ter-degrade
-                            // (`key_slots_d[slot].key[j][cnt*W +: W]` di
-                            // keymgr_dpe_ctrl — member chain dinamis tak bisa
-                            // di-offset statis). Pertahankan degrade: warning +
-                            // lvalue asal (write diabaikan engine) agar modul
-                            // tidak di-skip.
+                            // Lvalue hierarkis dengan base DINAMIS
+                            // (`u.data[base +: 4]`): dekomposisi ke concat
+                            // HierRefIndex, offset dievaluasi saat write.
                             IrLValue::HierRef(name) => {
-                                let (l, c) = expr_location(expr);
-                                self.elab_warn_at(
-                                    DiagCode::NotImplemented,
-                                    format!(
-                                        "dynamic part-select pada lvalue hierarkis '{}' — write diabaikan",
-                                        name.as_str()
-                                    ),
-                                    l,
-                                    c,
-                                );
-                                Ok(IrLValue::HierRef(name))
+                                let mut parts: Vec<IrLValue> =
+                                    Vec::with_capacity(width_c);
+                                for k in (0..width_c).rev() {
+                                    let idx = if k == 0 {
+                                        base_ir.clone()
+                                    } else {
+                                        IrExpr::BinaryOp(
+                                            BinaryIrOp::Add,
+                                            Box::new(base_ir.clone()),
+                                            Box::new(IrExpr::Const(LogicVec::from_u64(
+                                                k as u64,
+                                                64,
+                                            ))),
+                                        )
+                                    };
+                                    parts.push(IrLValue::HierRefIndex {
+                                        name,
+                                        index: Box::new(idx),
+                                    });
+                                }
+                                Ok(IrLValue::Concat(parts))
                             }
                             IrLValue::HierRefIndex { name, index } => {
-                                let (l, c) = expr_location(expr);
-                                self.elab_warn_at(
-                                    DiagCode::NotImplemented,
-                                    format!(
-                                        "dynamic part-select pada lvalue hierarkis '{}' — write diabaikan",
-                                        name.as_str()
-                                    ),
-                                    l,
-                                    c,
-                                );
-                                Ok(IrLValue::HierRefIndex { name, index })
+                                let mut parts: Vec<IrLValue> =
+                                    Vec::with_capacity(width_c);
+                                for k in (0..width_c).rev() {
+                                    let idx = if k == 0 {
+                                        (*index).clone()
+                                    } else {
+                                        IrExpr::BinaryOp(
+                                            BinaryIrOp::Add,
+                                            index.clone(),
+                                            Box::new(IrExpr::Const(LogicVec::from_u64(
+                                                k as u64,
+                                                64,
+                                            ))),
+                                        )
+                                    };
+                                    parts.push(IrLValue::HierRefIndex {
+                                        name,
+                                        index: Box::new(idx),
+                                    });
+                                }
+                                Ok(IrLValue::Concat(parts))
                             }
                             IrLValue::ObjectField { sig_id, field } => {
                                 let (l, c) = expr_location(expr);
