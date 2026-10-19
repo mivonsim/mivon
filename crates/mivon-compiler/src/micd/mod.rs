@@ -101,7 +101,13 @@ pub use verify::{now_ns, CheckResult, VerifyCheckKind, VerifyResult};
 /// (`stage_schemas` di manifest). Rebuild binary tanpa perubahan format =
 /// cache tetap hidup. Fingerprint tercatat di `registry.json` (statistik) dan
 /// hanya memicu peringatan debug bila berubah.
-pub const COMPILER_VERSION: &str = concat!("Mivon ", env!("CARGO_PKG_VERSION"), "-p2");
+///
+/// PROTOKOL BUMP (LANG-53, dari bug demo basi): setiap commit yang mengubah
+/// semantik parse/elaborasi/evaluasi WAJIB menaikkan angka `-p<N>` di sini.
+/// Lupa bump → cache IR lama dilayani ke user berdesain baru (demo LANG-47
+/// harus `--recompile` manual). Angka = revisi semantik pipeline, bukan
+/// release number.
+pub const COMPILER_VERSION: &str = concat!("Mivon ", env!("CARGO_PKG_VERSION"), "-p3");
 
 /// Fingerprint identitas binary yang sedang berjalan: xxh64 atas ukuran +
 /// mtime (nanodetik) file executable. Binary yang sama → fingerprint sama
@@ -2768,6 +2774,39 @@ mod tests {
         assert!(!compiler_base_matches(&format!("{}-zzz", COMPILER_VERSION)));
         assert!(!compiler_base_matches(&format!("{}-", COMPILER_VERSION)));
         assert!(!compiler_base_matches(&format!("{}-123", COMPILER_VERSION)));
+    }
+
+    // LANG-53: revisi pipeline LEBIH TUA dari -p saat ini harus ditolak —
+    // cache IR dari binary versi semantik lama TIDAK BOLEH dilayani. Ini
+    // gerbang anti-basi: setiap bump `-p<N>` otomatis menolak semua `-pM`
+    // dgn M < N (dan sebaliknya versi lebih baru juga ditolak agar older
+    // binary tidak memakai cache dari newer pipeline).
+    #[test]
+    fn test_pipeline_revision_bump_menolak_versi_lama() {
+        // Ekstrak angka revisi saat ini: "...-p3" → 3.
+        let base = COMPILER_VERSION
+            .strip_prefix("Mivon ")
+            .expect("format 'Mivon x.y.z-pN'");
+        let (ver, rev) = base
+            .rsplit_once("-p")
+            .expect("suffix '-pN' wajib ada");
+        let cur: u64 = rev.parse().expect("revisi harus integer");
+        assert!(cur >= 1, "revisi semantik mulai 1");
+        // Versi lebih tua (cur-1) dan lebih baru (cur+1) → ditolak.
+        for other in [cur.saturating_sub(1).max(1), cur + 1] {
+            if other == cur {
+                continue;
+            }
+            let stored = format!("Mivon {}-p{}", ver, other);
+            assert!(
+                !compiler_base_matches(&stored),
+                "revisi {} harus ditolak dgn gerbang -p{}",
+                stored,
+                cur
+            );
+        }
+        // Versi saat ini → diterima.
+        assert!(compiler_base_matches(COMPILER_VERSION));
     }
 
     #[test]
