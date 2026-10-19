@@ -106,6 +106,8 @@ mod cva6_struct_param_regression_tests;
 mod nested_select_tests;
 #[cfg(test)]
 mod unit_scope_tests;
+#[cfg(test)]
+mod named_sva_tests;
 
 // Guided structure-aware fuzzer (metode test fuzzing "tidak buta"):
 // grammar-aware generation + coverage feedback + differential oracle.

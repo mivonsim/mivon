@@ -204,7 +204,7 @@ impl Parser {
         if self.peek() == &Token::Property {
             self.advance();
             self.expect(Token::LParen)?;
-            let clock_event = if self.peek() == &Token::At {
+            let mut clock_event = if self.peek() == &Token::At {
                 self.advance();
                 self.expect(Token::LParen)?;
                 let ce = if self.peek() == &Token::PosEdge {
@@ -298,6 +298,54 @@ impl Parser {
                 }
             }
             self.expect(Token::RParen)?;
+            // LANG-42: referensi ke deklarasi bernama — `assert property (@(posedge clk) p)`
+            // atau `p(arg)`. Body disubstitusi (parameter formal → argumen aktual);
+            // clock dari deklarasi dipakai bila assertion tidak punya clock sendiri.
+            let mut resolved = None;
+            match &expr_opt {
+                Some(Expr::Ident { name, .. }) => {
+                    if let Some(v) = self
+                        .named_properties
+                        .get(name)
+                        .or_else(|| self.named_sequences.get(name))
+                        .cloned()
+                    {
+                        resolved = Some((v.0, v.1, v.2, Vec::new()));
+                    }
+                }
+                Some(Expr::FuncCall { name, args, .. }) => {
+                    if let Some(v) = self
+                        .named_properties
+                        .get(name)
+                        .or_else(|| self.named_sequences.get(name))
+                        .cloned()
+                    {
+                        resolved = Some((v.0, v.1, v.2, args.clone()));
+                    }
+                }
+                _ => {}
+            }
+            if let Some((formals, body, decl_clock, args)) = resolved {
+                let map: std::collections::HashMap<Symbol, &Expr> =
+                    formals.iter().copied().zip(args.iter()).collect();
+                let subst = Self::subst_sequence(&body, &map);
+                // Properti boolean murni (`property p; a; endproperty`) identik
+                // dengan assertion boolean inline — jangan lewat jalur
+                // SequenceAttempt (tidak menghasilkan statistik pass/fail).
+                match subst {
+                    super::types::Sequence::Expr(e) => {
+                        expr_opt = Some(e);
+                        sequence = None;
+                    }
+                    other => {
+                        sequence = Some(other);
+                        expr_opt = None;
+                    }
+                }
+                if clock_event.is_none() {
+                    clock_event = decl_clock;
+                }
+            }
             let fail_stmt = if self.peek() == &Token::Else {
                 self.advance();
                 Some(Box::new(self.parse_stmt()?))
@@ -526,6 +574,202 @@ impl Parser {
         } else {
             let expr = self.parse_expr(0)?;
             Ok(super::types::Sequence::Expr(expr))
+        }
+    }
+
+    /// LANG-42: parse body sequence/property SVA (IEEE 1800-2017 §16.9):
+    /// `[##N] expr (##N expr)*`, `expr |-> consequent`, atau `expr`.
+    pub(crate) fn parse_sequence_expr(&mut self) -> Result<super::types::Sequence, SimError> {
+        if self.peek() == &Token::HashHash {
+            self.advance();
+            let delay = self.parse_sequence_delay()?;
+            let first = self.parse_expr(0)?;
+            let mut seq = super::types::Sequence::Concat(
+                Box::new(delay),
+                Box::new(super::types::Sequence::Expr(first)),
+            );
+            while self.peek() == &Token::HashHash {
+                self.advance();
+                let delay = self.parse_sequence_delay()?;
+                let next = self.parse_expr(0)?;
+                seq = super::types::Sequence::Concat(
+                    Box::new(seq),
+                    Box::new(super::types::Sequence::Concat(
+                        Box::new(delay),
+                        Box::new(super::types::Sequence::Expr(next)),
+                    )),
+                );
+            }
+            return Ok(seq);
+        }
+        let expr = self.parse_expr(0)?;
+        if self.peek() == &Token::PipeArrow {
+            self.advance();
+            let cons = self.parse_sequence_after_consequent()?;
+            return Ok(super::types::Sequence::Implication(
+                Box::new(super::types::Sequence::Expr(expr)),
+                Box::new(cons),
+            ));
+        }
+        let mut seq = super::types::Sequence::Expr(expr);
+        while self.peek() == &Token::HashHash {
+            self.advance();
+            let delay = self.parse_sequence_delay()?;
+            let next = self.parse_expr(0)?;
+            seq = super::types::Sequence::Concat(
+                Box::new(seq),
+                Box::new(super::types::Sequence::Concat(
+                    Box::new(delay),
+                    Box::new(super::types::Sequence::Expr(next)),
+                )),
+            );
+        }
+        Ok(seq)
+    }
+
+    /// LANG-42: deklarasi SVA bernama (IEEE 1800-2017 §16.12):
+    /// `sequence name [(formals)] [@(clk)] body endsequence` atau bentuk
+    /// ringkas `sequence name = body;` (idem untuk `property`).
+    pub(crate) fn parse_named_sva_decl(&mut self, is_property: bool) -> Result<(), SimError> {
+        self.advance(); // consume 'sequence'/'property'
+        let name = self.expect_ident()?;
+        let mut formals: Vec<Symbol> = Vec::new();
+        if self.peek() == &Token::LParen {
+            self.advance();
+            while self.peek() != &Token::RParen && self.peek() != &Token::Eof {
+                match self.peek() {
+                    Token::Comma
+                    | Token::Input
+                    | Token::Output
+                    | Token::Inout
+                    | Token::Logic
+                    | Token::Bit
+                    | Token::Reg
+                    | Token::Int
+                    | Token::Integer
+                    | Token::Byte
+                    | Token::Shortint
+                    | Token::Longint
+                    | Token::Wire
+                    | Token::LBrack
+                    | Token::RBrack
+                    | Token::Colon
+                    | Token::Signed
+                    | Token::Unsigned
+                    | Token::Number { .. } => {
+                        self.advance();
+                    }
+                    Token::Ident(s) => {
+                        formals.push(*s);
+                        self.advance();
+                    }
+                    _ => {
+                        self.advance();
+                    }
+                }
+            }
+            self.expect(Token::RParen)?;
+        }
+        // Bentuk ringkas: `name = expr;` — tidak ada endsequence/endproperty.
+        if self.peek() == &Token::BlockingAssign {
+            self.advance();
+            let body = self.parse_sequence_expr()?;
+            self.skip_semi();
+            self.register_named_sva(is_property, name, formals, body, None);
+            return Ok(());
+        }
+        self.skip_semi();
+        // Optional clocking event di dalam deklarasi: `property p; @(posedge clk) a; endproperty`.
+        let decl_clock = if self.peek() == &Token::At {
+            self.advance();
+            self.expect(Token::LParen)?;
+            let ce = if self.peek() == &Token::PosEdge {
+                self.advance();
+                let sig = self.expect_ident()?;
+                Some(ClockEvent::Posedge(sig))
+            } else if self.peek() == &Token::NegEdge {
+                self.advance();
+                let sig = self.expect_ident()?;
+                Some(ClockEvent::Negedge(sig))
+            } else {
+                let sig = self.expect_ident()?;
+                Some(ClockEvent::Edge(sig))
+            };
+            self.expect(Token::RParen)?;
+            ce
+        } else {
+            None
+        };
+        let body = self.parse_sequence_expr()?;
+        self.skip_semi();
+        match self.peek() {
+            Token::EndSequence => {
+                self.advance();
+            }
+            Token::Ident(n) if n.as_str() == "endproperty" => {
+                self.advance();
+            }
+            _ => {
+                return Err(self.err("expected endsequence/endproperty"));
+            }
+        }
+        if self.peek() == &Token::Colon {
+            self.advance();
+            if matches!(self.peek(), Token::Ident(_)) {
+                self.advance();
+            }
+        }
+        self.register_named_sva(is_property, name, formals, body, decl_clock);
+        Ok(())
+    }
+
+    fn register_named_sva(
+        &mut self,
+        is_property: bool,
+        name: Symbol,
+        formals: Vec<Symbol>,
+        body: super::types::Sequence,
+        clock: Option<ClockEvent>,
+    ) {
+        if is_property {
+            self.named_properties.insert(name, (formals, body, clock));
+        } else {
+            self.named_sequences.insert(name, (formals, body, clock));
+        }
+    }
+
+    /// LANG-42: substitusi parameter formal sequence/property dengan argumen
+    /// aktual (`substitute_let_args` untuk node Expr).
+    pub(crate) fn subst_sequence(
+        seq: &super::types::Sequence,
+        map: &std::collections::HashMap<Symbol, &Expr>,
+    ) -> super::types::Sequence {
+        use super::types::Sequence;
+        match seq {
+            Sequence::Expr(e) => {
+                Sequence::Expr(mivon_ast::inline_util::substitute_let_args(e.clone(), map))
+            }
+            Sequence::Delay(n) => Sequence::Delay(*n),
+            Sequence::DelayRange(a, b) => Sequence::DelayRange(*a, *b),
+            Sequence::Concat(a, b) => Sequence::Concat(
+                Box::new(Self::subst_sequence(a, map)),
+                Box::new(Self::subst_sequence(b, map)),
+            ),
+            Sequence::Or(a, b) => Sequence::Or(
+                Box::new(Self::subst_sequence(a, map)),
+                Box::new(Self::subst_sequence(b, map)),
+            ),
+            Sequence::And(a, b) => Sequence::And(
+                Box::new(Self::subst_sequence(a, map)),
+                Box::new(Self::subst_sequence(b, map)),
+            ),
+            Sequence::Repeat(a, n) => {
+                Sequence::Repeat(Box::new(Self::subst_sequence(a, map)), *n)
+            }
+            Sequence::Implication(a, b) => Sequence::Implication(
+                Box::new(Self::subst_sequence(a, map)),
+                Box::new(Self::subst_sequence(b, map)),
+            ),
         }
     }
 

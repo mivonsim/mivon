@@ -983,13 +983,12 @@ pub(crate) fn rename_in_expr(expr: Expr, rename_map: &HashMap<Symbol, Symbol>) -
 /// engine (jalur AST class method).
 pub fn substitute_let_args(expr: Expr, map: &HashMap<Symbol, &Expr>) -> Expr {
     match expr {
-        Expr::Ident { name, .. } => match map.get(&name) {
+        Expr::Ident { name, line, col } => match map.get(&name) {
             Some(repl) => (*repl).clone(),
-            None => Expr::Ident {
-                name,
-                line: 0,
-                col: 0,
-            },
+            // Pertahankan posisi asli: `record_assertion` mengabaikan line 0,
+            // sehingga assertion hasil substitusi (SVA/let) tidak tercatat
+            // bila posisi di-reset.
+            None => Expr::Ident { name, line, col },
         },
         Expr::RangeSelect { expr, msb, lsb } => Expr::RangeSelect {
             expr: Box::new(substitute_let_args(*expr, map)),

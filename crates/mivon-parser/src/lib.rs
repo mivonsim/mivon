@@ -89,6 +89,26 @@ pub struct Parser {
     /// `parse_module_item` drain dulu sebelum parse item baru. Tanpa ini
     /// assignment ke-2+ jatuh ke E1005 "skipping unknown construct" (cva6).
     pub(crate) pending_assigns: std::cell::RefCell<Vec<ModuleItem>>,
+    /// LANG-42: deklarasi SVA bernama `sequence`/`property` (nama → parameter
+    /// formal + body `Sequence`). Dipakai `assert property (...)` untuk
+    /// me-resolve referensi nama (dengan substitusi argumen) di scope module
+    /// maupun compilation-unit. Deklarasi harus mendahului pemakaian.
+    pub(crate) named_sequences: std::collections::HashMap<
+        Symbol,
+        (
+            Vec<Symbol>,
+            crate::types::Sequence,
+            Option<crate::types::ClockEvent>,
+        ),
+    >,
+    pub(crate) named_properties: std::collections::HashMap<
+        Symbol,
+        (
+            Vec<Symbol>,
+            crate::types::Sequence,
+            Option<crate::types::ClockEvent>,
+        ),
+    >,
     pub errors: Vec<Diagnostic>,
 }
 
@@ -211,6 +231,8 @@ impl Parser {
             timescale_segments: Vec::new(),
             timescale_at_line: None,
             pending_assigns: std::cell::RefCell::new(Vec::new()),
+            named_sequences: std::collections::HashMap::new(),
+            named_properties: std::collections::HashMap::new(),
             errors: Vec::new(),
         }
     }
@@ -1067,13 +1089,44 @@ impl Parser {
                 if self.peek() == &Token::EndPrimitive {
                     self.advance();
                 }
-            } else if self.peek() == &Token::Sequence {
-                self.advance(); // consume 'sequence'
-                while self.peek() != &Token::EndSequence && self.peek() != &Token::Eof {
+            } else if self.peek() == &Token::Sequence || self.peek() == &Token::Property {
+                // LANG-42: deklarasi SVA bernama — dua bentuk:
+                //   `sequence s = body;` / `property p = body;` (ringkas),
+                //   `sequence s; body endsequence` (blok).
+                // Bentuk ringkas TIDAK punya endsequence — loop lama
+                // (skip sampai EndSequence) menelan seluruh file.
+                let is_seq = self.peek() == &Token::Sequence;
+                self.advance(); // consume 'sequence'/'property'
+                if matches!(self.peek(), Token::Ident(_)) {
+                    self.advance(); // nama
+                }
+                let mut shorthand = false;
+                while !matches!(self.peek(), Token::Semi | Token::Eof) {
+                    if self.peek() == &Token::BlockingAssign {
+                        shorthand = true;
+                    }
                     self.advance();
                 }
-                if self.peek() == &Token::EndSequence {
+                if self.peek() == &Token::Semi {
                     self.advance();
+                }
+                if !shorthand {
+                    loop {
+                        match self.peek() {
+                            Token::Eof => break,
+                            Token::EndSequence if is_seq => {
+                                self.advance();
+                                break;
+                            }
+                            Token::Ident(n) if !is_seq && n.as_str() == "endproperty" => {
+                                self.advance();
+                                break;
+                            }
+                            _ => {
+                                self.advance();
+                            }
+                        }
+                    }
                 }
             } else if self.peek() == &Token::Checker {
                 // LANG-41: checker di compilation-unit scope — body di-skip
@@ -1496,6 +1549,20 @@ impl Parser {
                         unit_items.push(ModuleItem::Checker(cd));
                         false
                     }
+                    Err(e) => {
+                        self.errors.push(e.to_diagnostic());
+                        true
+                    }
+                },
+                Token::Sequence => match self.parse_named_sva_decl(false) {
+                    Ok(()) => false,
+                    Err(e) => {
+                        self.errors.push(e.to_diagnostic());
+                        true
+                    }
+                },
+                Token::Property => match self.parse_named_sva_decl(true) {
+                    Ok(()) => false,
                     Err(e) => {
                         self.errors.push(e.to_diagnostic());
                         true
@@ -2532,48 +2599,14 @@ impl Parser {
                 }
             }
             Token::Property => {
-                // Deklarasi SVA `property name(...); ... endproperty` — di-skip
-                // penuh (property assertion tidak di-elaborasi). Depth-aware
-                // untuk property bertingkat. `endproperty` bukan keyword
-                // lexer — di-lex sebagai Ident("endproperty").
-                self.advance(); // consume 'property'
-                let mut depth = 1usize;
-                loop {
-                    match self.peek() {
-                        Token::Property => {
-                            depth += 1;
-                            self.advance();
-                        }
-                        Token::Ident(n) if n == "endproperty" => {
-                            depth -= 1;
-                            self.advance();
-                            if depth == 0 {
-                                break;
-                            }
-                        }
-                        Token::Eof => break,
-                        _ => {
-                            self.advance();
-                        }
-                    }
-                }
-                // Konsumsi optional `endproperty : name`
-                if self.peek() == &Token::Colon {
-                    self.advance();
-                    if matches!(self.peek(), Token::Ident(_)) {
-                        self.advance();
-                    }
-                }
+                // LANG-42: `property name[(formals)] [@(clk)] body endproperty`
+                // — didaftarkan agar `assert property (... name)` ter-resolve.
+                self.parse_named_sva_decl(true)?;
                 Ok(None)
             }
             Token::Sequence => {
-                self.advance();
-                while self.peek() != &Token::EndSequence && self.peek() != &Token::Eof {
-                    self.advance();
-                }
-                if self.peek() == &Token::EndSequence {
-                    self.advance();
-                }
+                // LANG-42: `sequence name[(formals)] body endsequence`.
+                self.parse_named_sva_decl(false)?;
                 Ok(None)
             }
             Token::For | Token::If | Token::Case | Token::CaseX | Token::CaseZ => {
