@@ -258,8 +258,8 @@ impl CoverageReport {
         features.push(FeatureEntry {
             section: "15.4".into(),
             name: "Sequences (##N, [*N], |->, |=>)".into(),
-            status: SupportStatus::Partial,
-            notes: Some("##N, |->, [*N] done; |=> open".into()),
+            status: SupportStatus::Full,
+            notes: Some("##N, ##[m:n], |->, |=> (via Delay(1) encoding), [*N] done".into()),
         });
         features.push(FeatureEntry {
             section: "15.5".into(),

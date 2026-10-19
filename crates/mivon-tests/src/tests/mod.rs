@@ -14863,6 +14863,67 @@ endmodule
 }
 
 #[test]
+fn test_sva_nonoverlap_implication() {
+    // LANG-47: `|=>` non-overlap implication (IEEE 1800-2017 §16.9.2).
+    // Antecedent match di posedge k → consequent dievaluasi mulai posedge
+    // k+1 (di window 1 cycle). Vacuous: req selamat dari match → pass.
+    //
+    // Pass: req=1 di cycle pertamanya yang true, done=1 TEPAT di posedge
+    // berikutnya → attempt matched (pass).
+    let pass_src = r#"
+module tb_nonoverlap_pass;
+  reg clk = 0;
+  reg req = 0;
+  reg done = 0;
+  always #5 clk = ~clk;
+  assert property (@(posedge clk) req |=> done);
+  initial begin
+    @(posedge clk) req = 1;
+    @(posedge clk) done = 1;  // done TRUE di posedge TEPAT setelah req
+    @(posedge clk) req = 0;
+    #20; $finish;
+  end
+endmodule
+"#;
+    let design = compile_str(pass_src).expect("compile nonoverlap pass");
+    let mut engine = crate::simulator::SimulationEngine::new(design, 60);
+    let _ = engine.run();
+    let total_pass: u64 = engine.assertion_stats.values().map(|(p, _)| *p).sum();
+    let total_fail: u64 = engine.assertion_stats.values().map(|(_, f)| *f).sum();
+    assert!(
+        total_pass >= 1,
+        "|=> pass case: pass={} fail={}",
+        total_pass,
+        total_fail
+    );
+    assert_eq!(total_fail, 0, "|=> pass case: fail={}", total_fail);
+
+    // Fail: done=0 di posedge TEPAT setelah antecedent → attempt failed
+    // (|=> menuntut true PERSIS di cycle berikutnya, bukan cycle sama).
+    let fail_src = r#"
+module tb_nonoverlap_fail;
+  reg clk = 0;
+  reg req = 1;   // req true sejak t=0 → antecedent match di posedge pertama
+  reg done = 0;  // done TIDAK pernah → consequent gagal di posedge berikutnya
+  always #5 clk = ~clk;
+  assert property (@(posedge clk) req |=> done);
+  initial begin
+    #40; $finish;
+  end
+endmodule
+"#;
+    let design = compile_str(fail_src).expect("compile nonoverlap fail");
+    let mut engine = crate::simulator::SimulationEngine::new(design, 60);
+    let _ = engine.run();
+    let total_fail: u64 = engine.assertion_stats.values().map(|(_, f)| *f).sum();
+    assert!(
+        total_fail >= 1,
+        "|=> fail case belum terdeteksi: fail={}",
+        total_fail
+    );
+}
+
+#[test]
 fn test_checker_construct_instance() {
     // LANG-10: checker construct (IEEE 1800-2017 §17.8) — `checker name
     // (ports); assert property... endchecker` dideklarasikan, diinstansiasi

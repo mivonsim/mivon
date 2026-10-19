@@ -277,6 +277,25 @@ impl Parser {
                     let ante = super::types::Sequence::Expr(expr);
                     let seq = super::types::Sequence::Implication(Box::new(ante), Box::new(cons));
                     sequence = Some(seq);
+                } else if self.peek() == &Token::PipeFatArrow {
+                    // `expr |=> consequent` — non-overlap implication (SVA
+                    // §16.9.2): consequent mulai satu cycle SETELAH antecedent.
+                    // Representasi ekuivalen: `expr ##1 consequent` di bawah
+                    // umbrella implication — Delay(1) dipakai sebagai leader
+                    // concat sehingga evaluasi consequent jatuh tepat pada
+                    // posedge berikutnya (encoding ini tidak menambah variant
+                    // IR dan memakai back-end `|->` yang sudah tervalidasi).
+                    self.advance(); // consume |=>
+                    let cons = self.parse_sequence_after_consequent()?;
+                    let ante = super::types::Sequence::Expr(expr);
+                    let seq = super::types::Sequence::Implication(
+                        Box::new(ante),
+                        Box::new(super::types::Sequence::Concat(
+                            Box::new(super::types::Sequence::Delay(1)),
+                            Box::new(cons),
+                        )),
+                    );
+                    sequence = Some(seq);
                 } else if self.peek() == &Token::HashHash {
                     // bentuk `expr ##N expr ...`
                     let mut seq = super::types::Sequence::Expr(expr);
@@ -609,6 +628,21 @@ impl Parser {
             return Ok(super::types::Sequence::Implication(
                 Box::new(super::types::Sequence::Expr(expr)),
                 Box::new(cons),
+            ));
+        }
+        if self.peek() == &Token::PipeFatArrow {
+            // `expr |=> consequent` — non-overlap implication (SVA §16.9.2).
+            // Encoding sama dengan jalur assert inline: Delay(1) sebagai leader
+            // concat di dalam umbrella Implication. Semantik: consequent
+            // dievaluasi dari posedge tepat SETELAH antecedent match.
+            self.advance();
+            let cons = self.parse_sequence_after_consequent()?;
+            return Ok(super::types::Sequence::Implication(
+                Box::new(super::types::Sequence::Expr(expr)),
+                Box::new(super::types::Sequence::Concat(
+                    Box::new(super::types::Sequence::Delay(1)),
+                    Box::new(cons),
+                )),
             ));
         }
         let mut seq = super::types::Sequence::Expr(expr);

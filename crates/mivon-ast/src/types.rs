@@ -977,7 +977,8 @@ pub enum ClockEvent {
 /// properti ber-urutan. Dievaluasi ber-clock oleh engine via
 /// `IrSequence` (elaborator menerjemahkan enum ini). Bentuk yang didukung:
 /// boolean `Expr`, delay `##N`/`##[min:max]`, `Concat` (seq1 ##1 seq2),
-/// `Or`/`And`, dan `Repeat` (`[*N]`).
+/// `Or`/`And`, `Repeat` (`[*N]`), `Implication` (`|->`) dan non-overlap
+/// implication `|=>` (di-encode sebagai `Implication` dgn leader `Delay(1)`).
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Sequence {
     /// Immediate Boolean expression (dievaluasi tiap cycle)
