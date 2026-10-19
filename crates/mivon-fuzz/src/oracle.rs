@@ -2885,7 +2885,10 @@ pub(crate) fn diag_loc_in_range(msg: &str, source: &str) -> bool {
 }
 
 /// Pair angka `N:M` pertama di teks: scan pola `digit ':' digit`, expand
-/// digit kiri/kanan. Pair berawalan `[` → range spec, skip.
+/// digit kiri/kanan. Pair berawalan `[` → range spec, skip. Digit-run
+/// >19 (junk mutasi `99999…:1`) → pair di-skip, scan lanjut — dulu
+/// `parse().ok()?` memutus seluruh scan (review A1: false-negative,
+/// bug out-of-range di belakang junk lolos).
 pub(crate) fn first_num_pair(msg: &str) -> Option<(u64, u64)> {
     let b = msg.as_bytes();
     let n = b.len();
@@ -2903,6 +2906,11 @@ pub(crate) fn first_num_pair(msg: &str) -> Option<(u64, u64)> {
             let mut hi = i + 1;
             while hi + 1 < n && b[hi + 1].is_ascii_digit() {
                 hi += 1;
+            }
+            // Junk digit-run (>19 = tak mungkin line/col sah) → skip pair.
+            if i - lo >= 19 || hi - (i + 1) >= 19 {
+                i = hi + 1;
+                continue;
             }
             let line: u64 = msg[lo..=i].parse().ok()?;
             let col: u64 = msg[i + 2..=hi].parse().ok()?;
@@ -3005,6 +3013,14 @@ mod scan_tests {
         assert!(
             !diag_loc_in_range("width [8:0] mismatch: x.sv:77:1: boom", many),
             "range [8:0] skip, loc 77:1 di luar rentang = bug"
+        );
+        // Junk digit-run >19 → skip, pair sah di belakang tetap dinilai.
+        assert!(
+            !diag_loc_in_range(
+                "deret 9999999999999999999999:1 junk berubah; x.sv:77:1: boom",
+                many
+            ),
+            "junk memutus scan = adalah false-negative (A1)"
         );
     }
 
