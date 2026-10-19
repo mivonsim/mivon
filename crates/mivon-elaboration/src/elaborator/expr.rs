@@ -622,15 +622,25 @@ impl Elaborator {
                                     }
                                 }
                             }
-                            // If we still can't determine width, emit error as before
-                            Err(self.elab_diag_at(
-                                DiagCode::NotImplemented,
-                                format!(
-                                    "dynamic range select not supported: bounds [{:?}:{:?}] are not constant at elaboration",
-                                    msb, lsb
-                                ),
-                                expr_location(expr).0,
-                                expr_location(expr).1,
+                            // Bounds tidak konstan → range-select dinamis
+                            // `[msb:lsb]` diturunkan ke ExprPartSelect
+                            // (base=lsb, width=msb-lsb+1) yang dievaluasi
+                            // runtime oleh engine.
+                            let msb_ir = self.elaborate_expr(msb, signal_map, signals)?;
+                            let lsb_ir = self.elaborate_expr(lsb, signal_map, signals)?;
+                            let width_ir = IrExpr::BinaryOp(
+                                BinaryIrOp::Add,
+                                Box::new(IrExpr::BinaryOp(
+                                    BinaryIrOp::Sub,
+                                    Box::new(msb_ir),
+                                    Box::new(lsb_ir.clone()),
+                                )),
+                                Box::new(IrExpr::Const(LogicVec::from_u64(1, 32))),
+                            );
+                            Ok(IrExpr::ExprPartSelect(
+                                Box::new(inner_expr),
+                                Box::new(lsb_ir),
+                                Box::new(width_ir),
                             ))
                         }
                     }

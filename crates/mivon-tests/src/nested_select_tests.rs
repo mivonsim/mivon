@@ -216,3 +216,21 @@ endmodule"#;
     assert_eq!(get_u64(&sigs, "a"), 0x0A);
     assert_eq!(get_u64(&sigs, "b"), 0x0F);
 }
+
+#[test]
+fn dynamic_range_select_rvalue() {
+    let src = r#"module top(output [7:0] o);
+  reg [15:0] d;
+  reg [3:0] hi;
+  reg [3:0] lo;
+  initial begin
+    d = 16'hABCD;
+    hi = 15;
+    lo = 8;
+    #1 $finish;
+  end
+  assign o = d[hi:lo];
+endmodule"#;
+    let sigs = sim(src, 10);
+    assert_eq!(get_u64(&sigs, "o"), 0xAB);
+}
