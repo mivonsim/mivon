@@ -5497,6 +5497,21 @@ impl Elaborator {
                             }
                         }
                         // Drive assertion property items di body checker.
+                        // LANG-50: `let` di dalam checker terlihat oleh body
+                        // assertion (IEEE 1800-2017 §17.8 — checker items
+                        // mengikuti scope checker); body `let` boleh
+                        // mereferensi nama port (ter-bind via bind_map di
+                        // elaborate_always). Registrasi dulu sebelum item
+                        // loop, lalu dibersihkan agar scope per-instance.
+                        let mut inserted_lets: Vec<Symbol> = Vec::new();
+                        for item in &cd.items {
+                            if let ModuleItem::Let(ld) = item {
+                                if !self.let_decls.contains_key(&ld.name) {
+                                    self.let_decls.insert(ld.name, ld.clone());
+                                    inserted_lets.push(ld.name);
+                                }
+                            }
+                        }
                         for item in &cd.items {
                             let ModuleItem::PropertyAssert(stmt) = item else {
                                 continue;
@@ -5549,6 +5564,10 @@ impl Elaborator {
                                     }
                                 }
                             }
+                        }
+                        // Bersihkan scope let checker yang baru di-register.
+                        for n in inserted_lets {
+                            self.let_decls.remove(&n);
                         }
                     } else {
                         // Regular module instance

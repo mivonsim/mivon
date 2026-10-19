@@ -15051,6 +15051,41 @@ endmodule
 }
 
 #[test]
+fn test_checker_let_items() {
+    // LANG-50: `let` di dalam checker di-resolve oleh body assertion
+    // (IEEE 1800-2017 §17.8 — checker items satu scope). Body let boleh
+    // mereferensi nama port checker (ter-bind saat instance).
+    let source = r#"
+module tb_chk_let;
+    reg clk = 0;
+    reg [3:0] cnt = 0;
+    always #5 clk = ~clk;
+    always @(posedge clk) cnt <= cnt + 1;
+
+    checker chk_let (logic clk_p, logic [3:0] d, logic en);
+        let thr = en;
+        assert property (@(posedge clk_p) !thr || (d > 0));
+        assert property (@(posedge clk_p) d <= 10);
+    endchecker
+
+    chk_let u_chk(clk, cnt, 1'b1);
+    initial #50 $finish;
+endmodule
+"#;
+    let design = compile_str(source).unwrap();
+    let mut engine = crate::simulator::SimulationEngine::new(design, 60);
+    let _ = engine.run();
+    let total_pass: u64 = engine.assertion_stats.values().map(|(p, _)| *p).sum();
+    // Kedua assertion checker (thr let + rentang) pass — cnt 0..di 10.
+    assert!(
+        total_pass >= 2,
+        "checker let assertion pass: pass={}",
+        total_pass
+    );
+    let _ = total_pass;
+}
+
+#[test]
 fn test_checker_construct_instance() {
     // LANG-10: checker construct (IEEE 1800-2017 §17.8) — `checker name
     // (ports); assert property... endchecker` dideklarasikan, diinstansiasi

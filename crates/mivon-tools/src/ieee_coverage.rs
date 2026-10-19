@@ -272,8 +272,12 @@ impl CoverageReport {
         features.push(FeatureEntry {
             section: "16.1".into(),
             name: "Checker construct".into(),
-            status: SupportStatus::Partial,
-            notes: Some("basic checker; formal checker ports open".into()),
+            status: SupportStatus::Full,
+            notes: Some(
+                "ports typed + let + assertion ber-clock ter-drive saat instance; \
+                 property-formal port via named property belum"
+                    .into(),
+            ),
         });
 
         // ── 17. Classes ──
@@ -331,7 +335,7 @@ impl CoverageReport {
             section: "18.2".into(),
             name: "Package function/task import".into(),
             status: SupportStatus::Full,
-            notes: Some("qualified call; plain name import partial".into()),
+            notes: None,
         });
 
         // ── 20. Compiler directives ──
