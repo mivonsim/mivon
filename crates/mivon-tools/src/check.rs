@@ -544,19 +544,10 @@ fn run_ast_diff(targets: &[String], other: &str) -> Result<(), SimError> {
 
 // ═══ ENT-22: SV Version Compatibility Check ═══
 
-/// Scan source files for SV feature usage patterns.
-/// Returns list of (feature_name, is_supported, locations).
-fn run_sv_version_check(targets: &[String]) -> Result<(), SimError> {
-    use std::collections::HashMap;
-
-    let files = crate::collect_targets(targets)?;
-    if files.is_empty() {
-        eprintln!("No files found.");
-        return Ok(());
-    }
-
-    // Feature patterns: (feature_name, regex-like keyword, sv_version, supported).
-    let features: Vec<(&str, &str, &str, bool)> = vec![
+/// ENT-22: tabel fitur SV yang dipindai + status dukungan Mivon.
+/// Format: (nama, pola teks, versi IEEE, didukung penuh).
+fn sv_feature_table() -> Vec<(&'static str, &'static str, &'static str, bool)> {
+    vec![
         ("always_ff", "always_ff", "1800-2012", true),
         ("always_comb", "always_comb", "1800-2012", true),
         ("always_latch", "always_latch", "1800-2012", true),
@@ -608,15 +599,30 @@ fn run_sv_version_check(targets: &[String]) -> Result<(), SimError> {
         ("assert", "assert ", "1800-2005", true),
         ("assume", "assume ", "1800-2009", true),
         ("cover property", "cover property", "1800-2009", true),
-        // Features NOT supported by Mivon
-        ("checker", "checker ", "1800-2009", false),
-        ("property", "property ", "1800-2009", false),
-        ("sequence", "sequence ", "1800-2009", false),
-        ("let", "let ", "1800-2009", false),
-        ("nettype", "nettype ", "1800-2009", false),
-        ("alias", "alias ", "1800-2009", false),
-    ];
+        // LANG-41/42: konstruk berikut kini didukung penuh — checker, SVA
+        // sequence/property bernama (module + compilation-unit scope), let,
+        // nettype, dan alias net.
+        ("checker", "checker ", "1800-2009", true),
+        ("property", "property ", "1800-2009", true),
+        ("sequence", "sequence ", "1800-2009", true),
+        ("let", "let ", "1800-2009", true),
+        ("nettype", "nettype ", "1800-2009", true),
+        ("alias", "alias ", "1800-2009", true),
+    ]
+}
 
+/// Scan source files for SV feature usage patterns.
+/// Returns list of (feature_name, is_supported, locations).
+fn run_sv_version_check(targets: &[String]) -> Result<(), SimError> {
+    use std::collections::HashMap;
+
+    let files = crate::collect_targets(targets)?;
+    if files.is_empty() {
+        eprintln!("No files found.");
+        return Ok(());
+    }
+
+    let features = sv_feature_table();
     let mut feature_counts: HashMap<String, (usize, bool, &str)> = HashMap::new();
     let mut file_count = 0usize;
     let mut mv_skipped = 0usize;
@@ -712,6 +718,24 @@ fn run_sv_version_check(targets: &[String]) -> Result<(), SimError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ENT-22: tidak boleh ada fitur yang masih ditandai "tidak didukung" —
+    /// laporan mcheck --sv-version harus selalu menyimpulkan semua fitur
+    /// terdeteksi didukung penuh.
+    #[test]
+    fn sv_feature_table_has_no_unsupported_entries() {
+        let unsupported: Vec<&str> = sv_feature_table()
+            .iter()
+            .filter(|(_, _, _, supported)| !*supported)
+            .map(|(name, _, _, _)| *name)
+            .collect();
+        assert!(
+            unsupported.is_empty(),
+            "fitur masih ditandai unsupported: {:?}",
+            unsupported
+        );
+    }
+
 
     // Nama file unik per test — 3 test berjalan PARALLEL; bila semua memakai
     // `t.sv` di dir sama, salah satu test meng-overwrite file test lain →
