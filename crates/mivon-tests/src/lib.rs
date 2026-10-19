@@ -115,6 +115,8 @@ mod vif_write_tests;
 #[cfg(test)]
 mod interface_port_tests;
 #[cfg(test)]
+mod lang_features_tests;
+#[cfg(test)]
 mod synth_sir_tests;
 
 // Guided structure-aware fuzzer (metode test fuzzing "tidak buta"):
