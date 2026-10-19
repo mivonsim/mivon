@@ -310,6 +310,7 @@ impl Elaborator {
                     constraints,
                     rand_fields: merged_rand_fields(&classes, cd, &rand_fields),
                     lets,
+                    is_virtual: cd.is_virtual,
                 },
             );
         }

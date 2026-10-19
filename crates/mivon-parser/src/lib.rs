@@ -89,6 +89,10 @@ pub struct Parser {
     /// `parse_module_item` drain dulu sebelum parse item baru. Tanpa ini
     /// assignment ke-2+ jatuh ke E1005 "skipping unknown construct" (cva6).
     pub(crate) pending_assigns: std::cell::RefCell<Vec<ModuleItem>>,
+    /// LANG-57: flag class virtual yang sedang diparse — di-set bila deklarasi
+    /// didahului kata kunci `virtual` (`virtual class C ... endclass`, LRM
+    /// 1800-2017 §8.23) sebelum parse_class dipanggil.
+    pub(crate) current_class_is_virtual: bool,
     /// LANG-42: deklarasi SVA bernama `sequence`/`property` (nama → parameter
     /// formal + body `Sequence`). Dipakai `assert property (...)` untuk
     /// me-resolve referensi nama (dengan substitusi argumen) di scope module
@@ -231,6 +235,7 @@ impl Parser {
             timescale_segments: Vec::new(),
             timescale_at_line: None,
             pending_assigns: std::cell::RefCell::new(Vec::new()),
+            current_class_is_virtual: false,
             named_sequences: std::collections::HashMap::new(),
             named_properties: std::collections::HashMap::new(),
             errors: Vec::new(),
@@ -1028,6 +1033,7 @@ impl Parser {
                 self.skip_attribute();
             } else if self.peek() == &Token::Virtual && self.peek_ahead(1) == &Token::Class {
                 self.advance(); // consume virtual
+                self.current_class_is_virtual = true; // LANG-57
                 match self.parse_class_fast() {
                     Ok(_) => {}
                     Err(e) => {
@@ -1361,6 +1367,7 @@ impl Parser {
                 }
                 Token::Virtual if self.peek_ahead(1) == &Token::Class => {
                     self.advance(); // consume 'virtual' so parse_class() sees 'class'
+                    self.current_class_is_virtual = true; // LANG-57
                     match self.parse_class() {
                         Ok(c) => {
                             classes.push(c);
@@ -2858,6 +2865,17 @@ impl Parser {
                 }
             }
             Token::Virtual => {
+                // LANG-56: `virtual class ... endclass` (LRM 1800-2017 §8.3 —
+                // abstract class; tak bisa di-instantiate, method virtual bisa
+                // di-consumes pure与其 body kosong/pure virtual). Tanpa arm ini
+                // `virtual` jatuh ke jalur virtual-interface → E1002
+                // "expected identifier, found class".
+                if self.peek_ahead(1) == &Token::Class {
+                    self.advance(); // consume 'virtual'
+                    self.current_class_is_virtual = true; // LANG-57
+                    let c = self.parse_class()?;
+                    return Ok(Some(ModuleItem::Class(c)));
+                }
                 // virtual <iface_type>[.<modport>] <vif_name>;
                 self.advance(); // consume 'virtual'
                 let iface_type = self.expect_ident()?;

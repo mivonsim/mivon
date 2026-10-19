@@ -60,6 +60,10 @@ pub struct ClassDecl {
     pub extends: Option<Symbol>,
     pub type_params: Vec<TypeParam>,
     pub members: Vec<ClassMember>,
+    /// LANG-57: `virtual class C ... endclass` (LRM 1800 §8.23) — abstract
+    /// class: tidak boleh di-instantiate (`new`), hanya diperluas.
+    #[serde(default)]
+    pub is_virtual: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]

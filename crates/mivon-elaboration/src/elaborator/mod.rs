@@ -2094,6 +2094,7 @@ impl Elaborator {
                     constraints: vec![],
                     rand_fields: vec![],
                     lets: vec![],
+                    is_virtual: false,
                 },
             );
             classes.insert(
@@ -2107,6 +2108,7 @@ impl Elaborator {
                     constraints: vec![],
                     rand_fields: vec![],
                     lets: vec![],
+                    is_virtual: false,
                 },
             );
             classes.insert(
@@ -2120,6 +2122,7 @@ impl Elaborator {
                     constraints: vec![],
                     rand_fields: vec![],
                     lets: vec![],
+                    is_virtual: false,
                 },
             );
             classes.insert(
@@ -2134,6 +2137,7 @@ impl Elaborator {
                     constraints: vec![],
                     rand_fields: vec![],
                     lets: vec![],
+                    is_virtual: false,
                 },
             );
             classes.insert(
@@ -2148,6 +2152,7 @@ impl Elaborator {
                     constraints: vec![],
                     rand_fields: vec![],
                     lets: vec![],
+                    is_virtual: false,
                 },
             );
             classes.insert(
@@ -2161,6 +2166,7 @@ impl Elaborator {
                     constraints: vec![],
                     rand_fields: vec![],
                     lets: vec![],
+                    is_virtual: false,
                 },
             );
             classes.insert(
@@ -2174,6 +2180,7 @@ impl Elaborator {
                     constraints: vec![],
                     rand_fields: vec![],
                     lets: vec![],
+                    is_virtual: false,
                 },
             );
             classes.insert(
@@ -2187,6 +2194,7 @@ impl Elaborator {
                     constraints: vec![],
                     rand_fields: vec![],
                     lets: vec![],
+                    is_virtual: false,
                 },
             );
             classes.insert(
@@ -2200,6 +2208,7 @@ impl Elaborator {
                     constraints: vec![],
                     rand_fields: vec![],
                     lets: vec![],
+                    is_virtual: false,
                 },
             );
             classes.insert(
@@ -2213,6 +2222,7 @@ impl Elaborator {
                     constraints: vec![],
                     rand_fields: vec![],
                     lets: vec![],
+                    is_virtual: false,
                 },
             );
             classes.insert(
@@ -2226,6 +2236,7 @@ impl Elaborator {
                     constraints: vec![],
                     rand_fields: vec![],
                     lets: vec![],
+                    is_virtual: false,
                 },
             );
             classes.insert(
@@ -2239,6 +2250,7 @@ impl Elaborator {
                     constraints: vec![],
                     rand_fields: vec![],
                     lets: vec![],
+                    is_virtual: false,
                 },
             );
             // F23: uvm_analysis_export — passthrough port (connect + write
@@ -2255,6 +2267,7 @@ impl Elaborator {
                     constraints: vec![],
                     rand_fields: vec![],
                     lets: vec![],
+                    is_virtual: false,
                 },
             );
             // F23: uvm_tlm_fifo — FIFO TLM blocking put/get/peek + export
@@ -2270,6 +2283,7 @@ impl Elaborator {
                     constraints: vec![],
                     rand_fields: vec![],
                     lets: vec![],
+                    is_virtual: false,
                 },
             );
             classes.insert(
@@ -2283,6 +2297,7 @@ impl Elaborator {
                     constraints: vec![],
                     rand_fields: vec![],
                     lets: vec![],
+                    is_virtual: false,
                 },
             );
             // F24: uvm_seq_item_port — port driver↔sequencer. Method
@@ -2300,6 +2315,7 @@ impl Elaborator {
                     constraints: vec![],
                     rand_fields: vec![],
                     lets: vec![],
+                    is_virtual: false,
                 },
             );
             // F22: uvm_subscriber — komponen penerima broadcast analysis port.
@@ -2317,6 +2333,7 @@ impl Elaborator {
                     constraints: vec![],
                     rand_fields: vec![],
                     lets: vec![],
+                    is_virtual: false,
                 },
             );
             classes.insert(
@@ -2330,6 +2347,7 @@ impl Elaborator {
                     constraints: vec![],
                     rand_fields: vec![],
                     lets: vec![],
+                    is_virtual: false,
                 },
             );
             classes.insert(
@@ -2343,6 +2361,7 @@ impl Elaborator {
                     constraints: vec![],
                     rand_fields: vec![],
                     lets: vec![],
+                    is_virtual: false,
                 },
             );
             classes.insert(
@@ -2356,6 +2375,7 @@ impl Elaborator {
                     constraints: vec![],
                     rand_fields: vec![],
                     lets: vec![],
+                    is_virtual: false,
                 },
             );
             classes.insert(
@@ -2369,6 +2389,7 @@ impl Elaborator {
                     constraints: vec![],
                     rand_fields: vec![],
                     lets: vec![],
+                    is_virtual: false,
                 },
             );
             classes.insert(
@@ -2382,6 +2403,7 @@ impl Elaborator {
                     constraints: vec![],
                     rand_fields: vec![],
                     lets: vec![],
+                    is_virtual: false,
                 },
             );
             classes.insert(
@@ -2395,6 +2417,7 @@ impl Elaborator {
                     constraints: vec![],
                     rand_fields: vec![],
                     lets: vec![],
+                    is_virtual: false,
                 },
             );
             classes.insert(
@@ -2408,6 +2431,7 @@ impl Elaborator {
                     constraints: vec![],
                     rand_fields: vec![],
                     lets: vec![],
+                    is_virtual: false,
                 },
             );
             // F21: uvm_event — sinkronisasi trigger/wait antar komponen.
@@ -2424,6 +2448,7 @@ impl Elaborator {
                     constraints: vec![],
                     rand_fields: vec![],
                     lets: vec![],
+                    is_virtual: false,
                 },
             );
             // F21: uvm_barrier — sinkronisasi N-proses (threshold).
@@ -2438,6 +2463,7 @@ impl Elaborator {
                     constraints: vec![],
                     rand_fields: vec![],
                     lets: vec![],
+                    is_virtual: false,
                 },
             );
             classes.insert(
@@ -2451,6 +2477,7 @@ impl Elaborator {
                     constraints: vec![],
                     rand_fields: vec![],
                     lets: vec![],
+                    is_virtual: false,
                 },
             );
         }

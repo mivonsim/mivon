@@ -128,6 +128,10 @@ pub struct IrClassDef {
     pub rand_fields: Vec<Symbol>,
     /// LANG-40: `let` declaration di dalam class (IEEE 1800-2017 §11.12.2).
     pub lets: Vec<mivon_ast::types::LetDecl>,
+    /// LANG-57: class virtual (abstract) — `virtual class C ... endclass`
+    /// (LRM 1800 §8.23): TIDAK BOLEH di-instantiate (`new` → error).
+    #[serde(default)]
+    pub is_virtual: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]

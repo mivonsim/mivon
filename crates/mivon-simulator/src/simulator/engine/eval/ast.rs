@@ -1326,6 +1326,20 @@ impl SimulationEngine {
             .get(&raw)
             .cloned()
             .unwrap_or(raw);
+        // LANG-57: `virtual class` = abstract (LRM 1800 §8.23) — tidak boleh
+        // di-instantiate. Dulu: `C c = new;` pada class virtual tetap membuat
+        // object kosong tanpa error → tidak ada enforcement LRM.
+        if let Some(cd) = self.design.classes.get(&Symbol::intern(&effective)) {
+            if cd.is_virtual {
+                return Err(SimError::with_diag(
+                    mivon_core::diagnostics::DiagCode::TypeMismatch,
+                    format!(
+                        "abstract class '{}' cannot be instantiated (deklarasi 'virtual class' — pakai subclass konkrit)",
+                        effective
+                    ),
+                ));
+            }
+        }
         let obj_id = self.state.alloc_object(Symbol::intern(&effective));
         // F19: inisialisasi field class ke default 0 (semantics SV — semua
         // member di-zero-initialize). Tanpa ini, baca field yang belum pernah

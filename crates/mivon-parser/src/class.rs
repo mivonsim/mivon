@@ -531,17 +531,29 @@ impl Parser {
                     }));
                 }
                 Token::Ident(s) if s == "pure" && self.peek_ahead(1) == &Token::Virtual => {
-                    self.advance(); // pure
-                    loop {
-                        match self.peek() {
-                            Token::Semi => {
-                                self.advance();
-                                break;
+                    // LANG-57: `pure virtual function <type> name (...);` dan
+                    // `pure virtual task ...;` (LRM 1800 §8.6) — method abstrak
+                    // class virtual: DIREGISTRASI sbg member (virtual) dengan
+                    // body kosong (jadwal = gaya cabang `virtual` sebelumnya);
+                    // dulu di-skip diam-diam sehingga override-check dan format
+                    // klassen (virtual class) tidak melihatnya.
+                    self.advance(); // 'pure'
+                    self.advance(); // 'virtual'
+                    match self.peek() {
+                        Token::Function => match self.parse_function(true) {
+                            Ok(f) => members.push(ClassMember::Function(f)),
+                            Err(_) => {
+                                let _ = self.skip_until_semi_or_end();
                             }
-                            Token::EndClass | Token::Eof => break,
-                            _ => {
-                                self.advance();
+                        },
+                        Token::Task => match self.parse_task(true) {
+                            Ok(t) => members.push(ClassMember::Task(t)),
+                            Err(_) => {
+                                let _ = self.skip_until_semi_or_end();
                             }
+                        },
+                        _ => {
+                            let _ = self.skip_until_semi_or_end();
                         }
                     }
                 }
@@ -661,11 +673,16 @@ impl Parser {
             }
         }
         self.type_param_names.clear();
+        // LANG-57: baca + reset flag class virtual (class NON-virtual
+        // berikutnya tidak boleh mewarisi flag dari class virtual sebelumnya).
+        let is_virtual = self.current_class_is_virtual;
+        self.current_class_is_virtual = false;
         Ok(ClassDecl {
             name,
             extends,
             type_params,
             members,
+            is_virtual,
         })
     }
 
