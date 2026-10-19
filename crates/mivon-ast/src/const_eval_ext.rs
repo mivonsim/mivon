@@ -1239,13 +1239,25 @@ fn eval_function_body_inner(
             array_structs,
             cur_pkg,
         ) {
-            Ok(Some(v)) => return Ok(v),
+            Ok(Some(v)) => {
+                if let CVal::Scalar(code) = &v {
+                    if *code == FLOW_BREAK || *code == FLOW_CONTINUE {
+                        continue;
+                    }
+                }
+                return Ok(v);
+            }
             Ok(None) => {}
             Err(e) => return Err(e),
         }
     }
     Err(format!("function '{}' has no return", func.name.as_str()))
 }
+
+/// Sentinel nilai-kembali untuk `break`/`continue` di dalam const function.
+/// Dipilih dari ujung i64 agar tidak bentrok dengan nilai integer normal.
+const FLOW_BREAK: i64 = i64::MIN;
+const FLOW_CONTINUE: i64 = i64::MIN + 1;
 
 fn eval_stmt(
     stmt: &Stmt,
@@ -1333,7 +1345,7 @@ fn eval_stmt(
                 )?;
             }
             let mut guard = 0usize;
-            loop {
+            'outer: loop {
                 if let Some(c) = cond {
                     if truthy(&eval_in_ctx!(c)?)? == 0 {
                         break;
@@ -1353,6 +1365,25 @@ fn eval_stmt(
                         array_structs,
                         cur_pkg,
                     )? {
+                        if let CVal::Scalar(code) = &v {
+                            if *code == FLOW_BREAK {
+                                break 'outer;
+                            }
+                            if *code == FLOW_CONTINUE {
+                                if let Some(st) = step {
+                                    eval_stmt(
+                                        st,
+                                        scalars,
+                                        arrays,
+                                        structs,
+                                        package_symbols,
+                                        array_structs,
+                                        cur_pkg,
+                                    )?;
+                                }
+                                continue 'outer;
+                            }
+                        }
                         return Ok(Some(v));
                     }
                 }
@@ -1372,7 +1403,7 @@ fn eval_stmt(
         }
         Stmt::LoopWhile { cond, stmts } | Stmt::DoWhile { cond, stmts } => {
             let mut guard = 0usize;
-            loop {
+            'outer: loop {
                 if truthy(&eval_in_ctx!(cond)?)? == 0 {
                     break Ok(None);
                 }
@@ -1390,6 +1421,14 @@ fn eval_stmt(
                         array_structs,
                         cur_pkg,
                     )? {
+                        if let CVal::Scalar(code) = &v {
+                            if *code == FLOW_BREAK {
+                                break 'outer Ok(None);
+                            }
+                            if *code == FLOW_CONTINUE {
+                                continue 'outer;
+                            }
+                        }
                         return Ok(Some(v));
                     }
                 }
@@ -1397,7 +1436,7 @@ fn eval_stmt(
         }
         Stmt::Repeat { count, stmts } => {
             let n = scalar(eval_in_ctx!(count)?)?;
-            for _ in 0..n {
+            'outer: for _ in 0..n {
                 for s in stmts {
                     if let Some(v) = eval_stmt(
                         s,
@@ -1408,6 +1447,14 @@ fn eval_stmt(
                         array_structs,
                         cur_pkg,
                     )? {
+                        if let CVal::Scalar(code) = &v {
+                            if *code == FLOW_BREAK {
+                                break 'outer;
+                            }
+                            if *code == FLOW_CONTINUE {
+                                continue 'outer;
+                            }
+                        }
                         return Ok(Some(v));
                     }
                 }
@@ -1537,7 +1584,9 @@ fn eval_stmt(
             }
             Ok(None)
         }
-        Stmt::BlockingAssign { lhs, rhs, .. } => {
+        Stmt::BlockingAssign { lhs, rhs, .. }
+        | Stmt::NonBlockingAssign { lhs, rhs, .. }
+        | Stmt::StmtAssign { lhs, rhs } => {
             let v = eval_in_ctx!(rhs)?;
             match lhs {
                 Expr::Ident { name, .. } => match v {
@@ -1591,7 +1640,139 @@ fn eval_stmt(
         }
         Stmt::Return(None) => Ok(Some(CVal::Scalar(0))),
         Stmt::Null => Ok(None),
-        _ => Err("unsupported statement in const function".to_string()),
+        Stmt::Break => Ok(Some(CVal::Scalar(FLOW_BREAK))),
+        Stmt::Continue => Ok(Some(CVal::Scalar(FLOW_CONTINUE))),
+        Stmt::LoopForever { stmts } => {
+            let mut guard = 0usize;
+            'forever: loop {
+                guard += 1;
+                if guard > 1_000_000 {
+                    return Err("const loop exceeded iteration limit".to_string());
+                }
+                for s in stmts {
+                    if let Some(v) = eval_stmt(
+                        s,
+                        scalars,
+                        arrays,
+                        structs,
+                        package_symbols,
+                        array_structs,
+                        cur_pkg,
+                    )? {
+                        if let CVal::Scalar(code) = &v {
+                            if *code == FLOW_BREAK {
+                                break 'forever;
+                            }
+                            if *code == FLOW_CONTINUE {
+                                continue 'forever;
+                            }
+                        }
+                        return Ok(Some(v));
+                    }
+                }
+            }
+            Ok(None)
+        }
+        Stmt::ForeachLoop {
+            array_var,
+            index_vars,
+            stmts,
+        } => {
+            let Some(arr) = arrays.get(array_var).cloned() else {
+                return Ok(None);
+            };
+            'fe: for (i, _elem) in arr.iter().enumerate() {
+                if let Some(iv) = index_vars.first() {
+                    scalars.insert(*iv, i as i64);
+                }
+                for s in stmts {
+                    if let Some(v) = eval_stmt(
+                        s,
+                        scalars,
+                        arrays,
+                        structs,
+                        package_symbols,
+                        array_structs,
+                        cur_pkg,
+                    )? {
+                        if let CVal::Scalar(code) = &v {
+                            if *code == FLOW_BREAK {
+                                break 'fe;
+                            }
+                            if *code == FLOW_CONTINUE {
+                                continue 'fe;
+                            }
+                        }
+                        return Ok(Some(v));
+                    }
+                }
+            }
+            Ok(None)
+        }
+        Stmt::UniqueIf {
+            cond,
+            true_branch,
+            false_branch,
+        }
+        | Stmt::PriorityIf {
+            cond,
+            true_branch,
+            false_branch,
+        } => {
+            let c = truthy(&eval_in_ctx!(cond)?)?;
+            if c != 0 {
+                eval_stmt(
+                    true_branch,
+                    scalars,
+                    arrays,
+                    structs,
+                    package_symbols,
+                    array_structs,
+                    cur_pkg,
+                )
+            } else if let Some(fb) = false_branch {
+                eval_stmt(
+                    fb,
+                    scalars,
+                    arrays,
+                    structs,
+                    package_symbols,
+                    array_structs,
+                    cur_pkg,
+                )
+            } else {
+                Ok(None)
+            }
+        }
+        Stmt::Expr { expr } => {
+            let _ = eval_in_ctx!(expr)?;
+            Ok(None)
+        }
+        Stmt::SysCall { args, .. } => {
+            for a in args {
+                let _ = eval_in_ctx!(a)?;
+            }
+            Ok(None)
+        }
+        Stmt::SysFinish
+        | Stmt::Delay { .. }
+        | Stmt::Wait { .. }
+        | Stmt::WaitFork
+        | Stmt::Disable { .. }
+        | Stmt::Force { .. }
+        | Stmt::Release { .. }
+        | Stmt::Deassign { .. }
+        | Stmt::EventControl { .. }
+        | Stmt::EventTrigger { .. }
+        | Stmt::WaitOrder { .. }
+        | Stmt::Expect { .. }
+        | Stmt::PropertySeq { .. }
+        | Stmt::Fork { .. }
+        | Stmt::RandCase { .. }
+        | Stmt::RandSequence { .. }
+        | Stmt::Assert { .. }
+        | Stmt::Assume { .. }
+        | Stmt::Cover { .. } => Ok(None),
     }
 }
 

@@ -157,3 +157,26 @@ endmodule";
     assert_eq!(get_mem_elem(&sigs, "mem", 3, 32), 0x300000);
     assert_eq!(get_u64(&sigs, "sig"), 0xA0000);
 }
+
+#[test]
+fn const_function_break_continue() {
+    let src = r#"package P;
+  function automatic int find_sum();
+    int i;
+    int s;
+    s = 0;
+    for (i = 0; i < 10; i++) begin
+      if (i == 5) break;
+      if (i % 2 == 1) continue;
+      s = s + i;
+    end
+    return s;
+  endfunction
+  localparam int R = find_sum();
+endpackage
+module top(output [7:0] o);
+  assign o = P::R;
+endmodule"#;
+    let sigs = sim(src, 10);
+    assert_eq!(get_u64(&sigs, "o"), 6);
+}
