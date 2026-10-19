@@ -1310,6 +1310,18 @@ impl SimulationEngine {
                                 // Inactive re-drains; Active drains once (outer loop
                                 // re-circulates if new events appear later)
                                 if region == EventRegion::Active {
+                                    // LANG-51: pending blocking @(posedge ...) harus
+                                    // dicek PADA delta yang sama dgn perubahan sinyal.
+                                    // Tanpa ini, perubahan yang di-commit di Active
+                                    // (mis. clock dari child via hier port conn)
+                                    // hilang: deltas di-reset sebelum Reactive jalan,
+                                    // posedge 0→1 tak pernah terlihat oleh event yang
+                                    // menunggu (bug hier port conn — LANG-51).
+                                    if !self.pending_events.is_empty() && !deltas.is_empty() {
+                                        if self.process_pending_events(&deltas)? {
+                                            activity = true;
+                                        }
+                                    }
                                     break;
                                 }
                             }

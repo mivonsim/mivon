@@ -299,6 +299,9 @@ impl SimulationEngine {
         let mut remaining = Vec::new();
         let pending = std::mem::take(&mut self.pending_events);
         for pe in pending {
+            let _ = &deltas; // LANG-51: edge dideteksi via snapshot-vs-current,
+                             // bukan deltas gate (perubahan Active-region pada
+                             // delta sama tetap terlihat di delta berikut).
             let fire = pe.sigs.iter().any(|(sid, edge)| {
                 match edge {
                     None => {
@@ -311,17 +314,15 @@ impl SimulationEngine {
                         self.snapshot_value(*sid) != *self.state.read_signal(*sid)
                     }
                     Some(ClockEdge::PosEdge(id)) => {
-                        if !deltas.contains(id) {
-                            return false;
-                        }
+                        // LANG-51: edge dilihat dari baseline snapshot (awal
+                        // delta) vs nilai kini — TIDAK di-gate deltas, karena
+                        // perubahan yang di-commit region Active (delta lebih
+                        // awal) tetap sah memicu edge di pass Reactive.
                         let new = self.state.read_signal(*id);
                         self.snapshot_value(*id).to_bool() != Some(true)
                             && new.to_bool() == Some(true)
                     }
                     Some(ClockEdge::NegEdge(id)) => {
-                        if !deltas.contains(id) {
-                            return false;
-                        }
                         let new = self.state.read_signal(*id);
                         self.snapshot_value(*id).to_bool() != Some(false)
                             && new.to_bool() == Some(false)
@@ -333,9 +334,6 @@ impl SimulationEngine {
                             Some(&sid) => sid,
                             None => return false,
                         };
-                        if !deltas.contains(&id) {
-                            return false;
-                        }
                         let new = self.state.read_signal(id);
                         self.snapshot_value(id).to_bool() != Some(true)
                             && new.to_bool() == Some(true)
@@ -345,9 +343,6 @@ impl SimulationEngine {
                             Some(&sid) => sid,
                             None => return false,
                         };
-                        if !deltas.contains(&id) {
-                            return false;
-                        }
                         let new = self.state.read_signal(id);
                         self.snapshot_value(id).to_bool() != Some(false)
                             && new.to_bool() == Some(false)

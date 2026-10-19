@@ -15086,6 +15086,45 @@ endmodule
 }
 
 #[test]
+fn test_hier_port_edge_wait() {
+    // LANG-51: instance port yang dikoneksikan ke referensi hierarkis
+    // (`u_i.clk`) — wait @(posedge c) di child HARUS terpicu. Dulu: perubahan
+    // clock di-commit region Active, deltas di-reset sebelum Reactive jalan,
+    // posedge tak pernah terlihat oleh EventControl → hang.
+    let source = r#"
+module child (input logic c);
+  initial begin
+    @(posedge c);
+    @(posedge c);
+    $display("CHILD_HIER_OK");
+    $finish;
+  end
+endmodule
+module inner;
+  reg clk = 0;
+  always #5 clk = ~clk;
+endmodule
+module abi_top;
+  inner u_i();
+  child u_c(u_i.clk);
+endmodule
+"#;
+    let design = compile_str(source).expect("compile hier port");
+    let mut engine = crate::simulator::SimulationEngine::new(design, 100);
+    let _ = engine.run();
+    // Jika wait hang, CHILD_HIER_OK tak pernah dicetak — verifikasi via
+    // assertion_stats kosong + proses selesai (engine.run selesai normal).
+    // Penanda keberhasilan: simulasi berjalan tanpa hang; verifikasi output
+    // $display via simulate-style jalur di atas tidak diekspos — gunakan
+    // waktu selesai: sebelum fix, engine berjalan sampai max_time (100).
+    assert!(
+        engine.state.time < 100,
+        "hier port edge wait: simulasi hang sampai max_time (time={})",
+        engine.state.time
+    );
+}
+
+#[test]
 fn test_checker_construct_instance() {
     // LANG-10: checker construct (IEEE 1800-2017 §17.8) — `checker name
     // (ports); assert property... endchecker` dideklarasikan, diinstansiasi
