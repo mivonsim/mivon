@@ -407,11 +407,57 @@ impl SimulationEngine {
         out
     }
 
+    /// LANG-54: `string.psprintf(args...)` (LRM 1800 §6.16.9) — receiver =
+    /// format string; hasil = `$sformatf(fmt, args...)` yang sama. Arg IR
+    /// (jalur engine) dievaluasi di sini via `format_display` agar
+    /// signedness/real flag per-arg menangani `%d`/`%f` dengan benar.
+    pub(crate) fn psprintf_string(
+        &mut self,
+        fmt: &str,
+        ir_args: &[IrExpr],
+    ) -> Result<LogicVec, SimError> {
+        let mut full: Vec<IrExpr> = Vec::with_capacity(ir_args.len() + 1);
+        full.push(IrExpr::String(fmt.to_string()));
+        full.extend(ir_args.iter().cloned());
+        let msg = self.format_display(&full);
+        Ok(Self::bits_from_ascii_no_term(msg.as_bytes()))
+    }
+
+    /// LANG-54: `string.psprintf(...)` di jalur AST (body method class).
+    /// Identik dengan psprintf_string jawa IR, tapi argumen dievaluasi via
+    /// `evaluate_ast_expr`.
+    pub(crate) fn psprintf_string_ast(
+        &mut self,
+        fmt: &str,
+        ast_args: &[mivon_ast::Expr],
+    ) -> Result<LogicVec, SimError> {
+        let mut full: Vec<mivon_ast::Expr> = Vec::with_capacity(ast_args.len() + 1);
+        full.push(mivon_ast::Expr::String(fmt.to_string()));
+        full.extend(ast_args.iter().cloned());
+        let msg = self.format_display_ast(&full);
+        Ok(Self::bits_from_ascii_no_term(msg.as_bytes()))
+    }
+
+    /// Convert ASCII bytes (tanpa null terminator) ke `LogicVec` biner LSB-
+    /// first per byte — pola sama dengan jalur `$sformatf` engine.
+    fn bits_from_ascii_no_term(bytes: &[u8]) -> LogicVec {
+        let mut bits: Vec<LogicVal> = Vec::with_capacity(bytes.len() * 8);
+        for byte in bytes {
+            for b in 0..8 {
+                bits.push(if (byte >> b) & 1 == 1 {
+                    LogicVal::One
+                } else {
+                    LogicVal::Zero
+                });
+            }
+        }
+        LogicVec { width: bits.len(), bits }
+    }
+
     /// F17: format `$display`/`$sformatf` di jalur AST (body method class) —
     /// argumen dievaluasi via `evaluate_ast_expr` (field class `it.addr` dkk
     /// ter-resolve via current_this), lalu format spec identik dengan jalur IR.
-    pub(crate) fn format_display_ast(&mut self, ast_args: &[mivon_ast::Expr]) -> String {
-        let (fmt_str, start_idx) = if let Some(mivon_ast::Expr::String(s)) = ast_args.first() {
+    pub(crate) fn format_display_ast(&mut self, ast_args: &[mivon_ast::Expr]) -> String {        let (fmt_str, start_idx) = if let Some(mivon_ast::Expr::String(s)) = ast_args.first() {
             (s.as_str(), 1)
         } else {
             let mut out = String::with_capacity(ast_args.len() * 8);

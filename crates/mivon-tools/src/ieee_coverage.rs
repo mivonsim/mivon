@@ -77,7 +77,7 @@ impl CoverageReport {
             section: "3.10".into(),
             name: "String type".into(),
             status: SupportStatus::Full,
-            notes: Some("basic ops; no full method set".into()),
+            notes: Some("method set LRM §6.16 penuh incl. psprintf/realtoa (LANG-54)".into()),
         });
 
         // ── 4. Scheduling semantics ──

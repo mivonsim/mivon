@@ -15125,6 +15125,36 @@ endmodule
 }
 
 #[test]
+fn test_string_realtoa_psprintf() {
+    // LANG-54: LRM 1800 §6.16.1 realtoa (MUTATING receiver) + §6.16.9
+    // psprintf (receiver = format string, non-mutating).
+    let src = r#"
+module tb_realtoa_psprintf;
+  reg ok_rt = 0;
+  reg ok_ps = 0;
+  initial begin
+    real r = 3.5;
+    string rs;
+    rs.realtoa(r);
+    if (rs == "3.5") ok_rt = 1;
+    string ps = "a=%0d b=%s".psprintf(7, "xyz");
+    if (ps == "a=7 b=xyz") ok_ps = 1;
+  end
+endmodule
+"#;
+    let sigs = crate::simulate_signals(src, 60).expect("sim realtoa+psprintf");
+    let find = |name: &str| {
+        sigs
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, v)| v.to_bool() == Some(true))
+            .unwrap_or(false)
+    };
+    assert!(find("ok_rt"), "realtoa: rs harus '3.5'");
+    assert!(find("ok_ps"), "psprintf: harus 'a=7 b=xyz'");
+}
+
+#[test]
 fn test_checker_construct_instance() {
     // LANG-10: checker construct (IEEE 1800-2017 §17.8) — `checker name
     // (ports); assert property... endchecker` dideklarasikan, diinstansiasi

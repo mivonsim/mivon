@@ -2555,6 +2555,11 @@ impl SimulationEngine {
                     }
                 }
                 if let IrExpr::String(s) = obj.as_ref() {
+                    // LANG-54: psprintf — format spec utk arg IR full
+                    // (%d/%f/%t via format_display).
+                    if method.as_str() == "psprintf" {
+                        return self.psprintf_string(s.as_str(), args);
+                    }
                     let arg_vals: Vec<LogicVec> = args
                         .iter()
                         .map(|a| self.evaluate_expr(a))
@@ -2573,13 +2578,17 @@ impl SimulationEngine {
                     if is_string {
                         let lv = self.state.read_signal(*id);
                         let s = logicvec_to_string(lv);
+                        // LANG-54: psprintf — receiver string = format spec.
+                        if method.as_str() == "psprintf" {
+                            return self.psprintf_string(s.as_str(), args);
+                        }
                         let arg_vals: Vec<LogicVec> = args
                             .iter()
                             .map(|a| self.evaluate_expr(a))
                             .collect::<Result<_, _>>()?;
                         let result = evaluate_string_method(&s, method.as_str(), &arg_vals)?;
-                        // Method MUTATING (itoa/hextoa/bintoa/octtoa/putc) —
-                        // write-back hasil ke receiver string (LRM §6.16.1).
+                        // Method MUTATING (itoa/hextoa/bintoa/octtoa/putc/
+                        // realtoa) — write-back hasil ke receiver string.
                         if is_mutating_string_method(method.as_str()) {
                             self.state.write_signal(*id, result.clone());
                         }

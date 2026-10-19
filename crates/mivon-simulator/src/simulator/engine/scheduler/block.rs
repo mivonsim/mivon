@@ -987,10 +987,17 @@ impl SimulationEngine {
                             }
                             // LRM 1800 §6.16.1 — method string pada signal string
                             // (getc/ato*/atoreal non-mutating; itoa/hextoa/bintoa/
-                            // octtoa/putc MUTATING → write-back ke receiver).
+                            // octtoa/putc/realtoa MUTATING → write-back receiver).
                             if sig.is_string {
                                 let lv = self.state.read_signal(*id);
                                 let s = logicvec_to_string(lv);
+                                // LANG-54: psprintf — receiver string = format
+                                // spec; di konteks statement nilai dibuang
+                                // (LRM psprintf non-mutating).
+                                if method.as_str() == "psprintf" {
+                                    let _ = self.psprintf_string(s.as_str(), args)?;
+                                    continue;
+                                }
                                 let arg_vals: Vec<LogicVec> = args
                                     .iter()
                                     .map(|a| self.evaluate_expr(a))
@@ -2898,10 +2905,17 @@ impl SimulationEngine {
                             }
                             // LRM 1800 §6.16.1 — method string pada signal string
                             // (getc/ato*/atoreal non-mutating; itoa/hextoa/bintoa/
-                            // octtoa/putc MUTATING → write-back ke receiver).
+                            // octtoa/putc/realtoa MUTATING → write-back receiver).
                             if sig.is_string {
                                 let lv = self.state.read_signal(*id);
                                 let s = logicvec_to_string(lv);
+                                // LANG-54: psprintf — receiver string = format
+                                // spec; di konteks statement nilai dibuang
+                                // (LRM psprintf non-mutating).
+                                if method.as_str() == "psprintf" {
+                                    let _ = self.psprintf_string(s.as_str(), args)?;
+                                    continue;
+                                }
                                 let arg_vals: Vec<LogicVec> = args
                                     .iter()
                                     .map(|a| self.evaluate_expr(a))

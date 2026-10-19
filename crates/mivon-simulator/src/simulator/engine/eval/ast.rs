@@ -811,6 +811,10 @@ impl SimulationEngine {
                             if sig.is_string {
                                 let s_val = self.state.read_signal(sig_id);
                                 let s_str = logicvec_to_string(s_val);
+                                // LANG-54: psprintf — format via format_display_ast.
+                                if method.as_str() == "psprintf" {
+                                    return self.psprintf_string_ast(s_str.as_str(), args);
+                                }
                                 let arg_vals: Vec<LogicVec> = args
                                     .iter()
                                     .map(|a| self.evaluate_ast_expr(a))

@@ -22,10 +22,13 @@ use mivon_core::error::SimError;
 use mivon_ir::{LogicVal, LogicVec};
 
 /// Method string yang MUTATING receiver (LRM 1800 §6.16.1): `itoa`/`hextoa`/
-/// `bintoa`/`octtoa`/`putc`. Evaluator melakukan write-back hasil ke receiver
-/// (signal string) setelah evaluasi.
+/// `bintoa`/`octtoa`/`putc`/`realtoa`. Evaluator melakukan write-back hasil ke
+/// receiver (signal string) setelah evaluasi.
 pub(crate) fn is_mutating_string_method(method: &str) -> bool {
-    matches!(method, "itoa" | "hextoa" | "bintoa" | "octtoa" | "putc")
+    matches!(
+        method,
+        "itoa" | "hextoa" | "bintoa" | "octtoa" | "putc" | "realtoa"
+    )
 }
 
 /// Bangun `LogicVec` dari string TANPA null-terminator — konsisten dgn
@@ -202,12 +205,33 @@ pub(crate) fn evaluate_string_method(
             let val = i64::from_str_radix(trimmed, 8).unwrap_or(0);
             Ok(LogicVec::from_u64(val as u64, 32))
         }
-        // LRM 1800 §6.16.1 — `atoreal()` → nilai real (bit-pattern f64 64-bit,
+        // LANG-54: `atoreal()` → nilai real (bit-pattern f64 64-bit,
         // konsisten dengan penanganan real di simulator ini, mis. `$itor`).
         "atoreal" => {
             let val: f64 = s.trim().parse().unwrap_or(0.0);
             Ok(LogicVec::from_u64(f64::to_bits(val), 64))
         }
+        // LANG-54: `realtoa(val)` (LRM 1800 §6.16.1) — MUTATING: receiver
+        // berisi bentuk teks desimal real `val` (LRM contoh: 8.5 → "8.5").
+        // f64 Display Rust = round-trip terpendek ("3.5" → "3.5") — konsisten
+        // dgn contoh LRM.
+        "realtoa" => {
+            if args.is_empty() {
+                return Err(SimError::with_diag(
+                    DiagCode::DpiError,
+                    "realtoa expects 1 argument (real)".to_string(),
+                ));
+            }
+            let val = f64::from_bits(args[0].to_u64());
+            Ok(string_logicvec_no_term(&format!("{}", val)))
+        }
+        // LANG-54: `psprintf` di-intercept evaluator SEBELUM dispatcher
+        // (butuh state engine utk format `%t`). Lekwat sini = hanya kalau
+        // ada jalur pemanggil yang belum di-patch.
+        "psprintf" => Err(SimError::with_diag(
+            DiagCode::NotImplemented,
+            "psprintf: evaluator harus memanggil psprintf_string sebelum dispatcher".to_string(),
+        )),
         // LRM 1800 §6.16.1 — method MUTATING: mengubah receiver string dan
         // mengembalikan string hasil. Write-back receiver ditangani di evaluator
         // (`IrExpr::Signal` is_string) via `is_mutating_string_method`.
