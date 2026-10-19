@@ -514,6 +514,67 @@ impl<'a> Builder<'a> {
                     }
                 }
             }
+            // System function yang sintesizable.
+            IrExpr::SysFunc { name, args, .. } => {
+                let n = name.as_str();
+                match n {
+                    "$unsigned" | "$signed" => args
+                        .first()
+                        .map(|a| self.lower_expr(a))
+                        .unwrap_or_else(|| self.const_zero(1)),
+                    "$countones" | "$onehot" | "$onehot0" => {
+                        let Some(arg) = args.first() else {
+                            return self.const_zero(1);
+                        };
+                        let v = self.lower_expr(arg);
+                        let w = self.value_width(v).max(1);
+                        let out_w = (usize::BITS - (w as usize).leading_zeros()) as usize + 1;
+                        let mut acc: Option<ValueId> = None;
+                        for i in 0..w {
+                            let bit = self.slice_of(v, i, i);
+                            let bit = self.fit(bit, out_w);
+                            acc = Some(match acc {
+                                None => bit,
+                                Some(a) => self.node(SirNodeKind::Add, vec![a, bit], out_w),
+                            });
+                        }
+                        let cnt = acc.unwrap_or_else(|| self.const_zero(out_w));
+                        match n {
+                            "$countones" => cnt,
+                            "$onehot" => {
+                                let one = self.const_val(1, out_w);
+                                self.node(SirNodeKind::Eq, vec![cnt, one], 1)
+                            }
+                            _ => {
+                                let one = self.const_val(1, out_w);
+                                self.node(SirNodeKind::Le, vec![cnt, one], 1)
+                            }
+                        }
+                    }
+                    // 2-state synthesis: tidak ada X, jadi isunknown = 0.
+                    "$isunknown" => self.const_zero(1),
+                    _ => {
+                        self.skipped.push(format!(
+                            "system function {} non-sintesis / belum di-lower",
+                            n
+                        ));
+                        self.const_zero(1)
+                    }
+                }
+            }
+            // Hierarchical signal read (`u.data`) — resolve lewat hier_signal_map.
+            IrExpr::HierRef(name) => {
+                if let Some(&sid) = self.ir.hier_signal_map.get(name) {
+                    let w = self.sig_width(sid);
+                    self.signal_value[sid].unwrap_or_else(|| self.const_zero(w))
+                } else {
+                    self.skipped.push(format!(
+                        "hier ref '{}' tidak ter-resolve (non-sintesis)",
+                        name.as_str()
+                    ));
+                    self.const_zero(1)
+                }
+            }
             // `x inside {a, b, [lo:hi]}` — OR dari perbandingan (sintesizable).
             IrExpr::Inside { expr, list } => {
                 let v = self.lower_expr(expr);

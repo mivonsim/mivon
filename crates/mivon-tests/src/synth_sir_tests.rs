@@ -193,3 +193,30 @@ endmodule
         kinds
     );
 }
+
+#[test]
+fn countones_and_onehot_lower_to_adder_tree() {
+    let src = r#"
+module f(input [7:0] a, output reg [3:0] c, output reg oh, output reg oh0);
+    always @* begin
+        c   = $countones(a);
+        oh  = $onehot(a);
+        oh0 = $onehot0(a);
+    end
+endmodule
+"#;
+    let ir = ir_of(src);
+    let out = mivon_sir::lower::lower(&ir);
+    assert!(
+        out.skipped.is_empty(),
+        "countones/onehot tidak boleh di-skip: {:?}",
+        out.skipped
+    );
+    let adds = out
+        .module
+        .nodes
+        .iter()
+        .filter(|n| matches!(n.kind, mivon_sir::sir::SirNodeKind::Add))
+        .count();
+    assert!(adds >= 7, "$countones 8-bit → adder tree, dapat {adds} ADD");
+}
