@@ -138,7 +138,7 @@ impl<'r> Mutator<'r> {
         if source.is_empty() {
             return String::new();
         }
-        match self.rng.below(26) {
+        match self.rng.below(28) {
             0 => self.splice_from_corpus(source, corpus),
             1 => self.replace_keyword(source),
             2 => self.delete_chunk(source),
@@ -170,6 +170,11 @@ impl<'r> Mutator<'r> {
             22 => self.toggle_signed(source),
             23 => self.index_oob(source),
             24 => self.inject_initial_finish(source),
+            // ── Area baru (peringkat kampanye): operator-swap + dup-statement
+            //    — near-valid mutation (MC 1990-style): error "hampir benar"
+            //    membuka jalur diagnostik baru yang garbage tak pernah picu ──
+            25 => self.swap_operator(source),
+            26 => self.duplicate_stmt(source),
             _ => source.to_string(), // no-op
         }
     }
@@ -192,6 +197,119 @@ impl<'r> Mutator<'r> {
             3 => self.remove_line(source),
             _ => self.flip_char(source),
         }
+    }
+
+    /// Ganti SATU operator ekspresi dengan operator lain dari tabel sama —
+    /// near-valid mutation: `a & b` → `a && b`, `==`→`===`, `<<`→`>>`.
+    /// Baris dgn string literal (`"`), comment, directive `` ` `` di-skip
+    /// agar tak merusak struktur menjelang; hasil tetap parse-able →
+    /// memicu jalur semantik baru, bukan sekadar error leksikal.
+    fn swap_operator(&mut self, source: &str) -> String {
+        // Longest-first: `===` menang atas `==`, `&&` atas `&`.
+        const OPS: [&str; 14] = [
+            "===", "!==", "&&", "||", "<<", ">>", "==", "!=", "+", "-", "*", "&", "|", "^",
+        ];
+        // Kumpulan kandidat (abs_start, op_len) — abs = offset byte sumber.
+        let mut cands: Vec<(usize, usize)> = Vec::new();
+        // Track komentar blok lintas-baris /* ... */.
+        let mut in_block = false;
+        for (i, line) in source.lines().enumerate() {
+            let t = line.trim_start();
+            if t.starts_with("`") || line.contains("\"") {
+                in_block = false;
+                continue;
+            }
+            // Scan prefix SEBELUM `//` (inline comment aman) + skip runtun
+            // dalam blok `/* ... */` (conservative: baris bermost marker)
+            // — temuan test: `module m; // a & b` dulu ikut ter-swap.
+            let scan = if in_block || t.starts_with("/*") {
+                ""
+            } else {
+                line.split("//").next().unwrap_or("")
+            };
+            if line.contains("/*") || line.contains("*/") {
+                in_block = line.contains("/*") && !line.contains("*/");
+                continue;
+            }
+            let base: usize = source
+                .lines()
+                .take(i)
+                .map(|l| l.len() + 1)
+                .sum::<usize>();
+            let lb = scan.as_bytes();
+            let mut k = 0;
+            while k < lb.len() {
+                let mut hit: Option<usize> = None;
+                for op in OPS {
+                    if scan[k..].starts_with(op) {
+                        hit = Some(op.len());
+                        break;
+                    }
+                }
+                match hit {
+                    Some(len) => {
+                        // Tidak di dalam identifier: byte sebelum = alnum/_.
+                        let before =
+                            k > 0 && (lb[k - 1].is_ascii_alphanumeric() || lb[k - 1] == b'_');
+                        if !before {
+                            cands.push((base + k, len));
+                        }
+                        k += len;
+                    }
+                    None => k += 1,
+                }
+            }
+        }
+        if cands.is_empty() {
+            return source.to_string();
+        }
+        let (at, len) = *self.rng.pick(&cands);
+        let cur = &source[at..at + len];
+        let mut repl = *self.rng.pick(&OPS);
+        while repl == cur {
+            repl = *self.rng.pick(&OPS);
+        }
+        let mut out = String::with_capacity(source.len() + repl.len());
+        out.push_str(&source[..at]);
+        out.push_str(repl);
+        out.push_str(&source[at + len..]);
+        out
+    }
+
+    /// Duplikasi SATU baris statement (berekor `;`, bukan comment) tepat
+    /// sesudah aslinya — near-valid: `assign b = a; assign b = a;` memicu
+    /// jalur re-assign/late-binding, dup deklarasi lokal menantang diag
+    /// "already declared" dsb. Cluster 1-baris = termurah utk temukan
+    /// bug diag-duplikat.
+    fn duplicate_stmt(&mut self, source: &str) -> String {
+        let lines: Vec<&str> = source.lines().collect();
+        let cands: Vec<usize> = lines
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| {
+                let t = l.trim();
+                !t.is_empty()
+                    && t.ends_with(';')
+                    && !t.starts_with("//")
+                    && !t.starts_with('*')
+                    && !t.starts_with('`')
+            })
+            .map(|(i, _)| i)
+            .collect();
+        if cands.is_empty() {
+            return source.to_string();
+        }
+        let idx = *self.rng.pick(&cands);
+        let mut out = String::with_capacity(source.len() + lines[idx].len() + 1);
+        for (i, l) in lines.iter().enumerate() {
+            out.push_str(l);
+            out.push('\n');
+            if i == idx {
+                out.push_str(lines[idx]);
+                out.push('\n');
+            }
+        }
+        out
     }
 
     /// Sisipkan directive preprocessor di posisi acak (`` `ifdef ``+`` `endif ``
@@ -898,6 +1016,81 @@ fn kw_at(t: &str, kw: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `swap_operator` mengganti operator dgn operator lain (near-valid).
+    /// Tanpa kandidat (baris comment/string) → no-op; output tidak pernah
+    /// membedah kata identifier.
+    #[test]
+    fn swap_operator_swaps_and_respects_boundaries() {
+        // Kandidat ada: `&` → operator lain; hasil berubah atau tetap `&`.
+        let src = "module m;\n  logic a, b;\n  assign b = a & 1'b0;\nendmodule\n";
+        let mut changed = 0;
+        for seed in 0..50u64 {
+            let mut rng = crate::Rng::new(seed);
+            let mut m = Mutator::new(&mut rng);
+            let out = m.swap_operator(src);
+            assert!(out.contains("assign b = a "), "struktur baris assign pecah: {out}");
+            if out != src {
+                changed += 1;
+            }
+        }
+        assert!(changed > 0, "50 seed tanpa satupun swap = mutator mati");
+        // Inline comment TIDAK pernah disentuh (regresi: dulu `module m; //
+        // a & b` ikut ter-swap di suffix comment).
+        let cmt = "module m; // a & b\nendmodule\n";
+        for seed in 0..50u64 {
+            let mut rng = crate::Rng::new(seed);
+            let mut m = Mutator::new(&mut rng);
+            assert_eq!(
+                m.swap_operator(cmt),
+                cmt,
+                "baris comment tidak boleh dikenai op swap"
+            );
+        }
+        // Identifier `a_b` tidak pecah di garis operand.
+        let id = "module m;\n  logic x, y;\n  assign y = x & a_b;\nendmodule\n";
+        for seed in 0..50u64 {
+            let mut rng = crate::Rng::new(seed);
+            let mut m = Mutator::new(&mut rng);
+            let out = m.swap_operator(id);
+            // a_b tetap utuh dgn karakter word (alum `_`).
+            assert!(out.contains("a_b"), "identifier a_b rusak: {out}");
+        }
+    }
+
+    /// `duplicate_stmt` menggandakan SATU baris berekor `;`; comment/directive
+    /// tidak pernah; tanpa kandidat → no-op. Kandidat harmonis: baris
+    /// deklarasi atau assign — yang pasti SATU baris ceramah 2x muncul.
+    #[test]
+    fn duplicate_stmt_duplicates_statement_line() {
+        let src = "module m;\n  logic [7:0] a;\n  assign a = 8'hFF;\nendmodule\n";
+        for seed in 3..30u64 {
+            let mut rng = crate::Rng::new(seed);
+            let mut m = Mutator::new(&mut rng);
+            let out = m.duplicate_stmt(src);
+            assert!(out.len() > src.len(), "seed {seed}: no dup: {out}");
+            // Tiga kandidat (module m; / logic / assign) — persis SATU yang
+            // muncul 2x, dua lainnya tetap 1x (deterministik; kontrak fuzzer).
+            let cands: [(&str, usize); 3] = [
+                ("module m;", 1),
+                ("logic [7:0] a", 1),
+                ("assign a = 8'hFF", 1),
+            ];
+            let sums: Vec<usize> = cands
+                .iter()
+                .map(|(s, _)| out.lines().filter(|l| l.contains(s)).count())
+                .collect();
+            let dups = sums.iter().filter(|&&c| c == 2).count();
+            let duds = sums.iter().filter(|&&c| c == 1).count();
+            assert!(dups == 1 && duds == 2, "seed {seed}: {out} counts {sums:?}");
+        }
+        let none = "module m; endmodule\n"; // tanpa baris `;`
+        for seed in 0..10u64 {
+            let mut rng = crate::Rng::new(seed);
+            let mut m = Mutator::new(&mut rng);
+            assert_eq!(m.duplicate_stmt(none), none, "tanpa kandidat = no-op");
+        }
+    }
 
     /// Regresi: `replace_keyword` dulu pakai `find` polos — substring di
     /// tengah kata ikut terganti (`for` di `forever` → `$left`+`ever` =
