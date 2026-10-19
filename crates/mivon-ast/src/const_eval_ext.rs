@@ -127,6 +127,30 @@ fn array_eq(a: &CVal, b: &CVal) -> bool {
     }
 }
 
+/// Perbandingan relasional dua `CVal::Array` (packed vector > 64-bit) sebagai
+/// integer unsigned. `flatten` menghasilkan urutan elemen MSB-first (item
+/// pertama concat = bit paling tinggi), jadi bandingkan leksikografis dari
+/// indeks 0, padding nol di depan untuk panjang berbeda. Ini konsisten dengan
+/// cara concat membangun array; cukup untuk `localparam`/`parameter` wide.
+fn array_cmp(a: &CVal, b: &CVal) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    let (CVal::Array(x), CVal::Array(y)) = (a, b) else {
+        return Ordering::Equal;
+    };
+    let xv = flatten(x);
+    let yv = flatten(y);
+    let n = xv.len().max(yv.len());
+    for i in 0..n {
+        let xi = if i < n - xv.len() { 0 } else { xv[i - (n - xv.len())] };
+        let yi = if i < n - yv.len() { 0 } else { yv[i - (n - yv.len())] };
+        let o = (xi as u64).cmp(&(yi as u64));
+        if o != Ordering::Equal {
+            return o;
+        }
+    }
+    Ordering::Equal
+}
+
 /// Truthiness untuk konteks kondisi (`if`, loop, `?:`, `&&`, `||`, `!`).
 /// Skalar: != 0. Array (packed vector > 64 bit): true bila ada bit/elemen
 /// bukan nol — terdefinisi tanpa lebar elemen. Struct tidak valid di sini.
@@ -384,23 +408,44 @@ pub fn eval_expr(e: &Expr, ctx: &PkgCtx, cur_pkg: Option<&str>) -> Result<CVal, 
                 }
                 if l_is_arr && r_is_arr {
                     // Wide packed vector vs wide packed vector (both > 64-bit).
-                    // `==`/`!=` compare element-wise (bit-exact; element order is
-                    // consistent between operands from the same code path, so it
-                    // is valid without element-width info). Relational ops
-                    // (<,<=,>,>=) need the element order (which is MSB) that is
-                    // not tracked -> still error to avoid a silent-wrong compile.
+                    // `==`/`!=`/`===`/`!==`/`==?`/`!=?` compare element-wise
+                    // (bit-exact). Relational ops (<,<=,>,>=) memakai `array_cmp`
+                    // (unsigned big-integer, urutan MSB-first sesuai concat).
                     match op {
                         BinaryOp::Eq => {
                             return Ok(CVal::Scalar(array_eq(&lv, &rv) as i64));
                         }
-                        BinaryOp::Neq => {
+                        BinaryOp::Neq | BinaryOp::CaseNeq | BinaryOp::NeqWild => {
                             return Ok(CVal::Scalar((!array_eq(&lv, &rv)) as i64));
                         }
+                        BinaryOp::CaseEq | BinaryOp::EqWild => {
+                            return Ok(CVal::Scalar(array_eq(&lv, &rv) as i64));
+                        }
+                        BinaryOp::Lt => {
+                            return Ok(CVal::Scalar(
+                                (array_cmp(&lv, &rv) == std::cmp::Ordering::Less) as i64,
+                            ));
+                        }
+                        BinaryOp::Le => {
+                            return Ok(CVal::Scalar(
+                                (array_cmp(&lv, &rv) != std::cmp::Ordering::Greater) as i64,
+                            ));
+                        }
+                        BinaryOp::Gt => {
+                            return Ok(CVal::Scalar(
+                                (array_cmp(&lv, &rv) == std::cmp::Ordering::Greater) as i64,
+                            ));
+                        }
+                        BinaryOp::Ge => {
+                            return Ok(CVal::Scalar(
+                                (array_cmp(&lv, &rv) != std::cmp::Ordering::Less) as i64,
+                            ));
+                        }
                         _ => {
-                            return Err(
-                                "relational comparison of wide packed vectors not supported"
-                                    .to_string(),
-                            );
+                            return Err(format!(
+                                "wide packed vector op {:?} requires element-width tracking",
+                                op
+                            ));
                         }
                     }
                 }
