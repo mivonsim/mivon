@@ -2582,12 +2582,10 @@ impl Elaborator {
             // di-discard menjadi FillLit 0). Member access tetap di-const-eval
             // benar lewat arm MemberAccess + key param_vals.
             Expr::StructLit { .. } => Ok(IrExpr::FillLit(mivon_ir::LogicVal::Zero)),
-            _ => Err(self.elab_diag_at(
-                DiagCode::ModuleNotFound,
-                "expression type not yet supported".to_string(),
-                expr_location(expr).0,
-                expr_location(expr).1,
-            )),
+            // Semua varian Expr lain sudah ditangani `elaborate_expr` /
+            // `elaborate_expr_deep` sebelum dirutekan ke sini, jadi arm ini
+            // tidak tercapai (dulu keliru memakai pesan 'not supported').
+            _ => unreachable!("elaborate_expr_rest: variant handled earlier"),
         }
     }
 
