@@ -1461,13 +1461,13 @@ impl SimulationEngine {
                                     o.fields.insert(*field, new_val);
                                 }
                             }
-                            _ => {}
+                            _ => self.write_ast_lvalue(inner, new_val)?,
                         }
                         Ok(())
                     }
                     _ => Err(SimError::with_diag(
                         DiagCode::NotImplemented,
-                        format!("unsupported LHS in method: {:?}", lhs),
+                        format!("cannot assign to expression in method: {:?}", lhs),
                     )),
                 }
             }
@@ -1578,13 +1578,13 @@ impl SimulationEngine {
                                     o.fields.insert(*field, new_val);
                                 }
                             }
-                            _ => {}
+                            _ => self.write_ast_lvalue(inner, new_val)?,
                         }
                         Ok(())
                     }
                     _ => Err(SimError::with_diag(
                         DiagCode::NotImplemented,
-                        format!("unsupported LHS in method: {:?}", lhs),
+                        format!("cannot assign to expression in method: {:?}", lhs),
                     )),
                 }
             }
@@ -1931,15 +1931,71 @@ impl SimulationEngine {
                             ))
                         }
                     }
-                    _ => Err(SimError::with_diag(
-                        DiagCode::NotImplemented,
-                        format!("unsupported LHS in StmtAssign: {:?}", lhs),
-                    )),
+                    _ => self.write_ast_lvalue(lhs, val),
                 }
+            }
+            Stmt::NamedBlock { stmts, .. } => {
+                for s in stmts {
+                    if self.ast_return_pending {
+                        break;
+                    }
+                    self.evaluate_ast_stmt(s)?;
+                }
+                Ok(())
+            }
+            Stmt::DoWhile { cond, stmts } => {
+                let mut guard = 0usize;
+                loop {
+                    guard += 1;
+                    if guard > 1_000_000 {
+                        return Err(SimError::with_diag(
+                            DiagCode::NotImplemented,
+                            "do-while iteration limit",
+                        ));
+                    }
+                    for s in stmts {
+                        if self.ast_return_pending {
+                            break;
+                        }
+                        self.evaluate_ast_stmt(s)?;
+                    }
+                    if self.ast_return_pending {
+                        break;
+                    }
+                    if !self.evaluate_ast_expr(cond)?.to_bool().unwrap_or(false) {
+                        break;
+                    }
+                }
+                Ok(())
+            }
+            Stmt::UniqueIf {
+                cond,
+                true_branch,
+                false_branch,
+            }
+            | Stmt::PriorityIf {
+                cond,
+                true_branch,
+                false_branch,
+            } => {
+                let cval = self.evaluate_ast_expr(cond)?;
+                if cval.to_bool().unwrap_or(false) {
+                    self.evaluate_ast_stmt(true_branch)
+                } else if let Some(f) = false_branch {
+                    self.evaluate_ast_stmt(f)
+                } else {
+                    Ok(())
+                }
+            }
+            Stmt::Assert { cond, .. }
+            | Stmt::Assume { cond, .. }
+            | Stmt::Cover { cond, .. } => {
+                let _ = self.evaluate_ast_expr(cond)?;
+                Ok(())
             }
             _ => Err(SimError::with_diag(
                 DiagCode::NotImplemented,
-                format!("unsupported statement in method context: {:?}", stmt),
+                format!("method context cannot execute statement: {:?}", stmt),
             )),
         }
     }

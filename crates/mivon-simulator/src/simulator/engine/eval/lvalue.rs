@@ -799,10 +799,7 @@ impl SimulationEngine {
                                 ))
                             }
                         }
-                        _ => Err(self.diag_error(
-                            mivon_core::diagnostics::DiagCode::NotImplemented,
-                            format!("unsupported array base in task method: {:?}", inner),
-                        )),
+                        _ => self.write_ast_lvalue(inner, new_val),
                     }
                 } else {
                     let lhs_val = self.evaluate_ast_expr(inner)?;
@@ -830,10 +827,7 @@ impl SimulationEngine {
                                 ))
                             }
                         }
-                        _ => Err(self.diag_error(
-                            mivon_core::diagnostics::DiagCode::NotImplemented,
-                            format!("unsupported bit base in task method: {:?}", inner),
-                        )),
+                        _ => self.write_ast_lvalue(inner, new_val),
                     }
                 }
             }
@@ -876,10 +870,7 @@ impl SimulationEngine {
                             ))
                         }
                     }
-                    _ => Err(self.diag_error(
-                        mivon_core::diagnostics::DiagCode::NotImplemented,
-                        format!("unsupported range base in task method: {:?}", inner),
-                    )),
+                    _ => self.write_ast_lvalue(inner, new_val),
                 }
             }
             mivon_ast::Expr::PartSelect {
@@ -921,15 +912,12 @@ impl SimulationEngine {
                             ))
                         }
                     }
-                    _ => Err(self.diag_error(
-                        mivon_core::diagnostics::DiagCode::NotImplemented,
-                        format!("unsupported part-select base in task method: {:?}", inner),
-                    )),
+                    _ => self.write_ast_lvalue(inner, new_val),
                 }
             }
             _ => Err(self.diag_error(
                 mivon_core::diagnostics::DiagCode::NotImplemented,
-                format!("unsupported lvalue type in task method: {:?}", lhs),
+                format!("cannot assign to expression in task method: {:?}", lhs),
             )),
         }
     }

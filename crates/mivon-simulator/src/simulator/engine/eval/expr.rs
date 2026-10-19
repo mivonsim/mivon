@@ -1809,6 +1809,48 @@ impl SimulationEngine {
                         }
                         return Ok(LogicVec::from_u64(0, 64));
                     }
+                    "$bits" | "$size" | "$high" | "$low" | "$left" | "$right"
+                    | "$increment" | "$dimensions" | "$unpacked_dimensions" => {
+                        // Query dimensi/lebar butuh metadata SignalInfo.
+                        let dim = args
+                            .get(1)
+                            .and_then(|a| self.evaluate_expr(a).ok())
+                            .map(|v| v.to_u64() as usize)
+                            .unwrap_or(0);
+                        let sid = match args.first() {
+                            Some(IrExpr::Signal(id, _)) => Some(*id),
+                            Some(IrExpr::HierRef(name)) => self.find_signal(name.as_str()),
+                            _ => None,
+                        };
+                        if let Some(sig) = sid.and_then(|id| self.design.top.signals.get(id)) {
+                            let v: i64 = match fn_name {
+                                "$bits" => (sig.width * sig.array_depth.max(1)) as i64,
+                                "$size" => {
+                                    if dim == 0 {
+                                        sig.width as i64
+                                    } else {
+                                        sig.array_dims.get(dim - 1).copied().unwrap_or(1)
+                                            as i64
+                                    }
+                                }
+                                "$high" => sig.msb.max(sig.lsb) as i64,
+                                "$low" => sig.msb.min(sig.lsb) as i64,
+                                "$left" => sig.msb as i64,
+                                "$right" => sig.lsb as i64,
+                                "$increment" => {
+                                    if sig.msb >= sig.lsb {
+                                        1
+                                    } else {
+                                        -1
+                                    }
+                                }
+                                "$dimensions" => (sig.array_dims.len() + 1) as i64,
+                                _ => sig.array_dims.len() as i64,
+                            };
+                            return Ok(LogicVec::from_u64(v as u64, 32));
+                        }
+                        return Ok(LogicVec::from_u64(0, 32));
+                    }
                     _ => {}
                 }
                 // Try VPI registered system functions first
@@ -1822,7 +1864,7 @@ impl SimulationEngine {
                 if self.notimpl_warned.insert(*name) {
                     self.emit_warning(
                         mivon_core::diagnostics::DiagCode::NotImplemented,
-                        format!("unsupported system function '{}'", fn_name),
+                        format!("unknown system function '{}' (returns 0)", fn_name),
                     );
                 }
                 Ok(LogicVec::from_u64(0, 32))

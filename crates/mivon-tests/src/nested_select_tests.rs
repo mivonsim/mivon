@@ -234,3 +234,21 @@ endmodule"#;
     let sigs = sim(src, 10);
     assert_eq!(get_u64(&sigs, "o"), 0xAB);
 }
+
+#[test]
+fn task_nested_lvalue_write() {
+    let src = r#"module top(output [7:0] o);
+  reg [7:0] mem [0:3];
+  task automatic wr(input integer i, input integer j);
+    mem[i][j] = 1'b1;
+  endtask
+  initial begin
+    mem[1] = 8'h00;
+    wr(1, 3);
+    $finish;
+  end
+  assign o = mem[1];
+endmodule"#;
+    let sigs = sim(src, 10);
+    assert_eq!(get_u64(&sigs, "o"), 8);
+}
