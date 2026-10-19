@@ -131,6 +131,176 @@ pub(crate) fn lvalue_width(lv: &IrLValue, signals: &[SignalInfo]) -> usize {
     }
 }
 
+/// Pilih bit `off` (dari LSB) dari sebuah lvalue, dipakai untuk men-decompose
+/// nested bit-select pada concat lvalue (`{a,b}[k]`). Mengembalikan lvalue
+/// yang sudah menunjuk bit fisik tunggal, atau None bila tak bisa statis.
+fn select_lv_bit(lv: &IrLValue, off: usize, signals: &[SignalInfo]) -> Option<IrLValue> {
+    match lv {
+        IrLValue::Signal(sid, _) => Some(IrLValue::BitSelect(*sid, off)),
+        IrLValue::BitSelect(sid, b) => Some(IrLValue::BitSelect(*sid, b + off)),
+        IrLValue::RangeSelect(sid, msb, lsb) => {
+            Some(IrLValue::BitSelect(*sid, (*msb).min(*lsb) + off))
+        }
+        IrLValue::ArrayBitSelect {
+            sig_id,
+            index,
+            elem_width,
+            bit,
+        } => {
+            if off < *elem_width {
+                Some(IrLValue::ArrayBitSelect {
+                    sig_id: *sig_id,
+                    index: index.clone(),
+                    elem_width: *elem_width,
+                    bit: Box::new(IrExpr::BinaryOp(
+                        BinaryIrOp::Add,
+                        bit.clone(),
+                        Box::new(IrExpr::Const(LogicVec::from_u64(off as u64, 64))),
+                    )),
+                })
+            } else {
+                None
+            }
+        }
+        IrLValue::ArrayRangeSelect {
+            sig_id,
+            index,
+            elem_width,
+            msb,
+            lsb,
+        } => {
+            let base = (*msb).min(*lsb);
+            Some(IrLValue::ArrayBitSelect {
+                sig_id: *sig_id,
+                index: index.clone(),
+                elem_width: *elem_width,
+                bit: Box::new(IrExpr::Const(LogicVec::from_u64((base + off) as u64, 64))),
+            })
+        }
+        IrLValue::ExprPartSelect {
+            sig_id,
+            base,
+            width,
+        } => {
+            if off < *width {
+                Some(IrLValue::ExprPartSelect {
+                    sig_id: *sig_id,
+                    base: Box::new(IrExpr::BinaryOp(
+                        BinaryIrOp::Add,
+                        base.clone(),
+                        Box::new(IrExpr::Const(LogicVec::from_u64(off as u64, 64))),
+                    )),
+                    width: 1,
+                })
+            } else {
+                None
+            }
+        }
+        IrLValue::Concat(items) => {
+            let mut rem = off;
+            for part in items.iter().rev() {
+                let w = lvalue_width(part, signals);
+                if rem < w {
+                    return select_lv_bit(part, rem, signals);
+                }
+                rem -= w;
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+/// Pilih rentang `[base, base+width)` (dari LSB) dari sebuah lvalue, dipakai
+/// untuk men-decompose part-select pada concat lvalue (`{a,b}[base+:w]`).
+fn select_lv_range(
+    lv: &IrLValue,
+    base: usize,
+    width: usize,
+    signals: &[SignalInfo],
+) -> Option<IrLValue> {
+    if width == 0 {
+        return None;
+    }
+    let hi = base + width - 1;
+    match lv {
+        IrLValue::Signal(sid, _) => Some(IrLValue::RangeSelect(*sid, hi, base)),
+        IrLValue::RangeSelect(sid, msb, lsb) => {
+            let m = (*msb).min(*lsb);
+            Some(IrLValue::RangeSelect(*sid, m + hi, m + base))
+        }
+        IrLValue::BitSelect(sid, b) => {
+            if width == 1 {
+                Some(IrLValue::BitSelect(*sid, b + base))
+            } else {
+                None
+            }
+        }
+        IrLValue::ArrayBitSelect { .. } => {
+            if width == 1 {
+                select_lv_bit(lv, base, signals)
+            } else {
+                None
+            }
+        }
+        IrLValue::ArrayRangeSelect {
+            sig_id,
+            index,
+            elem_width,
+            msb,
+            lsb,
+        } => {
+            let m = (*msb).min(*lsb);
+            Some(IrLValue::ArrayRangeSelect {
+                sig_id: *sig_id,
+                index: index.clone(),
+                elem_width: *elem_width,
+                msb: m + hi,
+                lsb: m + base,
+            })
+        }
+        IrLValue::ExprPartSelect {
+            sig_id,
+            base: b,
+            width: _,
+        } => Some(IrLValue::ExprPartSelect {
+            sig_id: *sig_id,
+            base: Box::new(IrExpr::BinaryOp(
+                BinaryIrOp::Add,
+                b.clone(),
+                Box::new(IrExpr::Const(LogicVec::from_u64(base as u64, 64))),
+            )),
+            width,
+        }),
+        IrLValue::Concat(items) => {
+            let total = lvalue_width(lv, signals);
+            if base + width > total {
+                return None;
+            }
+            let mut out: Vec<IrLValue> = Vec::new();
+            let mut offset = total;
+            for part in items.iter() {
+                let w = lvalue_width(part, signals);
+                let p_start = offset.saturating_sub(w);
+                let p_end = offset;
+                let lo = base.max(p_start);
+                let hi_i = (base + width).min(p_end);
+                if lo < hi_i {
+                    let sel = select_lv_range(part, lo - p_start, hi_i - lo, signals)?;
+                    out.push(sel);
+                }
+                offset = p_start;
+            }
+            match out.len() {
+                0 => None,
+                1 => out.pop(),
+                _ => Some(IrLValue::Concat(out)),
+            }
+        }
+        _ => None,
+    }
+}
+
 /// Ambil nilai konstanta dari IrExpr bila berupa literal — dipakai untuk
 /// part-select width yang tidak ter-fold saat elaborasi (base dinamis seperti
 /// `sig[i*32 +: 32]` → width tetap `Const(32)`).
@@ -2994,12 +3164,29 @@ impl Elaborator {
                             })
                         }
                     }
-                    _ => Err(self.elab_diag_at(
-                        DiagCode::NotImplemented,
-                        "nested bit select not supported",
-                        expr_location(expr).0,
-                        expr_location(expr).1,
-                    )),
+                    // Bit-select di atas concat lvalue (`{a,b}[k]`): decompose
+                    // statis ke bit fisik pada part yang memuat k (dari LSB).
+                    IrLValue::Concat(parts) => {
+                        if let Ok(idx) = const_eval_params(bs_index, &self.param_vals) {
+                            let lv = IrLValue::Concat(parts);
+                            match select_lv_bit(&lv, idx as usize, signals) {
+                                Some(sel) => Ok(sel),
+                                None => Err(self.elab_diag_at(
+                                    DiagCode::NotImplemented,
+                                    "concat bit-select index out of range",
+                                    expr_location(expr).0,
+                                    expr_location(expr).1,
+                                )),
+                            }
+                        } else {
+                            Err(self.elab_diag_at(
+                                DiagCode::NotImplemented,
+                                "dynamic bit-select on concat lvalue",
+                                expr_location(expr).0,
+                                expr_location(expr).1,
+                            ))
+                        }
+                    }
                 }
             }
             Expr::PartSelect {
@@ -3126,12 +3313,50 @@ impl Elaborator {
                                     width: width_c,
                                 })
                             }
-                            _ => Err(self.elab_diag_at(
-                                DiagCode::NotImplemented,
-                                "nested part-select in lvalue not supported",
-                                expr_location(expr).0,
-                                expr_location(expr).1,
-                            )),
+                            // Part-select di atas concat lvalue (`{a,b}[base+:w]`):
+                            // decompose ke sub-range per part.
+                            IrLValue::Concat(parts) => {
+                                let lv = IrLValue::Concat(parts);
+                                match select_lv_range(&lv, base_c, width_c, signals) {
+                                    Some(sel) => Ok(sel),
+                                    None => Err(self.elab_diag_at(
+                                        DiagCode::NotImplemented,
+                                        "concat part-select out of range",
+                                        expr_location(expr).0,
+                                        expr_location(expr).1,
+                                    )),
+                                }
+                            }
+                            IrLValue::ObjectField { sig_id, field } => {
+                                let (l, c) = expr_location(expr);
+                                self.elab_warn_at(
+                                    DiagCode::NotImplemented,
+                                    format!(
+                                        "part-select pada field object '{}' yang tidak ter-resolve — write diabaikan",
+                                        field.as_str()
+                                    ),
+                                    l,
+                                    c,
+                                );
+                                Ok(IrLValue::ObjectField { sig_id, field })
+                            }
+                            IrLValue::HierRef(name) | IrLValue::HierRefIndex { name, .. } => {
+                                if width_c == 1 {
+                                    let index_expr =
+                                        self.elaborate_expr(base, signal_map, signals)?;
+                                    Ok(IrLValue::HierRefIndex {
+                                        name,
+                                        index: Box::new(index_expr),
+                                    })
+                                } else {
+                                    Err(self.elab_diag_at(
+                                        DiagCode::NotImplemented,
+                                        "hierarchical part-select width>1 belum didukung",
+                                        expr_location(expr).0,
+                                        expr_location(expr).1,
+                                    ))
+                                }
+                            }
                         }
                     }
                     _ => {
@@ -3331,9 +3556,9 @@ impl Elaborator {
                                     width: width_c,
                                 })
                             }
-                            _ => Err(self.elab_diag_at(
+                            IrLValue::Concat(_) => Err(self.elab_diag_at(
                                 DiagCode::NotImplemented,
-                                "nested dynamic part-select in lvalue not supported",
+                                "dynamic part-select on concat lvalue requires constant base",
                                 expr_location(expr).0,
                                 expr_location(expr).1,
                             )),

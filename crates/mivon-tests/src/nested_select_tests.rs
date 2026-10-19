@@ -180,3 +180,39 @@ endmodule"#;
     let sigs = sim(src, 10);
     assert_eq!(get_u64(&sigs, "o"), 6);
 }
+
+#[test]
+fn nested_bitselect_on_concat_lvalue() {
+    let src = r#"module top;
+  reg [7:0] a;
+  reg [7:0] b;
+  initial begin
+    a = 8'h00;
+    b = 8'h00;
+    {a, b}[0] = 1'b1;
+    {a, b}[8] = 1'b1;
+    $finish;
+  end
+endmodule"#;
+    let sigs = sim(src, 10);
+    assert_eq!(get_u64(&sigs, "a"), 1);
+    assert_eq!(get_u64(&sigs, "b"), 1);
+}
+
+#[test]
+fn nested_partselect_on_concat_lvalue() {
+    let src = r#"module top;
+  reg [7:0] a;
+  reg [7:0] b;
+  initial begin
+    a = 8'h00;
+    b = 8'h00;
+    {a, b}[0 +: 4] = 4'hF;
+    {a, b}[8 +: 4] = 4'hA;
+    $finish;
+  end
+endmodule"#;
+    let sigs = sim(src, 10);
+    assert_eq!(get_u64(&sigs, "a"), 0x0A);
+    assert_eq!(get_u64(&sigs, "b"), 0x0F);
+}
