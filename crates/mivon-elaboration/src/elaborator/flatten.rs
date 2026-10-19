@@ -961,6 +961,15 @@ impl Elaborator {
     fn translate_lvalue(&self, lv: &IrLValue, map_sig: &dyn Fn(SignalId) -> SignalId) -> IrLValue {
         match lv {
             IrLValue::Signal(id, w) => IrLValue::Signal(map_sig(*id), *w),
+            IrLValue::VifField {
+                vif,
+                field,
+                width,
+            } => IrLValue::VifField {
+                vif: *vif,
+                field: *field,
+                width: *width,
+            },
             IrLValue::RangeSelect(id, msb, lsb) => IrLValue::RangeSelect(map_sig(*id), *msb, *lsb),
             IrLValue::BitSelect(id, idx) => IrLValue::BitSelect(map_sig(*id), *idx),
             IrLValue::ArrayIndex {

@@ -73,6 +73,7 @@ fn lvalue_dep_id(lv: &IrLValue) -> Option<SignalId> {
         | IrLValue::ObjectField { sig_id: id, .. } => Some(*id),
         IrLValue::Concat(items) => items.first().and_then(lvalue_dep_id),
         IrLValue::HierRef(_) | IrLValue::HierRefIndex { .. } => None,
+        IrLValue::VifField { .. } => None,
     }
 }
 

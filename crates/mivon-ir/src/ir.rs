@@ -639,6 +639,16 @@ pub enum IrLValue {
         name: Symbol,
         index: Box<IrExpr>,
     },
+    /// Write ke field melalui VARIABLE virtual interface: `vif.data = x`.
+    /// Binding (instance mana) baru diketahui saat runtime — engine membaca
+    /// handle dari sinyal `vif`, menurunkan path instance, lalu menulis sinyal
+    /// field tersebut (kebalikan dari `IrExpr::VirtualIfaceAccess` untuk baca).
+    VifField {
+        vif: Symbol,
+        field: Symbol,
+        /// Lebar field bila diketahui statis; 0 = resolve runtime.
+        width: usize,
+    },
     Concat(Vec<IrLValue>),
 }
 

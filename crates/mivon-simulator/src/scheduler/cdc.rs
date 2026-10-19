@@ -295,6 +295,7 @@ pub(crate) fn lvalue_collect_signal_ids(lvalue: &IrLValue, ids: &mut HashSet<Sig
         | IrLValue::ObjectField { sig_id, .. } => {
             ids.insert(*sig_id);
         }
+        IrLValue::VifField { .. } => {}
         IrLValue::Concat(items) => {
             for item in items {
                 lvalue_collect_signal_ids(item, ids);

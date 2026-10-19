@@ -287,6 +287,8 @@ fn lvalue_signal_ids(lhs: &IrLValue) -> Vec<SignalId> {
         IrLValue::Concat(items) => items.iter().flat_map(lvalue_signal_ids).collect(),
         // HierRef: nama hierarkis — bukan SignalId lokal; R0: dilewati.
         IrLValue::HierRef(_) | IrLValue::HierRefIndex { .. } => Vec::new(),
+        // VifField: target baru diketahui saat runtime (binding vif).
+        IrLValue::VifField { .. } => Vec::new(),
     }
 }
 

@@ -111,6 +111,8 @@ mod named_sva_tests;
 #[cfg(test)]
 mod hier_lvalue_tests;
 #[cfg(test)]
+mod vif_write_tests;
+#[cfg(test)]
 mod synth_sir_tests;
 
 // Guided structure-aware fuzzer (metode test fuzzing "tidak buta"):

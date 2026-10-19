@@ -599,6 +599,37 @@ impl SimulationEngine {
                     obj.fields.insert(*field, val);
                 }
             }
+            // LANG-44: write lewat VARIABLE virtual interface (vif.data = x).
+            // Binding runtime: nilai sinyal vif = SignalId sinyal pertama pada
+            // instance terikat, lalu turunkan path instance ke sinyal field.
+            IrLValue::VifField { vif, field, .. } => {
+                let Some(vif_sid) = self.find_signal(vif.as_str()) else {
+                    return Err(self.diag_error_at(
+                        mivon_core::diagnostics::DiagCode::UndefinedSignal,
+                        format!("virtual interface '{}' not found for write", vif.as_str()),
+                        0,
+                        0,
+                    ));
+                };
+                let binding = self.state.read_signal(vif_sid);
+                let handle = binding.to_u64() as usize;
+                if handle == 0 || handle >= self.design.top.signals.len() {
+                    // Belum di-bind (null vif) - tidak ada target untuk ditulis.
+                    return Ok(());
+                }
+                let Some(field_sid) = self.vif_field_signal(handle, *field) else {
+                    return Err(self.diag_error_at(
+                        mivon_core::diagnostics::DiagCode::UndefinedSignal,
+                        format!(
+                            "field '{}' tidak ditemukan pada instance virtual interface (vif)",
+                            field.as_str()
+                        ),
+                        0,
+                        0,
+                    ));
+                };
+                self.write_lvalue(&IrLValue::Signal(field_sid, 0), val, is_blocking)?;
+            }
             // Lvalue hierarkis (nama di flattened signal list — mis. signal
             // interface instance `sif.csb`). Resolve nama → SignalId lalu
             // dispatch ulang ke write penuh (const check, race, resize, dll).
@@ -689,6 +720,31 @@ impl SimulationEngine {
 
     pub(crate) fn get_lvalue_width(&self, lvalue: &IrLValue) -> usize {
         match lvalue {
+            // Lebar field vif di-resolve runtime dari instance terikat.
+            IrLValue::VifField { vif, field, width } => {
+                if *width > 0 {
+                    return *width;
+                }
+                let Some(vif_sid) = self.find_signal(vif.as_str()) else {
+                    return 1;
+                };
+                let handle = self.state.read_signal(vif_sid).to_u64() as usize;
+                if handle == 0 || handle >= self.design.top.signals.len() {
+                    return 1;
+                }
+                let bound_name = self.design.top.signals[handle].name.as_str().to_string();
+                let inst_path = match bound_name.rfind('.') {
+                    Some(p) => bound_name[..p].to_string(),
+                    None => bound_name,
+                };
+                let key = format!("{}.{}", inst_path, field.as_str());
+                self.design
+                    .hier_signal_map
+                    .get(&mivon_core::intern::Symbol::intern(&key))
+                    .and_then(|sid| self.design.top.signals.get(*sid))
+                    .map(|s| s.width.max(1))
+                    .unwrap_or(1)
+            }
             IrLValue::Signal(id, _) => self.state.read_signal(*id).width,
             IrLValue::RangeSelect(_, msb, lsb) => {
                 if *msb > *lsb {
@@ -744,6 +800,57 @@ impl SimulationEngine {
         }
     }
 
+    /// LANG-44: sinyal field pada instance yang di-bind variabel virtual
+    /// interface. Handle = SignalId sinyal pertama instance terikat; path
+    /// instance diturunkan dengan memotong komponen terakhir.
+    pub(crate) fn vif_field_signal(&self, handle: usize, field: Symbol) -> Option<usize> {
+        let bound_name = self
+            .design
+            .top
+            .signals
+            .get(handle)?
+            .name
+            .as_str()
+            .to_string();
+        let dot = bound_name.rfind('.')?;
+        let key = format!("{}.{}", &bound_name[..dot], field.as_str());
+        self.design
+            .hier_signal_map
+            .get(&Symbol::intern(&key))
+            .copied()
+    }
+
+    /// LANG-44: tulis field objek class, atau field instance interface bila
+    /// `obj` mengevaluasi ke handle virtual interface (`vif.data = x`).
+    pub(crate) fn write_ast_member_field(
+        &mut self,
+        obj: &mivon_ast::Expr,
+        field: Symbol,
+        val: LogicVec,
+    ) -> Result<(), SimError> {
+        let obj_val = self.evaluate_ast_expr(obj)?;
+        let handle = obj_val.to_u64() as usize;
+        // LANG-44: variabel virtual interface dikenali dari DEKLARASINYA,
+        // bukan dari nilai handle (ObjId dan SignalId bisa bertabrakan).
+        if self.expr_is_virtual_iface(obj) {
+            if let Some(sid) = self.vif_field_signal(handle, field) {
+                return self.write_lvalue(&IrLValue::Signal(sid, 0), val, true);
+            }
+            if handle == 0 {
+                // Belum di-bind (null vif) - tidak ada target untuk ditulis.
+                return Ok(());
+            }
+        }
+        if let Some(o) = self.state.get_object_mut(handle as ObjId) {
+            o.fields.insert(field, val);
+            return Ok(());
+        }
+        Err(self.diag_error(
+            mivon_core::diagnostics::DiagCode::NullHandle,
+            format!("object {} not found for field '{}'", handle, field),
+        ))
+    }
+
     pub(crate) fn write_ast_lvalue(
         &mut self,
         lhs: &mivon_ast::Expr,
@@ -751,19 +858,7 @@ impl SimulationEngine {
     ) -> Result<(), SimError> {
         match lhs {
             mivon_ast::Expr::Ident { name, .. } => self.write_local_or_field(name.as_str(), val),
-            mivon_ast::Expr::MemberAccess { obj, field } => {
-                let obj_val = self.evaluate_ast_expr(obj)?;
-                let obj_id = obj_val.to_u64() as ObjId;
-                if let Some(obj_data) = self.state.get_object_mut(obj_id) {
-                    obj_data.fields.insert(*field, val);
-                    Ok(())
-                } else {
-                    Err(self.diag_error(
-                        mivon_core::diagnostics::DiagCode::NullHandle,
-                        format!("object {} not found for field '{}'", obj_id, field),
-                    ))
-                }
-            }
+            mivon_ast::Expr::MemberAccess { obj, field } => self.write_ast_member_field(obj, *field, val),
             mivon_ast::Expr::BitSelect { expr: inner, index } => {
                 // `arr[idx] = rhs` — array element (array field/queue) ATAU
                 // bit select pada vector. Konsisten dgn evaluate_ast_stmt.
@@ -787,17 +882,7 @@ impl SimulationEngine {
                             self.write_local_or_field(name.as_str(), new_val)
                         }
                         mivon_ast::Expr::MemberAccess { obj, field } => {
-                            let ov = self.evaluate_ast_expr(obj)?;
-                            let oid = ov.to_u64() as ObjId;
-                            if let Some(o) = self.state.get_object_mut(oid) {
-                                o.fields.insert(*field, new_val);
-                                Ok(())
-                            } else {
-                                Err(self.diag_error(
-                                    mivon_core::diagnostics::DiagCode::NullHandle,
-                                    format!("object {} not found for field write", oid),
-                                ))
-                            }
+                            self.write_ast_member_field(obj, *field, new_val)
                         }
                         _ => self.write_ast_lvalue(inner, new_val),
                     }
@@ -815,17 +900,7 @@ impl SimulationEngine {
                             self.write_local_or_field(name.as_str(), new_val)
                         }
                         mivon_ast::Expr::MemberAccess { obj, field } => {
-                            let ov = self.evaluate_ast_expr(obj)?;
-                            let oid = ov.to_u64() as ObjId;
-                            if let Some(o) = self.state.get_object_mut(oid) {
-                                o.fields.insert(*field, new_val);
-                                Ok(())
-                            } else {
-                                Err(self.diag_error(
-                                    mivon_core::diagnostics::DiagCode::NullHandle,
-                                    format!("object {} not found for field write", oid),
-                                ))
-                            }
+                            self.write_ast_member_field(obj, *field, new_val)
                         }
                         _ => self.write_ast_lvalue(inner, new_val),
                     }
@@ -858,17 +933,7 @@ impl SimulationEngine {
                         self.write_local_or_field(name.as_str(), new_val)
                     }
                     mivon_ast::Expr::MemberAccess { obj, field } => {
-                        let ov = self.evaluate_ast_expr(obj)?;
-                        let oid = ov.to_u64() as ObjId;
-                        if let Some(o) = self.state.get_object_mut(oid) {
-                            o.fields.insert(*field, new_val);
-                            Ok(())
-                        } else {
-                            Err(self.diag_error(
-                                mivon_core::diagnostics::DiagCode::NullHandle,
-                                format!("object {} not found for field write", oid),
-                            ))
-                        }
+                        self.write_ast_member_field(obj, *field, new_val)
                     }
                     _ => self.write_ast_lvalue(inner, new_val),
                 }
@@ -900,17 +965,7 @@ impl SimulationEngine {
                         self.write_local_or_field(name.as_str(), new_val)
                     }
                     mivon_ast::Expr::MemberAccess { obj, field } => {
-                        let ov = self.evaluate_ast_expr(obj)?;
-                        let oid = ov.to_u64() as ObjId;
-                        if let Some(o) = self.state.get_object_mut(oid) {
-                            o.fields.insert(*field, new_val);
-                            Ok(())
-                        } else {
-                            Err(self.diag_error(
-                                mivon_core::diagnostics::DiagCode::NullHandle,
-                                format!("object {} not found for field write", oid),
-                            ))
-                        }
+                        self.write_ast_member_field(obj, *field, new_val)
                     }
                     _ => self.write_ast_lvalue(inner, new_val),
                 }

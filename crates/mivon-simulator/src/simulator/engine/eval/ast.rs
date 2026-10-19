@@ -68,6 +68,12 @@ impl SimulationEngine {
                 if let Some(sig_id) = self.find_signal(name.as_str()) {
                     return Ok(self.state.read_signal(sig_id).clone());
                 }
+                // LANG-44: nama instance interface sebagai nilai = binding
+                // virtual interface (`vif = b;`). Handle = SignalId sinyal
+                // pertama di dalam instance (sama dgn IrExpr::VifBinding).
+                if let Some(sid) = self.iface_instance_handle(name.as_str()) {
+                    return Ok(LogicVec::from_u64(sid as u64, 64));
+                }
                 let ctx = self
                     .current_this
                     .map(|id| format!("obj_id={}", id))
@@ -859,6 +865,11 @@ impl SimulationEngine {
                 if let Some(sig_id) = self.find_signal(&hier_name) {
                     return Ok(self.state.read_signal(sig_id).clone());
                 }
+                // LANG-44: field melalui variabel virtual interface (`vif.data`)
+                // — resolve ke sinyal instance yang di-bind, bukan field objek.
+                if let Some(v) = self.read_vif_field(obj, *field) {
+                    return Ok(v);
+                }
                 // Fall back to object field access (class objects)
                 let obj_val = self.evaluate_ast_expr(obj)?;
                 let obj_id = obj_val.to_u64() as ObjId;
@@ -1203,6 +1214,73 @@ impl SimulationEngine {
         map.get(&Symbol::intern(name)).copied()
     }
 
+    /// LANG-44: nama instance interface → handle binding virtual interface
+    /// (SignalId sinyal pertama di dalam instance), sama dengan
+    /// `IrExpr::VifBinding`. Dipakai `vif = iface_inst;` di jalur AST.
+    pub(crate) fn iface_instance_handle(&self, name: &str) -> Option<usize> {
+        let prefix = format!("{}.", name);
+        self.design
+            .top
+            .signals
+            .iter()
+            .position(|s| s.name.as_str().starts_with(&prefix))
+    }
+
+    /// LANG-44: apakah `expr` adalah VARIABEL virtual interface menurut
+    /// deklarasinya (sinyal module bertipe interface, atau field class
+    /// bertipe interface) — bukan objek class yang kebetulan handle-nya
+    /// bertabrakan dengan SignalId.
+    pub(crate) fn expr_is_virtual_iface(&self, expr: &mivon_ast::Expr) -> bool {
+        let mivon_ast::Expr::Ident { name, .. } = expr else {
+            return false;
+        };
+        if let Some(oid) = self.current_this {
+            if let Some(obj) = self.state.get_object(oid) {
+                if let Some(def) = self.design.classes.get(&obj.class_name) {
+                    if let Some(f) = def.fields.iter().find(|f| f.name == *name) {
+                        return matches!(
+                            &f.dtype,
+                            Some(mivon_ast::DataType::UserDefined(t)) if self.is_interface_type(*t)
+                        );
+                    }
+                }
+            }
+        }
+        if let Some(sid) = self.find_signal(name.as_str()) {
+            return self
+                .design
+                .top
+                .signals
+                .get(sid)
+                .map(|s| s.iface_type.is_some())
+                .unwrap_or(false);
+        }
+        false
+    }
+
+    /// Nama tipe interface: bukan class. Interface di-elaborasi menjadi
+    /// `IrModule` (jadi `design.modules` juga memuatnya), sehingga class map
+    /// adalah pembeda yang dapat diandalkan. Field bertipe non-class lain
+    /// (typedef/struct) tetap aman: resolusi vif mensyaratkan sinyal field
+    /// benar-benar ada pada instance terikat.
+    pub(crate) fn is_interface_type(&self, t: Symbol) -> bool {
+        self.design.modules.contains_key(&t) && !self.design.classes.contains_key(&t)
+    }
+
+    /// LANG-44: baca field melalui variabel virtual interface (`vif.data`).
+    pub(crate) fn read_vif_field(
+        &mut self,
+        obj: &mivon_ast::Expr,
+        field: Symbol,
+    ) -> Option<LogicVec> {
+        if !self.expr_is_virtual_iface(obj) {
+            return None;
+        }
+        let handle = self.evaluate_ast_expr(obj).ok()?.to_u64() as usize;
+        let sid = self.vif_field_signal(handle, field)?;
+        Some(self.state.read_signal(sid).clone())
+    }
+
     pub(crate) fn build_hier_name(obj: &Expr, field: &str) -> String {
         match obj {
             Expr::Ident { name: prefix, .. } => format!("{}.{}", prefix, field),
@@ -1360,19 +1438,7 @@ impl SimulationEngine {
                 let val = self.eval_ast_assign_rhs(rhs, lhs)?;
                 match lhs {
                     Expr::Ident { name, .. } => self.write_local_or_field(name.as_str(), val),
-                    Expr::MemberAccess { obj, field } => {
-                        let obj_val = self.evaluate_ast_expr(obj)?;
-                        let obj_id = obj_val.to_u64() as ObjId;
-                        if let Some(obj) = self.state.get_object_mut(obj_id) {
-                            obj.fields.insert(*field, val);
-                            Ok(())
-                        } else {
-                            Err(SimError::with_diag(
-                                DiagCode::NullHandle,
-                                format!("object {} not found for field write", obj_id),
-                            ))
-                        }
-                    }
+                    Expr::MemberAccess { obj, field } => self.write_ast_member_field(obj, *field, val),
                     Expr::BitSelect { expr: inner, index } => {
                         let idx_val = self.evaluate_ast_expr(index)?;
                         let idx = idx_val.to_u64() as usize;
@@ -1394,11 +1460,7 @@ impl SimulationEngine {
                                     self.write_local_or_field(name.as_str(), new_val)?;
                                 }
                                 Expr::MemberAccess { obj, field } => {
-                                    let ov = self.evaluate_ast_expr(obj)?;
-                                    let oid = ov.to_u64() as ObjId;
-                                    if let Some(o) = self.state.get_object_mut(oid) {
-                                        o.fields.insert(*field, new_val);
-                                    }
+                                    self.write_ast_member_field(obj, *field, new_val)?;
                                 }
                                 _ => {}
                             }
@@ -1417,11 +1479,7 @@ impl SimulationEngine {
                                     self.write_local_or_field(name.as_str(), new_val)?;
                                 }
                                 Expr::MemberAccess { obj, field } => {
-                                    let ov = self.evaluate_ast_expr(obj)?;
-                                    let oid = ov.to_u64() as ObjId;
-                                    if let Some(o) = self.state.get_object_mut(oid) {
-                                        o.fields.insert(*field, new_val);
-                                    }
+                                    self.write_ast_member_field(obj, *field, new_val)?;
                                 }
                                 _ => {}
                             }
@@ -1455,11 +1513,7 @@ impl SimulationEngine {
                                 self.write_local_or_field(name.as_str(), new_val)?;
                             }
                             Expr::MemberAccess { obj, field } => {
-                                let ov = self.evaluate_ast_expr(obj)?;
-                                let oid = ov.to_u64() as ObjId;
-                                if let Some(o) = self.state.get_object_mut(oid) {
-                                    o.fields.insert(*field, new_val);
-                                }
+                                self.write_ast_member_field(obj, *field, new_val)?;
                             }
                             _ => self.write_ast_lvalue(inner, new_val)?,
                         }
@@ -1477,19 +1531,7 @@ impl SimulationEngine {
                 let val = self.eval_ast_assign_rhs(rhs, lhs)?;
                 match lhs {
                     Expr::Ident { name, .. } => self.write_local_or_field(name.as_str(), val),
-                    Expr::MemberAccess { obj, field } => {
-                        let obj_val = self.evaluate_ast_expr(obj)?;
-                        let obj_id = obj_val.to_u64() as ObjId;
-                        if let Some(obj) = self.state.get_object_mut(obj_id) {
-                            obj.fields.insert(*field, val);
-                            Ok(())
-                        } else {
-                            Err(SimError::with_diag(
-                                DiagCode::NullHandle,
-                                format!("object {} not found for field write", obj_id),
-                            ))
-                        }
-                    }
+                    Expr::MemberAccess { obj, field } => self.write_ast_member_field(obj, *field, val),
                     Expr::BitSelect { expr: inner, index } => {
                         let idx_val = self.evaluate_ast_expr(index)?;
                         let idx = idx_val.to_u64() as usize;
@@ -1511,11 +1553,7 @@ impl SimulationEngine {
                                     self.write_local_or_field(name.as_str(), new_val)?;
                                 }
                                 Expr::MemberAccess { obj, field } => {
-                                    let ov = self.evaluate_ast_expr(obj)?;
-                                    let oid = ov.to_u64() as ObjId;
-                                    if let Some(o) = self.state.get_object_mut(oid) {
-                                        o.fields.insert(*field, new_val);
-                                    }
+                                    self.write_ast_member_field(obj, *field, new_val)?;
                                 }
                                 _ => {}
                             }
@@ -1534,11 +1572,7 @@ impl SimulationEngine {
                                     self.write_local_or_field(name.as_str(), new_val)?;
                                 }
                                 Expr::MemberAccess { obj, field } => {
-                                    let ov = self.evaluate_ast_expr(obj)?;
-                                    let oid = ov.to_u64() as ObjId;
-                                    if let Some(o) = self.state.get_object_mut(oid) {
-                                        o.fields.insert(*field, new_val);
-                                    }
+                                    self.write_ast_member_field(obj, *field, new_val)?;
                                 }
                                 _ => {}
                             }
@@ -1572,11 +1606,7 @@ impl SimulationEngine {
                                 self.write_local_or_field(name.as_str(), new_val)?;
                             }
                             Expr::MemberAccess { obj, field } => {
-                                let ov = self.evaluate_ast_expr(obj)?;
-                                let oid = ov.to_u64() as ObjId;
-                                if let Some(o) = self.state.get_object_mut(oid) {
-                                    o.fields.insert(*field, new_val);
-                                }
+                                self.write_ast_member_field(obj, *field, new_val)?;
                             }
                             _ => self.write_ast_lvalue(inner, new_val)?,
                         }
@@ -1918,19 +1948,7 @@ impl SimulationEngine {
                 let val = self.evaluate_ast_expr(rhs)?;
                 match lhs {
                     Expr::Ident { name, .. } => self.write_local_or_field(name.as_str(), val),
-                    Expr::MemberAccess { obj, field } => {
-                        let obj_val = self.evaluate_ast_expr(obj)?;
-                        let obj_id = obj_val.to_u64() as ObjId;
-                        if let Some(obj) = self.state.get_object_mut(obj_id) {
-                            obj.fields.insert(*field, val);
-                            Ok(())
-                        } else {
-                            Err(SimError::with_diag(
-                                DiagCode::NullHandle,
-                                format!("object {} not found for field write", obj_id),
-                            ))
-                        }
-                    }
+                    Expr::MemberAccess { obj, field } => self.write_ast_member_field(obj, *field, val),
                     _ => self.write_ast_lvalue(lhs, val),
                 }
             }

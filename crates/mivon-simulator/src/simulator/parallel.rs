@@ -781,6 +781,7 @@ fn get_lvalue_width_simple(
             hi - lo + 1
         }
         IrLValue::BitSelect(_, _) => 1,
+        IrLValue::VifField { width, .. } => (*width).max(1),
         IrLValue::ArrayIndex { elem_width, .. } => *elem_width,
         IrLValue::ArrayRangeSelect {
             elem_width,

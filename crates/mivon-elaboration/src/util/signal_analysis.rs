@@ -147,6 +147,7 @@ fn collect_lvalue_read_index_exprs(lv: &IrLValue, out: &mut Vec<SignalId>) {
             collect_read_signals_expr(index, out);
             collect_read_signals_expr(bit, out);
         }
+        IrLValue::VifField { .. } => {}
         IrLValue::Concat(parts) => {
             for p in parts {
                 collect_lvalue_read_index_exprs(p, out);

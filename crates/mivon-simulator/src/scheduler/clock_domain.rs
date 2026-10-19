@@ -528,6 +528,7 @@ fn lvalue_collect_writes(lvalue: &IrLValue, writes: &mut HashSet<SignalId>) {
         | IrLValue::ObjectField { sig_id, .. } => {
             writes.insert(*sig_id);
         }
+        IrLValue::VifField { .. } => {}
         IrLValue::Concat(items) => {
             for item in items {
                 lvalue_collect_writes(item, writes);

@@ -281,6 +281,7 @@ fn lvalue_signal_writes(lvalue: &IrLValue, access: &mut SignalAccess) {
         | IrLValue::ObjectField { sig_id, .. } => {
             access.writes.insert(*sig_id);
         }
+        IrLValue::VifField { .. } => {}
         IrLValue::Concat(items) => {
             for item in items {
                 lvalue_signal_writes(item, access);

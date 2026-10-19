@@ -1117,6 +1117,7 @@ impl SimulationEngine {
             IrLValue::HierRef(name) | IrLValue::HierRefIndex { name, .. } => {
                 self.find_signal(name.as_str())
             }
+            IrLValue::VifField { .. } => None,
             IrLValue::Concat(_) => None,
         }
     }

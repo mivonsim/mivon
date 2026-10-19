@@ -253,6 +253,7 @@ fn lvalue_sig_id(lv: &IrLValue) -> Option<usize> {
         | IrLValue::ArrayBitSelect { sig_id: id, .. }
         | IrLValue::ExprPartSelect { sig_id: id, .. }
         | IrLValue::ObjectField { sig_id: id, .. } => Some(*id),
+        IrLValue::VifField { .. } => None,
         IrLValue::HierRef(_) | IrLValue::HierRefIndex { .. } => None,
         IrLValue::Concat(_) => None,
     }

@@ -106,6 +106,7 @@ pub(crate) fn lvalue_signal_id(lv: &IrLValue) -> Option<SignalId> {
         IrLValue::ExprPartSelect { sig_id, .. } => Some(*sig_id),
         IrLValue::ObjectField { sig_id, .. } => Some(*sig_id),
         IrLValue::HierRef(_) | IrLValue::HierRefIndex { .. } => None,
+        IrLValue::VifField { .. } => None,
         IrLValue::Concat(items) => items.first().and_then(lvalue_signal_id),
     }
 }
@@ -1101,6 +1102,16 @@ impl Elaborator {
                         .get(*sid)
                         .map(|s| s.iface_type.is_some())
                         .unwrap_or(false),
+                    // LANG-44: field class bertipe virtual interface -
+                    // RHS berupa NAMA INSTANCE interface (bukan signal), jadi
+                    // harus jadi VifBinding. Tanpa ini elaborasi gagal dan
+                    // seluruh blok initial dibuang tanpa diagnostik.
+                    IrLValue::ObjectField { .. } => matches!(
+                        rhs,
+                        Expr::Ident { name, .. }
+                            if !signal_map.contains_key(name)
+                                && self.is_interface_instance(name.as_str())
+                    ),
                     _ => false,
                 };
                 let mut ir_rhs = if is_vif_lhs {
@@ -2901,6 +2912,12 @@ impl Elaborator {
             } => {
                 let inner_lv = self.elaborate_lvalue(inner, signal_map, signals)?;
                 match inner_lv {
+IrLValue::VifField { .. } => Err(self.elab_diag_at(
+                            DiagCode::NotImplemented,
+                            "select pada field virtual interface tidak dapat di-resolve statis",
+                            expr_location(expr).0,
+                            expr_location(expr).1,
+                        )),
                     IrLValue::Signal(sid, _) => {
                         let sig = &signals[sid];
                         // Check for multi-dim packed array: packed_dims.len() > 1
@@ -3244,6 +3261,12 @@ impl Elaborator {
                     (Ok(b), Ok(w)) => {
                         let (base_c, width_c) = (b as usize, w as usize);
                         match inner_lv {
+IrLValue::VifField { .. } => Err(self.elab_diag_at(
+                            DiagCode::NotImplemented,
+                            "select pada field virtual interface tidak dapat di-resolve statis",
+                            expr_location(expr).0,
+                            expr_location(expr).1,
+                        )),
                             IrLValue::Signal(sid, _) => {
                                 let sig = &signals[sid];
                                 if width_c > 0 {
@@ -3457,6 +3480,12 @@ impl Elaborator {
                             }
                         };
                         match inner_lv {
+IrLValue::VifField { .. } => Err(self.elab_diag_at(
+                            DiagCode::NotImplemented,
+                            "select pada field virtual interface tidak dapat di-resolve statis",
+                            expr_location(expr).0,
+                            expr_location(expr).1,
+                        )),
                             IrLValue::Signal(sid, _) => Ok(IrLValue::ExprPartSelect {
                                 sig_id: sid,
                                 base: Box::new(base_ir),
@@ -3712,6 +3741,23 @@ impl Elaborator {
                 match self.elaborate_expr(obj, signal_map, signals) {
                     Ok(IrExpr::Signal(sig_id, _)) => {
                         let sig_info = &signals[sig_id];
+                        // LANG-44: VARIABLE virtual interface (bukan port
+                        // interface) - vif.field ditulis lewat binding runtime.
+                        if sig_info.iface_type.is_some()
+                            && sig_info.class_name == sig_info.iface_type
+                            && !matches!(
+                                sig_info.kind,
+                                mivon_ir::SignalKind::Input
+                                    | mivon_ir::SignalKind::Output
+                                    | mivon_ir::SignalKind::Inout
+                            )
+                        {
+                            return Ok(IrLValue::VifField {
+                                vif: sig_info.name,
+                                field: *field,
+                                width: 0,
+                            });
+                        }
                         if !sig_info.struct_fields.is_empty() {
                             if let Some(f) =
                                 sig_info.struct_fields.iter().find(|f| f.name == *field)
