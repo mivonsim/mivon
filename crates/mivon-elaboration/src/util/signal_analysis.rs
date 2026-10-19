@@ -295,21 +295,67 @@ pub fn resolve_expr_signal(
 }
 
 /// Deteksi reset sinkron dari body IR process.
-/// Cari pola: if (signal) sebagai statement pertama.
+///
+/// Pola reset: statement pertama `if (sig)` yang cabang true-nya hanya
+/// meng-assign NILAI KONSTAN (nilai reset). Tanpa syarat konstanta ini,
+/// `always @(posedge clk) if (en) q <= d;` salah dikenali sebagai reset
+/// (`rst=en`) — netlist SIR jadi punya reset palsu.
 pub fn detect_sync_reset(body: &[IrStmt]) -> Option<ResetInfo> {
     if let Some(IrStmt::If {
         cond: IrExpr::Signal(sig_id, _),
+        true_branch,
         ..
     }) = body.first()
     {
-        return Some(ResetInfo {
-            signal: *sig_id,
-            polarity: true,
-            r#async: false,
-            value: LogicVec::new(1),
-        });
+        if branch_assigns_const(true_branch) {
+            return Some(ResetInfo {
+                signal: *sig_id,
+                polarity: true,
+                r#async: false,
+                value: LogicVec::new(1),
+            });
+        }
     }
     None
+}
+
+/// True bila semua assignment di `stmts` menulis ekspresi konstan (nilai
+/// reset) dan minimal ada satu assignment. Blok if/case bersarang → bukan
+/// pola reset sederhana.
+fn branch_assigns_const(stmts: &[IrStmt]) -> bool {
+    let mut saw_assign = false;
+    for st in stmts {
+        match st {
+            IrStmt::Block { stmts, .. } | IrStmt::NamedBlock { stmts, .. } => {
+                if !branch_assigns_const(stmts) {
+                    return false;
+                }
+                saw_assign = true;
+            }
+            IrStmt::BlockingAssign { rhs, .. } | IrStmt::NonBlockingAssign { rhs, .. } => {
+                if !is_const_expr(rhs) {
+                    return false;
+                }
+                saw_assign = true;
+            }
+            IrStmt::If { .. } | IrStmt::Case { .. } => return false,
+            _ => {}
+        }
+    }
+    saw_assign
+}
+
+/// Ekspresi yang seluruhnya konstanta (foldable saat elaborasi).
+fn is_const_expr(e: &IrExpr) -> bool {
+    match e {
+        IrExpr::Const(_) | IrExpr::FillLit(_) => true,
+        IrExpr::Concat(parts) => parts.iter().all(is_const_expr),
+        IrExpr::Replicate(_, inner) => is_const_expr(inner),
+        IrExpr::Cast { expr, .. } | IrExpr::Signed(expr) => is_const_expr(expr),
+        IrExpr::UnaryOp(_, inner) => is_const_expr(inner),
+        IrExpr::BinaryOp(_, a, b) => is_const_expr(a) && is_const_expr(b),
+        _ => false,
+    }
 }
 
 /// Kumpulkan sensitivity list dari expression AST (untuk always_comb).

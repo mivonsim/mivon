@@ -1,0 +1,109 @@
+use super::*;
+
+// REGRESI SYN-10: lowering SIR untuk elemen array (register file / RAM) dan
+// deteksi reset sinkron yang tidak boleh salah mengenali enable.
+//
+// Sebelumnya:
+//   - `rdata <= mem[addr]` → const 0 (ArrayIndex tidak di-lower, silent wrong)
+//   - `mem[addr] <= wdata` → SELURUH sinyal mem tertimpa RHS (index diabaikan)
+//   - `if (en) q <= d`     → dianggap reset sinkron (`rst=en`) di SIR
+// Sekarang: read = SHR+MASK, write = read-modify-write (SHL/NOT/AND/OR),
+// dan reset hanya dideteksi bila cabang true meng-assign konstanta.
+
+fn ir_of(src: &str) -> mivon_ir::IrDesign {
+    compile_str(src).expect("compile + elaborate")
+}
+
+const RF_SRC: &str = r#"
+module rf(input clk, input [1:0] addr, input [7:0] wdata, input we,
+          output reg [7:0] rdata);
+    reg [7:0] mem [0:3];
+    always @(posedge clk) if (we) mem[addr] <= wdata;
+    always @(posedge clk) rdata <= mem[addr];
+endmodule
+"#;
+
+#[test]
+fn array_index_read_lowers_to_shift_mask() {
+    let ir = ir_of(RF_SRC);
+    let out = mivon_sir::lower::lower(&ir);
+    assert!(
+        out.skipped.is_empty(),
+        "tidak boleh ada konstruk di-skip: {:?}",
+        out.skipped
+    );
+    let kinds: Vec<String> = out
+        .module
+        .nodes
+        .iter()
+        .map(|n| format!("{:?}", n.kind))
+        .collect();
+    assert!(
+        kinds.iter().any(|k| k == "Shr"),
+        "read elemen array harus memakai SHR: {:?}",
+        kinds
+    );
+    assert!(
+        kinds.iter().any(|k| k == "And"),
+        "read elemen array harus memakai mask AND: {:?}",
+        kinds
+    );
+}
+
+#[test]
+fn array_element_write_is_read_modify_write() {
+    let ir = ir_of(RF_SRC);
+    let out = mivon_sir::lower::lower(&ir);
+    let kinds: Vec<String> = out
+        .module
+        .nodes
+        .iter()
+        .map(|n| format!("{:?}", n.kind))
+        .collect();
+    for need in ["Shl", "Not", "And", "Or"] {
+        assert!(
+            kinds.iter().any(|k| k == need),
+            "write elemen array harus memakai {}: {:?}",
+            need,
+            kinds
+        );
+    }
+}
+
+#[test]
+fn enable_if_is_not_treated_as_sync_reset() {
+    let ir = ir_of(RF_SRC);
+    let out = mivon_sir::lower::lower(&ir);
+    for reg in &out.module.registers {
+        assert!(
+            reg.reset.is_none(),
+            "register '{}' tidak punya reset di source, tapi SIR menginfer {:?}",
+            reg.name.as_str(),
+            reg.reset
+        );
+    }
+}
+
+#[test]
+fn sync_reset_still_detected() {
+    let src = r#"
+module cnt(input clk, input rst, input [7:0] d, output reg [7:0] q);
+    always @(posedge clk) begin
+        if (rst) q <= 8'h00;
+        else q <= d;
+    end
+endmodule
+"#;
+    let ir = ir_of(src);
+    let out = mivon_sir::lower::lower(&ir);
+    let reg = out
+        .module
+        .registers
+        .iter()
+        .find(|r| r.name.as_str() == "q")
+        .expect("register q");
+    assert!(
+        reg.reset.is_some(),
+        "pola if (rst) q <= 0; else q <= d; harus terdeteksi reset sinkron"
+    );
+}

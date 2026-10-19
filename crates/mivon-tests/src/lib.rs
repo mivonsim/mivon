@@ -110,6 +110,8 @@ mod unit_scope_tests;
 mod named_sva_tests;
 #[cfg(test)]
 mod hier_lvalue_tests;
+#[cfg(test)]
+mod synth_sir_tests;
 
 // Guided structure-aware fuzzer (metode test fuzzing "tidak buta"):
 // grammar-aware generation + coverage feedback + differential oracle.

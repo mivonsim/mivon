@@ -10,7 +10,7 @@
 //! melaporkannya sebelum pipeline ini dipanggil. Konstruk yang masih lolos
 //! dicatat di `LowerResult.skipped` (honest: jangan diam-diam salah).
 
-use mivon_core::LogicVec;
+use mivon_core::{LogicVal, LogicVec};
 use mivon_ir::{
     BinaryIrOp, ClockEdge, IrDesign, IrExpr, IrLValue, IrStmt, Process, SignalId, UnaryIrOp,
 };
@@ -261,7 +261,52 @@ impl<'a> Builder<'a> {
                 }
                 IrStmt::BlockingAssign { lhs, rhs, .. }
                 | IrStmt::NonBlockingAssign { lhs, rhs, .. } => {
-                    if let Some((id, _w)) = lvalue_signal(lhs) {
+                    // Write ke ELEMEN array (`mem[i] <= v`) = read-modify-write:
+                    // hanya elemen terpilih berubah. Sebelumnya index diabaikan
+                    // dan seluruh sinyal tertimpa RHS (netlist salah diam-diam).
+                    let elem: Option<(SignalId, ValueId, usize)> = match lhs {
+                        IrLValue::ArrayIndex {
+                            sig_id,
+                            index,
+                            elem_width,
+                        } => {
+                            let iv = self.lower_expr(index);
+                            let ew = (*elem_width).max(1);
+                            let off = if ew == 1 {
+                                iv
+                            } else {
+                                let ewv = self.const_val(ew as u64, 32);
+                                self.node(SirNodeKind::Mul, vec![iv, ewv], 32)
+                            };
+                            Some((*sig_id, off, ew))
+                        }
+                        IrLValue::ArrayBitSelect {
+                            sig_id,
+                            index,
+                            elem_width,
+                            bit,
+                        } => {
+                            let iv = self.lower_expr(index);
+                            let ew = (*elem_width).max(1);
+                            let ewv = self.const_val(ew as u64, 32);
+                            let off = self.node(SirNodeKind::Mul, vec![iv, ewv], 32);
+                            let bv = self.lower_expr(bit);
+                            let off = self.node(SirNodeKind::Add, vec![off, bv], 32);
+                            Some((*sig_id, off, 1))
+                        }
+                        _ => None,
+                    };
+                    if let Some((id, off, ew)) = elem {
+                        let w = self.sig_width(id);
+                        let old = out
+                            .get(&id)
+                            .copied()
+                            .or_else(|| holds.get(&id).copied())
+                            .unwrap_or_else(|| self.const_zero(w));
+                        let v = self.lower_expr(rhs);
+                        let merged = self.lower_elem_write(id, off, ew, v, old);
+                        out.insert(id, merged);
+                    } else if let Some((id, _w)) = lvalue_signal(lhs) {
                         // Context rule SV: hasil di-fit ke lebar signal.
                         let v = self.lower_expr(rhs);
                         let v = self.fit(v, self.sig_width(id));
@@ -396,6 +441,37 @@ impl<'a> Builder<'a> {
                         self.const_zero(1)
                     }
                 }
+            }
+            // Array unpacked read `mem[i]` (register file / RAM read) —
+            // index konstan → SLICE statis; index runtime → barrel shift +
+            // mask (`(mem >> i*elem_width) & ((1<<elem_width)-1)`).
+            IrExpr::ArrayIndex {
+                sig_id,
+                index,
+                elem_width,
+            } => {
+                let w = self.sig_width(*sig_id);
+                let ew = (*elem_width).max(1);
+                let base = self.signal_value[*sig_id].unwrap_or_else(|| self.const_zero(w));
+                let idx_v = self.lower_expr(index);
+                if let Some(i) = self.const_u64(idx_v) {
+                    let lo = (i as usize).saturating_mul(ew);
+                    if lo + ew <= w {
+                        return self.slice_of(base, lo + ew - 1, lo);
+                    }
+                    return self.const_zero(ew);
+                }
+                let shift_w = w.max(32);
+                let ew_v = self.const_val(ew as u64, shift_w);
+                let off = self.node(SirNodeKind::Mul, vec![idx_v, ew_v], shift_w);
+                let shifted = self.node(SirNodeKind::Shr, vec![base, off], w);
+                let mask_lv = if ew >= 64 {
+                    LogicVec::fill(LogicVal::One, ew)
+                } else {
+                    LogicVec::from_u64((1u64 << ew) - 1, ew)
+                };
+                let mask = self.module.add_value(SirValue::Const(mask_lv));
+                self.node(SirNodeKind::And, vec![shifted, mask], ew)
             }
             IrExpr::Concat(parts) => {
                 let vals: Vec<ValueId> = parts.iter().map(|p| self.lower_expr(p)).collect();
@@ -568,6 +644,39 @@ impl<'a> Builder<'a> {
     fn slice_of(&mut self, base: ValueId, msb: usize, lsb: usize) -> ValueId {
         let w = msb.saturating_sub(lsb) + 1;
         self.node(SirNodeKind::Slice { msb, lsb }, vec![base], w)
+    }
+
+    /// Tulis `ew` bit pada `offset` di dalam sinyal `sig` tanpa mengubah bit
+    /// lain: `(old & ~(mask << off)) | ((v & mask) << off)`.
+    fn lower_elem_write(
+        &mut self,
+        sig: SignalId,
+        offset: ValueId,
+        ew: usize,
+        rhs: ValueId,
+        old: ValueId,
+    ) -> ValueId {
+        let w = self.sig_width(sig);
+        let v = self.fit(rhs, ew);
+        let v_ext = self.fit(v, w);
+        let placed = self.node(SirNodeKind::Shl, vec![v_ext, offset], w);
+        let mask_lv = if ew >= 64 {
+            LogicVec::fill(LogicVal::One, ew)
+        } else {
+            LogicVec::from_u64((1u64 << ew) - 1, ew)
+        };
+        let mask = self.module.add_value(SirValue::Const(mask_lv));
+        let mask_ext = self.fit(mask, w);
+        let shifted = self.node(SirNodeKind::Shl, vec![mask_ext, offset], w);
+        let inv = self.node(SirNodeKind::Not, vec![shifted], w);
+        let cleared = self.node(SirNodeKind::And, vec![old, inv], w);
+        self.node(SirNodeKind::Or, vec![cleared, placed], w)
+    }
+
+    /// Konstanta u64 dengan lebar tertentu.
+    fn const_val(&mut self, val: u64, width: usize) -> ValueId {
+        self.module
+            .add_value(SirValue::Const(LogicVec::from_u64(val, width.max(1))))
     }
 
     /// Konstanta nol (di-cache per lebar).
