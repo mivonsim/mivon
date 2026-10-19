@@ -138,7 +138,9 @@ impl<'r> Mutator<'r> {
         if source.is_empty() {
             return String::new();
         }
-        match self.rng.below(28) {
+        // below(27): semua 27 arm mutasi tertentu (0-26) terembrapa —
+        // dulu below(28) = 1/28 jatuh ke `_` = no-op kitroll.
+        match self.rng.below(27) {
             0 => self.splice_from_corpus(source, corpus),
             1 => self.replace_keyword(source),
             2 => self.delete_chunk(source),
@@ -175,7 +177,7 @@ impl<'r> Mutator<'r> {
             //    membuka jalur diagnostik baru yang garbage tak pernah picu ──
             25 => self.swap_operator(source),
             26 => self.duplicate_stmt(source),
-            _ => source.to_string(), // no-op
+            _ => source.to_string(), // tak terjangkau (0-26 penuh)
         }
     }
 
@@ -213,45 +215,65 @@ impl<'r> Mutator<'r> {
         let mut cands: Vec<(usize, usize)> = Vec::new();
         // Track komentar blok lintas-baris /* ... */.
         let mut in_block = false;
-        for (i, line) in source.lines().enumerate() {
+        // Offset berlari O(n) — dulu base-di-recompute per baris via
+        // .lines().take(i) = O(n²) (review T2: seed 2MB/50k baris ≈ 50GB
+        // byte walk × 4 mutasi/case = kampanye mendekati jebakan swap).
+        // split('\n') + phys: byte \r ikut dihitung — dulu offsets meleset
+        // (panic UTF-8 / swap salah posisi) di seed CRLF.
+        let mut base = 0usize;
+        for line in source.split('\n') {
+            let phys = line.len();
+            let line = line.strip_suffix('\r').unwrap_or(line);
             let t = line.trim_start();
-            if t.starts_with("`") || line.contains("\"") {
-                in_block = false;
+            // Directive / string literal → skip penuh (in_block tetap —
+            // dulu di-reset acak oleh baris blok berkutip.
+            if t.starts_with('`') || line.contains('"') {
+                base += phys + 1;
                 continue;
             }
-            // Scan prefix SEBELUM `//` (inline comment aman) + skip runtun
-            // dalam blok `/* ... */` (conservative: baris bermost marker)
-            // — temuan test: `module m; // a & b` dulu ikut ter-swap.
-            let scan = if in_block || t.starts_with("/*") {
-                ""
-            } else {
-                line.split("//").next().unwrap_or("")
-            };
-            if line.contains("/*") || line.contains("*/") {
-                in_block = line.contains("/*") && !line.contains("*/");
+            if in_block {
+                if line.contains("*/") {
+                    in_block = false;
+                }
+                base += phys + 1;
                 continue;
             }
-            let base: usize = source
-                .lines()
-                .take(i)
-                .map(|l| l.len() + 1)
-                .sum::<usize>();
+            // Scan prefix SEBELUM `//` (inline comment aman) dan SEBELUM
+            // `/*` — temuan test: `module m; // a & b` dulu ikut ter-swap.
+            let mut scan = line.split("//").next().unwrap_or("");
+            let open = scan.find("/*");
+            if let Some(open) = open {
+                scan = &scan[..open];
+                let rest = &line[open + 2..];
+                in_block = !rest.contains("*/");
+            }
             let lb = scan.as_bytes();
             let mut k = 0;
             while k < lb.len() {
-                let mut hit: Option<usize> = None;
+                let mut hit: Option<(usize, &'static str)> = None;
                 for op in OPS {
                     if scan[k..].starts_with(op) {
-                        hit = Some(op.len());
+                        hit = Some((op.len(), op));
                         break;
                     }
                 }
                 match hit {
-                    Some(len) => {
+                    Some((len, matched)) => {
                         // Tidak di dalam identifier: byte sebelum = alnum/_.
+                        let prev_byte = if k > 0 { lb[k - 1] } else { 0 };
+                        let next_byte = if k + len < lb.len() { lb[k + len] } else { 0 };
                         let before =
-                            k > 0 && (lb[k - 1].is_ascii_alphanumeric() || lb[k - 1] == b'_');
-                        if !before {
+                            prev_byte.is_ascii_alphanumeric() || prev_byte == b'_';
+                        // Guard tok: `+:`/`-:` step-range, `*::` import,
+                        // attribute `(*`/`*)`, dan jemp `*/` (comment).
+                        let is_pm = matched == "+" || matched == "-";
+                        let guard = (is_pm && next_byte == b':')
+                            || (matched == "*"
+                                && (next_byte == b':'
+                                    || prev_byte == b'('
+                                    || next_byte == b')'
+                                    || next_byte == b'/'));
+                        if !before && !guard {
                             cands.push((base + k, len));
                         }
                         k += len;
@@ -259,6 +281,7 @@ impl<'r> Mutator<'r> {
                     None => k += 1,
                 }
             }
+            base += phys + 1;
         }
         if cands.is_empty() {
             return source.to_string();
@@ -293,6 +316,10 @@ impl<'r> Mutator<'r> {
                     && !t.starts_with("//")
                     && !t.starts_with('*')
                     && !t.starts_with('`')
+                    // Guard ukuran: baris jumbo (hasil cluster duplicate_chunk)
+                    // didup → ledak >SIZE_CAP = evaluasi tetap jalan tapi buang
+                    // seluruh variasi mutasi (review T2). 8KB cukup utk statement.
+                    && l.len() <= 8192
             })
             .map(|(i, _)| i)
             .collect();
