@@ -1014,7 +1014,12 @@ fn detect_violation(output: &str) -> Option<String> {
     let violation_pats = [
         ("Assertion failed", "assertion failed"),
         ("assertion violation", "assertion violation"),
-        ("$fatal", "$fatal hit"),
+        // Engine $fatal (util.rs emit_severity) cetak "Fatal: msg (at loc)".
+        // Dulu pattern "$fatal" mentok substring — false positive: ringkasan
+        // module bernama `$fatal` ("Module '$fatal': 0 signals") dari seed
+        // mutasi `module $fatal` (bug_5fc00003132d_min) tertelan sbg
+        // guard_bypass. Kolon mencegah cocok nama-identifier.
+        ("Fatal: ", "fatal hit"),
     ];
     for (pat, desc) in violation_pats {
         if let Some(line) = output.lines().find(|l| l.contains(pat)) {
