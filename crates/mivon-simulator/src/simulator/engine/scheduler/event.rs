@@ -4,6 +4,7 @@ use crate::simulator::types::*;
 use mivon_core::diagnostics::DiagCode;
 use mivon_core::error::SimError;
 use mivon_ir::*;
+use parallel::ParallelWrite;
 use std::sync::Arc;
 
 /// Apakah sensitivity process terpenuhi oleh perubahan signal `changed`.
@@ -604,23 +605,45 @@ impl SimulationEngine {
     /// hasil paralel (dipakai saat ≥`min_processes_parallel` proses comb) bisa
     /// beda dari serial (ditemukan mivon-fuzz: EMI dead-code menambah 1 proses →
     /// melewati ambang → multi-driver wire berubah nilai → mismatch EMI palsu).
-    pub(crate) fn apply_parallel_writes(&mut self, writes: &[(SignalId, LogicVec)]) {
-        for (sig_id, val) in writes {
-            if let Some(info) = self.design.top.signals.get(*sig_id) {
-                if info.multi_driver
-                    && matches!(
-                        info.kind,
-                        SignalKind::Wire | SignalKind::Inout | SignalKind::Output
-                    )
-                {
+    /// PINCH-SEMANTICS (fuzz dag bug_0cb12a3dc00b / 63d353b8c78f): write
+    /// PARTIAL (`mid > 0` atau patch lebih sempit dari sinyal) = patch
+    /// slice `[start..start+len)` — di-apply sebagai overwrite slice
+    /// (mirror jalur serial RangeSelect, lvalue.rs:278), BUKAN full-width
+    /// resolve: dulu full-vec tail snapshot ikut di-resolve union dgn
+    /// X-initial → X menghancurkan bit non-target (dag Q=x vs default z).
+    /// Full-write (start==0, len==width): resolusi multi-driver tetap.
+    pub(crate) fn apply_parallel_writes(&mut self, writes: &[ParallelWrite]) {
+        for (sig_id, start, patch) in writes {
+            let info = self.design.top.signals.get(*sig_id);
+            let target_width = info.map(|i| i.width).unwrap_or(0);
+            let is_full = *start == 0 && patch.width >= target_width;
+            if !is_full {
+                // Patch slice — mirror serial RangeSelect: RMW lokal tanpa
+                // resolution multi-driver (hanya bit ter-patch yang berubah).
+                if *start < target_width {
+                    let mut cur = self.state.read_signal(*sig_id).clone();
+                    let len = patch.width.min(cur.width.saturating_sub(*start));
+                    for i in 0..len {
+                        cur.bits[start + i] =
+                            patch.bits.get(i).copied().unwrap_or(mivon_ir::LogicVal::X);
+                    }
+                    self.state.write_signal(*sig_id, cur);
+                }
+                continue;
+            }
+            if let Some(info) = info.filter(|i| i.multi_driver) {
+                if matches!(
+                    info.kind,
+                    SignalKind::Wire | SignalKind::Inout | SignalKind::Output
+                ) {
                     let current = self.state.read_signal(*sig_id).clone();
                     let resolved =
-                        crate::simulator::util::resolve_net_values(info.net_type, &current, val);
+                        crate::simulator::util::resolve_net_values(info.net_type, &current, patch);
                     self.state.write_signal(*sig_id, resolved);
                     continue;
                 }
             }
-            self.state.write_signal(*sig_id, val.clone());
+            self.state.write_signal(*sig_id, patch.clone());
         }
     }
 
@@ -871,7 +894,7 @@ impl SimulationEngine {
 
                 let eval_group = if needs_full {
                     let identity: Vec<Option<usize>> = (0..signal_count).map(Some).collect();
-                    let results: Vec<Result<Vec<(SignalId, LogicVec)>, SimError>> = group
+                    let results: Vec<Result<Vec<parallel::ParallelWrite>, SimError>> = group
                         .par_iter()
                         .map(|&pid| {
                             let use_packed = self.use_packed_eval;
@@ -941,7 +964,7 @@ impl SimulationEngine {
                         signal_count,
                         group.len()
                     );
-                    let results: Vec<Result<Vec<(SignalId, LogicVec)>, SimError>> = group
+                    let results: Vec<Result<Vec<parallel::ParallelWrite>, SimError>> = group
                         .par_iter()
                         .map(|&pid| {
                             let use_packed = self.use_packed_eval;

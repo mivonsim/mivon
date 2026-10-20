@@ -82,3 +82,65 @@ fn dag_parallel_serial_fallback_matches_default() {
          senyap lagi: {dag_v}"
     );
 }
+
+/// Baca nilai sinyal flat (post-flatten) sbg string bit MSB→LSB utk
+/// design dari source `src` dgn flag DAG on/off.
+fn run_signal_bits(src: &str, name: &str, use_dag: bool) -> String {
+    let design = compile_str(src).expect("design harus compile");
+    let mut engine = mivon_simulator::simulator::SimulationEngine::new(design, 100);
+    engine.use_dag_parallel = use_dag;
+    engine.run().expect("sim harus jalan");
+    let idx = engine
+        .design
+        .top
+        .signals
+        .iter()
+        .position(|s| s.name == name)
+        .unwrap_or_else(|| panic!("sinyal '{name}' harus ada di design flat"));
+    engine
+        .state
+        .read_signal(idx)
+        .bits
+        .iter()
+        .rev()
+        .map(|b| match b {
+            mivon_ir::LogicVal::Zero => '0',
+            mivon_ir::LogicVal::One => '1',
+            mivon_ir::LogicVal::X => 'x',
+            mivon_ir::LogicVal::Z => 'z',
+        })
+        .collect()
+}
+
+/// MINIMAL REPRO (fuzz bug_0cb12a3dc00b / bug_63d353b8c78f, kampanye
+/// sim 2026-10-19): submodule pasif (`assign out = m`, m masih X,
+/// tanpa stimulus) + 2 part-select assign ke `q` di parent. Divergen:
+/// default — q tetap kendali Z, DAG — q jadi x. Semantik LRM: out = m(X)
+/// → dout X → kedua slice q = X. Kedua jalur wajib identik.
+const PASSIVE_CHAIN_SRC: &str = r#"
+module mem_sub(out);
+  output [28:0] out;
+  reg [28:0] m;
+  assign out = m;
+endmodule
+
+module top;
+  wire [28:0] dout_lo;
+  wire [28:0] dout_hi;
+  wire [58:0] q;
+  mem_sub s_lo(.out(dout_lo));
+  mem_sub s_hi(.out(dout_hi));
+  assign q[57:29] = dout_hi;
+  assign q[28:0]  = dout_lo;
+endmodule
+"#;
+
+#[test]
+fn dag_vs_default_passive_slice_chain_identical() {
+    let def = run_signal_bits(PASSIVE_CHAIN_SRC, "dout_lo", false);
+    let dag = run_signal_bits(PASSIVE_CHAIN_SRC, "dout_lo", true);
+    assert_eq!(def, dag, "dout_lo beda antar jalur: default={def} dag={dag}");
+    let qd = run_signal_bits(PASSIVE_CHAIN_SRC, "q", false);
+    let qg = run_signal_bits(PASSIVE_CHAIN_SRC, "q", true);
+    assert_eq!(qd, qg, "q beda antar jalur: default={qd} dag={qg}");
+}

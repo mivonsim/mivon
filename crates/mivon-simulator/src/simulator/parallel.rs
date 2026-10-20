@@ -8,6 +8,17 @@ use mivon_ir::{
 };
 use std::sync::Arc;
 
+/// Satu item write paralel: `(SignalId, start_bit, patch)`.
+///
+/// PATCH, bukan full-vec: write khas lvalue partial (RangeSelect/BitSelect/
+/// ExprPartSelect/ArrayX) diganti patch `[start, start+len)` — nilai vec
+/// `len` bit. Dulu vec FULL-width (snapshot+patch) di-push; apply meresolusi
+/// union dgn X-initial → X menghancurkan slice driver lain → differential
+/// dag vs default (fuzz bug_0cb12a3dc00b / 63d353b8c78f). Full-write
+/// (lvalue Signal) keep start=0 + len=width → resolusi multi-driver
+/// tetap bekerja (bug_0366cd02200e).
+pub type ParallelWrite = (SignalId, usize, LogicVec);
+
 // Semantik packed-eval untuk jalur paralel (BUG FIX fuZZ): evaluator paralel
 // (SIM-28) memakai `eval_binary` (value.rs, pessimistic) sedangkan jalur
 // serial memakai `eval_binary_packed` (tabel LRM) saat `use_packed_eval` —
@@ -562,7 +573,7 @@ fn resolve_hier_signal(name: &str, sig_info: &[SignalInfo]) -> Option<usize> {
 pub fn evaluate_stmt_block_parallel(
     stmts: &[IrStmt],
     signals: &mut SignalView,
-    writes: &mut Vec<(SignalId, LogicVec)>,
+    writes: &mut Vec<ParallelWrite>,
     sig_info: &[SignalInfo],
 ) -> Result<(), SimError> {
     for stmt in stmts {
@@ -812,7 +823,7 @@ fn write_lvalue_simple(
     lvalue: &IrLValue,
     val: LogicVec,
     signals: &mut SignalView,
-    writes: &mut Vec<(SignalId, LogicVec)>,
+    writes: &mut Vec<ParallelWrite>,
     sig_info: &[SignalInfo],
 ) -> Result<(), SimError> {
     match lvalue {
@@ -836,7 +847,8 @@ fn write_lvalue_simple(
             // serial (fuzzer: traffic.mv).
             sanitize_for_2state(sig_info, *id, &mut resized);
             signals.set(*id, Arc::new(resized.clone()));
-            writes.push((*id, resized));
+            // Full-write: start=0, patch penuh — resolusi multi-driver tetap.
+            writes.push((*id, 0, resized));
         }
         IrLValue::RangeSelect(sig_id, msb, lsb) => {
             let (start, end) = if *msb > *lsb {
@@ -858,7 +870,17 @@ fn write_lvalue_simple(
             }
             sanitize_for_2state(sig_info, *sig_id, &mut existing);
             signals.set(*sig_id, Arc::new(existing.clone()));
-            writes.push((*sig_id, existing));
+            // PATCH (bukan full-vec): hanya slice [start..=end] — dulu full
+            // snapshot ikut di-push → apply union X-initial menghancurkan
+            // slice driver lain (fuzz dag vs default).
+            let end_eff = end.min(existing.width.saturating_sub(1));
+            if start <= end_eff {
+                let patch = LogicVec {
+                    width: end_eff - start + 1,
+                    bits: existing.bits[start..=end_eff].to_vec(),
+                };
+                writes.push((*sig_id, start, patch));
+            }
         }
         IrLValue::BitSelect(sig_id, idx) => {
             let mut existing = signals
@@ -870,7 +892,14 @@ fn write_lvalue_simple(
             }
             sanitize_for_2state(sig_info, *sig_id, &mut existing);
             signals.set(*sig_id, Arc::new(existing.clone()));
-            writes.push((*sig_id, existing));
+            // PATCH 1-bit pada posisi idx.
+            if *idx < existing.width {
+                let patch = LogicVec {
+                    width: 1,
+                    bits: vec![existing.bits[*idx]],
+                };
+                writes.push((*sig_id, *idx, patch));
+            }
         }
         IrLValue::ArrayIndex {
             sig_id,
@@ -891,7 +920,15 @@ fn write_lvalue_simple(
             }
             sanitize_for_2state(sig_info, *sig_id, &mut existing);
             signals.set(*sig_id, Arc::new(existing.clone()));
-            writes.push((*sig_id, existing));
+            // PATCH elemen: [start..start+elem_width).
+            let len = (*elem_width).min(existing.width.saturating_sub(start));
+            if len > 0 {
+                let patch = LogicVec {
+                    width: len,
+                    bits: existing.bits[start..start + len].to_vec(),
+                };
+                writes.push((*sig_id, start, patch));
+            }
         }
         IrLValue::ArrayRangeSelect {
             sig_id,
@@ -924,7 +961,21 @@ fn write_lvalue_simple(
             }
             sanitize_for_2state(sig_info, *sig_id, &mut existing);
             signals.set(*sig_id, Arc::new(existing.clone()));
-            writes.push((*sig_id, existing));
+            // PATCH elem range: [base+start..=base+end).
+            let end_eff = end
+                .min(existing.width.saturating_sub(1).saturating_sub(base))
+                .min(max_end);
+            if start <= end_eff {
+                let lo = base + start;
+                let len = end_eff - start + 1;
+                if lo + len <= existing.width {
+                    let patch = LogicVec {
+                        width: len,
+                        bits: existing.bits[lo..lo + len].to_vec(),
+                    };
+                    writes.push((*sig_id, lo, patch));
+                }
+            }
         }
         IrLValue::ArrayBitSelect {
             sig_id,
@@ -945,7 +996,14 @@ fn write_lvalue_simple(
             }
             sanitize_for_2state(sig_info, *sig_id, &mut existing);
             signals.set(*sig_id, Arc::new(existing.clone()));
-            writes.push((*sig_id, existing));
+            // PATCH 1-bit pada abs (ArrayBitSelect).
+            if abs < existing.width {
+                let patch = LogicVec {
+                    width: 1,
+                    bits: vec![existing.bits[abs]],
+                };
+                writes.push((*sig_id, abs, patch));
+            }
         }
         IrLValue::ExprPartSelect {
             sig_id,
@@ -965,7 +1023,15 @@ fn write_lvalue_simple(
             }
             sanitize_for_2state(sig_info, *sig_id, &mut existing);
             signals.set(*sig_id, Arc::new(existing.clone()));
-            writes.push((*sig_id, existing));
+            // PATCH part [start..start+width).
+            let len = (*width).min(existing.width.saturating_sub(start));
+            if len > 0 {
+                let patch = LogicVec {
+                    width: len,
+                    bits: existing.bits[start..start + len].to_vec(),
+                };
+                writes.push((*sig_id, start, patch));
+            }
         }
         IrLValue::Concat(items) => {
             // LRM 1800-2017 §10.7: assignment ke concat lvalue — RHS
@@ -1033,7 +1099,8 @@ fn write_lvalue_simple(
             };
             sanitize_for_2state(sig_info, id, &mut resized);
             signals.set(id, Arc::new(resized.clone()));
-            writes.push((id, resized));
+            // HierRef = full-write (start=0, patch penuh).
+            writes.push((id, 0, resized));
         }
         _ => {}
     }

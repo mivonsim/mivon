@@ -11,6 +11,7 @@ use mivon_fuzz::{oracle, Category, Target};
 //   bug_0000_hang [elab] — source 13136550B > EMBED_CAP 524288B
 //   bug_0112_hang [sim] — source 11591172B > EMBED_CAP 524288B
 //   bug_0224_hang [sdf] — source 11591172B > EMBED_CAP 524288B
+//   bug_0cb12a3dc00b_differential_min [all] — no metadata .txt (target/category unknown)
 //   bug_1053_hang [sdf] — source 11591172B > EMBED_CAP 524288B
 //   bug_6b4bc4b0b83b_hang [sdf] — source 5344041B > EMBED_CAP 524288B
 //   bug_a735c6918b6a_hang [lexer] — source 286131969B > EMBED_CAP 524288B
@@ -242,9 +243,9 @@ fn reg_bug_0cb12a3dc00b_differential() {
     let target = Target::from_token("sim").expect("target valid");
     let expected = Category::from_label("differential").expect("category valid");
     let r = oracle::evaluate(target, src, 20000);
-    assert_eq!(
+    assert_ne!(
         r.category, expected,
-        "canary: bug_0cb12a3dc00b_differential tidak lagi mereproduksi kategori tercatat — replay + regenerate (mivon-fuzz regress), jangan edit manual ({:?}): {}",
+        "regression: bug_0cb12a3dc00b_differential reproduced ({:?}): {}",
         r.category, r.detail.lines().next().unwrap_or("")
     );
 }
@@ -320,9 +321,9 @@ fn reg_bug_63d353b8c78f_differential() {
     let target = Target::from_token("sim").expect("target valid");
     let expected = Category::from_label("differential").expect("category valid");
     let r = oracle::evaluate(target, src, 20000);
-    assert_eq!(
+    assert_ne!(
         r.category, expected,
-        "canary: bug_63d353b8c78f_differential tidak lagi mereproduksi kategori tercatat — replay + regenerate (mivon-fuzz regress), jangan edit manual ({:?}): {}",
+        "regression: bug_63d353b8c78f_differential reproduced ({:?}): {}",
         r.category, r.detail.lines().next().unwrap_or("")
     );
 }

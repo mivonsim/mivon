@@ -10,13 +10,18 @@
 //! # Zero-Lock Design
 //!
 //! Setiap process layer di-evaluasi pada sinyal array sendiri-sendiri.
-//! Writes dikumpulkan sebagai `Vec<(SignalId, LogicVec)>` dan diterapkan
+//! Writes dikumpulkan sebagai `Vec<ParallelWrite>` (patch: id, start, vec
+//! slice) dan diterapkan
 //! sekuensial setelah semua process dalam layer selesai — lock-free karena
 //! tidak ada shared mutable state antar process dalam satu layer.
 
 use mivon_ir::*;
 use std::collections::HashSet;
 use std::sync::Arc;
+
+// Write item paralel = PATCH (SignalId, start, LogicVec slice) — bukan
+// full-vec. Lihat `parallel::ParallelWrite` (doc patch F-PIV) untuk motif.
+pub(crate) use crate::simulator::parallel::ParallelWrite;
 
 // ─── Signal Access Analysis ───
 
@@ -589,7 +594,7 @@ pub fn layer_to_string(layers: &[Vec<usize>]) -> String {
 pub fn evaluate_process_body(
     body: &[IrStmt],
     signals: &[Arc<LogicVec>],
-    writes: &mut Vec<(SignalId, LogicVec)>,
+    writes: &mut Vec<crate::simulator::parallel::ParallelWrite>,
     // For fill-lit width resolution, pass signal count as signal_ref
 ) -> Result<(), mivon_core::error::SimError> {
     // Reuse the existing parallel-safe evaluator. Per-process overlay kosong
@@ -615,20 +620,20 @@ pub fn evaluate_process_body(
 /// tanpa mutex/lock karena tidak ada shared mutable state.
 ///
 /// # Returns
-/// Kumpulan (SignalId, LogicVec) dari semua writes, siap diaplikasikan.
+/// Kumpulan patch (id, start, vec) dari semua writes, siap diaplikasikan.
 pub fn evaluate_layer_parallel(
     layer: &[usize],
     processes: &[Process],
     signals: &[Arc<LogicVec>],
-) -> Result<Vec<(SignalId, LogicVec)>, mivon_core::error::SimError> {
+) -> Result<Vec<ParallelWrite>, mivon_core::error::SimError> {
     use rayon::prelude::*;
 
     // Evaluate each process in the layer in parallel
     let identity: Vec<Option<usize>> = (0..signals.len()).map(Some).collect();
-    let results: Vec<Result<Vec<(SignalId, LogicVec)>, mivon_core::error::SimError>> = layer
+    let results: Vec<Result<Vec<ParallelWrite>, mivon_core::error::SimError>> = layer
         .par_iter()
         .map(
-            |pid| -> Result<Vec<(SignalId, LogicVec)>, mivon_core::error::SimError> {
+            |pid| -> Result<Vec<ParallelWrite>, mivon_core::error::SimError> {
                 if *pid >= processes.len() {
                     return Ok(Vec::new());
                 }
@@ -643,7 +648,7 @@ pub fn evaluate_layer_parallel(
                     Process::Sequential { body, .. } => body,
                 };
 
-                let mut writes: Vec<(SignalId, LogicVec)> = Vec::new();
+                let mut writes: Vec<ParallelWrite> = Vec::new();
                 let mut overlay = std::collections::HashMap::new();
                 let mut view =
                     crate::simulator::parallel::SignalView::new(signals, &identity, &mut overlay);
@@ -659,7 +664,7 @@ pub fn evaluate_layer_parallel(
         .collect();
 
     // Merge all writes
-    let mut all_writes: Vec<(SignalId, LogicVec)> = Vec::new();
+    let mut all_writes: Vec<ParallelWrite> = Vec::new();
     for result in results {
         let writes = result?;
         all_writes.extend(writes);
@@ -679,22 +684,23 @@ pub fn evaluate_bodies_parallel(
     body_map: &std::collections::HashMap<usize, Vec<IrStmt>>,
     signals: &[Arc<LogicVec>],
     sig_info: &[mivon_ir::SignalInfo],
-) -> Result<Vec<(SignalId, LogicVec)>, mivon_core::error::SimError> {
+) -> Result<Vec<ParallelWrite>, mivon_core::error::SimError> {
     use rayon::prelude::*;
 
     // SIM-28: per-process overlay kosong — tanpa clone seluruh sinyal.
     let identity: Vec<Option<usize>> = (0..signals.len()).map(Some).collect();
-    let results: Vec<Result<Vec<(SignalId, LogicVec)>, mivon_core::error::SimError>> = layer_pids
+    let results: Vec<Result<Vec<ParallelWrite>, mivon_core::error::SimError>> = layer_pids
         .par_iter()
         .map(
-            |&&pid| -> Result<Vec<(SignalId, LogicVec)>, mivon_core::error::SimError> {
+            |&&pid| -> Result<Vec<ParallelWrite>, mivon_core::error::SimError> {
                 let body = match body_map.get(&pid) {
                     Some(b) => b,
                     None => return Ok(Vec::new()),
                 };
 
-                let mut writes: Vec<(SignalId, LogicVec)> = Vec::new();
-                let mut overlay = std::collections::HashMap::new();
+                let mut writes: Vec<ParallelWrite> = Vec::new();
+                let mut overlay: std::collections::HashMap<SignalId, Arc<LogicVec>> =
+                    std::collections::HashMap::new();
                 let mut view =
                     crate::simulator::parallel::SignalView::new(signals, &identity, &mut overlay);
                 crate::simulator::parallel::evaluate_stmt_block_parallel(
@@ -708,7 +714,7 @@ pub fn evaluate_bodies_parallel(
         )
         .collect();
 
-    let mut all_writes: Vec<(SignalId, LogicVec)> = Vec::new();
+    let mut all_writes: Vec<ParallelWrite> = Vec::new();
     for result in results {
         let writes = result?;
         all_writes.extend(writes);
