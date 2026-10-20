@@ -113,9 +113,9 @@ pub fn record_keys(keys: &[String]) -> usize {
         return 0;
     }
     let m = LEDGER.get_or_init(|| std::sync::Mutex::new(CoverageLedger::load()));
-    let Ok(mut l) = m.lock() else {
-        return 0;
-    };
+    // Poison recovery: isi ledger tetap valid (flag saja) → key tetap dicatat,
+    // tidak hilang senyap (dulu return 0 = feedback mati sampai kampanye baru).
+    let mut l = m.lock().unwrap_or_else(|p| p.into_inner());
     let before = l.new_marks();
     let fresh = l.mark_new(keys).len();
     if fresh > 0 && l.new_marks() / 64 != before / 64 {
@@ -124,12 +124,11 @@ pub fn record_keys(keys: &[String]) -> usize {
     fresh
 }
 
-/// Paksa simpan ledger (dipanggil akhir kampanye).
+/// Paksa simpan ledger (dipanggil akhir kampanye). Poison recovery: isi
+/// tetap valid → save jalan, tidak gagal senyap.
 pub fn flush() {
     if let Some(m) = LEDGER.get() {
-        if let Ok(l) = m.lock() {
-            let _ = l.save();
-        }
+        let _ = m.lock().unwrap_or_else(|p| p.into_inner()).save();
     }
 }
 

@@ -807,6 +807,14 @@ fn eval_case(
     let mut agg = CaseAgg::empty();
     let mut rng = case_rng(cfg.seed, slot);
 
+    // Early-guard: stop sudah dilipat (worker lain memandang cap) → kasus
+    // ini TIDAK dievaluasi sama sekali — tanpa ini, jobs-1 worker menyisa
+    // menambah leak ≤ (jobs-1)×256MB setelah guard trip.
+    if oracle::leaked_watchdogs() >= oracle::WATCHDOG_LEAK_CAP {
+        agg.leak_cap_hit = true;
+        return agg;
+    }
+
     // Ambil seed nyata dari corpus via plan (100% — tanpa template
     // sintetis). `.mv` return RAW source, transpile setelah mutasi.
     let Some(&seed_idx) = plan.get(slot) else {
@@ -909,17 +917,24 @@ fn eval_case(
 
     let mut result = oracle::evaluate(cfg.target, &source, eval_timeout);
 
-    // Guard OOM thread bocor: tiap hang asli = worker 256MB tetap hidup.
-    // Cap tercapai → kasus ini masih dihitung, seed TIDAK di-mark ledger
-    // (kampanye berikutnya mengulang dgn replay-tenang penuh), workers stop.
+    // Guard OOM thread bocor: cap tercapai → kategori tetap dihitung
+    // (summary tak kehilangan kasus), tetapi seed TIDAK di-mark ledger,
+    // TANPA O6-scan/feedback/save — identik semantik serial lama (HEAD~1):
+    // kampanye berikutnya mengulang seed dgn replay-tenang + dismiss penuh.
     agg.leak_cap_hit = oracle::leaked_watchdogs() >= oracle::WATCHDOG_LEAK_CAP;
+    *agg.categories.entry(result.category).or_insert(0) += 1;
+    if agg.leak_cap_hit {
+        return agg;
+    }
 
     // Ledger: seed ini sudah dijamah kampanye (mark SETELAH evaluasi —
     // seed yang crash di tengah tetap dianggap belum selesai).
-    if let Ok(mut l) = ledger.lock() {
-        l.mark(&ledger_key);
-        agg.ledger_marked = true;
-    }
+    // Poison recovery: konten set tetap valid — mark jangan hilang senyap.
+    ledger
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .mark(&ledger_key);
+    agg.ledger_marked = true;
 
     // O6 utk jalur IN-PROCESS: scan detail utk pola KUAT HiddenBug.
     if !result.category.is_bug() {
@@ -939,11 +954,14 @@ fn eval_case(
             let _ = crate::feedback::save_interesting(&source);
         }
     }
-    *agg.categories.entry(result.category).or_insert(0) += 1;
 
     if result.category.is_bug() {
         let sig = result.signature();
-        let fresh = sigs.lock().map(|mut s| s.insert(sig)).unwrap_or(false);
+        // Poison recovery: isi set tetap valid (flag saja) → dedup tetap betul.
+        let fresh = sigs
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(sig);
         if fresh {
             // AUTO-DISMISS hang via replay tenang: replay dgn budget 6× —
             // tak selesai → hang asli (simpan sbg bug); selesai dgn kategori
@@ -1035,8 +1053,16 @@ fn run_single(cfg: FuzzConfig, corpus: &corpus::Corpus) -> FuzzReport {
         let mut seen = Vec::new();
         for &i in &candidates {
             let key = corpus.seed_at(i).map(crate::ledger::seed_key);
+            let seen_now = key
+                .as_ref()
+                .is_some_and(|k| {
+                    ledger
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .is_seen(k)
+                });
             match key {
-                Some(k) if ledger.lock().is_ok_and(|l| l.is_seen(&k)) => seen.push(i),
+                Some(_) if seen_now => seen.push(i),
                 _ => unseen.push(i),
             }
         }
@@ -1057,7 +1083,8 @@ fn run_single(cfg: FuzzConfig, corpus: &corpus::Corpus) -> FuzzReport {
 
     if jobs <= 1 {
         // ── Jalur serial (jalur lama) ──
-        for slot in 0..cfg.cases {
+        let cases = cfg.cases.min(seed_plan.len());
+        for slot in 0..cases {
             let agg = eval_case(&cfg, corpus, &seed_plan, slot, &ledger, &seen_sigs);
             if merge_case(
                 agg,
@@ -1074,13 +1101,14 @@ fn run_single(cfg: FuzzConfig, corpus: &corpus::Corpus) -> FuzzReport {
                 break;
             }
             if (slot + 1) % progress_every == 0 {
-                if let Ok(l) = ledger.lock() {
-                    let _ = l.save();
-                }
+                let _ = ledger
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .save();
                 eprint!(
                     "\r  [{}/{}] bugs: {} large: {}",
                     slot + 1,
-                    cfg.cases,
+                    cases,
                     results.len(),
                     large_evaluated
                 );
@@ -1151,9 +1179,10 @@ fn run_single(cfg: FuzzConfig, corpus: &corpus::Corpus) -> FuzzReport {
                 );
             }
             if merged % progress_every == 0 {
-                if let Ok(l) = ledger.lock() {
-                    let _ = l.save();
-                }
+                let _ = ledger
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .save();
                 eprint!(
                     "\r  [{}/{}] bugs: {} large: {}",
                     merged, cases, results.len(), large_evaluated
@@ -1165,10 +1194,12 @@ fn run_single(cfg: FuzzConfig, corpus: &corpus::Corpus) -> FuzzReport {
     if cfg.cases >= progress_every {
         eprintln!();
     }
-    if let Ok(l) = ledger.lock() {
-        if let Err(e) = l.save() {
-            eprintln!("  (ledger: gagal simpan: {e})");
-        }
+    if let Err(e) = ledger
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .save()
+    {
+        eprintln!("  (ledger: gagal simpan: {e})");
     }
     crate::feedback::flush();
     let (n_total, n_new) = ledger
@@ -1292,10 +1323,17 @@ fn bugdb_insert_entry(content: &str, entry: &str) -> String {
     content
 }
 
+/// Lock global append bugdb: read-modify-write sesudah applicant worker
+/// paralel — tanpa lock, rename terakhir menutin (entry bug hilang) atau
+/// penyimpsangan tulis `File::create` membuat pojok shared korup.
+static BUGDB_MTX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Append satu entry ke bug database (format lama dihormati; tulis atomik
 /// via temp+rename ala MICD). Gagal = diam (bug utama tetap ke-save ke .sv).
 fn append_bugdb(kind: &str, source: &str, detail: &str, iter: usize) {
     use std::io::Write as _;
+    // Poison recovery: konten tetap valid (flag saja) → lanjutkan.
+    let _guard = BUGDB_MTX.lock().unwrap_or_else(|p| p.into_inner());
     let path = crate::bugdb_path();
     let t = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
