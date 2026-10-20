@@ -480,6 +480,21 @@ pub fn run(cfg: FuzzConfig) -> FuzzReport {
         Target::All => {
             let mut merged = FuzzReport::default();
             for &target in Target::ALL {
+                // Guard OOM thread bocor: budget thread bocor SATU proses
+                // kampanye sudah habis di target sebelumnya → sisa target
+                // dilewati SEBELUM evaluasi (tanpa ini, tiap target tersisa
+                // masih mengevaluasi 1 kasus — bisa hang lagi = bocoran
+                // tambahan). Tanpa reset per-target: reset di awal tiap target
+                // akan melipatgandakan cap total = risiko OOM × jumlah target.
+                if oracle::leaked_watchdogs() >= oracle::WATCHDOG_LEAK_CAP {
+                    eprintln!(
+                        "\n  (guard: {} hang asli >= cap {} — target {:?} dilewati; budget thread bocor kampanye habis)",
+                        oracle::leaked_watchdogs(),
+                        oracle::WATCHDOG_LEAK_CAP,
+                        target
+                    );
+                    break;
+                }
                 let mut single_cfg = cfg.clone();
                 single_cfg.target = target;
                 let report = run_single(single_cfg, &corpus);
@@ -852,10 +867,18 @@ fn run_single(cfg: FuzzConfig, corpus: &corpus::Corpus) -> FuzzReport {
         let mut result = oracle::evaluate(cfg.target, &source, eval_timeout);
         // Guard OOM thread bocor: tiap hang asli = worker 256MB tetap hidup.
         // Cap tercapai → break kampanye bersih (ledger/bug tersimpan),
-        // bukan mati OOM tanpa laporan.
-        if oracle::leaked_watchdogs() > oracle::WATCHDOG_LEAK_CAP {
+        // bukan mati OOM tanpa laporan. `>=` — counter menunjuk hang-asli ke-N
+        // yang BARU menyebabkan N == cap (break persis saat thread bocor
+        // ke-cap-tercapai; `>` dulu meloloskan satu bocoran ekstra).
+        if oracle::leaked_watchdogs() >= oracle::WATCHDOG_LEAK_CAP {
+            // Kasus pemicu cap tetap terhitung di kategorinya — summary tidak
+            // kehilangan satu kasus terakhir. Sudah diteruskan: seed TIDAK
+            // di-mark ledger (di bawah) → kampanye berikutnya mengulanginya
+            // dgn replay-tenang + dismiss penuh; TIDAK disimpan sbg bug
+            // (belum lewat filter auto-dismiss — bisa saja noise).
+            *categories.entry(result.category).or_insert(0) += 1;
             eprintln!(
-                "\n  (guard: {} hang asli > cap {} — thread stack bocor 256MB/kasus; kampanye dihentikan bersih)",
+                "\n  (guard: {} hang asli >= cap {} — thread stack bocor 256MB/kasus; kampanye dihentikan bersih)",
                 oracle::leaked_watchdogs(),
                 oracle::WATCHDOG_LEAK_CAP
             );

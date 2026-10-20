@@ -158,10 +158,28 @@ where
                     source,
                 ),
                 Ok(r) => r,
-                Err(_) => {
-                    // Hang asli: worker tak mati (stack 256MB bocor) —
-                    // hitung; run_single break kampanye lewat cap.
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    // Hang asli: worker masih hidup setelah grace 2× — tak bisa
+                    // di-kill (stack 256MB tetap bocor). Hitung HANYA di sini
+                    // (Timeout = thread bocor); run_single break kampanye
+                    // lewat cap.
                     WATCHDOG_LEAKED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    mk(
+                        target,
+                        Oracle::O1NoCrash,
+                        Category::Hang,
+                        &format!(
+                            "hang > {} ms (grace 2× habis; worker dilanjutkan di background)",
+                            timeout_ms.saturating_mul(2)
+                        ),
+                        source,
+                    )
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    // Worker MATI saat grace (panic di luar catch_unwind — tx
+                    // terlepas tanpa hasil): thread sudah usai, TIDAK bocor
+                    // → bukan hang asli, TIDAK dihitung. Label Hang tetap
+                    // (perilaku lama disengaja tak diubah).
                     mk(
                         target,
                         Oracle::O1NoCrash,
@@ -3139,5 +3157,51 @@ mod scan_tests {
         w2.bits[0] = LogicVal::One;
         let _ = &mut w1;
         assert_ne!(fmt_sigval(&w1), fmt_sigval(&w2));
+    }
+}
+
+#[cfg(test)]
+mod watchdog_leak_tests {
+    use super::*;
+
+    /// Guard thread bocor: counter hanya bertambah pada HANG ASLI (grace 2×
+    /// habis, worker masih hidup). Worker selesai cepat / Slow → TIDAK
+    /// dihitung. Satu test sekuensial untuk kedua sisi karena counter
+    /// global-static (lintas test paralel bisa saling terkotori).
+    #[test]
+    fn watchdog_leak_counter_semantics() {
+        // 1) Worker selesai dalam budget → Ok, TANPA leak.
+        let before = leaked_watchdogs();
+        let ok_src = "module m; endmodule";
+        let r = run_with_watchdog(Target::Lexer, ok_src, 500, "fuzz-test-ok", |_| {
+            mk(
+                Target::Lexer,
+                Oracle::O1NoCrash,
+                Category::Ok,
+                "ok cepat",
+                ok_src,
+            )
+        });
+        assert_eq!(r.category, Category::Ok);
+        assert_eq!(
+            leaked_watchdogs(),
+            before,
+            "kasus selesai dalam budget tidak boleh menambah counter leak"
+        );
+
+        // 2) Worker tak pernah selesai (sleep-loop abadi, ~0 CPU) → hang asli
+        //    (grace 2× habis) → counter +1. Thread uji hidup sampai proses
+        //    test keluar — sleep murni, tanpa CPU.
+        let hang_r = run_with_watchdog(Target::Lexer, "hang", 50, "fuzz-test-hang", |_src| {
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(3600));
+            }
+        });
+        assert_eq!(hang_r.category, Category::Hang, "hang asli = kategori Hang");
+        assert_eq!(
+            leaked_watchdogs(),
+            before + 1,
+            "hang asli harus menambah counter leak tepat 1"
+        );
     }
 }
