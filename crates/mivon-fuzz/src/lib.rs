@@ -922,8 +922,10 @@ fn eval_case(
     // TANPA O6-scan/feedback/save — identik semantik serial lama (HEAD~1):
     // kampanye berikutnya mengulang seed dgn replay-tenang + dismiss penuh.
     agg.leak_cap_hit = oracle::leaked_watchdogs() >= oracle::WATCHDOG_LEAK_CAP;
-    *agg.categories.entry(result.category).or_insert(0) += 1;
     if agg.leak_cap_hit {
+        // Kasus pemicu cap: kategori (pra-O6) tetap dihitung lalu berhenti
+        // total — TANPA mark/O6/feedback/save (semantik serial lama).
+        *agg.categories.entry(result.category).or_insert(0) += 1;
         return agg;
     }
 
@@ -954,6 +956,9 @@ fn eval_case(
             let _ = crate::feedback::save_interesting(&source);
         }
     }
+    // Kategori dihitung SETELAH scan O6 (bisa upgrade HiddenBug/Degraded —
+    // summary harus mencerminkan kategori akhir, bukan kategori mentah).
+    *agg.categories.entry(result.category).or_insert(0) += 1;
 
     if result.category.is_bug() {
         let sig = result.signature();
