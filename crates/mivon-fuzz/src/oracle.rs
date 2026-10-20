@@ -7,6 +7,8 @@ use mivon_api::{
     simulate_signals_with_flags_quiet, simulate_signals_with_trace_quiet, EngineFlags,
 };
 
+use crate::feedback::ir_cov_keys;
+
 /// Evaluasi satu source terhadap target.
 ///
 /// Pendekatan: in-process melalui mivon-api (bukan subprocess), karena API
@@ -44,6 +46,7 @@ fn mk(
         oracle: oracle.as_str(),
         detail: detail.to_string(),
         source: source.to_string(),
+        cov_keys: Vec::new(),
     }
 }
 
@@ -259,35 +262,42 @@ fn compile_in_thread(target: Target, source: &str) -> CaseResult {
     };
 
     // Compile sukses — determinism check (O4): kompilasi ulang sama
-    let second = std::panic::catch_unwind(|| mivon_api::compile_str_quiet(source));
-    match second {
-        Ok(Ok(ir2)) => {
-            let diffs = mivon_api::compare_asts(&ir_design, &ir2);
-            if !diffs.is_empty() {
-                return mk(
+    // + coverage keys: kind proses/IR yang dicapai — feed balik corpus
+    // (dulu HANYA sim menyumbang keys → corpus evolusi buta per-target).
+    let keys = ir_cov_keys(&ir_design);
+    let mut result = {
+        let second = std::panic::catch_unwind(|| mivon_api::compile_str_quiet(source));
+        match second {
+            Ok(Ok(ir2)) => {
+                let diffs = mivon_api::compare_asts(&ir_design, &ir2);
+                if !diffs.is_empty() {
+                    return mk(
+                        target,
+                        Oracle::O4Determinism,
+                        Category::NonDeterministic,
+                        &format!("AST berbeda antar run ({} diffs)", diffs.len()),
+                        source,
+                    );
+                }
+                mk(
                     target,
-                    Oracle::O4Determinism,
-                    Category::NonDeterministic,
-                    &format!("AST berbeda antar run ({} diffs)", diffs.len()),
+                    Oracle::O1NoCrash,
+                    Category::Ok,
+                    "compile ok",
                     source,
-                );
+                )
             }
-            mk(
+            _ => mk(
                 target,
-                Oracle::O1NoCrash,
-                Category::Ok,
-                "compile ok",
+                Oracle::O4Determinism,
+                Category::NonDeterministic,
+                "compile kedua panic/error — non-deterministik",
                 source,
-            )
+            ),
         }
-        _ => mk(
-            target,
-            Oracle::O4Determinism,
-            Category::NonDeterministic,
-            "compile kedua panic/error — non-deterministik",
-            source,
-        ),
-    }
+    };
+    result.cov_keys = keys;
+    result
 }
 
 /// Fuzzing LEXER khusus (area belum tersentuh — target Lexer lama memakai
@@ -338,13 +348,21 @@ fn lex_eval(source: &str) -> CaseResult {
                     source,
                 );
             }
-            mk(
+            let mut result = mk(
                 Target::Lexer,
                 Oracle::O1NoCrash,
                 Category::Ok,
                 &format!("lexer ok ({} token)", t1.len()),
                 source,
-            )
+            );
+            // Keys coverage lexer: token-kind yang dicapai → corpus evolusi
+            // melihat input yang membuka kind baru (feed ke record_keys).
+            let mut kinds = std::collections::BTreeSet::new();
+            for (kind, _, _) in &t1 {
+                kinds.insert(format!("lex|t|{kind}"));
+            }
+            result.cov_keys = kinds.into_iter().collect();
+            result
         }
         (Err(_), _) | (_, Err(_)) => mk(
             Target::Lexer,

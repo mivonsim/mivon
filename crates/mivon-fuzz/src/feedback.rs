@@ -148,6 +148,75 @@ pub fn save_interesting(source: &str) -> Option<PathBuf> {
     Some(path)
 }
 
+// ── Coverage keys per-target (feed balik corpus evolusi) ─────────────────────
+//
+// Dulu HANYA jalur sim menyumbang keys (oracle.rs) — corpus tumbuh didorong
+// satu sinyal; lexer/parser/elab/fmt semua buta. Sekarang: hasil compile/
+// lex in-process juga mencongkir keys → input membuka set IR/token-kind baru
+// dianggap menarik → disimpan sbg seed kampanye berikutnya.
+
+/// Cap token per dump — anti besar tanpa batas (debug IR bisa 100k token).
+pub const COV_TOKEN_CAP: usize = 400;
+
+/// Token-konstruksi dari output `{:?}`: ident alnum awal-HURUF-BESAR yang
+/// menandai nama variant/konstruk (`BlockingAssign`, `IrExpr::Concat`, ...).
+/// Murni + deterministik — diuji.
+pub fn debug_cov_tokens(debug_str: &str) -> Vec<String> {
+    let mut set = std::collections::BTreeSet::new();
+    let bytes = debug_str.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() && set.len() < COV_TOKEN_CAP {
+        let b = bytes[i];
+        if b.is_ascii_alphabetic() {
+            // Ident dimulai huruf besar? Scan sampai non-ident.
+            let start = i;
+            let mut j = i;
+            while j < bytes.len() && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'_') {
+                j += 1;
+            }
+            if bytes[start].is_ascii_uppercase() && j - start >= 4 {
+                set.insert(debug_str[start..j].to_string());
+            }
+            i = j;
+        } else {
+            i += 1;
+        }
+    }
+    set.into_iter().collect()
+}
+
+/// Keys coverage dari IrDesign hasil compile in-process — menutupi kind
+/// proses/sinyal/hierarki/class yang dicapai input (top + semua modul).
+/// Token ditarik dari union seluruh dump (BTreeSet terurut → deterministik,
+/// order iterasi HashMap tak berefek; cap batasi di scanner).
+pub fn ir_cov_keys(ir: &mivon_ir::IrDesign) -> Vec<String> {
+    use std::fmt::Write as _;
+    let mut buf = String::new();
+    let mut modules_seen = 0usize;
+    buf.push_str(&debug_str_module(&ir.top));
+    modules_seen += 1;
+    for (_, m) in ir.modules.iter() {
+        buf.push_str(&debug_str_module(m));
+        modules_seen += 1;
+    }
+    let _ = write!(buf, "Modules{:?}", modules_seen); // key coarse jumlah modul
+    for cls in ir.classes.keys() {
+        buf.push_str(&format!("Class{:?}", cls));
+    }
+    let mut keys = Vec::new();
+    for tok in debug_cov_tokens(&buf) {
+        keys.push(format!("ir|k|{tok}"));
+    }
+    keys
+}
+
+/// Dump struktur satu module untuk token-kind coverage. Debug penuh IrModule
+/// (name/signals/processes/instances) — tidak menarik source_lines (itu di
+/// IrDesign, bukan module).
+fn debug_str_module(m: &mivon_ir::IrModule) -> String {
+    format!("{m:?}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -170,5 +239,47 @@ mod tests {
             "persisten antar load"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn debug_cov_tokens_upper_variants_only() {
+        let toks = debug_cov_tokens("BlockingAssign { hmac: IrExpr::Concat(..), Other(x) lowercase: keep_out }");
+        assert!(toks.iter().any(|t| t == "BlockingAssign"), "{toks:?}");
+        assert!(toks.iter().any(|t| t == "Concat"), "{toks:?}");
+        assert!(toks.iter().any(|t| t == "IrExpr"), "{toks:?}");
+        assert!(!toks.iter().any(|t| t == "hmac"), "huruf kecil = bukan token: {toks:?}");
+        assert!(!toks.iter().any(|t| t == "keep"), "huruf kecil lain = bukan token: {toks:?}");
+    }
+
+    #[test]
+    fn debug_cov_tokens_cap_keeps_sorted_prefix() {
+        let mut s = String::new();
+        for i in 0..1000 {
+            s.push_str(&format!("Big{:04} tiny{} ", i, i));
+        }
+        let toks = debug_cov_tokens(&s);
+        assert_eq!(toks.len(), COV_TOKEN_CAP, "cap ditegakkan");
+        // Terurut + deterministik: run kedua sama.
+        assert_eq!(toks, debug_cov_tokens(&s));
+    }
+
+    /// REGRESI corpus-evolution gap: IR design valid wajib menyumbang keys —
+    /// dulu jalur compile TIDAK mem-feed `record_keys` (hanya sim), corpus
+    /// tumbuh asimetris.
+    #[test]
+    fn ir_cov_keys_nonempty_on_small_design() {
+        let ir = mivon_api::compile_str_quiet(
+            "module kp(input logic a, output logic b);\n  assign b = ~a;\nendmodule\n",
+        )
+        .expect("compile");
+        let keys = ir_cov_keys(&ir);
+        assert!(!keys.is_empty(), "harus ada keys");
+        assert!(keys.iter().all(|k| k.starts_with("ir|k|")), "{:?}", &keys[..keys.len().min(8)]);
+        // Deterministik: two calls sama.
+        let ir2 = mivon_api::compile_str_quiet(
+            "module kp(input logic a, output logic b);\n  assign b = ~a;\nendmodule\n",
+        )
+        .expect("compile");
+        assert_eq!(keys, ir_cov_keys(&ir2), "keys deterministik antar run");
     }
 }

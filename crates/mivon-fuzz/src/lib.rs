@@ -299,6 +299,12 @@ pub struct CaseResult {
     pub oracle: &'static str,
     pub detail: String,
     pub source: String,
+    /// Keys coverage hasil evaluasi (`ir|k|*`, `lex|t|*`, sim pakai
+    /// engine-coverage sendiri). Kosong = target tak menyumbang.
+    /// Diproses `run_single` via `feedback::record_keys` → input
+    /// baru-menarik disimpan sbg seed tumbuh. Dulu HANYA jalur sim
+    /// menyumbang — corpus tumbuh asimetris, target lain buta sinyal.
+    pub cov_keys: Vec<String>,
 }
 
 impl CaseResult {
@@ -860,6 +866,16 @@ fn run_single(cfg: FuzzConfig, corpus: &corpus::Corpus) -> FuzzReport {
                 }
             }
         }
+        // Feed balik coverage keys penyumbang oracle (compile/lexer in-process;
+        // sim merekam sendiri via cov engine). Key baru → simpan input sbg
+        // seed tumbuh → kampanye berikutnya memberi perhatian pada jalur yang
+        // MENGUNJAKAN kind IR/token baru, semua target (Bukan hanya sim).
+        if !result.cov_keys.is_empty() {
+            let fresh = crate::feedback::record_keys(&result.cov_keys);
+            if fresh > 0 && source.len() <= crate::feedback::INTERESTING_MAX_BYTES {
+                let _ = crate::feedback::save_interesting(&source);
+            }
+        }
         *categories.entry(result.category).or_insert(0) += 1;
 
         if result.category.is_bug() {
@@ -1112,6 +1128,7 @@ mod bugdb_tests {
             oracle: "O5-differential",
             detail: detail.to_string(),
             source: "module x; endmodule".to_string(),
+            cov_keys: Vec::new(),
         }
     }
 

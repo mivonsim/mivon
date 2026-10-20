@@ -327,6 +327,7 @@ fn cmd_triage(args: &[String]) -> i32 {
                     .unwrap_or("")
                     .to_string(),
                 source,
+                cov_keys: Vec::new(),
             });
         }
     } else {
@@ -802,6 +803,7 @@ fn cmd_report(args: &[String]) -> i32 {
                 oracle: "manual",
                 detail: String::new(),
                 source,
+                cov_keys: Vec::new(),
             });
         }
     }
