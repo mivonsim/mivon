@@ -264,7 +264,14 @@ fn compile_in_thread(target: Target, source: &str) -> CaseResult {
     // Compile sukses — determinism check (O4): kompilasi ulang sama
     // + coverage keys: kind proses/IR yang dicapai — feed balik corpus
     // (dulu HANYA sim menyumbang keys → corpus evolusi buta per-target).
-    let keys = ir_cov_keys(&ir_design);
+    // Gate ukuran: render debug IR bisa 5-10× ukuran source; di atas batas
+    // seed tumbuh (INTERESTING_MAX_BYTES) keys tak tersimpan → skip demi
+    // budget watchdog (render + compile-2 + compare_asts satu recv_timeout).
+    let keys = if source.len() <= crate::feedback::INTERESTING_MAX_BYTES {
+        ir_cov_keys(&ir_design)
+    } else {
+        Vec::new()
+    };
     let mut result = {
         let second = std::panic::catch_unwind(|| mivon_api::compile_str_quiet(source));
         match second {

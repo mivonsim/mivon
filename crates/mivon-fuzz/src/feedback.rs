@@ -174,7 +174,7 @@ pub fn debug_cov_tokens(debug_str: &str) -> Vec<String> {
             while j < bytes.len() && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'_') {
                 j += 1;
             }
-            if bytes[start].is_ascii_uppercase() && j - start >= 4 {
+            if bytes[start].is_ascii_uppercase() && j - start >= 2 {
                 set.insert(debug_str[start..j].to_string());
             }
             i = j;
@@ -187,21 +187,26 @@ pub fn debug_cov_tokens(debug_str: &str) -> Vec<String> {
 
 /// Keys coverage dari IrDesign hasil compile in-process — menutupi kind
 /// proses/sinyal/hierarki/class yang dicapai input (top + semua modul).
-/// Token ditarik dari union seluruh dump (BTreeSet terurut → deterministik,
-/// order iterasi HashMap tak berefek; cap batasi di scanner).
+/// Token ditarik dari union seluruh dump (BTreeSet terurut → deterministik;
+/// modul/class diurut by name sehingga TRUNCATION cap-400-antara-run juga
+/// identik — urutan iterasi HashMap berbeda antar proses).
 pub fn ir_cov_keys(ir: &mivon_ir::IrDesign) -> Vec<String> {
     use std::fmt::Write as _;
     let mut buf = String::new();
-    let mut modules_seen = 0usize;
-    buf.push_str(&debug_str_module(&ir.top));
-    modules_seen += 1;
-    for (_, m) in ir.modules.iter() {
-        buf.push_str(&debug_str_module(m));
-        modules_seen += 1;
+    // Coarse key DULUAN — tak terpotong cap bila dump modul raksasa
+    // menghabiskan kuota 400 token.
+    let _ = write!(buf, "Modules{:?}", ir.modules.len() + 1); // top + map
+    let mut classes: Vec<_> = ir.classes.keys().collect();
+    classes.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+    for cls in classes {
+        buf.push_str("Class");
+        buf.push_str(cls.as_str()); // Display — Debug Symbol = index intern proses-lokal
     }
-    let _ = write!(buf, "Modules{:?}", modules_seen); // key coarse jumlah modul
-    for cls in ir.classes.keys() {
-        buf.push_str(&format!("Class{:?}", cls));
+    buf.push_str(&debug_str_module(&ir.top));
+    let mut mods: Vec<_> = ir.modules.iter().collect();
+    mods.sort_by(|(a, _), (b, _)| a.as_str().cmp(b.as_str()));
+    for (_, m) in mods {
+        buf.push_str(&debug_str_module(m));
     }
     let mut keys = Vec::new();
     for tok in debug_cov_tokens(&buf) {
