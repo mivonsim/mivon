@@ -34,7 +34,23 @@ impl Elaborator {
         if super::super::util::contains_signal_ref(expr, signal_map) {
             return Ok(None);
         }
-        let folded = super::super::util::try_fold_const(expr, &self.param_vals)?;
+        let folded = match super::super::util::try_fold_const(expr, &self.param_vals) {
+            Ok(f) => f,
+            // Fuzz regress bug_4dcdecaac736 (kampanye parser, oracle O2):
+            // div/mod-nol di const-fold dulu jadi Err hard → E9001 TANPA
+            // lokasi (String const_eval tak membawa span; konversi SimError
+            // di atas kehilangan posisi). Fold = OPTIMASI — kegagalannya
+            // tidak boleh mematikan elaborasi ekspresi. §11.6.1: div/mod
+            // dengan 0 hasil X di runtime; evaluator runtime (value.rs)
+            // sudah menangani r==0 → X. Biarkan unfolded (None).
+            Err(e)
+                if e.contains("division by zero in constant expression")
+                    || e.contains("modulo by zero in constant expression") =>
+            {
+                None
+            }
+            Err(e) => return Err(e),
+        };
         if let Some(IrExpr::Const(lv)) = &folded {
             self.opt_stats
                 .record_const_fold(format!("{:?}", expr), lv.to_u64() as i64);

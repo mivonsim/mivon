@@ -295,9 +295,9 @@ fn reg_bug_4dcdecaac736_diag_missing() {
     let target = Target::from_token("parser").expect("target valid");
     let expected = Category::from_label("diag_missing").expect("category valid");
     let r = oracle::evaluate(target, src, 20000);
-    assert_eq!(
+    assert_ne!(
         r.category, expected,
-        "canary: bug_4dcdecaac736_diag_missing tidak lagi mereproduksi kategori tercatat — replay + regenerate (mivon-fuzz regress), jangan edit manual ({:?}): {}",
+        "regression: bug_4dcdecaac736_diag_missing reproduced ({:?}): {}",
         r.category, r.detail.lines().next().unwrap_or("")
     );
 }

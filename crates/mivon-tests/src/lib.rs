@@ -73,6 +73,11 @@ mod syscall_noargs_tests;
 #[cfg(test)]
 mod const_fold_xz_power_tests;
 
+/// Regresi div/mod-nol const-fold (fuzz bug_4dcdecaac736) — bukan fatal,
+/// hasil runtime X (§11.6.1).
+#[cfg(test)]
+mod const_fold_divmod_zero_tests;
+
 /// `timescale` per-module (LRM §19.8) — `#N` harus pakai satuan module itu,
 /// bukan satuan global design.
 #[cfg(test)]
