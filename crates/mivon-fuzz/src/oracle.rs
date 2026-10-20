@@ -97,6 +97,19 @@ fn is_global_error(msg: &str) -> bool {
 /// satu loop tak-berujung di lexer/preproc/transpile menghentikan kampanye
 /// selamanya tanpa baris progres — progres kampanye sempat hilang total dan
 /// hanya ketahuan dari CPU 100% satu thread.
+///
+/// Guard OOM: tiap worker hang-yang-dibiarkan hidup menahan stack 256MB.
+/// Hitung; `run_single` break kampanye lewat WATCHDOG_LEAK_CAP.
+static WATCHDOG_LEAKED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// Cap kasus hang asli per proses kampanye: inertnya, kampanye break —
+/// tanpa guard, kampanye banyak-hang = OOM linear (N × 256MB stack bocor).
+pub const WATCHDOG_LEAK_CAP: u32 = 24;
+
+pub fn leaked_watchdogs() -> u32 {
+    WATCHDOG_LEAKED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 fn run_with_watchdog<F>(
     target: Target,
     source: &str,
@@ -145,16 +158,21 @@ where
                     source,
                 ),
                 Ok(r) => r,
-                Err(_) => mk(
-                    target,
-                    Oracle::O1NoCrash,
-                    Category::Hang,
-                    &format!(
-                        "hang > {} ms (grace 2× habis; worker dilanjutkan di background)",
-                        timeout_ms.saturating_mul(2)
-                    ),
-                    source,
-                ),
+                Err(_) => {
+                    // Hang asli: worker tak mati (stack 256MB bocor) —
+                    // hitung; run_single break kampanye lewat cap.
+                    WATCHDOG_LEAKED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    mk(
+                        target,
+                        Oracle::O1NoCrash,
+                        Category::Hang,
+                        &format!(
+                            "hang > {} ms (grace 2× habis; worker dilanjutkan di background)",
+                            timeout_ms.saturating_mul(2)
+                        ),
+                        source,
+                    )
+                }
             }
         }
         Err(_) => mk(

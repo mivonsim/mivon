@@ -850,6 +850,17 @@ fn run_single(cfg: FuzzConfig, corpus: &corpus::Corpus) -> FuzzReport {
         };
 
         let mut result = oracle::evaluate(cfg.target, &source, eval_timeout);
+        // Guard OOM thread bocor: tiap hang asli = worker 256MB tetap hidup.
+        // Cap tercapai → break kampanye bersih (ledger/bug tersimpan),
+        // bukan mati OOM tanpa laporan.
+        if oracle::leaked_watchdogs() > oracle::WATCHDOG_LEAK_CAP {
+            eprintln!(
+                "\n  (guard: {} hang asli > cap {} — thread stack bocor 256MB/kasus; kampanye dihentikan bersih)",
+                oracle::leaked_watchdogs(),
+                oracle::WATCHDOG_LEAK_CAP
+            );
+            break;
+        }
         // Ledger: seed ini sudah dijamah kampanye (mark SETELAH evaluasi —
         // seed yang crash di tengah tetap dianggap belum selesai).
         ledger.mark(&ledger_key);
