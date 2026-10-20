@@ -498,6 +498,26 @@ pub fn run(cfg: FuzzConfig) -> FuzzReport {
                 let mut single_cfg = cfg.clone();
                 single_cfg.target = target;
                 let report = run_single(single_cfg, &corpus);
+                // Ringkasan real-time per target: dulu hanya muncul di AKHIR
+                // run() seluruh 14 target → triage antar-wake tidak melihat
+                // target mana yang menghasilkan bug tanpa menunggu selesai.
+                for s in &report.summaries {
+                    let mut parts: Vec<String> = s
+                        .categories
+                        .iter()
+                        .map(|(c, n)| format!("{}={}", c.label(), n))
+                        .collect();
+                    parts.sort();
+                    eprintln!(
+                        "[{}] total={} bugs={} large={} dismissed={} :: {}",
+                        s.target.as_str(),
+                        s.total,
+                        s.bugs,
+                        s.large_evaluated,
+                        s.dismissed_hangs,
+                        parts.join(" ")
+                    );
+                }
                 merged.bugs.extend(report.bugs);
                 merged.summaries.extend(report.summaries);
             }
