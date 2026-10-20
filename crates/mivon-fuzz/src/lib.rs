@@ -343,6 +343,11 @@ pub struct FuzzConfig {
     pub timeout_ms: u64,
     pub corpus_dir: Option<PathBuf>,
     pub save_bugs: bool,
+    /// Jumlah worker paralel. `0` = auto (cores/2, clamp 1-8), `1` = serial
+    /// (jalur lama), `N>1` = N worker (`--jobs N`). RNG per-kasus
+    /// deterministik (`case_rng(seed, slot)`) — hasil TIDAK tergantung
+    /// jadwal worker; permutasi urutan eksekusi tak mengubah hasil.
+    pub jobs: usize,
 }
 
 impl Default for FuzzConfig {
@@ -359,8 +364,32 @@ impl Default for FuzzConfig {
             timeout_ms: 5000,
             corpus_dir: None,
             save_bugs: true,
+            jobs: 0,
         }
     }
+}
+
+/// Resolusi jumlah worker: `0` = auto = cores/2 clamp 1-8 (kompromi —
+/// evaluator in-process CPU-bound penuh di watchdog thread; oversubscribe
+/// 1:1 membuat semua worker lambat + false-hang grace; subprocess target
+/// toleran tapi tak dipilih kasus-demi-kasus), `1` = serial, `N` = N worker.
+pub fn case_jobs(jobs: usize) -> usize {
+    match jobs {
+        0 => std::thread::available_parallelism()
+            .map(|n| n.get().saturating_div(2))
+            .unwrap_or(1)
+            .clamp(1, 8),
+        n => n.max(1),
+    }
+}
+
+/// RNG per-kasus deterministik: setiap slot kasus punya stream sendiri
+/// (seed XOR splitmix(slot)) — hasil kampanye identik serial vs paralel,
+/// jadwal worker tak boleh mengubah mutasi/evaluasi mana pun.
+pub fn case_rng(seed: u64, slot: usize) -> Rng {
+    let mut m = seed ^ 0x9E3779B97F4A7C15;
+    m = m.wrapping_add((slot as u64).wrapping_mul(0xD1B54A32D192ED03));
+    Rng::new(m)
 }
 
 /// Ringkasan per target.
@@ -731,20 +760,251 @@ pub(crate) fn build_prioritized_plan(
     plan
 }
 
+/// Agregat hasil satu kasus — nilainya (diratakan lintas worker; dulu
+/// mutasi langsung variabel loop).
+struct CaseAgg {
+    bugs: Vec<CaseResult>,
+    categories: std::collections::BTreeMap<Category, usize>,
+    large_evaluated: usize,
+    dismissed_hangs: usize,
+    ledger_marked: bool,
+    /// Guard thread-bocor tercapai di kasus INI → pengulang kampanye
+    /// (main loopBreak/stop workers).
+    leak_cap_hit: bool,
+}
+
+impl CaseAgg {
+    fn empty() -> Self {
+        Self {
+            bugs: Vec::new(),
+            categories: std::collections::BTreeMap::new(),
+            large_evaluated: 0,
+            dismissed_hangs: 0,
+            ledger_marked: false,
+            leak_cap_hit: false,
+        }
+    }
+}
+
+/// State worker-pool shared (Arc) — penjemput slot atomik + stop flag guard.
+struct Pool {
+    next: std::sync::atomic::AtomicUsize,
+    stop: std::sync::atomic::AtomicUsize,
+}
+
+/// Evaluasi SATU slot kasus — pipeline identik untuk jalur serial & worker
+/// paralel (dulu satu blok loop ~200 baris; ekstraksi = prasyarat
+/// paralelizasi TANPA duplikat semantik). Deterministik: RNG stream
+/// `case_rng(cfg.seed, slot)` — jadwal worker tak mengubah mutasi/eval.
+fn eval_case(
+    cfg: &FuzzConfig,
+    corpus: &corpus::Corpus,
+    plan: &[usize],
+    slot: usize,
+    ledger: &std::sync::Mutex<crate::ledger::SeedLedger>,
+    sigs: &std::sync::Mutex<std::collections::HashSet<String>>,
+) -> CaseAgg {
+    let mut agg = CaseAgg::empty();
+    let mut rng = case_rng(cfg.seed, slot);
+
+    // Ambil seed nyata dari corpus via plan (100% — tanpa template
+    // sintetis). `.mv` return RAW source, transpile setelah mutasi.
+    let Some(&seed_idx) = plan.get(slot) else {
+        return agg;
+    };
+    let Some(base_seed) = corpus.seed_by_index(seed_idx) else {
+        return agg;
+    };
+    let is_mv = base_seed.is_mv;
+    // Kunci ledger seed ini (path|size|mtime) — ditandai setelah evaluasi.
+    let ledger_key = crate::ledger::seed_key(&base_seed.path);
+
+    // Siapkan base source:
+    //   .sv + tb_pair → concat modul+tb
+    //   lainnya → mentah (terhitung .mv juga — mutasi menyentuh .mv)
+    let mut base_source = if !is_mv {
+        let is_tb = base_seed
+            .path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .map(|n| n.starts_with("tb_"))
+            .unwrap_or(false);
+        if is_tb {
+            combine_tb_with_module(&base_seed.path, &base_seed.text, corpus)
+        } else {
+            base_seed.text.clone()
+        }
+    } else {
+        // MV: simpan raw; transpile terjadi SETELAH mutasi
+        base_seed.text.clone()
+    };
+
+    // Source raksasa: JANGAN di-skip. Mutasi PENUH dimatikan
+    // (`duplicate_chunk`/splice bisa meledak 267MB → false hang massal),
+    // TAPI 1x mutasi RINGAN tak-pengembang tetap jalan (dulu n_mut=0 =
+    // dievaluasi mentah tanpa variasi = coverage gap).
+    let is_large = base_source.len() > SIZE_CAP;
+    if is_large {
+        let mut mutator = mutator::Mutator::new(&mut rng);
+        base_source = mutator.mutate_light(&base_source, corpus);
+    } else {
+        let n_mut = rng.below(5);
+        let mut mutator = mutator::Mutator::new(&mut rng);
+        for _ in 0..n_mut {
+            base_source = mutator.mutate(&base_source, corpus);
+        }
+    }
+
+    // Directed mutation: 30% kasus — serangan terarah SETELAH mutasi acak
+    // (dilewati bila source raksasa, demi cegah blowup).
+    if !is_large && rng.chance(30) {
+        let mut dir = directed::DirectedMutator::new(&mut rng);
+        base_source = dir.mutate(&base_source);
+    }
+
+    // CLAMP pasca-mutasi: rangkaian `duplicate_chunk`/splice pada seed
+    // hampir-2MB bisa meledak puluhan MB (terukur: swap-thrash mesin
+    // 7GB, kampanye merayap). Source hasil mutasi > SIZE_CAP → evaluasi
+    // versi light (tak berkembang) — tetap ada variasi, tanpa blowup.
+    if !is_large && base_source.len() > SIZE_CAP {
+        let mut clamp = mutator::Mutator::new(&mut rng);
+        base_source = clamp.mutate_light(&base_source, corpus);
+    }
+
+    // MV → transpile mutated MV ke SV sebelum evaluasi — KECUALI target
+    // Mv: `evaluate_mv` mengharap source MV mentah (dia yang mentranspile
+    // di dalam untuk cek determinisme + output parseable). Transpile di
+    // sini membuat SV di-feed balik ke transpiler MV → 100% case jadi
+    // "transpile error" (clean_error=2000/2000, kampanye MV tak berguna).
+    let source = if is_mv && cfg.target != Target::Mv {
+        let base_name = base_seed
+            .path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("design")
+            .to_string();
+        corpus::transpile_mv_string(&base_source, &base_name).unwrap_or_else(|_| {
+            // Transpile gagal (mutasi merusak sintaks MV) — jadikan
+            // placeholder error-clean agar tak terhitung sebagai bug.
+            "// mv transpile failed\nmodule fz_mv_transpile_err; endmodule".to_string()
+        })
+    } else {
+        base_source
+    };
+
+    // Env hook: tulis source pre-eval untuk repro
+    if let Ok(trace_path) = std::env::var("MIVON_FUZZ_TRACE") {
+        let _ = std::fs::write(&trace_path, &source);
+    }
+
+    // Source raksasa: TIDAK di-skip. Evaluasi dgn budget waktu lebih
+    // longgar (parse/elab source besar butuh waktu lebih) agar tak
+    // salah digolongkan hang.
+    let eval_timeout = if source.len() > SIZE_CAP {
+        agg.large_evaluated += 1;
+        cfg.timeout_ms.saturating_mul(4)
+    } else {
+        cfg.timeout_ms
+    };
+
+    let mut result = oracle::evaluate(cfg.target, &source, eval_timeout);
+
+    // Guard OOM thread bocor: tiap hang asli = worker 256MB tetap hidup.
+    // Cap tercapai → kasus ini masih dihitung, seed TIDAK di-mark ledger
+    // (kampanye berikutnya mengulang dgn replay-tenang penuh), workers stop.
+    agg.leak_cap_hit = oracle::leaked_watchdogs() >= oracle::WATCHDOG_LEAK_CAP;
+
+    // Ledger: seed ini sudah dijamah kampanye (mark SETELAH evaluasi —
+    // seed yang crash di tengah tetap dianggap belum selesai).
+    if let Ok(mut l) = ledger.lock() {
+        l.mark(&ledger_key);
+        agg.ledger_marked = true;
+    }
+
+    // O6 utk jalur IN-PROCESS: scan detail utk pola KUAT HiddenBug.
+    if !result.category.is_bug() {
+        if let Some((cat, detail)) = oracle::scan_hidden_diags(&result.detail) {
+            if cat == Category::HiddenBug {
+                result.category = cat;
+                result.detail = detail;
+            }
+        }
+    }
+
+    // Feed balik coverage keys penyumbang oracle (compile/lexer in-process;
+    // sim merekam sendiri via cov engine).
+    if !result.cov_keys.is_empty() {
+        let fresh = crate::feedback::record_keys(&result.cov_keys);
+        if fresh > 0 && source.len() <= crate::feedback::INTERESTING_MAX_BYTES {
+            let _ = crate::feedback::save_interesting(&source);
+        }
+    }
+    *agg.categories.entry(result.category).or_insert(0) += 1;
+
+    if result.category.is_bug() {
+        let sig = result.signature();
+        let fresh = sigs.lock().map(|mut s| s.insert(sig)).unwrap_or(false);
+        if fresh {
+            // AUTO-DISMISS hang via replay tenang: replay dgn budget 6× —
+            // tak selesai → hang asli (simpan sbg bug); selesai dgn kategori
+            // non-bug → BUKAN bug (jangan simpan, jangan hitung).
+            if result.category == Category::Hang {
+                let calmer = oracle::evaluate(
+                    result.target,
+                    &result.source,
+                    cfg.timeout_ms.saturating_mul(6),
+                );
+                if !calmer.category.is_bug() {
+                    // Kategori pindah ke hasil replay (summary konsisten).
+                    if let Some(c) = agg.categories.get_mut(&Category::Hang) {
+                        *c = c.saturating_sub(1);
+                    }
+                    *agg.categories.entry(calmer.category).or_insert(0) += 1;
+                    agg.dismissed_hangs += 1;
+                    return agg;
+                }
+            }
+            if cfg.save_bugs {
+                save_crash(&result, slot);
+            }
+            agg.bugs.push(result);
+        }
+    }
+    agg
+}
+
+/// Gabung satu CaseAgg ke agregat kampanye (main thread — dulu dilakukan
+/// inline di loop). Return = leak_cap_hit.
+fn merge_case(
+    agg: CaseAgg,
+    results: &mut Vec<CaseResult>,
+    categories: &mut std::collections::BTreeMap<Category, usize>,
+    large_evaluated: &mut usize,
+    dismissed_hangs: &mut usize,
+) -> bool {
+    for (c, n) in agg.categories {
+        *categories.entry(c).or_insert(0) += n;
+    }
+    *large_evaluated += agg.large_evaluated;
+    *dismissed_hangs += agg.dismissed_hangs;
+    results.extend(agg.bugs);
+    agg.leak_cap_hit
+}
+
 fn run_single(cfg: FuzzConfig, corpus: &corpus::Corpus) -> FuzzReport {
     use std::collections::BTreeMap;
 
     // Ledger seed ter-evaluasi (persisten lintas kampanye): kampanye
     // memprioritaskan seed yang BELUM pernah dijamah — target "semua seed
     // dijalankan tanpa ada yang di-skip" tercapai secara akumulatif.
-    let mut ledger = crate::ledger::SeedLedger::load();
+    let ledger = std::sync::Mutex::new(crate::ledger::SeedLedger::load());
 
-    let mut rng = Rng::new(cfg.seed);
+    let mut rng = Rng::new(cfg.seed); // hanya utk seed-plan (serial, deterministic)
 
     let mut results: Vec<CaseResult> = Vec::new();
     let mut dismissed_hangs: usize = 0;
     let mut categories: BTreeMap<Category, usize> = BTreeMap::new();
-    let mut seen_sigs: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let seen_sigs = std::sync::Mutex::new(std::collections::HashSet::<String>::new());
     let mut large_evaluated: usize = 0;
 
     if corpus.skipped_large > 0 {
@@ -776,7 +1036,7 @@ fn run_single(cfg: FuzzConfig, corpus: &corpus::Corpus) -> FuzzReport {
         for &i in &candidates {
             let key = corpus.seed_at(i).map(crate::ledger::seed_key);
             match key {
-                Some(k) if ledger.is_seen(&k) => seen.push(i),
+                Some(k) if ledger.lock().is_ok_and(|l| l.is_seen(&k)) => seen.push(i),
                 _ => unseen.push(i),
             }
         }
@@ -793,217 +1053,129 @@ fn run_single(cfg: FuzzConfig, corpus: &corpus::Corpus) -> FuzzReport {
     // kasus); kampanye besar tiap 500.
     let progress_every = if cfg.cases <= 500 { 25 } else { 500 };
 
-    for i in 0..cfg.cases {
-        // Ambil seed nyata dari corpus via plan (100% — tanpa template
-        // sintetis). `.mv` return RAW source, transpile setelah mutasi.
-        let Some(&seed_idx) = seed_plan.get(i) else {
-            break;
-        };
-        let base_seed = match corpus.seed_by_index(seed_idx) {
-            Some(s) => s,
-            None => break,
-        };
-        let is_mv = base_seed.is_mv;
-        // Kunci ledger seed ini (path|size|mtime) — ditandai setelah evaluasi.
-        let ledger_key = crate::ledger::seed_key(&base_seed.path);
+    let jobs = case_jobs(cfg.jobs);
 
-        // Siapkan base source:
-        //   .sv + tb_pair → concat modul+tb
-        //   lainnya → mentah (terhitung .mv juga — mutasi menyentuh .mv)
-        let mut base_source = if !is_mv {
-            let is_tb = base_seed
-                .path
-                .file_name()
-                .and_then(|s| s.to_str())
-                .map(|n| n.starts_with("tb_"))
-                .unwrap_or(false);
-            if is_tb {
-                combine_tb_with_module(&base_seed.path, &base_seed.text, corpus)
-            } else {
-                base_seed.text
+    if jobs <= 1 {
+        // ── Jalur serial (jalur lama) ──
+        for slot in 0..cfg.cases {
+            let agg = eval_case(&cfg, corpus, &seed_plan, slot, &ledger, &seen_sigs);
+            if merge_case(
+                agg,
+                &mut results,
+                &mut categories,
+                &mut large_evaluated,
+                &mut dismissed_hangs,
+            ) {
+                eprintln!(
+                    "\n  (guard: {} hang asli >= cap {} — thread stack bocor 256MB/kasus; kampanye dihentikan bersih)",
+                    oracle::leaked_watchdogs(),
+                    oracle::WATCHDOG_LEAK_CAP
+                );
+                break;
             }
-        } else {
-            // MV: simpan raw; transpile terjadi SETELAH mutasi
-            base_seed.text
-        };
-
-        // Source raksasa: JANGAN di-skip. Mutasi PENUH dimatikan
-        // (`duplicate_chunk`/splice bisa meledak 267MB → false hang massal),
-        // TAPI 1x mutasi RINGAN tak-pengembang tetap jalan (dulu n_mut=0 =
-        // dievaluasi mentah tanpa variasi = coverage gap).
-        let is_large = base_source.len() > SIZE_CAP;
-        if is_large {
-            let mut mutator = mutator::Mutator::new(&mut rng);
-            base_source = mutator.mutate_light(&base_source, corpus);
-        } else {
-            let n_mut = rng.below(5);
-            let mut mutator = mutator::Mutator::new(&mut rng);
-            for _ in 0..n_mut {
-                base_source = mutator.mutate(&base_source, corpus);
-            }
-        }
-
-        // Directed mutation: 30% kasus — serangan terarah SETELAH mutasi acak
-        // (dilewati bila source raksasa, demi cegah blowup).
-        if !is_large && rng.chance(30) {
-            let mut dir = directed::DirectedMutator::new(&mut rng);
-            base_source = dir.mutate(&base_source);
-        }
-
-        // CLAMP pasca-mutasi: rangkaian `duplicate_chunk`/splice pada seed
-        // hampir-2MB bisa meledak puluhan MB (terukur: swap-thrash mesin
-        // 7GB, kampanye merayap). Source hasil mutasi > SIZE_CAP → evaluasi
-        // versi light (tak berkembang) — tetap ada variasi, tanpa blowup.
-        if !is_large && base_source.len() > SIZE_CAP {
-            let mut clamp = mutator::Mutator::new(&mut rng);
-            base_source = clamp.mutate_light(&base_source, corpus);
-        }
-
-        // MV → transpile mutated MV ke SV sebelum evaluasi — KECUALI target
-        // Mv: `evaluate_mv` mengharap source MV mentah (dia yang mentranspile
-        // di dalam untuk cek determinisme + output parseable). Transpile di
-        // sini membuat SV di-feed balik ke transpiler MV → 100% case jadi
-        // "transpile error" (clean_error=2000/2000, kampanye MV tak berguna).
-        let source = if is_mv && cfg.target != Target::Mv {
-            let base_name = base_seed
-                .path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("design")
-                .to_string();
-            corpus::transpile_mv_string(&base_source, &base_name).unwrap_or_else(|_| {
-                // Transpile gagal (mutasi merusak sintaks MV) — jadikan
-                // placeholder error-clean agar tak terhitung sebagai bug.
-                "// mv transpile failed\nmodule fz_mv_transpile_err; endmodule".to_string()
-            })
-        } else {
-            base_source
-        };
-
-        // Env hook: tulis source pre-eval untuk repro
-        if let Ok(trace_path) = std::env::var("MIVON_FUZZ_TRACE") {
-            let _ = std::fs::write(&trace_path, &source);
-        }
-
-        // Source raksasa: TIDAK di-skip. Evaluasi dgn budget waktu lebih
-        // longgar (parse/elab source besar butuh waktu lebih) agar tak
-        // salah digolongkan hang. Mutasi pengembang sudah ditekan → tak ada
-        // blowup. Dihitung di `large_evaluated` supaya kampanye tahu persis
-        // berapa seed besar yang dijamah (bukan hilang senyap).
-        let eval_timeout = if source.len() > SIZE_CAP {
-            large_evaluated += 1;
-            cfg.timeout_ms.saturating_mul(4)
-        } else {
-            cfg.timeout_ms
-        };
-
-        let mut result = oracle::evaluate(cfg.target, &source, eval_timeout);
-        // Guard OOM thread bocor: tiap hang asli = worker 256MB tetap hidup.
-        // Cap tercapai → break kampanye bersih (ledger/bug tersimpan),
-        // bukan mati OOM tanpa laporan. `>=` — counter menunjuk hang-asli ke-N
-        // yang BARU menyebabkan N == cap (break persis saat thread bocor
-        // ke-cap-tercapai; `>` dulu meloloskan satu bocoran ekstra).
-        if oracle::leaked_watchdogs() >= oracle::WATCHDOG_LEAK_CAP {
-            // Kasus pemicu cap tetap terhitung di kategorinya — summary tidak
-            // kehilangan satu kasus terakhir. Sudah diteruskan: seed TIDAK
-            // di-mark ledger (di bawah) → kampanye berikutnya mengulanginya
-            // dgn replay-tenang + dismiss penuh; TIDAK disimpan sbg bug
-            // (belum lewat filter auto-dismiss — bisa saja noise).
-            *categories.entry(result.category).or_insert(0) += 1;
-            eprintln!(
-                "\n  (guard: {} hang asli >= cap {} — thread stack bocor 256MB/kasus; kampanye dihentikan bersih)",
-                oracle::leaked_watchdogs(),
-                oracle::WATCHDOG_LEAK_CAP
-            );
-            break;
-        }
-        // Ledger: seed ini sudah dijamah kampanye (mark SETELAH evaluasi —
-        // seed yang crash di tengah tetap dianggap belum selesai).
-        ledger.mark(&ledger_key);
-        // O6 utk jalur IN-PROCESS (lexer/parser/elab/fmt/preproc/mv): tak ada
-        // subprocess stdout utk di-scan — scan `detail` (pesan error/ok)
-        // utk pola KUAT HiddenBug (mis. pesan ber-"internal error") — dulu
-        // jalur ini lolos tanpa O6 sama sekali. Degradasi lemah tak discan
-        // di sini (pesan CleanError korpus fragment → noise).
-        if !result.category.is_bug() {
-            if let Some((cat, detail)) = oracle::scan_hidden_diags(&result.detail) {
-                if cat == Category::HiddenBug {
-                    result.category = cat;
-                    result.detail = detail;
+            if (slot + 1) % progress_every == 0 {
+                if let Ok(l) = ledger.lock() {
+                    let _ = l.save();
                 }
+                eprint!(
+                    "\r  [{}/{}] bugs: {} large: {}",
+                    slot + 1,
+                    cfg.cases,
+                    results.len(),
+                    large_evaluated
+                );
             }
         }
-        // Feed balik coverage keys penyumbang oracle (compile/lexer in-process;
-        // sim merekam sendiri via cov engine). Key baru → simpan input sbg
-        // seed tumbuh → kampanye berikutnya memberi perhatian pada jalur yang
-        // MENGUNJAKAN kind IR/token baru, semua target (Bukan hanya sim).
-        if !result.cov_keys.is_empty() {
-            let fresh = crate::feedback::record_keys(&result.cov_keys);
-            if fresh > 0 && source.len() <= crate::feedback::INTERESTING_MAX_BYTES {
-                let _ = crate::feedback::save_interesting(&source);
-            }
-        }
-        *categories.entry(result.category).or_insert(0) += 1;
-
-        if result.category.is_bug() {
-            let sig = result.signature();
-            if !seen_sigs.contains(&sig) {
-                seen_sigs.insert(sig);
-                // AUTO-DISMISS hang via replay tenang (review kampanye):
-                // grace runner 3× (15s) belum cukup utk kasus besar + beban
-                // mesin → "hang" berulang padahal replay saat sepi SELESAI
-                // (semua hang kampanye = slow, replay-ok). Replay dgn budget
-                // 6×: tak selesai → hang asli (simpan sbg bug); selesai dgn
-                // kategori non-bug → BUKAN bug (jangan simpan, jangan hitung).
-                if result.category == Category::Hang {
-                    let calmer = oracle::evaluate(
-                        result.target,
-                        &result.source,
-                        cfg.timeout_ms.saturating_mul(6),
-                    );
-                    if !calmer.category.is_bug() {
-                        // Pindahkan hitungan ke kategori hasil replay
-                        // (slow/ok/suspicious) — summary tetap konsisten.
-                        if let Some(c) = categories.get_mut(&result.category) {
-                            *c = c.saturating_sub(1);
+    } else {
+        // ── Worker pool paralel: N worker menjemput slot dari plan ──
+        // Determinisme tetap: RNG stream per-slot (`case_rng`), plan serial
+        // → hasil tidak tergantung jadwal worker, hanya slot yang dijamah
+        // berbeda urutan (ekuivalen — tidak ada mutasi state lintas slot).
+        eprintln!(
+            "  (parallel: {} workers; per-slot RNG deterministik — hasil = serial)",
+            jobs
+        );
+        let pool = std::sync::Arc::new(Pool {
+            next: std::sync::atomic::AtomicUsize::new(0),
+            stop: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let cases = cfg.cases.min(seed_plan.len());
+        let (tx, rx) = std::sync::mpsc::channel::<CaseAgg>();
+        // Borrow kembar (thread::scope: lifetime terikat scope — no 'static).
+        let cfg_ref = &cfg;
+        let corpus_ref = corpus;
+        let plan_ref = &seed_plan;
+        let ledger_ref = &ledger;
+        let sigs_ref = &seen_sigs;
+        std::thread::scope(|scope| {
+            for _ in 0..jobs {
+                let pool = pool.clone();
+                let tx = tx.clone();
+                let _worker = scope.spawn(
+                    move || loop {
+                        if pool.stop.load(Ordering::Relaxed) != 0 {
+                            break;
                         }
-                        *categories.entry(calmer.category).or_insert(0) += 1;
-                        dismissed_hangs += 1;
-                        continue;
-                    }
-                }
-                if cfg.save_bugs {
-                    save_crash(&result, i);
-                }
-                results.push(result);
+                        let slot = pool.next.fetch_add(1, Ordering::AcqRel);
+                        if slot >= cases {
+                            break;
+                        }
+                        let agg =
+                            eval_case(cfg_ref, corpus_ref, plan_ref, slot, ledger_ref, sigs_ref);
+                        if agg.leak_cap_hit {
+                            pool.stop.store(1, Ordering::Relaxed);
+                        }
+                        if tx.send(agg).is_err() {
+                            break;
+                        }
+                    },
+                );
             }
-        }
-
-        if (i + 1) % progress_every == 0 {
-            // Simpan ledger berkala: progres seed tidak hilang bila kampanye
-            // dimatikan di tengah.
-            let _ = ledger.save();
-            eprint!(
-                "\r  [{}/{}] bugs: {} large: {}",
-                i + 1,
-                cfg.cases,
-                results.len(),
-                large_evaluated
-            );
+            drop(tx);
+        });
+        // Merge hasil worker (main thread).
+        let mut merged = 0usize;
+        for agg in rx {
+            merged += 1;
+            if merge_case(
+                agg,
+                &mut results,
+                &mut categories,
+                &mut large_evaluated,
+                &mut dismissed_hangs,
+            ) {
+                eprintln!(
+                    "\n  (guard: {} hang asli >= cap {} — thread stack bocor 256MB/kasus; kampanye dihentikan bersih)",
+                    oracle::leaked_watchdogs(),
+                    oracle::WATCHDOG_LEAK_CAP
+                );
+            }
+            if merged % progress_every == 0 {
+                if let Ok(l) = ledger.lock() {
+                    let _ = l.save();
+                }
+                eprint!(
+                    "\r  [{}/{}] bugs: {} large: {}",
+                    merged, cases, results.len(), large_evaluated
+                );
+            }
         }
     }
+
     if cfg.cases >= progress_every {
         eprintln!();
     }
-    if let Err(e) = ledger.save() {
-        eprintln!("  (ledger: gagal simpan: {e})");
+    if let Ok(l) = ledger.lock() {
+        if let Err(e) = l.save() {
+            eprintln!("  (ledger: gagal simpan: {e})");
+        }
     }
     crate::feedback::flush();
-    eprintln!(
-        "  (ledger: {} kunci total, +{} baru kampanye ini)",
-        ledger.len(),
-        ledger.new_marks()
-    );
+    let (n_total, n_new) = ledger
+        .lock()
+        .map(|l| (l.len(), l.new_marks()))
+        .unwrap_or((0, 0));
+    eprintln!("  (ledger: {} kunci total, +{} baru kampanye ini)", n_total, n_new);
 
     let summary = TargetSummary {
         target: cfg.target,
@@ -1334,6 +1506,52 @@ mod bugdb_tests {
         let plan = build_prioritized_plan(&[], &seen, 7, &mut Rng::new(11));
         assert_eq!(plan.len(), 7);
         assert!(plan.iter().all(|i| seen.contains(i)));
+    }
+
+    /// Kesetaraan serial vs worker-pool: preproc in-process deterministik →
+    /// kategori per-slot IDENTIK jobs=1 vs jobs=3 (RNG stream per-slot).
+    #[test]
+    fn parallel_matches_serial_preproc() {
+        let seed = 0xC0FFEE_BEEF;
+        let mut serial = FuzzConfig::default();
+        serial.target = Target::Preproc;
+        serial.cases = 10;
+        serial.jobs = 1;
+        serial.seed = seed;
+        serial.save_bugs = false;
+        let rep_serial = run(serial.clone());
+
+        let mut par = serial.clone();
+        par.jobs = 3;
+        let rep_par = run(par);
+
+        assert_eq!(
+            rep_serial.summaries[0].categories, rep_par.summaries[0].categories,
+            "kategori serial vs parallel harus identik (determinisme per-slot)"
+        );
+        assert!(
+            !rep_par.summaries[0].categories.is_empty(),
+            "preproc 10 kasus harus menghasilkan kategori"
+        );
+    }
+
+    /// case_rng: stream per-slot berbeda & deterministik lintas pemanggilan.
+    #[test]
+    fn case_rng_deterministic_per_slot() {
+        let mut a1 = case_rng(0xC0FFEE, 7);
+        let mut a2 = case_rng(0xC0FFEE, 7);
+        assert_eq!(a1.next_u64(), a2.next_u64(), "slot sama = stream sama");
+        let mut b = case_rng(0xC0FFEE, 8);
+        assert_ne!(a1.next_u64(), b.next_u64(), "slot beda = stream beda");
+    }
+
+    /// case_jobs: 0 = auto (clamp 1-8), 1 = serial, besar = tetap N.
+    #[test]
+    fn case_jobs_resolution() {
+        assert_eq!(case_jobs(1), 1);
+        assert_eq!(case_jobs(99), 99);
+        let auto = case_jobs(0);
+        assert!((1..=8).contains(&auto), "auto = cores/2 clamp 1-8, dapat {auto}");
     }
 
     /// Nama artefak bug: stabil untuk signature sama, unik untuk beda.

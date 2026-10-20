@@ -39,7 +39,8 @@ fn print_help() {
         r#"mivon-fuzz {version} — fuzzer berbasis corpus project nyata (cva6/openc910/opentitan)
 
 USAGE:
-  mivon-fuzz run     [--target <t>] [-c <n>] [--seed <n>] [--timeout <ms>] [--corpus <dir>] [--no-save] [--no-verify] [--verify-cases <n>] [--verify-seed <n>]
+  mivon-fuzz run     [--target <t>] [-c <n>] [--seed <n>] [--timeout <ms>] [--corpus <dir>] [--no-save] [--no-verify] [--verify-cases <n>] [--verify-seed <n>] [--jobs <n>]
+                     # --jobs: 0/absen = auto (cores/2 clamp 1-8), 1 = serial, N = worker pool
   mivon-fuzz replay  <file.sv> [--target <t>] [--timeout <ms>]
   mivon-fuzz judge   <file.sv> [--timeout <ms>]   # nilai LRM IEEE 1800 (lrm_judge)
   mivon-fuzz triage  <dir>
@@ -98,6 +99,7 @@ fn cmd_run(args: &[String]) -> i32 {
     let (corpus_s, rest) = take_flag(&rest, "--corpus");
     let (verify_cases_s, rest) = take_flag(&rest, "--verify-cases");
     let (verify_seed_s, rest) = take_flag(&rest, "--verify-seed");
+    let (jobs_s, rest) = take_flag(&rest, "--jobs");
     let no_save = rest.iter().any(|a| a == "--no-save");
     // Auto-verify vs iverilog (differential eksternal) bisa dimatikan:
     // `--no-verify`.
@@ -117,6 +119,10 @@ fn cmd_run(args: &[String]) -> i32 {
         .and_then(|s| s.parse().ok())
         .unwrap_or(FuzzConfig::default().timeout_ms);
     let corpus_dir = corpus_s.map(PathBuf::from);
+    // `--jobs N`: 0/absen = auto (cores/2 clamp 1-8), 1 = serial jalur lama.
+    let jobs: usize = jobs_s
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
 
     let cfg = FuzzConfig {
         target,
@@ -125,14 +131,16 @@ fn cmd_run(args: &[String]) -> i32 {
         timeout_ms: timeout,
         corpus_dir,
         save_bugs: !no_save,
+        jobs,
     };
 
     eprintln!(
-        "KAMPANYE: target={} cases={} seed={:#x} timeout={}ms",
+        "KAMPANYE: target={} cases={} seed={:#x} timeout={}ms jobs={}",
         target.as_str(),
         cases,
         seed,
-        timeout
+        timeout,
+        if jobs == 0 { "auto".to_string() } else { jobs.to_string() }
     );
     let report = run(cfg);
     let text = triage::render_report(&report.bugs);
