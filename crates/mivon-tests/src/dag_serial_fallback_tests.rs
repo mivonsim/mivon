@@ -114,9 +114,12 @@ fn run_signal_bits(src: &str, name: &str, use_dag: bool) -> String {
 
 /// MINIMAL REPRO (fuzz bug_0cb12a3dc00b / bug_63d353b8c78f, kampanye
 /// sim 2026-10-19): submodule pasif (`assign out = m`, m masih X,
-/// tanpa stimulus) + 2 part-select assign ke `q` di parent. Divergen:
-/// default — q tetap kendali Z, DAG — q jadi x. Semantik LRM: out = m(X)
-/// → dout X → kedua slice q = X. Kedua jalur wajib identik.
+/// tanpa stimulus) + 2 part-select assign ke `q` di parent. Semantik
+/// LRM: out = m(X) → dout X → kedua slice q = X; bit58 TIDAK ter-drive
+/// → tetap Z. Fix dag (commit cbf7608) = nilai PINNED persis (bukan
+/// sekadar identik): default = dag = "z" (bit58) + "x"×58. Kalau remake
+/// silent shift kebalik arah (mis. patch drop → all-z), test ini tetap
+/// kena.
 const PASSIVE_CHAIN_SRC: &str = r#"
 module mem_sub(out);
   output [28:0] out;
@@ -140,7 +143,11 @@ fn dag_vs_default_passive_slice_chain_identical() {
     let def = run_signal_bits(PASSIVE_CHAIN_SRC, "dout_lo", false);
     let dag = run_signal_bits(PASSIVE_CHAIN_SRC, "dout_lo", true);
     assert_eq!(def, dag, "dout_lo beda antar jalur: default={def} dag={dag}");
+    // PINNED — bukan sekadar identik: bit58 undriven z, 58 bit cover q = x.
+    let expect = format!("z{}", "x".repeat(58));
+    assert_eq!(def, "x".repeat(29), "dout_lo harus X semua (reg masih X)");
     let qd = run_signal_bits(PASSIVE_CHAIN_SRC, "q", false);
     let qg = run_signal_bits(PASSIVE_CHAIN_SRC, "q", true);
-    assert_eq!(qd, qg, "q beda antar jalur: default={qd} dag={qg}");
+    assert_eq!(qd, expect, "q default beda pin: {qd}");
+    assert_eq!(qg, expect, "q dag beda pin: {qg}");
 }

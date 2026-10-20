@@ -594,7 +594,7 @@ pub fn layer_to_string(layers: &[Vec<usize>]) -> String {
 pub fn evaluate_process_body(
     body: &[IrStmt],
     signals: &[Arc<LogicVec>],
-    writes: &mut Vec<crate::simulator::parallel::ParallelWrite>,
+    writes: &mut Vec<ParallelWrite>,
     // For fill-lit width resolution, pass signal count as signal_ref
 ) -> Result<(), mivon_core::error::SimError> {
     // Reuse the existing parallel-safe evaluator. Per-process overlay kosong

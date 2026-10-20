@@ -962,9 +962,7 @@ fn write_lvalue_simple(
             sanitize_for_2state(sig_info, *sig_id, &mut existing);
             signals.set(*sig_id, Arc::new(existing.clone()));
             // PATCH elem range: [base+start..=base+end).
-            let end_eff = end
-                .min(existing.width.saturating_sub(1).saturating_sub(base))
-                .min(max_end);
+            let end_eff = end.min(existing.width.saturating_sub(1).saturating_sub(base));
             if start <= end_eff {
                 let lo = base + start;
                 let len = end_eff - start + 1;
