@@ -463,6 +463,33 @@ pub fn bugdb_path() -> PathBuf {
     PathBuf::from(".mivon-fuzz-bugdb.json")
 }
 
+/// Satu baris ringkasan per target. Dipakai real-time di `run()` (stderr)
+/// dan ringkasan akhir di `main.rs::cmd_run` (stdout) — jangan duplikasi
+/// formatnya di dua tempat.
+pub fn summary_line(s: &TargetSummary) -> String {
+    let mut parts: Vec<String> = s
+        .categories
+        .iter()
+        .map(|(c, n)| format!("{}={}", c.label(), n))
+        .collect();
+    parts.sort();
+    // dismissed_hangs: hang yg selesai saat replay tenang — tampil bila ada.
+    let dismissed = if s.dismissed_hangs > 0 {
+        format!(" dismissed={}", s.dismissed_hangs)
+    } else {
+        String::new()
+    };
+    format!(
+        "[{}] total={} bugs={} large={}{} :: {}",
+        s.target.as_str(),
+        s.total,
+        s.bugs,
+        s.large_evaluated,
+        dismissed,
+        parts.join(" ")
+    )
+}
+
 /// Run kampanye fuzz.
 ///
 /// Corpus di-load SEKALI untuk seluruh kampanye (dulu per-target = 14×
@@ -502,21 +529,7 @@ pub fn run(cfg: FuzzConfig) -> FuzzReport {
                 // run() seluruh 14 target → triage antar-wake tidak melihat
                 // target mana yang menghasilkan bug tanpa menunggu selesai.
                 for s in &report.summaries {
-                    let mut parts: Vec<String> = s
-                        .categories
-                        .iter()
-                        .map(|(c, n)| format!("{}={}", c.label(), n))
-                        .collect();
-                    parts.sort();
-                    eprintln!(
-                        "[{}] total={} bugs={} large={} dismissed={} :: {}",
-                        s.target.as_str(),
-                        s.total,
-                        s.bugs,
-                        s.large_evaluated,
-                        s.dismissed_hangs,
-                        parts.join(" ")
-                    );
+                    eprintln!("{}", summary_line(s));
                 }
                 merged.bugs.extend(report.bugs);
                 merged.summaries.extend(report.summaries);

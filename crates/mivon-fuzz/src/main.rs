@@ -140,28 +140,7 @@ fn cmd_run(args: &[String]) -> i32 {
 
     // Ringkasan per target
     for s in &report.summaries {
-        let mut parts: Vec<String> = s
-            .categories
-            .iter()
-            .map(|(c, n)| format!("{}={}", c.label(), n))
-            .collect();
-        parts.sort();
-        // dismissed_hangs: hang yg ternyata selesai saat replay tenang (6×)
-        // → dibuang dari bug (slow ≠ hang); tampil bila ada.
-        let dismissed = if s.dismissed_hangs > 0 {
-            format!(" dismissed={}", s.dismissed_hangs)
-        } else {
-            String::new()
-        };
-        println!(
-            "[{}] total={} bugs={} large={}{} :: {}",
-            s.target.as_str(),
-            s.total,
-            s.bugs,
-            s.large_evaluated,
-            dismissed,
-            parts.join(" ")
-        );
+        println!("{}", mivon_fuzz::summary_line(s));
     }
     if !report.bugs.is_empty() {
         let p = triage::save_report(&report.bugs);
