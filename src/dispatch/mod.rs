@@ -15,10 +15,12 @@
 //! Adaptor per tool tetap fungsi terpisah (bukan satu `match` raksasa) agar
 //! tiap tool bisa diubah/diuji tanpa menyentuh yang lain.
 
+mod emu;
 mod extra;
 mod manage;
 mod tools;
 
+pub(crate) use emu::*;
 pub(crate) use extra::*;
 pub(crate) use manage::*;
 pub(crate) use tools::*;
