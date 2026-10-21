@@ -168,6 +168,27 @@ pub enum ElaborateMode {
     AnalysisRecovery,
 }
 
+/// ELAB-09: satu entri `defparam` terkumpul dari AST (IEEE 1800-2017 §23.11).
+/// Dikumpulkan sekali di `elaborate()` (compilation-unit scope + semua
+/// module body), diterapkan saat flatten per path instance absolut.
+#[derive(Debug, Clone)]
+pub struct DefParamEntry {
+    /// `None` = compilation-unit scope (path absolut dari top module);
+    /// `Some(M)` = dideklarasikan di module M (path relatif thd instance M).
+    pub scope_module: Option<Symbol>,
+    /// Segmen hierarki instance SEBELUM nama param
+    /// (mis. `top.u_a[0]` → ["top", "u_a[0]"]; segmen indeks array disimpan
+    /// sebagai teks `name[idx]` agar cocok dgn nama instance hasil ekspansi).
+    pub path: Vec<Symbol>,
+    /// Nama parameter yang di-override.
+    pub param: Symbol,
+    /// Nilai override — const-eval sederhana saat flatten.
+    pub value: mivon_ast::Expr,
+    /// Posisi deklarasi (diagnostic).
+    pub line: usize,
+    pub col: usize,
+}
+
 pub struct Elaborator {
     pub design: Design,
     pub modules: HashMap<Symbol, IrModule>,
@@ -189,6 +210,18 @@ pub struct Elaborator {
     /// module items saat elaborate; instance checker di-resolve ke sini lalu
     /// assertion body di-drive dengan port binding.
     pub checker_decls: HashMap<Symbol, CheckerDecl>,
+    /// ELAB-09: kumpulan `defparam` (IEEE 1800-2017 §23.11) — dikumpulkan
+    /// dari compilation-unit scope (`scope_module = None`, path absolut dari
+    /// top) dan module body (`scope_module = Some(M)`, path relatif terhadap
+    /// instance M). Diterapkan saat flatten: path instance target dicocokkan
+    /// dengan path hierarki penuh, lalu nilai di-merge ke `param_map`
+    /// instance SEBELUM signature/needs_custom_params dihitung → child
+    /// di-elaborasi ulang dengan override.
+    pub defparams: Vec<DefParamEntry>,
+    /// ELAB-09: dedup warning defparam per posisi (line, col). Module-scope
+    /// defparam di-resolve per instance (module diinstansiasi N kali) →
+    /// tanpa dedup, warning identik tercetak N kali (noise di desain besar).
+    pub defparam_warned: std::collections::HashSet<(usize, usize)>,
     pub typedef_map: HashMap<Symbol, usize>,
     pub typedef_field_map: HashMap<Symbol, Vec<StructFieldInfo>>,
     /// Range + packed dims typedef module/package (untuk mengisi `packed_dims`
@@ -701,6 +734,8 @@ impl Elaborator {
             param_is_signed: std::collections::HashSet::new(),
             let_decls: HashMap::new(),
             checker_decls: HashMap::new(),
+            defparams: Vec::new(),
+            defparam_warned: std::collections::HashSet::new(),
             typedef_map: HashMap::new(),
             typedef_dims: HashMap::new(),
             typedef_queue: std::collections::HashSet::new(),
@@ -807,6 +842,36 @@ impl Elaborator {
                 self.checker_decls
                     .entry(cd.name)
                     .or_insert_with(|| cd.clone());
+            }
+        }
+
+        // ELAB-09: kumpulkan semua `defparam` — compilation-unit scope
+        // (path absolut dari top) + module body (path relatif scope module).
+        // Diterapkan saat flatten per instance path; di sini hanya kumpul.
+        for item in &self.design.unit_items {
+            if let ModuleItem::DefParam(dp) = item {
+                self.defparams.push(DefParamEntry {
+                    scope_module: None,
+                    path: dp.path.clone(),
+                    param: dp.param,
+                    value: dp.value.clone(),
+                    line: dp.line,
+                    col: dp.col,
+                });
+            }
+        }
+        for module in &self.design.modules {
+            for item in &module.items {
+                if let ModuleItem::DefParam(dp) = item {
+                    self.defparams.push(DefParamEntry {
+                        scope_module: Some(module.name),
+                        path: dp.path.clone(),
+                        param: dp.param,
+                        value: dp.value.clone(),
+                        line: dp.line,
+                        col: dp.col,
+                    });
+                }
             }
         }
 

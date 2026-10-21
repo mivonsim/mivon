@@ -1376,6 +1376,63 @@ impl Parser {
     }
 
 
+    /// ELAB-09: `defparam <hier-path>.<param> = <expr>;` (IEEE 1800-2017
+    /// §23.11, warisan Verilog-2001). Path = rantai ident dengan opsi indeks
+    /// array `[N]` per segmen; segmen terakhir = nama parameter.
+    /// Dipakai di compilation-unit scope dan module body.
+    pub(crate) fn parse_defparam(&mut self) -> Result<DefParamDecl, SimError> {
+        let line = self.peek_line();
+        let col = self.peek_col();
+        self.advance(); // consume 'defparam'
+        let mut path = Vec::new();
+        loop {
+            let seg = self.expect_ident()?;
+            // Indeks instance array: `u_a[0]` — simpan sebagai teks satu
+            // segmen agar cocok persis dgn nama instance hasil ekspansi
+            // flatten (`format!("{}[{}]", name, idx)`).
+            let mut text = String::from(seg.as_str());
+            if self.peek() == &Token::LBrack {
+                self.advance();
+                let mut idx = String::new();
+                while self.peek() != &Token::RBrack && self.peek() != &Token::Eof {
+                    // Ekstrak nilai number LANGSUNG — Display Token::Number
+                    // jatuh ke arm Debug (`Number { value: "1", ... }`), bukan
+                    // teks literal `1` → path array tak akan match nama
+                    // instance `u_a[1]` hasil ekspansi.
+                    match self.peek() {
+                        Token::Number { value, .. } => idx.push_str(value.as_str()),
+                        Token::Ident(s) => idx.push_str(s.as_str()),
+                        other => idx.push_str(&format!("{}", other)),
+                    }
+                    self.advance();
+                }
+                self.expect(Token::RBrack)?;
+                text.push('[');
+                text.push_str(idx.trim());
+                text.push(']');
+            }
+            path.push(Symbol::intern(&text));
+            if self.peek() == &Token::Dot {
+                self.advance();
+                continue;
+            }
+            break;
+        }
+        let param = path
+            .pop()
+            .ok_or_else(|| self.err("expected parameter name after hierarchical path"))?;
+        self.expect(Token::BlockingAssign)?;
+        let value = self.parse_expr(0)?;
+        self.skip_semi();
+        Ok(DefParamDecl {
+            path,
+            param,
+            value,
+            line,
+            col,
+        })
+    }
+
     /// LANG-41: `nettype <base> [range] <name> [with ...];` (IEEE 1800-2017
     /// §6.10). Dipakai baik di module scope maupun compilation-unit scope.
     pub(crate) fn parse_nettype_decl(&mut self) -> Result<NettypeDecl, SimError> {

@@ -123,6 +123,8 @@ mod interface_port_tests;
 mod lang_features_tests;
 #[cfg(test)]
 mod synth_sir_tests;
+#[cfg(test)]
+mod defparam_tests;
 
 // Guided structure-aware fuzzer (metode test fuzzing "tidak buta"):
 // grammar-aware generation + coverage feedback + differential oracle.

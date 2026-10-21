@@ -1174,6 +1174,17 @@ pub fn substitute_genvar_in_module_item(item: &mut ModuleItem, var_name: &str, v
                 *lsb = substitute_loop_var_in_expr(&old_lsb, var_name, value);
             }
         }
+        ModuleItem::DefParam(dp) => {
+            // ELAB-09: substitusi genvar di nilai defparam. CATATAN: path
+            // (`dp.path`, mis. indeks genvar `u_a[i]`) TIDAK disubstitusi —
+            // defparam yang menarget instance di dalam generate block belum
+            // match (limitation; warning "not found" akan tercetak).
+            let old = std::mem::replace(
+                &mut dp.value,
+                Expr::Value(mivon_ast::expr::Value::Decimal(0)),
+            );
+            dp.value = substitute_loop_var_in_expr(&old, var_name, value);
+        }
         ModuleItem::Func(_)
         | ModuleItem::Typedef(_)
         | ModuleItem::Import { .. }

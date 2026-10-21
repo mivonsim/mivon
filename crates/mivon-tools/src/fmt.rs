@@ -669,6 +669,7 @@ fn is_keyword(tok: &Token) -> bool {
             | Mailbox
             | Semaphore
             | Bind
+            | Defparam
             | Specify
             | EndSpecify
             | SpecParam

@@ -248,6 +248,8 @@ pub enum Token {
     Semaphore,
     // Bind
     Bind,
+    // Defparam (ELAB-09: parameter override per hierarchical instance path)
+    Defparam,
     // Specify
     Specify,
     EndSpecify,
@@ -386,6 +388,7 @@ impl fmt::Display for Token {
             Token::Import => write!(f, "import"),
             Token::Export => write!(f, "export"),
             Token::Bind => write!(f, "bind"),
+            Token::Defparam => write!(f, "defparam"),
             Token::Specify => write!(f, "specify"),
             Token::EndSpecify => write!(f, "endspecify"),
             Token::SpecParam => write!(f, "specparam"),
@@ -856,6 +859,7 @@ impl Lexer {
                 "import" => Token::Import,
                 "export" => Token::Export,
                 "bind" => Token::Bind,
+                "defparam" => Token::Defparam,
                 "specify" => Token::Specify,
                 "endspecify" => Token::EndSpecify,
                 "specparam" => Token::SpecParam,

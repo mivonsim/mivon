@@ -851,6 +851,25 @@ pub enum ModuleItem {
     /// §17.8) — unit assertion terinstansiasi. Saat checker diinstansiasi di
     /// module, assertion property di `items` di-drive dengan port binding.
     Checker(CheckerDecl),
+    /// ELAB-09: `defparam <hier-path>.<param> = <expr>;` — override parameter
+    /// per instance path. Bisa di compilation-unit scope (`unit_items`) atau
+    /// module body (`items`); elaborator mengumpulkan + menerapkan saat
+    /// flatten (path absolut dari top).
+    DefParam(DefParamDecl),
+}
+
+/// ELAB-09: `defparam <hier-path>.<param> = <expr>;` — parameter override
+/// per instance path (IEEE 1800-2017 §23.11, warisan Verilog-2001).
+/// `path` = segmen hierarki instance SEBELUM nama param
+/// (mis. `top.u_a[0]` → ["top", "u_a[0]"]; segmen indeks array disimpan
+/// sebagai teks `name[idx]` agar cocok dengan nama instance hasil ekspansi).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct DefParamDecl {
+    pub path: Vec<Symbol>,
+    pub param: Symbol,
+    pub value: Expr,
+    pub line: usize,
+    pub col: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]

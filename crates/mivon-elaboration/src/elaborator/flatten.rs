@@ -1,4 +1,4 @@
-use super::Elaborator;
+use super::{DefParamEntry, Elaborator};
 use mivon_ast::*;
 use mivon_core::diagnostics::diagnostic::DiagCode;
 use mivon_core::error::SimError;
@@ -6,7 +6,32 @@ use mivon_core::intern::Symbol;
 use mivon_ir::*;
 use std::collections::HashMap;
 
+/// ELAB-09: defparam yang target-nya sudah di-resolve ke path hierarki penuh
+/// (rantai nama instance dari root). Nilai di-const-eval saat apply — gagal →
+/// per-entry `value: None` + warning (bukan error).
+struct PendingDefParam {
+    /// Path instance absolut target (rantai nama instance dari root).
+    target: Vec<Symbol>,
+    param: Symbol,
+    /// Hasil const-eval; `None` bila nilai bukan konstanta (sudah warning).
+    value: Option<i64>,
+    /// True bila minimal satu instance cocok (untuk warning "tak terpakai").
+    matched: bool,
+    /// Posisi deklarasi defparam (warning).
+    line: usize,
+    col: usize,
+}
+
 impl Elaborator {
+    /// ELAB-09: warning defparam DEDUP per posisi deklarasi — module-scope
+    /// defparam di-resolve sekali per instance, tanpa dedup warning identik
+    /// tercetak N kali (N = jumlah instance module tsb).
+    fn warn_defparam_once(&mut self, message: impl Into<String>, line: usize, col: usize) {
+        if self.defparam_warned.insert((line, col)) {
+            self.elab_warn_at(DiagCode::ParamMismatch, message, line, col);
+        }
+    }
+
     /// Signature deterministik untuk cache IR instance ber-parameter: module
     /// name + param override (sorted) + type param override (sorted). Dua
     /// instance dengan override identik menghasilkan IR yang identik, jadi
@@ -61,7 +86,91 @@ impl Elaborator {
         // clone list instance top (kecil).
         let saved_instances = top.sub_instances.clone();
         let mut chain = Vec::new();
-        let mut map = self.flatten_instances_inner(top, &mut chain, &module_index, &known_mods)?;
+        // ELAB-09: resolve defparam compilation-unit scope → target absolut.
+        // Path unit-scope diawali nama top module (mis. `top.u.W`) — strip
+        // bila cocok agar tinggal rantai instance dari root. `pending` juga
+        // menerima entri module-scope saat recurse (lihat inner).
+        let mut pending: Vec<PendingDefParam> = Vec::new();
+        // Clone dulu: loop body panggil `warn_defparam_once(&mut self)` —
+        // tak bisa sambil meminjam `self.defparams`.
+        let unit_defparams: Vec<DefParamEntry> = self
+            .defparams
+            .iter()
+            .filter(|dp| dp.scope_module.is_none())
+            .cloned()
+            .collect();
+        for dp in unit_defparams {
+            let mut target: Vec<Symbol> = dp.path.clone();
+            if target.first() == Some(&top.name) {
+                target.remove(0);
+            }
+            if target.is_empty() {
+                // `defparam <top>.<P> = ...` menimpa param modul teratas —
+                // top sudah di-elaborasi dgn default; belum didukung (tahap 1).
+                self.warn_defparam_once(
+                    "defparam targeting a parameter of the top module is not supported yet",
+                    dp.line,
+                    dp.col,
+                );
+                continue;
+            }
+            // const_eval_with_params (bukan const_eval_simple) — menangani
+            // ekspresi aritmetika `4 + 4` (simple hanya literal polos).
+            // Contoh gagal: nilai mereferensi symbol lain (`defparam x.W =
+            // DEFAULT_W;`) — const-eval tanpa context scope.
+            let value = match const_eval_with_params(&dp.value, &HashMap::new()) {
+                Ok(v) => Some(v),
+                Err(msg) => {
+                    self.warn_defparam_once(
+                        format!(
+                            "defparam value is not a compile-time constant (references to other symbols are not supported yet): {}",
+                            msg
+                        ),
+                        dp.line,
+                        dp.col,
+                    );
+                    None
+                }
+            };
+            pending.push(PendingDefParam {
+                target,
+                param: dp.param,
+                value,
+                matched: false,
+                line: dp.line,
+                col: dp.col,
+            });
+        }
+        let mut inst_path: Vec<Symbol> = Vec::new();
+        let mut map = self.flatten_instances_inner(
+            top,
+            &mut chain,
+            &mut inst_path,
+            &mut pending,
+            &module_index,
+            &known_mods,
+        )?;
+        // ELAB-09: warning bila target defparam tidak ditemukan di hierarki.
+        // Dedup per (line, col): module-scope defparam menghasilkan satu
+        // entry per instance module tsb — warning identik hanya sekali.
+        for p in &pending {
+            if !p.matched {
+                let joined = p
+                    .target
+                    .iter()
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join(".");
+                self.warn_defparam_once(
+                    format!(
+                        "defparam target instance '{}' not found in hierarchy (targets inside generate blocks are not supported yet)",
+                        joined
+                    ),
+                    p.line,
+                    p.col,
+                );
+            }
+        }
         // F28 post-pass: proses job alias hier port interface SETELAH semua
         // instance ter-flatten — tidak bergantung pada urutan sub_instances
         // (instance interface boleh muncul setelah child module di AST).
@@ -124,12 +233,101 @@ impl Elaborator {
         &mut self,
         top: &mut IrModule,
         chain: &mut Vec<Symbol>,
+        // ELAB-09: path instance modul INI dari root (rantai nama instance;
+        // root = []). Dipakai resolve defparam module-scope → absolut.
+        inst_path: &mut Vec<Symbol>,
+        pending: &mut Vec<PendingDefParam>,
         module_index: &HashMap<Symbol, usize>,
         known_mods: &[Symbol],
     ) -> Result<HashMap<Symbol, SignalId>, SimError> {
+        // ELAB-09: defparam module-scope di body `top` — path relatif scope
+        // modul ini → absolut = path modul ini ++ segmen relatif. Dikumpul
+        // sebelum loop child agar target nested (`u_b.u_g.W`) match saat
+        // recurse ke kedalaman yang tepat.
+        let mod_name = top.name;
+        let own_defparams: Vec<(Vec<Symbol>, DefParamEntry)> = self
+            .defparams
+            .iter()
+            .filter(|dp| dp.scope_module == Some(mod_name))
+            .map(|dp| (dp.path.clone(), dp.clone()))
+            .collect();
+        for (rel, dp) in own_defparams {
+            // Path boleh ditulis absolut dari module ini sendiri
+            // (`defparam top.u1.W` di dalam `module top`) — strip prefix
+            // nama module bila ada, sisanya relatif (LRM §23.11: hierarchical
+            // path di-resolve dari scope tempat defparam dideklarasikan).
+            let rel: Vec<Symbol> = if rel.first() == Some(&mod_name) {
+                rel[1..].to_vec()
+            } else {
+                rel
+            };
+            let mut target = inst_path.clone();
+            target.extend(rel);
+            if target.is_empty() {
+                continue; // `defparam P = ...` di body — tanpa path tak valid
+            }
+            let value = match const_eval_with_params(&dp.value, &HashMap::new()) {
+                Ok(v) => Some(v),
+                Err(msg) => {
+                    self.warn_defparam_once(
+                        format!(
+                            "defparam value is not a compile-time constant (references to other symbols are not supported yet): {}",
+                            msg
+                        ),
+                        dp.line,
+                        dp.col,
+                    );
+                    None
+                }
+            };
+            pending.push(PendingDefParam {
+                target,
+                param: dp.param,
+                value,
+                matched: false,
+                line: dp.line,
+                col: dp.col,
+            });
+        }
         let mut hier_signal_map: HashMap<Symbol, SignalId> = HashMap::new();
-        let instances = std::mem::take(&mut top.sub_instances);
-        for inst in &instances {
+        let mut instances = std::mem::take(&mut top.sub_instances);
+        for inst in &mut instances {
+            // ELAB-09: cocokkan defparam target == path instance ini (path
+            // lokal, `inst_path` = path modul induk), merge override ke
+            // param_map SEBELUM needs_custom_params/signature dihitung →
+            // instance di-elaborasi ulang dgn nilai defparam (defparam menang
+            // atas override `#()` bila keduanya ada).
+            let mut full_path = inst_path.clone();
+            full_path.push(inst.instance_name);
+            for p in pending.iter_mut() {
+                if p.target != full_path {
+                    continue;
+                }
+                p.matched = true;
+                let val = p.value;
+                let param = p.param;
+                let (pline, pcol) = (p.line, p.col);
+                // Validasi: module target punya param tsb.
+                let has_param = module_index.get(&inst.module_name).is_some_and(|&mi| {
+                    self.design.modules[mi]
+                        .params
+                        .iter()
+                        .any(|pp| pp.name == param)
+                });
+                if !has_param {
+                    // Dedup: module diinstansiasi N kali → warning per (line,col).
+                    self.warn_defparam_once(
+                        format!(
+                            "defparam: module '{}' has no parameter '{}'",
+                            inst.module_name, param
+                        ),
+                        pline,
+                        pcol,
+                    );
+                } else if let Some(v) = val {
+                    std::sync::Arc::make_mut(&mut inst.param_map).insert(param, v);
+                }
+            }
             // Cycle detection: chain berisi nama module yang sedang di-flatten.
             // Instantiation cycle tidak legal di SV — deteksi dini mencegah
             // rekursi tak terbatas / duplikasi kerja (anti-leak memori).
@@ -291,8 +489,16 @@ impl Elaborator {
 
             // Recursively flatten child's own instances
             chain.push(inst.module_name);
-            let child_hier_map =
-                self.flatten_instances_inner(&mut child, chain, module_index, known_mods)?;
+            inst_path.push(inst.instance_name);
+            let child_hier_map = self.flatten_instances_inner(
+                &mut child,
+                chain,
+                inst_path,
+                pending,
+                module_index,
+                known_mods,
+            )?;
+            inst_path.pop();
             chain.pop();
             hier_signal_map.extend(child_hier_map);
 

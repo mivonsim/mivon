@@ -1068,6 +1068,17 @@ impl Parser {
                 if self.peek() == &Token::Semi {
                     self.advance();
                 }
+            } else if self.peek() == &Token::Defparam {
+                // ELAB-09: skip defparam in first pass (diparse penuh di
+                // second pass) — tanpa ini jatuh ke warning "skipping
+                // top-level construct" + skip_to_next_top_level.
+                self.advance();
+                while self.peek() != &Token::Semi && self.peek() != &Token::Eof {
+                    self.advance();
+                }
+                if self.peek() == &Token::Semi {
+                    self.advance();
+                }
             } else if self.peek() == &Token::Clocking {
                 // Skip clocking block in first pass
                 self.advance(); // consume 'clocking'
@@ -1554,6 +1565,18 @@ impl Parser {
                 Token::Checker => match self.parse_checker_decl() {
                     Ok(cd) => {
                         unit_items.push(ModuleItem::Checker(cd));
+                        false
+                    }
+                    Err(e) => {
+                        self.errors.push(e.to_diagnostic());
+                        true
+                    }
+                },
+                Token::Defparam => match self.parse_defparam() {
+                    // ELAB-09: `defparam` di compilation-unit scope — path
+                    // absolut dari top module (IEEE 1800-2017 §23.11).
+                    Ok(dp) => {
+                        unit_items.push(ModuleItem::DefParam(dp));
                         false
                     }
                     Err(e) => {
@@ -2116,6 +2139,13 @@ impl Parser {
                 let _ = self.parse_instance();
                 self.skip_semi();
                 Ok(None)
+            }
+            Token::Defparam => {
+                // ELAB-09: `defparam` di module body — path relatif scope
+                // module (atau absolut dari top). Disimpan sebagai item;
+                // elaborator menerapkan saat flatten.
+                let dp = self.parse_defparam()?;
+                Ok(Some(ModuleItem::DefParam(dp)))
             }
             Token::Assert | Token::Assume | Token::Cover | Token::Restrict => {
                 // Concurrent assertion SVA module-level. Bentuk BOOLEAN

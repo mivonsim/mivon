@@ -461,6 +461,7 @@ impl<'a> FastLexer<'a> {
             "import" => Token::Import,
             "export" => Token::Export,
             "bind" => Token::Bind,
+            "defparam" => Token::Defparam,
             "specify" => Token::Specify,
             "endspecify" => Token::EndSpecify,
             "specparam" => Token::SpecParam,
