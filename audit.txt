@@ -1050,8 +1050,17 @@ ELAB-08: ⚠️ Config/library mapping — PARTIAL (ROUND 85b tahap 1)
          (VERIF-06 F19). Yang masih open: type parameter support untuk
          config_db::set/get (parameterized type resolution).
          Status: masih open untuk tahap lanjut.
-ELAB-09:[] Tidak ada instance array with parameter override per
-         instance path (High)
+ELAB-09: ✅ defparam / instance array parameter override per instance path
+         — IMPLEMENTASI PENUH (commit 4e675f6): lexer `defparam` → parser
+         (unit scope + module body, path dgn indeks array `u_a[0]`) → AST
+         `ModuleItem::DefParam` → collect `Elaborator::defparams` → apply
+         saat flatten (`PendingDefParam`, `inst_path` per-instance, merge ke
+         `param_map` SEBELUM signature → re-elaborasi; defparam menang atas
+         `#()`). Warning dedup per (line,col). Tests: 8 e2e
+         defparam_tests.rs (unit/module scope, array per-elemen, nested,
+         const-expr, prioritas #(), warning). Limitation terdokumentasi:
+         target di generate block, nilai referensi symbol lain, param top
+         module. Full suite 3367 pass.
 ELAB-10: ✅ parameter type override — flatten.rs (name + param override +
            type param override sorted) + test_parameter_type_override.
 ELAB-11: ✅ elaborated database persistence — MICD elaborate/ cache:
@@ -8108,4 +8117,34 @@ WAJIB DI UPDATE TEXT SETELAH SELESAI
      "GenuineIntel" utuh. Test diperkuat.
    - cargo test --workspace: ✅ 2659 passed, 0 failed (18 skipped);
      maria-emu: 87 passed, 0 failed.
+\\=======================================================================//
+
+📊 VERIFIKASI ROUND 85 — ELAB-09 defparam implementation:
+   - Audit item: "ELAB-09: Tidak ada instance array with parameter override
+     per instance path (High)" → ✅ IMPLEMENTASI PENUH (commit 4e675f6).
+   - Pipeline: lexer `defparam` (parser + FastLexer) → `parse_defparam()`
+     (unit scope + module body; segmen indeks array disimpan sebagai teks
+     `u_a[0]` agar match nama instance hasil ekspansi flatten) → AST
+     `ModuleItem::DefParam` → collect `Elaborator::defparams` (pre-pass
+     `elaborate()`) → apply saat flatten: `PendingDefParam` di-resolve ke
+     path absolut per-instance (`inst_path`), merge ke param_map via
+     `Arc::make_mut` SEBELUM `needs_custom_params`/signature → instance
+     di-elaborasi ulang dgn override; defparam menang atas `#()`.
+   - Review agent: 12 temuan (2 major, 6 minor, 4 nit) — semua major/minor
+     utama diperbaiki: warning dedup per (line,col) (`warn_defparam_once`),
+     limitation generate block + referensi symbol didokumentasikan di
+     komentar/pesan, comment menyesatkan generate.rs diluruskan,
+     `mfmt` keyword `defparam` ditambahkan, index number parse fix
+     (Display `Token::Number` jatuh ke Debug → teks `Number {..}` salah).
+   - Tests: +8 e2e (crates/mivon-tests/src/defparam_tests.rs):
+     unit-scope, module-body relatif, instance array per-elemen
+     (`u_a[0]`/`u_a[1]` beda nilai), path nested 2 level, const-expr
+     `4+4`, prioritas atas `#()`, bad target = warning bukan error,
+     defparam setelah endmodule.
+   - cargo nextest run --workspace --features dev: ✅ 3367 passed,
+     0 failed, 24 skipped — baseline sebelumnya 3361; +8 defparam
+     (termasuk 1 test mivon-tools migrate defparam warning yang sudah ada).
+   - Sisa limitation tahap 1 (terdokumentasi, warning): defparam menarget
+     instance di dalam generate block, nilai mereferensi symbol lain,
+     param modul teratas.
 \\=======================================================================//
