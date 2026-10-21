@@ -1,9 +1,15 @@
 // Allow large Result Err variant for SimError (intentional)
 #![allow(clippy::result_large_err, clippy::type_complexity)]
 
+mod anim_glue;
 mod cli;
 mod dispatch;
 
+use anim_glue::{
+    anim_abort, anim_active, anim_enabled, anim_finish, anim_log, anim_phase_done,
+    anim_phase_running, anim_set_cached, anim_set_exts, anim_set_files, anim_set_modules,
+    anim_set_top, emit_diags_anim,
+};
 use clap::Parser as ClapParser;
 use cli::Cli;
 use dispatch::{
@@ -76,7 +82,7 @@ fn init_warn_filter(cli: &Cli) {
     let _ = WARN_FILTER_MAX.set(cli.max_warnings.unwrap_or(usize::MAX));
 }
 
-fn emit_diags(diags: &[mivon_core::diagnostics::diagnostic::Diagnostic]) {
+pub(crate) fn emit_diags(diags: &[mivon_core::diagnostics::diagnostic::Diagnostic]) {
     let no_warn = WARN_FILTER_NO_WARN.load(std::sync::atomic::Ordering::Relaxed);
     let allow_codes = WARN_FILTER_ALLOW.get().cloned().unwrap_or_default();
     let max_warn = WARN_FILTER_MAX.get().copied();
@@ -365,126 +371,6 @@ fn micd_save_and_print(session: &mut CompileSession, quiet: bool, suppress: bool
                 eprintln!("[MICD] save warning: {}", e);
             }
         }
-    }
-}
-
-/// Apakah animasi pipeline aktif (menggambar di terminal).
-fn anim_active(anim: &Option<PipelineAnimator>) -> bool {
-    anim.as_ref().map(|a| a.is_active()).unwrap_or(false)
-}
-
-/// Kapan animasi pipeline diizinkan: bukan quiet, bukan mode debug/step,
-/// bukan compile-only/lazy (output verbose akan merusak area animasi).
-/// `MIVON_NO_ANIM` menonaktifkan animasi paksa (dipakai saat profiling/debug
-/// dengan gdb/scripting — area animasi bisa mengganggu output dan thread render).
-fn anim_enabled(cli: &Cli) -> bool {
-    if std::env::var("MIVON_NO_ANIM").is_ok() {
-        return false;
-    }
-    !cli.quiet
-        && !cli.compile_only
-        && !cli.lazy
-        && !cli.debug
-        && !cli.step
-        && cli.break_cycle.is_empty()
-        && cli.break_change.is_empty()
-        && cli.break_eq.is_empty()
-        && cli.watch.is_empty()
-}
-
-/// Helpers ringkas untuk memanggil method animator tanpa unwrap.
-fn anim_phase_running(anim: &Option<PipelineAnimator>, phase: Phase) {
-    if let Some(a) = anim.as_ref() {
-        a.phase_running(phase);
-    }
-}
-
-fn anim_phase_done(anim: &Option<PipelineAnimator>, phase: Phase) {
-    if let Some(a) = anim.as_ref() {
-        a.phase_done(phase);
-    }
-}
-
-fn anim_set_files(anim: &Option<PipelineAnimator>, total: u64, done: u64) {
-    if let Some(a) = anim.as_ref() {
-        a.set_files(total, done);
-    }
-}
-
-fn anim_set_modules(anim: &Option<PipelineAnimator>, n: u64) {
-    if let Some(a) = anim.as_ref() {
-        a.set_modules(n);
-    }
-}
-
-fn anim_finish(anim: &mut Option<PipelineAnimator>, ok: bool, errors: usize, warnings: usize) {
-    if let Some(a) = anim.as_mut() {
-        a.finish(ok, errors, warnings);
-    }
-}
-
-fn anim_abort(anim: &mut Option<PipelineAnimator>, errors: usize, warnings: usize) {
-    if let Some(a) = anim.as_mut() {
-        a.abort(errors, warnings);
-    }
-}
-
-/// Log fase bergaya Cargo: baris status dibersihkan dulu (bila aktif), pesan
-/// dicetak sebagai baris tersendiri DI ATAS status, lalu status digambar ulang
-/// di baris berikutnya. Non-aktif → eprintln biasa.
-fn anim_log(anim: &Option<PipelineAnimator>, msg: &str) {
-    match anim.as_ref() {
-        Some(a) if a.is_active() => a.suspend_print(|| eprintln!("{}", msg)),
-        _ => eprintln!("{}", msg),
-    }
-}
-
-/// Wrapper `emit_diags` yang aman terhadap animasi aktif — diagnostik multi-baris
-/// dicetak saat render dijeda, lalu baris status digambar ulang.
-fn emit_diags_anim(
-    anim: &Option<PipelineAnimator>,
-    diags: &[mivon_core::diagnostics::diagnostic::Diagnostic],
-) {
-    match anim.as_ref() {
-        Some(a) if a.is_active() => a.suspend_print(|| emit_diags(diags)),
-        _ => emit_diags(diags),
-    }
-}
-
-/// Hitung jumlah file per ekstensi `[sv, svh, v, vh]` lalu pasang ke animasi
-/// (tampil di baris idle: `Compiling 128 file · sv 112 · svh 14`).
-fn anim_set_exts<P: AsRef<std::path::Path>>(anim: &Option<PipelineAnimator>, files: &[P]) {
-    if let Some(a) = anim.as_ref() {
-        let mut exts = [0u64; 4];
-        for f in files {
-            match f
-                .as_ref()
-                .extension()
-                .and_then(|e| e.to_str())
-                .map(|e| e.to_ascii_lowercase())
-            {
-                Some(ref e) if e == "sv" => exts[0] += 1,
-                Some(ref e) if e == "svh" => exts[1] += 1,
-                Some(ref e) if e == "v" => exts[2] += 1,
-                Some(ref e) if e == "vh" => exts[3] += 1,
-                _ => {}
-            }
-        }
-        a.set_ext_counts(exts);
-    }
-}
-
-/// Pasang top module ke baris status (subjek fase ELA).
-fn anim_set_top(anim: &Option<PipelineAnimator>, top: &str) {
-    if let Some(a) = anim.as_ref() {
-        a.set_top(top);
-    }
-}
-
-/// Pasang jumlah file cache-hit (MICD) — tampil sebagai `N cached`.
-fn anim_set_cached(anim: &Option<PipelineAnimator>, n: u64) {
-    if let Some(a) = anim.as_ref() {
-        a.set_cached(n);
     }
 }
 
@@ -5083,6 +4969,23 @@ mod tests {
                 argv
             );
         }
+    }
+
+    /// Refactor stage: glue animasi pindah ke `anim_glue.rs` — gerbang
+    /// animasi (quiet/step) harus berperilaku sama seperti sebelumnya.
+    #[test]
+    fn anim_enabled_gate_unchanged() {
+        use clap::Parser;
+        // MIVON_NO_ANIM mematikan paksa; jangan bergantung env mesin.
+        if std::env::var("MIVON_NO_ANIM").is_ok() {
+            return;
+        }
+        let plain = crate::cli::Cli::try_parse_from(["mivon", "a.sv"]).expect("parse");
+        assert!(crate::anim_enabled(&plain), "default harus aktif");
+        let quiet = crate::cli::Cli::try_parse_from(["mivon", "-q", "a.sv"]).expect("parse");
+        assert!(!crate::anim_enabled(&quiet), "quiet harus mematikan animasi");
+        let step = crate::cli::Cli::try_parse_from(["mivon", "--step", "a.sv"]).expect("parse");
+        assert!(!crate::anim_enabled(&step), "step harus mematikan animasi");
     }
 
     /// Fuzz `verify_bug_0228`: pesan diagnostik >80 byte yang memuat karakter
