@@ -3226,3 +3226,22 @@ endmodule"#;
         "dag harus identik dengan serial (ditemukan mivon-fuzz: X)"
     );
 }
+
+// === LRM §5.6: `$name` = keyword sistem — TIDAK boleh jadi identifier ===
+// (canary bug terbuka, temuan reviewer oracle-fix fuzz: lexer memecah
+// `$fatal` menjadi `Dollar` + ident `fatal`; parser recovery menerima
+// keduanya sebagai NAMA MODUL tanpa satu diag pun. LRM: `$fatal` bukan
+// identifier yang sah. `#[ignore]` = gate "belum beres" — test menegaskan
+// perilaku LRM yang BENAR; saat akar (parser/lexer) dibereskan, hapus
+// `#[ignore]` dan test langsung hijau permanen.)
+#[test]
+#[ignore = "BUG TERBUKA (LRM §5.6): ident `$fatal` diterima via recovery tanpa diag error"]
+fn system_keyword_dollar_name_rejected_as_identifier() {
+    // Perilaku benar: `$fatal` sbg nama modul HARUS gagal compile dengan
+    // diag error — bukan di-recovery jadi modul bernama `$fatal`.
+    let result = crate::compile_str("module $fatal; endmodule");
+    assert!(
+        result.is_err(),
+        "LRM §5.6: `$name` bukan identifier yang sah — `$fatal` sebagai nama modul harus munculkan diag error, dapat Ok"
+    );
+}
