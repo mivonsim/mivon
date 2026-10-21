@@ -5,8 +5,12 @@ mod cli;
 mod dispatch;
 
 use clap::Parser as ClapParser;
-use dispatch::*;
 use cli::Cli;
+use dispatch::{
+    dispatch_batch, dispatch_cov_closure, dispatch_design_repo, dispatch_eco,
+    dispatch_equiv_check, dispatch_ipxact, dispatch_memcheck, dispatch_project, dispatch_regression,
+    dispatch_sdc, dispatch_tbgen, dispatch_vault, dispatch_waiver, exit_tool,
+};
 use std::path::{Path, PathBuf};
 use std::process;
 
@@ -5252,8 +5256,6 @@ fn emu_snapshot_save(
     )))
 }
 
-/// Jalankan tool, cetak error via TerminalEmitter, exit dengan kode.
-
 #[cfg(test)]
 mod tests {
     use super::truncate_ellipsis;
@@ -5273,6 +5275,17 @@ mod tests {
         let cli = crate::cli::Cli::try_parse_from(["mivon", "mipxact", "summary"])
             .expect("mipxact summary harus parse");
         assert!(matches!(cli.cmd, Some(crate::cli::MivonCmd::Ipxact(_))));
+        // Sisa adaptor: pastikan semua varian yang dilayani extra.rs tercakup
+        // (memcheck & tbgen sempat lolos dari test pertama).
+        let cli = crate::cli::Cli::try_parse_from(["mivon", "memcheck", "/bin/true"])
+            .expect("memcheck harus parse");
+        assert!(matches!(cli.cmd, Some(crate::cli::MivonCmd::Memcheck(_))));
+        let cli = crate::cli::Cli::try_parse_from(["mivon", "mtbgen", "-m", "dut"])
+            .expect("mtbgen harus parse");
+        assert!(matches!(cli.cmd, Some(crate::cli::MivonCmd::Tbgen(_))));
+        let cli = crate::cli::Cli::try_parse_from(["mivon", "mwaiver", "list"])
+            .expect("mwaiver list harus parse");
+        assert!(matches!(cli.cmd, Some(crate::cli::MivonCmd::Waiver(_))));
     }
 
     /// Refactor stage: adaptor manajemen desain & kualitas dipindah ke
@@ -5299,8 +5312,15 @@ mod tests {
             "--input",
             "x.json",
         ])
-            .expect("mcov-closure analyze harus parse");
+        .expect("mcov-closure analyze harus parse");
         assert!(matches!(cli.cmd, Some(crate::cli::MivonCmd::CovClosure(_))));
+        let cli = crate::cli::Cli::try_parse_from(["mivon", "msdc", "x.sdc"])
+            .expect("msdc harus parse");
+        assert!(matches!(cli.cmd, Some(crate::cli::MivonCmd::Sdc(_))));
+        let cli =
+            crate::cli::Cli::try_parse_from(["mivon", "mequiv", "-g", "g.json", "-i", "i.json"])
+                .expect("mequiv harus parse");
+        assert!(matches!(cli.cmd, Some(crate::cli::MivonCmd::EquivCheck(_))));
     }
 
     /// Fuzz `verify_bug_0228`: pesan diagnostik >80 byte yang memuat karakter
