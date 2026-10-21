@@ -911,6 +911,30 @@ fn read_source_bytes(
     std::fs::read(path)
 }
 
+/// Flag mesin yang harus berlaku di SEMUA jalur eksekusi (legacy `run` dan
+/// `run_fast`). Dulu `--jit-body` hanya dipasang di jalur legacy dan
+/// `--cycle-fusion` hanya di jalur fast → flag diabaikan diam-diam.
+#[derive(Debug, PartialEq, Eq)]
+struct EngineFlags {
+    mir_jit: bool,
+    cycle_fusion: bool,
+}
+
+fn engine_flags(cli: &Cli) -> EngineFlags {
+    EngineFlags {
+        mir_jit: cli.jit_body,
+        cycle_fusion: cli.cycle_fusion,
+    }
+}
+
+/// Pasang flag mesin dari CLI — dipanggil kedua jalur agar tak ada yang
+/// tertinggal saat pipeline diubah.
+fn apply_engine_flags(engine: &mut SimulationEngine, cli: &Cli) {
+    let f = engine_flags(cli);
+    engine.use_mir_jit = f.mir_jit;
+    engine.use_cycle_fusion = f.cycle_fusion;
+}
+
 fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), SimError> {
     env.telemetry().metrics.inc_build();
     env.telemetry().trace("run", "pipeline legacy dimulai");
@@ -2452,7 +2476,7 @@ fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), SimError> {
     engine.snapshot_interval = cli.snap_interval;
     engine.use_packed_eval = cli.packed;
     engine.use_dag_parallel = cli.parallel;
-    engine.use_mir_jit = cli.jit_body;
+    apply_engine_flags(&mut engine, &cli);
     engine.use_timing_wheel = cli.use_timing_wheel;
     // SIM-20: cycle-based mode (--cycle / --cycle-period)
     engine.set_cycle_based(cli.cycle_mode);
@@ -3909,7 +3933,7 @@ fn run_fast(
     engine.snapshot_interval = cli.snap_interval;
     engine.use_packed_eval = cli.packed;
     engine.use_dag_parallel = cli.parallel;
-    engine.use_cycle_fusion = cli.cycle_fusion;
+    apply_engine_flags(&mut engine, &cli);
     // SIM-20: cycle-based mode (--cycle / --cycle-period)
     engine.set_cycle_based(cli.cycle_mode);
     engine.set_cycle_period(cli.cycle_period);
@@ -4988,6 +5012,28 @@ mod tests {
                 argv
             );
         }
+    }
+
+    /// Regresi bug wiring (temuan reviewer-2): kedua flag mesin harus
+    /// berlaku di SEMUA jalur. Dulu `--jit-body` hanya dipasang di jalur
+    /// legacy dan `--cycle-fusion` hanya di jalur fast → diabaikan diam-diam.
+    #[test]
+    fn engine_flags_cover_both_pipelines() {
+        use clap::Parser;
+        let cli = crate::cli::Cli::try_parse_from([
+            "mivon",
+            "--jit-body",
+            "--cycle-fusion",
+            "a.sv",
+        ])
+        .expect("flag harus parse");
+        let f = crate::engine_flags(&cli);
+        assert!(f.mir_jit, "--jit-body harus terbaca");
+        assert!(f.cycle_fusion, "--cycle-fusion harus terbaca");
+
+        let plain = crate::cli::Cli::try_parse_from(["mivon", "a.sv"]).expect("parse");
+        let f = crate::engine_flags(&plain);
+        assert!(!f.mir_jit && !f.cycle_fusion, "default harus mati");
     }
 
     /// Refactor stage: glue animasi pindah ke `anim_glue.rs` — gerbang
