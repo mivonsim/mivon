@@ -8,8 +8,10 @@
 //! - `extra.rs` — tool tambahan (batch, memcheck, tbgen, waiver, vault, ipxact).
 
 mod extra;
+mod manage;
 
 pub(crate) use extra::*;
+pub(crate) use manage::*;
 
 use mivon_core::error::SimError;
 
