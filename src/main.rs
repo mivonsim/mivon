@@ -5,6 +5,7 @@ mod anim_glue;
 mod cli;
 #[cfg(feature = "formal")]
 mod formal_run;
+mod pipeline_config;
 mod report_glue;
 mod source_io;
 mod dispatch;
@@ -16,6 +17,7 @@ use anim_glue::{
 };
 use clap::Parser as ClapParser;
 use cli::Cli;
+use pipeline_config::{micd_root_for, pick_elab_mode};
 use source_io::{content_has_timescale, load_project_foreign_libs, read_source_bytes};
 #[cfg(feature = "formal")]
 use formal_run::run_formal;
@@ -44,7 +46,7 @@ use mivon_core::animasi::{Phase, PipelineAnimator};
 use mivon_core::diagnostics::DiagCode;
 use mivon_core::diagnostics::DiagLevel;
 use mivon_core::error::SimError;
-use mivon_elaboration::elaborator::{ElaborateMode, Elaborator};
+use mivon_elaboration::elaborator::Elaborator;
 use mivon_ir::LogicVec;
 use mivon_parser::lexer::Lexer;
 use mivon_parser::preprocessor::Preprocessor;
@@ -288,42 +290,6 @@ fn check_coverage_threshold(
         );
     }
     Ok(())
-}
-
-/// Pilih ElaborateMode: config `[elaborate] mode` menang, lalu `--top` eksplisit
-/// (StrictSimulation), lalu AnalysisRecovery (tanpa top — analisis saja).
-/// Nilai config yang tidak dikenal memicu warning lalu fallback ke logika CLI.
-fn pick_elab_mode(cli: &Cli) -> ElaborateMode {
-    match cli.config_elab_mode.as_deref() {
-        Some(m) if m.eq_ignore_ascii_case("analysisrecovery") => ElaborateMode::AnalysisRecovery,
-        Some(m) if m.eq_ignore_ascii_case("strictsimulation") => ElaborateMode::StrictSimulation,
-        Some(m) => {
-            eprintln!("warning: elaborate.mode '{}' tidak dikenal (pakai StrictSimulation / AnalysisRecovery) — memakai mode default", m);
-            if cli.top.is_some() {
-                ElaborateMode::StrictSimulation
-            } else {
-                ElaborateMode::AnalysisRecovery
-            }
-        }
-        None => {
-            if cli.top.is_some() {
-                ElaborateMode::StrictSimulation
-            } else {
-                ElaborateMode::AnalysisRecovery
-            }
-        }
-    }
-}
-
-/// Path root database MICD, dengan support `--target-dir`.
-/// `--target-dir <path>` override path default (`.mivon/database`).
-fn micd_root_for(cli: &Cli) -> std::path::PathBuf {
-    use mivon_compiler::micd::MicdDatabase;
-    if let Some(ref dir) = cli.target_dir {
-        std::path::PathBuf::from(dir).join("database")
-    } else {
-        MicdDatabase::default_root()
-    }
 }
 
 /// Bersihkan database MICD (`.mivon/database`). Menghapus isi
