@@ -369,7 +369,20 @@ fn cmd_minimize(args: &[String]) -> i32 {
     eprintln!("minimized: {} -> {} bytes", source.len(), min.len());
     println!("{min}");
 
-    let out = file.replace(".sv", "_min.sv");
+    // Nama keluaran SAMA dengan yang dicari `collect_bugs` (regression.rs):
+    // `{file_stem}_min.sv` via `with_file_name` — bukan `.replace(".sv", ...)
+    // yang mengoperasi seluruh string path (dir mengandung ".sv" kena korup,
+    // `x.sv.sv` → `x_min.sv_min.sv`, dan input tanpa ekstensi malah menimpa
+    // file ASLI: replace no-op → out == input).
+    let path = std::path::Path::new(&file);
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("artifact");
+    let out = path
+        .with_file_name(format!("{stem}_min.sv"))
+        .to_string_lossy()
+        .to_string();
     let _ = std::fs::write(&out, &min);
     eprintln!("tersimpan: {out}");
     0
