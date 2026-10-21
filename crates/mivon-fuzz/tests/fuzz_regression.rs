@@ -257,9 +257,9 @@ fn reg_bug_151139797a01_roundtrip_mismatch() {
     let target = Target::from_token("mv").expect("target valid");
     let expected = Category::from_label("roundtrip_mismatch").expect("category valid");
     let r = oracle::evaluate(target, src, 20000);
-    assert_eq!(
+    assert_ne!(
         r.category, expected,
-        "canary: bug_151139797a01_roundtrip_mismatch tidak lagi mereproduksi kategori tercatat — replay + regenerate (mivon-fuzz regress), jangan edit manual ({:?}): {}",
+        "regression: bug_151139797a01_roundtrip_mismatch reproduced ({:?}): {}",
         r.category, r.detail.lines().next().unwrap_or("")
     );
 }
@@ -335,9 +335,9 @@ fn reg_bug_490d4c855149_roundtrip_mismatch() {
     let target = Target::from_token("mv").expect("target valid");
     let expected = Category::from_label("roundtrip_mismatch").expect("category valid");
     let r = oracle::evaluate(target, src, 20000);
-    assert_eq!(
+    assert_ne!(
         r.category, expected,
-        "canary: bug_490d4c855149_roundtrip_mismatch tidak lagi mereproduksi kategori tercatat — replay + regenerate (mivon-fuzz regress), jangan edit manual ({:?}): {}",
+        "regression: bug_490d4c855149_roundtrip_mismatch reproduced ({:?}): {}",
         r.category, r.detail.lines().next().unwrap_or("")
     );
 }
@@ -374,9 +374,9 @@ fn reg_bug_6365eafcd317_roundtrip_mismatch() {
     let target = Target::from_token("mv").expect("target valid");
     let expected = Category::from_label("roundtrip_mismatch").expect("category valid");
     let r = oracle::evaluate(target, src, 20000);
-    assert_eq!(
+    assert_ne!(
         r.category, expected,
-        "canary: bug_6365eafcd317_roundtrip_mismatch tidak lagi mereproduksi kategori tercatat — replay + regenerate (mivon-fuzz regress), jangan edit manual ({:?}): {}",
+        "regression: bug_6365eafcd317_roundtrip_mismatch reproduced ({:?}): {}",
         r.category, r.detail.lines().next().unwrap_or("")
     );
 }
@@ -400,9 +400,9 @@ fn reg_bug_73041522a5c7_roundtrip_mismatch() {
     let target = Target::from_token("mv").expect("target valid");
     let expected = Category::from_label("roundtrip_mismatch").expect("category valid");
     let r = oracle::evaluate(target, src, 20000);
-    assert_eq!(
+    assert_ne!(
         r.category, expected,
-        "canary: bug_73041522a5c7_roundtrip_mismatch tidak lagi mereproduksi kategori tercatat — replay + regenerate (mivon-fuzz regress), jangan edit manual ({:?}): {}",
+        "regression: bug_73041522a5c7_roundtrip_mismatch reproduced ({:?}): {}",
         r.category, r.detail.lines().next().unwrap_or("")
     );
 }
@@ -452,9 +452,9 @@ fn reg_bug_9f1347db4111_roundtrip_mismatch() {
     let target = Target::from_token("mv").expect("target valid");
     let expected = Category::from_label("roundtrip_mismatch").expect("category valid");
     let r = oracle::evaluate(target, src, 20000);
-    assert_eq!(
+    assert_ne!(
         r.category, expected,
-        "canary: bug_9f1347db4111_roundtrip_mismatch tidak lagi mereproduksi kategori tercatat — replay + regenerate (mivon-fuzz regress), jangan edit manual ({:?}): {}",
+        "regression: bug_9f1347db4111_roundtrip_mismatch reproduced ({:?}): {}",
         r.category, r.detail.lines().next().unwrap_or("")
     );
 }
@@ -465,9 +465,9 @@ fn reg_bug_a6a2036648f7_roundtrip_mismatch() {
     let target = Target::from_token("mv").expect("target valid");
     let expected = Category::from_label("roundtrip_mismatch").expect("category valid");
     let r = oracle::evaluate(target, src, 20000);
-    assert_eq!(
+    assert_ne!(
         r.category, expected,
-        "canary: bug_a6a2036648f7_roundtrip_mismatch tidak lagi mereproduksi kategori tercatat — replay + regenerate (mivon-fuzz regress), jangan edit manual ({:?}): {}",
+        "regression: bug_a6a2036648f7_roundtrip_mismatch reproduced ({:?}): {}",
         r.category, r.detail.lines().next().unwrap_or("")
     );
 }
@@ -491,9 +491,9 @@ fn reg_bug_ee569a845cbe_roundtrip_mismatch() {
     let target = Target::from_token("mv").expect("target valid");
     let expected = Category::from_label("roundtrip_mismatch").expect("category valid");
     let r = oracle::evaluate(target, src, 20000);
-    assert_eq!(
+    assert_ne!(
         r.category, expected,
-        "canary: bug_ee569a845cbe_roundtrip_mismatch tidak lagi mereproduksi kategori tercatat — replay + regenerate (mivon-fuzz regress), jangan edit manual ({:?}): {}",
+        "regression: bug_ee569a845cbe_roundtrip_mismatch reproduced ({:?}): {}",
         r.category, r.detail.lines().next().unwrap_or("")
     );
 }

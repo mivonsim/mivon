@@ -339,6 +339,48 @@ pub(crate) fn check_expr<'a>(
             for a in args {
                 check_expr(a, ctx, scope, depth + 1)?;
             }
+            // E2001: panggilan fungsi/task tidak terdeklarasi — dulu dilewati
+            // diam-diam lalu di-emit verbatim, dan SV compile gagal E3001
+            // ("function 'x' not found") = roundtrip bug palsu dari kampanye
+            // fuzz. .mv tidak punya fungsi eksternal lingkup file (F29 hanya
+            // MENOLERANSI modul eksternal), jadi error di level .mv lebih
+            // tepat dan mencegah SV rusak.
+            // Panggilan sistem `$...` (mis. `$info`, `$display`) diizinkan
+            // lewat — tanda tangan sistem fleksibel (diproses di SysFunc).
+            // Panggilan method implisit di badan class diperbolehkan: class
+            // boleh `extends <base eksternal>` (F29) yang tak bisa di-
+            // maksud di file ini (f29 UVM test perlu method eksternal).
+            if !name.starts_with('$') && !scope.in_class {
+                // `pkg::f` (referensi package lintas-file, F77r4) — map
+                // func_arity di-key nama polos; kandidat = nama penuh dulu,
+                // lalu suffix item. Bila semua miss → E2001.
+                let known = scope.func_arity.contains_key(name.as_str())
+                    || name.split_once("::")
+                        .map(|(_, item)| scope.func_arity.contains_key(item))
+                        .unwrap_or(false);
+                if !known {
+                    if ctx.types.contains_key(name.as_str()) {
+                        // Panggilan ke nama tipe (`Word16()`) — bentuk kast yang
+                        // sah di .mv adalah `T'(x)` (F33), bukan `T()`.
+                        return Err(err_at(
+                            *l,
+                            *c,
+                            "E2001",
+                            format!(
+                                "panggilan tipe '{name}()' bukan bentuk sah — kast: `{name}'(x)`"
+                            ),
+                        ));
+                    }
+                    return Err(err_at(
+                        *l,
+                        *c,
+                        "E2001",
+                        format!(
+                            "function '{name}' tidak ditemukan — deklarasi `func {name}` diperlukan (bukan konstruksi eksternal)"
+                        ),
+                    ));
+                }
+            }
             // E2011: jumlah argumen harus cocok dengan tanda tangan function.
             let n = args.len();
             if let Some(Some((req, total))) = scope.func_arity.get(name.as_str()) {

@@ -121,6 +121,10 @@ pub(crate) struct Scope<'a> {
     pub(crate) loop_depth: usize,
     /// apakah sedang di dalam task (return expr di task = error)
     pub(crate) in_task: bool,
+    /// sedang di dalam badan class — method dari base eksternal tidak bisa
+    /// divalidasi, jadi panggilan method tak dikenal di class diperbolehkan
+    /// (pola F29: konstruksi eksternal ditoleransi, bukan error).
+    pub(crate) in_class: bool,
 }
 
 impl Scope<'_> {
@@ -756,5 +760,6 @@ pub(crate) fn new_scope<'a>(ctx: &'a Ctx<'a>, mname: &'a str) -> Scope<'a> {
         },
         loop_depth: 0,
         in_task: false,
+        in_class: false,
     }
 }

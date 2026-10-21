@@ -399,6 +399,50 @@ fn e2001_in_class_method() {
 }
 
 #[test]
+fn e2001_unknown_function_call() {
+    // Panggilan fungsi tak-dideklarasi dulu dilewati → transpile memancar-
+    // kan verbatim → SV compile E3001 (fuzz bug_9f1347db4111). Kini E2001
+    // di level .mv.
+    let src = "module t { initial { b() } }";
+    let e = check_src(src).unwrap_err();
+    assert!(e.msg.contains("E2001"), "msg: {}", e.msg);
+    assert!(e.msg.contains("b"), "msg: {}", e.msg);
+}
+
+#[test]
+fn e2001_type_call_bukan_kast() {
+    // `Word16()` = panggilan nama tipe — kast sah di .mv adalah `Word16'(x)`
+    // (F33). Dulu memancar verbatim → SV rusak (fuzz bug_a6a2036648f7).
+    let src = "type Word16 = logic[2]\nmodule a {\n sig y : Word16\n initial { y = Word16() }\n}";
+    let e = check_src(src).unwrap_err();
+    assert!(e.msg.contains("E2001"), "msg: {}", e.msg);
+    assert!(e.msg.contains("Word16"), "msg: {}", e.msg);
+}
+
+#[test]
+fn e2001_modport_kosong() {
+    // `modport e {}` tanpa item arah → SV `modport e();` tak sah (LRM §25.9)
+    // (fuzz bug_6365eafcd317).
+    let src = "interface axi_lite {\n modport e { }\n}";
+    let e = check_src(src).unwrap_err();
+    assert!(e.msg.contains("E2001"), "msg: {}", e.msg);
+    assert!(e.msg.contains("modport 'e' kosong"), "msg: {}", e.msg);
+}
+
+#[test]
+fn e2001_assert_property_event_kosong() {
+    // `assert property (@())` → SV `assert property (@());` tak sah (LRM
+    // §16.12: kontrol event wajib ekspresi) (fuzz bug_490d4c855149).
+    let src = "module c { initial { assert property(@()) } }";
+    let e = check_src(src).unwrap_err();
+    assert!(e.msg.contains("event kontrol kosong"), "msg: {}", e.msg);
+    // Bentuk ber-spasi `@ ()` juga tertangkap (normalisasi whitespace).
+    let src2 = "module c { initial { assert property(@ ()) } }";
+    let e2 = check_src(src2).unwrap_err();
+    assert!(e2.msg.contains("event kontrol kosong"), "msg: {}", e2.msg);
+}
+
+#[test]
 fn e2007_duplicate_class_field() {
     let src = "class c {\n field x : uint\n field x : uint\n}";
     let e = check_src(src).unwrap_err();

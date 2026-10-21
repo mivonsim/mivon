@@ -114,6 +114,21 @@ pub(crate) fn check_interface<'a>(i: &'a Interface, ctx: &'a Ctx<'a>) -> Result<
                 ),
             ));
         }
+        // E2001: modport KOSONG (`modport e {}` tanpa item arah) — parser
+        // menerima, tapi SV yang di-emit `modport e()` TIDAK sah (LRM §25.9:
+        // modport butuh minimal satu simpul arah) → hasil transpile tak
+        // parseable (fuzz bug_6365eafcd317). Error di level .mv.
+        if mp.dirs.is_empty() {
+            return Err(err_at(
+                mp.line,
+                mp.col,
+                "E2001",
+                format!(
+                    "modport '{}' kosong — minimal satu item arah (in/out/inout) diperlukan di interface '{}'",
+                    mp.name, i.name
+                ),
+            ));
+        }
         for (_, names) in &mp.dirs {
             for n in names {
                 if !sig_names.contains(n.as_str()) {

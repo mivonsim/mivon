@@ -40,7 +40,21 @@ impl Parser {
                     depth -= 1;
                     self.advance();
                     if depth == 0 {
-                        return Ok(self.raw_slice(sl, sc, l, c + 1));
+                        let sliced = self.raw_slice(sl, sc, l, c + 1);
+                        // E2001: event kontrol kosong `@()` — di-emit 1:1 jadi
+                        // `assert property (@());` yang TIDAK sah di SV (LRM
+                        // §16.12: kontrol event wajib punya ekspresi clocking)
+                        // → hasil transpile tak parseable (fuzz bug_490d4c855149).
+                        let norm: String =
+                            sliced.split_whitespace().collect::<Vec<_>>().join("");
+                        if norm.contains("@()") {
+                            return Err(MvError::new(
+                                sl,
+                                sc,
+                                "assert property dengan event kontrol kosong `@()` — tulis ekspresi clocking, mis. `@(posedge clk)`".to_string(),
+                            ));
+                        }
+                        return Ok(sliced);
                     }
                 }
                 _ => {

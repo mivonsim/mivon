@@ -61,6 +61,7 @@ fn check_expr_stmt_ctx<'a>(
 /// `this`/`super`/`rand` adalah kata kunci konteks — bukan sinyal.
 pub(crate) fn check_class<'a>(c: &'a MClass, ctx: &'a Ctx<'a>) -> Result<(), MvError> {
     let mut scope = new_scope(ctx, &c.name);
+    scope.in_class = true;
 
     // ── field: duplikat (E2007) + tipe (E2005) ──
     let mut fseen = HashSet::new();
