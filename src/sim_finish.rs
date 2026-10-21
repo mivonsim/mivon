@@ -17,7 +17,7 @@ use mivon_core::error::SimError;
 /// selesai, terlepas dari `--coverage-ucdb` — agar config `coverage.branch_threshold`
 /// benar-benar berlaku (sebelumnya hanya dicek saat menyimpan UCDB, sehingga
 /// gate CI dari config tidak pernah aktif).
-pub(crate) fn check_coverage_threshold(
+fn check_coverage_threshold(
     engine: &mivon_api::simulator::SimulationEngine,
     threshold: f64,
     quiet: bool,
@@ -134,7 +134,7 @@ pub(crate) fn finish_simulation(
         if let Err(e) = covdb.export_html(&path) {
             eprintln!("warning: HTML coverage report failed: {}", e);
         } else if !cli.quiet {
-            println!("HTML coverage report written to '{}'", html_path);
+            println!("HTML coverage report written to '{}'", path);
         }
     }
 
