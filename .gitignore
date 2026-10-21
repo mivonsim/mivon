@@ -34,6 +34,9 @@
 *.lock
 *.mv 
 *.sv
+# Carve-out: fixture canary mivon-fuzz (content-addressed, over EMBED_CAP)
+# HARUS ter-commit — include_str! mematahkan compile test di checkout lain.
+!crates/mivon-fuzz/tests/fixtures/*.sv
 *.mvnet
 *.v
 *.mcs

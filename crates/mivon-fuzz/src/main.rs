@@ -711,17 +711,34 @@ fn cmd_regress(args: &[String]) -> i32 {
 
     let entries = mivon_fuzz::regression::collect_bugs(&dir);
     // Fixture untuk artefak > EMBED_CAP: salin ke tests/fixtures/ agar tetap
-    // jadi test (`include_str!`) — bukan di-skip sebagai komentar.
+    // jadi test (`include_str!`) — HANYA utk canary live (assert_eq). Canary
+    // statis (assert_ne) tanpa fixture mematahkan compile checkout lain:
+    // `.gitignore` repo melarang `*.sv` sehingga fixture tak akan ter-commit.
     let fixtures = mivon_fuzz::corpus::workspace_root().join("crates/mivon-fuzz/tests/fixtures");
     let mut n_fixture = 0usize;
     // Comment kini penyimpanan tunggal mivon-fuzz::regression::FIXTURE_MAX_BYTES
     // (dulu salinan lokal = 2 mata sumber nilai, review T4 nit 4).
     let mut written: Vec<u64> = Vec::new();
     let fix_cap = mivon_fuzz::regression::FIXTURE_MAX_BYTES;
+    let active = entries.iter().filter(|e| !e.skipped).count();
+    // Skip sejati = tanpa metadata; entri ukuran-besar tertangani fixture.
+    let sized = entries
+        .iter()
+        .filter(|e| e.skipped && e.skip_reason.starts_with("source "))
+        .count();
+    let skipped = entries.len() - active - sized;
+    // Deteksi LIVE (bug masi reproduksi) → canary assert_eq bukan assert_ne
+    // (suite tetap hijau; kantong bug muncul merah saat perilaku berubah).
+    eprintln!("regress: deteksi live ({active} entri, replay tiap bug ~s)");
+    let live = mivon_fuzz::regression::compute_live(&entries);
     for e in entries
         .iter()
         .filter(|e| e.skipped && e.skip_reason.starts_with("source "))
     {
+        // Tidak live → tidak ada test include_str → jangan tulis fixture.
+        if !live.contains(&e.name) {
+            continue;
+        }
         if e.source.len() > fix_cap {
             continue;
         }
@@ -740,17 +757,6 @@ fn cmd_regress(args: &[String]) -> i32 {
             n_fixture += 1;
         }
     }
-    let active = entries.iter().filter(|e| !e.skipped).count();
-    // Skip sejati = tanpa metadata; entri ukuran-besar tertangani fixture.
-    let sized = entries
-        .iter()
-        .filter(|e| e.skipped && e.skip_reason.starts_with("source "))
-        .count();
-    let skipped = entries.len() - active - sized;
-    // Deteksi LIVE (bug masi reproduksi) → canary assert_eq bukan assert_ne
-    // (suite tetap hijau; kantong bug muncul merah saat perilaku berubah).
-    eprintln!("regress: deteksi live ({active} entri, replay tiap bug ~s)");
-    let live = mivon_fuzz::regression::compute_live(&entries);
     let code = mivon_fuzz::regression::emit_rust_tests(&entries, &fixtures, &live);
 
     match std::fs::write(&out, &code) {

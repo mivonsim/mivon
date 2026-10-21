@@ -292,6 +292,7 @@ pub fn emit_rust_tests(
     // duplikat dicatat sebagai komentar.
     let mut seen_fp: Vec<u64> = Vec::new();
     let mut dup_comments: Vec<String> = Vec::new();
+    let mut skip_fixture_comments: Vec<String> = Vec::new();
     for e in &fixture_ready {
         let fp = content_fingerprint(&e.source);
         if seen_fp.contains(&fp) {
@@ -302,6 +303,20 @@ pub fn emit_rust_tests(
             continue;
         }
         seen_fp.push(fp);
+        // Fixture besar yang TIDAK live (bug flaky / tak reproduksi saat
+        // regenerate): canary statis assert_ne-nya tak bisa jalan tanpa file
+        // fixture, dan `.gitignore` repo melarang `*.sv` masuk git — embed
+        // include_str ke file yang tak pernah di-commit mematahkan compile
+        // test untuk checkout lain. Emit sebagai komentar skip; fixture baru
+        // di-embed bila bug kembali live (repr deterministik).
+        if !live.contains(&e.name) {
+            skip_fixture_comments.push(format!(
+                "//   {} — sumber {}B > EMBED_CAP, TIDAK live saat regenerate (flaky/tak stabil) — tanpa fixture di git",
+                e.name,
+                e.source.len()
+            ));
+            continue;
+        }
         let t = e.target.as_str();
         let c = e.category.label();
         out.push_str(&format!(
@@ -321,22 +336,24 @@ pub fn emit_rust_tests(
             "    let r = oracle::evaluate(target, src, {});\n",
             FIXTURE_TIMEOUT_MS
         ));
-        if live.contains(&e.name) {
-            out.push_str(&format!(
-                "    assert_eq!(\n        r.category, expected,\n        \"canary: {} tidak lagi mereproduksi kategori tercatat — replay + regenerate, jangan edit manual ({{:?}}): {{}}\",\n        r.category, r.detail.lines().next().unwrap_or(\"\")\n    );\n",
-                e.name
-            ));
-        } else {
-            out.push_str(&format!(
-                "    assert_ne!(\n        r.category, expected,\n        \"regression: {} reproduced ({{:?}}): {{}}\",\n        r.category, r.detail.lines().next().unwrap_or(\"\")\n    );\n",
-                e.name
-            ));
-        }
+        // Guarded di atas: masuk sini = live → canary assert_eq.
+        out.push_str(&format!(
+            "    assert_eq!(\n        r.category, expected,\n        \"canary: {} tidak lagi mereproduksi kategori tercatat — replay + regenerate, jangan edit manual ({{:?}}): {{}}\",\n        r.category, r.detail.lines().next().unwrap_or(\"\")\n    );\n",
+            e.name
+        ));
         out.push_str("}\n\n");
     }
     if !dup_comments.is_empty() {
         out.push_str("// --- DUPLIKAT (sumber identik, test sudah ada) ---\n");
         for c in &dup_comments {
+            out.push_str(c);
+            out.push('\n');
+        }
+        out.push('\n');
+    }
+    if !skip_fixture_comments.is_empty() {
+        out.push_str("// --- FIXTURE BESAR TIDAK LIVE (tanpa embed, lihat catatan emit) ---\n");
+        for c in &skip_fixture_comments {
             out.push_str(c);
             out.push('\n');
         }
@@ -570,8 +587,12 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Kontrak baru: fixture besar (> EMBED_CAP) di-embed include_str hanya
+    /// bila bug LIVE (canary assert_eq) — tanpa fixture ter-commit,
+    /// include_str mematahkan compile test di checkout lain (.gitignore
+    /// melarang *.sv).
     #[test]
-    fn emit_uses_fixture_for_oversized_when_available() {
+    fn emit_fixture_only_for_live_oversized() {
         let dir = std::env::temp_dir().join(format!("fzfix_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let fx = dir.join("fixtures");
@@ -585,12 +606,26 @@ mod tests {
         let code = emit_rust_tests(&entries, &fx, &Default::default());
         assert!(code.contains("SKIPPED"), "tanpa fixture = skip");
         assert!(!code.contains("include_str!"), "belum ada fixture");
-        // Fixture disediakan (content-addressed) → 1 bug tetap 1 test.
+        // Fixture TIDAK live: tersedia pun TIDAK di-embed — canary statis
+        // assert_ne tanpa fixture (embed-nya mematahkan compile checkout
+        // lain: .gitignore repo melarang *.sv, fixture tak ter-commit).
         let fx_name = fixture_name(&big);
         std::fs::write(fx.join(&fx_name), &big).unwrap();
         let code2 = emit_rust_tests(&entries, &fx, &Default::default());
-        assert!(code2.contains("fn reg_bug_big_hang()"));
-        assert!(code2.contains(&format!("include_str!(\"fixtures/{fx_name}\")")));
+        assert!(
+            !code2.contains(&format!("include_str!(\"fixtures/{fx_name}\")")),
+            "non-live: include_str dilarang"
+        );
+        assert!(
+            code2.contains("FIXTURE BESAR TIDAK LIVE"),
+            "alasan skip tercatat"
+        );
+        // LIVE: bug masih reproduksi → canary include_str tersusun.
+        let live: std::collections::HashSet<String> =
+            ["bug_big_hang".to_string()].into_iter().collect();
+        let code_live = emit_rust_tests(&entries, &fx, &live);
+        assert!(code_live.contains("fn reg_bug_big_hang()"));
+        assert!(code_live.contains(&format!("include_str!(\"fixtures/{fx_name}\")")));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
