@@ -2925,10 +2925,16 @@ PERF-19: ✅ Parser recovery retries same tokens — STALE TERVERIFIKASI
          Test regresi: parser_recovery_tests.rs (4 test, bound min/max +
          anti-duplikat + akurasi posisi + source sehat tetap bersih).
 
-PERF-20:[] ForkJoin tracking via Vec iteration
-         types.rs: ForkGroup remaining decrement
-         Impact: O(fork_branches) per completion
-         Fix: Atomic counter per ForkGroup
+PERF-20: ✅ ForkJoin tracking Vec iteration — STALE TERVERIFIKASI
+         (ROUND 87, commit bc7a008): `fork_decrement(fid)` = indeks
+         langsung `fork_groups[fid]` O(1) (fid dari Continuation);
+         alloc O(1) via free-list `fork_free`. Scan `fork_groups` hanya
+         per-statement `wait fork`/`disable fork`/`disable <label>` —
+         bukan per-completion. Scheduler single-threaded → "atomic
+         counter" tak relevan (`remaining: usize` sudah counter).
+         Test regresi: fork_tracking_tests.rs (4 test — slot reuse
+         fired-reset, fanout 64 branch non-premature t=63, isolasi
+         group nested, filter spawner wait fork).
 
 
 ═══════════════════════════════════════════════════════════════════════════════
@@ -8179,4 +8185,34 @@ WAJIB DI UPDATE TEXT SETELAH SELESAI
      `*_roundtrip_mismatch` akibat perubahan perilaku mv checker
      (commit user 0e0a705, di luar cakupan tahap ini — canary perlu
      regenerate via `mivon-fuzz regress` oleh pemilik jalur mv).
+\\=======================================================================//
+
+📊 VERIFIKASI ROUND 87 — PERF-20 fork tracking stale-marker:
+   - Audit item: "PERF-20: ForkJoin tracking via Vec iteration →
+     O(fork_branches) per completion → fix atomic counter" →
+     ✅ STALE TERVERIFIKASI (commit bc7a008).
+   - Fakta kode: `fork_decrement(fid)` (engine/core.rs:691) indeks
+     langsung `fork_groups[fid]` — O(1), `fid` dari `Continuation.
+     fork_id`; `alloc_fork_group` O(1) via free-list `fork_free`
+     (reuse slot retired, anti-leak fork dlm loop). Scan `fork_groups`
+     (`active_fork_groups_for_current_process` 6 situs di block.rs +
+     `disable_fork_by_label`) hanya dipanggil per-STATEMENT
+     `wait fork`/`disable fork`/`disable <label>` — konstruk langka.
+     `fork_finish` → `check_wait_forks` scan `pending_wait_forks`
+     per-completion tapi bukan O(fork_branches) dan biasanya kosong.
+     Scheduler single-threaded → "atomic counter" tidak relevan
+     (`remaining: usize` sudah counter).
+   - Tests: +4 (crates/mivon-tests/src/fork_tracking_tests.rs):
+     slot reuse 50 iterasi (continuation fire tepat sekali — fired
+     flag reset), fan-out 64 branch (semua jalan; continuation t=63
+     non-premature via $time), fork bersarang (decrement group dalam
+     tak menyelesaikan luar — outer join t=6), filter spawner
+     `wait fork` (proses A query di t=1 saat group B sudah ada —
+     eksklusi group proses lain terkunci; tanpa jeda #1 mutasi
+     "hapus predicate spawner" lolos → review major diperbaiki).
+   - Review agent: 1 major (test spawner vacuous — urutan initial) +
+     2 minor + 2 nit — semua diterapkan sebelum commit.
+   - cargo nextest run --workspace --features dev --no-fail-fast:
+     ✅ 3379 passed, 0 failed, 24 skipped (kanari fuzz juga hijau
+     setelah user regenerate via 0e0a705 lanjutan).
 \\=======================================================================//
