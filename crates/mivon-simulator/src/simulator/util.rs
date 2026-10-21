@@ -1,10 +1,12 @@
 use crate::simulator::engine::SimulationEngine;
 use crate::simulator::types::TimeFormat;
 use mivon_ast::*;
-use mivon_core::diagnostics::DiagCode;
 use mivon_core::error::SimError;
 use mivon_ir::*;
 use std::fmt::Write as _;
+
+pub mod io;
+pub use io::*;
 
 pub fn map_ast_binary_op(op: &BinaryOp) -> Result<BinaryIrOp, String> {
     match op {
@@ -1482,143 +1484,6 @@ pub fn resolve_net_values(net_type: NetType, current: &LogicVec, incoming: &Logi
         bits.push(net_type.resolve_bit(cur, inc));
     }
     LogicVec { bits, width }
-}
-
-pub fn read_hex_file(
-    filename: &str,
-    elem_width: usize,
-    array_depth: usize,
-    start: Option<usize>,
-    end: Option<usize>,
-) -> Result<Vec<(usize, LogicVec)>, SimError> {
-    let content = std::fs::read_to_string(filename).map_err(|e| {
-        SimError::with_diag(
-            DiagCode::IoError,
-            format!("cannot read {}: {}", filename, e),
-        )
-    })?;
-    read_hex_text(&content, elem_width, array_depth, start, end)
-}
-
-/// Parse isi teks (bukan file) format $readmemh/$sreadmemh.
-pub fn read_hex_text(
-    content: &str,
-    elem_width: usize,
-    array_depth: usize,
-    start: Option<usize>,
-    end: Option<usize>,
-) -> Result<Vec<(usize, LogicVec)>, SimError> {
-    let start_addr = start.unwrap_or(0);
-    let end_addr = end.unwrap_or(array_depth.saturating_sub(1));
-    if end_addr < start_addr {
-        return Ok(Vec::new());
-    }
-    let mut data = Vec::new();
-    let mut addr = start_addr;
-    'outer: for line in content.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with("//") || line.starts_with('#') {
-            continue;
-        }
-        // LRM: beberapa nilai per baris dipisah whitespace; @addr set alamat.
-        for tok in line.split_whitespace() {
-            if tok.starts_with("//") || tok.starts_with('#') {
-                break;
-            }
-            if let Some(rest) = tok.strip_prefix('@') {
-                addr = usize::from_str_radix(rest, 16).map_err(|e| {
-                    SimError::with_diag(
-                        DiagCode::InvalidSyntax,
-                        format!("bad address '{}': {}", rest, e),
-                    )
-                })?;
-                continue;
-            }
-            let val = i64::from_str_radix(tok, 16).map_err(|e| {
-                SimError::with_diag(
-                    DiagCode::InvalidSyntax,
-                    format!("bad hex value '{}': {}", tok, e),
-                )
-            })?;
-            if addr >= start_addr && addr <= end_addr {
-                data.push((addr, LogicVec::from_u64(val as u64, elem_width)));
-            }
-            addr += 1;
-            if addr > end_addr {
-                break 'outer;
-            }
-        }
-    }
-    Ok(data)
-}
-
-pub fn read_bin_file(
-    filename: &str,
-    elem_width: usize,
-    array_depth: usize,
-    start: Option<usize>,
-    end: Option<usize>,
-) -> Result<Vec<(usize, LogicVec)>, SimError> {
-    let content = std::fs::read_to_string(filename).map_err(|e| {
-        SimError::with_diag(
-            DiagCode::IoError,
-            format!("cannot read {}: {}", filename, e),
-        )
-    })?;
-    read_bin_text(&content, elem_width, array_depth, start, end)
-}
-
-/// Parse isi teks (bukan file) format $readmemb/$sreadmemb.
-pub fn read_bin_text(
-    content: &str,
-    elem_width: usize,
-    array_depth: usize,
-    start: Option<usize>,
-    end: Option<usize>,
-) -> Result<Vec<(usize, LogicVec)>, SimError> {
-    let start_addr = start.unwrap_or(0);
-    let end_addr = end.unwrap_or(array_depth.saturating_sub(1));
-    if end_addr < start_addr {
-        return Ok(Vec::new());
-    }
-    let mut data = Vec::new();
-    let mut addr = start_addr;
-    'outer: for line in content.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with("//") || line.starts_with('#') {
-            continue;
-        }
-        // LRM: beberapa nilai per baris dipisah whitespace; @addr set alamat
-        // (alamat selalu heksadesimal, termasuk untuk readmemb).
-        for tok in line.split_whitespace() {
-            if tok.starts_with("//") || tok.starts_with('#') {
-                break;
-            }
-            if let Some(rest) = tok.strip_prefix('@') {
-                addr = usize::from_str_radix(rest, 16).map_err(|e| {
-                    SimError::with_diag(
-                        DiagCode::InvalidSyntax,
-                        format!("bad address '{}': {}", rest, e),
-                    )
-                })?;
-                continue;
-            }
-            let val = i64::from_str_radix(tok, 2).map_err(|e| {
-                SimError::with_diag(
-                    DiagCode::InvalidSyntax,
-                    format!("bad binary value '{}': {}", tok, e),
-                )
-            })?;
-            if addr >= start_addr && addr <= end_addr {
-                data.push((addr, LogicVec::from_u64(val as u64, elem_width)));
-            }
-            addr += 1;
-            if addr > end_addr {
-                break 'outer;
-            }
-        }
-    }
-    Ok(data)
 }
 
 pub fn string_to_logicvec(s: &str) -> LogicVec {
