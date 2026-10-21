@@ -1,0 +1,26 @@
+//! Dispatch subcommand CLI → backend tool (tools.md).
+//!
+//! `main.rs` tetap entrypoint tipis: seluruh adaptor `dispatch_*` yang
+//! menerjemahkan argumen `cli::*Args` menjadi `*Args` milik `mivon-api`
+//! hidup di sini, dipisah per keluarga tool.
+//!
+//! 1 file = 1 tanggung jawab:
+//! - `extra.rs` — tool tambahan (batch, memcheck, tbgen, waiver, vault, ipxact).
+
+mod extra;
+
+pub(crate) use extra::*;
+
+use mivon_core::error::SimError;
+
+/// Keluar proses dengan kode exit sesuai jenis error (`SimError::exit_code`),
+/// mencetak diagnostik ke terminal bila ada.
+pub(crate) fn exit_tool(result: Result<(), SimError>) -> ! {
+    if let Err(e) = result {
+        let mut emitter = mivon_core::diagnostics::TerminalEmitter::new();
+        let diag = e.to_diagnostic();
+        let _ = emitter.emit(&diag);
+        std::process::exit(e.exit_code());
+    }
+    std::process::exit(0);
+}
