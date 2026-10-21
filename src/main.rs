@@ -4902,9 +4902,16 @@ mod tests {
         let cli = crate::cli::Cli::try_parse_from(["mivon", "mtbgen", "-m", "dut"])
             .expect("mtbgen harus parse");
         assert!(matches!(cli.cmd, Some(crate::cli::MivonCmd::Tbgen(_))));
-        let cli = crate::cli::Cli::try_parse_from(["mivon", "mwaiver", "list"])
-            .expect("mwaiver list harus parse");
-        assert!(matches!(cli.cmd, Some(crate::cli::MivonCmd::Waiver(_))));
+        let cli = crate::cli::Cli::try_parse_from([
+            "mivon", "mwaiver", "add", "-r", "W1001", "-R", "alasan", "-o", "budi",
+        ])
+        .expect("mwaiver add harus parse");
+        match cli.cmd {
+            Some(crate::cli::MivonCmd::Waiver(crate::cli::MwaiverArgs {
+                cmd: crate::cli::MwaiverCmd::Add { rule, .. },
+            })) => assert_eq!(rule, "W1001"),
+            _ => panic!("bukan Waiver::Add"),
+        }
     }
 
     /// Refactor stage: adaptor manajemen desain & kualitas dipindah ke
@@ -4932,14 +4939,26 @@ mod tests {
             "x.json",
         ])
         .expect("mcov-closure analyze harus parse");
-        assert!(matches!(cli.cmd, Some(crate::cli::MivonCmd::CovClosure(_))));
+        match cli.cmd {
+            Some(crate::cli::MivonCmd::CovClosure(crate::cli::McovClosureArgs {
+                cmd: crate::cli::McovClosureCmd::Analyze { input },
+            })) => assert_eq!(input, "x.json"),
+            _ => panic!("bukan CovClosure::Analyze"),
+        }
         let cli = crate::cli::Cli::try_parse_from(["mivon", "msdc", "x.sdc"])
             .expect("msdc harus parse");
         assert!(matches!(cli.cmd, Some(crate::cli::MivonCmd::Sdc(_))));
+        // Field-level: menukar -g/-i akan tertangkap (assert varian saja tidak).
         let cli =
             crate::cli::Cli::try_parse_from(["mivon", "mequiv", "-g", "g.json", "-i", "i.json"])
                 .expect("mequiv harus parse");
-        assert!(matches!(cli.cmd, Some(crate::cli::MivonCmd::EquivCheck(_))));
+        match cli.cmd {
+            Some(crate::cli::MivonCmd::EquivCheck(a)) => {
+                assert_eq!(a.golden, "g.json");
+                assert_eq!(a.impl_file, "i.json");
+            }
+            _ => panic!("bukan EquivCheck"),
+        }
     }
 
     /// Refactor stage: adaptor tool inti dipindah ke `dispatch/tools.rs` —

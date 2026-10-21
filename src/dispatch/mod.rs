@@ -2,10 +2,18 @@
 //!
 //! `main.rs` tetap entrypoint tipis: seluruh adaptor `dispatch_*` yang
 //! menerjemahkan argumen `cli::*Args` menjadi `*Args` milik `mivon-api`
-//! hidup di sini, dipisah per keluarga tool.
+//! hidup di sini.
 //!
-//! 1 file = 1 tanggung jawab:
-//! - `extra.rs` — tool tambahan (batch, memcheck, tbgen, waiver, vault, ipxact).
+//! 1 file = 1 tanggung jawab (granularitas: satu keluarga tool):
+//! - `tools.rs`  — tool inti: inspect, lint, elab, sim, cov, wave, fmt, gen,
+//!   prof, check, bench, synth, update.
+//! - `manage.rs` — manajemen desain & kualitas: design_repo, project, sdc,
+//!   equiv_check, regression, eco, cov_closure.
+//! - `extra.rs`  — tool tambahan: batch, memcheck, tbgen, waiver, vault,
+//!   ipxact.
+//!
+//! Adaptor per tool tetap fungsi terpisah (bukan satu `match` raksasa) agar
+//! tiap tool bisa diubah/diuji tanpa menyentuh yang lain.
 
 mod extra;
 mod manage;
