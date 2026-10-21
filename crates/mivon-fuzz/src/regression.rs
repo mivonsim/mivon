@@ -128,8 +128,23 @@ pub fn collect_bugs(dir: &Path) -> Vec<BugEntry> {
             .and_then(|s| s.to_str())
             .unwrap_or("bug")
             .to_string();
-        let Some(source) = std::fs::read_to_string(&p).ok() else {
+        // `_min.sv` = versi minimize dari artifact lain (tanpa .txt sendiri) —
+        // BUKAN bug terpisah; isinya dijadi-kan source entri original di bawah.
+        if name.ends_with("_min") {
             continue;
+        }
+        // Canary test = fixture bug minimal: `minimize` membuktikan `_min.sv`
+        // masih mereproduksi bug → embed-kan isi `_min` (bisa 126B vs 205KB
+        // asli) supaya test cepat & suite ramping. Bila `_min` hilang/stale,
+        // fallback artifact asli — replay `compute_live` tetap jadi gate
+        // suara (live-canary vs assert_ne statis).
+        let min_path = p.with_file_name(format!("{name}_min.sv"));
+        let source = match std::fs::read_to_string(&min_path) {
+            Ok(s) => s,
+            Err(_) => match std::fs::read_to_string(&p) {
+                Ok(s) => s,
+                Err(_) => continue,
+            },
         };
         let txt = p.with_extension("txt");
         let (target, category) = match parse_meta(&txt) {
@@ -481,6 +496,43 @@ mod tests {
         let z = entries.iter().find(|e| e.name == "bug_z_hang").unwrap();
         assert!(z.skipped);
         assert!(z.skip_reason.contains("EMBED_CAP"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Canary = fixture bug minimal: isi `_min.sv` dipakai sbg source entri
+    /// original (metadata .txt tetap milik original); `_min` BUKAN entri
+    /// terpisah. Fallback artifact asli bila `_min` tidak ada.
+    #[test]
+    fn collect_bugs_prefers_min_sibling() {
+        let dir = std::env::temp_dir().join(format!("fzmin_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let sv = dir.join("bug_x_dag.sv");
+        std::fs::write(&sv, "module asli_besar; endmodule").unwrap();
+        std::fs::write(
+            sv.with_extension("txt"),
+            "oracle: O5-differential\ncategory: differential\ntarget: sim\n",
+        )
+        .unwrap();
+        let mn = dir.join("bug_x_dag_min.sv");
+        std::fs::write(&mn, "module tiny; endmodule").unwrap();
+
+        let entries = collect_bugs(&dir);
+        assert_eq!(entries.len(), 1, "_min BUKAN entri terpisah: {entries:?}");
+        assert!(
+            entries[0].source.contains("tiny"),
+            "source harus dari _min: {}",
+            entries[0].source
+        );
+        // Fallback: tanpa `_min` → artifact asli.
+        std::fs::remove_file(&mn).unwrap();
+        let entries2 = collect_bugs(&dir);
+        assert_eq!(entries2.len(), 1);
+        assert!(
+            entries2[0].source.contains("asli"),
+            "fallback = artifact asli: {}",
+            entries2[0].source
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

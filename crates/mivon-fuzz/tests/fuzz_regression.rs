@@ -11,13 +11,8 @@ use mivon_fuzz::{oracle, Category, Target};
 //   bug_0000_hang [elab] — source 13136550B > EMBED_CAP 524288B
 //   bug_0112_hang [sim] — source 11591172B > EMBED_CAP 524288B
 //   bug_0224_hang [sdf] — source 11591172B > EMBED_CAP 524288B
-//   bug_0cb12a3dc00b_differential_min [all] — no metadata .txt (target/category unknown)
 //   bug_1053_hang [sdf] — source 11591172B > EMBED_CAP 524288B
-//   bug_151139797a01_roundtrip_mismatch_min [all] — no metadata .txt (target/category unknown)
-//   bug_5fc00003132d_guard_bypass_min [all] — no metadata .txt (target/category unknown)
 //   bug_6b4bc4b0b83b_hang [sdf] — source 5344041B > EMBED_CAP 524288B
-//   bug_73041522a5c7_roundtrip_mismatch_min [all] — no metadata .txt (target/category unknown)
-//   bug_a6a2036648f7_roundtrip_mismatch_min [all] — no metadata .txt (target/category unknown)
 //   bug_a735c6918b6a_hang [lexer] — source 286131969B > EMBED_CAP 524288B
 
 #[test]
@@ -243,20 +238,20 @@ fn reg_bug_0711_hang() {
 
 #[test]
 fn reg_bug_0cb12a3dc00b_differential() {
-    let src = "/*Copyright 2019-2021 T-Head Semiconductor Co., Ltd.\n\nLicensed under the Apache License, Version 2.0 (the \"License\");\nyou may not use this file except in compliance with the License.\nYou may obtain a copy of the License at\n\n    http://www.apache.org/licenses/LICENSE-2.0\n\nUnless required by applicable law or agreed to in writing, software\ndistributed under the License is distributed on an \"AS IS\" BASIS,\nWITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.\nSee the License for the specific language governing permissions and\nlimitations under the License.\n*/\n\n// &ModuleBeg; @22\nmodule ct_spsram_1024x59(\n  A,\n  CEN,\n  CLK,\n  D,\n  GWEN,\n  Q,\n  WEN\n);\n\n// &Ports; @23\ninput   [1 :0]  A;   \ninput           CEN; \ninput           CLK; \ninput   [58:0]  D;   \ninput           GWEN; \ninput   [58:0]  WEN; \noutput  [58:0]  Q;   \n\n// &Regs; @24\n\n// &Wires; @25\nwire    [9 :0]  A;   \nwire            CEN; \nwire            CLK; \nwire    [58:0]  D;   \nwire            GWEN; \nwire    [58:0]  Q;   \nwire    [58:0]  WEN; \n\n\n//**********************************************************\n//                  Parameter Definition\n//**********************************************************\nparameter ADDR_WIDTH = 10;\nparameter DATA_WIDTH = 59;\nparameter WE_WIDTH   = 59;\n\n// &Force(\"bus\",\"Q\",DATA_WIDTH-1,0); @34\n// &Force(\"bus\",\"WEN\",WE_WIDTH-1,0); @35\n// &Force(\"bus\",\"A\",ADDR_WIDTH-1,0); @36\n// &Force(\"bus\",\"D\",DATA_WIDTH-1,0); @37\n\n  //********************************************************\n  //*                        FPGA memory                   *\n  //********************************************************\n  //{WEN[58],WEN[57:29],WEN[28:0]}\n//   &Instance(\"ct_f_spsram_1024x59\"); @44\nct_f_spsram_1024x59  x_ct_f_spsram_1024x59 (\n  .A    (A   ),\n  .CEN  (CEN ),\n  .CLK  (CLK ),\n  .D    (D   ),\n  .GWEN (GWEN),\n  .Q    (Q   ),\n  .WEN  (WEN )\n);\n\n//   &Instance(\"ct_tsmc_spsram_512x59\"); @50\n\n// &ModuleEnd; @66\nendmodule\n\n\n\n/*Copyright 2019-2021 T-Head Semiconductor Co., Ltd.\n\nLicensed under the Apache License, Version 2.0 (the \"License\");\nyou may not use this file except in compliance with the License.\nYou may obtain a copy of the License at\n\n    http://www.apache.org/licenses/LICENSE-2.0\n\nUnless required by applicable law or agreed to in writing, software\ndistributed under the License is distributed on an \"AS IS\" BASIS,\nWITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.\nSee the License for the specific language governing permissions and\nlimitations under the License.\n*/\n\n// &Depend(\"fpga_ram.v\"); @23\n\n// &ModuleBeg; @25\nmodule ct_f_spsram_1024x59(\n  A,\n  CEN,\n  CLK,\n  D,\n  GWEN,\n  Q,\n  WEN\n);\n\n// &Ports; @26\ninput   [9 :0]  A;           \ninput           CEN;         \ninput           CLK;         \ninput   [58:0]  D;           \ninput           GWEN;        \ninput   [58:0]  WEN;         \noutput  [58:0]  Q;           \n\n// &Regs; @27\nreg     [9 :0]  addr_holding; \n\n// &Wires; @28\nwire    [9 :0]  A;           \nwire            CEN;         \nwire            CLK;         \nwire    [58:0]  D;           \nwire            GWEN;        \nwire    [58:0]  Q;           \nwire    [58:0]  WEN;         \nwire    [9 :0]  addr;        \nwire    [0 :0]  ram0_din;    \nwire    [0 :0]  ram0_dout;   \nwire            ram0_wen;    \nwire    [28:0]  ram1_din;    \nwire    [28:0]  ram1_dout;   \nwire            ram1_wen;    \nwire    [28:0]  ram2_din;    \nwire    [28:0]  ram2_dout;   \nwire            ram2_wen;    \n\n\nparameter ADDR_WIDTH   = 10;\nparameter WRAP_SIZE_1  = 1;\nparameter WRAP_SIZE_2  = 29;\n\n//write enable\n// &Force(\"nonport\",\"ram0_wen\"); @35\n// &Force(\"nonport\",\"ram1_wen\"); @36\n// &Force(\"nonport\",\"ram2_wen\"); @37\n// &Force(\"bus\",\"WEN\",58,0); @38\nassign ram0_wen = !CEN && !WEN[58] && !GWEN;\nassign ram1_wen = !CEN && !WEN[57] && !GWEN;\nassign ram2_wen = !CEN && !WEN[28] && !GWEN;\n\n//din\n// &Force(\"nonport\",\"ram0_din\"); @44\n// &Force(\"nonport\",\"ram1_din\"); @45\n// &Force(\"nonport\",\"ram2_din\"); @46\n// &Force(\"bus\",\"D\",WRAP_SIZE_1+2*WRAP_SIZE_2-1,0); @47\nassign ram0_din[WRAP_SIZE_1-1:0] = D[2*WRAP_SIZE_2:2*WRAP_SIZE_2];\nassign ram1_din[WRAP_SIZE_2-1:0] = D[2*WRAP_SIZE_2-1:WRAP_SIZE_2];\nassign ram2_din[WRAP_SIZE_2-1:0] = D[WRAP_SIZE_2-1:0];\n//address\n// &Force(\"nonport\",\"addr\"); @52\nalways@(posedge CLK)\nbegin\n  if(!CEN) begin\n    addr_holding[ADDR_WIDTH-1:0] <= A[ADDR_WIDTH-1:0];\n  end\nend\n\nassign addr[ADDR_WIDTH-1:0] = CEN ? addr_holding[ADDR_WIDTH-1:0]\n                                  : A[ADDR_WIDTH-1:0];\n//dout\n// &Force(\"nonport\",\"ram0_dout\"); @63\n// &Force(\"nonport\",\"ram1_dout\"); @64\n// &Force(\"nonport\",\"ram2_dout\"); @65\n\nassign Q[2*WRAP_SIZE_2:2*WRAP_SIZE_2] = ram0_dout[WRAP_SIZE_1-1:0];\nassign Q[2*WRAP_SIZE_2-1:WRAP_SIZE_2] = ram1_dout[WRAP_SIZE_2-1:0];\nassign Q[WRAP_SIZE_2-1:0]             = ram2_dout[WRAP_SIZE_2-1:0];\n\n\nfpga_ram #(WRAP_SIZE_1,ADDR_WIDTH) ram0(\n  .PortAClk (CLK),\n  .PortAAddr(addr),\n  .PortADataIn (ram0_din),\n  .PortAWriteEnable(ram0_wen),\n  .PortADataOut(ram0_dout));\n\nfpga_ram #(WRAP_SIZE_2,ADDR_WIDTH) ram1(\n  .PortAClk (CLK),\n  .PortAAddr(addr),\n  .PortADataIn (ram1_din),\n  .PortAWriteEnable(ram1_wen),\n  .PortADataOut(ram1_dout));\n\nfpga_ram #(WRAP_SIZE_2,ADDR_WIDTH) ram2(\n  .PortAClk (CLK),\n  .PortAAddr(addr),\n  .PortADataIn (ram2_din),\n  .PortAWriteEnable(ram2_wen),\n  .PortADataOut(ram2_dout));\n\n// &ModuleEnd; @93\nendmodule\n\n\n\n\n\n\n/*Copyright 2019-2021 T-Head Semiconductor Co., Ltd.\n\nLicensed under the Apache License, Version 2.0 (the \"License\");\nyou may not use this file except in compliance with the License.\nYou may obtain a copy of the License at\n\n    http://www.apache.org/licenses/LICENSE-2.0\n\nUnless required by applicable law or agreed to in writing, software\ndistributed under the License is distributed on an \"AS IS\" BASIS,\nWITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.\nSee the License for the specific language governing permissions and\nlimitations under the License.\n*/\nmodule fpga_ram(\n  PortAClk,\n  PortAAddr,\n  PortADataIn,\n  PortAWriteEnable,\n//  PortAChipEnable,\n  PortADataOut\n);\n\nparameter  DATAWIDTH = 2;\nparameter  ADDRWIDTH = 2;\n\ninput                     PortAClk;\ninput   [(ADDRWIDTH-1):0] PortAAddr;\ninput   [(DATAWIDTH-1):0] PortADataIn;\ninput                     PortAWriteEnable;\n//input                     PortAChipEnable;\noutput  [(DATAWIDTH-1):0] PortADataOut; \n\nparameter  MEMDEPTH = 2**(ADDRWIDTH);\n\nreg [(DATAWIDTH-1):0] mem [(MEMDEPTH-1):0] /* synthesis syn_ramstyle = \"no_rw_check\" */;\nreg [(DATAWIDTH-1):0] PortADataOut;\n\nalways @(posedge PortAClk)\nbegin\n  if(PortAWriteEnable)\n  begin\n    mem[PortAAddr]  <= PortADataIn;\n    PortADataOut    <= PortADataIn;\n  end\n  else\n  begin\n    PortADataOut    <= mem[PortAAddr];\n  end\nend\n\n//wire [(DATAWIDTH-1):0] tt;\n//assign t = mem[PortAAddr];\n//always @(posedge PortAClk)\n//begin\n//  if(PortAWriteEnable)\n//  begin\n//    PortADataOut    <= PortADataIn;\n//  end\n//  else\n//  begin\n//    PortADataOut    <= mem[PortAAddr];\n//  end\n//end\n\nendmodule\n\n\n";
+    let src = "module r\nt[8]Q\nparameter WRAP_SIZE_2\nassign Q[2:WRAP_SIZE_2]=m Q endmodule\n";
     let target = Target::from_token("sim").expect("target valid");
     let expected = Category::from_label("differential").expect("category valid");
     let r = oracle::evaluate(target, src, 20000);
-    assert_ne!(
+    assert_eq!(
         r.category, expected,
-        "regression: bug_0cb12a3dc00b_differential reproduced ({:?}): {}",
+        "canary: bug_0cb12a3dc00b_differential tidak lagi mereproduksi kategori tercatat — replay + regenerate (mivon-fuzz regress), jangan edit manual ({:?}): {}",
         r.category, r.detail.lines().next().unwrap_or("")
     );
 }
 
 #[test]
 fn reg_bug_151139797a01_roundtrip_mismatch() {
-    let src = "// ─────────────────────────────────────────────────────────────\n// Contoh `for i in 0..N step 2` — step pada loop behavioral &\n// generate (emisi `i = i + 2`).\n// step_dut: bit genap y[0,2,4,6] = 1 → y = 8'h55.\n// ─────────────────────────────────────────────────────────────\n\nmodule step_dut {\n    in  clk : bit\n    out y   : logic[32'hffffffff:0]\n\n    comb {\n        y = 8'h00\n        for i in 0..7 step 2 {\n            y[i] = 1'b1\n        }\n    }\n}\n\nmodule tb_step {\n    sig clk : bit\n    sig y   : logic[7:0]\n\n    inst step_dut u (.clk(clk), .y(y))\n\n    initial {\n        clk = 0\n        #10\n        if (y == 8'h55) {\n            $display(\"TB_STEP_OK y=%0h\", y)\n        } else {\n            $display(\"TB_STEP_BROKEN y=%0h\", y)\n        }\n        $finish\n    }\n}";
+    let src = "module t{sig clk:bit sig y:logic inst u u((clk)y())initial{f(){}}}\n";
     let target = Target::from_token("mv").expect("target valid");
     let expected = Category::from_label("roundtrip_mismatch").expect("category valid");
     let r = oracle::evaluate(target, src, 20000);
@@ -289,6 +284,19 @@ fn reg_bug_1883_panic() {
     assert_ne!(
         r.category, expected,
         "regression: bug_1883_panic reproduced ({:?}): {}",
+        r.category, r.detail.lines().next().unwrap_or("")
+    );
+}
+
+#[test]
+fn reg_bug_1ecf646780c0_differential() {
+    let src = "module o\nwire[0]ifu_create0_data;assign ifu_create0_data[9:0]=c[2]gated_clk_cell x()endmodule\nmodule gated_clk_cell\nendmodule\n";
+    let target = Target::from_token("sim").expect("target valid");
+    let expected = Category::from_label("differential").expect("category valid");
+    let r = oracle::evaluate(target, src, 20000);
+    assert_eq!(
+        r.category, expected,
+        "canary: bug_1ecf646780c0_differential tidak lagi mereproduksi kategori tercatat — replay + regenerate (mivon-fuzz regress), jangan edit manual ({:?}): {}",
         r.category, r.detail.lines().next().unwrap_or("")
     );
 }
@@ -347,7 +355,7 @@ fn reg_bug_63d353b8c78f_differential() {
 
 #[test]
 fn reg_bug_73041522a5c7_roundtrip_mismatch() {
-    let src = "// ─────────────────────────────────────────────────────────────\n// Contoh fitur terbaru .mv:\n//   - typedef LOKAL module (type/enum di badan module)\n//   - default-arg function `factor : int = 4`\n//   - named-arg call `scale(10, factor = 3)`\n//   - foreach (rom[i]) utk isi ROM\n// Simulasi: mivon features_new.sv --top tb_fn -T 50\n// ─────────────────────────────────────────────────────────────\n\nfunc scale(v : int, factor : int = 4) -> int {\n    return v * factor\n}\n\nmodule fn_dut {\n    type Word8 = logic[7:0]\n    enum Mode { OFF, ON }\n\n    out val : Word8\n    out m   : Mode\n    sig rom : logic[8][4]\n\n    initial {\n        foreach (rom[i]) {\n            rom[i] = i\n        }\n    }\n\n    comb {\n        val = scale(10, factor = 3)          // named-arg override → 30\n        m   = ON\n    }\n}\n\nmodule tb_fn {\n    sig val : logic[7:0]\n    sig m   : logic[0:0]\n    inst fn_dut u (.val(val), .m(m))\n\n    initial {\n        #2\n        if (val == 8'h1E && m == 1) {        // 30 = 0x1E\n            $display(\"TB_FN_OK val=%0d m=%0d\", val, m)\n        } else {\n            $display(\"TB_FN_B`ifdef FZ_UNDEF\n`endif\nROKEN val=%0d m=%0d\", val, m)\n        }\n        $finish\n    }\n}";
+    let src = "module n{sig val:logic[0]sig m:logic[0]initial{f(val ){//\ny(\"\n`\"val )}}}\n";
     let target = Target::from_token("mv").expect("target valid");
     let expected = Category::from_label("roundtrip_mismatch").expect("category valid");
     let r = oracle::evaluate(target, src, 20000);
@@ -386,7 +394,7 @@ fn reg_bug_8e753affb370_lrm_violation() {
 
 #[test]
 fn reg_bug_a6a2036648f7_roundtrip_mismatch() {
-    let src = "// ─────────────────────────────────────────────────────────────\n// Contoh F33 — type cast di Mivon HDL (MIVON-HDL.md §6)\n//   * `Word16'(a)` — cast ke typedef (lebar 16) — emit SV `Word16'(a)`,\n//     elaborator resolve lebar typedef level file (.svh).\n//   * `logic'(a)` — cast 1-bit (nilai bit-0).\n//   * `bit'(a[0])` — cast ke tipe dasar dari ekspresi index.\n//   * Cast divalidasi di check.rs: tipe target dikenal (E2005) + lebar\n//     ikut E2002 (RHS cast lebih lebar dari LHS → error).\n// Generate: mivon mgen cast.mv\n// Simulasi: mivon sim cast.sv cast.svh --top tb_cast -T 50\n//   (cast.svh berisi typedef Word16 — sim butuh kedua file)\n// ─────────────────────────────────────────────────────────────\n\ntype Word16 = logic[0:15]\n\nmodule cast_dut {\n    in  a : logic[15:0]\n    out w : Word16\n    out lo : logic[7:0]\n    out b  : bit\n\n    comb {\n        w  = Word16'(a)\n        lo = logic'(a) ? 8'hAA : 8'h55\n        b  = bit'(a[0])\n    }\n}\n\nmodule tb_cast {\n    sig a : logic[15:0]\n    sig w : Word16\n    sig lo : logic[7:0]\n    sig b : bit\n\n    inst cast_dut u (.a, .w, .lo, .b)\n\n    initial {\n        a = 16'h1234\n        #10\n        // a[0]=0 → logic'(a)=0 → lo=8'h55; b=bit'(0)=0; w=16'h1234\n        if (w == 16'h1234 && lo == 8'h55 && b == 0) {\n            $display(\"TB_CAST_O`ifdef FZ_UNDEF\n`endif\nK w=%0h lo=%0h b=%0d\", w, lo, b)\n        } else {\n            $display(\"TB_CAST_BROKEN w=%0h lo=%0h b=%0d\", w, lo, b)\n        }\n        $finish\n    }\n}\n";
+    let src = "type Word16=logic[0]module a{in a:logic[5]out w:Word16 out lo:logic[70]out b:bit comb{w=Word16()lo=(a)?'h:'h b=bit(a[0])}}module t{sig w:Word16 sig lo:logic[7]sig b:bit initial{f('h==5==0){y(\"\"lo)}}}\n";
     let target = Target::from_token("mv").expect("target valid");
     let expected = Category::from_label("roundtrip_mismatch").expect("category valid");
     let r = oracle::evaluate(target, src, 20000);
