@@ -125,6 +125,8 @@ mod lang_features_tests;
 mod synth_sir_tests;
 #[cfg(test)]
 mod defparam_tests;
+#[cfg(test)]
+mod parser_recovery_tests;
 
 // Guided structure-aware fuzzer (metode test fuzzing "tidak buta"):
 // grammar-aware generation + coverage feedback + differential oracle.
