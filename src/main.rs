@@ -3,6 +3,7 @@
 
 mod anim_glue;
 mod cli;
+mod report_glue;
 mod dispatch;
 
 use anim_glue::{
@@ -2730,6 +2731,7 @@ fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), SimError> {
     // VCD setup
     let vcd_path = cli
         .output
+        .clone()
         .unwrap_or_else(|| format!("{}.vcd", engine.design.top.name));
     let mut vcd = VcdWriter::new(&vcd_path, &engine.design).map_err(|e| {
         SimError::with_diag(
@@ -2888,56 +2890,7 @@ fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), SimError> {
     // ── CSV close ──
     let _ = debugger.engine.close_csv();
 
-    // ── Signal statistics ──
-    if let Some(ref stats_path) = cli.signal_stats {
-        let path = if stats_path.is_empty() {
-            format!("{}.stats.txt", debugger.engine.design.top.name)
-        } else {
-            stats_path.clone()
-        };
-        if let Some(ref stats) = debugger.engine.signal_stats {
-            if let Err(e) = stats.write_to_file(&path) {
-                eprintln!("warning: signal stats write failed: {}", e);
-            } else if !cli.quiet {
-                println!("Signal statistics written to '{}'", path);
-            }
-        }
-    }
-
-    // ── GTKWave save file ──
-    if let Some(ref gtkw_path) = cli.gtkw {
-        let path = if gtkw_path.is_empty() {
-            format!("{}.gtkw", debugger.engine.design.top.name)
-        } else {
-            gtkw_path.clone()
-        };
-        match mivon_api::waveform::save_gtkw(&path, &vcd_path, &debugger.engine.design) {
-            Ok(()) => {
-                if !cli.quiet {
-                    println!("GTKWave save file written to '{}'", path);
-                }
-            }
-            Err(e) => eprintln!("warning: GTKW save failed: {}", e),
-        }
-    }
-
-    // ── HTML waveform viewer ──
-    if let Some(ref html_path) = cli.waveform_html_viewer {
-        let csv_ref = cli.waveform_csv.as_deref().unwrap_or("output.csv");
-        let path = if html_path.is_empty() {
-            format!("{}.html", debugger.engine.design.top.name)
-        } else {
-            html_path.clone()
-        };
-        match mivon_api::waveform::save_html_viewer(&path, csv_ref, &debugger.engine.design) {
-            Ok(()) => {
-                if !cli.quiet {
-                    println!("HTML waveform viewer written to '{}'", path);
-                }
-            }
-            Err(e) => eprintln!("warning: HTML viewer failed: {}", e),
-        }
-    }
+    report_glue::write_wave_reports(&cli, &debugger.engine, &vcd_path);
 
     // UCIS coverage export
     if let Some(ref ucis_path) = cli.coverage_ucis {
@@ -4116,6 +4069,7 @@ fn run_fast(
 
     let vcd_path = cli
         .output
+        .clone()
         .unwrap_or_else(|| format!("{}.vcd", engine.design.top.name));
     let mut vcd = VcdWriter::new(&vcd_path, &engine.design).map_err(|e| {
         SimError::with_diag(
@@ -4259,56 +4213,7 @@ fn run_fast(
     // ── CSV close ──
     let _ = debugger.engine.close_csv();
 
-    // ── Signal statistics ──
-    if let Some(ref stats_path) = cli.signal_stats {
-        let path = if stats_path.is_empty() {
-            format!("{}.stats.txt", debugger.engine.design.top.name)
-        } else {
-            stats_path.clone()
-        };
-        if let Some(ref stats) = debugger.engine.signal_stats {
-            if let Err(e) = stats.write_to_file(&path) {
-                eprintln!("warning: signal stats write failed: {}", e);
-            } else if !cli.quiet {
-                println!("Signal statistics written to '{}'", path);
-            }
-        }
-    }
-
-    // ── GTKWave save file ──
-    if let Some(ref gtkw_path) = cli.gtkw {
-        let path = if gtkw_path.is_empty() {
-            format!("{}.gtkw", debugger.engine.design.top.name)
-        } else {
-            gtkw_path.clone()
-        };
-        match mivon_api::waveform::save_gtkw(&path, &vcd_path, &debugger.engine.design) {
-            Ok(()) => {
-                if !cli.quiet {
-                    println!("GTKWave save file written to '{}'", path);
-                }
-            }
-            Err(e) => eprintln!("warning: GTKW save failed: {}", e),
-        }
-    }
-
-    // ── HTML waveform viewer ──
-    if let Some(ref html_path) = cli.waveform_html_viewer {
-        let csv_ref = cli.waveform_csv.as_deref().unwrap_or("output.csv");
-        let path = if html_path.is_empty() {
-            format!("{}.html", debugger.engine.design.top.name)
-        } else {
-            html_path.clone()
-        };
-        match mivon_api::waveform::save_html_viewer(&path, csv_ref, &debugger.engine.design) {
-            Ok(()) => {
-                if !cli.quiet {
-                    println!("HTML waveform viewer written to '{}'", path);
-                }
-            }
-            Err(e) => eprintln!("warning: HTML viewer failed: {}", e),
-        }
-    }
+    report_glue::write_wave_reports(&cli, &debugger.engine, &vcd_path);
 
     // Signal history stats
     if !cli.quiet && cli.signal_history_spill.is_some() {
