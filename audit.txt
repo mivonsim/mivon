@@ -2915,10 +2915,15 @@ PERF-18: [x] StringTable.get() — FIXED (already O(1) &str)
          StringTable::get() mengembalikan &str langsung dari intern
          storage tanpa alokasi String baru. Marker audit stale.
 
-PERF-19:[] Parser recovery mode retries same tokens
-         parser.rs: error recovery sync-token
-         Impact: Cascading errors slow parsing significantly
-         Fix: Skip-to-sync-token after single recovery attempt
+PERF-19: ✅ Parser recovery retries same tokens — STALE TERVERIFIKASI
+         (ROUND 86, commit 237c358): recovery kini selalu skip-to-sync-
+         token (`skip_until_semi_or_end`/`skip_to_stmt_boundary`) + guard
+         kemajuan (`if pos == before { advance() }`, komentar flood 71 rb
+         E1002 di stmt.rs) — persis fix yang disarankan audit. Bukti
+         empirik: 9 kasus malformed → 0 duplikat (line,col), maks 2
+         error/kasus, posisi akurat; 500 stmt rusak → ≤500 error (1/stmt).
+         Test regresi: parser_recovery_tests.rs (4 test, bound min/max +
+         anti-duplikat + akurasi posisi + source sehat tetap bersih).
 
 PERF-20:[] ForkJoin tracking via Vec iteration
          types.rs: ForkGroup remaining decrement
@@ -8147,4 +8152,31 @@ WAJIB DI UPDATE TEXT SETELAH SELESAI
    - Sisa limitation tahap 1 (terdokumentasi, warning): defparam menarget
      instance di dalam generate block, nilai mereferensi symbol lain,
      param modul teratas.
+\\=======================================================================//
+
+📊 VERIFIKASI ROUND 86 — PERF-19 parser recovery stale-marker:
+   - Audit item: "PERF-19: Parser recovery mode retries same tokens →
+     cascading errors slow parsing" → ✅ STALE TERVERIFIKASI
+     (commit 237c358).
+   - Verifikasi empirik (eksperimen → regression test): 9 kasus
+     malformed (missing `;` dalam blok, garbage di module body/top
+     level, unclosed begin/case/class, garbage dalam fork, missing
+     endmodule dgn module menyusul) → 0 duplikat error di posisi
+     (line,col) sama, maks 2 error per kasus, posisi akurat
+     (L5:C5 = token rusak persis). 500 stmt rusak dalam satu blok →
+     error ter-bounds ≤500 (1/stmt; flood historis = 71 ribu duplikat
+     E1002 dari DV macro-case base_seq::body).
+   - Recovery parser kini selalu skip-to-sync-token
+     (`skip_until_semi_or_end`/`skip_to_stmt_boundary`) + guard
+     kemajuan (`if pos == before { advance() }` di stmt.rs:143-149,
+     `while` module body dgn `_stuck` guard) — persis fix yang
+     disarankan audit. Tidak ada perubahan production code; test-only.
+   - Tests: +4 (crates/mivon-tests/src/parser_recovery_tests.rs):
+     anti-cascade bound min/max per kasus, flood guard 500-stmt,
+     akurasi posisi, source valid tetap bersih.
+   - cargo nextest run --workspace --features dev --no-fail-fast:
+     3368 passed; 7 gagal SEMUA = canary fuzz mivon-fuzz
+     `*_roundtrip_mismatch` akibat perubahan perilaku mv checker
+     (commit user 0e0a705, di luar cakupan tahap ini — canary perlu
+     regenerate via `mivon-fuzz regress` oleh pemilik jalur mv).
 \\=======================================================================//
