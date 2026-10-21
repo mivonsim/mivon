@@ -7,9 +7,12 @@ mod dispatch;
 use clap::Parser as ClapParser;
 use cli::Cli;
 use dispatch::{
-    dispatch_batch, dispatch_cov_closure, dispatch_design_repo, dispatch_eco,
-    dispatch_equiv_check, dispatch_ipxact, dispatch_memcheck, dispatch_project, dispatch_regression,
-    dispatch_sdc, dispatch_tbgen, dispatch_vault, dispatch_waiver, exit_tool,
+    dispatch_batch, dispatch_bench, dispatch_check, dispatch_cov, dispatch_cov_closure,
+    dispatch_design_repo, dispatch_eco, dispatch_elab, dispatch_equiv_check, dispatch_fmt,
+    dispatch_gen, dispatch_inspect, dispatch_ipxact, dispatch_lint, dispatch_memcheck,
+    dispatch_prof, dispatch_project, dispatch_regression, dispatch_sdc, dispatch_sim,
+    dispatch_synth, dispatch_tbgen, dispatch_update, dispatch_vault, dispatch_waiver,
+    dispatch_wave, exit_tool,
 };
 use std::path::{Path, PathBuf};
 use std::process;
@@ -4466,276 +4469,6 @@ fn run_fast(
     Ok(())
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Subcommand tools (tools.md) — dispatch dari main()
-// ═══════════════════════════════════════════════════════════════════════════
-
-fn dispatch_inspect(a: &crate::cli::MinspectArgs) -> ! {
-    // Subcommand output bisa di posisi pertama (tools.md: `minspect stats`)
-    const CMDS: [&str; 9] = [
-        "stats",
-        "modules",
-        "hierarchy",
-        "packages",
-        "classes",
-        "interfaces",
-        "parameters",
-        "deps",
-        "cache",
-    ];
-    let (command, targets): (Option<String>, Vec<String>) = match (
-        a.targets.first().map(|s| s.as_str()),
-        a.targets.last().map(|s| s.as_str()),
-    ) {
-        // Command di posisi pertama: `minspect stats rtl/`
-        (Some(first), _) if CMDS.contains(&first) => {
-            (Some(first.to_string()), a.targets[1..].to_vec())
-        }
-        // Command di posisi terakhir: `minspect rtl/ stats`
-        (_, Some(last)) if CMDS.contains(&last) && a.targets.len() > 1 => {
-            let mut t = a.targets.clone();
-            t.pop();
-            (Some(last.to_string()), t)
-        }
-        _ => (None, a.targets.clone()),
-    };
-    let args = mivon_api::tools::inspect::InspectArgs {
-        targets: &targets,
-        command,
-        incdirs: &a.incdirs,
-        defines: &a.defines,
-        top: a.top.as_deref(),
-        json: a.json,
-    };
-    exit_tool(mivon_api::tools::inspect::run(&args));
-}
-
-fn dispatch_lint(a: &crate::cli::MlintArgs) -> ! {
-    let args = mivon_api::tools::lint::LintArgs {
-        targets: &a.targets,
-        incdirs: &a.incdirs,
-        defines: &a.defines,
-        all: a.all,
-        unused: a.unused,
-        width: a.width,
-        latch: a.latch,
-        loop_check: a.loop_check,
-        fsm: a.fsm,
-        case_analysis: a.case_analysis,
-        clock_gating: a.clock_gating,
-        power: a.power,
-        memory: a.memory,
-        gate_opt: a.gate_opt,
-        quiet: a.quiet,
-    };
-    exit_tool(mivon_api::tools::lint::run(&args));
-}
-
-fn dispatch_elab(a: &crate::cli::MelabArgs) -> ! {
-    let args = mivon_api::tools::elab::ElabArgs {
-        files: &a.files,
-        incdirs: &a.incdirs,
-        defines: &a.defines,
-        top: a.top.as_deref(),
-        tree: a.tree,
-        params: a.params,
-        signals: a.signals,
-        reset_domain: a.reset_domain,
-        from_cache: a.from_cache,
-    };
-    exit_tool(mivon_api::tools::elab::run(&args));
-}
-
-fn dispatch_sim(a: &crate::cli::MsimArgs) -> ! {
-    let args = mivon_api::tools::sim::SimArgs {
-        files: &a.files,
-        incdirs: &a.incdirs,
-        defines: &a.defines,
-        top: a.top.as_deref(),
-        max_time: a.max_time.unwrap_or(DEFAULT_MAX_TIME_NS),
-        output: a.output.as_deref(),
-        fst: a.fst,
-        assertions: a.assertions,
-        coverage: a.coverage,
-    };
-    exit_tool(mivon_api::tools::sim::run(&args));
-}
-
-fn dispatch_cov(a: &crate::cli::McovArgs) -> ! {
-    let args = mivon_api::tools::cov::CovArgs {
-        files: &a.files,
-        incdirs: &a.incdirs,
-        defines: &a.defines,
-        top: a.top.as_deref(),
-        max_time: a.max_time.unwrap_or(DEFAULT_MAX_TIME_NS),
-        output: a.output.as_deref(),
-        json: a.json,
-        html: a.html,
-        threshold: a.threshold,
-    };
-    exit_tool(mivon_api::tools::cov::run(&args));
-}
-
-fn dispatch_wave(a: &crate::cli::MwaveArgs) -> ! {
-    let args = match &a.cmd {
-        crate::cli::MwaveCmd::Merge { inputs, output } => mivon_api::tools::wave::WaveArgs::Merge {
-            inputs: inputs.clone(),
-            output: output.clone(),
-        },
-        crate::cli::MwaveCmd::Export {
-            input,
-            format,
-            output,
-        } => mivon_api::tools::wave::WaveArgs::Export {
-            input: input.clone(),
-            format: format.clone(),
-            output: output.clone(),
-        },
-        crate::cli::MwaveCmd::Filter {
-            input,
-            signals,
-            output,
-        } => mivon_api::tools::wave::WaveArgs::Filter {
-            input: input.clone(),
-            signals: signals.clone(),
-            output: output.clone(),
-        },
-        crate::cli::MwaveCmd::Compare { a, b } => mivon_api::tools::wave::WaveArgs::Compare {
-            a: a.clone(),
-            b: b.clone(),
-        },
-        crate::cli::MwaveCmd::Search { input, patterns } => {
-            mivon_api::tools::wave::WaveArgs::Search {
-                input: input.clone(),
-                patterns: patterns.clone(),
-            }
-        }
-        crate::cli::MwaveCmd::Tree { input } => mivon_api::tools::wave::WaveArgs::Tree {
-            input: input.clone(),
-        },
-        crate::cli::MwaveCmd::Stats { input } => mivon_api::tools::wave::WaveArgs::Stats {
-            input: input.clone(),
-        },
-        crate::cli::MwaveCmd::Get {
-            input,
-            signals,
-            at,
-            range,
-        } => mivon_api::tools::wave::WaveArgs::Get {
-            input: input.clone(),
-            signals: signals.clone(),
-            at: *at,
-            range: *range,
-        },
-        crate::cli::MwaveCmd::Decode { input, proto } => mivon_api::tools::wave::WaveArgs::Decode {
-            input: input.clone(),
-            proto: proto.clone(),
-        },
-    };
-    exit_tool(mivon_api::tools::wave::run(&args));
-}
-
-fn dispatch_fmt(a: &crate::cli::MfmtArgs) -> ! {
-    let args = mivon_api::tools::fmt::FmtArgs {
-        files: &a.files,
-        inplace: a.inplace,
-        check: a.check,
-        indent: a.indent,
-    };
-    exit_tool(mivon_api::tools::fmt::run(&args));
-}
-
-fn dispatch_gen(a: &crate::cli::MgenArgs) -> ! {
-    let args = mivon_api::tools::gen::GenArgs {
-        targets: &a.targets,
-        output: a.output.clone(),
-        stdout: a.stdout,
-        check: a.check,
-        svh_only: a.svh_only,
-        sv_only: a.sv_only,
-        no_check: a.no_check,
-        package: a.package.clone(),
-        verbose: a.verbose,
-    };
-    exit_tool(mivon_api::tools::gen::run(&args));
-}
-
-fn dispatch_prof(a: &crate::cli::MprofArgs) -> ! {
-    let args = mivon_api::tools::prof::ProfArgs {
-        targets: &a.targets,
-        incdirs: &a.incdirs,
-        defines: &a.defines,
-        top: a.top.as_deref(),
-        max_time: a.max_time.unwrap_or(DEFAULT_MAX_TIME_NS),
-        cached: a.cached,
-    };
-    exit_tool(mivon_api::tools::prof::run(&args));
-}
-
-fn dispatch_check(a: &crate::cli::McheckArgs) -> ! {
-    let args = mivon_api::tools::check::CheckArgs {
-        targets: &a.targets,
-        all: a.all,
-        missing: a.missing,
-        circular: a.circular,
-        deps: a.deps,
-        cycles: a.cycles,
-        timescale: a.timescale,
-        ast_diff: a.ast_diff.as_deref(),
-        sv_version: a.sv_version,
-    };
-    exit_tool(mivon_api::tools::check::run(&args));
-}
-
-fn dispatch_bench(a: &crate::cli::MbenchArgs) -> ! {
-    let args = mivon_api::tools::bench::BenchArgs {
-        targets: &a.targets,
-        incdirs: &a.incdirs,
-        defines: &a.defines,
-        runs: a.runs,
-    };
-    exit_tool(mivon_api::tools::bench::run(&args));
-}
-
-fn dispatch_synth(a: &crate::cli::SynthArgs) -> ! {
-    let args = mivon_api::tools::synth::SynthArgs {
-        targets: &a.targets,
-        incdirs: &a.incdirs,
-        defines: &a.defines,
-        top: a.top.as_deref(),
-        output: a.output.clone(),
-        check_only: a.check_only,
-        device: a.device.clone(),
-        preset: a.preset.clone(),
-        emit_mvnet: a.emit_mvnet,
-        dump_sir: a.dump_sir,
-        dump_sir_opt: a.dump_sir_opt,
-        dump_netlist: a.dump_netlist,
-        emit_netlist: a.emit_netlist,
-        tech_map: a.tech_map,
-        report_util: a.report_util.clone(),
-        constraint: a.constraint.clone(),
-        timing: a.timing,
-        fsm_report: a.fsm_report,
-        quiet: a.quiet,
-    };
-    exit_tool(mivon_api::tools::synth::run(&args));
-}
-
-fn dispatch_update(a: &crate::cli::UpdateArgs) -> ! {
-    let check_only = matches!(a.cmd, Some(crate::cli::UpdateCmd::Check));
-    let args = mivon_api::tools::update::UpdateArgs {
-        check_only,
-        channel: Some(a.channel.as_str()),
-        version: a.version.as_deref(),
-        rollback: a.rollback,
-        yes: a.yes,
-        manifest_url: a.manifest_url.as_deref(),
-        exe_path: None,
-    };
-    exit_tool(mivon_api::tools::update::run(&args));
-}
-
 fn dispatch_emu(a: &crate::cli::EmuArgs) -> ! {
     use mivon_api::emu::config::EmuConfig;
     use mivon_api::emu::cpu::{CpuCore, RtlLinkedCpu};
@@ -5321,6 +5054,35 @@ mod tests {
             crate::cli::Cli::try_parse_from(["mivon", "mequiv", "-g", "g.json", "-i", "i.json"])
                 .expect("mequiv harus parse");
         assert!(matches!(cli.cmd, Some(crate::cli::MivonCmd::EquivCheck(_))));
+    }
+
+    /// Refactor stage: adaptor tool inti dipindah ke `dispatch/tools.rs` —
+    /// semua subcommand yang dilayani harus tetap ter-parse.
+    #[test]
+    fn dispatch_tools_subcommands_still_parse() {
+        use clap::Parser;
+        let cases: [&[&str]; 13] = [
+            &["mivon", "minspect", "stats", "rtl"],
+            &["mivon", "mlint", "rtl"],
+            &["mivon", "melab", "rtl"],
+            &["mivon", "msim", "rtl"],
+            &["mivon", "mcov", "rtl"],
+            &["mivon", "mwave", "tree", "x.vcd"],
+            &["mivon", "mfmt", "a.sv"],
+            &["mivon", "mgen", "a.mv"],
+            &["mivon", "mprof", "rtl"],
+            &["mivon", "mcheck", "rtl"],
+            &["mivon", "mbench", "rtl"],
+            &["mivon", "synth", "rtl"],
+            &["mivon", "mupdate", "check"],
+        ];
+        for argv in cases {
+            assert!(
+                crate::cli::Cli::try_parse_from(argv).is_ok(),
+                "gagal parse: {:?}",
+                argv
+            );
+        }
     }
 
     /// Fuzz `verify_bug_0228`: pesan diagnostik >80 byte yang memuat karakter
