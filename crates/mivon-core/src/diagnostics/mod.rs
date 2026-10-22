@@ -7,14 +7,16 @@ pub mod diagnostic;
 pub mod emitter;
 pub mod fixit;
 pub mod global;
+pub mod span;
 pub mod recovery;
 pub mod suggest;
 
 pub use codes::{all_codes, lookup_code};
 pub use diagnostic::{
-    DiagCode, DiagLevel, DiagNote, DiagSink, DiagSpan, Diagnostic, RuntimeContext, SourceSnippet,
+    DiagCode, DiagLevel, DiagSink, Diagnostic, RuntimeContext, SourceSnippet,
 };
 pub use fixit::FixItHint;
+pub use span::{DiagNote, DiagSpan};
 pub use emitter::{format_diagnostic, TerminalEmitter};
 pub use global::{diag_global, GlobalDiagnosticEngine};
 pub use recovery::ParserRecovery;
