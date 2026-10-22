@@ -406,7 +406,7 @@ jawab). Pindah dari `src/tools/` ke crate `mivon-tools` (migrasi monorepo crate
 | Tool | File | Fungsi |
 |------|------|--------|
 | `minspect` | `inspect.rs` | X-ray project: `stats`, `modules`, `hierarchy`, `packages`, `classes`, `interfaces`, `parameters`, `deps`. Subcommand boleh di posisi pertama (`minspect stats rtl/`) |
-| `mlint` | `lint.rs` | Static linter: unused signal, width mismatch, latch, combinational loop, FSM |
+| `mlint` | `lint/` | Static linter: unused signal, width mismatch, latch, combinational loop, FSM |
 | `melab` | `elab.rs` | Elaborasi saja: hierarchy tree, param, signal top, RDC (`--reset-domain`, SIM-22) |
 | `msim` | `sim.rs` | Simulasi: VCD (+FST), ringkasan assertion/coverage |
 | `mcov` | `cov.rs` | Coverage → `coverage.json` + `coverage.html` (via CoverageDatabase) |
@@ -519,7 +519,7 @@ Target: tidak ada file source `.rs` non-test yang monolitik (>1000 LOC dengan ba
 Sudah dipecah (contoh):
 - `diagnostics`: `fixit.rs`, `span.rs`, `runtime.rs`, `snippet.rs`, `sink.rs`, `record.rs`, `level.rs`.
 - Binary: `run_legacy.rs`, `run_fast.rs`, `source_io.rs`, `pipeline_config.rs`, `formal_run.rs`, `sim_finish.rs`, `report_glue.rs`, `dispatch/*`.
-- Tools: `wave/` submodul.
+- Tools: `wave/`, `lint/` submodul.
 
 Backlog prioritas (non-test, >1000 LOC):
 - `crates/mivon-elaboration/src/elaborator/mod.rs` (5886)
