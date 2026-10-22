@@ -7,6 +7,7 @@ pub mod diagnostic;
 pub mod emitter;
 pub mod fixit;
 pub mod global;
+pub mod snippet;
 pub mod span;
 pub mod recovery;
 pub mod runtime;
@@ -14,9 +15,10 @@ pub mod suggest;
 
 pub use codes::{all_codes, lookup_code};
 pub use diagnostic::{
-    DiagCode, DiagLevel, DiagSink, Diagnostic, SourceSnippet,
+    DiagCode, DiagLevel, DiagSink, Diagnostic,
 };
 pub use fixit::FixItHint;
+pub use snippet::SourceSnippet;
 pub use runtime::RuntimeContext;
 pub use span::{DiagNote, DiagSpan};
 pub use emitter::{format_diagnostic, TerminalEmitter};
