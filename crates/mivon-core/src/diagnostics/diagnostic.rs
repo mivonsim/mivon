@@ -34,9 +34,6 @@ use std::borrow::Cow;
 use std::fmt;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
-
-use crate::intern::Symbol;
-
 pub use super::fixit::FixItHint;
 
 // ─── Severity ───
@@ -1397,6 +1394,7 @@ impl Default for DiagSink {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::intern::Symbol;
 
     #[test]
     fn test_diagnostic_basic() {
