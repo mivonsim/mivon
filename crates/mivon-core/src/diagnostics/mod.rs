@@ -10,15 +10,17 @@ pub mod global;
 pub mod snippet;
 pub mod span;
 pub mod recovery;
+pub mod record;
 pub mod runtime;
 pub mod sink;
 pub mod suggest;
 
 pub use codes::{all_codes, lookup_code};
 pub use diagnostic::{
-    DiagCode, DiagLevel, Diagnostic,
+    DiagCode, DiagLevel,
 };
 pub use fixit::FixItHint;
+pub use record::Diagnostic;
 pub use snippet::SourceSnippet;
 pub use runtime::RuntimeContext;
 pub use sink::DiagSink;
