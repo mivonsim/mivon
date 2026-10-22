@@ -23,20 +23,24 @@
 //! - `tests`  — unit test per subkomando
 
 pub mod args;
-pub mod compare;
-pub mod data;
-pub mod decode;
-pub mod export;
-pub mod filter;
-pub mod get;
-pub mod merge;
-pub mod search;
-pub mod stats;
-pub mod tree;
-pub mod util;
+pub(crate) mod compare;
+pub(crate) mod data;
+pub(crate) mod decode;
+pub(crate) mod export;
+pub(crate) mod filter;
+pub(crate) mod get;
+pub(crate) mod merge;
+pub(crate) mod search;
+pub(crate) mod stats;
+pub(crate) mod tree;
+pub(crate) mod util;
 
 #[cfg(test)]
 mod tests;
 
 /// API publik mwave — dipakai dispatcher CLI (`mivon wave`).
 pub use args::{run, WaveArgs};
+/// Re-export API publik lama (jalur `wave::VcdData` / `wave::*_decode`
+/// sebelum pemecahan modul).
+pub use data::VcdData;
+pub use decode::{DecodedTx, ahb_decode, apb_decode, axi4lite_decode};
