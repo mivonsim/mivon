@@ -34,7 +34,12 @@ use mivon_parser::Parser;
 use tower_lsp::jsonrpc::Result as JsonRpcResult;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 
+mod completions;
+mod folding;
 mod hover;
+mod references;
+mod semantic;
+mod symbols;
 
 /// Hasil workspace symbol search (LSP-11).
 #[derive(Debug, Clone)]
