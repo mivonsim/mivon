@@ -1,5 +1,3 @@
-use std::borrow::Cow;
-
 /// Source code snippet yang menunjukkan lokasi error.
 #[derive(Debug, Clone)]
 pub struct SourceSnippet {
