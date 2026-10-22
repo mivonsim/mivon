@@ -665,11 +665,25 @@ mod tests {
             min_field_width: 0,
             base_units: -9,
         };
-        let args = || vec![(LogicVec::from_u64(42, 32), false, false)].into_iter();
+        // Tiga nilai: %0d, %h, %b masing-masing mengonsumsi satu argumen.
+        let args = || {
+            vec![
+                (LogicVec::from_u64(42, 32), false, false),
+                (LogicVec::from_u64(42, 32), false, false),
+                (LogicVec::from_u64(42, 32), false, false),
+            ]
+            .into_iter()
+        };
         let fmt = "%0d|%h|%b|%m";
+        let non_scoped = format_display_core(fmt, args(), 7, &tf);
         assert_eq!(
-            format_display_core(fmt, args(), 7, &tf),
+            non_scoped,
             format_display_core_scoped(fmt, args(), 7, &tf, "")
+        );
+        // Nilai literal (width 32 → %h/%b dipad penuh), %m kosong tanpa scope.
+        assert_eq!(
+            non_scoped,
+            "42|0000002a|00000000000000000000000000101010|"
         );
     }
 }
