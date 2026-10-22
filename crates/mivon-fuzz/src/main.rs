@@ -132,6 +132,7 @@ fn cmd_run(args: &[String]) -> i32 {
         corpus_dir,
         save_bugs: !no_save,
         jobs,
+        ledger_path: None,
     };
 
     eprintln!(

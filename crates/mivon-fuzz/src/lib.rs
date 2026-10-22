@@ -348,6 +348,11 @@ pub struct FuzzConfig {
     /// deterministik (`case_rng(seed, slot)`) — hasil TIDAK tergantung
     /// jadwal worker; permutasi urutan eksekusi tak mengubah hasil.
     pub jobs: usize,
+    /// Jalur ledger seed (seen-seeds.txt). `None` = jalur default
+    /// `.mivon-fuzz-state/seen-seeds.txt`. Test memakai jalur isolasi
+    /// per-putaran: ledger persisten mengubah seed-plan antar run
+    /// (state lintas campaign) sehingga dua run berurutan tak fair.
+    pub ledger_path: Option<PathBuf>,
 }
 
 impl Default for FuzzConfig {
@@ -365,6 +370,7 @@ impl Default for FuzzConfig {
             corpus_dir: None,
             save_bugs: true,
             jobs: 0,
+            ledger_path: None,
         }
     }
 }
@@ -1020,7 +1026,10 @@ fn run_single(cfg: FuzzConfig, corpus: &corpus::Corpus) -> FuzzReport {
     // Ledger seed ter-evaluasi (persisten lintas kampanye): kampanye
     // memprioritaskan seed yang BELUM pernah dijamah — target "semua seed
     // dijalankan tanpa ada yang di-skip" tercapai secara akumulatif.
-    let ledger = std::sync::Mutex::new(crate::ledger::SeedLedger::load());
+    let ledger = std::sync::Mutex::new(match &cfg.ledger_path {
+        Some(p) => crate::ledger::SeedLedger::load_from(p.clone()),
+        None => crate::ledger::SeedLedger::load(),
+    });
 
     let mut rng = Rng::new(cfg.seed); // hanya utk seed-plan (serial, deterministic)
 
@@ -1553,20 +1562,34 @@ mod bugdb_tests {
 
     /// Kesetaraan serial vs worker-pool: preproc in-process deterministik →
     /// kategori per-slot IDENTIK jobs=1 vs jobs=3 (RNG stream per-slot).
+    ///
+    /// Ledger DIISOLASI per-putaran (jalur beda, state awal kosong):
+    /// ledger persisten membuat seed-plan run kedua berbeda (state lintas
+    /// campaign) — itu perilaku produksi yang benar, tapi bikin perbandingan
+    /// dua-run dalam satu test tidak apple-to-apple.
     #[test]
     fn parallel_matches_serial_preproc() {
         let seed = 0xC0FFEE_BEEF;
+        let tmp = std::env::temp_dir().join(format!(
+            "mivon-fuzz-ledger-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
         let mut serial = FuzzConfig::default();
         serial.target = Target::Preproc;
         serial.cases = 10;
         serial.jobs = 1;
         serial.seed = seed;
         serial.save_bugs = false;
+        serial.ledger_path = Some(tmp.join("serial.txt"));
         let rep_serial = run(serial.clone());
 
         let mut par = serial.clone();
         par.jobs = 3;
+        par.ledger_path = Some(tmp.join("par.txt"));
         let rep_par = run(par);
+        let _ = std::fs::remove_dir_all(&tmp);
 
         assert_eq!(
             rep_serial.summaries[0].categories, rep_par.summaries[0].categories,
