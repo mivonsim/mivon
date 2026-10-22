@@ -1,5 +1,5 @@
 //! Test dasar kompilasi & tipe data: modul sederhana, struct/typedef dan
-//! offset member, pipeline compile (file tracking), string, serta hook VHPI/PLI.
+//! offset member, pipeline compile (file tracking), string, serta PLI/VPI.
 
 use super::*;
 

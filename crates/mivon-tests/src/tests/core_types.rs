@@ -1,5 +1,5 @@
-//! Semantik tipe & loop: release/deassign, break/continue, literal fill,
-//! wildcard equality, UDP, queue, dan signedness.
+//! Semantik tipe & system function: hook VHPI/PLI, UDP, queue, signedness,
+//! serta $random/$dist_* dan I/O file ($fdisplay/$fscanf/$readmemh).
 
 use super::*;
 

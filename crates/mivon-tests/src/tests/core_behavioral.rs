@@ -1,5 +1,6 @@
-//! Perilaku prosedural: package/import, fork-join, wait, mailbox, dan
-//! semaphore.
+//! Perilaku prosedural: release/deassign, loop (break/continue), literal fill,
+//! wildcard equality, package/import, fork-join, wait, mailbox, semaphore,
+//! dan UVM dasar.
 
 use super::*;
 
