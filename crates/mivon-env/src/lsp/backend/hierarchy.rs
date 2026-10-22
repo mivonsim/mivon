@@ -140,5 +140,9 @@ mod tests {
         );
         assert!(LspBackend::type_supertypes(&syms, "A").is_empty());
         assert!(LspBackend::type_supertypes(&syms, "Missing").is_empty());
+        // Base tak terdefinisi menghentikan rantai (bukan error, bukan entri).
+        let orphan = "class D extends UnknownBase; endclass\n";
+        let osyms = LspBackend::document_symbols(orphan);
+        assert!(LspBackend::type_supertypes(&osyms, "D").is_empty());
     }
 }

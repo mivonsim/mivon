@@ -3,6 +3,15 @@
 use super::*;
 
 impl LspBackend {
+    /// Folding range core (murni, bisa diuji) — LSP-15 tahap 1:
+    /// region lipat untuk blok scope berdasarkan token baris:
+    ///   - module/interface/package/class/checker/function/task/generate
+    ///     dibuka sebagai token PERTAMA baris, ditutup end* sebagai token
+    ///     pertama baris.
+    ///   - begin...end dan case...endcase: `begin`/`case` membuka (begin
+    ///     sebagai token terakhir baris header; case sebagai token pertama),
+    ///     ditutup bila baris memuat token `end` / `endcase`.
+    ///     Return (start_line, end_line) urut.
     pub(crate) fn compute_folding_ranges(source: &str) -> Vec<(u32, u32)> {
         // (keyword pembuka, keyword penutup) — pasangan scope utama.
         const PAIRS: &[(&str, &str)] = &[
