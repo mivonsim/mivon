@@ -19,6 +19,30 @@ fn run(source: &str, max_time: u64) -> (u64, u64) {
 }
 
 #[test]
+fn perf03_lazy_snapshot_refresh_concurrent_sequence() {
+    // PERF-03: lazy signal snapshot must still refresh when a concurrent
+    // SVA sequence attempt is pending, otherwise posedge detection falls
+    // back to "clk is high" and fires every cycle.
+    let source = r#"
+module tb;
+  reg clk = 0;
+  reg a = 0;
+  reg b = 0;
+  always #5 clk = ~clk;
+  assert property (@(posedge clk) a ##1 b);
+  initial begin
+    #12 a = 1;
+    #10 b = 1;
+    #40; $finish;
+  end
+endmodule
+"#;
+    let (pass, fail) = run(source, 60);
+    println!("LAZY_TEST pass={pass} fail={fail}");
+    assert!(pass >= 1, "lazy snapshot: concurrent sequence match: pass={pass} fail={fail}");
+}
+
+#[test]
 fn named_property_module_scope_boolean() {
     let source = r#"
 module tb;

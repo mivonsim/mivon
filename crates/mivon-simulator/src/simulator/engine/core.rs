@@ -1656,7 +1656,8 @@ impl SimulationEngine {
                     || !self.pending_waits.is_empty()
                     || !self.pending_ast_events.is_empty()
                     || !self.pending_ast_waits.is_empty()
-                    || !self.pending_wait_orders.is_empty();
+                    || !self.pending_wait_orders.is_empty()
+                    || !self.sequence_attempts.is_empty();
                 if needs_snapshot {
                     let num_sigs = self.state.signals.len();
                     let mut snap = Vec::with_capacity(num_sigs);
