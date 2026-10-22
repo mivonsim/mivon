@@ -512,6 +512,40 @@ cargo run -- file.sv --ast                # print AST
 cargo run -- file.sv --tokens             # print tokens
 ```
 
+## Status Refactor Monolitik (iteratif)
+
+Target: tidak ada file source `.rs` non-test yang monolitik (>1000 LOC dengan banyak tanggung jawab), kecuali file test.
+
+Sudah dipecah (contoh):
+- `diagnostics`: `fixit.rs`, `span.rs`, `runtime.rs`, `snippet.rs`, `sink.rs`, `record.rs`, `level.rs`.
+- Binary: `run_legacy.rs`, `run_fast.rs`, `source_io.rs`, `pipeline_config.rs`, `formal_run.rs`, `sim_finish.rs`, `report_glue.rs`, `dispatch/*`.
+- Tools: `wave/` submodul.
+
+Backlog prioritas (non-test, >1000 LOC):
+- `crates/mivon-elaboration/src/elaborator/mod.rs` (5886)
+- `crates/mivon-emu/src/cpu/x86.rs` (4793)
+- `crates/mivon-parser/src/lib.rs` (3624)
+- `crates/mivon-compiler/src/frontend/compile_session.rs` (3592)
+- `crates/mivon-simulator/src/simulator/engine/eval/expr.rs` (3394)
+- `crates/mivon-simulator/src/simulator/engine/scheduler/block.rs` (3262)
+- `crates/mivon-simulator/src/simulator/engine/core.rs` (2741)
+- `crates/mivon-elaboration/src/elaborator/expr.rs` (3962)
+- `crates/mivon-elaboration/src/elaborator/stmt.rs` (2967)
+- `crates/mivon-env/src/lsp/backend.rs` (3740)
+- `crates/mivon-mv/src/lib.rs` (2068)
+- `crates/mivon-ast/src/inline.rs` (2899)
+- `crates/mivon-compiler/src/micd/mod.rs` (2544)
+- `crates/mivon-mv/src/check/hazard.rs` (1940)
+- `crates/mivon-synth/src/techmap.rs` (1855)
+
+Aturan iterasi:
+1. Pilih satu file monolitik.
+2. Pecah minimal satu tanggung jawab ke submodul.
+3. Jalankan `cargo nextest run --workspace --features dev`.
+4. Commit + push.
+5. Auto-review oleh agent lain.
+6. Update daftar backlog di bagian ini.
+
 ## Debug mode
 
 Activate via `--debug` (basic) or `--deep-debug` (with snapshot/reverse). Debug types (`DebugMode`, `StepMode`, `Breakpoint`, `Watchpoint`) defined in `src/simulator/engine.rs`. `Debugger` wrapper in `src/debugger/mod.rs`.
