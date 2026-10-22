@@ -16,9 +16,9 @@ use crate::formal_run::run_formal;
 use crate::pipeline_config::{micd_root_for, pick_elab_mode};
 use crate::sim_finish;
 use crate::source_io::{content_has_timescale, read_source_bytes};
-// run() memanggil jalur cepat — sementara masih fn root (commit 2: modul
-// run_fast.rs). Binding name sama → body verbatim tanpa path-rewrite.
-use super::run_fast;
+// run() memanggil jalur cepat (di file sendiri setelah pemecahan). Binding
+// name sama → body verbatim tanpa path-rewrite.
+use crate::run_fast::run_fast;
 use crate::{
     DEFAULT_MAX_TIME_NS, apply_engine_flags, elab_abort_diag, emit_diags, print_ir_mem_stats,
     trim_heap, truncate_ellipsis,
