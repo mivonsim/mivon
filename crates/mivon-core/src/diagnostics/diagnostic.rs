@@ -30,7 +30,6 @@
 //!
 //! Initialize the interface before using it.
 
-use std::borrow::Cow;
 use std::fmt;
 pub use super::fixit::FixItHint;
 
