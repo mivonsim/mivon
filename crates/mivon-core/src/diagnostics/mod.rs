@@ -11,15 +11,17 @@ pub mod snippet;
 pub mod span;
 pub mod recovery;
 pub mod runtime;
+pub mod sink;
 pub mod suggest;
 
 pub use codes::{all_codes, lookup_code};
 pub use diagnostic::{
-    DiagCode, DiagLevel, DiagSink, Diagnostic,
+    DiagCode, DiagLevel, Diagnostic,
 };
 pub use fixit::FixItHint;
 pub use snippet::SourceSnippet;
 pub use runtime::RuntimeContext;
+pub use sink::DiagSink;
 pub use span::{DiagNote, DiagSpan};
 pub use emitter::{format_diagnostic, TerminalEmitter};
 pub use global::{diag_global, GlobalDiagnosticEngine};
