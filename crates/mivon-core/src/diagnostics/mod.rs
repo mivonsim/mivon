@@ -7,6 +7,7 @@ pub mod diagnostic;
 pub mod emitter;
 pub mod fixit;
 pub mod global;
+pub mod level;
 pub mod snippet;
 pub mod span;
 pub mod recovery;
@@ -16,9 +17,8 @@ pub mod sink;
 pub mod suggest;
 
 pub use codes::{all_codes, lookup_code};
-pub use diagnostic::{
-    DiagCode, DiagLevel,
-};
+pub use diagnostic::DiagCode;
+pub use level::DiagLevel;
 pub use fixit::FixItHint;
 pub use record::Diagnostic;
 pub use snippet::SourceSnippet;
