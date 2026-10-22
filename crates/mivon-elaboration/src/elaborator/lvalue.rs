@@ -1417,7 +1417,6 @@ IrLValue::VifField { .. } => Err(self.elab_diag_at(
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
