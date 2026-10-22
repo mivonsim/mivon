@@ -32,8 +32,6 @@
 
 use std::borrow::Cow;
 use std::fmt;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Mutex;
 pub use super::fixit::FixItHint;
 
 // ─── Severity ───
