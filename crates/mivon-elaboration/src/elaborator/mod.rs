@@ -70,6 +70,7 @@ pub mod always;
 pub mod classes;
 pub mod diag;
 pub mod expr;
+pub mod lvalue;
 pub mod params;
 pub mod sign;
 pub mod stmt;
