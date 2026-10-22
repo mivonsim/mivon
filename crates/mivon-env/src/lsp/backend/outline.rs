@@ -1,6 +1,7 @@
-//! Outline dokumen, hierarki tipe, dan pencarian simbol workspace
-//! (LSP-11/LSP-12/LSP-14): `document_symbols`, relasi extends/implements,
-//! `hierarchy_items`, dan `search_workspace_symbols`.
+//! Outline dokumen (LSP-12) dan pencarian simbol workspace (LSP-11):
+//! `document_symbols` membangun pohon `DocSymbol` dari token baris, lalu
+//! `search_workspace_symbols` memakainya untuk query lintas dokumen.
+
 use super::*;
 
 impl LspBackend {
@@ -253,135 +254,6 @@ impl LspBackend {
         std::mem::take(&mut stack[0].children)
     }
 
-    /// Folding range core (murni, bisa diuji) — LSP-15 tahap 1:
-    /// region lipat untuk blok scope berdasarkan token baris:
-    ///   - module/interface/package/class/checker/function/task/generate
-    ///     dibuka sebagai token PERTAMA baris, ditutup end* sebagai token
-    ///     pertama baris.
-    ///   - begin...end dan case...endcase: `begin`/`case` membuka (begin
-    ///     sebagai token terakhir baris header; case sebagai token pertama),
-    ///     ditutup bila baris memuat token `end` / `endcase`.
-    ///     Return (start_line, end_line) urut.
-    ///
-    /// LSP-14 tahap 2a: rantai supertype (langsung → akar) mengikuti
-    /// `base` (`class A extends B`). Hanya base terdefinisi yang masuk
-    /// rantai (unknown menghentikan). Cycle-guard. Non-class → kosong.
-    pub(crate) fn type_supertypes(symbols: &[DocSymbol], name: &str) -> Vec<String> {
-        fn find<'a>(syms: &'a [DocSymbol], name: &str) -> Option<&'a DocSymbol> {
-            for s in syms {
-                if s.kind == DocSymbol::KIND_CLASS && s.name == name {
-                    return Some(s);
-                }
-                if let Some(f) = find(&s.children, name) {
-                    return Some(f);
-                }
-            }
-            None
-        }
-        let mut out = Vec::new();
-        let mut cur = name.to_string();
-        while let Some(sym) = find(symbols, &cur) {
-            let Some(b) = sym.base.clone() else {
-                break;
-            };
-            // Cycle-guard + base tak terdefinisi menghentikan rantai
-            // tanpa dimasukkan (kontrak: hanya class terdefinisi, dan
-            // peminta sendiri tidak termasuk).
-            if b == name || out.contains(&b) || find(symbols, &b).is_none() {
-                break;
-            }
-            out.push(b.clone());
-            cur = b;
-        }
-        out
-    }
-
-    /// LSP-14 tahap 2a: subtype langsung + transitif (BFS mengikuti
-    /// edge base→child). Urut BFS deterministik.
-    pub(crate) fn type_subtypes(symbols: &[DocSymbol], name: &str) -> Vec<String> {
-        fn all_classes<'a>(syms: &'a [DocSymbol], out: &mut Vec<&'a DocSymbol>) {
-            for s in syms {
-                if s.kind == DocSymbol::KIND_CLASS {
-                    out.push(s);
-                }
-                all_classes(&s.children, out);
-            }
-        }
-        let mut all = Vec::new();
-        all_classes(symbols, &mut all);
-        let mut out = Vec::new();
-        let mut queue = std::collections::VecDeque::from([name.to_string()]);
-        while let Some(cur) = queue.pop_front() {
-            for c in &all {
-                // Self-extends / siklus kembali ke peminta dikecualikan.
-                if c.name == name {
-                    continue;
-                }
-                if c.base.as_deref() == Some(cur.as_str()) && !out.contains(&c.name) {
-                    out.push(c.name.clone());
-                    queue.push_back(c.name.clone());
-                }
-            }
-        }
-        out
-    }
-
-    /// LSP-14 tahap 2a: posisi (line, name_col) deklarasi class ber-nama.
-    pub(crate) fn find_class_symbol(symbols: &[DocSymbol], name: &str) -> Option<(u32, u32)> {
-        for s in symbols {
-            if s.kind == DocSymbol::KIND_CLASS && s.name == name {
-                return Some((s.line, s.name_col));
-            }
-            if let Some(p) = Self::find_class_symbol(&s.children, name) {
-                return Some(p);
-            }
-        }
-        None
-    }
-
-    /// LSP-14 tahap 2a: bangun TypeHierarchyItem untuk nama-nama class
-    /// yang ada deklarasinya (lewati base tak terdefinisi).
-    pub(crate) fn hierarchy_items(
-        uri: &Url,
-        symbols: &[DocSymbol],
-        names: &[String],
-    ) -> Vec<TypeHierarchyItem> {
-        let mut out = Vec::new();
-        for n in names {
-            let Some((line, col)) = Self::find_class_symbol(symbols, n) else {
-                continue;
-            };
-            let len = n.len() as u32;
-            out.push(TypeHierarchyItem {
-                name: n.clone(),
-                kind: SymbolKind::CLASS,
-                tags: None,
-                detail: None,
-                uri: uri.clone(),
-                range: Range {
-                    start: Position { line, character: 0 },
-                    end: Position {
-                        line,
-                        character: col + len,
-                    },
-                },
-                selection_range: Range {
-                    start: Position {
-                        line,
-                        character: col,
-                    },
-                    end: Position {
-                        line,
-                        character: col + len,
-                    },
-                },
-                data: None,
-            });
-        }
-        out
-    }
-
-
     /// Workspace symbol search core (murni, bisa diuji) — LSP-11 tahap 1:
     /// cari di SEMUA dokumen terbuka (cache), flatten outline, filter
     /// case-insensitive substring. Query kosong = semua simbol.
@@ -413,6 +285,4 @@ impl LspBackend {
         out.sort_by(|a, b| (&a.uri, a.line, a.col).cmp(&(&b.uri, b.line, b.col)));
         out
     }
-
 }
-

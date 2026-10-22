@@ -231,6 +231,4 @@ impl LspBackend {
         out.sort_by(|a, b| rank(&a.0, a.1).cmp(&rank(&b.0, b.1)).then(a.0.cmp(&b.0)));
         out
     }
-
 }
-

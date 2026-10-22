@@ -36,10 +36,11 @@ use tower_lsp::{Client, LanguageServer, LspService, Server};
 
 mod completions;
 mod folding;
+mod hierarchy;
 mod hover;
+mod outline;
 mod references;
 mod semantic;
-mod symbols;
 
 /// Hasil workspace symbol search (LSP-11).
 #[derive(Debug, Clone)]

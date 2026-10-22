@@ -117,6 +117,4 @@ impl MicdDatabase {
         self.objects_dir()
             .join(format!("{:016x}.{}", content_hash, ext))
     }
-
 }
-

@@ -300,6 +300,4 @@ impl MicdDatabase {
 
         db
     }
-
 }
-

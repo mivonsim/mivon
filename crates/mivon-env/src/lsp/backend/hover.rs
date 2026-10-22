@@ -106,7 +106,6 @@ impl LspBackend {
         out.reverse();
         Some(out.join("\n"))
     }
-
 }
 
 #[cfg(test)]

@@ -165,6 +165,4 @@ impl LspBackend {
             .collect();
         Self::encode_semantic_tokens(&raw)
     }
-
 }
-

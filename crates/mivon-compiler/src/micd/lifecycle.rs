@@ -210,6 +210,4 @@ impl MicdDatabase {
     pub fn affected(&mut self, changed: &[PathBuf]) -> Vec<PathBuf> {
         self.graph.affected(changed)
     }
-
 }
-
