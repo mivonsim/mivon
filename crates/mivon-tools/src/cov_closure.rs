@@ -47,6 +47,7 @@ pub struct CoverageClosure {
 
 /// Input kontribusi test (format JSON untuk subcommand build).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TestCoverage {
     pub test: String,
     #[serde(default)]
@@ -96,17 +97,24 @@ impl CoverageClosure {
     }
 
     fn recompute_unique(&mut self) {
-        let _all_covered: HashMap<&str, usize> = HashMap::new();
+        let known: HashSet<String> = self.points.iter().map(|p| p.id.clone()).collect();
         let mut point_count: HashMap<String, usize> = HashMap::new();
         for tc in &self.test_contributions {
+            // Dedup dalam satu test: ["p1","p1"] bukan dua kontribusi.
+            let mut seen: HashSet<&str> = HashSet::new();
             for pid in &tc.covered_points {
-                *point_count.entry(pid.clone()).or_insert(0) += 1;
+                if known.contains(pid.as_str()) && seen.insert(pid.as_str()) {
+                    *point_count.entry(pid.clone()).or_insert(0) += 1;
+                }
             }
         }
         for tc in &mut self.test_contributions {
+            let mut seen: HashSet<String> = HashSet::new();
             tc.unique_points = tc
                 .covered_points
                 .iter()
+                .filter(|pid| known.contains(pid.as_str()))
+                .filter(|pid| seen.insert((*pid).clone()))
                 .filter(|pid| point_count.get(pid.as_str()).copied().unwrap_or(0) == 1)
                 .cloned()
                 .collect();
@@ -128,16 +136,23 @@ impl CoverageClosure {
             .flat_map(|tc| tc.covered_points.iter().map(|s| s.as_str()))
             .filter(|id| known.contains(id))
             .collect();
-        (covered.len() as f64 / self.points.len() as f64 * 100.0).min(100.0)
+        // Denominator = point unik yang dikenal (points.json boleh berisi duplikat).
+        (covered.len() as f64 / known.len() as f64 * 100.0).min(100.0)
     }
 
     /// Bangun closure dari daftar point + kontribusi test.
     pub fn from_inputs(points: Vec<CoveragePoint>, tests: &[(String, Vec<String>)]) -> Self {
         let mut closure = CoverageClosure::new();
         closure.add_points(points);
+        // Push langsung lalu recompute sekali (hindari O(T^2)).
         for (test, covered) in tests {
-            closure.record_contribution(test, covered.clone());
+            closure.test_contributions.push(TestContribution {
+                test_name: test.clone(),
+                covered_points: covered.clone(),
+                unique_points: Vec::new(),
+            });
         }
+        closure.recompute_unique();
         closure.uncovered_points = closure
             .find_uncovered()
             .iter()
@@ -258,6 +273,43 @@ mod tests {
         assert_eq!(tests.len(), 2);
         assert_eq!(tests[0].1, vec!["p1".to_string()]);
         assert!(tests[1].1.is_empty());
+    }
+
+    #[test]
+    fn foreign_ids_are_excluded_from_numerator_not_just_clamped() {
+        let mut cc = CoverageClosure::new();
+        cc.add_points(vec![
+            make_point("p1", PointType::Line),
+            make_point("p2", PointType::Line),
+        ]);
+        cc.record_contribution("t1", vec!["p1".into(), "GHOST".into()]);
+        // Tanpa filter hasilnya 100% (2/2); dengan filter yang benar = 50%.
+        assert_eq!(cc.overall_coverage(), 50.0);
+    }
+
+    #[test]
+    fn critical_tests_ignore_unknown_ids_and_duplicates() {
+        let mut cc = CoverageClosure::new();
+        cc.add_points(vec![make_point("p1", PointType::Line)]);
+        cc.record_contribution("ghost_only", vec!["GHOST".into()]);
+        cc.record_contribution("real", vec!["p1".into(), "p1".into()]);
+        let critical: Vec<&str> = cc
+            .critical_tests()
+            .iter()
+            .map(|t| t.test_name.as_str())
+            .collect();
+        assert_eq!(critical, vec!["real"], "duplikat tidak menghapus status unik");
+    }
+
+    #[test]
+    fn duplicate_points_do_not_dilute_coverage() {
+        let mut cc = CoverageClosure::new();
+        cc.add_points(vec![
+            make_point("p1", PointType::Line),
+            make_point("p1", PointType::Line),
+        ]);
+        cc.record_contribution("t1", vec!["p1".into()]);
+        assert_eq!(cc.overall_coverage(), 100.0);
     }
 
     #[test]

@@ -1701,7 +1701,7 @@ pub enum MecoCmd {
 /// mcov-closure — Coverage closure analytics.
 #[derive(clap::Args, Clone)]
 pub struct McovClosureArgs {
-    /// Subcommand: analyze, critical, uncovered
+    /// Subcommand: analyze, critical, uncovered, build
     #[command(subcommand)]
     pub cmd: McovClosureCmd,
 }
