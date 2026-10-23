@@ -2125,19 +2125,26 @@ impl Elaborator {
                 for sl in slices {
                     ir_slices.push(self.elaborate_expr(sl, signal_map, signals)?);
                 }
+                // Posisi: chain slices pertama (ident paling dalam) — lihat
+                // expr_location; (0,0) → fallback nama di find_name_in_source.
+                let (l, c) = expr_location(expr);
                 let ir_slice_size = if let Some(ss) = slice_size {
                     match const_eval_params(ss, &self.param_vals) {
                         Ok(v) if v > 0 => Some(v as usize),
                         Ok(_) => {
-                            return Err(self.elab_diag(
+                            return Err(self.elab_diag_at(
                                 DiagCode::ParamMismatch,
                                 "streaming slice_size must be > 0",
+                                l,
+                                c,
                             ))
                         }
                         Err(_) => {
-                            return Err(self.elab_diag(
+                            return Err(self.elab_diag_at(
                                 DiagCode::ParamMismatch,
                                 "slice_size must be a constant expression",
+                                l,
+                                c,
                             ))
                         }
                     }
@@ -3250,17 +3257,25 @@ impl Elaborator {
                     )
                 })
                 .copied(),
-            Expr::MethodCall { .. } => Err(self.elab_diag(
+            Expr::MethodCall { .. } => Err(self.elab_diag_at(
                 DiagCode::ModuleNotFound,
                 "method calls cannot resolve to a signal",
+                // Posisi dari chain obj (ident paling dalam — lihat
+                // expr_location); (0,0) diperbolehkan → fallback nama.
+                expr_location(expr).0,
+                expr_location(expr).1,
             )),
-            Expr::MemberAccess { .. } => Err(self.elab_diag(
+            Expr::MemberAccess { .. } => Err(self.elab_diag_at(
                 DiagCode::ModuleNotFound,
                 "member access cannot resolve to a signal",
+                expr_location(expr).0,
+                expr_location(expr).1,
             )),
-            _ => Err(self.elab_diag(
+            _ => Err(self.elab_diag_at(
                 DiagCode::ModuleNotFound,
                 "expected simple signal identifier",
+                expr_location(expr).0,
+                expr_location(expr).1,
             )),
         }
     }
@@ -3298,7 +3313,7 @@ impl Elaborator {
         // Juga handle `b.master` (MemberAccess modport): `master u_m(b.master)`
         // — obj `b` interface instance, modport `.master`.
         if let Expr::MemberAccess { obj, .. } = expr {
-            if let Expr::Ident { name, .. } = obj.as_ref() {
+            if let Expr::Ident { name, line, col } = obj.as_ref() {
                 if !signal_map.contains_key(name) && self.is_interface_instance(name.as_str()) {
                     let iface_hint = hint_name.replace('.', "_");
                     let sig_name = format!("__iface_{}", iface_hint);
@@ -3342,9 +3357,11 @@ impl Elaborator {
                         .get(&Symbol::intern(&sig_name))
                         .copied()
                         .ok_or_else(|| {
-                            self.elab_diag(
+                            self.elab_diag_at(
                                 mivon_core::diagnostics::diagnostic::DiagCode::UndefinedSignal,
                                 format!("interface handle '{}' not found", sig_name),
+                                *line,
+                                *col,
                             )
                         });
                 }
