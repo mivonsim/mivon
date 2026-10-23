@@ -182,38 +182,54 @@ pub(crate) fn dispatch_verif_dashboard(a: &crate::cli::MdashboardArgs) -> ! {
     let result: Result<(), SimError> = (|| {
         use mivon_api::tools::verif_dashboard::Dashboard;
         let coverage = a.coverage.as_ref().map(std::path::PathBuf::from);
+        // Path yang diminta EKSPLISIT tetapi tidak ada = salah ketik, bukan
+        // "tidak ada data" — jangan diamkan.
+        if let Some(p) = &coverage {
+            if !p.exists() {
+                return Err(SimError::with_diag(
+                    DiagCode::IoError,
+                    format!("coverage file tidak ditemukan: {}", p.display()),
+                ));
+            }
+        }
         let dash = Dashboard::collect(
             coverage.as_deref(),
             std::path::Path::new(&a.regression),
             std::path::Path::new(&a.bugs),
         )
         .map_err(|e| SimError::with_diag(DiagCode::DataFormatError, e))?;
-        if a.text {
-            print!("{}", dash.render_text());
-            return Ok(());
-        }
-        let html = dash.render_html();
-        if let Some(out) = &a.output {
-            if let Some(parent) = std::path::Path::new(out).parent() {
-                if !parent.as_os_str().is_empty() {
-                    std::fs::create_dir_all(parent).map_err(|e| {
-                        SimError::with_diag(
-                            DiagCode::IoError,
-                            format!("buat direktori {}: {}", parent.display(), e),
-                        )
-                    })?;
-                }
-            }
-            std::fs::write(out, &html).map_err(|e| {
-                SimError::with_diag(DiagCode::IoError, format!("{}: {}", out, e))
-            })?;
-            println!("Dashboard written to {}", out);
+        let content = if a.text {
+            dash.render_text()
         } else {
-            print!("{}", html);
+            dash.render_html()
+        };
+        match &a.output {
+            Some(out) => {
+                write_report(out, &content)?;
+                println!("Dashboard written to {}", out);
+            }
+            None => print!("{}", content),
         }
         Ok(())
     })();
     exit_tool(result);
+}
+
+
+/// Tulis laporan (HTML/teks) — membuat direktori induk bila perlu.
+fn write_report(path: &str, content: &str) -> Result<(), SimError> {
+    if let Some(parent) = std::path::Path::new(path).parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                SimError::with_diag(
+                    DiagCode::IoError,
+                    format!("buat direktori {}: {}", parent.display(), e),
+                )
+            })?;
+        }
+    }
+    std::fs::write(path, content)
+        .map_err(|e| SimError::with_diag(DiagCode::IoError, format!("{}: {}", path, e)))
 }
 
 pub(crate) fn dispatch_waiver(a: &crate::cli::MwaiverArgs) -> ! {

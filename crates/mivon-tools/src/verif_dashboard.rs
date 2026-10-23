@@ -35,7 +35,18 @@ impl CoverageSection {
     pub fn from_json_str(src: &str) -> Result<Self, String> {
         let v: serde_json::Value =
             serde_json::from_str(src).map_err(|e| format!("coverage json: {e}"))?;
-        let cov = v.get("coverage").unwrap_or(&v);
+        if !v.is_object() {
+            return Err("coverage json: root harus objek".to_string());
+        }
+        // Objek `coverage` WAJIB ada dan berbentuk objek: tanpa validasi ini
+        // JSON valid tapi salah bentuk (null, array, field hilang) tampil
+        // sebagai 0.0% seolah hasil pengukuran nyata.
+        let cov = v
+            .get("coverage")
+            .ok_or_else(|| "coverage json: objek 'coverage' tidak ditemukan".to_string())?;
+        if !cov.is_object() {
+            return Err("coverage json: 'coverage' harus objek".to_string());
+        }
         let f = |path: &[&str]| -> f64 {
             let mut cur = cov;
             for k in path {
@@ -44,7 +55,17 @@ impl CoverageSection {
                     None => return 0.0,
                 }
             }
-            cur.as_f64().unwrap_or(0.0)
+            cur.as_f64().filter(|x| x.is_finite()).unwrap_or(0.0)
+        };
+        // Persen di-clamp 0..100 dan count ke rentang wajar: JSON valid bisa
+        // memuat -42.5 atau 1e30 (bukan XSS, tapi angka nonsense).
+        let pct = |p: f64| p.clamp(0.0, 100.0);
+        let count = |x: f64| -> u64 {
+            if x.is_finite() && x > 0.0 {
+                x.min(u32::MAX as f64) as u64
+            } else {
+                0
+            }
         };
         Ok(CoverageSection {
             // top_module ada di root dokumen, bukan di dalam objek coverage.
@@ -53,15 +74,15 @@ impl CoverageSection {
                 .and_then(|x| x.as_str())
                 .unwrap_or("")
                 .to_string(),
-            line_percent: f(&["line", "percent"]),
-            branch_percent: f(&["branch", "percent"]),
-            toggle_signals: f(&["toggle", "signals"]) as u64,
-            toggle_transitions: f(&["toggle", "transitions"]) as u64,
-            fsm_signals: f(&["fsm", "signals"]) as u64,
-            fsm_states: f(&["fsm", "states"]) as u64,
-            covergroup_points: f(&["covergroup", "points"]) as u64,
-            covergroup_covered: f(&["covergroup", "covered"]) as u64,
-            covergroup_percent: f(&["covergroup", "percent"]),
+            line_percent: pct(f(&["line", "percent"])),
+            branch_percent: pct(f(&["branch", "percent"])),
+            toggle_signals: count(f(&["toggle", "signals"])),
+            toggle_transitions: count(f(&["toggle", "transitions"])),
+            fsm_signals: count(f(&["fsm", "signals"])),
+            fsm_states: count(f(&["fsm", "states"])),
+            covergroup_points: count(f(&["covergroup", "points"])),
+            covergroup_covered: count(f(&["covergroup", "covered"])),
+            covergroup_percent: pct(f(&["covergroup", "percent"])),
         })
     }
 }
@@ -73,6 +94,8 @@ pub struct RegressionSection {
     pub latest_pass_rate: f64,
     pub latest_total: usize,
     pub latest_failed: usize,
+    /// Test berstatus Skip pada run terakhir (di luar denominator pass rate).
+    pub latest_skipped: usize,
     pub trend: String,
     pub flaky: Vec<String>,
     pub last_branch: String,
@@ -87,6 +110,14 @@ impl RegressionSection {
             latest_pass_rate: latest.map(|r| r.pass_rate()).unwrap_or(0.0),
             latest_total: latest.map(|r| r.results.len()).unwrap_or(0),
             latest_failed: latest.map(|r| r.fail_count()).unwrap_or(0),
+            latest_skipped: latest
+                .map(|r| {
+                    r.results
+                        .iter()
+                        .filter(|x| x.status == crate::regression::TestStatus::Skip)
+                        .count()
+                })
+                .unwrap_or(0),
             trend: format!("{:?}", db.trend()),
             flaky: db.flaky_tests().into_iter().map(|(n, _)| n).collect(),
             last_branch: latest.map(|r| r.branch.clone()).unwrap_or_default(),
@@ -225,21 +256,33 @@ impl Dashboard {
                     c.covergroup_points
                 ));
             }
-            None => h.push_str("<p class=\"empty\">coverage.json tidak ditemukan</p>\n"),
+            None => h.push_str("<p class=\"empty\">data coverage tidak tersedia</p>\n"),
         }
         h.push_str("</section>\n");
 
         h.push_str("<section><h2>Regression</h2>\n");
         match &self.regression {
             Some(r) => {
-                let cls = if r.latest_failed == 0 { "ok" } else { "bad" };
+                // Hijau hanya bila ada test yang benar-benar lulus semua;
+                // 0 run / all-Skip tidak boleh tampil sebagai badge hijau.
+                let cls = if r.latest_total == 0 || r.latest_failed > 0 || r.latest_pass_rate < 99.9 {
+                    if r.latest_total == 0 {
+                        ""
+                    } else {
+                        "bad"
+                    }
+                } else {
+                    "ok"
+                };
+                let counted = r.latest_total.saturating_sub(r.latest_skipped);
                 h.push_str(&format!(
-                    "<p>Runs: <b>{}</b> &middot; latest pass rate: <b class=\"{}\">{:.1}%</b> ({}/{} failed) &middot; trend: <b>{}</b></p>\n",
+                    "<p>Runs: <b>{}</b> &middot; latest pass rate: <b class=\"{}\">{:.1}%</b> ({} failed dari {} test, {} skipped) &middot; trend: <b>{}</b></p>\n",
                     r.runs,
                     cls,
                     r.latest_pass_rate,
                     r.latest_failed,
-                    r.latest_total,
+                    counted,
+                    r.latest_skipped,
                     escape_html(&r.trend)
                 ));
                 if !r.last_branch.is_empty() || !r.last_commit.is_empty() {
@@ -250,7 +293,14 @@ impl Dashboard {
                     ));
                 }
                 if r.flaky.is_empty() {
-                    h.push_str("<p class=\"empty\">tidak ada flaky test</p>\n");
+                    // flaky_tests() butuh >=3 run; jangan klaim negatif definitif.
+                    if r.runs < 3 {
+                        h.push_str(
+                            "<p class=\"empty\">tidak ada flaky terdeteksi (butuh minimal 3 run)</p>\n",
+                        );
+                    } else {
+                        h.push_str("<p class=\"empty\">tidak ada flaky test</p>\n");
+                    }
                 } else {
                     h.push_str("<p>Flaky tests:</p><ul>\n");
                     for name in &r.flaky {
@@ -259,7 +309,7 @@ impl Dashboard {
                     h.push_str("</ul>\n");
                 }
             }
-            None => h.push_str("<p class=\"empty\">regression.json tidak ditemukan</p>\n"),
+            None => h.push_str("<p class=\"empty\">data regression tidak tersedia</p>\n"),
         }
         h.push_str("</section>\n");
 
@@ -283,7 +333,7 @@ impl Dashboard {
                     h.push_str("</ul>\n");
                 }
             }
-            None => h.push_str("<p class=\"empty\">bugs.json tidak ditemukan</p>\n"),
+            None => h.push_str("<p class=\"empty\">data bug tidak tersedia</p>\n"),
         }
         h.push_str("</section>\n");
 
@@ -333,9 +383,15 @@ impl Dashboard {
 
 /// Satu kartu metrik pada section coverage.
 fn card_html(h: &mut String, label: &str, value: &str, class: &str) {
+    // Hindari atribut `class="num "` (spasi trailing) saat tanpa warna.
+    let class_attr = if class.is_empty() {
+        String::new()
+    } else {
+        format!(" {}", class)
+    };
     h.push_str(&format!(
-        "<div class=\"card\"><div class=\"num {}\">{}</div><div class=\"label\">{}</div></div>\n",
-        class,
+        "<div class=\"card\"><div class=\"num{}\">{}</div><div class=\"label\">{}</div></div>\n",
+        class_attr,
         escape_html(value),
         escape_html(label)
     ));
@@ -452,6 +508,7 @@ mod tests {
                 latest_pass_rate: 50.0,
                 latest_total: 2,
                 latest_failed: 1,
+                latest_skipped: 0,
                 trend: "Stable".into(),
                 flaky: vec!["<script>alert(1)</script>".into()],
                 last_branch: "main".into(),
@@ -501,5 +558,96 @@ mod tests {
         let html = dash.render_html();
         assert!(html.contains("90.0%"));
         assert!(html.contains("Regression"));
+    }
+
+    #[test]
+    fn coverage_json_wrong_shape_is_error() {
+        for bad in [
+            "null",
+            "[1,2,3]",
+            "\"str\"",
+            "{\"top_module\":\"x\"}",
+            "{\"coverage\":\"oops\"}",
+        ] {
+            assert!(
+                CoverageSection::from_json_str(bad).is_err(),
+                "bentuk salah harus error: {bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn coverage_numbers_are_clamped() {
+        let src = r#"{"coverage":{"line":{"percent":-42.5},
+            "branch":{"percent":1e30},
+            "toggle":{"signals":-7},"fsm":{"signals":1e30}}}"#;
+        let c = CoverageSection::from_json_str(src).unwrap();
+        assert_eq!(c.line_percent, 0.0);
+        assert_eq!(c.branch_percent, 100.0);
+        assert_eq!(c.toggle_signals, 0);
+        assert_eq!(c.fsm_signals, u32::MAX as u64);
+    }
+
+    fn section(
+        runs: usize,
+        total: usize,
+        failed: usize,
+        skipped: usize,
+    ) -> RegressionSection {
+        RegressionSection {
+            runs,
+            latest_pass_rate: if total == 0 { 0.0 } else { 100.0 },
+            latest_total: total,
+            latest_failed: failed,
+            latest_skipped: skipped,
+            trend: "Stable".into(),
+            flaky: Vec::new(),
+            last_branch: String::new(),
+            last_commit: String::new(),
+        }
+    }
+
+    #[test]
+    fn zero_runs_has_no_ok_badge() {
+        let dash = Dashboard {
+            coverage: None,
+            regression: Some(section(0, 0, 0, 0)),
+            bugs: None,
+        };
+        let html = dash.render_html();
+        assert!(!html.contains("class=\"ok\""), "0 run bukan hijau: {html}");
+    }
+
+    #[test]
+    fn skip_excluded_from_denominator_label() {
+        let dash = Dashboard {
+            coverage: None,
+            regression: Some(section(1, 3, 1, 1)),
+            bugs: None,
+        };
+        let html = dash.render_html();
+        assert!(html.contains("1 failed dari 2 test, 1 skipped"), "{html}");
+    }
+
+    #[test]
+    fn html_escapes_bug_titles_and_top_module() {
+        let dash = Dashboard {
+            coverage: Some(CoverageSection {
+                top_module: "<b>tb</b>".into(),
+                ..CoverageSection::default()
+            }),
+            regression: None,
+            bugs: Some(BugSection {
+                total: 1,
+                open: 1,
+                fixed: 0,
+                wontfix: 0,
+                open_titles: vec!["B-1: <img onerror=x>".into()],
+            }),
+        };
+        let html = dash.render_html();
+        assert!(html.contains("&lt;b&gt;tb&lt;/b&gt;"));
+        assert!(html.contains("B-1: &lt;img onerror=x&gt;"));
+        assert!(!html.contains("<img onerror"));
     }
 }
