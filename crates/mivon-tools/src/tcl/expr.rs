@@ -283,12 +283,39 @@ impl Parser {
     }
 
     fn parse_and(&mut self) -> Result<Value, String> {
-        let mut left = self.parse_equality()?;
+        let mut left = self.parse_bit_or()?;
         while self.eat_op(Op::And) {
-            let right = self.parse_equality()?;
+            let right = self.parse_bit_or()?;
             let l = left.truthy()?;
             let r = right.truthy()?;
             left = Value::Int(i64::from(l && r));
+        }
+        Ok(left)
+    }
+
+    fn parse_bit_or(&mut self) -> Result<Value, String> {
+        let mut left = self.parse_bit_xor()?;
+        while self.eat_op(Op::BitOr) {
+            let right = self.parse_bit_xor()?;
+            left = Value::Int(left.as_int()? | right.as_int()?);
+        }
+        Ok(left)
+    }
+
+    fn parse_bit_xor(&mut self) -> Result<Value, String> {
+        let mut left = self.parse_bit_and()?;
+        while self.eat_op(Op::BitXor) {
+            let right = self.parse_bit_and()?;
+            left = Value::Int(left.as_int()? ^ right.as_int()?);
+        }
+        Ok(left)
+    }
+
+    fn parse_bit_and(&mut self) -> Result<Value, String> {
+        let mut left = self.parse_equality()?;
+        while self.eat_op(Op::BitAnd) {
+            let right = self.parse_equality()?;
+            left = Value::Int(left.as_int()? & right.as_int()?);
         }
         Ok(left)
     }
@@ -316,14 +343,14 @@ impl Parser {
     }
 
     fn parse_relational(&mut self) -> Result<Value, String> {
-        let mut left = self.parse_additive()?;
+        let mut left = self.parse_shift()?;
         loop {
             let op = match self.peek() {
                 Some(Tok::Op(o)) if matches!(o, Op::Lt | Op::Le | Op::Gt | Op::Ge) => *o,
                 _ => break,
             };
             self.pos += 1;
-            let right = self.parse_additive()?;
+            let right = self.parse_shift()?;
             let a = left.as_int()?;
             let b = right.as_int()?;
             let result = match op {
@@ -333,6 +360,29 @@ impl Parser {
                 _ => a >= b,
             };
             left = Value::Int(i64::from(result));
+        }
+        Ok(left)
+    }
+
+    fn parse_shift(&mut self) -> Result<Value, String> {
+        let mut left = self.parse_additive()?;
+        loop {
+            let op = match self.peek() {
+                Some(Tok::Op(o)) if matches!(o, Op::Shl | Op::Shr) => *o,
+                _ => break,
+            };
+            self.pos += 1;
+            let right = self.parse_additive()?;
+            let a = left.as_int()?;
+            let shift = right.as_int()?;
+            if !(0..64).contains(&shift) {
+                return Err(format!("shift amount {} out of range", shift));
+            }
+            left = Value::Int(if op == Op::Shl {
+                a << shift
+            } else {
+                a >> shift
+            });
         }
         Ok(left)
     }
@@ -388,10 +438,6 @@ impl Parser {
         if self.eat_op(Op::Add) {
             return self.parse_unary();
         }
-        if self.eat_op(Op::BitAnd) {
-            let v = self.parse_unary()?;
-            return Ok(Value::Int(v.as_int()?));
-        }
         self.parse_primary()
     }
 
@@ -439,6 +485,18 @@ mod tests {
         assert_eq!(eval("!(3 == 4)").unwrap(), Value::Int(1));
         assert_eq!(eval("\"a\" eq \"a\"").unwrap(), Value::Int(1));
         assert_eq!(eval("\"a\" ne \"b\"").unwrap(), Value::Int(1));
+    }
+
+    #[test]
+    fn bitwise_and_shift() {
+        assert_eq!(eval("5 & 3").unwrap(), Value::Int(1));
+        assert_eq!(eval("5 | 2").unwrap(), Value::Int(7));
+        assert_eq!(eval("5 ^ 1").unwrap(), Value::Int(4));
+        assert_eq!(eval("1 << 4").unwrap(), Value::Int(16));
+        assert_eq!(eval("32 >> 2").unwrap(), Value::Int(8));
+        // Precedence: & lebih kuat dari ==, shift lebih kuat dari relasional.
+        assert_eq!(eval("1 | 2 == 3").unwrap(), Value::Int(1));
+        assert_eq!(eval("1 << 2 + 1").unwrap(), Value::Int(8));
     }
 
     #[test]

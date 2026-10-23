@@ -94,6 +94,8 @@ pub struct Interp {
     vars: HashMap<String, String>,
     procs: HashMap<String, ProcDef>,
     output: Vec<String>,
+    /// Buffer `puts -nonewline` yang belum diakhiri newline.
+    line_buf: String,
     exit_code: Option<i32>,
     depth: usize,
     pub(crate) design: Option<IrDesign>,
@@ -113,6 +115,7 @@ impl Interp {
             vars: HashMap::new(),
             procs: HashMap::new(),
             output: Vec::new(),
+            line_buf: String::new(),
             exit_code: None,
             depth: 0,
             design: None,
@@ -149,13 +152,23 @@ impl Interp {
 
     /// Jalankan skrip; `exit` ditangkap dan disimpan di `exit_code`.
     pub fn run(&mut self, script: &str) -> TclResult {
-        match self.eval_script(script) {
+        let result = self.eval_script(script);
+        self.flush_line_buf();
+        match result {
             Ok(v) => Ok(v),
             Err(TclError::Exit(code)) => {
                 self.exit_code = Some(code);
                 Ok(String::new())
             }
             Err(e) => Err(e),
+        }
+    }
+
+    /// Pindahkan sisa `puts -nonewline` ke daftar baris keluaran.
+    fn flush_line_buf(&mut self) {
+        if !self.line_buf.is_empty() {
+            let line = std::mem::take(&mut self.line_buf);
+            self.output.push(line);
         }
     }
 
@@ -298,6 +311,11 @@ impl Interp {
         }
         match name {
             "set" => {
+                if args.len() > 2 {
+                    return Err(TclError::Msg(
+                        "wrong # args: should be \"set varName ?newValue?\"".to_string(),
+                    ));
+                }
                 let var = self.need(args, 0, "set")?;
                 if args.len() > 1 {
                     let value = self.word_value(&args[1])?;
@@ -321,7 +339,13 @@ impl Interp {
                     idx += 1;
                 }
                 let text = self.need(args, idx, "puts")?;
-                self.output.push(if newline { text } else { text });
+                if newline {
+                    self.line_buf.push_str(&text);
+                    let line = std::mem::take(&mut self.line_buf);
+                    self.output.push(line);
+                } else {
+                    self.line_buf.push_str(&text);
+                }
                 Ok(String::new())
             }
             "incr" => {
@@ -367,7 +391,12 @@ impl Interp {
             "unset" => {
                 for w in args {
                     let name = self.word_value(w)?;
-                    self.vars.remove(&name);
+                    if self.vars.remove(&name).is_none() {
+                        return Err(TclError::Msg(format!(
+                            "can't unset \"{}\": no such variable",
+                            name
+                        )));
+                    }
                 }
                 Ok(String::new())
             }
@@ -420,9 +449,15 @@ impl Interp {
             }
             "lrange" => {
                 let list = parse_list(&self.need(args, 0, "lrange")?);
-                let first = resolve_index(&self.need(args, 1, "lrange")?, list.len()).unwrap_or(0);
-                let last = resolve_index(&self.need(args, 2, "lrange")?, list.len())
-                    .unwrap_or(list.len().saturating_sub(1));
+                // Indeks di luar jangkauan (mis. "end-10" pada list pendek)
+                // menghasilkan range kosong, bukan seluruh list.
+                let (first, last) = match (
+                    resolve_index(&self.need(args, 1, "lrange")?, list.len()),
+                    resolve_index(&self.need(args, 2, "lrange")?, list.len()),
+                ) {
+                    (Some(f), Some(l)) => (f, l),
+                    _ => return Ok(String::new()),
+                };
                 let mut out = Vec::new();
                 let mut i = first;
                 while i <= last && i < list.len() {
@@ -496,7 +531,15 @@ impl Interp {
                 let src = std::fs::read_to_string(&path).map_err(|e| {
                     TclError::Msg(format!("couldn't read file \"{}\": {}", path, e))
                 })?;
-                self.eval_script(&src)
+                if self.depth >= MAX_DEPTH {
+                    return Err(TclError::Msg(
+                        "too many nested source calls".to_string(),
+                    ));
+                }
+                self.depth += 1;
+                let result = self.eval_script(&src);
+                self.depth -= 1;
+                result
             }
             "exit" => {
                 let code = if args.is_empty() {
@@ -549,30 +592,21 @@ impl Interp {
                 values.len()
             )));
         }
-        // Simpan nilai lama lalu kembalikan setelah proc selesai (scope lokal).
-        let mut saved: Vec<(String, Option<String>)> = Vec::new();
+        // Scope lokal proc: snapshot seluruh variabel, lalu pulihkan setelah
+        // body selesai sehingga variabel kerja proc tidak bocor ke global.
+        let snapshot = self.vars.clone();
         for (i, name) in proc.params.iter().enumerate() {
             let value = if proc.variadic && i + 1 == proc.params.len() {
                 format_list(&values[fixed..])
             } else {
                 values[i].clone()
             };
-            saved.push((name.clone(), self.vars.get(name).cloned()));
             self.vars.insert(name.clone(), value);
         }
         self.depth += 1;
         let result = self.eval_script(&proc.body);
         self.depth -= 1;
-        for (name, old) in saved {
-            match old {
-                Some(v) => {
-                    self.vars.insert(name, v);
-                }
-                None => {
-                    self.vars.remove(&name);
-                }
-            }
-        }
+        self.vars = snapshot;
         match result {
             Ok(v) => Ok(v),
             Err(TclError::Return(v)) => Ok(v),
@@ -588,6 +622,10 @@ impl Interp {
             }
             if args[i].raw == "else" {
                 i += 1;
+                // Idiom `else if {..} {..}` = if bersarang.
+                if i < args.len() && args[i].raw == "if" {
+                    return self.cmd_if(&args[i + 1..]);
+                }
                 let body = args
                     .get(i)
                     .ok_or_else(|| TclError::Msg("wrong # args: no script following \"else\"".to_string()))?;
@@ -745,8 +783,13 @@ impl Interp {
                 let first = self.need(args, 2, "string range")?;
                 let last = self.need(args, 3, "string range")?;
                 let chars: Vec<char> = s.chars().collect();
-                let start = resolve_index(&first, chars.len()).unwrap_or(0);
-                let end = resolve_index(&last, chars.len()).unwrap_or(chars.len().saturating_sub(1));
+                let (start, end) = match (
+                    resolve_index(&first, chars.len()),
+                    resolve_index(&last, chars.len()),
+                ) {
+                    (Some(s), Some(e)) => (s, e),
+                    _ => return Ok(String::new()),
+                };
                 if start > end || start >= chars.len() {
                     return Ok(String::new());
                 }
@@ -1078,7 +1121,13 @@ fn resolve_index(text: &str, len: usize) -> Option<usize> {
         let n: usize = rest.trim().parse().ok()?;
         return len.checked_sub(1 + n);
     }
-    t.parse::<usize>().ok()
+    // Indeks negatif dihitung dari akhir (Tcl: -1 = elemen terakhir).
+    let value: i64 = t.parse().ok()?;
+    if value < 0 {
+        let index = len as i64 + value;
+        return if index < 0 { None } else { Some(index as usize) };
+    }
+    Some(value as usize)
 }
 
 #[cfg(test)]
@@ -1186,5 +1235,53 @@ mod tests {
         interp.set_argv(&["a.sv".to_string(), "-T".to_string()]);
         let _ = interp.run("puts \"$argc:$argv\"");
         assert_eq!(interp.output(), &["2:a.sv -T".to_string()]);
+    }
+
+    #[test]
+    fn puts_nonewline_concatenates() {
+        // Dua `puts -nonewline` lalu `puts` menutup baris yang sama ("abc").
+        let (interp, _) = run("puts -nonewline a\nputs -nonewline b\nputs c");
+        assert_eq!(interp.output(), &["abc".to_string()]);
+        let (only, _) = run("puts -nonewline x\nputs -nonewline y");
+        assert_eq!(only.output(), &["xy".to_string()]);
+    }
+
+    #[test]
+    fn proc_local_variables_do_not_leak() {
+        let (interp, _) = run("proc f {} { set tmp 99 }\nf\nputs [info exists tmp]");
+        assert_eq!(interp.output(), &["0".to_string()]);
+    }
+
+    #[test]
+    fn else_if_chain() {
+        let (interp, _) = run(
+            "set v 2\nif {$v == 1} { puts one } else if {$v == 2} { puts two } else { puts other }",
+        );
+        assert_eq!(interp.output(), &["two".to_string()]);
+    }
+
+    #[test]
+    fn out_of_range_and_negative_index() {
+        let (interp, _) = run(
+            "set l {a b c}\nputs <[lrange $l end-10 end]>\nputs [lindex $l -1]\nset s abc\nputs <[string range $s end-10 end]>",
+        );
+        assert_eq!(
+            interp.output(),
+            &["<>".to_string(), "c".to_string(), "<>".to_string()]
+        );
+    }
+
+    #[test]
+    fn arity_and_unset_errors() {
+        let (_i1, r1) = run("set x 1 2");
+        assert!(r1.is_err());
+        let (_i2, r2) = run("unset nope");
+        assert!(r2.is_err());
+    }
+
+    #[test]
+    fn bitwise_expression_in_script() {
+        let (interp, _) = run("puts [expr {1 << 4 | 3}]");
+        assert_eq!(interp.output(), &["19".to_string()]);
     }
 }

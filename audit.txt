@@ -8228,8 +8228,9 @@ WAJIB DI UPDATE TEXT SETELAH SELESAI
        escape backslash, word braced {..} (tanpa substitusi) & quoted "..";
        perintah set/puts/incr/append/lappend/unset/expr/if/while/for/
        foreach/proc/return/break/continue/list/lindex/llength/lrange/
-       string/info/catch/error/eval/source/exit. Scope variabel proc lokal
-       (save-restore), guard MAX_LOOP 10 juta iterasi + kedalaman call 64,
+       string/info/catch/error/eval/source/exit. Scope proc = snapshot penuh
+       variabel (tidak bocor ke global), guard MAX_LOOP 10 juta iterasi +
+       kedalaman call 64 (proc & source),
        argv/argc di-seed dari CLI.
      * expr.rs — evaluator ekspresi: integer des/hex/bin, aritmetika
        + - * / %, perbandingan == != < <= > >=, eq/ne string, logika
@@ -8240,10 +8241,29 @@ WAJIB DI UPDATE TEXT SETELAH SELESAI
        SimulationEngine; lookup sinyal exact lalu suffix .nama).
    - CLI: subcommand `mivon tcl <script.tcl> [args...]` (alias mtcl) →
      src/dispatch/tcl.rs (adaptor tipis; exit code skrip diteruskan).
-   - Tests: 17 (10 interpreter: substitusi/puts, if-elseif-else, while+for,
-     proc rekursif, list roundtrip, foreach, catch, unknown command,
-     break/continue, argv; 4 expr; 3 bridge: e2e compile→simulate→get
-     (8'd5 + 3 = 8, bin 00001000), get tanpa desain = error, reset).
+   - Tests: 25 (18 interpreter: substitusi/puts, -nonewline, if-elseif-else,
+     else-if, while+for, proc rekursif, scope proc, list roundtrip,
+     foreach, catch, unknown command, break/continue, indeks negatif/
+     out-of-range, arity, bitwise, argv; 4 expr; 3 bridge: e2e
+     compile→simulate→get (8'd5 + 3 = 8, bin 00001000), get X/Z wajib
+     -bin, get tanpa desain = error, reset).
+   - Review agent (tahap 1b) menemukan 1 blocker + 10 major; diperbaiki:
+     (a) `mivon get` menolak X/Z dan lebar >64 bit untuk -dec/-hex
+         (sebelumnya to_u64() melaporkan 0 palsu);
+     (b) operator bitwise `& | ^ << >>` kini punya level precedence
+         (tokenizer sudah ada, parser belum — klaim awal salah);
+     (c) `puts -nonewline` benar-benar menahan newline (buffer baris);
+     (d) scope proc: snapshot seluruh variabel, variabel kerja tidak bocor;
+     (e) idiom `else if {..}` didukung (sebelumnya no-op senyap);
+     (f) indeks `end-N` di luar jangkauan → range kosong, indeks negatif
+         (-1 = terakhir) didukung;
+     (g) lookup sinyal suffix ambigu → error (dulu nondeterministik);
+     (h) `mivon compile` gagal tidak lagi menyisakan state desain lama;
+     (i) `set`/`unset` menegakkan arity/keberadaan variabel;
+     (j) `source` ikut guard kedalaman.
+   - Sisa (dicatat untuk tahap lanjut, bukan blocker): urutan flush puts vs
+     $display engine, nomor baris error Tcl, escape dalam braced word,
+     konkatenasi word `{a}b`, default arg proc, split mod.rs (<1000 LOC).
    - cargo nextest run --workspace --features dev --no-fail-fast:
-     ✅ 3432 passed, 0 failed, 24 skipped.
+     ✅ 3440 passed, 0 failed, 24 skipped.
 \\=======================================================================//

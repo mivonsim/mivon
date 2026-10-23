@@ -80,6 +80,10 @@ impl Interp {
                 "mivon compile: no input files".to_string(),
             ));
         }
+        // Compile gagal tidak boleh meninggalkan state desain lama.
+        self.design = None;
+        self.signals.clear();
+        self.sim_time = 0;
         let (_session, _design, ir) = crate::open_elaborated(
             &files,
             &incdirs,
@@ -90,8 +94,6 @@ impl Interp {
         .map_err(|e| TclError::Msg(e.to_string()))?;
         let top_name = ir.top.name.as_str().to_string();
         self.design = Some(ir);
-        self.signals.clear();
-        self.sim_time = 0;
         Ok(top_name)
     }
 
@@ -150,12 +152,32 @@ impl Interp {
         let name = name.ok_or_else(|| {
             TclError::Msg("wrong # args: should be \"mivon get ?-dec|-hex|-bin? SIGNAL\"".to_string())
         })?;
-        let value = self.lookup_signal(&name).ok_or_else(|| {
+        let value = self.lookup_signal(&name)?.ok_or_else(|| {
             TclError::Msg(format!(
                 "mivon get: signal \"{}\" not found (compile+simulate first)",
                 name
             ))
         })?;
+        // Nilai X/Z atau lebar >64 bit tidak punya representasi desimal/hex
+        // yang jujur — jangan kembalikan angka palsu.
+        if format != "bin" {
+            let plain = value
+                .bits
+                .iter()
+                .all(|b| matches!(b, mivon_core::LogicVal::Zero | mivon_core::LogicVal::One));
+            if !plain {
+                return Err(TclError::Msg(format!(
+                    "mivon get: signal \"{}\" contains X/Z; use -bin",
+                    name
+                )));
+            }
+            if value.width > 64 {
+                return Err(TclError::Msg(format!(
+                    "mivon get: signal \"{}\" is {} bits (>64); use -bin",
+                    name, value.width
+                )));
+            }
+        }
         Ok(match format {
             "hex" => format!("{:x}", value.to_u64()),
             "bin" => value.to_string(),
@@ -163,15 +185,29 @@ impl Interp {
         })
     }
 
-    fn lookup_signal(&self, name: &str) -> Option<&mivon_core::LogicVec> {
+    fn lookup_signal(&self, name: &str) -> Result<Option<&mivon_core::LogicVec>, TclError> {
         if let Some(v) = self.signals.get(name) {
-            return Some(v);
+            return Ok(Some(v));
         }
         let suffix = format!(".{}", name);
-        self.signals
+        let mut matches: Vec<(&String, &mivon_core::LogicVec)> = self
+            .signals
             .iter()
-            .find(|(k, _)| k.ends_with(&suffix))
-            .map(|(_, v)| v)
+            .filter(|(k, _)| k.ends_with(&suffix))
+            .collect();
+        matches.sort_by(|a, b| a.0.cmp(b.0));
+        match matches.len() {
+            0 => Ok(None),
+            1 => Ok(Some(matches[0].1)),
+            _ => {
+                let names: Vec<&str> = matches.iter().map(|(k, _)| k.as_str()).collect();
+                Err(TclError::Msg(format!(
+                    "mivon get: signal \"{}\" ambiguous: {}",
+                    name,
+                    names.join(", ")
+                )))
+            }
+        }
     }
 
     fn need_at(&mut self, args: &[Word], index: usize, cmd: &str) -> TclResult {
@@ -226,6 +262,23 @@ mod tests {
         let mut interp = Interp::new();
         let result = interp.run("mivon get y");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn get_xz_signal_requires_bin() {
+        let (_dir, path) = write_design(
+            "module dut;\n\
+             logic [3:0] a;\n\
+             initial begin #1 $finish; end\n\
+             endmodule\n",
+        );
+        let mut interp = Interp::new();
+        interp
+            .run(&format!("mivon compile {}\nmivon simulate -T 5", path))
+            .expect("sim");
+        assert!(interp.run("mivon get a").is_err(), "X/Z must not be reported as 0");
+        interp.run("puts [mivon get -bin a]").expect("bin");
+        assert_eq!(interp.output(), &["xxxx".to_string()]);
     }
 
     #[test]
