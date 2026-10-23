@@ -608,6 +608,9 @@ pub enum GateType {
 pub struct GatePrimitive {
     pub gate_type: GateType,
     pub instance_name: Option<Symbol>,
+    /// Posisi source token nama gate type (1-based) — diagnostic elaborator.
+    pub line: usize,
+    pub col: usize,
     pub ports: Vec<Expr>,
     pub drive_strength: Option<(String, String)>,
     pub delay: Option<Delay>,

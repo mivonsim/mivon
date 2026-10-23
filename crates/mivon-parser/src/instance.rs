@@ -1456,6 +1456,9 @@ impl Parser {
     }
 
     pub(crate) fn parse_gate_primitive(&mut self) -> Result<GatePrimitive, SimError> {
+        // Posisi token tipe gate (1-based) untuk diagnostic elaborator.
+        let gline = self.peek_line();
+        let gcol = self.peek_col();
         let gate_type = match self.peek() {
             Token::And => {
                 self.advance();
@@ -1589,6 +1592,8 @@ impl Parser {
         Ok(GatePrimitive {
             gate_type,
             instance_name,
+            line: gline,
+            col: gcol,
             ports,
             drive_strength,
             delay,

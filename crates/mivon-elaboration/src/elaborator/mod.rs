@@ -5395,13 +5395,15 @@ impl Elaborator {
                 }
                 ModuleItem::Gate(gate) => {
                     if gate.ports.len() < 2 {
-                        return Err(self.elab_diag(
+                        return Err(self.elab_diag_at(
                             DiagCode::ParamMismatch,
                             format!(
                                 "gate requires at least 2 ports (gate type: {:?}, got {} ports)",
                                 gate.gate_type,
                                 gate.ports.len()
                             ),
+                            gate.line,
+                            gate.col,
                         ));
                     }
                     // Port output harus signal; port input boleh ekspresi arbitrer
