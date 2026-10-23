@@ -3223,6 +3223,9 @@ impl Parser {
         }
         Some(Module {
             name: mod_name,
+            // Module implicit/recovery — tanpa keyword di source.
+            line: 0,
+            col: 0,
             ports,
             params,
             decls,

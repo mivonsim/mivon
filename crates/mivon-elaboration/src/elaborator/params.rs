@@ -36,8 +36,17 @@ impl Elaborator {
             structs: &self.pkg_struct_ref_index,
             array_structs: &self.pkg_array_structs,
         };
-        resolve_param_values_with_ctx(module, instance_overrides, &ctx, Some(&pkg_full))
-            .map_err(|e| self.elab_diag(DiagCode::ParamMismatch, e))
+        resolve_param_values_with_ctx(module, instance_overrides, &ctx, Some(&pkg_full)).map_err(
+            |e| {
+                self.elab_diag_at(
+                    DiagCode::ParamMismatch,
+                    e,
+                    // Posisi deklarasi module (1-based).
+                    module.line,
+                    module.col,
+                )
+            },
+        )
     }
 
     /// Bangun global package param context SEKALI: qualified `pkg::name` untuk semua

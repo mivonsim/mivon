@@ -18,7 +18,7 @@ use mivon_ast::Design;
 /// Bumped 5 → 6 (F40b): `TypedefDecl` dapat field `is_queue`/`is_dynamic`.
 /// Alasan sama seperti bump 4→5 — bincode positional, cache lama wajib
 /// di-invalidate (bukan salah-decode jadi AST korup).
-pub const AST_FORMAT_VERSION: u64 = 8;
+pub const AST_FORMAT_VERSION: u64 = 9;
 
 /// Serialisasi `Design` → bytes biner (bincode).
 pub fn serialize_design(design: &Design) -> Result<Vec<u8>, String> {

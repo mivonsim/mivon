@@ -148,6 +148,8 @@ mod tests {
         // directive tidak masuk peta.
         let mk = |name: &str, ts: Option<(&str, &str)>| Module {
             name: Symbol::intern(name),
+            line: 0,
+            col: 0,
             ports: vec![],
             params: vec![],
             decls: vec![],

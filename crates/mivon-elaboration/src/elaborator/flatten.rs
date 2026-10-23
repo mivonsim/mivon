@@ -395,6 +395,10 @@ impl Elaborator {
                                 {
                                     Some(iface) => Module {
                                         name: iface.name,
+                                        // Interface tersintesis — tanpa posisi
+                                        // deklarasi di source.
+                                        line: 0,
+                                        col: 0,
                                         ports: vec![],
                                         params: vec![],
                                         decls: iface.decls.clone(),

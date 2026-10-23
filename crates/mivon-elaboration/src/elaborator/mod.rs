@@ -907,9 +907,20 @@ impl Elaborator {
                 continue;
             }
             let module = snapshot_map.get(&mod_name).ok_or_else(|| {
-                self.elab_diag(
+                // Posisi deklarasi module dari design (1,1 kalau module
+                // tambah-terpitungetic/recovery tanpa posisi).
+                let (mline, mcol) = self
+                    .design
+                    .modules
+                    .iter()
+                    .find(|m| m.name == mod_name)
+                    .map(|m| (m.line, m.col))
+                    .unwrap_or((0, 0));
+                self.elab_diag_at(
                     DiagCode::ModuleNotFound,
                     format!("module '{}' not found in snapshot", mod_name),
+                    mline,
+                    mcol,
                 )
             })?;
 
@@ -1050,6 +1061,9 @@ impl Elaborator {
             }
             let synthetic = Module {
                 name: iface.name,
+                // Interface tersintesis — tanpa posisi deklarasi di source.
+                line: 0,
+                col: 0,
                 ports: iface.ports.clone(),
                 params: iface.params.clone(),
                 decls: iface.decls.clone(),

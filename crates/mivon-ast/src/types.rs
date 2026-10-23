@@ -124,6 +124,10 @@ pub enum ConstraintItem {
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Module {
     pub name: Symbol,
+    /// Posisi source keyword `module`/`interface`/`program` (1-based) — untuk
+    /// diagnostic elaborator; `(0, 0)` untuk module tersintesis/recovery.
+    pub line: usize,
+    pub col: usize,
     pub ports: Vec<Port>,
     pub params: Vec<ParamDecl>,
     pub decls: Vec<Decl>,

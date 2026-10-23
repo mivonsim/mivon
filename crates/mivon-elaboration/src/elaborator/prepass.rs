@@ -767,6 +767,8 @@ mod tests {
     fn module_with_insts(name: &str, insts: &[&str]) -> Module {
         Module {
             name: sym(name),
+            line: 0,
+            col: 0,
             ports: vec![],
             params: vec![],
             decls: vec![],

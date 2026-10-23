@@ -312,6 +312,8 @@ mod tests {
         use std::collections::HashMap;
         Module {
             name: sym(name),
+            line: 0,
+            col: 0,
             ports: vec![],
             params: vec![],
             decls: vec![],

@@ -22,6 +22,10 @@ impl Parser {
             .rev()
             .find(|(from, _)| *from <= self.peek_line())
             .map(|(_, ts)| ts.clone());
+        // Posisi keyword module/interface/program (1-based) — diagnostic
+        // elaborator (posisi file diambil SEBELUM keyword di-consume).
+        let mline = self.peek_line();
+        let mcol = self.peek_col();
         self.advance(); // consume 'module', 'interface', or 'program'
         self.typedef_names.clear();
         // Re-seed typedef GLOBAL (lintas file) yang di-clear di atas — tanpa
@@ -230,6 +234,8 @@ impl Parser {
 
         Ok(Module {
             name,
+            line: mline,
+            col: mcol,
             ports,
             params,
             decls,

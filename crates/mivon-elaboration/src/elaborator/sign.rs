@@ -230,6 +230,8 @@ mod tests {
         };
         let m = Module {
             name: Symbol::intern("m"),
+            line: 0,
+            col: 0,
             ports: vec![],
             params: vec![mk("A", DataType::Int)],
             decls: vec![],

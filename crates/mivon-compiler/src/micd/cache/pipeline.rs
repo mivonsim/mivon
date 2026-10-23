@@ -535,6 +535,8 @@ mod tests {
     fn sample_design() -> Design {
         let mut m = Module {
             name: Symbol::intern("counter"),
+            line: 0,
+            col: 0,
             ports: vec![
                 Port {
                     name: Symbol::intern("clk"),
@@ -721,6 +723,8 @@ mod tests {
         use mivon_ast::types::{GenerateBlock, GenerateItem};
         let mut m = Module {
             name: Symbol::intern("genmod"),
+            line: 0,
+            col: 0,
             ports: vec![],
             params: vec![],
             decls: vec![],
@@ -806,6 +810,8 @@ mod tests {
     fn expanded_design() -> Design {
         let m = Module {
             name: Symbol::intern("genmod"),
+            line: 0,
+            col: 0,
             ports: vec![],
             params: vec![],
             decls: vec![],
