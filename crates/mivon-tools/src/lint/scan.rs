@@ -428,7 +428,11 @@ pub(crate) fn scan_stmt_reads(
                     scan_stmt_reads(std::slice::from_ref(fs), reads, writes);
                 }
             }
-            Stmt::WaitOrder { events, fail_stmt } => {
+            Stmt::WaitOrder {
+                events,
+                fail_stmt,
+                ..
+            } => {
                 for e in events {
                     reads.insert(*e);
                 }

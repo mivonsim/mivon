@@ -238,6 +238,9 @@ pub enum Stmt {
     WaitOrder {
         events: Vec<Symbol>,
         fail_stmt: Option<Box<Stmt>>,
+        /// Posisi keyword `wait_order` (1-based) — diagnostic elaborator.
+        line: usize,
+        col: usize,
     },
     /// Unique/priority if
     UniqueIf {

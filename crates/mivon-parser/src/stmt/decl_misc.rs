@@ -26,6 +26,9 @@ impl Parser {
     }
 
     pub(crate) fn parse_wait_order(&mut self) -> Result<Stmt, SimError> {
+        // Posisi keyword `wait_order` (1-based) — diagnostic elaborator.
+        let wline = self.peek_line();
+        let wcol = self.peek_col();
         self.advance();
         self.expect(Token::LParen)?;
         let mut events = Vec::new();
@@ -47,7 +50,12 @@ impl Parser {
             None
         };
         self.skip_semi();
-        Ok(Stmt::WaitOrder { events, fail_stmt })
+        Ok(Stmt::WaitOrder {
+            events,
+            fail_stmt,
+            line: wline,
+            col: wcol,
+        })
     }
 
     pub(crate) fn parse_covergroup(&mut self) -> Result<CovergroupDecl, SimError> {

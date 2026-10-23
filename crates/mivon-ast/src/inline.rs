@@ -1985,7 +1985,12 @@ fn inline_funcs_in_stmt_inner(
                 }),
             }
         }
-        Stmt::WaitOrder { events, fail_stmt } => Stmt::WaitOrder {
+        Stmt::WaitOrder {
+            events,
+            fail_stmt,
+            line,
+            col,
+        } => Stmt::WaitOrder {
             events,
             fail_stmt: fail_stmt.map(|s| {
                 Box::new(inline_funcs_in_stmt(
@@ -1997,6 +2002,8 @@ fn inline_funcs_in_stmt_inner(
                     recursive_funcs,
                 ))
             }),
+            line,
+            col,
         },
         Stmt::UniqueIf {
             cond,

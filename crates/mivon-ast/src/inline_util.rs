@@ -697,9 +697,16 @@ pub(crate) fn rename_in_stmt(stmt: &Stmt, rename_map: &HashMap<Symbol, Symbol>) 
             pass_stmt: pass_stmt.map(|s| Box::new(rename_in_stmt(&s, rename_map))),
             fail_stmt: fail_stmt.map(|s| Box::new(rename_in_stmt(&s, rename_map))),
         },
-        Stmt::WaitOrder { events, fail_stmt } => Stmt::WaitOrder {
+        Stmt::WaitOrder {
+            events,
+            fail_stmt,
+            line,
+            col,
+        } => Stmt::WaitOrder {
             events,
             fail_stmt: fail_stmt.map(|s| Box::new(rename_in_stmt(&s, rename_map))),
+            line,
+            col,
         },
         Stmt::UniqueIf {
             cond,

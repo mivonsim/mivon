@@ -2577,15 +2577,22 @@ impl Elaborator {
                     col: a_col,
                 })
             }
-            Stmt::WaitOrder { events, fail_stmt } => {
+            Stmt::WaitOrder {
+                events,
+                fail_stmt,
+                line,
+                col,
+            } => {
                 let mut sig_ids = Vec::new();
                 for name in events {
                     if let Some(idx) = signal_map.get(name) {
                         sig_ids.push(*idx);
                     } else {
-                        return Err(self.elab_diag(
+                        return Err(self.elab_diag_at(
                             DiagCode::ModuleNotFound,
                             format!("wait_order: signal '{}' not found", name),
+                            *line,
+                            *col,
                         ));
                     }
                 }
