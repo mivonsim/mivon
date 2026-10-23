@@ -52,12 +52,22 @@ impl RegressionRun {
             .count()
     }
 
+    /// Pass rate: Pass + Flaky dianggap lulus; Skip tidak masuk denominator.
     pub fn pass_rate(&self) -> f64 {
-        let total = self.results.len();
-        if total == 0 {
+        let counted = self
+            .results
+            .iter()
+            .filter(|r| r.status != TestStatus::Skip)
+            .count();
+        if counted == 0 {
             0.0
         } else {
-            self.pass_count() as f64 / total as f64 * 100.0
+            let passed = self
+                .results
+                .iter()
+                .filter(|r| matches!(r.status, TestStatus::Pass | TestStatus::Flaky))
+                .count();
+            passed as f64 / counted as f64 * 100.0
         }
     }
 }
@@ -118,19 +128,17 @@ impl RegressionDb {
     }
 
     /// Compute trend: is the suite improving or degrading?
+    ///
+    /// Membandingkan dua jendela DISJOINT berukuran sama (maks 5 run):
+    /// `older` = jendela sebelumnya, `recent` = jendela terakhir.
     pub fn trend(&self) -> RegressionTrend {
-        if self.runs.len() < 2 {
+        let len = self.runs.len();
+        if len < 2 {
             return RegressionTrend::Stable;
         }
-        let recent = &self.runs[self.runs.len().saturating_sub(5)..];
-        let older = if self.runs.len() > 5 {
-            &self.runs[self.runs.len() - 10..self.runs.len() - 5]
-        } else {
-            &self.runs[0..self.runs.len() / 2]
-        };
-        if recent.is_empty() || older.is_empty() {
-            return RegressionTrend::Stable;
-        }
+        let window = (len / 2).min(5);
+        let recent = &self.runs[len - window..];
+        let older = &self.runs[len - 2 * window..len - window];
         let recent_rate: f64 =
             recent.iter().map(|r| r.pass_rate()).sum::<f64>() / recent.len() as f64;
         let older_rate: f64 = older.iter().map(|r| r.pass_rate()).sum::<f64>() / older.len() as f64;
@@ -146,6 +154,9 @@ impl RegressionDb {
     /// Summary report.
     pub fn summary(&self) -> String {
         let total_runs = self.runs.len();
+        if total_runs == 0 {
+            return "Regression: no runs recorded".to_string();
+        }
         let latest_rate = self.runs.last().map(|r| r.pass_rate()).unwrap_or(0.0);
         let flaky = self.flaky_tests().len();
         let trend = self.trend();
@@ -265,6 +276,68 @@ mod tests {
             db.record(make_run(vec![("t1", true), ("t2", true)]));
         }
         assert_eq!(db.trend(), RegressionTrend::Stable);
+    }
+
+    #[test]
+    fn trend_handles_short_histories_without_panic() {
+        for n in 2..=9 {
+            let mut db = RegressionDb::new();
+            for _ in 0..n {
+                db.record(make_run(vec![("t1", true)]));
+            }
+            assert_eq!(db.trend(), RegressionTrend::Stable, "n={}", n);
+            let _ = db.summary();
+        }
+    }
+
+    #[test]
+    fn trend_improving_when_pass_rate_rises() {
+        let mut db = RegressionDb::new();
+        for _ in 0..5 {
+            db.record(make_run(vec![("t1", false)]));
+        }
+        for _ in 0..5 {
+            db.record(make_run(vec![("t1", true)]));
+        }
+        assert_eq!(db.trend(), RegressionTrend::Improving);
+    }
+
+    #[test]
+    fn pass_rate_ignores_skip_and_counts_flaky() {
+        let run = RegressionRun {
+            id: "r".into(),
+            timestamp: 0,
+            branch: "main".into(),
+            commit: "c".into(),
+            results: vec![
+                TestResult {
+                    name: "a".into(),
+                    status: TestStatus::Pass,
+                    duration_ms: 1,
+                    error_msg: None,
+                },
+                TestResult {
+                    name: "b".into(),
+                    status: TestStatus::Flaky,
+                    duration_ms: 1,
+                    error_msg: None,
+                },
+                TestResult {
+                    name: "c".into(),
+                    status: TestStatus::Skip,
+                    duration_ms: 1,
+                    error_msg: None,
+                },
+            ],
+            total_duration_ms: 3,
+        };
+        assert_eq!(run.pass_rate(), 100.0);
+    }
+
+    #[test]
+    fn summary_without_runs_is_explicit() {
+        let db = RegressionDb::new();
+        assert!(db.summary().contains("no runs"));
     }
 
     #[test]

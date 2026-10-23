@@ -8338,9 +8338,17 @@ WAJIB DI UPDATE TEXT SETELAH SELESAI
    - E2E diverifikasi manual: record 1 run (t1 Pass, t2 Fail) → summary
      "1 runs, latest 50.0% pass, trend: Stable", file .mivon/regression.json
      terbentuk.
-   - Tests: +4 (save membuat parent dir + load roundtrip, trend
-     Degrading saat pass rate turun, flaky butuh >=3 run, cap 100/50).
-     Modul regression total 9 test.
+   - Tests: +8 (save membuat parent dir + load roundtrip, trend
+     Degrading/Improving, 2..9 run tanpa panic, flaky butuh >=3 run,
+     cap 100/50, pass rate abaikan Skip & hitung Flaky, summary kosong).
+     Modul regression total 13 test.
+   - Review agent tahap 3b menemukan BLOCKER: trend() panic pada 6-9 run
+     (slice len-10 underflow) dan window recent/older tumpang tindih untuk
+     <10 run. Diperbaiki: dua jendela disjoint berukuran (len/2).min(5),
+     guard len<2. Sekaligus: pass_rate menghitung Pass+Flaky dan
+     mengecualikan Skip; summary tanpa run = "no runs recorded";
+     total_duration_ms dijumlahkan saat record; parse error JSON →
+     DataFormatError (bukan IoError).
    - cargo nextest run --workspace --features dev --no-fail-fast:
-     ✅ 3457 passed, 0 failed, 24 skipped.
+     ✅ 3461 passed, 0 failed, 24 skipped.
 \\=======================================================================//

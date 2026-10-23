@@ -231,18 +231,19 @@ pub(crate) fn dispatch_regression(a: &crate::cli::MregressionArgs) -> ! {
                     SimError::with_diag(DiagCode::IoError, format!("{}: {}", input, e))
                 })?;
                 let results: Vec<TestResult> = serde_json::from_str(&content)
-                    .map_err(|e| SimError::with_diag(DiagCode::IoError, e.to_string()))?;
+                    .map_err(|e| SimError::with_diag(DiagCode::DataFormatError, e.to_string()))?;
                 let ts = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_secs();
+                let total_duration_ms = results.iter().map(|r| r.duration_ms).sum();
                 let run = RegressionRun {
                     id: format!("run-{}", ts),
                     timestamp: ts,
                     branch: branch.clone(),
                     commit: commit.clone(),
                     results,
-                    total_duration_ms: 0,
+                    total_duration_ms,
                 };
                 db.record(run);
                 db.save(db_path)
