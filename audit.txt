@@ -3120,7 +3120,7 @@ DEBT-20:[x] No Debug/Deref implementations consistent across types
 FEAT-01:[] Design database server (persistent compile cache across
          projects and users) — Critical
 FEAT-02:[] Collaborative debug (multi-user debugging session) — High
-FEAT-03: ✅ Web-based simulation control dashboard (ROUND 151-152) —
+FEAT-03: ✅ Web-based simulation control dashboard (ROUND 151-153) —
          modul crates/mivon-tools/src/sim_dashboard/{mod,api,page}.rs di
          atas SimServer (ENT-18) + RestServer (FEAT-04): GET / (HTML:
          form submit, tabel sesi, tombol cancel, refresh tiap 2s), GET
@@ -9102,6 +9102,57 @@ cek Origin, json_object escape).
    - Smoke test nyata (binary hasil `cargo build`): POST sesi dengan
      /tmp/mweb-smoke/counter.sv&max_time=20 → GET sessions menunjukkan
      status Completed + elapsed_cycles 16; stats completed=1.
+
+\\=======================================================================//
+
+═══ ROUND 153 — perbaikan review ke-2 (FEAT-03) ═══
+
+Review ROUND 152 menemukan celah substansial yang tidak tertutup:
+
+MAJOR:
+  M1. `max_workers` tidak membatasi eksekusi nyata. ROUND 152 menghitung
+      kapasitas dari status `Running` dan `max_total_sessions`, sehingga
+      jumlah worker yang di-spawn bisa melebihi `max_workers` (bila
+      max_total_sessions > max_workers). Kini slot direservasi secara
+      ATOMIK (`Store::active` AtomicUsize + compare_exchange) SEBELUM
+      worker di-spawn, dan `ServerConfig::slots() = min(max_workers,
+      max_total_sessions)`. Test `max_workers_limits_parallel_execution`
+      membuktikan hanya 1 worker berjalan walau 2 sesi masuk.
+  M2. Panic di runner (parser/elaborator atas input klien) meninggalkan
+      sesi `Running` selamanya dan slot tidak dilepas. Kini worker memakai
+      `catch_unwind` → status `Failed("runner panic")` + `release_slot()`.
+      Test `runner_panic_marks_failed_and_frees_slot`.
+  M3. FIFO tidak terjamin: submit baru berstatus Running langsung, bisa
+      menyalip sesi lama yang mengantre. Kini SEMUA submit masuk antrean
+      (status Queued) lalu dipromosikan via `promote()` dalam urutan
+      antrean. Test `new_submit_does_not_overtake_queue`.
+  M4. Batas riwayat salah sasaran: bila semua sesi masih aktif, ROUND 152
+      menolak submit (503) padahal sesi terminal lama memenuhi slot. Kini
+      `submit` memangkas sesi terminal tertua (`evict_oldest_terminal`)
+      sebelum menolak. Test `history_cap_evicts_oldest_terminal` vs
+      `history_cap_rejects_when_all_active`.
+
+MEDIUM/LOW:
+  - `validate_files` menolak path absolut (`/`, `~`, `C:\\`, berisi
+    `:`) — server tanpa auth tidak boleh bisa membaca file mana pun di
+    mesin (isi berpotensi bocor lewat pesan Failed). Test
+    `absolute_paths_are_rejected`.
+  - `max_time` diikat atas (10_000_000) agar satu request tidak menahan
+    worker tanpa batas.
+  - `SubmitError::NoRunner` → 503 (runner wajib dipasang sebelum submit;
+    tanpa runner tidak ada sesi Running yang tak pernah selesai).
+  - Field `SimSession::elapsed_cycles` → `elapsed_time` (satuan waktu
+    simulator, bukan cycle); kolom tabel HTML "cycles" → "sim time".
+  - `CancelError`/status-code mapping dan doc kontrak sudah benar sejak
+    ROUND 152; tidak diubah.
+
+Test: 8 test baru di sim_server (slot/panic/evict/FIFO) + 1 di api
+(absolute path). Total workspace naik 3558 → 3563.
+
+📊 VERIFIKASI ROUND 153:
+   - cargo nextest run --workspace --features dev --no-fail-fast:
+     ✅ 3563 passed, 0 failed, 24 skipped.
+   - Targeted `-E 'test(/sim_dashboard|sim_server|rest_api/)'` → 54 passed.
 
 \\=======================================================================//
 

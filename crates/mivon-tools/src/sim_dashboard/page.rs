@@ -59,7 +59,7 @@ fn render_row(s: &SimSession) -> String {
         escape_html(&label),
         files,
         s.max_time,
-        s.elapsed_cycles,
+        s.elapsed_time,
         action,
     )
 }
@@ -126,7 +126,7 @@ const PAGE: &str = r#"<!DOCTYPE html>
     <span id="status"></span>
   </form>
   <table>
-    <thead><tr><th>ID</th><th>User</th><th>Status</th><th>Files</th><th>max_time</th><th>cycles</th><th></th></tr></thead>
+    <thead><tr><th>ID</th><th>User</th><th>Status</th><th>Files</th><th>max_time</th><th>sim time</th><th></th></tr></thead>
     <tbody id="sessions">
 <!--ROWS-->
     </tbody>
@@ -166,7 +166,7 @@ function renderRow(s) {
   tr.appendChild(td);
   tr.appendChild(cell(s.source_files.length ? s.source_files.join(', ') : '-', true));
   tr.appendChild(cell(String(s.max_time), false));
-  tr.appendChild(cell(String(s.elapsed_cycles), false));
+  tr.appendChild(cell(String(s.elapsed_time), false));
   const action = document.createElement('td');
   if (s.status === 'Running' || s.status === 'Queued') {
     const btn = document.createElement('button');
@@ -243,7 +243,7 @@ mod tests {
             status,
             source_files: files.iter().map(|f| f.to_string()).collect(),
             max_time: 1000,
-            elapsed_cycles: 0,
+            elapsed_time: 0,
             created_at: 0,
         }
     }

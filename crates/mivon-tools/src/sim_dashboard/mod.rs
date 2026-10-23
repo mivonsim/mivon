@@ -72,7 +72,23 @@ mod tests {
     use crate::rest_api::ApiResponse;
 
     fn dashboard() -> WebDashboard {
-        WebDashboard::new(ServerConfig::default())
+        let d = WebDashboard::new(ServerConfig::default());
+        d.server()
+            .set_runner(std::sync::Arc::new(|_files, _max_time| Ok(1)));
+        d
+    }
+
+    /// Dashboard dengan runner yang menahan sesi sampai sender di-drop, agar
+    /// status Running/Queued deterministik.
+    fn dashboard_held() -> (WebDashboard, std::sync::mpsc::Sender<()>) {
+        let d = WebDashboard::new(ServerConfig::default());
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        let rx = std::sync::Arc::new(std::sync::Mutex::new(rx));
+        d.server().set_runner(std::sync::Arc::new(move |_files, _max_time| {
+            let guard = rx.lock().unwrap_or_else(|e| e.into_inner());
+            guard.recv().map(|_| 1).map_err(|e| e.to_string())
+        }));
+        (d, tx)
     }
 
     /// Ambil body dari respons HTTP mentah (setelah header `\r\n\r\n`).
@@ -194,6 +210,14 @@ mod tests {
             max_sessions_total: 1,
             ..Default::default()
         });
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        let _tx = tx; // sender tetap hidup → sesi menggantung di Running
+        let rx = std::sync::Arc::new(std::sync::Mutex::new(rx));
+        d.server()
+            .set_runner(std::sync::Arc::new(move |_files, _max_time| {
+                let guard = rx.lock().unwrap_or_else(|e| e.into_inner());
+                guard.recv().map(|_| 1).map_err(|e| e.to_string())
+            }));
         let rest = d.into_rest_server("127.0.0.1:0");
         let first = rest.handle_request("POST", "/api/v1/sessions?user=alice");
         assert_eq!(status(&first), 201);
@@ -220,7 +244,7 @@ mod tests {
             let v: serde_json::Value = serde_json::from_str(body(&list)).unwrap();
             let s = &v["sessions"][0];
             if s["status"] == "Completed" {
-                assert_eq!(s["elapsed_cycles"], 42);
+                assert_eq!(s["elapsed_time"], 42);
                 done = true;
                 break;
             }
@@ -250,7 +274,7 @@ mod tests {
 
     #[test]
     fn cancel_twice_is_conflict() {
-        let d = dashboard();
+        let (d, _tx) = dashboard_held();
         let rest = d.into_rest_server("127.0.0.1:0");
         let id = d.server().submit("alice", vec![], 100).unwrap();
         let first = rest.handle_request("POST", &format!("/api/v1/cancel?id={}", id));
@@ -261,7 +285,7 @@ mod tests {
 
     #[test]
     fn quota_exhausted_is_429() {
-        let d = dashboard();
+        let (d, _tx) = dashboard_held();
         let rest = d.into_rest_server("127.0.0.1:0");
         for _ in 0..4 {
             let resp = rest.handle_request("POST", "/api/v1/sessions?user=alice");
@@ -273,7 +297,7 @@ mod tests {
 
     #[test]
     fn stats_counts_each_status() {
-        let d = dashboard();
+        let (d, _tx) = dashboard_held();
         let rest = d.into_rest_server("127.0.0.1:0");
         let a = d.server().submit("alice", vec![], 100).unwrap();
         d.server().submit("alice", vec![], 100).unwrap();

@@ -13,12 +13,16 @@
 use std::sync::Arc;
 
 use crate::rest_api::{parse_query, ApiResponse, RestServer};
-use crate::sim_server::{CancelError, SessionStatus, SimServer, SimSession, SubmitError};
+use crate::sim_server::{CancelError, SessionStatus, SimServer, SubmitError};
 
 use super::page::render_page;
 
 /// `max_time` default bila klien tidak mengirimkannya.
 const DEFAULT_MAX_TIME: u64 = 1000;
+
+/// Batas atas `max_time` — mencegah satu request menahan worker sangat lama
+/// (tidak ada mekanisme interupsi engine).
+const MAX_MAX_TIME: u64 = 10_000_000;
 
 pub(crate) fn register(rest: &mut RestServer, server: Arc<SimServer>) {
     let s = server.clone();
@@ -46,12 +50,6 @@ pub(crate) fn register(rest: &mut RestServer, server: Arc<SimServer>) {
     });
 }
 
-/// Urutkan sesi agar output deterministik (HashMap tidak berurutan).
-fn sorted(mut sessions: Vec<SimSession>) -> Vec<SimSession> {
-    sessions.sort_by(|a, b| a.created_at.cmp(&b.created_at).then_with(|| a.id.cmp(&b.id)));
-    sessions
-}
-
 /// Pisahkan daftar file `a.sv,b.sv` — buang entri kosong.
 fn split_files(raw: &str) -> Vec<String> {
     raw.split(',')
@@ -74,6 +72,12 @@ fn validate_files(files: &[String]) -> Result<(), String> {
     for f in files {
         if f.contains("..") {
             return Err(format!("path tidak boleh mengandung '..': {}", f));
+        }
+        // Path absolut / home / drive-letter ditolak: server tanpa auth tidak
+        // boleh bisa membaca file mana pun di mesin (isi bisa bocor lewat
+        // pesan Failed).
+        if f.starts_with('/') || f.starts_with('\\') || f.starts_with('~') || f.contains(':') {
+            return Err(format!("path harus relatif terhadap direktori kerja: {}", f));
         }
         let ext = std::path::Path::new(f)
             .extension()
@@ -101,8 +105,10 @@ fn sessions_response(server: &SimServer, path: &str) -> String {
         }
         None => None,
     };
+    // list_* sudah terurut (created_at, nomor urut) — jangan sort ulang
+    // dengan tie-break berbeda.
     let sessions = match user {
-        Some(user) => sorted(server.list_user_sessions(user)),
+        Some(user) => server.list_user_sessions(user),
         None => server.list_all(),
     };
     let body = serde_json::json!({
@@ -125,7 +131,14 @@ fn create_response(server: &SimServer, path: &str) -> String {
     let max_time = match q.get("max_time").map(|m| m.trim()) {
         None | Some("") => DEFAULT_MAX_TIME,
         Some(raw) => match raw.parse::<u64>() {
-            Ok(v) if v > 0 => v,
+            Ok(v) if v > 0 && v <= MAX_MAX_TIME => v,
+            Ok(v) if v > MAX_MAX_TIME => {
+                return ApiResponse::error(
+                    400,
+                    &format!("parameter 'max_time' maksimal {}", MAX_MAX_TIME),
+                )
+                .to_http_response()
+            }
             _ => {
                 return ApiResponse::error(400, "parameter 'max_time' harus bilangan bulat > 0")
                     .to_http_response()
@@ -156,6 +169,9 @@ fn create_response(server: &SimServer, path: &str) -> String {
             &format!("kapasitas server penuh ({} sesi, max {})", total, max),
         )
         .to_http_response(),
+        Err(SubmitError::NoRunner) => {
+            ApiResponse::error(503, "server belum punya runner eksekusi").to_http_response()
+        }
     }
 }
 
@@ -207,18 +223,10 @@ mod tests {
     }
 
     #[test]
-    fn sorted_is_stable_by_created_at_then_id() {
-        let mk = |id: &str, created_at: u64| SimSession {
-            id: id.to_string(),
-            user: "u".to_string(),
-            status: SessionStatus::Running,
-            source_files: vec![],
-            max_time: 1,
-            elapsed_cycles: 0,
-            created_at,
-        };
-        let out = sorted(vec![mk("b", 2), mk("c", 1), mk("a", 2)]);
-        let ids: Vec<&str> = out.iter().map(|s| s.id.as_str()).collect();
-        assert_eq!(ids, vec!["c", "a", "b"]);
+    fn absolute_paths_are_rejected() {
+        for bad in ["/etc/passwd.sv", "~/x.sv", "C:\\rtl\\a.sv"] {
+            assert!(validate_files(&[bad.to_string()]).is_err(), "{}", bad);
+        }
+        assert!(validate_files(&["rtl/a.sv".to_string()]).is_ok());
     }
 }
