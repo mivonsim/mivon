@@ -164,6 +164,9 @@ pub struct Interface {
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Port {
     pub name: Symbol,
+    /// Posisi source nama port (1-based) — diagnostic elaborator.
+    pub line: usize,
+    pub col: usize,
     pub direction: PortDirection,
     pub range: Option<Range>,
     pub expr_range: Option<ExprRange>,

@@ -930,6 +930,10 @@ impl Parser {
                         let name_tok = self.peek().clone();
                         match &name_tok {
                             Token::Ident(name) => {
+                                // Posisi nama port (1-based) — diagnostic
+                                // elaborator (check_packed_width).
+                                let pline = self.peek_line();
+                                let pcol = self.peek_col();
                                 self.advance();
                                 // Parse unpacked array dimension(s) after port name:
                                 //   data_i [N]          — ukuran tunggal (→ [N-1:0])
@@ -1055,6 +1059,8 @@ impl Parser {
                                 };
                                 ports.push(Port {
                                     name: *name,
+                                    line: pline,
+                                    col: pcol,
                                     direction: dir,
                                     range: range.clone(),
                                     expr_range: expr_range.clone(),

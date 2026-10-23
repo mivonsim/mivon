@@ -538,6 +538,8 @@ mod tests {
             ports: vec![
                 Port {
                     name: Symbol::intern("clk"),
+                    line: 0,
+                    col: 0,
                     direction: PortDirection::Input,
                     range: None,
                     expr_range: None,
@@ -549,6 +551,8 @@ mod tests {
                 },
                 Port {
                     name: Symbol::intern("out"),
+                    line: 0,
+                    col: 0,
                     direction: PortDirection::Output,
                     range: Some(Range { msb: 7, lsb: 0 }),
                     expr_range: None,

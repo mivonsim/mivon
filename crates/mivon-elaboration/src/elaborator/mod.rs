@@ -2660,7 +2660,12 @@ impl Elaborator {
             } else {
                 pwa(port, &effective_params, &signal_map, &signals)?
             };
-            self.check_packed_width(width, &format!("port '{}'", port.name.as_str()))?;
+            self.check_packed_width(
+                width,
+                &format!("port '{}'", port.name.as_str()),
+                port.line,
+                port.col,
+            )?;
             let kind = match port.direction {
                 PortDirection::Input => SignalKind::Input,
                 PortDirection::Output => SignalKind::Output,
@@ -3738,7 +3743,12 @@ impl Elaborator {
                         })?,
                     )
                     .max(decl.kind.default_width());
-                self.check_packed_width(elem_width, &format!("signal '{}'", var.name.as_str()))?;
+                self.check_packed_width(
+                    elem_width,
+                    &format!("signal '{}'", var.name.as_str()),
+                    var.line,
+                    var.col,
+                )?;
                 let (kind, net_type) = match decl.kind {
                     DeclKind::Wire => (SignalKind::Wire, NetType::Wire),
                     DeclKind::Wand => (SignalKind::Wire, NetType::Wand),

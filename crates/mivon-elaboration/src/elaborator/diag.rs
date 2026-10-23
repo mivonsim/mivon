@@ -33,19 +33,27 @@ impl Elaborator {
     /// ini error E3012 tercatat tanpa konteks modul dan `find_name_in_source`
     /// (fallback lokasi) bisa menunjuk ke kemunculan nama port yang sama di
     /// FILE/modul lain (pesan menyesatkan).
-    pub(crate) fn check_packed_width(&self, width: usize, what: &str) -> Result<(), SimError> {
+    pub(crate) fn check_packed_width(
+        &self,
+        width: usize,
+        what: &str,
+        line: usize,
+        col: usize,
+    ) -> Result<(), SimError> {
         if width > MAX_PACKED_WIDTH {
             let mod_ctx = self
                 .current_module
                 .map(|m| format!(" in module '{}'", m.as_str()))
                 .unwrap_or_default();
-            return Err(self.elab_diag(
+            return Err(self.elab_diag_at(
                 DiagCode::PackedWidthTooLarge,
                 format!(
                     "{what}{mod_ctx}: packed width {width} bit exceeds the implementation limit \
                      ({MAX_PACKED_WIDTH} bits) — refusing to elaborate an impractical \
                      vector (hang/OOM/incorrect truncation)"
                 ),
+                line,
+                col,
             ));
         }
         Ok(())
