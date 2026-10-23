@@ -1667,9 +1667,15 @@ VERIF-20: ⚠️ IN PROGRESS (ROUND 85b/122) — OVM compatibility tahap 1+2:
          Tahap 2 (ROUND 122): ovm_phase hierarchy (__ovm_phase/ovm_phase +
          BUILTIN) + ovm_factory::set_type_override_by_type alias di 3
          jalur (elab SysFunc, engine IR, engine AST).
-         MASIH OPEN: remap extends ovm_* → __uvm_* penuh (kini fallback
-         generik object — pre-existing tahap 1, item terpisah) +
-         ovm_* di is_builtin `::new` jalur AST.
+         Tahap 3 (ROUND 140): ovm_* di is_builtin `::new` jalur AST —
+         remap `__{}` (ovm_object::new → __ovm_object) + insert
+         uvm_object_data (parity jalur IR) + alias data builtin
+         ovm_analysis_port/imp → konvensi uvm_*. Test:
+         test_ovm_new_builtin_ast_path (get_name() = "Abc").
+         MASIH OPEN (item terpisah): remap extends ovm_* → __uvm_* penuh —
+         hierarchy dikenali via fallback generik, tetapi pemanggilan method
+         builtin uvm_object tanpa `this.` di body subclass (mis. get_name())
+         masih RT9003; perlu perluasan dispatch plain-name di eval/ast.rs.
 VERIF-21: [x] Functional coverage integration ke coverage database —
          RE-VERIFIKASI (ROUND 66): CoverageDatabase.merge_from_engine
          (coverage_db.rs:232) sudah membawa covergroup/coverpoint/cross
@@ -8421,3 +8427,43 @@ WAJIB DI UPDATE TEXT SETELAH SELESAI
    - cargo nextest run --workspace --features dev --no-fail-fast:
      ✅ 3476 passed, 0 failed, 24 skipped.
 \\=======================================================================//
+
+═══ ROUND 140 — VERIF-20 tahap 3: alias OVM di jalur AST `::new` ═══
+
+Masalah: `ovm_object::new("x")` di dalam body method class (jalur eval AST,
+`crates/mivon-simulator/src/simulator/engine/eval/ast.rs`) tidak di-remap ke
+`__ovm_object` seperti jalur elaborator (BUILTIN_UVM_CLASSES memuat ovm_*).
+Objek teralokasi dengan nama polos `ovm_object` → dispatch method gagal
+(RT8001) dan `get_name()` tidak pernah mengembalikan nama objek.
+
+Perubahan:
+  - daftar `is_builtin` jalur AST ditambah 17 alias `ovm_*` (object,
+    component, sequence_item, sequence, sequencer, driver, monitor,
+    scoreboard, analysis_port/imp/export, subscriber, tlm_fifo, test,
+    report_object, factory, resource_db) sehingga nama efektif = `__ovm_*`.
+  - data object builtin: bila kelas termasuk hierarki uvm_object,
+    `uvm_object_data { name }` di-insert dari argumen pertama `new`
+    (parity dengan jalur IR / NewCall). Tanpa ini `get_name()` kosong.
+  - alias data builtin: `ovm_analysis_port`/`ovm_analysis_imp` memakai
+    konvensi data padanan `uvm_*` (strip prefix ovm_ → uvm_).
+
+Test: `test_ovm_new_builtin_ast_path` (mivon-tests/tests/core_uvm.rs) —
+`ovm_object::new("Abc")` di body function class, `get_name()` = "Abc" (r=1).
+
+Catatan jujur: remap `extends ovm_*` → `__uvm_*` penuh BELUM selesai.
+Kelas `extends ovm_object` sudah dikenali sebagai hierarki object (fallback
+generik), tetapi pemanggilan method builtin uvm_object tanpa `this.` di body
+subclass (mis. `get_name()`) masih RT9003 karena dispatch plain-name hanya
+mencari method user (`find_method_quiet`). Dicatat sebagai item terpisah.
+Percobaan remap extends di elaborator dibatalkan (risiko menimpa kelas user
+bernama `ovm_object` tanpa manfaat yang terbukti).
+
+📊 VERIFIKASI ROUND 140:
+   - cargo nextest run --workspace --features dev --no-fail-fast:
+     ✅ 3479 passed, 0 failed, 24 skipped.
+   - Targeted: `cargo nextest run --workspace --features dev -E
+     'test(test_ovm_)'` → 2 passed (test_ovm_factory_override_alias,
+     test_ovm_new_builtin_ast_path).
+
+\\=======================================================================//
+

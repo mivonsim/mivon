@@ -184,6 +184,28 @@ impl SimulationEngine {
                         | "uvm_report_object"
                         | "uvm_factory"
                         | "uvm_resource_db"
+                        // VERIF-20 t3: alias OVM (ovm_*) — remap `__{}` sama
+                        // seperti jalur elaborator (BUILTIN_UVM_CLASSES memuat
+                        // nama ovm_*) + hierarchy.rs mengenali __ovm_object/
+                        // __ovm_component. Tanpa ini objek dialokasikan sbg
+                        // "ovm_*" polos → dispatch method gagal RT8001.
+                        | "ovm_object"
+                        | "ovm_component"
+                        | "ovm_sequence_item"
+                        | "ovm_sequence"
+                        | "ovm_sequencer"
+                        | "ovm_driver"
+                        | "ovm_monitor"
+                        | "ovm_scoreboard"
+                        | "ovm_analysis_port"
+                        | "ovm_analysis_imp"
+                        | "ovm_analysis_export"
+                        | "ovm_subscriber"
+                        | "ovm_tlm_fifo"
+                        | "ovm_test"
+                        | "ovm_report_object"
+                        | "ovm_factory"
+                        | "ovm_resource_db"
                 );
                 let effective = if is_builtin {
                     format!("__{}", raw_name)
@@ -202,7 +224,29 @@ impl SimulationEngine {
                     .collect::<Result<_, _>>()?;
                 // Initialize built-in data
                 if is_builtin {
-                    if raw_name == "uvm_analysis_port" {
+                    // VERIF-20 t3: data object utk kelas object builtin —
+                    // parity jalur IR (NewCall memasukkan uvm_object_data via
+                    // is_uvm_object_hierarchy, eval/expr.rs) supaya get_name()
+                    // dsb. punya data di jalur AST. Nama dari arg pertama
+                    // (kontrak execute_uvm_object_method "new").
+                    if self.is_uvm_object_hierarchy(effective.as_str()) {
+                        let name = if !arg_vals.is_empty() {
+                            logicvec_to_string(&arg_vals[0])
+                        } else {
+                            String::new()
+                        };
+                        self.uvm_object_data
+                            .entry(obj_id)
+                            .or_insert_with(|| UvmObjectData { name });
+                    }
+                    // Alias OVM memakai konvensi data builtin padanannya
+                    // (ovm_analysis_port → data uvm_analysis_port).
+                    let uvm_like = raw_name
+                        .as_str()
+                        .strip_prefix("ovm_")
+                        .map(|rest| format!("uvm_{rest}"))
+                        .unwrap_or_else(|| raw_name.clone());
+                    if uvm_like == "uvm_analysis_port" {
                         let pname = if !arg_vals.is_empty() {
                             logicvec_to_string(&arg_vals[0])
                         } else {
@@ -218,7 +262,7 @@ impl SimulationEngine {
                         self.uvm_object_data
                             .entry(obj_id)
                             .or_insert_with(|| UvmObjectData { name: pname });
-                    } else if raw_name == "uvm_analysis_imp" {
+                    } else if uvm_like == "uvm_analysis_imp" {
                         let pname = if !arg_vals.is_empty() {
                             logicvec_to_string(&arg_vals[0])
                         } else {

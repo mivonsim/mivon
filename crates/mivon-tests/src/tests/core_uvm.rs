@@ -1588,6 +1588,48 @@ endmodule
 }
 
 #[test]
+fn test_ovm_new_builtin_ast_path() {
+    // VERIF-20 t3: `ovm_object::new` di jalur eval AST (body method class)
+    // — remap ke `__ovm_object` + insert uvm_object_data (parity jalur IR),
+    // sehingga get_name() bekerja (tanpa remap: alloc "ovm_object" polos →
+    // dispatch method gagal RT8001). Jalur AST dieksekusi lewat body
+    // function class (execute_method_body → evaluate_ast_stmt).
+    let source = r#"
+class c_env extends ovm_object;
+    function new(string n);
+        super.new(n);
+    endfunction
+
+    function int cek_obj();
+        ovm_object o;
+        string s;
+        o = ovm_object::new("Abc");
+        s = o.get_name();
+        if (s == "Abc") return 1;
+        return 0;
+    endfunction
+endclass
+
+module tb;
+    c_env e;
+    int r;
+    initial begin
+        e = c_env::new("env");
+        r = e.cek_obj();
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 10).expect("ovm_object::new jalur AST gagal");
+    let r = sigs
+        .iter()
+        .find(|(n, _)| n == "r")
+        .map(|(_, v)| v.to_u64())
+        .unwrap_or(99);
+    assert_eq!(r, 1, "get_name() pada objek ovm_object::new harus 'Abc', got r={r}");
+}
+
+#[test]
 fn test_ovm_factory_override_alias() {
     // VERIF-20 tahap 2: `ovm_factory::set_type_override_by_type` alias
     // ke handler UVM yang sama (elab SysFunc + engine IR/AST).
