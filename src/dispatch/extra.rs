@@ -82,12 +82,12 @@ pub(crate) fn dispatch_memcheck(a: &crate::cli::MmemcheckArgs) -> ! {
 pub(crate) fn dispatch_tbgen(a: &crate::cli::MtbgenArgs) -> ! {
     let result: Result<(), SimError> = (|| {
         use mivon_api::tools::tbgen;
-        // Konfigurasi CLI dipakai di KEDUA jalur (sebelumnya --period,
-        // --reset, --sim-time, --dump-vcd, --checks diabaikan).
+        // Konfigurasi CLI dipakai di KEDUA jalur. clock/reset None = biarkan
+        // deteksi port yang menentukan (jalur --file) atau default (manual).
         let config = tbgen::TbConfig {
-            clock_name: a.clock_name.clone(),
+            clock_name: a.clock_name.clone().unwrap_or_default(),
             clock_period: a.clock_period,
-            reset_name: Some(a.reset_name.clone()),
+            reset_name: a.reset_name.clone(),
             reset_active_high: a.reset_high,
             simulation_time: a.sim_time,
             dump_vcd: a.dump_vcd,
@@ -98,32 +98,27 @@ pub(crate) fn dispatch_tbgen(a: &crate::cli::MtbgenArgs) -> ! {
             // Jalur otomatis: port dibaca dari AST module.
             let (design, _session) =
                 mivon_api::tools::open_project(&[file.clone()], &[], &[], a.module.as_deref())?;
-            tbgen::generate_for_module(&design, a.module.as_deref(), &config).map_err(|e| {
-                SimError::with_diag(DiagCode::ModuleNotFound, e)
-            })?
+            tbgen::generate_for_module(&design, a.module.as_deref(), &config)
+                .map_err(|e| SimError::with_diag(DiagCode::ModuleNotFound, e))?
         } else {
-            let mut inputs: Vec<(&str, u32)> = Vec::new();
-            let mut outputs: Vec<(&str, u32)> = Vec::new();
-            if let Some(ref input_str) = a.inputs {
-                for part in input_str.split(',') {
-                    if let Some((name, width)) = part.split_once('=') {
-                        inputs.push((name.trim(), width.trim().parse().unwrap_or(1)));
-                    }
-                }
-            }
-            if let Some(ref output_str) = a.outputs {
-                for part in output_str.split(',') {
-                    if let Some((name, width)) = part.split_once('=') {
-                        outputs.push((name.trim(), width.trim().parse().unwrap_or(1)));
-                    }
-                }
-            }
-            let ports = tbgen::ports_from_lists(&inputs, &outputs);
+            let inputs = parse_tb_ports(a.inputs.as_deref(), "--inputs")?;
+            let outputs = parse_tb_ports(a.outputs.as_deref(), "--outputs")?;
+            let in_refs: Vec<(&str, u32)> =
+                inputs.iter().map(|(n, w)| (n.as_str(), *w)).collect();
+            let out_refs: Vec<(&str, u32)> =
+                outputs.iter().map(|(n, w)| (n.as_str(), *w)).collect();
+            let ports = tbgen::ports_from_lists(&in_refs, &out_refs);
             let mut config = config.clone();
-            if a.module.is_some() {
-                config.module_name = a.module.clone().unwrap();
+            if let Some(m) = &a.module {
+                config.module_name = m.clone();
             } else {
                 config.module_name = "dut".to_string();
+            }
+            if config.clock_name.is_empty() {
+                config.clock_name = "clk".to_string();
+            }
+            if config.reset_name.is_none() {
+                config.reset_name = Some("rst_n".to_string());
             }
             tbgen::generate_tb(&config, &ports)
         };
@@ -138,6 +133,49 @@ pub(crate) fn dispatch_tbgen(a: &crate::cli::MtbgenArgs) -> ! {
         Ok(())
     })();
     exit_tool(result);
+}
+
+/// Parse `name=width,name=width` untuk --inputs/--outputs.
+/// Nama kosong atau width bukan angka positif = error (sebelumnya
+/// menghasilkan SV invalid `reg [7:0] ;` dengan exit 0).
+fn parse_tb_ports(spec: Option<&str>, what: &str) -> Result<Vec<(String, u32)>, SimError> {
+    let mut out = Vec::new();
+    let Some(spec) = spec else {
+        return Ok(out);
+    };
+    for part in spec.split(',') {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        let (name, width) = part.split_once('=').ok_or_else(|| {
+            SimError::with_diag(
+                DiagCode::InvalidSyntax,
+                format!("{}: '{}' harus berbentuk nama=lebar", what, part),
+            )
+        })?;
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(SimError::with_diag(
+                DiagCode::InvalidSyntax,
+                format!("{}: nama port kosong pada '{}'", what, part),
+            ));
+        }
+        let width: u32 = width.trim().parse().map_err(|_| {
+            SimError::with_diag(
+                DiagCode::InvalidSyntax,
+                format!("{}: lebar '{}' bukan angka pada '{}'", what, width.trim(), part),
+            )
+        })?;
+        if width == 0 {
+            return Err(SimError::with_diag(
+                DiagCode::InvalidSyntax,
+                format!("{}: lebar 0 tidak valid pada '{}'", what, part),
+            ));
+        }
+        out.push((name.to_string(), width));
+    }
+    Ok(out)
 }
 
 pub(crate) fn dispatch_waiver(a: &crate::cli::MwaiverArgs) -> ! {

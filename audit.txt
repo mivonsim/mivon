@@ -8633,3 +8633,60 @@ mencapai 16 state (0..15), clock/reset bekerja, tanpa gap coverage.
 
 \\=======================================================================//
 
+═══ ROUND 144 — perbaikan hasil review ROUND 143 (tbgen) ═══
+
+Review independen (termasuk validasi silang iverilog -g2012) menemukan 6
+MAJOR + 8 MINOR pada generator. Semua MAJOR diperbaiki:
+
+M1. Lebar berparameter `[W-1:0]` terbaca 1 bit (parser hanya mengisi
+    `range` bila konstanta numerik; `W-1` ada di `expr_range`). Kini
+    `ports_from_module` mengevaluasi default parameter module
+    (`module_param_values` + `resolve_expr_range`). `reg [7:0] a` benar.
+M2. `-m` sebenarnya wajib karena `Design.top_module` tidak pernah diisi
+    jalur parse. Fallback baru: design 1 module → module itu; >1 module
+    → error yang menyebut jumlah module.
+M3. Nama gaya `clk_i`/`clk_in`/`clock_i` tidak terdeteksi (ends_with).
+    Deteksi kini berbasis token (`name_tokens`: pisah `_`/`-`).
+M4. Port OUTPUT bernama `clk` ikut di-drive TB (multi-driver, ilegal).
+    `has_clock` kini mensyaratkan PortDir::Input; deteksi clock kosong →
+    clock dimatikan eksplisit (`clock_name` kosong).
+M5. Input >8 bit tidak pernah di-drive → output X, TB tetap COMPLETE.
+    Semua input kini diberi stimulus 0 lalu 1.
+M6. False positive reset `first`/`burst`/`preset` (contains). Kini token
+    `rst`/`reset`/`rstn`/`resetn`/`rstb`/`resetb`; polaritas dari token
+    terakhir (n/ni/b/low = active-low).
+
+MINOR yang diperbaiki:
+  - Module tanpa port tidak lagi mendapat `clk` liar (guard input-only).
+  - `--dump-vcd`/`--checks` bisa di-set false (`ArgAction::Set`).
+  - `--clock`/`--reset` menjadi Option dan hanya menimpa deteksi bila
+    memang port input (sebelumnya selalu ditimpa di jalur -f).
+  - reset == clock → tidak ada deklarasi ganda.
+  - `$dumpvars(0)` (bukan `$dumpvars(0, tb)`) → E2001 hilang.
+  - `--period 0/1` → setengah period minimal 1 (`always #0` dihindari).
+  - `--inputs '=8'` / `'a=x'` → error E1005 exit 10 (bukan SV invalid
+    dengan exit 0).
+
+Belum diperbaiki (dicatat): port unpacked array (`mem [0:3]`) dan typedef
+belum direpresentasikan; `--sim-time` masih aditif; nama module TB selalu
+`tb`; `tbgen -f` belum memakai `save_micd`.
+
+Test baru (8): parameterized_width_is_resolved,
+single_module_design_needs_no_module_flag, clk_i_style_names_are_detected,
+output_named_clk_is_not_driven, first_and_preset_are_not_treated_as_reset,
+wide_inputs_get_stimulus, reset_same_as_clock_no_duplicate_decl,
+generated_tb_parses.
+
+E2E: `tbgen -f dut.sv` (tanpa -m) → TB valid; `mivon dut.sv tb.sv -T 2000`
+→ COMPLETE tanpa E2001. `iverilog -g2012` menerima kedua TB (counter dan
+pipe berparameter clk_i/rst_ni). `--dump-vcd=false --checks=false` → tidak
+ada blok dump/checks.
+
+📊 VERIFIKASI ROUND 144:
+   - cargo nextest run --workspace --features dev --no-fail-fast:
+     ✅ 3496 passed, 0 failed, 24 skipped.
+   - Targeted `-E 'test(/tbgen/)'` → 17 passed (8 baru).
+   - iverilog -g2012: OK untuk TB counter & TB pipe (parameter + clk_i).
+
+\\=======================================================================//
+

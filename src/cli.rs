@@ -1297,26 +1297,26 @@ pub struct MtbgenArgs {
     /// Output file (default: stdout)
     #[arg(short = 'o', long = "output")]
     pub output: Option<String>,
-    /// Clock name (default: clk)
-    #[arg(long = "clock", default_value = "clk")]
-    pub clock_name: String,
+    /// Clock name (default: clk; dengan --file: dideteksi dari port)
+    #[arg(long = "clock")]
+    pub clock_name: Option<String>,
     /// Clock period (default: 10)
     #[arg(long = "period", default_value = "10")]
     pub clock_period: u32,
-    /// Reset name (default: rst_n)
-    #[arg(long = "reset", default_value = "rst_n")]
-    pub reset_name: String,
-    /// Reset active high (default: active low)
+    /// Reset name (default: rst_n; dengan --file: dideteksi dari port)
+    #[arg(long = "reset")]
+    pub reset_name: Option<String>,
+    /// Reset active high (default: dari nama port)
     #[arg(long = "reset-high")]
     pub reset_high: bool,
     /// Simulation time (default: 1000)
     #[arg(long = "sim-time", default_value = "1000")]
     pub sim_time: u32,
-    /// Include waveform dump
-    #[arg(long = "dump-vcd", default_value = "true")]
+    /// Include waveform dump (--dump-vcd=false untuk mematikan)
+    #[arg(long = "dump-vcd", default_value_t = true, action = clap::ArgAction::Set)]
     pub dump_vcd: bool,
-    /// Include basic checks
-    #[arg(long = "checks", default_value = "true")]
+    /// Include basic checks (--checks=false untuk mematikan)
+    #[arg(long = "checks", default_value_t = true, action = clap::ArgAction::Set)]
     pub include_checks: bool,
     /// Input ports: name=width (comma-separated)
     #[arg(long = "inputs")]
