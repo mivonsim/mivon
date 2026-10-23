@@ -3,6 +3,7 @@
 //! Generates a basic SystemVerilog testbench skeleton from module interface.
 //! Creates clock, reset, DUT instantiation, and basic stimulus patterns.
 
+use mivon_ast::{Design, Module, PortDirection};
 use serde::{Deserialize, Serialize};
 
 /// Port direction.
@@ -66,22 +67,29 @@ pub fn generate_tb(config: &TbConfig, ports: &[PortInfo]) -> String {
 
     push(&mut tb, "module tb;\n\n");
 
-    let half = config.clock_period / 2;
-    push(
-        &mut tb,
-        &format!(
-            "    // Clock generation ({}ns period)\n",
-            config.clock_period
-        ),
-    );
-    push(&mut tb, &format!("    reg {};\n", config.clock_name));
-    push(
-        &mut tb,
-        &format!(
-            "    always #{} {} = ~{};\n\n",
-            half, config.clock_name, config.clock_name
-        ),
-    );
+    // Clock hanya digenerate bila memang ada port clock (atau daftar port
+    // kosong pada pemakaian manual). Tanpa guard ini testbench untuk module
+    // tanpa clock mendapat sinyal `clk` liar yang tidak terhubung DUT.
+    let has_clock = ports.is_empty() || ports.iter().any(|p| p.name == config.clock_name);
+    if has_clock {
+        let half = config.clock_period / 2;
+        push(
+            &mut tb,
+            &format!(
+                "    // Clock generation ({}ns period)\n",
+                config.clock_period
+            ),
+        );
+        // Inisialisasi 0: tanpa ini clock mulai X pada simulator 4-state.
+        push(&mut tb, &format!("    reg {} = 0;\n", config.clock_name));
+        push(
+            &mut tb,
+            &format!(
+                "    always #{} {} = ~{};\n\n",
+                half, config.clock_name, config.clock_name
+            ),
+        );
+    }
 
     if let Some(rst) = &config.reset_name {
         push(&mut tb, "    // Reset\n");
@@ -89,8 +97,23 @@ pub fn generate_tb(config: &TbConfig, ports: &[PortInfo]) -> String {
     }
 
     push(&mut tb, "    // DUT signals\n");
+    // Clock/reset sudah dideklarasikan di blok atas — mendeklarasikannya lagi
+    // di sini menghasilkan testbench yang tidak bisa dikompilasi
+    // ("reg clk" dua kali) untuk module yang clock/reset-nya berupa port.
+    let mut driven: Vec<&str> = Vec::new();
+    if has_clock {
+        driven.push(config.clock_name.as_str());
+    }
+    if let Some(rst) = &config.reset_name {
+        driven.push(rst.as_str());
+    }
     for port in ports {
-        let width_str = if port.width > 0 {
+        if driven.contains(&port.name.as_str()) {
+            continue;
+        }
+        // Skalar (width 1) tidak butuh range; sebelumnya menghasilkan
+        // deklarasi janggal `reg [0:0] en`.
+        let width_str = if port.width > 1 {
             if let Some((msb, lsb)) = port.bus_range {
                 format!(" [{}:{}]", msb, lsb)
             } else {
@@ -155,6 +178,10 @@ pub fn generate_tb(config: &TbConfig, ports: &[PortInfo]) -> String {
     }
 
     for port in ports {
+        // Clock/reset punya pola stimulus sendiri di atas.
+        if driven.contains(&port.name.as_str()) {
+            continue;
+        }
         if matches!(port.dir, PortDir::Input) && port.width <= 8 {
             push(&mut tb, &format!("        {} = 0;\n", port.name));
             push(&mut tb, &format!("        #{};\n", config.clock_period * 2));
@@ -171,7 +198,7 @@ pub fn generate_tb(config: &TbConfig, ports: &[PortInfo]) -> String {
     push(&mut tb, "        $finish;\n");
     push(&mut tb, "    end\n\n");
 
-    if config.include_checks {
+    if config.include_checks && has_clock {
         push(&mut tb, "    // Basic checks\n");
         push(&mut tb, "    initial begin\n");
         push(&mut tb, "        repeat(100) @(posedge ");
@@ -188,8 +215,114 @@ pub fn generate_tb(config: &TbConfig, ports: &[PortInfo]) -> String {
     tb
 }
 
-/// Quick generate from simple port list.
-pub fn quick_tb(module_name: &str, inputs: &[(&str, u32)], outputs: &[(&str, u32)]) -> String {
+/// Port module AST → info testbench (lebar dari dimensi packed pertama).
+///
+/// Ref diperlakukan sebagai InOut (tidak di-drive testbench).
+pub fn ports_from_module(m: &Module) -> Vec<PortInfo> {
+    m.ports
+        .iter()
+        .map(|p| {
+            let dir = match p.direction {
+                PortDirection::Input => PortDir::Input,
+                PortDirection::Output => PortDir::Output,
+                PortDirection::Inout | PortDirection::Ref => PortDir::InOut,
+            };
+            let (width, bus_range) = match p.range.as_ref() {
+                Some(r) => {
+                    let msb = r.msb as u32;
+                    let lsb = r.lsb as u32;
+                    let w = if msb >= lsb {
+                        msb - lsb + 1
+                    } else {
+                        lsb - msb + 1
+                    };
+                    (w, Some((msb, lsb)))
+                }
+                None => (1, None),
+            };
+            PortInfo {
+                name: p.name.to_string(),
+                dir,
+                width,
+                bus_range,
+            }
+        })
+        .collect()
+}
+
+/// Deteksi port clock: input dengan nama berakhiran clk/clock
+/// (case-insensitive), mis. clk, sys_clk, i_clk.
+fn detect_clock(ports: &[PortInfo]) -> Option<String> {
+    ports
+        .iter()
+        .find(|p| {
+            matches!(p.dir, PortDir::Input) && {
+                let n = p.name.to_ascii_lowercase();
+                n.ends_with("clk") || n.ends_with("clock")
+            }
+        })
+        .map(|p| p.name.clone())
+}
+
+/// Deteksi port reset: input bernama rst*/reset* (bukan clock).
+/// Kembalikan (nama, active_high). Akhiran _n/_ni/_b = active-low.
+fn detect_reset(ports: &[PortInfo]) -> Option<(String, bool)> {
+    ports
+        .iter()
+        .find(|p| {
+            matches!(p.dir, PortDir::Input) && {
+                let n = p.name.to_ascii_lowercase();
+                (n.contains("rst") || n.contains("reset")) && !n.ends_with("clk")
+            }
+        })
+        .map(|p| {
+            let n = p.name.to_ascii_lowercase();
+            let active_low = n.ends_with("_n") || n.ends_with("_ni") || n.ends_with("_b");
+            (p.name.clone(), !active_low)
+        })
+}
+
+/// Generate testbench langsung dari module di design (port dibaca dari AST).
+///
+/// Clock/reset dideteksi otomatis dari nama port. Module dipilih dari
+/// module_name, atau design.top_module bila tidak disebut.
+pub fn generate_for_module(
+    design: &Design,
+    module_name: Option<&str>,
+    config: &TbConfig,
+) -> Result<String, String> {
+    let wanted = module_name
+        .map(|s| s.to_string())
+        .or_else(|| design.top_module.map(|s| s.to_string()));
+    let name = wanted.ok_or_else(|| {
+        "design tidak punya top module; sebutkan --module <nama>".to_string()
+    })?;
+    let module = design
+        .modules
+        .iter()
+        .find(|m| m.name.as_str() == name)
+        .ok_or_else(|| format!("module '{}' tidak ditemukan di design", name))?;
+
+    let ports = ports_from_module(module);
+    let mut cfg = config.clone();
+    cfg.module_name = module.name.to_string();
+    if let Some(clk) = detect_clock(&ports) {
+        cfg.clock_name = clk;
+    }
+    match detect_reset(&ports) {
+        Some((rst, high)) => {
+            cfg.reset_name = Some(rst);
+            cfg.reset_active_high = high;
+        }
+        // Module tanpa reset: jangan deklarasikan/drive sinyal rst liar.
+        None => cfg.reset_name = None,
+    }
+    Ok(generate_tb(&cfg, &ports))
+}
+
+/// Bangun PortInfo dari daftar (nama, lebar) — jalur CLI manual
+/// (--inputs/--outputs) tanpa membaca source.
+pub fn ports_from_lists(inputs: &[(&str, u32)], outputs: &[(&str, u32)]) -> Vec<PortInfo> {
     let mut ports = Vec::new();
     for (name, width) in inputs {
         ports.push(PortInfo {
@@ -215,6 +348,12 @@ pub fn quick_tb(module_name: &str, inputs: &[(&str, u32)], outputs: &[(&str, u32
             },
         });
     }
+    ports
+}
+
+/// Quick generate from simple port list.
+pub fn quick_tb(module_name: &str, inputs: &[(&str, u32)], outputs: &[(&str, u32)]) -> String {
+    let ports = ports_from_lists(inputs, outputs);
     let config = TbConfig {
         module_name: module_name.to_string(),
         ..TbConfig::default()
@@ -279,5 +418,82 @@ mod tests {
         let tb = quick_tb("counter", &[("clk", 1), ("en", 1)], &[("count", 4)]);
         assert!(tb.contains("counter u_dut"));
         assert!(tb.contains("[3:0] count"));
+    }
+
+    fn parse_design(src: &str) -> Design {
+        use mivon_parser::lexer::{Lexer, Token};
+        let mut pp = mivon_parser::preprocessor::Preprocessor::new();
+        let pre = pp.preprocess(src, None).unwrap();
+        let mut lexer = Lexer::new(&pre);
+        let mut tokens = Vec::new();
+        loop {
+            let (tok, line, col) = lexer.next_token();
+            if tok == Token::Eof {
+                break;
+            }
+            tokens.push((tok, line, col));
+        }
+        let mut parser = mivon_parser::Parser::new(tokens, "<tbgen-test>")
+            .with_source_lines(&pre)
+            .with_file_line_map(lexer.file_line_map.clone());
+        parser.parse_design().unwrap()
+    }
+
+    #[test]
+    fn ports_from_module_reads_direction_and_width() {
+        let design = parse_design(
+            "module dut(input logic clk, input logic [7:0] a, output logic [3:0] y, inout wire b);\nendmodule\n",
+        );
+        let ports = ports_from_module(&design.modules[0]);
+        assert_eq!(ports.len(), 4);
+        let get = |n: &str| ports.iter().find(|p| p.name == n).unwrap();
+        assert!(matches!(get("clk").dir, PortDir::Input));
+        assert_eq!(get("clk").width, 1);
+        assert_eq!(get("a").width, 8);
+        assert_eq!(get("a").bus_range, Some((7, 0)));
+        assert!(matches!(get("y").dir, PortDir::Output));
+        assert_eq!(get("y").width, 4);
+        assert!(matches!(get("b").dir, PortDir::InOut));
+    }
+
+    #[test]
+    fn generate_for_module_no_duplicate_clock_reset_decl() {
+        let design = parse_design(
+            "module dut(input logic clk, input logic rst_n, input logic [7:0] a, output logic [7:0] y);\nendmodule\n",
+        );
+        let tb = generate_for_module(&design, Some("dut"), &TbConfig::default()).unwrap();
+        assert_eq!(tb.matches("reg clk").count(), 1, "clk dideklarasikan sekali");
+        assert_eq!(tb.matches("reg rst_n").count(), 1, "rst_n sekali");
+        assert!(tb.contains("always #5 clk = ~clk;"));
+        assert!(tb.contains("dut u_dut"));
+        assert!(tb.contains(".a(a)"));
+        assert!(tb.contains(".y(y)"));
+        // Reset active-low: 0 dulu lalu 1.
+        let rst_pos = tb.find("rst_n = 0;").expect("reset assert");
+        let rel_pos = tb.find("rst_n = 1;").expect("reset release");
+        assert!(rst_pos < rel_pos);
+    }
+
+    #[test]
+    fn generate_for_module_without_reset_skips_reset() {
+        let design = parse_design("module dut(input logic clk, output logic q);\nendmodule\n");
+        let tb = generate_for_module(&design, Some("dut"), &TbConfig::default()).unwrap();
+        assert!(tb.contains("reg clk = 0;"));
+        assert!(!tb.contains("rst"), "module tanpa reset tidak boleh punya rst");
+    }
+
+    #[test]
+    fn generate_for_module_without_clock_skips_clock_block() {
+        let design = parse_design("module dut(input logic [3:0] a, output logic [3:0] y);\nendmodule\n");
+        let tb = generate_for_module(&design, Some("dut"), &TbConfig::default()).unwrap();
+        assert!(!tb.contains("always #"), "tanpa port clock tidak ada clock gen");
+        assert!(!tb.contains("posedge clk"));
+    }
+
+    #[test]
+    fn generate_for_module_unknown_module_is_error() {
+        let design = parse_design("module dut(input logic clk);\nendmodule\n");
+        let err = generate_for_module(&design, Some("nope"), &TbConfig::default()).unwrap_err();
+        assert!(err.contains("nope"), "pesan menyebut module: {err}");
     }
 }

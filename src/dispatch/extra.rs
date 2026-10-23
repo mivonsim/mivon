@@ -82,24 +82,51 @@ pub(crate) fn dispatch_memcheck(a: &crate::cli::MmemcheckArgs) -> ! {
 pub(crate) fn dispatch_tbgen(a: &crate::cli::MtbgenArgs) -> ! {
     let result: Result<(), SimError> = (|| {
         use mivon_api::tools::tbgen;
-        let mut inputs: Vec<(&str, u32)> = Vec::new();
-        let mut outputs: Vec<(&str, u32)> = Vec::new();
-        if let Some(ref input_str) = a.inputs {
-            for part in input_str.split(',') {
-                if let Some((name, width)) = part.split_once('=') {
-                    inputs.push((name.trim(), width.trim().parse().unwrap_or(1)));
+        // Konfigurasi CLI dipakai di KEDUA jalur (sebelumnya --period,
+        // --reset, --sim-time, --dump-vcd, --checks diabaikan).
+        let config = tbgen::TbConfig {
+            clock_name: a.clock_name.clone(),
+            clock_period: a.clock_period,
+            reset_name: Some(a.reset_name.clone()),
+            reset_active_high: a.reset_high,
+            simulation_time: a.sim_time,
+            dump_vcd: a.dump_vcd,
+            include_checks: a.include_checks,
+            ..tbgen::TbConfig::default()
+        };
+        let tb = if let Some(ref file) = a.file {
+            // Jalur otomatis: port dibaca dari AST module.
+            let (design, _session) =
+                mivon_api::tools::open_project(&[file.clone()], &[], &[], a.module.as_deref())?;
+            tbgen::generate_for_module(&design, a.module.as_deref(), &config).map_err(|e| {
+                SimError::with_diag(DiagCode::ModuleNotFound, e)
+            })?
+        } else {
+            let mut inputs: Vec<(&str, u32)> = Vec::new();
+            let mut outputs: Vec<(&str, u32)> = Vec::new();
+            if let Some(ref input_str) = a.inputs {
+                for part in input_str.split(',') {
+                    if let Some((name, width)) = part.split_once('=') {
+                        inputs.push((name.trim(), width.trim().parse().unwrap_or(1)));
+                    }
                 }
             }
-        }
-        if let Some(ref output_str) = a.outputs {
-            for part in output_str.split(',') {
-                if let Some((name, width)) = part.split_once('=') {
-                    outputs.push((name.trim(), width.trim().parse().unwrap_or(1)));
+            if let Some(ref output_str) = a.outputs {
+                for part in output_str.split(',') {
+                    if let Some((name, width)) = part.split_once('=') {
+                        outputs.push((name.trim(), width.trim().parse().unwrap_or(1)));
+                    }
                 }
             }
-        }
-        let module_name = a.module.as_deref().unwrap_or("dut");
-        let tb = tbgen::quick_tb(module_name, &inputs, &outputs);
+            let ports = tbgen::ports_from_lists(&inputs, &outputs);
+            let mut config = config.clone();
+            if a.module.is_some() {
+                config.module_name = a.module.clone().unwrap();
+            } else {
+                config.module_name = "dut".to_string();
+            }
+            tbgen::generate_tb(&config, &ports)
+        };
         if let Some(ref output) = a.output {
             std::fs::write(output, &tb).map_err(|e| {
                 SimError::with_diag(DiagCode::IoError, format!("{}: {}", output, e))

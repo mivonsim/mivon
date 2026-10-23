@@ -3160,7 +3160,19 @@ FEAT-21: ✅ ECO support (Engineering Change Order) — ROUND 141
          comment|summary` (alias `meco`). Incremental compile pasca-ECO
          sudah tersedia via MICD. Catatan: affected_files/affected_modules/
          risk_score belum dianalisis otomatis (diisi manual).
-FEAT-22:[] Automated testbench generation — Medium
+FEAT-22: ✅ Automated testbench generation — ROUND 143
+         crates/mivon-tools/src/tbgen.rs: `mivon tbgen -f dut.sv [-m mod]`
+         membaca port dari AST (arah, lebar, range) — tidak lagi wajib
+         menulis --inputs/--outputs manual. Clock dideteksi dari nama
+         (*clk/*clock) dan reset dari *rst*/*reset* (active-low bila
+         berakhiran _n/_ni/_b). Generator menghasilkan deklarasi sinyal,
+         clock gen (reg clk = 0), urutan reset, DUT instantiation by-name,
+         $dumpfile/$dumpvars, stimulus input, dan $finish. Diperbaiki:
+         deklarasi ganda clk/rst (TB tidak bisa dikompilasi), clock mulai
+         X, sinyal rst liar untuk module tanpa reset, dan opsi CLI
+         (--period/--reset/--sim-time/--dump-vcd/--checks) yang sebelumnya
+         diabaikan. E2E: TB hasil generate untuk counter disimulasikan →
+         q mencapai 16 state, tanpa gap coverage.
 FEAT-17: ✅ CI/CD pipeline integration kit — FIXED (stale + ROUND 101)
          Komponen kit sudah ada dan aktif: GitHub Actions CI
          (.github/workflows/ci.yml), `--formal` exit non-zero bila
@@ -8573,6 +8585,51 @@ Tidak diperbaiki (dicatat):
    - Targeted `-E 'test(/ovm_|eco::/)'` → 15 passed (4 test baru).
    - E2E binary: ovm_test::new("t").get_name() = "t",
      ovm_component::new("c", null).get_name() = "c".
+
+\\=======================================================================//
+
+═══ ROUND 143 — FEAT-22 automated testbench generation ═══
+
+`tbgen` sudah ada tetapi belum otomatis dan menghasilkan TB yang tidak valid.
+
+Ditambahkan:
+  - `ports_from_module(&Module) -> Vec<PortInfo>` — arah (Input/Output/
+    Inout; Ref → Inout), lebar dari range packed pertama, bus_range.
+  - `detect_clock` — input berakhiran clk/clock (case-insensitive).
+  - `detect_reset` — input *rst*/*reset*, active-low bila akhiran
+    _n/_ni/_b; module tanpa reset → reset_name None.
+  - `generate_for_module(&Design, module, &TbConfig)` — pilih module
+    (arg atau top_module), deteksi clock/reset, generate.
+  - `ports_from_lists` — jalur manual --inputs/--outputs (quick_tb
+    memakainya, menghapus duplikasi).
+  - CLI `mivon tbgen -f <file.sv>` (arg baru `--file`).
+
+Bug yang diperbaiki:
+  - Deklarasi ganda `reg clk;`/`reg rst_n;` (blok clock/reset + loop port)
+    → TB hasil generate gagal dikompilasi. Kini port clock/reset di-skip
+    di loop deklarasi dan stimulus.
+  - Clock mulai X (reg tanpa init) → `reg clk = 0;`.
+  - Module tanpa port clock tetap mendapat `clk` liar + `@(posedge clk)`
+    pada blok checks → clock gen & checks di-guard `has_clock`.
+  - Module tanpa reset tetap mendapat `rst_n` liar → reset_name None.
+  - Skalar tercetak `reg [0:0] en` → range hanya bila width > 1.
+  - Opsi CLI --period/--reset/--reset-high/--sim-time/--dump-vcd/--checks
+    di-parse tetapi diabaikan → kini membentuk TbConfig di kedua jalur.
+
+Test baru (5): ports_from_module_reads_direction_and_width,
+generate_for_module_no_duplicate_clock_reset_decl,
+generate_for_module_without_reset_skips_reset,
+generate_for_module_without_clock_skips_clock_block,
+generate_for_module_unknown_module_is_error.
+
+E2E: `mivon tbgen -f /tmp/dut.sv -m counter -o /tmp/tb_counter.sv` lalu
+`mivon /tmp/dut.sv /tmp/tb_counter.sv -T 2000` → simulasi selesai, q
+mencapai 16 state (0..15), clock/reset bekerja, tanpa gap coverage.
+
+📊 VERIFIKASI ROUND 143:
+   - cargo nextest run --workspace --features dev --no-fail-fast:
+     ✅ 3488 passed, 0 failed, 24 skipped.
+   - Targeted `-E 'test(/tbgen/)'` → 9 passed (5 baru).
 
 \\=======================================================================//
 

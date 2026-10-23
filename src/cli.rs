@@ -1288,6 +1288,9 @@ pub struct MmemcheckArgs {
 /// mtbgen — Testbench generation.
 #[derive(clap::Args, Clone)]
 pub struct MtbgenArgs {
+    /// File sumber SV — port module dibaca otomatis dari AST
+    #[arg(short = 'f', long = "file")]
+    pub file: Option<String>,
     /// Module name untuk testbench
     #[arg(short = 'm', long = "module")]
     pub module: Option<String>,
