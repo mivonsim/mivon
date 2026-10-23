@@ -393,7 +393,8 @@ cargo test -p mivon-tests     # test suite terpadu (ex src/tests + edge_tests + 
 cargo test <test_name>        # single test (no --lib needed if unique)
 ```
 
-No CI, no lint, no typecheck shortcuts. Just `cargo test`. 1634 tests pass.
+No CI, no lint, no typecheck shortcuts. Just `cargo test`. 3414 tests pass
+(24 skipped) via `cargo nextest run --workspace --features dev`.
 
 ## CLI Tools (`crates/mivon-tools/`, subcommand `mivon <tool>`)
 
@@ -444,6 +445,20 @@ di `mivon-api` (`crate::compile_str` → `mivon_api::compile_str`).
 8. **`crates/mivon-simulator/src/waveform/`** — `vcd.rs` (VCD dump), `fst.rs` (FST waveform via wavefst crate).
 9. **`crates/mivon-simulator/src/debugger/mod.rs`** — `Debugger` struct wrapping `SimulationEngine`. Step, breakpoint, watchpoint, timeline, hierarchy tree, reverse debug, memory inspect. 21 unit tests inline.
 10. **`uvm_macros.svh`** — UVM macro definitions (info/warning/error/fatal, factory utils).
+
+## Diagnostics Architecture (`crates/mivon-diag/`, konsolidasi 2026-10)
+
+**Satu pusat tipe diag: `mivon-diag`** — `DiagLevel`/`DiagCode`/`Diagnostic`/
+`DiagEntry`+`FileDiags` (MICD rich entry) /`TextSpan`/`RelatedInfo`/`FixIt`/
+`CodeAction`/`DiagSink`/`DiagCodeRegistry`. Semua crate lain = **consumer
+murni** (re-export via `mivon_core::diagnostics`; tidak ada definisi diag
+sendiri). Sink full = `DiagSink` per-komponen; `diag_global` (GDE) hanya
+aggregator (counter + sampel bounded). Error runtime = `SimError`
+(`mivon-core/src/error.rs`) — bawa kode terstruktur via `with_diag`/`from_*_diagnostic`,
+JANGAN tebak kode dari isi pesan (`error_code()` statis per varian). MICD
+`FileDiags` format VERSION 2 (`micd/format.rs`). GUI = view-model sendiri
+(`DiagEntry` GUI + `QuickFix` interaksi), konversi masuk lewat
+`DiagEntry::from_diagnostic`.
 
 ## Enterprise Context Architecture (`crates/mivon-env/`)
 
@@ -499,10 +514,10 @@ File proyek mendaftar file `.sv` (satu per baris, `#` untuk komentar). Dibaca vi
 - `crates/mivon-simulator/src/simulator/engine/` — largest file area. Event loop, all statement handlers, loop unrolling, `$display`/`$fopen`/`$urandom`, fork/join tracking, `execute_randomize`, debug hook.
 - `crates/mivon-parser/src/lib.rs` — second largest. Operator precedence table at line ~1968.
 - `crates/mivon-elaboration/src/elaborator/mod.rs` — AST→IR translation, constant folding, signal resolution, multidimensional packed array support.
-- `src/simulator/parallel.rs:448` — Parallel eval framework (rayon-based).
-- `src/simulator/sdf.rs:369` — SDF annotation parser + annotator.
-- `src/waveform/fst.rs:244` — FST waveform writer via wavefst crate.
-- `src/debugger/mod.rs:585` — Debugger struct + 21 unit tests.
+- `crates/mivon-simulator/src/simulator/parallel.rs` — Parallel eval framework (rayon-based).
+- `crates/mivon-simulator/src/simulator/sdf.rs` — SDF annotation parser + annotator.
+- `crates/mivon-simulator/src/waveform/fst.rs` — FST waveform writer via wavefst crate.
+- `crates/mivon-simulator/src/debugger/mod.rs` — Debugger struct + 21 unit tests.
 
 ## Run
 ```shell
@@ -548,7 +563,7 @@ Aturan iterasi:
 
 ## Debug mode
 
-Activate via `--debug` (basic) or `--deep-debug` (with snapshot/reverse). Debug types (`DebugMode`, `StepMode`, `Breakpoint`, `Watchpoint`) defined in `src/simulator/engine.rs`. `Debugger` wrapper in `src/debugger/mod.rs`.
+Activate via `--debug` (basic) or `--deep-debug` (with snapshot/reverse). Debug types (`DebugMode`, `StepMode`, `Breakpoint`, `Watchpoint`) defined in `crates/mivon-simulator/src/simulator/types.rs`. `Debugger` wrapper in `crates/mivon-simulator/src/debugger/mod.rs`.
 
 ### CLI flags
 ```shell
@@ -583,7 +598,10 @@ Object database biner (bukan SQL) di `project/.mivon/database/` yang membuat com
 lintas run incremental: file yang tidak berubah tidak di-lex/di-parse/di-verifikasi
 ulang. **Terintegrasi otomatis ke `run` dan `run_fast`** — bukan flag tambahan.
 
-Struktur `src/micd/`:
+Struktur `crates/mivon-compiler/src/micd/` (ex `src/micd/`, migrasi monorepo;
+submodul tambahan: `cache/`, `gc.rs`, `index.rs`, `lifecycle.rs`, `lock.rs`,
+`open.rs`, `paths.rs`, `persist.rs`, `precompiled.rs`, `stats.rs`,
+`stringpool.rs`, `txn.rs`, `objects.rs`):
 - `format.rs` — format file `MDB1`: header 64B + object table + payload, dibaca via mmap (memmap2). Tulis atomik (temp+rename).
 - `metadata.rs` — per-file: content hash (xxh3), mtime, size, status, flags hash, deps.
 - `graph.rs` — dependency graph file-level + reverse index → `affected(changed)` transitive closure.
