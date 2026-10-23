@@ -1,9 +1,0 @@
-# Konfigurasi boot ISO x86 (real-mode BIOS path) — maria emu --boot-iso
-# RAM 2 GB: GRUB boot.img men-decompress core.img ke buffer di ~1.06 GB
-# (0x42400000+) — 32 MB tidak cukup (x86 fault "unmapped @0x424fffd8").
-cpu = "x86"
-console = "stdio"
-
-[ram]
-base = 0x0
-size = 0x80000000
