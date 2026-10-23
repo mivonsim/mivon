@@ -3116,11 +3116,12 @@ FEAT-07: ✅ Regression management (ROUND 137) — RegressionDb (record run,
          flaky|trend` (alias mregression) + DB `.mivon/regression.json`.
          Fix: save() membuat direktori induk. 9 test. (Critical)
 FEAT-08: ✅ Bug tracking integration (ROUND 138) — crates/mivon-tools/src/
-         bugtrack.rs: BugTracker JSON (.mivon/bugs.json) — add (id unik),
-         link test↔bug (idempoten), close, bugs_for_test, has_open_bug
-         (gate CI: kegagalan yang sudah punya bug terbuka bukan regresi
-         baru), summary. CLI `mivon bugtrack add|link|close|list|summary|
-         check` (alias mbugtrack, --db override). 6 test. (Medium)
+         bugtrack.rs: BugTracker JSON (.mivon/bugs.json, tulis atomik) —
+         add (id/judul unik + trim), link test↔bug (idempoten), close,
+         bugs_for_test, has_open_bug, check_exit_code (gate CI: exit 0 bila
+         test punya bug Open, 1 bila tidak), export CSV Jira/Redmine.
+         CLI `mivon bugtrack add|link|close|list|summary|check|export`
+         (alias mbugtrack, --db override). 8 test modul + 1 CLI. (Medium)
 FEAT-09: ✅ Requirements traceability (ROUND 136) — modul requirements
          (CSV mapping requirement→test + JSON hasil test → report CSV/JSON
          + summary) kini ter-wire CLI: `mivon requirements report|summary`
@@ -8372,8 +8373,17 @@ WAJIB DI UPDATE TEXT SETELAH SELESAI
      dilaporkan dari regresi baru (dipakai alur CI).
    - E2E diverifikasi: add BUG-1 → link test_counter → check (open) →
      close → check (no open) → summary "1 total, 0 open, 1 fixed".
-   - Tests: 5 modul (add/link idempoten, duplikat id, close membuka gate,
-     save/load nested, link bug tak dikenal) + 1 parse CLI.
+   - Tests: 8 modul (add/link idempoten, duplikat id, close membuka gate,
+     save/load nested, link bug tak dikenal, exit code gate, export CSV,
+     trim/validasi id-test) + 1 parse CLI.
+   - Review agent tahap 4b menemukan BLOCKER: `check` selalu exit 0 →
+     gate CI tak berfungsi. Diperbaiki: check_exit_code (0 = ada bug Open,
+     1 = tidak) + exit process; check pada DB tidak ada = error E0004.
+     Tambahan: export CSV Jira/Redmine (integrasi sistem bug eksternal),
+     save atomik (temp+rename), trim id/judul/test + tolak kosong,
+     CLI export (ValueEnum jira|redmine).
+   - E2E diverifikasi: check open=exit 0, check tanpa bug=exit 1,
+     setelah close=exit 1, export Jira header + baris bug.
    - cargo nextest run --workspace --features dev --no-fail-fast:
-     ✅ 3467 passed, 0 failed, 24 skipped.
+     ✅ 3470 passed, 0 failed, 24 skipped.
 \\=======================================================================//

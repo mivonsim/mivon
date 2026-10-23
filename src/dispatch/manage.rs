@@ -538,10 +538,40 @@ pub(crate) fn dispatch_bugtrack(a: &crate::cli::MbugtrackArgs) -> ! {
             }
             crate::cli::MbugtrackCmd::Summary => println!("{}", tracker.summary()),
             crate::cli::MbugtrackCmd::Check { test } => {
+                if !path.exists() {
+                    return Err(SimError::with_diag(
+                        DiagCode::IoError,
+                        format!("{}: database bug tidak ditemukan", a.db),
+                    ));
+                }
                 if tracker.has_open_bug(test) {
                     println!("open bug linked to {}", test);
                 } else {
                     println!("no open bug for {}", test);
+                }
+                std::process::exit(tracker.check_exit_code(test));
+            }
+            crate::cli::MbugtrackCmd::Export { format, output } => {
+                let text = match format {
+                    crate::cli::BugExportFormat::Jira => tracker.export_jira_csv(),
+                    crate::cli::BugExportFormat::Redmine => tracker.export_redmine_csv(),
+                };
+                match output {
+                    Some(file) => std::fs::write(file, &text).map_err(|e| {
+                        SimError::with_diag(DiagCode::IoError, format!("{}: {}", file, e))
+                    })?,
+                    None => {
+                        use std::io::Write;
+                        let mut stdout = std::io::stdout().lock();
+                        if let Err(e) = stdout.write_all(text.as_bytes()) {
+                            if e.kind() != std::io::ErrorKind::BrokenPipe {
+                                return Err(SimError::with_diag(
+                                    DiagCode::IoError,
+                                    format!("stdout: {}", e),
+                                ));
+                            }
+                        }
+                    }
                 }
             }
         }

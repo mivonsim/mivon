@@ -1770,12 +1770,28 @@ pub enum MbugtrackCmd {
     List,
     /// Ringkasan jumlah bug
     Summary,
-    /// Cek apakah test punya bug terbuka (exit 0 = ada)
+    /// Gate CI: exit 0 bila test punya bug Open, exit 1 bila tidak
     Check {
         /// Nama test
         #[arg(long)]
         test: String,
     },
+    /// Export bug ke CSV untuk sistem bug eksternal
+    Export {
+        /// Format: jira | redmine
+        #[arg(long, value_enum, default_value_t = BugExportFormat::Jira)]
+        format: BugExportFormat,
+        /// Tulis ke file (default stdout)
+        #[arg(short = 'o', long = "output")]
+        output: Option<String>,
+    },
+}
+
+/// Format export bug.
+#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BugExportFormat {
+    Jira,
+    Redmine,
 }
 
 /// Format keluaran mrequirements.
