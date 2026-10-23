@@ -404,3 +404,50 @@ pub(crate) fn dispatch_cov_closure(a: &crate::cli::McovClosureArgs) -> ! {
     })();
     exit_tool(result);
 }
+
+pub(crate) fn dispatch_requirements(a: &crate::cli::MrequirementsArgs) -> ! {
+    let result: Result<(), SimError> = (|| {
+        use mivon_api::tools::requirements::{load_mappings, load_results, RequirementsReport};
+        use std::path::Path;
+        match &a.cmd {
+            crate::cli::MrequirementsCmd::Report {
+                mappings,
+                results,
+                format,
+                output,
+            } => {
+                let maps = load_mappings(Path::new(mappings))
+                    .map_err(|e| SimError::with_diag(DiagCode::IoError, e))?;
+                let res = load_results(Path::new(results))
+                    .map_err(|e| SimError::with_diag(DiagCode::IoError, e))?;
+                let report = RequirementsReport::generate(&maps, &res);
+                let text = match format.as_str() {
+                    "json" => report.to_json(),
+                    "csv" => report.to_csv(),
+                    other => {
+                        return Err(SimError::with_diag(
+                            DiagCode::InvalidSyntax,
+                            format!("format \"{}\" tidak dikenal (csv|json)", other),
+                        ))
+                    }
+                };
+                match output {
+                    Some(path) => std::fs::write(path, &text).map_err(|e| {
+                        SimError::with_diag(DiagCode::IoError, format!("{}: {}", path, e))
+                    })?,
+                    None => print!("{}", text),
+                }
+            }
+            crate::cli::MrequirementsCmd::Summary { mappings, results } => {
+                let maps = load_mappings(Path::new(mappings))
+                    .map_err(|e| SimError::with_diag(DiagCode::IoError, e))?;
+                let res = load_results(Path::new(results))
+                    .map_err(|e| SimError::with_diag(DiagCode::IoError, e))?;
+                let report = RequirementsReport::generate(&maps, &res);
+                println!("{}", report.summary());
+            }
+        }
+        Ok(())
+    })();
+    exit_tool(result);
+}

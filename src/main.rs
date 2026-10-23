@@ -21,9 +21,9 @@ use dispatch::{
     dispatch_design_repo, dispatch_eco, dispatch_elab, dispatch_emu, dispatch_equiv_check,
     dispatch_fmt,
     dispatch_gen, dispatch_inspect, dispatch_ipxact, dispatch_lint, dispatch_memcheck,
-    dispatch_prof, dispatch_project, dispatch_regression, dispatch_sdc, dispatch_sim,
-    dispatch_synth, dispatch_tbgen, dispatch_tcl, dispatch_update, dispatch_vault,
-    dispatch_waiver, dispatch_wave,
+    dispatch_prof, dispatch_project, dispatch_regression, dispatch_requirements,
+    dispatch_sdc, dispatch_sim, dispatch_synth, dispatch_tbgen, dispatch_tcl,
+    dispatch_update, dispatch_vault, dispatch_waiver, dispatch_wave,
 };
 use std::process;
 
@@ -493,6 +493,7 @@ fn real_main() {
             crate::cli::MivonCmd::Eco(a) => dispatch_eco(a),
             crate::cli::MivonCmd::CovClosure(a) => dispatch_cov_closure(a),
             crate::cli::MivonCmd::Tcl(a) => dispatch_tcl(a),
+            crate::cli::MivonCmd::Requirements(a) => dispatch_requirements(a),
         }
     }
 
@@ -665,6 +666,37 @@ mod tests {
                 cmd: crate::cli::MwaiverCmd::Add { rule, .. },
             })) => assert_eq!(rule, "W1001"),
             _ => panic!("bukan Waiver::Add"),
+        }
+    }
+
+    /// FEAT-09: wiring CLI requirements traceability.
+    #[test]
+    fn requirements_subcommand_parses() {
+        use clap::Parser;
+        let cli = crate::cli::Cli::try_parse_from([
+            "mivon",
+            "mrequirements",
+            "report",
+            "-m",
+            "req.csv",
+            "-r",
+            "res.json",
+        ])
+        .expect("mrequirements report harus parse");
+        match cli.cmd {
+            Some(crate::cli::MivonCmd::Requirements(crate::cli::MrequirementsArgs {
+                cmd: crate::cli::MrequirementsCmd::Report {
+                    mappings,
+                    results,
+                    format,
+                    ..
+                },
+            })) => {
+                assert_eq!(mappings, "req.csv");
+                assert_eq!(results, "res.json");
+                assert_eq!(format, "csv");
+            }
+            _ => panic!("bukan Requirements::Report"),
         }
     }
 

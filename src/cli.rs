@@ -103,6 +103,9 @@ pub enum MivonCmd {
     /// mtcl — Tcl scripting interface (otomasi simulasi)
     #[command(alias = "mtcl")]
     Tcl(MtclArgs),
+    /// mrequirements — requirements traceability (requirement → test → status)
+    #[command(alias = "mrequirements")]
+    Requirements(MrequirementsArgs),
 }
 
 /// minspect — Mivon Inspect.
@@ -1720,6 +1723,42 @@ pub enum McovClosureCmd {
         /// Coverage data file (JSON)
         #[arg(short = 'i', long = "input")]
         input: String,
+    },
+}
+
+/// mrequirements — requirements traceability (FEAT-09).
+#[derive(clap::Args, Clone)]
+pub struct MrequirementsArgs {
+    #[command(subcommand)]
+    pub cmd: MrequirementsCmd,
+}
+
+/// Subcommand mrequirements.
+#[derive(Subcommand, Clone)]
+pub enum MrequirementsCmd {
+    /// Generate laporan requirement → test (CSV/JSON)
+    Report {
+        /// CSV mapping: requirement_id,test_name,module,description,priority
+        #[arg(short = 'm', long = "mappings")]
+        mappings: String,
+        /// JSON hasil test: [{name,passed,duration_ms,module}]
+        #[arg(short = 'r', long = "results")]
+        results: String,
+        /// Format keluaran: csv | json
+        #[arg(long = "format", default_value = "csv")]
+        format: String,
+        /// Tulis ke file (default stdout)
+        #[arg(short = 'o', long = "output")]
+        output: Option<String>,
+    },
+    /// Ringkasan coverage requirement (tanpa detail)
+    Summary {
+        /// CSV mapping: requirement_id,test_name,module,description,priority
+        #[arg(short = 'm', long = "mappings")]
+        mappings: String,
+        /// JSON hasil test: [{name,passed,duration_ms,module}]
+        #[arg(short = 'r', long = "results")]
+        results: String,
     },
 }
 

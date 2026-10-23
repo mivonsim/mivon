@@ -165,6 +165,16 @@ impl RequirementsReport {
     }
 }
 
+/// Load test results dari file JSON (array TestResult).
+///
+/// Format: `[{"name":"t1","passed":true,"duration_ms":12,"module":"alu"}]`
+pub fn load_results(path: &Path) -> Result<Vec<TestResult>, String> {
+    let content = std::fs::read_to_string(path)
+        .map_err(|e| format!("gagal baca {}: {}", path.display(), e))?;
+    serde_json::from_str(&content)
+        .map_err(|e| format!("JSON hasil test tidak valid di {}: {}", path.display(), e))
+}
+
 /// Load requirement mappings dari CSV file.
 pub fn load_mappings(path: &Path) -> Result<Vec<RequirementMapping>, String> {
     let content = std::fs::read_to_string(path)
@@ -259,6 +269,30 @@ mod tests {
         let csv = report.to_csv();
         assert!(csv.contains("REQ-1"));
         assert!(csv.contains("Covered"));
+    }
+
+    #[test]
+    fn load_results_reads_json_array() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("results.json");
+        std::fs::write(
+            &path,
+            r#"[{"name":"t1","passed":true,"duration_ms":7,"module":null},
+                {"name":"t2","passed":false,"duration_ms":3,"module":"alu"}]"#,
+        )
+        .unwrap();
+        let results = load_results(&path).expect("parse results");
+        assert_eq!(results.len(), 2);
+        assert!(results[0].passed);
+        assert_eq!(results[1].duration_ms, 3);
+    }
+
+    #[test]
+    fn load_results_rejects_invalid_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bad.json");
+        std::fs::write(&path, "{not json").unwrap();
+        assert!(load_results(&path).is_err());
     }
 
     #[test]
