@@ -995,13 +995,18 @@ PARSER-07: ⚠️ Dua parser — PARTIAL (ROUND 85b tahap 1)
          ada untuk backward compatibility. Penghapusan legacy membutuhkan
          refactor besar. Status: masih open untuk tahap lanjut.
 PARSER-08: ✅ STALE — FastLexer SUDAH terintegrasi dengan Parser baru
-           (ROUND 149). CompileSession (jalur semua tool CLI) memakai
-           FastLexer byte-level lalu Parser (`compile_session.rs:634` +
-           `:674`); `use_fast_lexer` default true. Verifikasi: test baru
-           `parser_fastlexer_tests` — signature AST jalur session identik
-           dengan jalur legacy (Preprocessor+Lexer+Parser), mode
-           fast/slow identik, dan multi-file (2 module dari 2 file)
-           ter-parse lengkap.
+           (ROUND 149/150). CompileSession (jalur semua tool CLI) memakai
+           FastLexer byte-level lalu Parser (`compile_session.rs:636` +
+           `:674`); `use_fast_lexer` default true. Verifikasi diperkuat:
+           counter `CompileSession.fast_lexer_files` (bukti cabang fast
+           benar-benar dieksekusi: >0 fast, 0 slow), tanpa diagnostik
+           error, dan signature AST (module, parameter, lebar port
+           ter-resolve `[W-1:0]`, package items, jumlah decl/item) identik
+           dengan jalur legacy; multi-file 2 module dari 2 file.
+           Catatan follow-up (bukan bagian item ini): FastLexer belum
+           memproduksi token `|->`/`|=>` (relevan saat PARSER-09 SVA) dan
+           string non-ASCII (`é`) di FastLexer bisa mojibake karena
+           byte→char; jalur legacy benar.
 PARSER-09:[] Tidak ada parser for SVA properties full syntax (High)
 PARSER-10: ✅ Module/interface parameter type list edge cases (ROUND 85b)
            — parse_type_expr fix: scoped type (pkg::type_name), signed/byte/
@@ -8909,6 +8914,40 @@ Test baru `crates/mivon-tests/src/parser_fastlexer_tests.rs` (3):
    - cargo nextest run --workspace --features dev --no-fail-fast:
      ✅ 3520 passed, 0 failed, 24 skipped.
    - Targeted `-E 'test(/parser_fastlexer/)'` → 3 passed.
+
+\\=======================================================================//
+
+═══ ROUND 150 — perbaikan review ROUND 149 (PARSER-08) ═══
+
+Review: 3 MEDIUM + 3 LOW. Yang diperbaiki:
+
+M1. Test hanya membandingkan output — tidak membuktikan cabang
+    `use_fast_lexer` dieksekusi. Ditambah counter
+    `CompileSession.fast_lexer_files` (AtomicUsize, reset di AWAL compile,
+    increment di cabang FastLexer). Test: fast > 0, slow == 0.
+    (Bug yang ditemukan saat menulis test: reset semula diletakkan SETELAH
+    par_iter sehingga counter selalu 0 — dipindah ke awal compile.)
+M2. Signature terlalu lemah dan klaim "parameter width" tidak terverifikasi
+    (`[W-1:0]` tidak mengisi `Port.range`). Signature kini memuat parameter
+    module, lebar port ter-resolve (`resolved_width` dengan nilai parameter),
+    `range`, `dtype_name`, jumlah decl/item, dan package items.
+M3. `compile()` bisa mengembalikan design walau ada parse error. Helper test
+    kini menghitung diagnostik level Error dan meng-assert 0.
+
+LOW:
+  - `#[cfg(test)]` yang bergeser (parser_recovery_tests ikut build non-test
+    → 3 warning dead_code) dikembalikan.
+  - Direktori temp test kini unik per proses + counter atomik dan dibersihkan
+    di akhir (aman untuk nextest paralel / dua invokasi bersamaan).
+
+Follow-up dicatat (bukan blocker PARSER-08): FastLexer belum menghasilkan
+token `|->`/`|=>` (relevan untuk PARSER-09 SVA) dan string non-ASCII bisa
+mojibake karena `advance() as char`; jalur legacy benar.
+
+📊 VERIFIKASI ROUND 150:
+   - cargo nextest run --workspace --features dev --no-fail-fast:
+     ✅ 3521 passed, 0 failed, 24 skipped.
+   - Targeted `-E 'test(/parser_fastlexer/)'` → 4 passed.
 
 \\=======================================================================//
 

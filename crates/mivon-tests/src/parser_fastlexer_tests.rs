@@ -2,9 +2,11 @@
 //! terintegrasi dengan Parser baru di jalur `CompileSession` (jalur yang
 //! dipakai semua tool CLI), bukan hanya tokenizer terpisah.
 //!
-//! Test membandingkan hasil AST jalur session dengan jalur legacy
-//! (Preprocessor + Lexer + Parser) dan memastikan kedua mode lexer
-//! (`use_fast_lexer` true/false) menghasilkan struktur yang sama.
+//! Bukti yang diuji:
+//! - `fast_lexer_files` > 0 hanya pada mode fast (counter di CompileSession),
+//! - tidak ada diagnostik error hasil parse,
+//! - struktur AST (module, parameter, port, package typedef) sama dengan
+//!   jalur legacy (Preprocessor + Lexer + Parser).
 
 use mivon_ast::{Design, PortDirection};
 use mivon_compiler::frontend::compile_session::{CompileSession, SessionConfig};
@@ -28,9 +30,23 @@ fn legacy_design(src: &str) -> Design {
     parser.parse_design().expect("legacy parse")
 }
 
-fn session_design(files: &[(&str, &str)], tag: &str, fast: bool) -> Design {
-    let dir = std::env::temp_dir().join(format!("mivon_parser08_{tag}_{fast}"));
-    let _ = std::fs::remove_dir_all(&dir);
+/// Hasil compile session: design, jumlah file lewat FastLexer, error parse.
+struct SessionOut {
+    design: Design,
+    fast_files: usize,
+    error_count: usize,
+}
+
+fn session_design(files: &[(&str, &str)], tag: &str, fast: bool) -> SessionOut {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static SEQ: AtomicUsize = AtomicUsize::new(0);
+    let uniq = format!(
+        "{}_{}_{}",
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::Relaxed),
+        tag
+    );
+    let dir = std::env::temp_dir().join(format!("mivon_parser08_{uniq}"));
     std::fs::create_dir_all(&dir).unwrap();
     let mut sources = Vec::new();
     for (name, src) in files {
@@ -45,16 +61,45 @@ fn session_design(files: &[(&str, &str)], tag: &str, fast: bool) -> Design {
     };
     let mut session = CompileSession::new(cfg);
     let (design, _index) = session.compile().expect("session compile");
-    design
+    let fast_files = session
+        .fast_lexer_files
+        .load(std::sync::atomic::Ordering::Relaxed);
+    let error_count = session
+        .parse_errors
+        .iter()
+        .filter(|d| d.level == mivon_core::diagnostics::DiagLevel::Error)
+        .count();
+    let _ = std::fs::remove_dir_all(&dir);
+    SessionOut {
+        design,
+        fast_files,
+        error_count,
+    }
 }
 
-/// Sidik jari struktur: nama module + port (nama, arah, range).
-fn signature(d: &Design) -> Vec<(String, Vec<(String, String, Option<(usize, usize)>)>)> {
-    let mut out: Vec<_> = d
+/// Sidik jari struktur: module (parameter, port, jumlah decl/item) + package.
+fn signature(d: &Design) -> Vec<String> {
+    let mut out: Vec<String> = d
         .modules
         .iter()
         .map(|m| {
-            let ports = m
+            let params: Vec<String> = m
+                .params
+                .iter()
+                .map(|p| format!("{}={:?}", p.name, p.default))
+                .collect();
+            // Lebar di-resolve dari parameter module: membuktikan `[W-1:0]`
+            // menghasilkan 8 bit di kedua jalur (posisi source tidak ikut
+            // dibandingkan karena base offset file berbeda).
+            let mut param_vals = std::collections::HashMap::new();
+            for p in &m.params {
+                if let Some(expr) = &p.default {
+                    if let Ok(v) = mivon_ast::const_eval_with_params(expr, &param_vals) {
+                        param_vals.insert(p.name, v);
+                    }
+                }
+            }
+            let ports: Vec<String> = m
                 .ports
                 .iter()
                 .map(|p| {
@@ -64,17 +109,27 @@ fn signature(d: &Design) -> Vec<(String, Vec<(String, String, Option<(usize, usi
                         PortDirection::Inout => "inout",
                         PortDirection::Ref => "ref",
                     };
-                    (
-                        p.name.to_string(),
-                        dir.to_string(),
-                        p.range.as_ref().map(|r| (r.msb, r.lsb)),
+                    let width = p.resolved_width(&param_vals).ok();
+                    format!(
+                        "{}:{}:{:?}:{:?}:{:?}",
+                        p.name, dir, width, p.range, p.dtype_name
                     )
                 })
                 .collect();
-            (m.name.to_string(), ports)
+            format!(
+                "module {} params=[{}] ports=[{}] decls={} items={}",
+                m.name,
+                params.join(","),
+                ports.join(","),
+                m.decls.len(),
+                m.items.len()
+            )
         })
         .collect();
-    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out.extend(d.packages.iter().map(|p| {
+        format!("package {} items={}", p.name, p.items.len())
+    }));
+    out.sort();
     out
 }
 
@@ -102,29 +157,36 @@ endmodule
 #[test]
 fn fast_lexer_session_matches_legacy() {
     let legacy = signature(&legacy_design(SRC));
-    let session = signature(&session_design(&[("design.sv", SRC)], "single", true));
-    assert_eq!(session, legacy, "jalur FastLexer harus sama dengan legacy");
-    assert_eq!(session.len(), 2, "alu + top");
+    let out = session_design(&[("design.sv", SRC)], "single", true);
+    assert_eq!(out.error_count, 0, "parse harus tanpa error");
+    assert!(out.fast_files > 0, "cabang FastLexer harus dieksekusi");
+    assert_eq!(signature(&out.design), legacy, "AST jalur FastLexer = legacy");
+}
+
+#[test]
+fn slow_mode_uses_legacy_lexer() {
+    let out = session_design(&[("design.sv", SRC)], "slow", false);
+    assert_eq!(out.error_count, 0);
+    assert_eq!(out.fast_files, 0, "mode slow tidak boleh memakai FastLexer");
 }
 
 #[test]
 fn both_lexer_modes_agree() {
-    let fast = signature(&session_design(&[("design.sv", SRC)], "mode", true));
-    let slow = signature(&session_design(&[("design.sv", SRC)], "mode", false));
-    assert_eq!(fast, slow, "use_fast_lexer true/false harus identik");
+    let fast = session_design(&[("design.sv", SRC)], "agree", true);
+    let slow = session_design(&[("design.sv", SRC)], "agree", false);
+    assert!(fast.fast_files > 0);
+    assert_eq!(signature(&fast.design), signature(&slow.design));
 }
 
 #[test]
 fn fast_lexer_handles_multiple_files() {
     let a = "module m_a(input logic x, output logic y);\n  assign y = x;\nendmodule\n";
     let b = "module m_b(input logic x, output logic y);\n  assign y = ~x;\nendmodule\n";
-    let design = session_design(&[("a.sv", a), ("b.sv", b)], "multi", true);
-    let sig = signature(&design);
+    let out = session_design(&[("a.sv", a), ("b.sv", b)], "multi", true);
+    assert_eq!(out.error_count, 0);
+    assert_eq!(out.fast_files, 2, "kedua file lewat FastLexer");
+    let sig = signature(&out.design);
     assert_eq!(sig.len(), 2, "dua module dari dua file");
-    assert!(sig.iter().any(|(n, _)| n == "m_a"));
-    assert!(sig.iter().any(|(n, _)| n == "m_b"));
-    // Port tetap lengkap (bukan hanya module pertama).
-    for (_, ports) in &sig {
-        assert_eq!(ports.len(), 2, "setiap module punya 2 port");
-    }
+    assert!(sig.iter().any(|s| s.contains("module m_a")));
+    assert!(sig.iter().any(|s| s.contains("module m_b")));
 }

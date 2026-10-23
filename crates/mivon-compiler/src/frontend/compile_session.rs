@@ -112,6 +112,10 @@ pub struct CompileSession {
     micd_restore_expected: usize,
     /// Include deps per file (dari preprocessor) untuk verifikasi header.
     micd_include_deps: HashMap<PathBuf, Vec<PathBuf>>,
+    /// Jumlah file yang di-lex lewat FastLexer pada compile terakhir.
+    /// Counter verifikasi (PARSER-08): membuktikan cabang `use_fast_lexer`
+    /// benar-benar dieksekusi, bukan hanya konfigurasi yang diabaikan.
+    pub fast_lexer_files: std::sync::atomic::AtomicUsize,
     /// Parse errors collected during compilation
     pub parse_errors: Vec<mivon_core::diagnostics::Diagnostic>,
     /// Diagnostik parse PER FILE (path → diagnostics) dari compile terakhir.
@@ -342,6 +346,7 @@ impl CompileSession {
             micd_restored_paths: HashSet::new(),
             micd_restore_expected: 0,
             micd_include_deps: HashMap::new(),
+            fast_lexer_files: std::sync::atomic::AtomicUsize::new(0),
             parse_errors: Vec::new(),
             file_parse_diags: HashMap::new(),
             elab_diagnostics: Vec::new(),
@@ -362,6 +367,9 @@ impl CompileSession {
     /// If self.config.incremental is set, skips files whose checksums haven't changed.
     pub fn compile(&mut self) -> Result<(Design, &ModuleIndex), SimError> {
         let total_start = Instant::now();
+        // Counter PARSER-08 di-reset di AWAL compile (bukan setelah par_iter).
+        self.fast_lexer_files
+            .store(0, std::sync::atomic::Ordering::Relaxed);
         let base_pp = self.create_preprocessor();
 
         // ── Phase 1: File Discovery ──
@@ -628,6 +636,8 @@ impl CompileSession {
                 // Adjusted by base offset after lexing, same as tokens.
                 let file_line_map: Vec<(usize, usize, String)>;
                 let tokens = if use_fast_lexer {
+                    self.fast_lexer_files
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     // FastLexer keeps cumulative line numbers; content after the
                     // initial `line 1 "file" directive starts at internal line 2,
                     // so global position = line + base (mirrors merged source).
