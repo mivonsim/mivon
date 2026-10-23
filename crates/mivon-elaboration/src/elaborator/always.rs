@@ -47,7 +47,7 @@ impl Elaborator {
             }
             AlwaysKind::AlwaysFF => {
                 let (clock, reset, iff) =
-                    self.extract_clock_reset(&always.sensitivity, signal_map, signals)?;
+                    self.extract_clock_reset(&always.sensitivity, signal_map, signals, always.line, always.col)?;
                 let body = self.elaborate_stmt_block(&always.stmts, signal_map, &[], signals)?;
                 let reset = reset.or_else(|| detect_sync_reset(&body));
                 Ok(Process::Sequential {
@@ -81,9 +81,13 @@ impl Elaborator {
                 // Check if sensitivity has clock edges -> Sequential process
                 if let Some(sl) = &always.sensitivity {
                     if sl.events.iter().any(is_edge_event) {
-                        if let Ok((clock, reset, iff)) =
-                            self.extract_clock_reset(&always.sensitivity, signal_map, signals)
-                        {
+                        if let Ok((clock, reset, iff)) = self.extract_clock_reset(
+                            &always.sensitivity,
+                            signal_map,
+                            signals,
+                            always.line,
+                            always.col,
+                        ) {
                             let body =
                                 self.elaborate_stmt_block(&always.stmts, signal_map, &[], signals)?;
                             let reset = reset.or_else(|| detect_sync_reset(&body));
@@ -146,13 +150,17 @@ impl Elaborator {
         sensitivity: &Option<SensitivityList>,
         signal_map: &HashMap<Symbol, SignalId>,
         signals: &[SignalInfo],
+        ab_line: usize,
+        ab_col: usize,
     ) -> Result<(ClockEdge, Option<ResetInfo>, Option<IrExpr>), SimError> {
         let events = match sensitivity {
             Some(sl) => &sl.events,
             None => {
-                return Err(self.elab_diag(
+                return Err(self.elab_diag_at(
                     DiagCode::ModuleNotFound,
                     "always_ff requires sensitivity list",
+                    ab_line,
+                    ab_col,
                 ))
             }
         };

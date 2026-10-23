@@ -4,6 +4,10 @@ use mivon_core::intern::Symbol;
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct AlwaysBlock {
     pub kind: AlwaysKind,
+    /// Posisi source keyword `always*` (1-based) — diagnostic elaborator;
+    /// `(0, 0)` untuk blok tersintesis (synth inline/assign-lowering).
+    pub line: usize,
+    pub col: usize,
     pub sensitivity: Option<SensitivityList>,
     pub stmts: Vec<Stmt>,
 }

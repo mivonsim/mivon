@@ -4381,6 +4381,9 @@ impl Elaborator {
                         };
                         let always = AlwaysBlock {
                             kind: AlwaysKind::Always,
+                            // Bending assign tersintesis — tanpa posisi source.
+                            line: 0,
+                            col: 0,
                             sensitivity: Some(SensitivityList { events: vec![ev] }),
                             stmts: vec![stmt.as_ref().clone()],
                         };
@@ -4919,6 +4922,9 @@ impl Elaborator {
                                 };
                                 let always = AlwaysBlock {
                                     kind: AlwaysKind::Always,
+                                    // Bending assign tersintesis — tanpa posisi source.
+                                    line: 0,
+                                    col: 0,
                                     sensitivity: Some(SensitivityList { events: vec![ev] }),
                                     stmts: vec![stmt.as_ref().clone()],
                                 };

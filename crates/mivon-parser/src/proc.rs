@@ -100,6 +100,9 @@ impl Parser {
     }
 
     pub(crate) fn parse_always(&mut self) -> Result<AlwaysBlock, SimError> {
+        // Posisi keyword `always*` (1-based) untuk diagnostic elaborator.
+        let aline = self.peek_line();
+        let acol = self.peek_col();
         let kind = match self.peek() {
             Token::Always => {
                 self.advance();
@@ -139,6 +142,8 @@ impl Parser {
 
         Ok(AlwaysBlock {
             kind,
+            line: aline,
+            col: acol,
             sensitivity,
             stmts,
         })

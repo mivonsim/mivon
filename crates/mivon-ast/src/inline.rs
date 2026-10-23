@@ -141,6 +141,9 @@ pub fn inline_func_calls_in_module(module: &mut Module) -> Result<Vec<TempSignal
                     };
                     new_items.push(ModuleItem::Always(super::stmt::AlwaysBlock {
                         kind: super::stmt::AlwaysKind::AlwaysComb,
+                        // Blok tersintesis — tanpa posisi source.
+                        line: 0,
+                        col: 0,
                         sensitivity: Some(wc),
                         stmts: preamble,
                     }));
@@ -339,6 +342,9 @@ fn inline_module_items(
                     };
                     out.push(ModuleItem::Always(super::stmt::AlwaysBlock {
                         kind: super::stmt::AlwaysKind::AlwaysComb,
+                        // Blok tersintesis — tanpa posisi source.
+                        line: 0,
+                        col: 0,
                         sensitivity: Some(wc),
                         stmts: preamble,
                     }));
