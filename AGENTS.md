@@ -460,6 +460,15 @@ JANGAN tebak kode dari isi pesan (`error_code()` statis per varian). MICD
 (`DiagEntry` GUI + `QuickFix` interaksi), konversi masuk lewat
 `DiagEntry::from_diagnostic`.
 
+**Posisi diagnostic elaborator (span threading AST, 2026-10)**: parser mencatat
+posisi 1-based di node AST — `DeclVar`, `Port`, `UdpDef`, `GatePrimitive`,
+`AlwaysBlock`, `Stmt::WaitOrder`, `Stmt::ForeachLoop` (flagged `AST_FORMAT_VERSION`
+per penambahan field; bincode MICD tak forward-compatible). Situs error
+elaborator pakai posisi node ini via `elab_diag_at`/`elab_warn_at`; fallback
+`find_name_in_source` hanya untuk situs benar-benar tanpa pos sumber (8 sisa:
+mod.rs top-resolution family ×6 + snapshot map ×1, params.rs resolve param modul
+×1) — level design/global, tak ada posisi tunggal yang valid.
+
 ## Enterprise Context Architecture (`crates/mivon-env/`)
 
 Desain 5 doc/env.md: `GlobalEnv` root object menampung 12 context (masing-masing `Arc`), bukan satu Env raksasa. Dependency satu arah: `Config → Workspace → Runtime → Compiler → Cache/Database/Diagnostics/Telemetry → Verification → Simulation`. Pindah dari `src/env/` ke crate `mivon-env` (migrasi monorepo crate 10); `mivon_api::env` re-export via mivon-api lib.rs.
