@@ -230,6 +230,7 @@ mod tests {
     fn test_lookup_code() {
         assert_eq!(lookup_code("E1001"), Some(DiagCode::UnexpectedToken));
         assert_eq!(lookup_code("E3001"), Some(DiagCode::ModuleNotFound));
+        assert_eq!(lookup_code("E0005"), Some(DiagCode::DataFormatError));
         // E3005 = top resolution (dahulu prefix aneh "EL3001" di luar skema
         // E3xxx — user tak menemukannya di dokumentasi kode E3xxx)
         assert_eq!(lookup_code("E3005"), Some(DiagCode::TopResolutionFailed));

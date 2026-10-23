@@ -281,7 +281,7 @@ impl SimError {
             // DPI Link failed (RT8xxx)
             c if c.starts_with("RT8") => 70,
             // Preprocessor, IO, Debugger, Waveform
-            "E0101" | "E0003" | "E0004" | "W0001" => 10,
+            "E0101" | "E0003" | "E0004" | "E0005" | "W0001" => 10,
             _ => 1,
         }
     }

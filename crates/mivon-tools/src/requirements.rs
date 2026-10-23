@@ -68,6 +68,7 @@ pub struct RequirementsReport {
     /// Requirement dengan campuran test pass/fail atau sebagian test hilang.
     pub partial: usize,
     pub not_covered: usize,
+    /// Persentase requirement yang SEPENUHNYA covered (Partial tidak dihitung).
     pub coverage_percent: f64,
     pub details: Vec<RequirementDetail>,
 }
@@ -116,14 +117,21 @@ impl RequirementsReport {
             let mut pass = 0usize;
             let mut fail = 0usize;
             let mut missing = 0usize;
+            let mut seen_tests: std::collections::HashSet<&str> = std::collections::HashSet::new();
+            let mut unique_tests = 0usize;
             for mapping in group {
+                // Baris mapping duplikat (req,test) tidak menggelembungkan hitungan.
+                if !seen_tests.insert(mapping.test_name.as_str()) {
+                    continue;
+                }
+                unique_tests += 1;
                 match results_map.get(mapping.test_name.as_str()) {
                     Some(r) if r.passed => pass += 1,
                     Some(_) => fail += 1,
                     None => missing += 1,
                 }
             }
-            let status = if fail > 0 && pass == 0 {
+            let status = if fail > 0 && pass == 0 && missing == 0 {
                 RequirementStatus::Failed
             } else if fail > 0 || (pass > 0 && missing > 0) {
                 RequirementStatus::PartialCovered
@@ -139,10 +147,10 @@ impl RequirementsReport {
                 RequirementStatus::NotCovered => not_covered += 1,
             }
             let first = group[0];
-            let test_name = if group.len() == 1 {
+            let test_name = if unique_tests == 1 {
                 Some(first.test_name.clone())
             } else {
-                Some(format!("{} tests", group.len()))
+                Some(format!("{} tests", unique_tests))
             };
             details.push(RequirementDetail {
                 requirement_id: id.to_string(),
@@ -173,7 +181,7 @@ impl RequirementsReport {
 
     /// Export sebagai CSV (semua field di-quote dan di-escape).
     pub fn to_csv(&self) -> String {
-        let mut csv = String::from("Requirement ID,Description,Status,Test,Module\n");
+        let mut csv = format!("{}\n", Self::csv_header());
         for d in &self.details {
             csv.push_str(&format!(
                 "{},{},{},{},{}\n",
@@ -223,14 +231,24 @@ impl RequirementsReport {
 pub fn load_results(path: &Path) -> Result<Vec<TestResult>, String> {
     let content = std::fs::read_to_string(path)
         .map_err(|e| format!("gagal baca {}: {}", path.display(), e))?;
-    let raw: Vec<RawTestResult> = serde_json::from_str(&content)
+    let value: serde_json::Value = serde_json::from_str(&content)
         .map_err(|e| format!("JSON hasil test tidak valid di {}: {}", path.display(), e))?;
-    let mut results = Vec::with_capacity(raw.len());
-    for (index, item) in raw.into_iter().enumerate() {
-        let passed = match (item.passed, item.status.as_deref()) {
+    let records = extract_result_records(&value)?;
+    let mut results = Vec::with_capacity(records.len());
+    for (index, record) in records.iter().enumerate() {
+        let item: RawTestResult = serde_json::from_value(record.clone())
+            .map_err(|e| format!("hasil test #{}: {}", index + 1, e))?;
+        let status = item.status.as_deref().map(|s| s.to_ascii_lowercase());
+        // Skip tidak dihitung sebagai hasil (requirement jadi Partial/NotCovered).
+        if matches!(status.as_deref(), Some("skip") | Some("skipped")) {
+            continue;
+        }
+        let passed = match (item.passed, status.as_deref()) {
             (Some(p), _) => p,
-            (None, Some("Pass" | "PASS" | "pass" | "passed")) => true,
-            (None, Some("Fail" | "FAIL" | "fail" | "failed")) => false,
+            (None, Some("pass" | "passed")) => true,
+            (None, Some("fail" | "failed")) => false,
+            // Flaky = lulus setelah retry.
+            (None, Some("flaky")) => true,
             _ => {
                 return Err(format!(
                     "hasil test #{} ({}): butuh field \"passed\" atau \"status\"",
@@ -247,6 +265,35 @@ pub fn load_results(path: &Path) -> Result<Vec<TestResult>, String> {
         });
     }
     Ok(results)
+}
+
+/// Terima array polos atau bentuk database regression/testdb
+/// `{ "runs": [{ "results": [...] }] }`.
+fn extract_result_records(value: &serde_json::Value) -> Result<Vec<serde_json::Value>, String> {
+    match value {
+        serde_json::Value::Array(items) => Ok(items.clone()),
+        serde_json::Value::Object(map) => {
+            let runs = map
+                .get("runs")
+                .and_then(|v| v.as_array())
+                .ok_or_else(|| "objek JSON hasil test harus punya array \"runs\"".to_string())?;
+            let mut out = Vec::new();
+            for run in runs {
+                if let Some(list) = run
+                    .get("results")
+                    .or_else(|| run.get("tests"))
+                    .and_then(|v| v.as_array())
+                {
+                    out.extend(list.iter().cloned());
+                }
+            }
+            if out.is_empty() {
+                return Err("tidak ada results di dalam \"runs\"".to_string());
+            }
+            Ok(out)
+        }
+        _ => Err("hasil test harus array atau objek {runs:[...]}".to_string()),
+    }
 }
 
 /// Bentuk longgar supaya kompatibel dengan skema hasil test lain di repo
@@ -273,15 +320,17 @@ struct RawTestResult {
 pub fn load_mappings(path: &Path) -> Result<Vec<RequirementMapping>, String> {
     let content = std::fs::read_to_string(path)
         .map_err(|e| format!("gagal baca {}: {}", path.display(), e))?;
+    // BOM UTF-8 dapat menempel di kolom pertama.
+    let content = content.trim_start_matches('\u{feff}');
     let mut rows = content
         .lines()
         .enumerate()
         .filter(|(_, line)| !line.trim().is_empty());
-    let Some((_, first)) = rows.next() else {
+    let Some((first_index, first)) = rows.next() else {
         return Ok(Vec::new());
     };
-    let first_fields = split_csv_line(first);
-    let columns = detect_columns(&first_fields);
+    let first_fields = split_csv_line(first, first_index + 1)?;
+    let columns = detect_columns(&first_fields)?;
     let mut mappings = Vec::new();
     let mut add = |fields: Vec<String>, line_no: usize| -> Result<(), String> {
         let get = |index: Option<usize>| {
@@ -307,12 +356,12 @@ pub fn load_mappings(path: &Path) -> Result<Vec<RequirementMapping>, String> {
     };
     if columns.has_header {
         for (index, line) in rows {
-            add(split_csv_line(line), index + 1)?;
+            add(split_csv_line(line, index + 1)?, index + 1)?;
         }
     } else {
-        add(first_fields, 1)?;
+        add(first_fields, first_index + 1)?;
         for (index, line) in rows {
-            add(split_csv_line(line), index + 1)?;
+            add(split_csv_line(line, index + 1)?, index + 1)?;
         }
     }
     Ok(mappings)
@@ -328,39 +377,54 @@ struct Columns {
     priority: Option<usize>,
 }
 
-fn detect_columns(first: &[String]) -> Columns {
-    let lower: Vec<String> = first.iter().map(|s| s.trim().to_ascii_lowercase()).collect();
-    let find = |needle: &str| lower.iter().position(|h| h.contains(needle));
-    let is_header = find("requirement").is_some() && find("test").is_some();
-    if is_header {
-        Columns {
-            has_header: true,
-            id: find("requirement").unwrap_or(0),
-            test: find("test").unwrap_or(1),
-            module: find("module"),
-            description: find("description"),
-            priority: find("priority"),
-        }
-    } else {
-        Columns {
+fn normalize_header(value: &str) -> String {
+    value
+        .trim()
+        .trim_start_matches('\u{feff}')
+        .to_ascii_lowercase()
+        .replace([' ', '-'], "_")
+}
+
+fn detect_columns(first: &[String]) -> Result<Columns, String> {
+    let norm: Vec<String> = first.iter().map(|s| normalize_header(s)).collect();
+    let id_pos = norm.iter().position(|h| {
+        matches!(h.as_str(), "requirement_id" | "req_id" | "requirement" | "id")
+    });
+    let test_pos = norm.iter().position(|h| {
+        matches!(h.as_str(), "test_name" | "testname" | "test" | "tests")
+    });
+    if id_pos.is_none() && test_pos.is_none() {
+        return Ok(Columns {
             has_header: false,
             id: 0,
             test: 1,
             module: Some(2),
             description: Some(3),
             priority: Some(4),
-        }
+        });
     }
+    let id = id_pos.ok_or_else(|| "header CSV tidak punya kolom requirement id".to_string())?;
+    let test = test_pos.ok_or_else(|| "header CSV tidak punya kolom test name".to_string())?;
+    let find = |name: &str| norm.iter().position(|h| h == name);
+    Ok(Columns {
+        has_header: true,
+        id,
+        test,
+        module: find("module"),
+        description: find("description"),
+        priority: find("priority"),
+    })
 }
 
-/// Quote satu field CSV (escape kutip ganda).
+/// Quote satu field CSV (escape kutip ganda, newline jadi spasi).
 fn csv_field(value: &str) -> String {
-    format!("\"{}\"", value.replace('"', "\"\""))
+    let cleaned = value.replace(['\n', '\r'], " ");
+    format!("\"{}\"", cleaned.replace('"', "\"\""))
 }
 
 /// Split satu baris CSV dengan dukungan tanda kutip (termasuk koma di
-/// dalam kutip dan kutip ganda escape).
-fn split_csv_line(line: &str) -> Vec<String> {
+/// dalam kutip dan kutip ganda escape). Kutip tidak seimbang = error.
+fn split_csv_line(line: &str, line_no: usize) -> Result<Vec<String>, String> {
     let mut fields = Vec::new();
     let mut current = String::new();
     let mut quoted = false;
@@ -382,13 +446,73 @@ fn split_csv_line(line: &str) -> Vec<String> {
             _ => current.push(c),
         }
     }
+    if quoted {
+        return Err(format!("baris {}: kutip CSV tidak seimbang", line_no));
+    }
     fields.push(current);
-    fields
+    Ok(fields)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn csv_unbalanced_quote_is_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bad.csv");
+        std::fs::write(&path, "REQ-1,\"test_a\n").unwrap();
+        let err = load_mappings(&path).expect_err("kutip tak seimbang harus error");
+        assert!(err.contains("kutip"), "{err}");
+    }
+
+    #[test]
+    fn load_mappings_strips_utf8_bom() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bom.csv");
+        std::fs::write(&path, "\u{feff}REQ-1,t1\nREQ-2,t2\n").unwrap();
+        let maps = load_mappings(&path).expect("parse");
+        assert_eq!(maps[0].requirement_id, "REQ-1");
+    }
+
+    #[test]
+    fn load_results_accepts_runs_wrapper_and_skips() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("runs.json");
+        std::fs::write(
+            &path,
+            r#"{"runs":[{"results":[
+                {"name":"t1","status":"Pass","duration_ms":1},
+                {"name":"t2","status":"Skip","duration_ms":1},
+                {"name":"t3","status":"Flaky","duration_ms":2}
+            ]}]}"#,
+        )
+        .unwrap();
+        let results = load_results(&path).expect("parse runs");
+        assert_eq!(results.len(), 2, "Skip tidak dihitung");
+        assert!(results[0].passed);
+        assert!(results[1].passed, "Flaky dianggap lulus");
+    }
+
+    #[test]
+    fn duplicate_mapping_rows_counted_once() {
+        let mappings = vec![mapping("R1", "t1"), mapping("R1", "t1")];
+        let results = vec![result("t1", true)];
+        let report = RequirementsReport::generate(&mappings, &results);
+        assert_eq!(report.total_requirements, 1);
+        assert_eq!(report.covered, 1);
+        assert_eq!(report.details[0].test_name.as_deref(), Some("t1"));
+    }
+
+    #[test]
+    fn failed_requires_no_missing_tests() {
+        let mappings = vec![mapping("R1", "t1"), mapping("R1", "t2")];
+        let results = vec![result("t1", false)];
+        let report = RequirementsReport::generate(&mappings, &results);
+        // t1 gagal, t2 tidak punya hasil → Partial, bukan Failed.
+        assert_eq!(report.partial, 1);
+        assert_eq!(report.failed, 0);
+    }
 
     #[test]
     fn test_requirements_report() {

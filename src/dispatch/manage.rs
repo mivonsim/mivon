@@ -458,8 +458,15 @@ pub(crate) fn dispatch_requirements(a: &crate::cli::MrequirementsArgs) -> ! {
                     None => {
                         use std::io::Write;
                         let mut stdout = std::io::stdout().lock();
-                        // Broken pipe (mis. `| head`) bukan error fatal.
-                        let _ = stdout.write_all(text.as_bytes());
+                        if let Err(e) = stdout.write_all(text.as_bytes()) {
+                            // Broken pipe (mis. `| head`) bukan error fatal.
+                            if e.kind() != std::io::ErrorKind::BrokenPipe {
+                                return Err(SimError::with_diag(
+                                    DiagCode::IoError,
+                                    format!("stdout: {}", e),
+                                ));
+                            }
+                        }
                     }
                 }
             }

@@ -8285,23 +8285,35 @@ WAJIB DI UPDATE TEXT SETELAH SELESAI
        -m req.csv -r results.json` (alias mrequirements).
      * src/dispatch/manage.rs::dispatch_requirements — adaptor tipis
        (validasi format, tulis file atau stdout).
-   - Tests: 9 baru di modul (load_results JSON valid/invalid/skema
-     regression, agregasi per requirement_id, duplikat results first-wins,
-     CSV quoted-comma, report CSV bisa dibaca balik, parse CLI) — total 11
-     test modul + 1 test CLI.
-   - Review agent tahap 2b (1 blocker tidak ada, 3 major) diperbaiki:
+   - Tests: 15 test modul + 1 test CLI (agregasi per requirement_id,
+     duplikat mapping/result, CSV quoted-comma, kutip tak seimbang, BOM,
+     header-aware, roundtrip report 1-test, skema regression, wrapper
+     {runs:[...]} + Skip/Flaky, parse CLI).
+   - Review agent tahap 2b (tidak ada blocker, 3 major) diperbaiki:
      (a) report diagregasi per requirement_id (sebelumnya per baris →
-         coverage salah); status Partial kini dipakai untuk campuran
-         pass/fail atau test hilang; results duplikat = entri pertama;
-     (b) parser CSV sadar kutip (koma di dalam field, escape "") dan
-         header-aware → report CSV bisa dibaca balik sebagai mapping;
-     (c) load_results menerima skema regression (status Pass/Fail) dan
-         testdb, bukan hanya {passed};
-     (d) error format data kini DiagCode baru DataFormatError (E0005),
-         file hilang tetap E0004; format divalidasi ValueEnum (csv|json);
+         coverage salah); status Partial untuk campuran pass/fail atau
+         test hilang; Failed hanya bila semua test yang punya hasil gagal;
+         mapping (req,test) duplikat dihitung sekali; results duplikat =
+         entri pertama;
+     (b) parser CSV sadar kutip (koma di dalam field, escape ""),
+         header-aware dengan nama kolom eksak, kutip tak seimbang =
+         DataFormatError (bukan data rusak senyap), BOM UTF-8 di-strip,
+         nomor baris akurat. Catatan: report multi-test menampilkan
+         "N tests" sehingga roundtrip otomatis hanya untuk 1 test —
+         mapping asli tetap sumber kebenaran;
+     (c) load_results menerima array polos, skema regression/testdb
+         (status Pass/Fail/Skip/Flaky), dan wrapper {runs:[{results}]};
+         Skip tidak dihitung, Flaky = lulus;
+     (d) error format data kini DiagCode baru DataFormatError (E0005)
+         dengan exit code 10 (setara E0004), file hilang tetap E0004;
+         format divalidasi ValueEnum (csv|json);
      (e) mapping kosong = error (bukan 0/0 sukses), stdout broken-pipe
-         tidak panic, semua field CSV di-escape.
-   - DiagCode::DataFormatError baru → test jumlah kode 70 → 71.
+         hanya diabaikan untuk EPIPE, semua field CSV di-escape
+         (newline → spasi).
+   - DiagCode::DataFormatError baru → test jumlah kode 70 → 71 + lookup
+     E0005.
+   - Sisa (dicatat): roundtrip report multi-test, CSV multi-baris
+     (ditolak eksplisit), parser CSV belum submodul sendiri.
    - cargo nextest run --workspace --features dev --no-fail-fast:
-     ✅ 3448 passed, 0 failed, 24 skipped.
+     ✅ 3453 passed, 0 failed, 24 skipped.
 \\=======================================================================//
