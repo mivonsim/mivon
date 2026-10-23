@@ -994,8 +994,14 @@ PARSER-07: ⚠️ Dua parser — PARTIAL (ROUND 85b tahap 1)
          FastLexer sudah default (use_fast_lexer: true). Legacy lexer masih
          ada untuk backward compatibility. Penghapusan legacy membutuhkan
          refactor besar. Status: masih open untuk tahap lanjut.
-PARSER-08:[] FastLexer belum digabung dengan parser baru — hanya
-           tokenisasi (High)
+PARSER-08: ✅ STALE — FastLexer SUDAH terintegrasi dengan Parser baru
+           (ROUND 149). CompileSession (jalur semua tool CLI) memakai
+           FastLexer byte-level lalu Parser (`compile_session.rs:634` +
+           `:674`); `use_fast_lexer` default true. Verifikasi: test baru
+           `parser_fastlexer_tests` — signature AST jalur session identik
+           dengan jalur legacy (Preprocessor+Lexer+Parser), mode
+           fast/slow identik, dan multi-file (2 module dari 2 file)
+           ter-parse lengkap.
 PARSER-09:[] Tidak ada parser for SVA properties full syntax (High)
 PARSER-10: ✅ Module/interface parameter type list edge cases (ROUND 85b)
            — parse_type_expr fix: scoped type (pkg::type_name), signed/byte/
@@ -8876,6 +8882,33 @@ RT9004; `--timeout 5` pada DB lama → heartbeat_timeout=5.
    - cargo nextest run --workspace --features dev --no-fail-fast:
      ✅ 3517 passed, 0 failed, 24 skipped.
    - Targeted `-E 'test(/license_server/)'` → 13 passed (5 baru).
+
+\\=======================================================================//
+
+═══ ROUND 149 — PARSER-08 re-verifikasi (FastLexer + Parser) ═══
+
+Audit menyatakan FastLexer belum digabung dengan parser baru (hanya
+tokenisasi). Verifikasi kode menunjukkan klaim itu STALE:
+
+  - `crates/mivon-compiler/src/frontend/compile_session.rs:634` membuat
+    `FastLexer::new(&combined, &path_str)` lalu `:674`
+    `Parser::new(tokens, &path_str)` — jadi lexing byte-level dan parsing
+    berjalan di jalur yang sama (CompileSession, dipakai semua tool CLI).
+  - `SessionConfig::use_fast_lexer` default `true`.
+
+Test baru `crates/mivon-tests/src/parser_fastlexer_tests.rs` (3):
+  - `fast_lexer_session_matches_legacy` — signature (module + port: nama,
+    arah, range) jalur CompileSession identik dengan jalur legacy
+    (Preprocessor + Lexer + Parser) untuk source berisi package, parameter
+    width, dan dua module.
+  - `both_lexer_modes_agree` — `use_fast_lexer` true vs false identik.
+  - `fast_lexer_handles_multiple_files` — dua module dari dua file
+    ter-parse lengkap (bukan hanya file pertama).
+
+📊 VERIFIKASI ROUND 149:
+   - cargo nextest run --workspace --features dev --no-fail-fast:
+     ✅ 3520 passed, 0 failed, 24 skipped.
+   - Targeted `-E 'test(/parser_fastlexer/)'` → 3 passed.
 
 \\=======================================================================//
 

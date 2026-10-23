@@ -126,6 +126,7 @@ mod synth_sir_tests;
 #[cfg(test)]
 mod defparam_tests;
 #[cfg(test)]
+mod parser_fastlexer_tests;
 mod parser_recovery_tests;
 #[cfg(test)]
 mod fork_tracking_tests;
