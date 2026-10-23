@@ -2080,9 +2080,13 @@ impl Parser {
                     Ok(Some(ModuleItem::Decl(self.parse_decl()?)))
                 } else if let Token::Ident(_) = self.peek() {
                     // Implicit var with type inference (treated as logic)
+                    let vline = self.peek_line();
+                    let vcol = self.peek_col();
                     let vname = self.expect_ident()?;
                     let names = vec![DeclVar {
                         name: vname,
+                        line: vline,
+                        col: vcol,
                         range: None,
                         expr_range: None,
                         array_range: None,
@@ -2307,6 +2311,8 @@ impl Parser {
                     let mut names = Vec::new();
                     loop {
                         if let Token::Ident(n) = self.peek() {
+                            let vline = self.peek_line();
+                            let vcol = self.peek_col();
                             let vname = *n;
                             self.advance();
                             // Dimensi unpacked setelah nama: queue `name[$]`,
@@ -2511,6 +2517,8 @@ impl Parser {
                             }
                             names.push(DeclVar {
                                 name: vname,
+                                line: vline,
+                                col: vcol,
                                 range: None,
                                 expr_range: None,
                                 array_range,
@@ -2613,6 +2621,8 @@ impl Parser {
                     || self.peek_ahead(1) == &Token::Semi
                 {
                     // Treat as implicit wire/reg declaration: `name;` or `name <= expr;` or `name = expr;`
+                    let vline = self.peek_line();
+                    let vcol = self.peek_col();
                     let vname = self.expect_ident()?;
                     let expr = if matches!(
                         self.peek(),
@@ -2626,6 +2636,8 @@ impl Parser {
                     self.skip_semi();
                     let names = vec![DeclVar {
                         name: vname,
+                        line: vline,
+                        col: vcol,
                         range: None,
                         expr_range: None,
                         array_range: None,

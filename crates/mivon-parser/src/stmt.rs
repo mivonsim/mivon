@@ -1773,6 +1773,8 @@ impl Parser {
         // Parameter name(s) with optional default
         let mut names = Vec::new();
         loop {
+            let vline = self.peek_line();
+            let vcol = self.peek_col();
             let name = self.expect_ident()?;
             let mut expr = None;
             if self.peek() == &Token::BlockingAssign {
@@ -1781,6 +1783,8 @@ impl Parser {
             }
             names.push(DeclVar {
                 name,
+                line: vline,
+                col: vcol,
                 range: None,
                 expr_range: expr_range.clone(),
                 array_range: None,

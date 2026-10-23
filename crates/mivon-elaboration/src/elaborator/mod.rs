@@ -3685,7 +3685,9 @@ impl Elaborator {
                                 &signal_map,
                                 &signals,
                             )
-                            .map_err(|e| self.elab_diag(DiagCode::ParamMismatch, e))?,
+                            .map_err(|e| {
+                                self.elab_diag_at(DiagCode::ParamMismatch, e, var.line, var.col)
+                            })?,
                         )
                         .max(decl.kind.default_width());
                     let sid = next_id;
@@ -3731,7 +3733,9 @@ impl Elaborator {
                             &signal_map,
                             &signals,
                         )
-                        .map_err(|e| self.elab_diag(DiagCode::ParamMismatch, e))?,
+                        .map_err(|e| {
+                            self.elab_diag_at(DiagCode::ParamMismatch, e, var.line, var.col)
+                        })?,
                     )
                     .max(decl.kind.default_width());
                 self.check_packed_width(elem_width, &format!("signal '{}'", var.name.as_str()))?;

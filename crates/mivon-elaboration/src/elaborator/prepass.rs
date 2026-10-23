@@ -369,6 +369,9 @@ impl Elaborator {
                     kind: DeclKind::Reg,
                     names: vec![DeclVar {
                         name,
+                        // Var tersintesis — tanpa posisi source.
+                        line: 0,
+                        col: 0,
                         range: None,
                         // Range asli `[Width-1:0]` (dari function return / decl
                         // lokal) diprioritaskan — elaborator me-resolve-nya

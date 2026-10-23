@@ -449,6 +449,10 @@ impl Parser {
         let mut names = Vec::new();
         loop {
             let name_tok = self.peek().clone();
+            // Posisi nama variabel (1-based) — dicek sebelum dimensi/parse
+            // lanjutan menggeser peek (untuk diagnostic elaborator).
+            let vline = self.peek_line();
+            let vcol = self.peek_col();
             match &name_tok {
                 Token::Ident(_) | Token::None | Token::Some_ => {
                     // `none`/`some` adalah keyword SV namun valid sebagai nama
@@ -1008,6 +1012,8 @@ impl Parser {
                     };
                     names.push(DeclVar {
                         name,
+                        line: vline,
+                        col: vcol,
                         range: var_range,
                         expr_range: var_expr_range,
                         array_range,

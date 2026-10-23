@@ -433,6 +433,10 @@ pub struct DeclVar {
     /// antar pemanggilan function/task yang sama (IEEE 1800 §6.21).
     pub is_static: bool,
     pub expr: Option<Expr>,
+    /// Posisi source nama variabel (1-based) — untuk diagnostic elaborator
+    /// (width-resolve, dll). `(0, 0)` untuk var hasil sintesis (prepass).
+    pub line: usize,
+    pub col: usize,
 }
 
 impl DeclVar {
