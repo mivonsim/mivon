@@ -180,10 +180,20 @@ impl EcoDb {
         )
     }
 
-    /// Save to JSON.
+    /// Save to JSON (atomik, membuat direktori induk bila perlu).
     pub fn save(&self, path: &Path) -> Result<(), String> {
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| format!("gagal buat direktori {}: {}", parent.display(), e))?;
+            }
+        }
         let json = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
-        std::fs::write(path, json).map_err(|e| e.to_string())
+        let temp = path.with_extension("json.tmp");
+        std::fs::write(&temp, json)
+            .map_err(|e| format!("gagal tulis {}: {}", temp.display(), e))?;
+        std::fs::rename(&temp, path)
+            .map_err(|e| format!("gagal rename {}: {}", path.display(), e))
     }
 
     /// Load from JSON.
@@ -262,6 +272,43 @@ mod tests {
         db.transition(&id1, EcoStatus::Closed).unwrap();
         assert_eq!(db.open_ecos().len(), 1);
         assert_eq!(db.open_ecos()[0].id, id2);
+    }
+
+    #[test]
+    fn save_creates_parent_and_roundtrips_next_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nested/eco.json");
+        let mut db = EcoDb::new();
+        db.create("t1", "d1", EcoSeverity::Major, "alice");
+        db.save(&path).expect("save");
+        let mut loaded = EcoDb::load(&path).expect("load");
+        assert_eq!(loaded.entries.len(), 1);
+        let id = loaded.create("t2", "d2", EcoSeverity::Minor, "bob");
+        assert_eq!(id, "ECO-0002", "next_id tersimpan");
+    }
+
+    #[test]
+    fn closing_sets_closed_at() {
+        let mut db = EcoDb::new();
+        let id = db.create("t", "d", EcoSeverity::Major, "alice");
+        for status in [
+            EcoStatus::Submitted,
+            EcoStatus::Reviewed,
+            EcoStatus::Approved,
+            EcoStatus::Implemented,
+            EcoStatus::Verified,
+            EcoStatus::Closed,
+        ] {
+            db.transition(&id, status).unwrap();
+        }
+        assert!(db.entries[0].closed_at.is_some());
+    }
+
+    #[test]
+    fn unknown_eco_transition_is_error() {
+        let mut db = EcoDb::new();
+        assert!(db.transition("ECO-9999", EcoStatus::Submitted).is_err());
+        assert!(db.comment("ECO-9999", "a", "x").is_err());
     }
 
     #[test]

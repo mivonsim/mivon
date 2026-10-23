@@ -3148,7 +3148,18 @@ FEAT-16:[x] Simulation farm orchestration — Critical
 FEAT-18:[] Post-silicon validation alignment — Medium
 FEAT-19:[] Emulation/prototyping integration — High
 FEAT-20:[] Hardware acceleration co-simulation — High
-FEAT-21:[] ECO support (Engineering Change Order) — High
+FEAT-21: ✅ ECO support (Engineering Change Order) — ROUND 141
+         crates/mivon-tools/src/eco.rs: EcoDb (create/transition/comment/
+         open_ecos/by_severity/summary/save/load) dengan state machine
+         Draft→Submitted→Reviewed→Approved/Rejected→Implemented→Verified
+         →Closed (+ closed_at otomatis), severity Critical/Major/Minor/
+         Cosmetic, komentar ber-timestamp, flag regression/verification
+         required, risk_score. Persistensi JSON di .mivon/eco.json — kini
+         ATOMIK (temp + rename) + create_dir_all induk (sebelumnya gagal
+         bila .mivon/ belum ada). CLI `mivon meco create|list|transition|
+         comment|summary` (alias `meco`). Incremental compile pasca-ECO
+         sudah tersedia via MICD. Catatan: affected_files/affected_modules/
+         risk_score belum dianalisis otomatis (diisi manual).
 FEAT-22:[] Automated testbench generation — Medium
 FEAT-17: ✅ CI/CD pipeline integration kit — FIXED (stale + ROUND 101)
          Komponen kit sudah ada dan aktif: GitHub Actions CI
@@ -8464,6 +8475,53 @@ bernama `ovm_object` tanpa manfaat yang terbukti).
    - Targeted: `cargo nextest run --workspace --features dev -E
      'test(test_ovm_)'` → 2 passed (test_ovm_factory_override_alias,
      test_ovm_new_builtin_ast_path).
+
+\\=======================================================================//
+
+═══ ROUND 141 — FEAT-21 ECO support (Engineering Change Order) ═══
+
+Modul `crates/mivon-tools/src/eco.rs` (sudah ada) di-verifikasi + diperbaiki
+pada titik yang membuat alur ECO gagal di pemakaian nyata.
+
+Cakupan:
+  - `EcoDb::create(title, description, severity, author)` → id `ECO-NNNN`
+    (next_id persist), status awal Draft, timestamp created/updated.
+  - `transition(id, status)` — state machine eksplisit:
+    Draft→Submitted→Reviewed→{Approved|Rejected}→Implemented→Verified
+    →Closed; transisi tak sah ditolak (Err), id tak dikenal ditolak.
+    `closed_at` di-set saat Closed (test baru `closing_sets_closed_at`).
+  - `comment(id, author, text)`, `open_ecos()`, `by_severity()`, `summary()`
+    (total/open/critical-open).
+  - `save()`/`load()` JSON.
+
+Perbaikan:
+  - `save()` kini membuat direktori induk (`create_dir_all`) — sebelumnya
+    `meco create` pertama kali di project bersih gagal karena `.mivon/`
+    belum ada.
+  - `save()` atomik: tulis `<path>.json.tmp` lalu `rename` — crash di
+    tengah tulis tidak lagi meninggalkan JSON terpotong.
+
+Test baru (3):
+  - `save_creates_parent_and_roundtrips_next_id` — simpan ke
+    `nested/eco.json` (direktori belum ada) → load → create berikutnya
+    tetap `ECO-0002` (next_id tidak reset).
+  - `closing_sets_closed_at` — jalur penuh sampai Closed mengisi closed_at.
+  - `unknown_eco_transition_is_error` — id asing pada transition/comment.
+
+E2E (binary): `meco create` → `ECO-0001: fix fifo [Major] (Draft)`;
+`meco transition ECO-0001 submitted`; `meco comment ... --comment lgtm`;
+`meco summary` → `ECO: 1 total, 1 open, 0 critical open`; `.mivon/eco.json`
+terbentuk tanpa file `.tmp` tersisa.
+
+Catatan: `affected_files`, `affected_modules`, dan `risk_score` tersedia di
+skema tetapi belum dianalisis otomatis dari diff RTL (diisi manual).
+Incremental compile pasca-ECO sudah ditangani MICD.
+
+📊 VERIFIKASI ROUND 141:
+   - cargo nextest run --workspace --features dev --no-fail-fast:
+     ✅ 3479 passed, 0 failed, 24 skipped.
+   - cargo nextest run --workspace --features dev -E 'test(/eco::/)' →
+     9 test modul eco lulus (6 lama + 3 baru).
 
 \\=======================================================================//
 
