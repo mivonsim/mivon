@@ -5,22 +5,16 @@
 //! terbaru file tersebut. Sejak Kritik 12 db.md, setiap entry kaya:
 //! primary span, secondary/related span, fix-it, dan code action — bukan
 //! hanya `Error` berpesan.
+//!
+//! Seragam (aturan "1 diag pusat"): level memakai `DiagLevel` dari
+//! mivon-diag (tidak ada enum `DiagSeverity` kedua); kode string dipetakan
+//! ke enum `DiagCode` via `lookup_code` saat render ke `Diagnostic`.
 
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use mivon_core::diagnostics::{DiagCode, DiagLevel, Diagnostic};
-
-/// Tingkat keparahan diagnostic.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum DiagSeverity {
-    Error,
-    Warning,
-    Hint,
-    Note,
-    Info,
-}
+use mivon_core::diagnostics::{lookup_code, DiagCode, DiagLevel, Diagnostic, SourceSnippet};
 
 /// Rentang teks (1-based, inclusive end) dalam satu file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -70,7 +64,7 @@ pub struct DiagEntry {
     /// Baris utama (singkatan — sama dengan `span.start_line` bila ada).
     pub line: usize,
     pub col: usize,
-    pub severity: DiagSeverity,
+    pub severity: DiagLevel,
     pub message: String,
     /// Kode diagnostic (kosong bila tidak ada).
     pub code: String,
@@ -89,7 +83,7 @@ impl DiagEntry {
     pub fn new(
         line: usize,
         col: usize,
-        severity: DiagSeverity,
+        severity: DiagLevel,
         message: String,
         code: String,
     ) -> Self {
@@ -106,30 +100,34 @@ impl DiagEntry {
         }
     }
 
-    /// Ubah ke Diagnostic core agar bisa dirender lewat renderer tunggal
-    /// format_diagnostic. Severity dipetakan ke DiagLevel; kode (string)
-    /// dan posisi dibawa ke pesan agar tidak hilang (ruang kode micd tidak
-    /// dipetakan ke enum DiagCode core).
-    pub fn to_diagnostic(&self) -> Diagnostic {
-        let level = match self.severity {
-            DiagSeverity::Error => DiagLevel::Error,
-            DiagSeverity::Warning => DiagLevel::Warning,
-            DiagSeverity::Hint => DiagLevel::Help,
-            DiagSeverity::Note => DiagLevel::Note,
-            DiagSeverity::Info => DiagLevel::Info,
+    /// Proyeksi ke `Diagnostic` pusat agar dirender lewat renderer tunggal
+    /// `format_diagnostic`.
+    ///
+    /// - Level: `DiagLevel` langsung — tidak ada pemetaan enum kedua.
+    /// - Kode: string → enum via `lookup_code` bila terdaftar; bila tidak,
+    ///   kode mentah tetap terlihat lewat awalan `[RAW]` di pesan (enum
+    ///   fallback `SimulationError`).
+    /// - Posisi: `file:line:col` dibawa lewat `SourceSnippet` (file dari
+    ///   `FileDiags::path`) — bukan ditempel ke teks pesan.
+    pub fn to_diagnostic(&self, file: &std::path::Path) -> Diagnostic {
+        let raw = self.code.as_str();
+        let (code, message) = match lookup_code(raw) {
+            Some(c) => (c, self.message.clone()),
+            None if !raw.is_empty() => {
+                (DiagCode::SimulationError, format!("[{}] {}", raw, self.message))
+            }
+            None => (DiagCode::SimulationError, self.message.clone()),
         };
-        let code = if self.code.is_empty() {
-            String::new()
-        } else {
-            format!("[{}] ", self.code)
-        };
-        let pos = if self.line > 0 {
-            format!("{}:{}: ", self.line, self.col)
-        } else {
-            String::new()
-        };
-        let message = format!("{}{}{}", pos, code, self.message);
-        Diagnostic::new(level, DiagCode::InvalidSyntax, message)
+        let mut d = Diagnostic::new(self.severity, code, message);
+        if !file.as_os_str().is_empty() && self.line > 0 {
+            d = d.with_source_snippet(SourceSnippet::new(
+                file.display().to_string(),
+                self.line,
+                self.col,
+                String::new(),
+            ));
+        }
+        d
     }
 }
 
@@ -146,14 +144,14 @@ impl FileDiags {
     pub fn error_count(&self) -> usize {
         self.entries
             .iter()
-            .filter(|e| e.severity == DiagSeverity::Error)
+            .filter(|e| e.severity == DiagLevel::Error)
             .count()
     }
 
     pub fn warning_count(&self) -> usize {
         self.entries
             .iter()
-            .filter(|e| e.severity == DiagSeverity::Warning)
+            .filter(|e| e.severity == DiagLevel::Warning)
             .count()
     }
 
@@ -169,21 +167,24 @@ impl FileDiags {
 mod tests {
     use super::*;
     use mivon_core::diagnostics::format_diagnostic;
+    use std::path::Path;
 
     #[test]
     fn test_diag_entry_to_diagnostic_error() {
         let e = DiagEntry::new(
             10,
             4,
-            DiagSeverity::Error,
+            DiagLevel::Error,
             "bad port".to_string(),
             "E3005".to_string(),
         );
-        let d = e.to_diagnostic();
+        let d = e.to_diagnostic(Path::new("a.sv"));
         let s = format_diagnostic(&d);
         assert!(s.contains("bad port"));
+        // E3005 terdaftar di registry → header kode asli, bukan ditempel ke pesan.
         assert!(s.contains("E3005"));
         assert!(s.contains("error"));
+        // Posisi dari snippet (file:line:col), bukan prefix pesan.
         assert!(s.contains("10:4"));
     }
 
@@ -192,15 +193,25 @@ mod tests {
         let w = DiagEntry::new(
             2,
             1,
-            DiagSeverity::Warning,
+            DiagLevel::Warning,
             "unused".to_string(),
             String::new(),
         );
-        let d = w.to_diagnostic();
+        let d = w.to_diagnostic(Path::new("a.sv"));
         let s = format_diagnostic(&d);
         assert!(s.contains("unused"));
         assert!(s.contains("warning"));
         assert!(!s.contains("[]"));
+    }
+
+    /// Kode di luar registry tetap terlihat (awalan [RAW]) — tidak hilang.
+    #[test]
+    fn test_diag_entry_raw_code_preserved() {
+        let e = DiagEntry::new(1, 1, DiagLevel::Error, "weird".into(), "WD001".into());
+        let d = e.to_diagnostic(Path::new("a.sv"));
+        let s = format_diagnostic(&d);
+        assert!(s.contains("WD001"), "kode mentah harus tetap terlihat: {s}");
+        assert!(s.contains("weird"));
     }
 
     #[test]
@@ -208,8 +219,8 @@ mod tests {
         let d = FileDiags {
             path: PathBuf::from("a.sv"),
             entries: vec![
-                DiagEntry::new(1, 0, DiagSeverity::Error, "boom".into(), "ER001".into()),
-                DiagEntry::new(2, 0, DiagSeverity::Warning, "warn".into(), "WR010".into()),
+                DiagEntry::new(1, 0, DiagLevel::Error, "boom".into(), "ER001".into()),
+                DiagEntry::new(2, 0, DiagLevel::Warning, "warn".into(), "WR010".into()),
             ],
             content_hash: 1,
         };
@@ -223,7 +234,7 @@ mod tests {
         let mut e = DiagEntry::new(
             4,
             10,
-            DiagSeverity::Error,
+            DiagLevel::Error,
             "width mismatch".into(),
             "WD001".into(),
         );
@@ -255,6 +266,7 @@ mod tests {
         let bytes = bincode::serialize(&d).unwrap();
         let d2: FileDiags = bincode::deserialize(&bytes).unwrap();
         assert_eq!(d, d2);
+        assert_eq!(d2.entries[0].severity, DiagLevel::Error);
         assert_eq!(d2.entries[0].actions.len(), 1);
         assert_eq!(d2.entries[0].related[0].message, "dideklarasikan di sini");
     }

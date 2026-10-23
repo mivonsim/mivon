@@ -103,21 +103,6 @@ impl SimError {
         (None, None, None)
     }
 
-    /// Tebak DiagCode dari pesan parse error.
-    fn parse_code(msg: &str) -> DiagCode {
-        if msg.contains("unexpected token") || msg.contains("Unexpected") {
-            DiagCode::UnexpectedToken
-        } else if msg.contains("expected") && msg.contains("';'") {
-            DiagCode::ExpectedSemi
-        } else if msg.contains("expected") {
-            DiagCode::ExpectedToken
-        } else if msg.contains("unclosed") {
-            DiagCode::UnclosedBlock
-        } else {
-            DiagCode::InvalidSyntax
-        }
-    }
-
     /// Dapatkan error code yang sesuai.
     pub fn error_code(&self) -> &'static str {
         let msg = self.to_string();
@@ -133,22 +118,14 @@ impl SimError {
         }
 
         match self {
-            SimError::Parse(ref _msg) => Self::parse_code(&msg).as_str(),
-            SimError::Elaborate(_) => {
-                if msg.contains("Unable to determine top-level design")
-                    || msg.contains("Top resolution failed")
-                {
-                    "E3005"
-                } else if msg.contains("not found") || msg.contains("module") {
-                    "E3001"
-                } else if msg.contains("circular") {
-                    "E3002"
-                } else if msg.contains("parameter") || msg.contains("param") {
-                    "E3003"
-                } else {
-                    "E3004"
-                }
-            }
+            // String variant: kode statis per varian — TANPA tebak dari isi
+            // pesan (aturan "line/col/kode 100% akurat"). Kode spesifik
+            // (E3001/E3002/E3005, dll.) seharusnya dibawa lewat jalur
+            // Diagnostic (`SimError::with_diag`/`from_*_diagnostic`) oleh
+            // produsen, bukan ditebak dari substring.
+            SimError::Parse(_) => DiagCode::InvalidSyntax.as_str(),
+            // Elaborate tanpa Diagnostic = fallback generik.
+            SimError::Elaborate(_) => "E3004",
             SimError::Runtime(_) => "E9001",
             SimError::Preprocessor(_) => "E0101",
             SimError::Waveform(_) => "W0001",
@@ -186,7 +163,7 @@ impl SimError {
 
         let msg = self.to_string();
         let (level, code) = match self {
-            SimError::Parse(_) => (DiagLevel::Error, Self::parse_code(&msg)),
+            SimError::Parse(_) => (DiagLevel::Error, DiagCode::InvalidSyntax),
             SimError::Elaborate(_) => (DiagLevel::Error, DiagCode::SimulationError),
             SimError::Runtime(_) => (DiagLevel::Error, DiagCode::SimulationError),
             SimError::Preprocessor(_) => (DiagLevel::Error, DiagCode::PreprocessorError),
@@ -378,20 +355,26 @@ impl From<&str> for SimError {
 mod tests {
     use super::*;
 
-    /// Top resolution failed = kode E3005 (dahulu "EL3001", prefix di luar
-    /// skema E3xxx) dan HARUS tetap exit 40 — arm E3005 wajib berada sebelum
-    /// guard `starts_with("E3") => 30` supaya tidak tertangkap E3 biasa.
+    /// Top resolution failed = kode E3005 (DiagCode::TopResolutionFailed —
+    /// dibawa TERSTRUKTUR via `with_diag`, bukan ketebalan dari isi pesan)
+    /// dan HARUS tetap exit 40 — arm E3005 wajib berada sebelum guard
+    /// `starts_with("E3") => 30` supaya tidak tertangkap E3 biasa.
     #[test]
     fn top_resolution_exit_code_stays_40() {
-        let e = SimError::Elaborate("Unable to determine top-level design".into());
+        let e = SimError::with_diag(
+            DiagCode::TopResolutionFailed,
+            "Unable to determine top-level design",
+        );
         assert_eq!(e.error_code(), "E3005");
         assert_eq!(e.exit_code(), 40);
     }
 
+    /// Elaborate tanpa Diagnostic = fallback generik E3004 (exit 30). Kode
+    /// spesifik (E3001/E3002/E3003) hanya dari produsen yang membawa Diagnostic.
     #[test]
-    fn module_not_found_exit_code_30() {
+    fn unstructured_elaborate_defaults_generic_e3004() {
         let e = SimError::Elaborate("module foo not found".into());
-        assert_eq!(e.error_code(), "E3001");
+        assert_eq!(e.error_code(), "E3004");
         assert_eq!(e.exit_code(), 30);
     }
 

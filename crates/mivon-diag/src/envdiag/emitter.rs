@@ -1,6 +1,6 @@
 //! Emitter diagnostik — membungkus `TerminalEmitter` dengan mode simple/pretty.
 
-use mivon_core::diagnostics::{Diagnostic, TerminalEmitter};
+use crate::diagnostics::{Diagnostic, TerminalEmitter};
 
 /// Handle ke emitter terminal. Bisa diclone ringan (Clone di belakangnya).
 #[derive(Debug, Clone)]
@@ -44,7 +44,7 @@ impl Default for EmitterHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mivon_core::diagnostics::DiagCode;
+    use crate::diagnostics::DiagCode;
 
     #[test]
     fn test_emitter_new() {

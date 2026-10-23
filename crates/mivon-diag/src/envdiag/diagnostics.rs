@@ -1,5 +1,5 @@
-use crate::env::diagnostics::{DiagStatistics, EmitterHandle};
-use mivon_core::diagnostics::{DiagLevel, DiagSink, Diagnostic};
+use crate::diagnostics::{DiagLevel, DiagSink, Diagnostic};
+use super::EmitterHandle;
 
 /// DiagnosticsContext — pusat penerima diagnostik dari seluruh pipeline.
 ///
@@ -8,7 +8,6 @@ use mivon_core::diagnostics::{DiagLevel, DiagSink, Diagnostic};
 pub struct DiagnosticsContext {
     sink: DiagSink,
     emitter: EmitterHandle,
-    stats: DiagStatistics,
     warnings_are_errors: bool,
 }
 
@@ -17,7 +16,6 @@ impl DiagnosticsContext {
         DiagnosticsContext {
             sink: DiagSink::new(),
             emitter: EmitterHandle::new(),
-            stats: DiagStatistics::default(),
             warnings_are_errors: false,
         }
     }
@@ -36,25 +34,18 @@ impl DiagnosticsContext {
         &self.emitter
     }
 
-    pub fn stats(&self) -> &DiagStatistics {
-        &self.stats
-    }
-
     /// Catat + kirim ke sink (bukan output langsung).
     pub fn push(&self, diag: Diagnostic) {
-        self.record(&diag);
         self.sink.push(diag);
     }
 
     /// Catat + emit ke terminal.
     pub fn emit(&self, diag: &Diagnostic) {
-        self.record(diag);
         self.emitter.emit(diag);
     }
 
     /// Kirim + emit (paket lengkap: sink tersimpan, terminal tercetak).
     pub fn report(&self, diag: Diagnostic) {
-        self.record(&diag);
         self.sink.push(diag.clone());
         self.emitter.emit(&diag);
     }
@@ -76,16 +67,6 @@ impl DiagnosticsContext {
     pub fn is_fatal(&self, diag: &Diagnostic) -> bool {
         diag.is_error() || (self.warnings_are_errors && diag.level == DiagLevel::Warning)
     }
-
-    fn record(&self, diag: &Diagnostic) {
-        match diag.level {
-            DiagLevel::Error | DiagLevel::Fatal | DiagLevel::Bug => {
-                self.stats.record_error("total");
-            }
-            DiagLevel::Warning => self.stats.record_warning("total"),
-            _ => self.stats.record_note(),
-        }
-    }
 }
 
 impl Default for DiagnosticsContext {
@@ -97,7 +78,7 @@ impl Default for DiagnosticsContext {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mivon_core::diagnostics::DiagCode;
+    use crate::diagnostics::DiagCode;
 
     #[test]
     fn test_report_counts() {
@@ -106,17 +87,28 @@ mod tests {
         ctx.report(Diagnostic::warning(DiagCode::WaveformError, "w1"));
         ctx.report(Diagnostic::error(DiagCode::InvalidSyntax, "m2"));
         assert_eq!(ctx.error_count(), 2);
-        assert_eq!(ctx.stats().total(), 3);
         assert!(ctx.has_errors());
-        assert!(!ctx.stats().is_clean());
+        assert_eq!(ctx.drain().len(), 3);
+    }
+
+    #[test]
+    fn test_sink_counter() {
+        let ctx = DiagnosticsContext::new();
+        ctx.push(Diagnostic::warning(DiagCode::WaveformError, "w"));
+        ctx.push(Diagnostic::warning(DiagCode::WaveformError, "w2"));
+        assert_eq!(ctx.sink().total_pushed.load(std::sync::atomic::Ordering::Relaxed), 2);
+        assert!(!ctx.has_errors());
     }
 
     #[test]
     fn test_warnings_as_errors() {
         let ctx = DiagnosticsContext::new().with_warnings_as_errors(true);
         let w = Diagnostic::warning(DiagCode::WaveformError, "w");
-        assert!(ctx.is_fatal(&w));
         let e = Diagnostic::error(DiagCode::InvalidSyntax, "e");
+        assert!(ctx.is_fatal(&w), "warning harus fatal saat flag aktif");
         assert!(ctx.is_fatal(&e));
+        // Flag mati: warning bukan fatal.
+        let off = DiagnosticsContext::new();
+        assert!(!off.is_fatal(&w));
     }
 }

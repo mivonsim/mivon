@@ -40,8 +40,9 @@ impl DiagSink {
     /// Push a diagnostic (non-blocking, lock-free fast path).
     /// Channel bounded: bila penuh, diagnostic DIBUANG (dihitung di `dropped`)
     /// daripada menumpuk memori tanpa batas.
-    /// Setiap diagnostic juga diteruskan ke Global Diagnostic Engine
-    /// (`crate::diagnostics::global`) — agregator global lintas komponen.
+    /// Sink = satu-satunya koleksi PENUH (aturan "1 pusat diag"). Engine global
+    /// hanya menerima hitungan agregat (per kode/level + sampel bounded) —
+    /// salinan penuh TIDAK dobel di sana lagi.
     pub fn push(&self, diag: Diagnostic) {
         self.total_pushed.fetch_add(1, Ordering::Relaxed);
         super::global::diag_global().report(diag.clone());

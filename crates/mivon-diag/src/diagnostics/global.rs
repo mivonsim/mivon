@@ -1,24 +1,29 @@
 //! ──────────────────────────────────────────────────────────────────────────────
-//! Global Diagnostic Engine (GDE) — satu-satunya tempat seluruh komponen Mivon
-//! melaporkan diagnostic (lexer, parser, elaborator, simulator, tools, dll).
+//! Global Diagnostic Engine (GDE) — agregator global, BUKAN kolektor kedua.
 //!
-//! Semua `DiagSink::push()` diteruskan ke engine ini, jadi komponen TIDAK perlu
-//! memanggil engine global secara langsung — cukup lewat sink masing-masing.
-//! `DiagSink` tetap dipakai untuk alur per-komponen (bounded queue, sort), dan
-//! GDE adalah agregator global yang mencatat SEMUA diagnostic lintas fase.
+//! Aturan "satu pusat koleksi": sink per-komponen (`DiagSink`) adalah
+//! SATU-SATUNYA penyimpan diagnostic penuh. Setiap `DiagSink::push()`
+//! mendaftarkan hitungan ke engine ini, dan engine hanya menyimpan:
+//!   - counter per kode (`by_code`)  — untuk coverage top-code registry
+//!   - counter per level (`by_level`)
+//!   - total/dropped
+//!   - sampel bounded (SAMPLE_CAP) untuk diagnostic TANPA posisi dan
+//!     diagnostic dengan kode di luar registry `all_codes()` — dua-duanya
+//!     subset kecil yang dipakai CLI `--gdiag`.
 //!
-//! API ringkas:
-//!   - `diag_global()`        → akses singleton global
-//!   - `report()`             → single entry point (dipanggil DiagSink::push)
+//! Dulu engine menyimpan `Vec<Diagnostic>` penuh (cap 1 juta) sebagai salinan
+//! kedua dari setiap diagnostic → memori tumbuh tanpa henti pada proses
+//! panjang (GUI/LSP/CI worker) dan data dobel dengan sink. Sekarang salinan
+//! penuh hanya di sink; agregat di sini bounded dan murah.
+//!
+//! API (semua agregat/kounter, tanpa koleksi penuh):
+//!   - `diag_global()`                 → akses singleton global
+//!   - `report()`                      → single entry point (dipanggil DiagSink::push)
 //!   - `report_error/warning/fatal/note(...)` → helper
-//!   - `all()`                → semua diagnostic, terurut per file/posisi
-//!   - `errors()/warnings()/fatal()/notes()`  → filter per level
-//!   - `by_code()/by_source()`                → filter per kode / per file
-//!   - `unpositioned()`       → diagnostic TANPA file:line:col (coverage posisi)
-//!   - `uncoded()`            → diagnostic dengan kode yang TIDAK terdaftar
-//!     di registry `all_codes()` (coverage registry)
-//!   - `code_usage()/uncovered_codes()` → analisis coverage kode error
-//!   - `summary()/coverage_report()`     → laporan ringkas
+//!   - `level_count()/code_count()`   → counter per level/kode
+//!   - `code_usage()/uncovered_codes()` → analisis coverage kode registry
+//!   - `unpositioned()/uncoded()`     → sampel bounded (subset kecil)
+//!   - `summary()/coverage_report()`  → laporan ringkas (CLI `--gdiag`)
 //!
 //! ──────────────────────────────────────────────────────────────────────────────
 
@@ -30,13 +35,25 @@ use std::time::Instant;
 use super::codes::all_codes;
 use super::diagnostic::{DiagCode, DiagLevel, Diagnostic};
 
-/// Kapasitas maksimum koleksi global (anti-leak pada sesi yang sangat panjang).
-const GLOBAL_CAP: usize = 1_000_000;
+/// Batas sampel (bounded) untuk daftar unpositioned / unregistered.
+/// Keduanya subset kecil pada run sehat; cap mencegah loop spam (mis.
+/// `forever` yang memuntahkan warning tanpa posisi) menumpuk memori.
+const SAMPLE_CAP: usize = 200;
+
+/// Registry semua kode resmi — di-cache sekali (70 varian) agar tiap `report()`
+/// tidak membangun ulang seluruh tabel `all_codes()`.
+fn registry_codes() -> &'static [DiagCode] {
+    static REG: OnceLock<Vec<DiagCode>> = OnceLock::new();
+    REG.get_or_init(|| all_codes().iter().map(|(c, _)| *c).collect())
+}
 
 struct GlobalState {
-    collected: Vec<Diagnostic>,
     by_code: HashMap<DiagCode, usize>,
     by_level: HashMap<DiagLevel, usize>,
+    /// Sampel diagnostic TANPA posisi (untuk CLI coverage report).
+    unpositioned_sample: Vec<Diagnostic>,
+    /// Sampel diagnostic dengan kode di luar registry `all_codes()`.
+    unregistered_sample: Vec<Diagnostic>,
 }
 
 /// Global Diagnostic Engine — agregator diagnostic lintas seluruh komponen.
@@ -59,9 +76,10 @@ impl GlobalDiagnosticEngine {
     pub fn new() -> Self {
         GlobalDiagnosticEngine {
             state: Mutex::new(GlobalState {
-                collected: Vec::new(),
                 by_code: HashMap::new(),
                 by_level: HashMap::new(),
+                unpositioned_sample: Vec::new(),
+                unregistered_sample: Vec::new(),
             }),
             total: AtomicUsize::new(0),
             dropped: AtomicUsize::new(0),
@@ -71,18 +89,30 @@ impl GlobalDiagnosticEngine {
 
     // ── Pelaporan (single entry point) ──
 
-    /// Laporkan diagnostic ke engine global. Semua komponen masuk lewat sini
-    /// (melalui `DiagSink::push`). Thread-safe.
+    /// Daftarkan diagnostic ke agregat global. Semua komponen masuk lewat sini
+    /// (melalui `DiagSink::push`). TIDAK menyimpan salinan penuh — hanya
+    /// counter + sampel bounded. Thread-safe.
     pub fn report(&self, diag: Diagnostic) {
         self.total.fetch_add(1, Ordering::Relaxed);
         let mut st = self.state.lock().unwrap();
-        if st.collected.len() >= GLOBAL_CAP {
-            self.dropped.fetch_add(1, Ordering::Relaxed);
-            return;
-        }
-        st.collected.push(diag.clone());
         *st.by_code.entry(diag.code).or_insert(0) += 1;
         *st.by_level.entry(diag.level).or_insert(0) += 1;
+
+        // Sampel unpositioned: tanpa source_snippet DAN tanpa spans.
+        if diag.source_snippet.is_none() && diag.spans.is_empty() {
+            if st.unpositioned_sample.len() < SAMPLE_CAP {
+                st.unpositioned_sample.push(diag.clone());
+            } else {
+                self.dropped.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        // Sampel kode tak terdaftar (registry coverage). Kode di luar registry
+        // jarang — juga bounded.
+        if !registry_codes().contains(&diag.code)
+            && st.unregistered_sample.len() < SAMPLE_CAP
+        {
+            st.unregistered_sample.push(diag);
+        }
     }
 
     /// Helper: laporkan error dengan kode.
@@ -109,103 +139,38 @@ impl GlobalDiagnosticEngine {
         ));
     }
 
-    // ── Koleksi ──
+    // ── Counter agregat ──
 
-    /// Kunci posisi untuk sorting: (file, line, col) — fallback ke spans.
-    fn pos_key(&self, d: &Diagnostic) -> (String, usize, usize) {
-        if let Some(s) = &d.source_snippet {
-            return (s.file.clone(), s.line, s.col);
-        }
-        if let Some(sp) = d.spans.first() {
-            return (sp.file.as_str().to_string(), sp.start as usize, 0);
-        }
-        (String::new(), 0, 0)
+    /// Jumlah diagnostic per level yang tercatat.
+    pub fn level_count(&self, level: DiagLevel) -> usize {
+        self.state
+            .lock()
+            .unwrap()
+            .by_level
+            .get(&level)
+            .copied()
+            .unwrap_or(0)
     }
 
-    /// Semua diagnostic terurut per file → posisi.
-    pub fn all(&self) -> Vec<Diagnostic> {
-        let st = self.state.lock().unwrap();
-        let mut all = st.collected.clone();
-        drop(st);
-        all.sort_by_key(|a| self.pos_key(a));
-        all
+    /// Jumlah diagnostic per kode yang tercatat.
+    pub fn code_count(&self, code: DiagCode) -> usize {
+        self.state
+            .lock()
+            .unwrap()
+            .by_code
+            .get(&code)
+            .copied()
+            .unwrap_or(0)
     }
 
-    /// Filter per level.
-    pub fn by_level(&self, level: DiagLevel) -> Vec<Diagnostic> {
-        self.all()
-            .into_iter()
-            .filter(|d| d.level == level)
-            .collect()
-    }
-
-    pub fn errors(&self) -> Vec<Diagnostic> {
-        // is_error() = Fatal | Bug | Error — Fatal/Bug ikut dihitung sebagai
-        // error (dulu `== Error` → status/report menampilkan 0 error padahal
-        // build gagal fatal).
-        self.all().into_iter().filter(|d| d.is_error()).collect()
-    }
-
-    pub fn warnings(&self) -> Vec<Diagnostic> {
-        self.by_level(DiagLevel::Warning)
-    }
-
-    pub fn fatal(&self) -> Vec<Diagnostic> {
-        self.by_level(DiagLevel::Fatal)
-    }
-
-    pub fn notes(&self) -> Vec<Diagnostic> {
-        self.by_level(DiagLevel::Note)
-    }
-
-    /// Filter per kode error.
-    pub fn by_code(&self, code: DiagCode) -> Vec<Diagnostic> {
-        self.all().into_iter().filter(|d| d.code == code).collect()
-    }
-
-    /// Filter per nama file sumber (cocok pada source_snippet atau spans).
-    pub fn by_source(&self, file: &str) -> Vec<Diagnostic> {
-        self.all()
-            .into_iter()
-            .filter(|d| {
-                d.source_snippet
-                    .as_ref()
-                    .map(|s| s.file.contains(file))
-                    .unwrap_or(false)
-                    || d.spans
-                        .first()
-                        .map(|sp| sp.file.as_str().contains(file))
-                        .unwrap_or(false)
-            })
-            .collect()
-    }
-
-    // ── Coverage / penyaringan ──
-
-    /// Diagnostic yang TIDAK punya posisi (tidak ada `source_snippet` maupun
-    /// `spans`) — tidak "kena cover" oleh file:line:col. Inilah yang dalam
-    /// output tidak menampilkan `--> file:line:col` sama sekali.
+    /// Sampel diagnostic tanpa posisi (bounded SAMPLE_CAP, klik dokumentasi modul).
     pub fn unpositioned(&self) -> Vec<Diagnostic> {
-        let st = self.state.lock().unwrap();
-        st.collected
-            .iter()
-            .filter(|d| d.source_snippet.is_none() && d.spans.is_empty())
-            .cloned()
-            .collect()
+        self.state.lock().unwrap().unpositioned_sample.clone()
     }
 
-    /// Diagnostic dengan kode yang TIDAK terdaftar di registry `all_codes()`.
-    /// Kode seperti ini tidak punya entri resmi di codes.rs — "tidak kena
-    /// cover" oleh registry error code. Biasanya menandakan kode baru yang
-    /// belum didaftarkan di `DiagCode::as_str()`.
+    /// Sampel diagnostic dengan kode di luar registry (bounded SAMPLE_CAP).
     pub fn uncoded(&self) -> Vec<Diagnostic> {
-        let registry: Vec<DiagCode> = all_codes().iter().map(|(c, _)| *c).collect();
-        let st = self.state.lock().unwrap();
-        st.collected
-            .iter()
-            .filter(|d| !registry.contains(&d.code))
-            .cloned()
-            .collect()
+        self.state.lock().unwrap().unregistered_sample.clone()
     }
 
     /// Statistik pemakaian kode: (kode-string, jumlah), terurut menurun.
@@ -234,19 +199,21 @@ impl GlobalDiagnosticEngine {
 
     // ── Statistik & laporan ──
 
+    /// Total diagnostic yang dilaporkan (agregat — bukan koleksi penuh).
     pub fn len(&self) -> usize {
-        self.state.lock().unwrap().collected.len()
+        self.total()
     }
 
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
-    /// Total diagnostic yang dilaporkan (termasuk yang dibuang).
+    /// Total diagnostic yang dilaporkan.
     pub fn total(&self) -> usize {
         self.total.load(Ordering::Relaxed)
     }
 
+    /// Sampel yang dibuang karena SAMPLE_CAP tercapai.
     pub fn dropped(&self) -> usize {
         self.dropped.load(Ordering::Relaxed)
     }
@@ -255,29 +222,23 @@ impl GlobalDiagnosticEngine {
         self.started.elapsed()
     }
 
-    /// Kosongkan koleksi global (untuk test / sesi baru).
+    /// Kosongkan agregat global (untuk test / sesi baru).
     pub fn reset(&self) {
         let mut st = self.state.lock().unwrap();
-        st.collected.clear();
         st.by_code.clear();
         st.by_level.clear();
-        st.collected.reserve(0);
+        st.unpositioned_sample.clear();
+        st.unregistered_sample.clear();
     }
 
     /// Ringkasan singkat: total per level + posisi/registry coverage.
     pub fn summary(&self) -> String {
-        let st = self.state.lock().unwrap();
-        let e = st.by_level.get(&DiagLevel::Error).copied().unwrap_or(0);
-        let w = st.by_level.get(&DiagLevel::Warning).copied().unwrap_or(0);
-        let f = st.by_level.get(&DiagLevel::Fatal).copied().unwrap_or(0);
-        let n = st.by_level.get(&DiagLevel::Note).copied().unwrap_or(0);
-        let up = st
-            .collected
-            .iter()
-            .filter(|d| d.source_snippet.is_none() && d.spans.is_empty())
-            .count();
+        let e = self.level_count(DiagLevel::Error);
+        let w = self.level_count(DiagLevel::Warning);
+        let f = self.level_count(DiagLevel::Fatal);
+        let n = self.level_count(DiagLevel::Note);
+        let up = self.unpositioned().len();
         let registry = all_codes().len();
-        drop(st);
         format!(
             "Global diagnostics: total={} (pushed={} dropped={}) error={} warning={} fatal={} note={} | unpositioned={} | codes_emitted={}/{}",
             self.len(),
@@ -324,7 +285,7 @@ impl GlobalDiagnosticEngine {
     }
 }
 
-/// Singleton global engine.
+/// Singleton global engine (agregator — lihat dokumentasi modul).
 pub fn diag_global() -> &'static GlobalDiagnosticEngine {
     static GLOBAL: OnceLock<GlobalDiagnosticEngine> = OnceLock::new();
     GLOBAL.get_or_init(GlobalDiagnosticEngine::new)
@@ -338,31 +299,31 @@ mod tests {
     use crate::diagnostics::DiagSink;
 
     #[test]
-    fn test_report_and_collect() {
+    fn test_report_aggregates() {
         let engine = GlobalDiagnosticEngine::new();
         assert!(engine.is_empty());
         engine.report_error(DiagCode::UndefinedSignal, "a not found");
         engine.report_warning(DiagCode::WidthMismatchWarning, "width mismatch");
-        assert_eq!(engine.len(), 2);
-        assert_eq!(engine.errors().len(), 1);
-        assert_eq!(engine.warnings().len(), 1);
-        assert_eq!(engine.by_code(DiagCode::UndefinedSignal).len(), 1);
         assert_eq!(engine.total(), 2);
+        assert_eq!(engine.code_count(DiagCode::UndefinedSignal), 1);
+        assert_eq!(engine.level_count(DiagLevel::Error), 1);
+        assert_eq!(engine.level_count(DiagLevel::Warning), 1);
+        // Kedua diagnostic di atas tanpa snippet/span → masuk sampel unpositioned.
+        assert_eq!(engine.unpositioned().len(), 2);
     }
 
-    /// errors() harus ikut menghitung Fatal/Bug (is_error), bukan hanya
-    /// level Error — dulu statusbar/report bisa menampilkan 0 error
-    /// padahal build gagal fatal.
+    /// Fatal tercatat di level-nya sendiri; summary menampilkan fatal=X.
     #[test]
-    fn errors_include_fatal() {
+    fn fatal_recorded_in_summary() {
         let engine = GlobalDiagnosticEngine::new();
         engine.report_fatal(DiagCode::InfiniteDelta, "fatal stop");
-        assert_eq!(engine.errors().len(), 1, "fatal harus dihitung errors()");
-        assert_eq!(engine.fatal().len(), 1);
+        assert_eq!(engine.level_count(DiagLevel::Fatal), 1);
+        let s = engine.summary();
+        assert!(s.contains("fatal=1"), "summary harus mencatat fatal: {s}");
     }
 
     #[test]
-    fn test_unpositioned() {
+    fn test_unpositioned_sample() {
         let engine = GlobalDiagnosticEngine::new();
         engine.report_error(DiagCode::UndefinedSignal, "no position");
         let mut d = Diagnostic::new(DiagLevel::Error, DiagCode::TypeMismatch, "with position");
@@ -371,8 +332,22 @@ mod tests {
         ));
         engine.report(d);
         let up = engine.unpositioned();
-        assert_eq!(up.len(), 1);
+        assert_eq!(up.len(), 1, "hanya diagnostic tanpa posisi yang di-sample");
         assert_eq!(up[0].message, "no position");
+    }
+
+    /// Sampel unpositioned bounded — loop spam tidak boleh menumpuk memori.
+    #[test]
+    fn test_unpositioned_sample_capped() {
+        let engine = GlobalDiagnosticEngine::new();
+        for i in 0..(SAMPLE_CAP + 50) {
+            engine.report_error(DiagCode::UndefinedSignal, format!("spam {i}"));
+        }
+        assert_eq!(engine.unpositioned().len(), SAMPLE_CAP);
+        assert_eq!(engine.dropped(), 50);
+        // Counter tetap akurat meski sampel penuh.
+        assert_eq!(engine.total(), SAMPLE_CAP + 50);
+        assert_eq!(engine.code_count(DiagCode::UndefinedSignal), SAMPLE_CAP + 50);
     }
 
     #[test]
@@ -400,7 +375,8 @@ mod tests {
 
     #[test]
     fn test_diag_sink_forwards_to_global() {
-        // DiagSink adalah jalur utama komponen → harus terlihat di singleton.
+        // DiagSink adalah jalur utama komponen; push harus tercatat di agregat
+        // singleton (counter per kode/level — bukan koleksi penuh).
         diag_global().reset();
         let sink = DiagSink::new();
         sink.push(Diagnostic::new(
@@ -413,17 +389,16 @@ mod tests {
             DiagCode::WidthMismatchWarning,
             "forwarded2",
         ));
-        // Catatan: singleton global dibagi antar-test yang berjalan paralel —
-        // test lain di modul ini ikut mem-push ke singleton yang sama. Assert
-        // berdasarkan pesan (deterministik), bukan berdasarkan jumlah total
-        // (yang bisa terkontaminasi test paralel).
-        let all = diag_global().all();
-        let fwd_err = all.iter().find(|d| d.message == "forwarded");
-        let fwd_warn = all.iter().find(|d| d.message == "forwarded2");
-        assert!(fwd_err.is_some(), "error harus diteruskan ke global");
-        assert!(fwd_warn.is_some(), "warning harus diteruskan ke global");
-        assert_eq!(fwd_err.unwrap().level, DiagLevel::Error);
-        assert_eq!(fwd_warn.unwrap().level, DiagLevel::Warning);
+        // Agregat hanya bertambah — test paralel bisa menambah counter lain,
+        // jadi assert ≥ (bukan ==).
+        assert!(
+            diag_global().code_count(DiagCode::UndefinedSignal) >= 1,
+            "error harus tercatat di agregat global"
+        );
+        assert!(
+            diag_global().level_count(DiagLevel::Warning) >= 1,
+            "warning harus tercatat di agregat global"
+        );
         diag_global().reset();
     }
 }

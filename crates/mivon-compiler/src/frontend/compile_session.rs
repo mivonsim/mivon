@@ -298,14 +298,6 @@ fn diag_dedup_key(
 /// diagnostik" di `attach_micd` — BUG #2). Lokasi diambil dari
 /// `source_snippet` (file:line:col saat render), fallback `spans[0]`.
 fn diag_to_entry(d: &mivon_core::diagnostics::Diagnostic) -> micd::DiagEntry {
-    use mivon_core::diagnostics::diagnostic::DiagLevel;
-    let severity = match d.level {
-        DiagLevel::Warning => micd::DiagSeverity::Warning,
-        DiagLevel::Note => micd::DiagSeverity::Note,
-        DiagLevel::Help => micd::DiagSeverity::Hint,
-        DiagLevel::Info | DiagLevel::Trace | DiagLevel::Debug => micd::DiagSeverity::Info,
-        DiagLevel::Fatal | DiagLevel::Bug | DiagLevel::Error => micd::DiagSeverity::Error,
-    };
     let (line, col) = if let Some(ss) = &d.source_snippet {
         (ss.line, ss.col)
     } else if let Some(sp) = d.spans.first() {
@@ -316,7 +308,7 @@ fn diag_to_entry(d: &mivon_core::diagnostics::Diagnostic) -> micd::DiagEntry {
     let mut e = micd::DiagEntry::new(
         line,
         col,
-        severity,
+        d.level,
         d.message.to_string(),
         d.code.as_str().to_string(),
     );

@@ -10,6 +10,7 @@
 use super::Parser;
 use crate::lexer::*;
 use mivon_ast::*;
+use mivon_core::diagnostics::DiagCode;
 use mivon_core::error::SimError;
 use mivon_core::intern::Symbol;
 
@@ -31,7 +32,7 @@ impl Parser {
                     }
                     break;
                 }
-                Token::Eof => return Err(self.err("unexpected EOF in package")),
+                Token::Eof => return Err(self.err_with_code(DiagCode::ExpectedToken, "unexpected EOF in package")),
                 _ => {
                     // Macro non-expand di package body: bare `Ident(`
                     // (mis. `ASSERT_STATIC_IN_PACKAGE(...)` prim_assert).

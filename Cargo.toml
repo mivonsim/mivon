@@ -3,6 +3,7 @@
 # Migrasi monorepo: logika dipindah bertahap dari src/ ke crates/.
 resolver = "2"
 members = [
+    "crates/mivon-diag",
     "crates/mivon-core",
     "crates/mivon-ast",
     "crates/mivon-ir",
@@ -64,6 +65,7 @@ toml = "0.8"
 
 # ── Workspace crates (migrasi monorepo: src/ → crates/) ──
 mivon-core = { path = "crates/mivon-core" }
+mivon-diag = { path = "crates/mivon-diag" }
 mivon-ast = { path = "crates/mivon-ast" }
 mivon-ir = { path = "crates/mivon-ir" }
 mivon-parser = { path = "crates/mivon-parser" }

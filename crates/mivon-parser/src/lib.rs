@@ -374,7 +374,7 @@ impl Parser {
         // Nesting statement/ekspresi >1024 tidak ada di HDL nyata.
         if self.recursion_depth > 1024 {
             self.recursion_depth = 0;
-            return Err(self.err("parser recursion depth exceeded (possible infinite recursion)"));
+            return Err(self.err_with_code(DiagCode::InvalidSyntax, "parser recursion depth exceeded (possible infinite recursion)"));
         }
         Ok(())
     }
@@ -413,6 +413,32 @@ impl Parser {
     }
 
     fn err(&self, msg: impl Into<String>) -> SimError {
+        let msg = msg.into();
+        self.err_with_code(Self::guess_parse_code(&msg), msg)
+    }
+
+    /// Kode dari pesan error — LEGACY fallback, dipakai hanya untuk call site
+    /// yang pesannya dinamis (bukan string literal). Semua call site static
+    /// sudah dimigrasi ke `err_with_code` dengan kode eksplisit.
+    fn guess_parse_code(msg: &str) -> DiagCode {
+        if msg.contains("unexpected token") || msg.contains("Unexpected") {
+            DiagCode::UnexpectedToken
+        } else if msg.contains("expected") && msg.contains("';'") {
+            DiagCode::ExpectedSemi
+        } else if msg.contains("expected") {
+            DiagCode::ExpectedToken
+        } else if msg.contains("unclosed")
+            || msg.contains("unterminated")
+            || msg.contains("unexpected EOF")
+        {
+            DiagCode::UnclosedBlock
+        } else {
+            DiagCode::InvalidSyntax
+        }
+    }
+
+    /// Build SimError para error parse dengan kode eksplisit (tanpa guess).
+    fn err_with_code(&self, code: DiagCode, msg: impl Into<String>) -> SimError {
         let msg_str = msg.into();
         let cumulative_line = self.peek_line();
         let mut col = self.peek_col();
@@ -430,22 +456,6 @@ impl Parser {
             }
         }
 
-        // Tentukan DiagCode berdasarkan pesan error
-        let code = if msg_str.contains("unexpected token") || msg_str.contains("Unexpected") {
-            DiagCode::UnexpectedToken
-        } else if msg_str.contains("expected") && msg_str.contains("';'") {
-            DiagCode::ExpectedSemi
-        } else if msg_str.contains("expected") {
-            DiagCode::ExpectedToken
-        } else if msg_str.contains("unclosed")
-            || msg_str.contains("unterminated")
-            || msg_str.contains("unexpected EOF")
-        {
-            DiagCode::UnclosedBlock
-        } else {
-            DiagCode::InvalidSyntax
-        };
-
         // Buat source snippet — text dari file yang benar: combined utk file
         // current, peta per-file utk include (display_file ≠ source_file).
         let source_line = if display_line > 0 {
@@ -454,6 +464,7 @@ impl Parser {
             None
         };
 
+        // Generate fix-it hints untuk error umum
         let msg_for_diag = msg_str.clone();
         let mut diag = Diagnostic::error(code, msg_for_diag);
 
@@ -769,7 +780,7 @@ impl Parser {
             self.advance();
             Ok(())
         } else {
-            Err(self.err(format!("expected {}, found {}", expected, self.peek())))
+            Err(self.err_with_code(DiagCode::ExpectedToken, format!("expected {}, found {}", expected, self.peek())))
         }
     }
 
@@ -815,7 +826,7 @@ impl Parser {
                 self.advance();
                 Ok(Symbol::intern("some"))
             }
-            _ => Err(self.err(format!("expected identifier, found {}", self.peek()))),
+            _ => Err(self.err_with_code(DiagCode::ExpectedToken, format!("expected identifier, found {}", self.peek()))),
         }
     }
 
@@ -859,7 +870,7 @@ impl Parser {
             let _ = (line, col);
             if let Token::Error(msg) = tok {
                 self.pos.set(i);
-                return Err(self.err(format!(
+                return Err(self.err_with_code(DiagCode::InvalidSyntax, format!(
                     "lexical error: {} (SV identifier hanya ASCII; karakter non-ASCII harus di dalam string/komentar)",
                     msg
                 )));
@@ -916,7 +927,7 @@ impl Parser {
         while self.peek() != &Token::Eof {
             // Step limit guard: prevent infinite loops
             if self.parse_steps > self.step_limit() {
-                return Err(self.err("parser exceeded maximum step limit (possible infinite loop)"));
+                return Err(self.err_with_code(DiagCode::InvalidSyntax, "parser exceeded maximum step limit (possible infinite loop)"));
             }
             // Stuck detection: if pos hasn't changed for too many iterations, abort
             if self.pos.get() == _last_pos {
@@ -1235,7 +1246,7 @@ impl Parser {
         while self.peek() != &Token::Eof {
             // Step limit guard: prevent infinite loops
             if self.parse_steps > self.step_limit() {
-                return Err(self.err("parser exceeded maximum step limit (possible infinite loop)"));
+                return Err(self.err_with_code(DiagCode::InvalidSyntax, "parser exceeded maximum step limit (possible infinite loop)"));
             }
             // Stuck detection: if pos hasn't changed for too many iterations, abort
             if self.pos.get() == _last_pos {
@@ -1343,7 +1354,7 @@ impl Parser {
                             }
                         };
                         if self.peek() != &Token::Scope {
-                            let err = self.err("expected '::' after package name");
+                            let err = self.err_with_code(DiagCode::ExpectedToken, "expected '::' after package name");
                             self.errors.push(err.to_diagnostic());
                             self.skip_to_next_top_level();
                             break;
@@ -1946,7 +1957,7 @@ impl Parser {
                 let first = assigns
                     .into_iter()
                     .next()
-                    .ok_or_else(|| self.err("expected assignment after 'assign'"))?;
+                    .ok_or_else(|| self.err_with_code(DiagCode::ExpectedToken, "expected assignment after 'assign'"))?;
                 Ok(Some(ModuleItem::Assign(first)))
             }
             Token::Dollar => {
@@ -3289,7 +3300,7 @@ impl Parser {
             if self.pos.get() == _last_pos {
                 _stuck += 1;
                 if _stuck > 5_000 {
-                    return Err(self.err("parser stuck (no progress) in skip_until_semi_or_end"));
+                    return Err(self.err_with_code(DiagCode::InvalidSyntax, "parser stuck (no progress) in skip_until_semi_or_end"));
                 }
             } else {
                 _stuck = 0;

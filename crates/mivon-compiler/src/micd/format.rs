@@ -40,7 +40,10 @@ use crate::cache::checksum::compute_checksum;
 /// Magic bytes identitas format MDB1.
 pub const MAGIC: [u8; 4] = *b"MDB1";
 /// Versi format saat ini.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
+// VERSION 1 → 2: `FileDiags` kini menyimpan `DiagLevel` (mivon-diag pusat),
+// bukan enum lama `DiagSeverity`. Urutan/arity enum berubah → payload lama
+// TIDAK kompatibel; bump memaksa rebuild penuh (cache di-restore ulang).
 
 /// Flag header: blob terkompresi LZ4 (frame).
 pub const FLAG_LZ4: u32 = 0x0000_0001;

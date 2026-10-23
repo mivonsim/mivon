@@ -7,6 +7,7 @@ use crate::lexer::*;
 use crate::util::*;
 use mivon_ast::types::const_eval_simple;
 use mivon_ast::*;
+use mivon_core::diagnostics::DiagCode;
 use mivon_core::error::SimError;
 use mivon_core::intern::Symbol;
 
@@ -50,7 +51,7 @@ impl Parser {
                 s.push_str(ident.as_str());
                 Symbol::intern(&s)
             }
-            _ => return Err(self.err("expected module name")),
+            _ => return Err(self.err_with_code(DiagCode::ExpectedToken, "expected module name")),
         };
         let mut ports = Vec::new();
         let mut params = Vec::new();
@@ -158,7 +159,7 @@ impl Parser {
                         line,
                         col,
                     );
-                    return Err(self.err("parser stuck (no progress) in module body"));
+                    return Err(self.err_with_code(DiagCode::InvalidSyntax, "parser stuck (no progress) in module body"));
                 }
             } else {
                 _stuck = 0;
@@ -250,11 +251,11 @@ impl Parser {
                 // Yosys module name `$...` — fast path (discovery pass).
                 self.advance();
                 if !matches!(self.peek(), Token::Ident(_)) {
-                    return Err(self.err("expected module name"));
+                    return Err(self.err_with_code(DiagCode::ExpectedToken, "expected module name"));
                 }
                 self.advance();
             }
-            _ => return Err(self.err("expected module name")),
+            _ => return Err(self.err_with_code(DiagCode::ExpectedToken, "expected module name")),
         }
         // Skip #(params) if any
         if self.peek() == &Token::Hash {
@@ -327,7 +328,7 @@ impl Parser {
                         // Skip name
         match self.peek() {
             Token::Ident(_) | Token::Hash => { /* name optional if #(params) follows */ }
-            _ => return Err(self.err("expected interface name")),
+            _ => return Err(self.err_with_code(DiagCode::ExpectedToken, "expected interface name")),
         }
         if matches!(self.peek(), Token::Ident(_)) {
             self.advance(); // consume name
@@ -422,7 +423,7 @@ impl Parser {
                         break;
                     }
                 }
-                Token::Eof => return Err(self.err("unexpected EOF in balanced paren")),
+                Token::Eof => return Err(self.err_with_code(DiagCode::ExpectedToken, "unexpected EOF in balanced paren")),
                 _ => {
                     self.advance();
                 }
@@ -460,7 +461,7 @@ impl Parser {
                 self.advance();
                 n
             }
-            _ => return Err(self.err("expected interface name")),
+            _ => return Err(self.err_with_code(DiagCode::ExpectedToken, "expected interface name")),
         };
         let mut ports = Vec::new();
         let mut params = Vec::new();
@@ -560,7 +561,7 @@ impl Parser {
                         line,
                         col,
                     );
-                    return Err(self.err("parser stuck (no progress) in interface body"));
+                    return Err(self.err_with_code(DiagCode::InvalidSyntax, "parser stuck (no progress) in interface body"));
                 }
             } else {
                 _stuck = 0;
@@ -618,7 +619,7 @@ impl Parser {
                 self.advance();
             }
             _ => {
-                return Err(self.err("expected endinterface"));
+                return Err(self.err_with_code(DiagCode::ExpectedToken, "expected endinterface"));
             }
         }
         if self.peek() == &Token::Colon {
@@ -647,7 +648,7 @@ impl Parser {
                 self.advance();
                 n
             }
-            _ => return Err(self.err("expected modport name")),
+            _ => return Err(self.err_with_code(DiagCode::ExpectedToken, "expected modport name")),
         };
         self.expect(Token::LParen)?;
         let mut items = Vec::new();
@@ -686,7 +687,7 @@ impl Parser {
                     self.advance();
                     PortDirection::Inout
                 }
-                _ => return Err(self.err("expected direction in modport")),
+                _ => return Err(self.err_with_code(DiagCode::ExpectedToken, "expected direction in modport")),
             };
             // Collect all signals under this direction, comma-separated
             loop {
@@ -696,7 +697,7 @@ impl Parser {
                         self.advance();
                         n
                     }
-                    _ => return Err(self.err("expected signal name in modport")),
+                    _ => return Err(self.err_with_code(DiagCode::ExpectedToken, "expected signal name in modport")),
                 };
                 items.push(ModportItem {
                     name: sig_name,
@@ -1172,7 +1173,7 @@ impl Parser {
                             self.advance();
                             *s
                         }
-                        _ => return Err(self.err("expected parameter name")),
+                        _ => return Err(self.err_with_code(DiagCode::ExpectedToken, "expected parameter name")),
                     };
                     self.expect(Token::LParen)?;
                     if self.is_type_token() {
@@ -1224,7 +1225,7 @@ impl Parser {
                 self.advance();
                 *s
             }
-            _ => return Err(self.err("expected module name")),
+            _ => return Err(self.err_with_code(DiagCode::ExpectedToken, "expected module name")),
         };
 
         // F31 fix: blok parameter `#(...)` legal di DUA posisi di SV:
@@ -1249,7 +1250,7 @@ impl Parser {
                 self.advance();
                 *s
             }
-            _ => return Err(self.err("expected instance name")),
+            _ => return Err(self.err_with_code(DiagCode::ExpectedToken, "expected instance name")),
         };
 
         // Parse optional array range [msb:lsb] for arrayed instances
@@ -1338,7 +1339,7 @@ impl Parser {
                                 self.advance();
                                 *s
                             }
-                            _ => return Err(self.err("expected port name")),
+                            _ => return Err(self.err_with_code(DiagCode::ExpectedToken, "expected port name")),
                         };
 
                         if self.peek() == &Token::LParen {
@@ -1404,7 +1405,7 @@ impl Parser {
                         n
                     }
                     _ => {
-                        return Err(self.err("expected port name after '.' in instance connection"))
+                        return Err(self.err_with_code(DiagCode::ExpectedToken, "expected port name after '.' in instance connection"))
                     }
                 };
                 let expr = if self.peek() == &Token::LParen {
@@ -1488,7 +1489,7 @@ impl Parser {
                 self.advance();
                 GateType::Not
             }
-            _ => return Err(self.err("expected gate type")),
+            _ => return Err(self.err_with_code(DiagCode::ExpectedToken, "expected gate type")),
         };
 
         // Parse optional drive strength: (strength1, strength0)
@@ -1566,7 +1567,7 @@ impl Parser {
                     self.advance();
                     Some(s)
                 }
-                _ => return Err(self.err("expected gate instance name")),
+                _ => return Err(self.err_with_code(DiagCode::ExpectedToken, "expected gate instance name")),
             };
             name
         };

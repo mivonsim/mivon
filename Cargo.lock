@@ -2065,6 +2065,7 @@ dependencies = [
  "mivon-ast",
  "mivon-compiler",
  "mivon-core",
+ "mivon-diag",
  "mivon-elaboration",
  "mivon-emu",
  "mivon-env",
@@ -2151,6 +2152,7 @@ dependencies = [
  "crossbeam",
  "dashmap 6.2.1",
  "fxhash",
+ "mivon-diag",
  "num_cpus",
  "parking_lot",
  "serde",
@@ -2158,6 +2160,18 @@ dependencies = [
  "tempfile",
  "toml",
  "xxhash-rust",
+]
+
+[[package]]
+name = "mivon-diag"
+version = "0.3.0"
+dependencies = [
+ "crossbeam",
+ "dashmap 6.2.1",
+ "fxhash",
+ "parking_lot",
+ "serde",
+ "tempfile",
 ]
 
 [[package]]
@@ -2193,6 +2207,7 @@ dependencies = [
  "mivon-ast",
  "mivon-compiler",
  "mivon-core",
+ "mivon-diag",
  "mivon-elaboration",
  "mivon-ir",
  "mivon-parser",

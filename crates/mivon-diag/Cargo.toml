@@ -1,0 +1,15 @@
+[package]
+name = "mivon-diag"
+version = "0.3.0"
+edition = "2021"
+description = "Mivon diagnostics + intern (Symbol/Span): single owner for core diagnostic types"
+
+[dependencies]
+crossbeam = "0.8"
+dashmap = "6"
+fxhash = "0.2"
+parking_lot = "0.12"
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+tempfile = "3"

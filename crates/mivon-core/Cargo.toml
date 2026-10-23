@@ -5,6 +5,7 @@ edition = "2021"
 description = "Mivon core: intern (Symbol/Span), arena, error, diagnostics, config, animasi, logic values"
 
 [dependencies]
+mivon-diag = { path = "../mivon-diag" }
 crossbeam = "0.8"
 dashmap = "6"
 fxhash = "0.2"

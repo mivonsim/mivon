@@ -10,13 +10,15 @@ pub mod arena;
 pub mod audit;
 pub mod checksum;
 pub mod config;
-pub mod diagnostics;
 pub mod error;
-pub mod intern;
 pub mod logic;
 pub mod template;
 
-pub use intern::{init_string_table, Span, Symbol};
+// Diagnostics + intern dipindah ke mivon-diag (single owner). Re-export agar
+// path `mivon_core::diagnostics::*` dan `mivon_core::intern::*` tetap valid.
+pub use mivon_diag::diagnostics;
+pub use mivon_diag::intern;
+pub use mivon_diag::{init_string_table, Span, Symbol};
 /// Tipe nilai logika inti — dipakai langsung (`mivon_core::LogicVec`) dan
 /// di-reexport oleh `mivon-ir` agar `mivon_ir::LogicVec` tetap valid.
 pub use logic::{LogicVal, LogicVec};

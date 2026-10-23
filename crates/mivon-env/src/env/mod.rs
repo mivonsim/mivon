@@ -17,7 +17,7 @@ pub mod cache;
 pub mod compiler;
 pub mod config;
 pub mod database;
-pub mod diagnostics;
+pub use mivon_diag::envdiag as diagnostics;
 pub mod global;
 pub mod plugins;
 pub mod runtime;

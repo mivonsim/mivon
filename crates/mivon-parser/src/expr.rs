@@ -15,6 +15,7 @@ use crate::lexer::*;
 use crate::util::dec_str_to_bits;
 use mivon_ast::types::const_eval_simple;
 use mivon_ast::*;
+use mivon_core::diagnostics::DiagCode;
 use mivon_core::error::SimError;
 use mivon_core::intern::Symbol;
 
@@ -82,7 +83,7 @@ impl Parser {
                     DistWeight::Range(weight),
                 ))
             } else {
-                Err(self.err("expected := or :/ after dist range"))
+                Err(self.err_with_code(DiagCode::ExpectedToken, "expected := or :/ after dist range"))
             }
         } else {
             // Single value: expr := weight or expr :/ weight
@@ -101,7 +102,7 @@ impl Parser {
                 let weight = const_eval_simple(&val).unwrap_or(0) as u64;
                 Ok(DistItem::Value(Box::new(expr), DistWeight::Range(weight)))
             } else {
-                Err(self.err("expected := or :/ after dist item"))
+                Err(self.err_with_code(DiagCode::ExpectedToken, "expected := or :/ after dist item"))
             }
         }
     }
@@ -487,7 +488,7 @@ impl Parser {
                                     expr: Box::new(inner),
                                 };
                             } else {
-                                return Err(self.err("'with' clause can only follow a method call"));
+                                return Err(self.err_with_code(DiagCode::InvalidSyntax, "'with' clause can only follow a method call"));
                             }
                         }
                         // Pola DV UVM `std::randomize(x) with { ... }` /
@@ -497,7 +498,7 @@ impl Parser {
                         Expr::FuncCall { .. } | Expr::ScopedIdent { .. } => {
                             lhs = old_lhs;
                         }
-                        _ => return Err(self.err("'with' clause can only follow a method call")),
+                        _ => return Err(self.err_with_code(DiagCode::InvalidSyntax, "'with' clause can only follow a method call")),
                     }
                     continue;
                 }
@@ -983,7 +984,7 @@ impl Parser {
                 // ''", temuan fuzz bug_0012 DIAG-001). Literal berbasis wajib
                 // punya digit: tolak di parse selagi peek di token ini.
                 if matches!(base, Some(2) | Some(8) | Some(16)) && value.as_str().is_empty() {
-                    return Err(self.err(
+                    return Err(self.err_with_code(DiagCode::InvalidSyntax, 
                         "literal berbasis `'b/`'o/`'h` tanpa digit (mis. `8'h`) tidak valid",
                     ));
                 }
@@ -1383,7 +1384,7 @@ impl Parser {
             ref other => {
                 // Lokasi diambil err() sendiri (peek_line/peek_col internal),
                 // jadi tidak perlu diambil manual di sini.
-                Err(self.err(format!("expected expression, found {:?}", other)))
+                Err(self.err_with_code(DiagCode::ExpectedToken, format!("expected expression, found {:?}", other)))
             }
         }
     }

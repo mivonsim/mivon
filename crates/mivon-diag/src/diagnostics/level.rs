@@ -1,6 +1,20 @@
 use std::fmt;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// Derive serde: `DiagLevel` dipakai langsung di struktur serialisasi MICD
+/// (`FileDiags`/`DiagEntry`) — satu enum level untuk seluruh sistem, tanpa
+/// enum duplikat `DiagSeverity`.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub enum DiagLevel {
     /// Fatal — simulasi harus dihentikan segera.
     Fatal,

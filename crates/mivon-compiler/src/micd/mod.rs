@@ -63,7 +63,7 @@ use serde::{Deserialize, Serialize};
 
 pub use ast::{deserialize_design, serialize_design, AST_FORMAT_VERSION};
 pub use cache::{CacheCategory, CacheLayer, CacheLayerStats};
-pub use diag::{DiagEntry, DiagSeverity, FileDiags};
+pub use diag::{DiagEntry, FileDiags};
 pub use format::{MdbReader, MdbWriter};
 pub use gc::{run_cache_gc, run_gc, GcConfig, GcStats, ReclaimConfig, GLOBAL_CACHE_BUDGET_BYTES};
 pub use graph::FileGraph;
@@ -2477,7 +2477,7 @@ mod tests {
                 entries: vec![crate::micd::DiagEntry::new(
                     10,
                     5,
-                    crate::micd::DiagSeverity::Warning,
+                    mivon_core::diagnostics::DiagLevel::Warning,
                     "unused signal".into(),
                     "W001".into(),
                 )],

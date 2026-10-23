@@ -6,6 +6,7 @@ description = "Mivon Enterprise Context Architecture (GlobalEnv) + LSP server + 
 
 [dependencies]
 mivon-core = { path = "../mivon-core" }
+mivon-diag = { path = "../mivon-diag" }
 mivon-ast = { path = "../mivon-ast" }
 mivon-ir = { path = "../mivon-ir" }
 mivon-parser = { path = "../mivon-parser" }

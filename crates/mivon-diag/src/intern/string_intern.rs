@@ -22,7 +22,7 @@ thread_local! {
 /// # Examples
 ///
 /// ```
-/// use mivon_core::intern::Symbol;
+/// use mivon_diag::intern::Symbol;
 ///
 /// let sym = Symbol::intern("hello");
 /// assert_eq!(sym.as_str(), "hello");

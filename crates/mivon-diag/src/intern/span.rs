@@ -52,7 +52,7 @@ impl TextRange {
 /// # Examples
 ///
 /// ```
-/// use mivon_core::intern::Span;
+/// use mivon_diag::intern::Span;
 ///
 /// let span = Span::new("test.sv", 0, 10);
 /// assert_eq!(span.start(), 0);

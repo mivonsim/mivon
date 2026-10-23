@@ -29,6 +29,7 @@ use crate::lexer::*;
 use mivon_ast::types::const_eval_simple;
 use mivon_ast::*;
 
+use mivon_core::diagnostics::DiagCode;
 use mivon_core::error::SimError;
 use mivon_core::intern::Symbol;
 
@@ -202,7 +203,7 @@ impl Parser {
                 self.advance();
                 "assume"
             }
-            _ => return Err(self.err("expected assert/assume/cover/expect")),
+            _ => return Err(self.err_with_code(DiagCode::ExpectedToken, "expected assert/assume/cover/expect")),
         };
         if self.peek() == &Token::Property {
             self.advance();
@@ -233,7 +234,7 @@ impl Parser {
                     Token::Ident(s) if s == "iff" => {
                         self.advance();
                     }
-                    _ => return Err(self.err("expected 'iff' after 'disable'")),
+                    _ => return Err(self.err_with_code(DiagCode::ExpectedToken, "expected 'iff' after 'disable'")),
                 }
                 self.expect(Token::LParen)?;
                 let expr = self.parse_expr(0)?;
@@ -1052,7 +1053,7 @@ impl Parser {
                     | Expr::BitSelect { .. }
                     | Expr::RangeSelect { .. }
                     | Expr::PartSelect { .. } => Ok(Stmt::Release { expr }),
-                    _ => Err(self.err("expected signal name after release")),
+                    _ => Err(self.err_with_code(DiagCode::ExpectedToken, "expected signal name after release")),
                 }
             }
             Token::Deassign => {
@@ -2571,7 +2572,7 @@ impl Parser {
                         label: fork_label,
                     });
                 }
-                Token::Eof => return Err(self.err("unexpected EOF in fork block")),
+                Token::Eof => return Err(self.err_with_code(DiagCode::ExpectedToken, "unexpected EOF in fork block")),
                 // DV style (macro wait/SPINWAIT): `fork ... end join` /
                 // `... end join_any` — `end` sebelum join menutup block ENCLOSING
                 // (fork tanpa begin di dalam begin luar). Toleransi: konsumsi
@@ -2632,7 +2633,7 @@ impl Parser {
                 self.advance();
                 Symbol::intern("realtime")
             }
-            _ => return Err(self.err("expected system call name after $")),
+            _ => return Err(self.err_with_code(DiagCode::ExpectedToken, "expected system call name after $")),
         };
         match name.as_str() {
             "finish" | "stop" => {
