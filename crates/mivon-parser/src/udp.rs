@@ -170,6 +170,9 @@ impl Parser {
 
     pub(crate) fn parse_udp_declaration(&mut self) -> Result<UdpDef, SimError> {
         self.expect(Token::Primitive)?;
+        // Posisi nama UDP (1-based) untuk diagnostic elaborator.
+        let uline = self.peek_line();
+        let ucol = self.peek_col();
         let name = self.expect_ident()?;
 
         // Parse port list: (output [reg] port1, input port2, input port3, ...)
@@ -280,6 +283,8 @@ impl Parser {
 
         Ok(UdpDef {
             name,
+            line: uline,
+            col: ucol,
             ports,
             table,
             is_sequential,

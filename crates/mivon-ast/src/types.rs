@@ -1095,6 +1095,9 @@ pub struct UdpTableEntry {
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct UdpDef {
     pub name: Symbol,
+    /// Posisi source nama UDP (1-based) untuk diagnostic elaborator.
+    pub line: usize,
+    pub col: usize,
     pub ports: Vec<UdpPort>,
     pub table: Vec<UdpTableEntry>,
     pub is_sequential: bool,

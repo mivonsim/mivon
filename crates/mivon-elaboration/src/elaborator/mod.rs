@@ -4780,12 +4780,14 @@ impl Elaborator {
                             sig_ids.push(sid);
                         }
                         if sig_ids.len() < 2 {
-                            return Err(self.elab_diag(
+                            return Err(self.elab_diag_at(
                                 DiagCode::ParamMismatch,
                                 format!(
                                     "UDP '{}' requires at least 2 ports (1 output + 1+ inputs)",
                                     udp.name
                                 ),
+                                udp.line,
+                                udp.col,
                             ));
                         }
                         let out_id = sig_ids[0];
