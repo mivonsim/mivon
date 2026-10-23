@@ -2166,6 +2166,7 @@ dependencies = [
 name = "mivon-diag"
 version = "0.3.0"
 dependencies = [
+ "bincode",
  "crossbeam",
  "dashmap 6.2.1",
  "fxhash",
