@@ -461,13 +461,15 @@ JANGAN tebak kode dari isi pesan (`error_code()` statis per varian). MICD
 `DiagEntry::from_diagnostic`.
 
 **Posisi diagnostic elaborator (span threading AST, 2026-10)**: parser mencatat
-posisi 1-based di node AST — `DeclVar`, `Port`, `UdpDef`, `GatePrimitive`,
-`AlwaysBlock`, `Stmt::WaitOrder`, `Stmt::ForeachLoop` (flagged `AST_FORMAT_VERSION`
-per penambahan field; bincode MICD tak forward-compatible). Situs error
-elaborator pakai posisi node ini via `elab_diag_at`/`elab_warn_at`; fallback
-`find_name_in_source` hanya untuk situs benar-benar tanpa pos sumber (8 sisa:
-mod.rs top-resolution family ×6 + snapshot map ×1, params.rs resolve param modul
-×1) — level design/global, tak ada posisi tunggal yang valid.
+posisi 1-based di node AST — `DeclVar`, `Port`, `Module`, `UdpDef`,
+`GatePrimitive`, `AlwaysBlock`, `Stmt::WaitOrder`, `Stmt::ForeachLoop` (flagged
+`AST_FORMAT_VERSION` per penambahan field; bincode MICD tak
+forward-compatible). Situs error elaborator pakai posisi node ini via
+`elab_diag_at`/`elab_warn_at`; fallback `find_name_in_source` hanya untuk
+situs benar-benar tanpa pos sumber (6 sisa, semuanya di mod.rs
+top-resolution/multi-candidate) — level design/global (top tak ada, kandidat
+>1), tak ada posisi tunggal yang valid. Situs module-level (`params.rs`,
+snapshot map) sudah terposisi via `Module.line/col`.
 
 ## Enterprise Context Architecture (`crates/mivon-env/`)
 
