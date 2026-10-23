@@ -204,6 +204,11 @@ impl Elaborator {
         let msg: String = message.into();
         let (line, col) = if line > 0 && col > 0 {
             (line, col)
+        } else if line > 0 && col == 0 {
+            // Line diberikan tanpa col (source posisinya 1-based — col=0 =
+            // tidak ada): baris 100% akurat, jangan ganti hasil tebakan
+            // global find_name_in_source yang bisa salah FILE.
+            (line, 1)
         } else {
             // Fallback global: cari nama dari pesan di source (mis.
             // `'UVM_HDL_MAX_WIDTH' not found in parameter context` dari
@@ -241,6 +246,9 @@ impl Elaborator {
         let msg: String = message.into();
         let (line, col) = if line > 0 && col > 0 {
             (line, col)
+        } else if line > 0 && col == 0 {
+            // Line diberikan tanpa col — lihat komentar elab_diag_at.
+            (line, 1)
         } else {
             // Fallback global (lihat elab_diag_at): `unknown type 'X' is not
             // defined in this scope` (resolve_type_width) dipanggil tanpa

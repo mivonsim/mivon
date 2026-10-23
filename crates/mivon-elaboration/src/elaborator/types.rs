@@ -11,6 +11,7 @@ use mivon_core::error::SimError;
 use mivon_core::intern::Symbol;
 use mivon_ir::*;
 
+use super::super::util::generate::expr_location;
 use super::super::util::width;
 use super::Elaborator;
 use super::BUILTIN_UVM_CLASSES;
@@ -698,12 +699,17 @@ impl Elaborator {
                     None => last,
                 };
                 if member_expr.is_some() && val.is_none() && warned.insert(*member_name) {
-                    self.elab_warn(
+                    // Posisi: dari ekspresi nilai member (ident/func/token)
+                    // bila tersedia — fallback nama tetap di find_name_in_source.
+                    let (l, c) = member_expr.iter().map(|e| expr_location(e)).next().unwrap_or((0, 0));
+                    self.elab_warn_at(
                         DiagCode::ParamMismatch,
                         format!(
                             "nilai enum member '{member_name}' bukan ekspresi konstan ({context}) — \
                              member dilewati; rujukan ke sana gagal E2001"
                         ),
+                        l,
+                        c,
                     );
                     break;
                 }
