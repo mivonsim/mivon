@@ -1630,6 +1630,41 @@ endmodule
 }
 
 #[test]
+fn test_ovm_alias_all_classes_remap_to_uvm() {
+    // VERIF-20 t3 (review): alias ovm_* harus dinormalisasi ke __uvm_*, bukan
+    // __ovm_* — kelas sintetis yang di-inject elaborator hanya __uvm_*, dan
+    // dispatch method mensyaratkan nama berawalan `__uvm_`. Dengan remap
+    // __ovm_* hanya ovm_object/ovm_component yang dikenali; ovm_test,
+    // ovm_driver, ovm_analysis_port dkk. tetap RT8001.
+    let source = r#"
+module tb;
+    ovm_test t;
+    ovm_component c;
+    int r1, r2;
+    string s1, s2;
+    initial begin
+        t = ovm_test::new("t");
+        s1 = t.get_name();
+        r1 = (s1 == "t") ? 1 : 0;
+        c = ovm_component::new("c", null);
+        s2 = c.get_name();
+        r2 = (s2 == "c") ? 1 : 0;
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 10).expect("alias ovm_* gagal disimulasikan");
+    let get = |name: &str| {
+        sigs.iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, v)| v.to_u64())
+            .unwrap_or(99)
+    };
+    assert_eq!(get("r1"), 1, "ovm_test::new + get_name harus 't'");
+    assert_eq!(get("r2"), 1, "ovm_component::new + get_name harus 'c'");
+}
+
+#[test]
 fn test_ovm_factory_override_alias() {
     // VERIF-20 tahap 2: `ovm_factory::set_type_override_by_type` alias
     // ke handler UVM yang sama (elab SysFunc + engine IR/AST).

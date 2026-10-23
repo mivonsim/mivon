@@ -8461,6 +8461,11 @@ Perubahan:
 Test: `test_ovm_new_builtin_ast_path` (mivon-tests/tests/core_uvm.rs) —
 `ovm_object::new("Abc")` di body function class, `get_name()` = "Abc" (r=1).
 
+⚠ Koreksi (ROUND 142): remap `__ovm_*` ternyata HANYA berfungsi untuk
+ovm_object/ovm_component (hierarchy.rs hanya mengenali dua nama itu; kelas
+sintetis __uvm_* tidak punya padanan __ovm_*). Perbaikan final: ovm_x
+dinormalisasi ke `__uvm_x` di jalur AST dan jalur IR elaborator.
+
 Catatan jujur: remap `extends ovm_*` → `__uvm_*` penuh BELUM selesai.
 Kelas `extends ovm_object` sudah dikenali sebagai hierarki object (fallback
 generik), tetapi pemanggilan method builtin uvm_object tanpa `this.` di body
@@ -8498,7 +8503,7 @@ Perbaikan:
   - `save()` kini membuat direktori induk (`create_dir_all`) — sebelumnya
     `meco create` pertama kali di project bersih gagal karena `.mivon/`
     belum ada.
-  - `save()` atomik: tulis `<path>.json.tmp` lalu `rename` — crash di
+  - `save()` atomik: tulis `<nama-file>.tmp` (mis. `.mivon/eco.json.tmp`) lalu `rename` — crash di
     tengah tulis tidak lagi meninggalkan JSON terpotong.
 
 Test baru (3):
@@ -8522,6 +8527,52 @@ Incremental compile pasca-ECO sudah ditangani MICD.
      ✅ 3479 passed, 0 failed, 24 skipped.
    - cargo nextest run --workspace --features dev -E 'test(/eco::/)' →
      9 test modul eco lulus (6 lama + 3 baru).
+
+\\=======================================================================//
+
+═══ ROUND 142 — perbaikan hasil review ROUND 140/141 ═══
+
+Review independen menemukan 2 MAJOR + 6 MINOR. Yang diperbaiki:
+
+1. MAJOR — alias OVM tidak efektif (ast.rs). Remap `__ovm_*` hanya
+   dikenali hierarchy.rs untuk object/component; tidak ada kelas sintetis
+   __ovm_test/__ovm_analysis_port dkk., dan fallback method.rs mensyaratkan
+   prefix `uvm_`. Terverifikasi: `ovm_test::new("t").get_name()` → RT8001.
+   Perbaikan: normalisasi `ovm_x → __uvm_x` di jalur AST (is_builtin) dan
+   jalur IR (`elaborator/expr.rs`, NewCall) sehingga seluruh dispatch UVM
+   dipakai ulang. Kini ovm_test/ovm_component bekerja.
+2. MAJOR — `uvm_object_data` tidak ter-insert untuk `__ovm_component`
+   (RT0001 uvm_object not initialized). Selesai otomatis oleh #1 karena
+   `is_uvm_object_hierarchy("__uvm_component")` = true.
+3. MINOR — `save()` memakai `with_extension("json.tmp")` yang MENGGANTI
+   ekstensi (dua path berbeda di direktori sama dapat bertabrakan). Kini
+   `<nama-file>.tmp` via OsString push.
+4. MINOR — `Rejected` terminal tetapi `closed_at` tidak di-set; laporan
+   berbasis closed_at melihat ECO final sebagai terbuka. Kini Closed DAN
+   Rejected menutup ECO.
+5. MINOR — test hanya mencakup ovm_object. Ditambah
+   `test_ovm_alias_all_classes_remap_to_uvm` (ovm_test + ovm_component,
+   get_name harus mengembalikan nama objek).
+6. MINOR — test eco belum mencakup state terminal, Rejected closed_at,
+   dan overwrite file. Ditambah `rejected_sets_closed_at_and_is_terminal`,
+   `closed_is_terminal`, `save_twice_overwrites_without_tmp_leftover`.
+
+Tidak diperbaiki (dicatat):
+  - Drift daftar alias AST vs BUILTIN_UVM_CLASSES (ovm_env/ovm_agent/
+    ovm_config_db/ovm_phase belum ada di daftar AST) — butuh satu const
+    bersama lintas crate; dijadwalkan terpisah.
+  - `affected_files`/`affected_modules`/`risk_score` ECO masih manual.
+  - `get_type_name()` mengembalikan nama internal (`__uvm_object`) —
+    pre-existing untuk UVM.
+  - Remap `extends ovm_*` (pemanggilan method builtin tanpa `this.` di body
+    subclass) tetap item terpisah seperti dicatat ROUND 140.
+
+📊 VERIFIKASI ROUND 142:
+   - cargo nextest run --workspace --features dev --no-fail-fast:
+     ✅ 3483 passed, 0 failed, 24 skipped.
+   - Targeted `-E 'test(/ovm_|eco::/)'` → 15 passed (4 test baru).
+   - E2E binary: ovm_test::new("t").get_name() = "t",
+     ovm_component::new("c", null).get_name() = "c".
 
 \\=======================================================================//
 

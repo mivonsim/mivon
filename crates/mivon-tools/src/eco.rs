@@ -128,7 +128,10 @@ impl EcoDb {
                 entry.status, new_status
             ));
         }
-        if new_status == EcoStatus::Closed {
+        // Closed dan Rejected sama-sama terminal: keduanya menutup ECO.
+        // Tanpa closed_at pada Rejected, laporan berbasis closed_at melihat
+        // ECO yang sudah final sebagai "masih terbuka".
+        if matches!(new_status, EcoStatus::Closed | EcoStatus::Rejected) {
             entry.closed_at = Some(now_secs());
         }
         entry.status = new_status;
@@ -189,7 +192,16 @@ impl EcoDb {
             }
         }
         let json = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
-        let temp = path.with_extension("json.tmp");
+        // Temp di direktori yang sama (rename selalu satu filesystem) dan
+        // mempertahankan nama penuh file: `eco.json` → `eco.json.tmp`
+        // (with_extension akan MENGGANTI ekstensi sehingga dua path berbeda
+        // di direktori sama bisa bertabrakan).
+        let mut temp_name = path
+            .file_name()
+            .map(|n| n.to_os_string())
+            .unwrap_or_else(|| std::ffi::OsString::from("eco.json"));
+        temp_name.push(".tmp");
+        let temp = path.with_file_name(temp_name);
         std::fs::write(&temp, json)
             .map_err(|e| format!("gagal tulis {}: {}", temp.display(), e))?;
         std::fs::rename(&temp, path)
@@ -302,6 +314,55 @@ mod tests {
             db.transition(&id, status).unwrap();
         }
         assert!(db.entries[0].closed_at.is_some());
+    }
+
+    #[test]
+    fn rejected_sets_closed_at_and_is_terminal() {
+        let mut db = EcoDb::new();
+        let id = db.create("t", "d", EcoSeverity::Minor, "alice");
+        db.transition(&id, EcoStatus::Submitted).unwrap();
+        db.transition(&id, EcoStatus::Reviewed).unwrap();
+        db.transition(&id, EcoStatus::Rejected).unwrap();
+        assert!(db.entries[0].closed_at.is_some(), "Rejected menutup ECO");
+        assert!(db.open_ecos().is_empty());
+        assert!(
+            db.transition(&id, EcoStatus::Submitted).is_err(),
+            "Rejected terminal"
+        );
+        assert!(db.transition(&id, EcoStatus::Draft).is_err());
+    }
+
+    #[test]
+    fn closed_is_terminal() {
+        let mut db = EcoDb::new();
+        let id = db.create("t", "d", EcoSeverity::Critical, "alice");
+        for status in [
+            EcoStatus::Submitted,
+            EcoStatus::Reviewed,
+            EcoStatus::Approved,
+            EcoStatus::Implemented,
+            EcoStatus::Verified,
+            EcoStatus::Closed,
+        ] {
+            db.transition(&id, status).unwrap();
+        }
+        assert!(db.transition(&id, EcoStatus::Submitted).is_err());
+    }
+
+    #[test]
+    fn save_twice_overwrites_without_tmp_leftover() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("eco.json");
+        let mut db = EcoDb::new();
+        db.create("first", "d", EcoSeverity::Minor, "alice");
+        db.save(&path).expect("save 1");
+        db.create("second", "d", EcoSeverity::Major, "bob");
+        db.save(&path).expect("save 2");
+        let loaded = EcoDb::load(&path).expect("load");
+        assert_eq!(loaded.entries.len(), 2, "isi terbaru menang");
+        assert_eq!(loaded.next_id, 3);
+        let tmp = dir.path().join("eco.json.tmp");
+        assert!(!tmp.exists(), "temp tidak boleh tertinggal");
     }
 
     #[test]

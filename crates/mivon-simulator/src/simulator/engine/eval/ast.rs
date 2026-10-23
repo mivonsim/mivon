@@ -207,8 +207,17 @@ impl SimulationEngine {
                         | "ovm_factory"
                         | "ovm_resource_db"
                 );
+                // VERIF-20 t3: alias OVM dinormalisasi ke basis UVM sintetis.
+                // Kelas sintetis yang di-inject elaborator hanya __uvm_*; jika
+                // ovm_* di-remap ke __ovm_* maka hanya __ovm_object /
+                // __ovm_component yang dikenali hierarchy.rs dan sisanya
+                // (__ovm_test, __ovm_analysis_port, ...) gagal RT8001.
+                // ovm_x → __uvm_x memakai ulang seluruh dispatch UVM.
                 let effective = if is_builtin {
-                    format!("__{}", raw_name)
+                    match raw_name.strip_prefix("ovm_") {
+                        Some(rest) => format!("__uvm_{}", rest),
+                        None => format!("__{}", raw_name),
+                    }
                 } else {
                     raw_name.clone()
                 };

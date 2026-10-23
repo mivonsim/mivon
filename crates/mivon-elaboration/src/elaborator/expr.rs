@@ -2346,7 +2346,13 @@ impl Elaborator {
                     }
                     Symbol::intern(&specialized)
                 } else if BUILTIN_UVM_CLASSES.contains(&raw_name.as_str()) {
-                    Symbol::intern(&format!("__{}", raw_name))
+                    // VERIF-20 t3: alias OVM — kelas sintetis hanya __uvm_*.
+                    // ovm_x → __uvm_x agar seluruh dispatch UVM dipakai ulang
+                    // (__ovm_x hanya dikenali untuk object/component).
+                    match raw_name.strip_prefix("ovm_") {
+                        Some(rest) => Symbol::intern(&format!("__uvm_{}", rest)),
+                        None => Symbol::intern(&format!("__{}", raw_name)),
+                    }
                 } else {
                     Symbol::intern(&raw_name)
                 };
