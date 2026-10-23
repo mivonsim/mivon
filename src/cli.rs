@@ -1727,6 +1727,18 @@ pub enum McovClosureCmd {
         #[arg(short = 'i', long = "input")]
         input: String,
     },
+    /// Bangun closure dari daftar point + kontribusi test (JSON)
+    Build {
+        /// File JSON coverage points
+        #[arg(short = 'p', long = "points")]
+        points: String,
+        /// File JSON kontribusi test [{test,covered}]
+        #[arg(short = 't', long = "tests")]
+        tests: String,
+        /// Tulis closure JSON ke file (default ringkasan stdout)
+        #[arg(short = 'o', long = "output")]
+        output: Option<String>,
+    },
 }
 
 /// mbugtrack — bug tracking integration (FEAT-08).

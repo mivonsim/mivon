@@ -365,7 +365,7 @@ pub(crate) fn dispatch_eco(a: &crate::cli::MecoArgs) -> ! {
 
 pub(crate) fn dispatch_cov_closure(a: &crate::cli::McovClosureArgs) -> ! {
     let result: Result<(), SimError> = (|| {
-        use mivon_api::tools::cov_closure::CoverageClosure;
+        use mivon_api::tools::cov_closure::{load_points, load_tests, CoverageClosure};
         match &a.cmd {
             crate::cli::McovClosureCmd::Analyze { input } => {
                 let cc = CoverageClosure::load(std::path::Path::new(input))
@@ -385,6 +385,36 @@ pub(crate) fn dispatch_cov_closure(a: &crate::cli::McovClosureArgs) -> ! {
                 } else {
                     for tc in &critical {
                         println!("  {} (unique: {})", tc.test_name, tc.unique_points.len());
+                    }
+                }
+            }
+            crate::cli::McovClosureCmd::Build {
+                points,
+                tests,
+                output,
+            } => {
+                let pts = load_points(std::path::Path::new(points))
+                    .map_err(|e| SimError::with_diag(DiagCode::DataFormatError, e))?;
+                let tst = load_tests(std::path::Path::new(tests))
+                    .map_err(|e| SimError::with_diag(DiagCode::DataFormatError, e))?;
+                if pts.is_empty() {
+                    return Err(SimError::with_diag(
+                        DiagCode::DataFormatError,
+                        format!("{}: tidak ada coverage point", points),
+                    ));
+                }
+                let cc = CoverageClosure::from_inputs(pts, &tst);
+                match output {
+                    Some(path) => cc
+                        .save(std::path::Path::new(path))
+                        .map_err(|e| SimError::with_diag(DiagCode::IoError, e))?,
+                    None => {
+                        println!("{}", cc.summary());
+                        println!(
+                            "uncovered: {} point, critical tests: {}",
+                            cc.find_uncovered().len(),
+                            cc.critical_tests().len()
+                        );
                     }
                 }
             }

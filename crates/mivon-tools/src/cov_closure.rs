@@ -45,6 +45,31 @@ pub struct CoverageClosure {
     pub uncovered_points: Vec<String>,
 }
 
+/// Input kontribusi test (format JSON untuk subcommand build).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TestCoverage {
+    pub test: String,
+    #[serde(default)]
+    pub covered: Vec<String>,
+}
+
+/// Muat daftar coverage point dari JSON.
+pub fn load_points(path: &Path) -> Result<Vec<CoveragePoint>, String> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| format!("gagal baca {}: {}", path.display(), e))?;
+    serde_json::from_str(&text)
+        .map_err(|e| format!("JSON point tidak valid di {}: {}", path.display(), e))
+}
+
+/// Muat kontribusi test dari JSON.
+pub fn load_tests(path: &Path) -> Result<Vec<(String, Vec<String>)>, String> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| format!("gagal baca {}: {}", path.display(), e))?;
+    let parsed: Vec<TestCoverage> = serde_json::from_str(&text)
+        .map_err(|e| format!("JSON test tidak valid di {}: {}", path.display(), e))?;
+    Ok(parsed.into_iter().map(|t| (t.test, t.covered)).collect())
+}
+
 impl CoverageClosure {
     pub fn new() -> Self {
         CoverageClosure {
@@ -89,16 +114,36 @@ impl CoverageClosure {
     }
 
     /// Compute overall coverage.
+    ///
+    /// Hanya ID yang benar-benar ada di daftar point yang dihitung, sehingga
+    /// ID asing tidak bisa membuat coverage > 100%.
     pub fn overall_coverage(&self) -> f64 {
         if self.points.is_empty() {
             return 100.0;
         }
+        let known: HashSet<&str> = self.points.iter().map(|p| p.id.as_str()).collect();
         let covered: HashSet<&str> = self
             .test_contributions
             .iter()
             .flat_map(|tc| tc.covered_points.iter().map(|s| s.as_str()))
+            .filter(|id| known.contains(id))
             .collect();
-        covered.len() as f64 / self.points.len() as f64 * 100.0
+        (covered.len() as f64 / self.points.len() as f64 * 100.0).min(100.0)
+    }
+
+    /// Bangun closure dari daftar point + kontribusi test.
+    pub fn from_inputs(points: Vec<CoveragePoint>, tests: &[(String, Vec<String>)]) -> Self {
+        let mut closure = CoverageClosure::new();
+        closure.add_points(points);
+        for (test, covered) in tests {
+            closure.record_contribution(test, covered.clone());
+        }
+        closure.uncovered_points = closure
+            .find_uncovered()
+            .iter()
+            .map(|p| p.id.clone())
+            .collect();
+        closure
     }
 
     /// Find uncovered points.
@@ -190,6 +235,50 @@ mod tests {
             column: None,
             description: None,
         }
+    }
+
+    #[test]
+    fn load_points_and_tests_from_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let points_path = dir.path().join("points.json");
+        let tests_path = dir.path().join("tests.json");
+        std::fs::write(
+            &points_path,
+            r#"[{"id":"p1","point_type":"Line","file":"a.sv","line":1,"column":null,"description":null}]"#,
+        )
+        .unwrap();
+        std::fs::write(
+            &tests_path,
+            r#"[{"test":"t1","covered":["p1"]},{"test":"t2"}]"#,
+        )
+        .unwrap();
+        let points = load_points(&points_path).expect("points");
+        let tests = load_tests(&tests_path).expect("tests");
+        assert_eq!(points.len(), 1);
+        assert_eq!(tests.len(), 2);
+        assert_eq!(tests[0].1, vec!["p1".to_string()]);
+        assert!(tests[1].1.is_empty());
+    }
+
+    #[test]
+    fn unknown_point_ids_do_not_exceed_100_percent() {
+        let mut cc = CoverageClosure::new();
+        cc.add_points(vec![make_point("p1", PointType::Line)]);
+        cc.record_contribution("t1", vec!["p1".into(), "GHOST".into()]);
+        assert_eq!(cc.overall_coverage(), 100.0);
+    }
+
+    #[test]
+    fn from_inputs_marks_uncovered_points() {
+        let points = vec![
+            make_point("p1", PointType::Line),
+            make_point("p2", PointType::Line),
+        ];
+        let tests = vec![("t1".to_string(), vec!["p1".to_string()])];
+        let closure = CoverageClosure::from_inputs(points, &tests);
+        assert_eq!(closure.overall_coverage(), 50.0);
+        assert_eq!(closure.uncovered_points, vec!["p2".to_string()]);
+        assert_eq!(closure.find_uncovered().len(), 1);
     }
 
     #[test]

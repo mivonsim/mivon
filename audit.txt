@@ -3126,7 +3126,13 @@ FEAT-09: ✅ Requirements traceability (ROUND 136) — modul requirements
          (CSV mapping requirement→test + JSON hasil test → report CSV/JSON
          + summary) kini ter-wire CLI: `mivon requirements report|summary`
          (alias mrequirements), loader `load_results` + 3 test. (Medium)
-FEAT-10:[] Coverage closure analytics — Critical
+FEAT-10: ✅ Coverage closure analytics (ROUND 139) — crates/mivon-tools/src/
+         cov_closure.rs: peta test→coverage point, overall coverage (hanya
+         ID dikenal, ≤100%), uncovered points, critical tests (unique
+         point), coverage per type, save/load JSON. Pipeline input baru:
+         `mcov-closure build -p points.json -t tests.json [-o closure.json]`
+         (loader load_points/load_tests), lalu `analyze|critical|uncovered`.
+         7 test. (Critical)
 FEAT-11:[] Verification management dashboard — High
 FEAT-12:[] License server for floating licenses — High
 FEAT-13:[] IP encryption (IEEE 1735) — Critical
@@ -8386,4 +8392,25 @@ WAJIB DI UPDATE TEXT SETELAH SELESAI
      setelah close=exit 1, export Jira header + baris bug.
    - cargo nextest run --workspace --features dev --no-fail-fast:
      ✅ 3470 passed, 0 failed, 24 skipped.
+\\=======================================================================//
+
+═══ ROUND 139 — FEAT-10 coverage closure analytics ═══
+📊 VERIFIKASI ROUND 139:
+   - Audit item: "FEAT-10:[] Coverage closure analytics — Critical" → ✅.
+   - Sebelumnya modul cov_closure.rs + CLI analyze/critical/uncovered ada,
+     tetapi TIDAK ada jalur untuk membangun data closure (hanya membaca
+     file yang tidak diproduksi tool mana pun) → fitur tak bisa dipakai.
+   - Ditambahkan: CoverageClosure::from_inputs(points, tests) +
+     load_points/load_tests (JSON), CLI `mcov-closure build -p -t [-o]`
+     → tulis closure.json atau ringkasan; alur analyze/critical/uncovered
+     langsung memakai file hasil build.
+   - Bug diperbaiki: overall_coverage menghitung ID asing (bisa >100%) —
+     kini hanya ID yang ada di daftar point, di-clamp 100%; field
+     uncovered_points kini diisi saat build.
+   - E2E: points p1(Line),p2(Branch) + test t1 cover p1 → build 50.0%,
+     1 uncovered, 1 critical test; analyze menampilkan Branch 0%/Line 100%.
+   - Tests: +3 (ID asing tidak >100%, from_inputs mengisi uncovered,
+     loader JSON points/tests). Modul cov_closure total 7 test.
+   - cargo nextest run --workspace --features dev --no-fail-fast:
+     ✅ 3473 passed, 0 failed, 24 skipped.
 \\=======================================================================//
