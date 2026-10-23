@@ -142,6 +142,7 @@ pub const INFRASTRUCTURE_ERRORS: &[(DiagCode, &str)] = &[
     (DiagCode::PreprocessorError, "preprocessor error"),
     (DiagCode::DebuggerError, "debugger error"),
     (DiagCode::IoError, "I/O error"),
+    (DiagCode::DataFormatError, "invalid data format"),
 ];
 
 /// All legacy runtime error codes (E9xxx)
@@ -221,8 +222,8 @@ mod tests {
         let codes = all_codes();
         // Parse: 5, Semantic: 4, Elab: 11, Memory: 5, Signal: 5, Scheduler: 5,
         // Event: 3, Module: 2, Interface: 2, Clock: 2, Assertion: 4, DPI: 3,
-        // Internal: 3, Infrastructure: 3, Legacy: 3, Other: 1, Warnings: 9 = 70 total
-        assert_eq!(codes.len(), 70);
+        // Internal: 3, Infrastructure: 4, Legacy: 3, Other: 1, Warnings: 9 = 71 total
+        assert_eq!(codes.len(), 71);
     }
 
     #[test]

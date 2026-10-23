@@ -1,7 +1,7 @@
 //! Adaptor dispatch untuk tool manajemen desain & kualitas.
 //!
 //! Mencakup: design_repo, project (workspace), sdc, equiv_check,
-//! regression, eco, cov_closure. Tiap fungsi hanya menerjemahkan
+//! regression, requirements, eco, cov_closure. Tiap fungsi hanya menerjemahkan
 //! cli::*Args menjadi mivon_api::tools::* lalu exit_tool().
 
 use mivon_core::diagnostics::DiagCode;
@@ -409,6 +409,28 @@ pub(crate) fn dispatch_requirements(a: &crate::cli::MrequirementsArgs) -> ! {
     let result: Result<(), SimError> = (|| {
         use mivon_api::tools::requirements::{load_mappings, load_results, RequirementsReport};
         use std::path::Path;
+        let load = |path: &str| -> Result<Vec<mivon_api::tools::requirements::RequirementMapping>, SimError> {
+            if !Path::new(path).exists() {
+                return Err(SimError::with_diag(
+                    DiagCode::IoError,
+                    format!("{}: file tidak ditemukan", path),
+                ));
+            }
+            load_mappings(Path::new(path)).map_err(|e| {
+                SimError::with_diag(DiagCode::DataFormatError, e)
+            })
+        };
+        let load_res = |path: &str| -> Result<Vec<mivon_api::tools::requirements::TestResult>, SimError> {
+            if !Path::new(path).exists() {
+                return Err(SimError::with_diag(
+                    DiagCode::IoError,
+                    format!("{}: file tidak ditemukan", path),
+                ));
+            }
+            load_results(Path::new(path)).map_err(|e| {
+                SimError::with_diag(DiagCode::DataFormatError, e)
+            })
+        };
         match &a.cmd {
             crate::cli::MrequirementsCmd::Report {
                 mappings,
@@ -416,33 +438,40 @@ pub(crate) fn dispatch_requirements(a: &crate::cli::MrequirementsArgs) -> ! {
                 format,
                 output,
             } => {
-                let maps = load_mappings(Path::new(mappings))
-                    .map_err(|e| SimError::with_diag(DiagCode::IoError, e))?;
-                let res = load_results(Path::new(results))
-                    .map_err(|e| SimError::with_diag(DiagCode::IoError, e))?;
+                let maps = load(mappings)?;
+                let res = load_res(results)?;
+                if maps.is_empty() {
+                    return Err(SimError::with_diag(
+                        DiagCode::DataFormatError,
+                        format!("{}: tidak ada mapping requirement", mappings),
+                    ));
+                }
                 let report = RequirementsReport::generate(&maps, &res);
-                let text = match format.as_str() {
-                    "json" => report.to_json(),
-                    "csv" => report.to_csv(),
-                    other => {
-                        return Err(SimError::with_diag(
-                            DiagCode::InvalidSyntax,
-                            format!("format \"{}\" tidak dikenal (csv|json)", other),
-                        ))
-                    }
+                let text = match format {
+                    crate::cli::RequirementsFormat::Json => report.to_json(),
+                    crate::cli::RequirementsFormat::Csv => report.to_csv(),
                 };
                 match output {
                     Some(path) => std::fs::write(path, &text).map_err(|e| {
                         SimError::with_diag(DiagCode::IoError, format!("{}: {}", path, e))
                     })?,
-                    None => print!("{}", text),
+                    None => {
+                        use std::io::Write;
+                        let mut stdout = std::io::stdout().lock();
+                        // Broken pipe (mis. `| head`) bukan error fatal.
+                        let _ = stdout.write_all(text.as_bytes());
+                    }
                 }
             }
             crate::cli::MrequirementsCmd::Summary { mappings, results } => {
-                let maps = load_mappings(Path::new(mappings))
-                    .map_err(|e| SimError::with_diag(DiagCode::IoError, e))?;
-                let res = load_results(Path::new(results))
-                    .map_err(|e| SimError::with_diag(DiagCode::IoError, e))?;
+                let maps = load(mappings)?;
+                let res = load_res(results)?;
+                if maps.is_empty() {
+                    return Err(SimError::with_diag(
+                        DiagCode::DataFormatError,
+                        format!("{}: tidak ada mapping requirement", mappings),
+                    ));
+                }
                 let report = RequirementsReport::generate(&maps, &res);
                 println!("{}", report.summary());
             }

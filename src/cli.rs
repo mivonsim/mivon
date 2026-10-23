@@ -1726,6 +1726,13 @@ pub enum McovClosureCmd {
     },
 }
 
+/// Format keluaran mrequirements.
+#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RequirementsFormat {
+    Csv,
+    Json,
+}
+
 /// mrequirements — requirements traceability (FEAT-09).
 #[derive(clap::Args, Clone)]
 pub struct MrequirementsArgs {
@@ -1744,9 +1751,9 @@ pub enum MrequirementsCmd {
         /// JSON hasil test: [{name,passed,duration_ms,module}]
         #[arg(short = 'r', long = "results")]
         results: String,
-        /// Format keluaran: csv | json
-        #[arg(long = "format", default_value = "csv")]
-        format: String,
+        /// Format keluaran
+        #[arg(long = "format", value_enum, default_value_t = RequirementsFormat::Csv)]
+        format: RequirementsFormat,
         /// Tulis ke file (default stdout)
         #[arg(short = 'o', long = "output")]
         output: Option<String>,

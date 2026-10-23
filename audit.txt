@@ -8285,8 +8285,23 @@ WAJIB DI UPDATE TEXT SETELAH SELESAI
        -m req.csv -r results.json` (alias mrequirements).
      * src/dispatch/manage.rs::dispatch_requirements — adaptor tipis
        (validasi format, tulis file atau stdout).
-   - Tests: 3 baru (load_results JSON valid, JSON invalid, parse CLI
-     mrequirements report). Test lama requirements (3) tetap hijau.
+   - Tests: 9 baru di modul (load_results JSON valid/invalid/skema
+     regression, agregasi per requirement_id, duplikat results first-wins,
+     CSV quoted-comma, report CSV bisa dibaca balik, parse CLI) — total 11
+     test modul + 1 test CLI.
+   - Review agent tahap 2b (1 blocker tidak ada, 3 major) diperbaiki:
+     (a) report diagregasi per requirement_id (sebelumnya per baris →
+         coverage salah); status Partial kini dipakai untuk campuran
+         pass/fail atau test hilang; results duplikat = entri pertama;
+     (b) parser CSV sadar kutip (koma di dalam field, escape "") dan
+         header-aware → report CSV bisa dibaca balik sebagai mapping;
+     (c) load_results menerima skema regression (status Pass/Fail) dan
+         testdb, bukan hanya {passed};
+     (d) error format data kini DiagCode baru DataFormatError (E0005),
+         file hilang tetap E0004; format divalidasi ValueEnum (csv|json);
+     (e) mapping kosong = error (bukan 0/0 sukses), stdout broken-pipe
+         tidak panic, semua field CSV di-escape.
+   - DiagCode::DataFormatError baru → test jumlah kode 70 → 71.
    - cargo nextest run --workspace --features dev --no-fail-fast:
-     ✅ 3443 passed, 0 failed, 24 skipped.
+     ✅ 3448 passed, 0 failed, 24 skipped.
 \\=======================================================================//

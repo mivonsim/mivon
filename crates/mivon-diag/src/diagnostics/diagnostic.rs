@@ -208,6 +208,8 @@ pub enum DiagCode {
     DebuggerError,
     /// I/O operation error (E0004)
     IoError,
+    /// Data file format error (E0005) — JSON/CSV input tidak valid
+    DataFormatError,
 
     // ── Other Codes ──
     /// Waveform error (W0001)
@@ -313,6 +315,7 @@ impl DiagCode {
             DiagCode::PreprocessorError => "E0101",
             DiagCode::DebuggerError => "E0003",
             DiagCode::IoError => "E0004",
+            DiagCode::DataFormatError => "E0005",
             // Other
             DiagCode::WaveformError => "W0001",
             // Legacy Runtime
@@ -410,6 +413,7 @@ impl DiagCode {
             DiagCode::PreprocessorError => "preprocessor error",
             DiagCode::DebuggerError => "debugger error",
             DiagCode::IoError => "I/O error",
+            DiagCode::DataFormatError => "invalid data format",
             // Other
             DiagCode::WaveformError => "waveform error",
             // Legacy Runtime
@@ -552,6 +556,8 @@ impl DiagCode {
                 "The debugger encountered an error during stepping, breakpoints, or reverse debugging.",
             DiagCode::IoError =>
                 "An I/O operation failed — the file may not exist, may be unreadable, or the disk may be full.",
+            DiagCode::DataFormatError =>
+                "A data file (JSON/CSV) has an unexpected or malformed structure.",
             DiagCode::WaveformError =>
                 "A waveform operation failed — the VCD/FST file could not be written or read.",
             DiagCode::SimulationError =>
@@ -706,6 +712,8 @@ impl DiagCode {
                 "Check debugger settings, breakpoints, and snapshot configuration.",
             DiagCode::IoError =>
                 "Check file paths, permissions, and disk space. Verify the file exists and is accessible.",
+            DiagCode::DataFormatError =>
+                "Validate the file against the expected schema (fields, types, quoting) before rerunning.",
             DiagCode::WaveformError =>
                 "Check disk space, file path permissions, and waveform configuration.",
             DiagCode::SimulationError =>
@@ -794,9 +802,10 @@ impl DiagCode {
             | DiagCode::NotImplemented
             | DiagCode::ResourceLimit => "Internal",
             DiagCode::WaveformError => "Waveform",
-            DiagCode::PreprocessorError | DiagCode::DebuggerError | DiagCode::IoError => {
-                "Infrastructure"
-            }
+            DiagCode::PreprocessorError
+            | DiagCode::DebuggerError
+            | DiagCode::IoError
+            | DiagCode::DataFormatError => "Infrastructure",
             DiagCode::SimulationError | DiagCode::OutOfBounds | DiagCode::RuntimeTypeMismatch => {
                 "Runtime"
             }

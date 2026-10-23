@@ -694,7 +694,7 @@ mod tests {
             })) => {
                 assert_eq!(mappings, "req.csv");
                 assert_eq!(results, "res.json");
-                assert_eq!(format, "csv");
+                assert_eq!(format, crate::cli::RequirementsFormat::Csv);
             }
             _ => panic!("bukan Requirements::Report"),
         }
