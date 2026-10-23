@@ -3110,7 +3110,11 @@ FEAT-06: ✅ Tcl scripting interface (ROUND 135) — interpreter Tcl 8.6 subset
          (substitusi $var/[cmd], if/while/for/foreach/proc, list/string/info,
          catch/source) + bridge `mivon compile|simulate|get|time|signals|reset`;
          CLI `mivon tcl <script.tcl>` (alias mtcl). 17 test. (High)
-FEAT-07:[] Regression management system with pass/fail analytics — Critical
+FEAT-07: ✅ Regression management (ROUND 137) — RegressionDb (record run,
+         pass rate, flaky detection 3+ run, trend improving/stable/degrading,
+         cap 100 run/50 history) + CLI `mivon regression record|summary|
+         flaky|trend` (alias mregression) + DB `.mivon/regression.json`.
+         Fix: save() membuat direktori induk. 9 test. (Critical)
 FEAT-08:[] Bug tracking integration — Medium
 FEAT-09: ✅ Requirements traceability (ROUND 136) — modul requirements
          (CSV mapping requirement→test + JSON hasil test → report CSV/JSON
@@ -8316,4 +8320,27 @@ WAJIB DI UPDATE TEXT SETELAH SELESAI
      (ditolak eksplisit), parser CSV belum submodul sendiri.
    - cargo nextest run --workspace --features dev --no-fail-fast:
      ✅ 3453 passed, 0 failed, 24 skipped.
+\\=======================================================================//
+
+═══ ROUND 137 — FEAT-07 regression management ═══
+📊 VERIFIKASI ROUND 137:
+   - Audit item: "FEAT-07:[] Regression management system with pass/fail
+     analytics — Critical" → ✅ SELESAI (fitur sudah ada, diverifikasi
+     end-to-end + gap diperbaiki).
+   - Bukti kode: crates/mivon-tools/src/regression.rs (RegressionDb:
+     record, pass_rate, flaky_tests [>=3 run, window 10], trend
+     improving/stable/degrading, cap 100 run & 50 history, save/load)
+     + CLI `mivon regression record|summary|flaky|trend` (alias
+     mregression) menyimpan `.mivon/regression.json`.
+   - Gap yang diperbaiki: RegressionDb::save tidak membuat direktori
+     induk → `mregression record` pertama di project baru gagal
+     (`.mivon/` belum ada). Kini create_dir_all(parent).
+   - E2E diverifikasi manual: record 1 run (t1 Pass, t2 Fail) → summary
+     "1 runs, latest 50.0% pass, trend: Stable", file .mivon/regression.json
+     terbentuk.
+   - Tests: +4 (save membuat parent dir + load roundtrip, trend
+     Degrading saat pass rate turun, flaky butuh >=3 run, cap 100/50).
+     Modul regression total 9 test.
+   - cargo nextest run --workspace --features dev --no-fail-fast:
+     ✅ 3457 passed, 0 failed, 24 skipped.
 \\=======================================================================//

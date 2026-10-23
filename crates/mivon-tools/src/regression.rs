@@ -155,8 +155,14 @@ impl RegressionDb {
         )
     }
 
-    /// Save to file.
+    /// Save to file (membuat direktori induk bila belum ada).
     pub fn save(&self, path: &Path) -> Result<(), String> {
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| format!("gagal buat direktori {}: {}", parent.display(), e))?;
+            }
+        }
         let json = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
         std::fs::write(path, json).map_err(|e| e.to_string())
     }
@@ -259,6 +265,50 @@ mod tests {
             db.record(make_run(vec![("t1", true), ("t2", true)]));
         }
         assert_eq!(db.trend(), RegressionTrend::Stable);
+    }
+
+    #[test]
+    fn save_creates_parent_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nested/deeper/regression.json");
+        let mut db = RegressionDb::new();
+        db.record(make_run(vec![("t1", true)]));
+        db.save(&path).expect("save");
+        let loaded = RegressionDb::load(&path).expect("load");
+        assert_eq!(loaded.runs.len(), 1);
+        assert_eq!(loaded.runs[0].results[0].name, "t1");
+    }
+
+    #[test]
+    fn trend_degrades_when_pass_rate_drops() {
+        let mut db = RegressionDb::new();
+        for _ in 0..5 {
+            db.record(make_run(vec![("t1", true), ("t2", true)]));
+        }
+        for _ in 0..5 {
+            db.record(make_run(vec![("t1", false), ("t2", false)]));
+        }
+        assert_eq!(db.trend(), RegressionTrend::Degrading);
+    }
+
+    #[test]
+    fn flaky_requires_at_least_three_runs() {
+        let mut db = RegressionDb::new();
+        db.record(make_run(vec![("t1", true)]));
+        db.record(make_run(vec![("t1", false)]));
+        assert!(db.flaky_tests().is_empty(), "2 run belum cukup");
+        db.record(make_run(vec![("t1", true)]));
+        assert_eq!(db.flaky_tests().len(), 1);
+    }
+
+    #[test]
+    fn history_is_capped() {
+        let mut db = RegressionDb::new();
+        for i in 0..105 {
+            db.record(make_run(vec![("t1", i % 2 == 0)]));
+        }
+        assert_eq!(db.runs.len(), 100, "maksimal 100 run disimpan");
+        assert_eq!(db.flaky_history["t1"].len(), 50, "maksimal 50 history");
     }
 
     #[test]
