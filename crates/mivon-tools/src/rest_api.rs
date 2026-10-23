@@ -10,6 +10,16 @@
 //! - POST /api/v1/simulate — run simulation
 //! - GET /api/v1/modules — list modules
 //!
+//! Dashboard (FEAT-03) menambahkan route-nya lewat `add_route`.
+//!
+//! Batas keamanan yang dipasang di layer transport:
+//! - satu thread per koneksi (klien lambat tidak memblokir accept loop),
+//! - read timeout 5 detik + batas 8 KiB header,
+//! - panic di handler ditangkap → 500, listener tetap hidup,
+//! - POST dengan `Origin` lintas-host ditolak 403 (proteksi CSRF dasar
+//!   untuk server yang bind ke localhost),
+//! - semua respons `Cache-Control: no-store` (data sesi selalu segar).
+//!
 //! Usage:
 //! ```no_run
 //! use mivon_tools::rest_api::RestServer;
@@ -20,11 +30,15 @@
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
+use std::sync::Arc;
+use std::time::Duration;
+
+type Handler = Arc<dyn Fn(&str, &str) -> String + Send + Sync>;
 
 /// REST API server.
 pub struct RestServer {
     addr: String,
-    routes: HashMap<String, Box<dyn Fn(&str, &str) -> String + Send + Sync>>,
+    routes: Arc<HashMap<String, Handler>>,
 }
 
 /// API response.
@@ -89,15 +103,17 @@ impl ApiResponse {
             200 => "OK",
             201 => "Created",
             400 => "Bad Request",
+            403 => "Forbidden",
             404 => "Not Found",
             405 => "Method Not Allowed",
             409 => "Conflict",
             429 => "Too Many Requests",
             500 => "Internal Server Error",
+            503 => "Service Unavailable",
             _ => "Unknown",
         };
         format!(
-            "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{}",
             self.status,
             status_text,
             self.content_type,
@@ -109,13 +125,12 @@ impl ApiResponse {
 
 impl RestServer {
     pub fn new(addr: &str) -> Self {
-        let mut routes: HashMap<String, Box<dyn Fn(&str, &str) -> String + Send + Sync>> =
-            HashMap::new();
+        let mut routes: HashMap<String, Handler> = HashMap::new();
 
         // Health check
         routes.insert(
             "GET /health".to_string(),
-            Box::new(|_, _| {
+            Arc::new(|_, _| {
                 ApiResponse::ok(r#"{"status":"healthy","version":"0.3.0"}"#).to_http_response()
             }),
         );
@@ -123,7 +138,7 @@ impl RestServer {
         // Server status
         routes.insert(
             "GET /api/v1/status".to_string(),
-            Box::new(|_, _| {
+            Arc::new(|_, _| {
                 ApiResponse::json(r#"{"server":"mivon","status":"running","uptime":"unknown"}"#)
                     .to_http_response()
             }),
@@ -131,7 +146,7 @@ impl RestServer {
 
         RestServer {
             addr: addr.to_string(),
-            routes,
+            routes: Arc::new(routes),
         }
     }
 
@@ -141,32 +156,33 @@ impl RestServer {
         F: Fn(&str, &str) -> String + Send + Sync + 'static,
     {
         let key = format!("{} {}", method, path);
-        self.routes.insert(key, Box::new(handler));
+        Arc::make_mut(&mut self.routes).insert(key, Arc::new(handler));
     }
 
     /// Dispatch satu request tanpa socket (dipakai test & handler internal).
     ///
     /// Route dicocokkan TANPA query string; handler tetap menerima path penuh
-    /// agar bisa mem-parse parameter (`parse_query`).
+    /// agar bisa mem-parse parameter (`parse_query`). Panic handler tidak
+    /// menjatuhkan proses: dikonversi menjadi 500.
     pub fn handle_request(&self, method: &str, path: &str) -> String {
-        let route_path = path.split('?').next().unwrap_or(path);
-        let key = format!("{} {}", method, route_path);
-        match self.routes.get(&key) {
-            Some(handler) => handler(method, path),
-            None => ApiResponse::not_found().to_http_response(),
-        }
+        dispatch(&self.routes, method, path)
     }
 
     /// Start the server (blocking).
+    ///
+    /// Satu thread per koneksi; error satu koneksi tidak menghentikan server.
     pub fn start(&self) -> Result<(), String> {
         let listener = TcpListener::bind(&self.addr).map_err(|e| format!("bind failed: {}", e))?;
 
         for stream in listener.incoming() {
             match stream {
                 Ok(stream) => {
-                    if let Err(e) = self.handle_connection(stream) {
-                        eprintln!("connection error: {}", e);
-                    }
+                    let routes = self.routes.clone();
+                    std::thread::spawn(move || {
+                        if let Err(e) = handle_connection(routes, stream) {
+                            eprintln!("connection error: {}", e);
+                        }
+                    });
                 }
                 Err(e) => {
                     eprintln!("accept error: {}", e);
@@ -175,33 +191,106 @@ impl RestServer {
         }
         Ok(())
     }
+}
 
-    fn handle_connection(&self, mut stream: TcpStream) -> Result<(), String> {
-        let reader = BufReader::new(stream.try_clone().map_err(|e| e.to_string())?);
-        let mut method = String::new();
-        let mut path = String::new();
+/// Batas total byte header (request line + header) — mencegah klien mengirim
+/// header raksasa tanpa akhir.
+const MAX_HEADER_BYTES: usize = 8 * 1024;
 
-        for line in reader.lines() {
-            let line = line.map_err(|e| e.to_string())?;
-            if line.starts_with("GET ") || line.starts_with("POST ") {
-                let parts: Vec<&str> = line.split_whitespace().collect();
-                if parts.len() >= 2 {
-                    method = parts[0].to_string();
-                    path = parts[1].to_string();
-                }
-            }
-            if line.is_empty() {
-                break;
+/// Timeout baca per koneksi.
+const READ_TIMEOUT: Duration = Duration::from_secs(5);
+
+fn dispatch(routes: &HashMap<String, Handler>, method: &str, path: &str) -> String {
+    let route_path = path.split('?').next().unwrap_or(path);
+    let key = format!("{} {}", method, route_path);
+    match routes.get(&key) {
+        Some(handler) => {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                handler(method, path)
+            }));
+            match result {
+                Ok(resp) => resp,
+                Err(_) => ApiResponse::error(500, "internal server error").to_http_response(),
             }
         }
-
-        let response = self.handle_request(&method, &path);
-
-        stream
-            .write_all(response.as_bytes())
-            .map_err(|e| e.to_string())?;
-        Ok(())
+        None => ApiResponse::not_found().to_http_response(),
     }
+}
+
+/// Proteksi CSRF dasar: bila request membawa `Origin`, host-nya harus sama
+/// dengan header `Host` (server bind lokal). Origin `null` ditolak.
+fn origin_allowed(origin: &str, host: &str) -> bool {
+    if host.is_empty() || origin == "null" {
+        return false;
+    }
+    origin
+        .split_once("://")
+        .map(|(_, rest)| rest == host)
+        .unwrap_or(false)
+}
+
+fn handle_connection(routes: Arc<HashMap<String, Handler>>, mut stream: TcpStream) -> Result<(), String> {
+    stream
+        .set_read_timeout(Some(READ_TIMEOUT))
+        .map_err(|e| e.to_string())?;
+    let reader = BufReader::new(stream.try_clone().map_err(|e| e.to_string())?);
+    let mut method = String::new();
+    let mut path = String::new();
+    let mut headers: HashMap<String, String> = HashMap::new();
+    let mut total = 0usize;
+
+    for line in reader.lines() {
+        let line = line.map_err(|e| e.to_string())?;
+        total += line.len() + 2;
+        if total > MAX_HEADER_BYTES {
+            let resp = ApiResponse::error(400, "header terlalu besar").to_http_response();
+            stream
+                .write_all(resp.as_bytes())
+                .map_err(|e| e.to_string())?;
+            return Ok(());
+        }
+        if line.is_empty() {
+            break;
+        }
+        if line.starts_with("GET ") || line.starts_with("POST ") {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 2 {
+                method = parts[0].to_string();
+                path = parts[1].to_string();
+            }
+            continue;
+        }
+        if let Some((k, v)) = line.split_once(':') {
+            headers.insert(k.trim().to_ascii_lowercase(), v.trim().to_string());
+        }
+    }
+
+    // CSRF: POST lintas-origin dari halaman lain ditolak sebelum dispatch.
+    if method == "POST" {
+        let host = headers.get("host").map(|s| s.as_str()).unwrap_or("");
+        if let Some(origin) = headers.get("origin") {
+            if !origin_allowed(origin, host) {
+                let resp = ApiResponse::error(403, "origin tidak diizinkan").to_http_response();
+                stream
+                    .write_all(resp.as_bytes())
+                    .map_err(|e| e.to_string())?;
+                return Ok(());
+            }
+        }
+        if headers.get("sec-fetch-site").map(|s| s.as_str()) == Some("cross-site") {
+            let resp = ApiResponse::error(403, "cross-site request ditolak").to_http_response();
+            stream
+                .write_all(resp.as_bytes())
+                .map_err(|e| e.to_string())?;
+            return Ok(());
+        }
+    }
+
+    let response = dispatch(&routes, &method, &path);
+    stream
+        .write_all(response.as_bytes())
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 /// Parse query string from URL path (percent-decoding + '+' → spasi).
@@ -254,13 +343,15 @@ pub fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// Format JSON response.
+/// Format JSON response dari pasangan key/value (string).
+///
+/// Nilai di-escape lewat serde_json — jangan menyusun JSON dengan format!.
 pub fn json_object(fields: &[(&str, &str)]) -> String {
-    let entries: Vec<String> = fields
+    let map: serde_json::Map<String, serde_json::Value> = fields
         .iter()
-        .map(|(k, v)| format!("\"{}\":\"{}\"", k, v))
+        .map(|(k, v)| ((*k).to_string(), serde_json::Value::String((*v).to_string())))
         .collect();
-    format!("{{{}}}", entries.join(","))
+    serde_json::Value::Object(map).to_string()
 }
 
 #[cfg(test)]
@@ -311,8 +402,15 @@ mod tests {
     #[test]
     fn test_json_object() {
         let j = json_object(&[("name", "mivon"), ("version", "0.3.0")]);
-        assert!(j.contains("\"name\":\"mivon\""));
-        assert!(j.contains("\"version\":\"0.3.0\""));
+        assert!(j.contains(r#""name":"mivon""#));
+        assert!(j.contains(r#""version":"0.3.0""#));
+    }
+
+    #[test]
+    fn json_object_escapes_values() {
+        let j = json_object(&[("x", "a\"b\\c")]);
+        let parsed: serde_json::Value = serde_json::from_str(&j).unwrap();
+        assert_eq!(parsed["x"], "a\"b\\c");
     }
 
     #[test]
@@ -321,6 +419,7 @@ mod tests {
         let http = resp.to_http_response();
         assert!(http.starts_with("HTTP/1.1 200 OK\r\n"));
         assert!(http.contains("Content-Type: application/json"));
+        assert!(http.contains("Cache-Control: no-store"));
         assert!(http.ends_with(r#"{"status":"ok"}"#));
     }
 
@@ -332,5 +431,21 @@ mod tests {
         });
         let key = "GET /test".to_string();
         assert!(server.routes.contains_key(&key));
+    }
+
+    #[test]
+    fn handler_panic_becomes_500() {
+        let mut server = RestServer::new("127.0.0.1:0");
+        server.add_route("GET", "/boom", |_, _| panic!("handler rusak"));
+        let resp = server.handle_request("GET", "/boom");
+        assert!(resp.starts_with("HTTP/1.1 500"));
+    }
+
+    #[test]
+    fn origin_check_allows_same_host() {
+        assert!(origin_allowed("http://127.0.0.1:8090", "127.0.0.1:8090"));
+        assert!(!origin_allowed("http://evil.example", "127.0.0.1:8090"));
+        assert!(!origin_allowed("null", "127.0.0.1:8090"));
+        assert!(!origin_allowed("http://127.0.0.1:8090", ""));
     }
 }

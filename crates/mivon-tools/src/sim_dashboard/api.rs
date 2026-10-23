@@ -2,8 +2,10 @@
 //!
 //! Kontrak:
 //! - `GET /api/v1/sessions[?user=]` → 200 `{count, queue_depth, sessions[]}`
+//!   (400 bila parameter `user` ada tapi kosong)
 //! - `POST /api/v1/sessions?user=&files=&max_time=` → 201 `{id, user, max_time}`
-//!   (400 parameter tidak valid, 429 kuota/kapasitas user habis)
+//!   (400 parameter/file tidak valid, 429 kuota user habis, 503 kapasitas
+//!   riwayat server penuh)
 //! - `POST /api/v1/cancel?id=` → 200 (400 tanpa id, 404 tak dikenal,
 //!   409 sudah terminal)
 //! - `GET /api/v1/stats` → 200 hitungan per status + ringkasan server
@@ -11,7 +13,7 @@
 use std::sync::Arc;
 
 use crate::rest_api::{parse_query, ApiResponse, RestServer};
-use crate::sim_server::{SessionStatus, SimServer, SimSession};
+use crate::sim_server::{CancelError, SessionStatus, SimServer, SimSession, SubmitError};
 
 use super::page::render_page;
 
@@ -59,9 +61,46 @@ fn split_files(raw: &str) -> Vec<String> {
         .collect()
 }
 
+/// Validasi daftar file dari klien.
+///
+/// Endpoint ini nantinya menyerahkan path ke simulator, jadi boundary harus
+/// ketat: ekstensi HDL/filelist, tanpa komponen `..`, dan jumlah terbatas.
+fn validate_files(files: &[String]) -> Result<(), String> {
+    const MAX_FILES: usize = 64;
+    const EXT: [&str; 6] = ["sv", "svh", "v", "vh", "f", "mivon"];
+    if files.len() > MAX_FILES {
+        return Err(format!("terlalu banyak file (max {})", MAX_FILES));
+    }
+    for f in files {
+        if f.contains("..") {
+            return Err(format!("path tidak boleh mengandung '..': {}", f));
+        }
+        let ext = std::path::Path::new(f)
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_ascii_lowercase())
+            .unwrap_or_default();
+        if !EXT.contains(&ext.as_str()) {
+            return Err(format!("ekstensi file tidak didukung: {}", f));
+        }
+    }
+    Ok(())
+}
+
 fn sessions_response(server: &SimServer, path: &str) -> String {
     let q = parse_query(path);
-    let user = q.get("user").map(|u| u.trim()).filter(|u| !u.is_empty());
+    // Parameter ada tapi kosong = salah ketik, bukan "semua user".
+    let user = match q.get("user") {
+        Some(raw) => {
+            let u = raw.trim();
+            if u.is_empty() {
+                return ApiResponse::error(400, "parameter 'user' tidak boleh kosong")
+                    .to_http_response();
+            }
+            Some(u)
+        }
+        None => None,
+    };
     let sessions = match user {
         Some(user) => sorted(server.list_user_sessions(user)),
         None => server.list_all(),
@@ -80,6 +119,9 @@ fn create_response(server: &SimServer, path: &str) -> String {
     if user.is_empty() {
         return ApiResponse::error(400, "parameter 'user' wajib diisi").to_http_response();
     }
+    if user.chars().count() > 64 {
+        return ApiResponse::error(400, "parameter 'user' maksimal 64 karakter").to_http_response();
+    }
     let max_time = match q.get("max_time").map(|m| m.trim()) {
         None | Some("") => DEFAULT_MAX_TIME,
         Some(raw) => match raw.parse::<u64>() {
@@ -91,6 +133,9 @@ fn create_response(server: &SimServer, path: &str) -> String {
         },
     };
     let files = q.get("files").map(|f| split_files(f)).unwrap_or_default();
+    if let Err(e) = validate_files(&files) {
+        return ApiResponse::error(400, &e).to_http_response();
+    }
 
     match server.submit(user, files, max_time) {
         Ok(id) => {
@@ -101,7 +146,16 @@ fn create_response(server: &SimServer, path: &str) -> String {
             });
             ApiResponse::created(&body.to_string()).to_http_response()
         }
-        Err(e) => ApiResponse::error(429, &e).to_http_response(),
+        Err(SubmitError::Quota { active, max, .. }) => ApiResponse::error(
+            429,
+            &format!("kuota sesi user habis ({} aktif, max {})", active, max),
+        )
+        .to_http_response(),
+        Err(SubmitError::Capacity { total, max }) => ApiResponse::error(
+            503,
+            &format!("kapasitas server penuh ({} sesi, max {})", total, max),
+        )
+        .to_http_response(),
     }
 }
 
@@ -111,15 +165,18 @@ fn cancel_response(server: &SimServer, path: &str) -> String {
     if id.is_empty() {
         return ApiResponse::error(400, "parameter 'id' wajib diisi").to_http_response();
     }
-    if server.get_session(id).is_none() {
-        return ApiResponse::error(404, "session tidak ditemukan").to_http_response();
-    }
     match server.cancel(id) {
         Ok(()) => {
             let body = serde_json::json!({ "id": id, "status": "cancelled" });
             ApiResponse::json(&body.to_string()).to_http_response()
         }
-        Err(e) => ApiResponse::error(409, &e).to_http_response(),
+        Err(CancelError::NotFound) => {
+            ApiResponse::error(404, "session tidak ditemukan").to_http_response()
+        }
+        Err(CancelError::NotCancellable) => {
+            ApiResponse::error(409, "session tidak dalam status yang bisa dibatalkan")
+                .to_http_response()
+        }
     }
 }
 

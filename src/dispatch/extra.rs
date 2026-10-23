@@ -516,6 +516,8 @@ pub(crate) fn dispatch_web_dashboard(a: &crate::cli::MwebArgs) -> ! {
             ..Default::default()
         };
         let dash = WebDashboard::new(cfg);
+        dash.server()
+            .set_runner(std::sync::Arc::new(run_sim_session));
         if a.print_html {
             print!("{}", dash.render_html());
             return Ok(());
@@ -525,4 +527,17 @@ pub(crate) fn dispatch_web_dashboard(a: &crate::cli::MwebArgs) -> ! {
             .map_err(|e| SimError::with_diag(DiagCode::IoError, e))
     })();
     exit_tool(result);
+}
+
+/// Runner sesi dashboard: elaborasi + jalankan engine, kembalikan waktu
+/// simulasi akhir (cycle). Error dikembalikan sebagai teks agar status sesi
+/// menjadi `Failed` (bukan mematikan worker).
+fn run_sim_session(files: &[String], max_time: u64) -> Result<u64, String> {
+    use mivon_elaboration::elaborator::ElaborateMode;
+    let (_session, _design, ir) =
+        mivon_api::tools::open_elaborated(files, &[], &[], None, ElaborateMode::StrictSimulation)
+            .map_err(|e| e.to_string())?;
+    let mut engine = mivon_api::simulator::SimulationEngine::new(ir, max_time);
+    engine.run().map_err(|e| e.to_string())?;
+    Ok(engine.state.time)
 }

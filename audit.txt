@@ -3120,20 +3120,25 @@ DEBT-20:[x] No Debug/Deref implementations consistent across types
 FEAT-01:[] Design database server (persistent compile cache across
          projects and users) — Critical
 FEAT-02:[] Collaborative debug (multi-user debugging session) — High
-FEAT-03: ✅ Web-based simulation control dashboard (ROUND 151) — modul
-         crates/mivon-tools/src/sim_dashboard/{mod,api,page}.rs di atas
-         SimServer (ENT-18) + RestServer (FEAT-04): GET / (HTML: form
-         submit, tabel sesi, tombol cancel, refresh tiap 2s), GET
+FEAT-03: ✅ Web-based simulation control dashboard (ROUND 151-152) —
+         modul crates/mivon-tools/src/sim_dashboard/{mod,api,page}.rs di
+         atas SimServer (ENT-18) + RestServer (FEAT-04): GET / (HTML:
+         form submit, tabel sesi, tombol cancel, refresh tiap 2s), GET
          /api/v1/sessions[?user=], POST /api/v1/sessions?user=&files=
-         &max_time= (201; 400 param invalid; 429 kuota), POST
-         /api/v1/cancel?id= (400/404/409), GET /api/v1/stats. CLI
-         `mivon mweb` (alias mweb; --addr/--print-html/--max-sessions).
-         Perbaikan pendukung: parse_query percent-decode ('+' → spasi,
-         form URLSearchParams), ApiResponse::created + status 201/400/
-         409/429, body error JSON di-escape, SimServer::submit ID atomik
-         (dua submit paralel tidak boleh ID sama), cancel mengeluarkan
-         antrean, queue_depth hanya menghitung Queued, SimServer::
-         list_all. 24 test baru. (High)
+         &max_time= (201; 400 param/file invalid; 429 kuota; 503
+         kapasitas riwayat), POST /api/v1/cancel?id= (400/404/409), GET
+         /api/v1/stats. EKSEKUSI NYATA: SimServer::set_runner (CLI
+         memasang elaborasi+engine; test memakai runner palsu) → status
+         Running→Completed/Failed, elapsed_cycles terisi, antrean FIFO
+         dipromosikan saat slot bebas. CLI `mivon mweb` (alias mweb;
+         --addr/--print-html/--max-sessions). Perbaikan pendukung:
+         parse_query percent-decode, ApiResponse::created + status
+         201/400/403/409/429/503, error JSON di-escape, ID sesi dari
+         counter atomik, cancel mengeluarkan antrean, queue_depth dari
+         status sesi, list_all, lock poison-tolerant, thread-per-
+         connection + read timeout 5s + batas header 8 KiB + panic→500,
+         cek Origin/Sec-Fetch-Site untuk POST, validasi file (ekstensi
+         HDL/filelist, tanpa '..', max 64). 37 test baru. (High)
 FEAT-04:[x] REST/gRPC API for automation — Critical
 FEAT-05:[x] Python bindings (like cocotb integration) — High
 FEAT-06: ✅ Tcl scripting interface (ROUND 135) — interpreter Tcl 8.6 subset
@@ -9029,6 +9034,74 @@ Test baru (24):
    - Targeted `-E 'test(/sim_dashboard|sim_server|rest_api/)'` → 36 passed.
    - Smoke test HTTP nyata via `mivon mweb --addr 127.0.0.1:18091` +
      curl (root/create/list/stats) → sesuai kontrak.
+
+\\=======================================================================//
+
+═══ ROUND 152 — perbaikan review ROUND 151 (FEAT-03) ═══
+
+Review menemukan bahwa dashboard ROUND 151 hanya *registri sesi*: tidak
+ada eksekusi, status Completed/Failed mustahil terjadi, antrean tidak
+pernah dipromosikan (dan karena kapasitas ikut menghitung Queued, ambang
+tak pernah turun), plus masalah transport (single-thread blocking, panic
+mematikan listener, lock poison) dan validasi input.
+
+CRITICAL yang diperbaiki:
+  C1. Eksekusi nyata. `SimServer::set_runner(SessionRunner)` — runner
+      di-inject (files, max_time) → jumlah cycle. Submit membuat sesi
+      Running lalu worker thread menjalankan runner; hasilnya menulis
+      `Completed` + `elapsed_cycles` atau `Failed(pesan)`. CLI `mivon
+      mweb` memasang runner nyata (`open_elaborated` StrictSimulation +
+      `SimulationEngine::run`), test memakai runner palsu. Smoke test:
+      counter.sv max_time=20 → status Completed, elapsed_cycles=16.
+  C2. Promosi antrean. Kapasitas sekarang hanya menghitung sesi Running;
+      `promote()` menarik antrean FIFO selama ada slot dan dipanggil
+      setelah sesi selesai/dibatalkan. Entri antrean basi dilewati.
+      Hasil worker tidak menimpa sesi yang sudah Cancelled.
+
+MAJOR:
+  M1. Transport: satu thread per koneksi, read timeout 5 detik, batas
+      8 KiB header (400 bila lewat), panic handler → 500 lewat
+      `catch_unwind` sehingga listener tidak mati.
+  M2. Lock SimServer memakai `unwrap_or_else(|e| e.into_inner())` —
+      panic di satu sesi tidak mem-poison seluruh server. Urutan lock
+      sessions → queue didokumentasikan di header modul.
+  M3. Proteksi CSRF dasar: POST dengan `Origin` yang host-nya beda dari
+      header `Host` (atau Origin "null", atau Sec-Fetch-Site:
+      cross-site) ditolak 403 sebelum dispatch. Server tetap localhost.
+  M4. Batas pertumbuhan: `max_sessions_total` (default 512) → submit
+      berikutnya 503; `user` ≤ 64 karakter; `files` ≤ 64 entri.
+  M5. Error submit bertipe (`SubmitError::Quota` → 429,
+      `SubmitError::Capacity` → 503); cancel bertipe (`CancelError` →
+      404/409). Doc kontrak diperbaiki (sebelumnya menulis 429 untuk
+      kapasitas padahal perilakunya mengantrekan).
+
+MEDIUM/LOW:
+  - Validasi `files`: ekstensi sv/svh/v/vh/f/mivon, tolak komponen
+    '..' → 400 (jalur ini nantinya diserahkan ke simulator).
+  - `queue_depth` dihitung dari status sesi (bukan isi vektor antrean),
+    sehingga tidak ada angka hantu dan tidak ada tulis di jalur baca.
+  - ID sesi dari `AtomicU64` (tidak pernah dipakai ulang bila riwayat
+    dipangkas; insert tidak bisa menimpa sesi lain).
+  - `?user=` kosong → 400 (bukan "semua user"); sort ganda dihapus.
+  - `json_object` memakai serde_json (escape benar).
+  - Sort tie-break memakai nomor urut numerik (sim_x_2 sebelum
+    sim_x_10), bukan leksikografis.
+  - Klaim "berguna tanpa JS" dihapus (tabel awal server-rendered, tetapi
+    submit/cancel/refresh butuh JS).
+  - Semua respons `Cache-Control: no-store`.
+
+Test: 13 test baru (runner sukses/gagal, promosi saat slot bebas,
+promosi saat cancel, batas riwayat, urutan numerik, validasi files,
+user kosong 400, kapasitas 503, runner end-to-end via HTTP, panic→500,
+cek Origin, json_object escape).
+
+📊 VERIFIKASI ROUND 152:
+   - cargo nextest run --workspace --features dev --no-fail-fast:
+     ✅ 3558 passed, 0 failed, 24 skipped.
+   - Targeted `-E 'test(/sim_dashboard|sim_server|rest_api/)'` → 49 passed.
+   - Smoke test nyata (binary hasil `cargo build`): POST sesi dengan
+     /tmp/mweb-smoke/counter.sv&max_time=20 → GET sessions menunjukkan
+     status Completed + elapsed_cycles 16; stats completed=1.
 
 \\=======================================================================//
 

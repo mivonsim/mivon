@@ -8,6 +8,9 @@
 //! - `GET /api/v1/stats` — hitungan status + ringkasan server
 //!
 //! Semua state ada di `SimServer` (ENT-18); modul ini hanya transport.
+//! Eksekusi simulasi di-inject lewat `SimServer::set_runner` — CLI `mivon
+//! mweb` memasang runner nyata (elaborasi + engine), sedangkan test memakai
+//! runner palsu. Tanpa runner, sesi tetap Running (mode registri).
 //! Satu tanggung jawab per file: `api.rs` (routing/handler) dan `page.rs`
 //! (HTML) — `mod.rs` hanya menyatukan keduanya.
 
@@ -145,14 +148,85 @@ mod tests {
             "/api/v1/sessions?user=alice&files=a.sv,b.sv&max_time=250",
         );
         assert_eq!(status(&resp), 201);
-        let created = body(&resp).to_string();
-        assert!(created.contains("sim_alice_"));
+        let created: serde_json::Value = serde_json::from_str(body(&resp)).unwrap();
+        assert_eq!(created["user"], "alice");
+        assert_eq!(created["max_time"], 250);
+        let id = created["id"].as_str().unwrap().to_string();
+        assert!(id.starts_with("sim_alice_"));
 
         let list = rest.handle_request("GET", "/api/v1/sessions?user=alice");
-        let list_body = body(&list);
-        assert!(list_body.contains("sim_alice_"));
-        assert!(list_body.contains("a.sv"));
-        assert!(list_body.contains("250"));
+        let list_body: serde_json::Value = serde_json::from_str(body(&list)).unwrap();
+        assert_eq!(list_body["count"], 1);
+        let s = &list_body["sessions"][0];
+        assert_eq!(s["id"], id);
+        assert_eq!(s["max_time"], 250);
+        assert_eq!(s["source_files"][0], "a.sv");
+        assert_eq!(s["source_files"][1], "b.sv");
+    }
+
+    #[test]
+    fn empty_user_query_is_400() {
+        let d = dashboard();
+        let rest = d.into_rest_server("127.0.0.1:0");
+        let resp = rest.handle_request("GET", "/api/v1/sessions?user=");
+        assert_eq!(status(&resp), 400);
+    }
+
+    #[test]
+    fn files_must_be_hdl_and_without_dotdot() {
+        let d = dashboard();
+        let rest = d.into_rest_server("127.0.0.1:0");
+        for bad in ["/etc/passwd", "../../secret.sv", "a.txt"] {
+            let resp = rest.handle_request(
+                "POST",
+                &format!("/api/v1/sessions?user=alice&files={}", bad),
+            );
+            assert_eq!(status(&resp), 400, "files={} harus ditolak", bad);
+        }
+        // Filelist .f dan .mivon tetap boleh.
+        let ok = rest.handle_request("POST", "/api/v1/sessions?user=alice&files=run.f,top.sv");
+        assert_eq!(status(&ok), 201);
+    }
+
+    #[test]
+    fn capacity_full_is_503() {
+        let d = WebDashboard::new(ServerConfig {
+            max_sessions_total: 1,
+            ..Default::default()
+        });
+        let rest = d.into_rest_server("127.0.0.1:0");
+        let first = rest.handle_request("POST", "/api/v1/sessions?user=alice");
+        assert_eq!(status(&first), 201);
+        let second = rest.handle_request("POST", "/api/v1/sessions?user=bob");
+        assert_eq!(status(&second), 503);
+    }
+
+    #[test]
+    fn runner_executes_session_and_reports_cycles() {
+        let d = dashboard();
+        d.server()
+            .set_runner(std::sync::Arc::new(|_files, max_time| Ok(max_time.min(42))));
+        let rest = d.into_rest_server("127.0.0.1:0");
+        let resp = rest.handle_request("POST", "/api/v1/sessions?user=alice&max_time=900");
+        assert_eq!(status(&resp), 201);
+        let id = serde_json::from_str::<serde_json::Value>(body(&resp)).unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let mut done = false;
+        for _ in 0..200 {
+            let list = rest.handle_request("GET", "/api/v1/sessions?user=alice");
+            let v: serde_json::Value = serde_json::from_str(body(&list)).unwrap();
+            let s = &v["sessions"][0];
+            if s["status"] == "Completed" {
+                assert_eq!(s["elapsed_cycles"], 42);
+                done = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(done, "sesi tidak selesai: {}", id);
     }
 
     #[test]

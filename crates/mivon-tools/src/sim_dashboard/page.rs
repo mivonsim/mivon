@@ -1,8 +1,8 @@
 //! Render halaman HTML dashboard (FEAT-03).
 //!
-//! Tabel di-render di server (progressive enhancement: halaman tetap berguna
-//! tanpa JS) dan di-refresh di klien lewat `/api/v1/sessions`. Semua teks
-//! dinamis di-escape — nama user / file berasal dari input klien.
+//! Tabel awal di-render di server (snapshot saat halaman diminta); refresh
+//! otomatis, submit, dan cancel memerlukan JS (fetch ke endpoint JSON).
+//! Semua teks dinamis di-escape — nama user / file berasal dari input klien.
 
 use crate::sim_server::{SessionStatus, SimSession};
 
