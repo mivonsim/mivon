@@ -234,54 +234,20 @@ fn write_report(path: &str, content: &str) -> Result<(), SimError> {
 
 pub(crate) fn dispatch_license(a: &crate::cli::MlicenseArgs) -> ! {
     let result: Result<(), SimError> = (|| {
-        use mivon_api::tools::license_server::LicenseServer;
+        use mivon_api::tools::license_server::{with_locked_db, LicenseServer};
         let path = std::path::Path::new(&a.db);
-        let mut server = if path.exists() {
-            LicenseServer::load(path)
-                .map_err(|e| SimError::with_diag(DiagCode::DataFormatError, e))?
-        } else {
-            LicenseServer::new(a.timeout)
-        };
+        let default_timeout = a.timeout.unwrap_or(300);
+        let fmt_err = |e: String| SimError::with_diag(DiagCode::DataFormatError, e);
         match &a.cmd {
-            crate::cli::MlicenseCmd::Init { feature, count } => {
-                if *count == 0 {
-                    return Err(SimError::with_diag(
-                        DiagCode::InvalidSyntax,
-                        "--count harus > 0".to_string(),
-                    ));
-                }
-                server.register_pool(feature, *count);
-                println!("Pool '{}' terdaftar: {} lisensi", feature, count);
-            }
-            crate::cli::MlicenseCmd::Checkout {
-                feature,
-                user,
-                host,
-            } => {
-                let id = server.checkout(feature, user, host).map_err(|e| {
-                    // Pool habis = resource limit; feature tak dikenal = referensi.
-                    let code = if e.contains("unknown feature") {
-                        DiagCode::InvalidReference
-                    } else {
-                        DiagCode::ResourceLimit
-                    };
-                    SimError::with_diag(code, e)
-                })?;
-                println!("{}", id);
-            }
-            crate::cli::MlicenseCmd::Checkin { lease } => {
-                server
-                    .checkin(lease)
-                    .map_err(|e| SimError::with_diag(DiagCode::InvalidReference, e))?;
-                println!("Lease {} dikembalikan", lease);
-            }
-            crate::cli::MlicenseCmd::Heartbeat { lease } => {
-                server
-                    .heartbeat(lease)
-                    .map_err(|e| SimError::with_diag(DiagCode::InvalidReference, e))?;
-                println!("Heartbeat lease {}", lease);
-            }
+            // Status read-only: TIDAK membuat/menulis DB (sebelumnya `status`
+            // di direktori kosong membuat licenses.json kosong).
             crate::cli::MlicenseCmd::Status => {
+                if !path.exists() {
+                    println!("LicenseServer: belum ada database lisensi ({})", a.db);
+                    return Ok(());
+                }
+                let mut server = LicenseServer::load(path).map_err(fmt_err)?;
+                server.refresh();
                 println!("{}", server.summary());
                 for l in server.active_leases() {
                     println!(
@@ -290,10 +256,61 @@ pub(crate) fn dispatch_license(a: &crate::cli::MlicenseArgs) -> ! {
                     );
                 }
             }
+            crate::cli::MlicenseCmd::Init { feature, count } => {
+                if *count == 0 {
+                    return Err(SimError::with_diag(
+                        DiagCode::InvalidSyntax,
+                        "--count harus > 0".to_string(),
+                    ));
+                }
+                let feature = feature.clone();
+                let count = *count;
+                let timeout = a.timeout;
+                let msg = with_locked_db(path, default_timeout, move |s| {
+                    if let Some(t) = timeout {
+                        s.set_heartbeat_timeout(t);
+                    }
+                    s.register_pool(&feature, count);
+                    Ok(format!("Pool '{}' terdaftar: {} lisensi", feature, count))
+                })
+                .map_err(fmt_err)?;
+                println!("{}", msg);
+            }
+            crate::cli::MlicenseCmd::Checkout {
+                feature,
+                user,
+                host,
+            } => {
+                let (feature, user, host) = (feature.clone(), user.clone(), host.clone());
+                let id = with_locked_db(path, default_timeout, move |s| s.checkout(&feature, &user, &host))
+                    .map_err(|e| {
+                        // Pool habis = resource limit; feature tak dikenal = referensi.
+                        let code = if e.contains("unknown feature") {
+                            DiagCode::InvalidReference
+                        } else {
+                            DiagCode::ResourceLimit
+                        };
+                        SimError::with_diag(code, e)
+                    })?;
+                println!("{}", id);
+            }
+            crate::cli::MlicenseCmd::Checkin { lease } => {
+                let lease = lease.clone();
+                let arg = lease.clone();
+                with_locked_db(path, default_timeout, move |s| s.checkin(&arg)).map_err(|e| {
+                    SimError::with_diag(DiagCode::InvalidReference, e)
+                })?;
+                println!("Lease {} dikembalikan", lease);
+            }
+            crate::cli::MlicenseCmd::Heartbeat { lease } => {
+                let lease = lease.clone();
+                let arg = lease.clone();
+                with_locked_db(path, default_timeout, move |s| s.heartbeat(&arg)).map_err(
+                    |e| SimError::with_diag(DiagCode::InvalidReference, e),
+                )?;
+                println!("Heartbeat lease {}", lease);
+            }
         }
-        server
-            .save(path)
-            .map_err(|e| SimError::with_diag(DiagCode::IoError, e))?;
         Ok(())
     })();
     exit_tool(result);

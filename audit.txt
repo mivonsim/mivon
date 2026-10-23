@@ -3150,16 +3150,17 @@ FEAT-11: ✅ Verification management dashboard — ROUND 145
          yang tidak ada → section kosong (bukan error); file rusak →
          E0005. CLI `mivon mdashboard [--coverage f] [--regression f]
          [--bugs f] [-o out.html] [--text]`.
-FEAT-12: ✅ License server for floating licenses — ROUND 147
+FEAT-12: ✅ License server for floating licenses — ROUND 147/148
          crates/mivon-tools/src/license_server.rs: LicenseServer (pool per
-         feature, checkout/checkin/heartbeat, lease expiry). Kini:
-         (a) lease juga kedaluwarsa saat melewati expires_at (sebelumnya
-         hanya heartbeat timeout — lease bisa hidup selamanya),
-         (b) persistensi JSON atomik (save/load, next_id & pool tersimpan),
-         (c) CLI `mivon mlicense init|checkout|checkin|heartbeat|status`
-         dengan db default .mivon/licenses.json. Pool habis → RT9004
-         (ResourceLimit); lease/feature tak dikenal → RT0002 (InvalidReference);
-         keduanya exit 10.
+         feature, checkout/checkin/heartbeat, expiry). ROUND 148: batas
+         absolut lease (max_expires_at) tidak bisa diperpanjang heartbeat,
+         heartbeat menolak lease mati, expire dipanggil di checkin/status,
+         `init` ulang mempertahankan lease aktif, load menormalisasi
+         next_id/available dan menolak ID duplikat, lock file + temp unik
+         untuk checkout paralel. CLI `mivon mlicense [--db] [--timeout]
+         init|checkout|checkin|heartbeat|status` (db default
+         .mivon/licenses.json; status read-only). Pool habis → RT9004
+         (exit 60); lease/feature tak dikenal → RT0002 (exit 1).
 FEAT-13:[] IP encryption (IEEE 1735) — Critical
 FEAT-14:[x] IP packaging (IP-XACT) — High
 FEAT-15:[] Design-for-debug infrastructure — Medium
@@ -8830,6 +8831,51 @@ E2E (/tmp): init 2 lisensi → checkout alice (L-000001) + bob (L-000002)
    - cargo nextest run --workspace --features dev --no-fail-fast:
      ✅ 3512 passed, 0 failed, 24 skipped.
    - Targeted `-E 'test(/license_server/)'` → 8 passed (4 baru).
+
+\\=======================================================================//
+
+═══ ROUND 148 — perbaikan hasil review ROUND 147 (license) ═══
+
+Review independen: 2 HIGH + 5 MEDIUM + 3 LOW. Yang diperbaiki:
+
+HIGH 1 — checkout paralel merusak DB (ID duplikat, rename gagal, lease
+hilang) karena save memakai temp tetap tanpa lock. Kini: temp unik per
+proses (`<file>.<pid>.tmp`) + `with_locked_db` (lock file create_new,
+tunggu maks 5s, lock basi >60s dibuang) membungkus load→mutate→save.
+Test `locked_db_serializes_concurrent_checkout` (2 thread, pool=1).
+HIGH 2 — `expire_stale` hanya dipanggil di checkout; `heartbeat`
+menghidupkan lease mati dan `status` menampilkan lease basi. Kini expire
+dipanggil di checkin/heartbeat/register_pool; `refresh()` untuk status;
+heartbeat MENOLAK lease yang lewat expires_at/max_expires_at.
+
+MEDIUM:
+  - Batas absolut lease `max_expires_at` (default 8 jam) tidak diperpanjang
+    heartbeat — sebelumnya heartbeat selalu menulis `expires_at = now+1h`
+    sehingga klaim audit ROUND 147 belum benar.
+  - `init` ulang tidak lagi me-reset available: dihitung
+    `count.saturating_sub(active)`; `pool_status` memakai saturating_sub
+    (sebelumnya bisa panic underflow).
+  - `load` menormalisasi: next_id > max ID terpakai, available dihitung
+    ulang, lease ID duplikat ditolak.
+  - `--timeout` menjadi Option dan diterapkan juga pada DB yang sudah ada
+    (sebelumnya diabaikan). Catatan: menurunkan timeout dapat langsung
+    meng-expire lease lama.
+  - `status` read-only: tidak lagi membuat/menulis DB di direktori kosong.
+  - Kode error checkout: pool habis RT9004 (exit 60), feature tak dikenal
+    RT0002 (exit 1) — audit ROUND 147 sebelumnya salah menulis exit 10.
+
+Test baru (5): heartbeat_rejects_expired_lease, reinit_keeps_active_leases,
+load_normalizes_next_id_and_available, load_rejects_duplicate_lease_ids,
+locked_db_serializes_concurrent_checkout.
+
+E2E: status di direktori kosong → tidak membuat licenses.json; dua
+checkout paralel pada pool=1 → tepat satu berhasil (L-000001) dan satu
+RT9004; `--timeout 5` pada DB lama → heartbeat_timeout=5.
+
+📊 VERIFIKASI ROUND 148:
+   - cargo nextest run --workspace --features dev --no-fail-fast:
+     ✅ 3517 passed, 0 failed, 24 skipped.
+   - Targeted `-E 'test(/license_server/)'` → 13 passed (5 baru).
 
 \\=======================================================================//
 

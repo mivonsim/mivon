@@ -1358,9 +1358,9 @@ pub struct MlicenseArgs {
     /// Database lisensi (dibuat bila belum ada)
     #[arg(long = "db", default_value = ".mivon/licenses.json")]
     pub db: String,
-    /// Timeout heartbeat (detik) saat inisialisasi
-    #[arg(long = "timeout", default_value = "300")]
-    pub timeout: u64,
+    /// Timeout heartbeat (detik); default 300 untuk DB baru
+    #[arg(long = "timeout")]
+    pub timeout: Option<u64>,
     #[command(subcommand)]
     pub cmd: MlicenseCmd,
 }
