@@ -112,6 +112,9 @@ pub enum MivonCmd {
     /// mdashboard — verification management dashboard (coverage + regression + bugs)
     #[command(alias = "mdashboard")]
     VerifDashboard(MdashboardArgs),
+    /// mlicense — floating license server (checkout/checkin/heartbeat)
+    #[command(alias = "mlicense")]
+    License(MlicenseArgs),
 }
 
 /// minspect — Mivon Inspect.
@@ -1347,6 +1350,58 @@ pub struct MdashboardArgs {
     /// Cetak ringkasan teks, bukan HTML
     #[arg(long = "text")]
     pub text: bool,
+}
+
+/// mlicense — floating license server.
+#[derive(clap::Args, Clone)]
+pub struct MlicenseArgs {
+    /// Database lisensi (dibuat bila belum ada)
+    #[arg(long = "db", default_value = ".mivon/licenses.json")]
+    pub db: String,
+    /// Timeout heartbeat (detik) saat inisialisasi
+    #[arg(long = "timeout", default_value = "300")]
+    pub timeout: u64,
+    #[command(subcommand)]
+    pub cmd: MlicenseCmd,
+}
+
+#[derive(Subcommand, Clone)]
+pub enum MlicenseCmd {
+    /// Daftarkan pool lisensi untuk sebuah feature
+    Init {
+        /// Nama feature (mis. mivon-sim)
+        #[arg(long)]
+        feature: String,
+        /// Jumlah lisensi
+        #[arg(long)]
+        count: u32,
+    },
+    /// Ambil lisensi (checkout)
+    Checkout {
+        /// Nama feature
+        #[arg(long)]
+        feature: String,
+        /// Nama user
+        #[arg(long)]
+        user: String,
+        /// Nama host
+        #[arg(long, default_value = "localhost")]
+        host: String,
+    },
+    /// Kembalikan lisensi (checkin)
+    Checkin {
+        /// Lease ID (L-NNNNNN)
+        #[arg(long)]
+        lease: String,
+    },
+    /// Perpanjang lease (heartbeat)
+    Heartbeat {
+        /// Lease ID
+        #[arg(long)]
+        lease: String,
+    },
+    /// Tampilkan status pool + lease aktif
+    Status,
 }
 
 /// mwaiver — Waiver management.

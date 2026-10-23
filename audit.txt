@@ -3150,7 +3150,16 @@ FEAT-11: ✅ Verification management dashboard — ROUND 145
          yang tidak ada → section kosong (bukan error); file rusak →
          E0005. CLI `mivon mdashboard [--coverage f] [--regression f]
          [--bugs f] [-o out.html] [--text]`.
-FEAT-12:[] License server for floating licenses — High
+FEAT-12: ✅ License server for floating licenses — ROUND 147
+         crates/mivon-tools/src/license_server.rs: LicenseServer (pool per
+         feature, checkout/checkin/heartbeat, lease expiry). Kini:
+         (a) lease juga kedaluwarsa saat melewati expires_at (sebelumnya
+         hanya heartbeat timeout — lease bisa hidup selamanya),
+         (b) persistensi JSON atomik (save/load, next_id & pool tersimpan),
+         (c) CLI `mivon mlicense init|checkout|checkin|heartbeat|status`
+         dengan db default .mivon/licenses.json. Pool habis → RT9004
+         (ResourceLimit); lease/feature tak dikenal → RT0002 (InvalidReference);
+         keduanya exit 10.
 FEAT-13:[] IP encryption (IEEE 1735) — Critical
 FEAT-14:[x] IP packaging (IP-XACT) — High
 FEAT-15:[] Design-for-debug infrastructure — Medium
@@ -8785,6 +8794,42 @@ E2E: `--text -o out/sum.txt` menulis file; coverage JSON tanpa objek
    - cargo nextest run --workspace --features dev --no-fail-fast:
      ✅ 3508 passed, 0 failed, 24 skipped.
    - Targeted `-E 'test(/verif_dashboard/)'` → 12 passed (5 baru).
+
+\\=======================================================================//
+
+═══ ROUND 147 — FEAT-12 floating license server ═══
+
+`license_server.rs` sudah ada tetapi hanya library in-memory tanpa CLI dan
+tanpa persistensi; satu bug nyata ditemukan saat menulis test.
+
+Perbaikan:
+  - Lease kini kedaluwarsa bila `now > expires_at`, bukan hanya saat
+    heartbeat timeout. Sebelumnya klien yang terus mengirim heartbeat
+    melewati masa berlaku (1 jam) tetap memegang lisensi selamanya.
+    Refactor `expire_stale_at(now)` agar test deterministik.
+  - `save`/`load` JSON: atomik (temp + rename), membuat direktori induk,
+    menyimpan pool + lease + `next_id` + `heartbeat_timeout`.
+  - `heartbeat_timeout()` accessor untuk verifikasi.
+
+CLI `mivon mlicense` (db default `.mivon/licenses.json`):
+  init --feature F --count N | checkout --feature F --user U [--host H]
+  | checkin --lease ID | heartbeat --lease ID | status.
+Error: pool habis → RT9004 (ResourceLimit); feature/lease tak dikenal →
+RT0002 (InvalidReference).
+
+Test baru (4): lease_expires_after_expires_at_even_with_heartbeat_timeout_long,
+stale_heartbeat_expires_lease, save_load_roundtrip_keeps_leases_and_next_id,
+load_rejects_malformed_json.
+
+E2E (/tmp): init 2 lisensi → checkout alice (L-000001) + bob (L-000002)
+→ checkout carol gagal RT9004 exit 10 → status `mivon-sim: 0/2 available`
+→ checkin L-000001 → checkout carol (L-000003) → status 2 lease aktif,
+`next_id` tidak reset setelah reload.
+
+📊 VERIFIKASI ROUND 147:
+   - cargo nextest run --workspace --features dev --no-fail-fast:
+     ✅ 3512 passed, 0 failed, 24 skipped.
+   - Targeted `-E 'test(/license_server/)'` → 8 passed (4 baru).
 
 \\=======================================================================//
 

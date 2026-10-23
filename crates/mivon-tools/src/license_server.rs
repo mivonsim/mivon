@@ -4,6 +4,7 @@
 //! Tracks license pool, heartbeat timeout, and lease expiration.
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -29,6 +30,7 @@ pub struct LicenseLease {
 }
 
 /// License server.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LicenseServer {
     pools: HashMap<String, LicensePool>,
     leases: Vec<LicenseLease>,
@@ -117,12 +119,19 @@ impl LicenseServer {
         Ok(())
     }
 
-    /// Expire stale leases (heartbeat timeout).
+    /// Expire stale leases (heartbeat timeout) DAN lease yang sudah lewat
+    /// `expires_at`. Tanpa cek expires_at, lease bisa hidup selamanya selama
+    /// heartbeat terus dikirim melewati masa berlaku yang diberikan.
     fn expire_stale(&mut self) {
-        let now = now_secs();
+        self.expire_stale_at(now_secs());
+    }
+
+    /// Varian dengan waktu eksplisit (untuk test deterministik).
+    fn expire_stale_at(&mut self, now: u64) {
         let timeout = self.heartbeat_timeout;
         self.leases.retain(|l| {
-            let stale = now.saturating_sub(l.heartbeat) > timeout;
+            let stale =
+                now.saturating_sub(l.heartbeat) > timeout || now > l.expires_at;
             if stale {
                 // Return license to pool
                 // Can't return here since we're in retain, handle after
@@ -167,6 +176,39 @@ impl LicenseServer {
             self.leases.len(),
             pools.join(", ")
         )
+    }
+
+    /// Simpan state server (JSON, atomik, membuat direktori induk).
+    pub fn save(&self, path: &Path) -> Result<(), String> {
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| format!("gagal buat direktori {}: {e}", parent.display()))?;
+            }
+        }
+        let json = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
+        let mut temp_name = path
+            .file_name()
+            .map(|n| n.to_os_string())
+            .unwrap_or_else(|| std::ffi::OsString::from("licenses.json"));
+        temp_name.push(".tmp");
+        let temp = path.with_file_name(temp_name);
+        std::fs::write(&temp, json)
+            .map_err(|e| format!("gagal tulis {}: {e}", temp.display()))?;
+        std::fs::rename(&temp, path)
+            .map_err(|e| format!("gagal rename {}: {e}", path.display()))
+    }
+
+    /// Muat state server dari JSON.
+    pub fn load(path: &Path) -> Result<Self, String> {
+        let src = std::fs::read_to_string(path)
+            .map_err(|e| format!("gagal baca {}: {e}", path.display()))?;
+        serde_json::from_str(&src).map_err(|e| format!("license db {}: {e}", path.display()))
+    }
+
+    /// Timeout heartbeat yang dipakai server (detik).
+    pub fn heartbeat_timeout(&self) -> u64 {
+        self.heartbeat_timeout
     }
 }
 
@@ -218,5 +260,57 @@ mod tests {
         assert_eq!(total, 3);
         assert_eq!(avail, 2);
         assert_eq!(in_use, 1);
+    }
+
+    #[test]
+    fn lease_expires_after_expires_at_even_with_heartbeat_timeout_long() {
+        let mut server = LicenseServer::new(100_000);
+        server.register_pool("sim", 1);
+        let id = server.checkout("sim", "alice", "h").unwrap();
+        let now = now_secs();
+        // Sebelum expires_at: lease hidup.
+        server.expire_stale_at(now + 10);
+        assert_eq!(server.active_leases().len(), 1);
+        assert_eq!(server.pool_status("sim").unwrap().1, 0);
+        // Melewati expires_at (1 jam): lease dibuang, lisensi kembali.
+        server.expire_stale_at(now + 4000);
+        assert!(server.active_leases().is_empty(), "lease {id} harus expired");
+        assert_eq!(server.pool_status("sim").unwrap().1, 1);
+    }
+
+    #[test]
+    fn stale_heartbeat_expires_lease() {
+        let mut server = LicenseServer::new(60);
+        server.register_pool("sim", 1);
+        server.checkout("sim", "alice", "h").unwrap();
+        server.expire_stale_at(now_secs() + 61);
+        assert!(server.active_leases().is_empty());
+        assert_eq!(server.pool_status("sim").unwrap().1, 1);
+    }
+
+    #[test]
+    fn save_load_roundtrip_keeps_leases_and_next_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nested/licenses.json");
+        let mut server = LicenseServer::new(300);
+        server.register_pool("sim", 2);
+        let id = server.checkout("sim", "alice", "h").unwrap();
+        server.save(&path).unwrap();
+        let mut loaded = LicenseServer::load(&path).unwrap();
+        assert_eq!(loaded.active_leases().len(), 1);
+        assert_eq!(loaded.pool_status("sim"), Some((2, 1, 1)));
+        assert_eq!(loaded.heartbeat_timeout(), 300);
+        let next = loaded.checkout("sim", "bob", "h2").unwrap();
+        assert_ne!(next, id, "next_id tidak reset setelah load");
+        assert_eq!(next, "L-000002");
+        assert!(!dir.path().join("nested/licenses.json.tmp").exists());
+    }
+
+    #[test]
+    fn load_rejects_malformed_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("licenses.json");
+        std::fs::write(&path, "{not json").unwrap();
+        assert!(LicenseServer::load(&path).is_err());
     }
 }

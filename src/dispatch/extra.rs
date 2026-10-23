@@ -232,6 +232,73 @@ fn write_report(path: &str, content: &str) -> Result<(), SimError> {
         .map_err(|e| SimError::with_diag(DiagCode::IoError, format!("{}: {}", path, e)))
 }
 
+pub(crate) fn dispatch_license(a: &crate::cli::MlicenseArgs) -> ! {
+    let result: Result<(), SimError> = (|| {
+        use mivon_api::tools::license_server::LicenseServer;
+        let path = std::path::Path::new(&a.db);
+        let mut server = if path.exists() {
+            LicenseServer::load(path)
+                .map_err(|e| SimError::with_diag(DiagCode::DataFormatError, e))?
+        } else {
+            LicenseServer::new(a.timeout)
+        };
+        match &a.cmd {
+            crate::cli::MlicenseCmd::Init { feature, count } => {
+                if *count == 0 {
+                    return Err(SimError::with_diag(
+                        DiagCode::InvalidSyntax,
+                        "--count harus > 0".to_string(),
+                    ));
+                }
+                server.register_pool(feature, *count);
+                println!("Pool '{}' terdaftar: {} lisensi", feature, count);
+            }
+            crate::cli::MlicenseCmd::Checkout {
+                feature,
+                user,
+                host,
+            } => {
+                let id = server.checkout(feature, user, host).map_err(|e| {
+                    // Pool habis = resource limit; feature tak dikenal = referensi.
+                    let code = if e.contains("unknown feature") {
+                        DiagCode::InvalidReference
+                    } else {
+                        DiagCode::ResourceLimit
+                    };
+                    SimError::with_diag(code, e)
+                })?;
+                println!("{}", id);
+            }
+            crate::cli::MlicenseCmd::Checkin { lease } => {
+                server
+                    .checkin(lease)
+                    .map_err(|e| SimError::with_diag(DiagCode::InvalidReference, e))?;
+                println!("Lease {} dikembalikan", lease);
+            }
+            crate::cli::MlicenseCmd::Heartbeat { lease } => {
+                server
+                    .heartbeat(lease)
+                    .map_err(|e| SimError::with_diag(DiagCode::InvalidReference, e))?;
+                println!("Heartbeat lease {}", lease);
+            }
+            crate::cli::MlicenseCmd::Status => {
+                println!("{}", server.summary());
+                for l in server.active_leases() {
+                    println!(
+                        "  {} {}@{} feature={} expires_at={}",
+                        l.id, l.user, l.host, l.feature, l.expires_at
+                    );
+                }
+            }
+        }
+        server
+            .save(path)
+            .map_err(|e| SimError::with_diag(DiagCode::IoError, e))?;
+        Ok(())
+    })();
+    exit_tool(result);
+}
+
 pub(crate) fn dispatch_waiver(a: &crate::cli::MwaiverArgs) -> ! {
     let result: Result<(), SimError> = (|| {
         use mivon_api::tools::waiver::WaiverStore;
