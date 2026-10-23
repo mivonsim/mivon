@@ -3139,7 +3139,17 @@ FEAT-10: ⚠️ PARTIAL (ROUND 139) — crates/mivon-tools/src/cov_closure.rs:
          -p points.json -t tests.json [-o closure.json]` → analyze/critical/
          uncovered. 10 test. MASIH OPEN: adapter otomatis mcov/regression →
          points/tests (saat ini input JSON manual). (Critical)
-FEAT-11:[] Verification management dashboard — High
+FEAT-11: ✅ Verification management dashboard — ROUND 145
+         crates/mivon-tools/src/verif_dashboard.rs: agregasi artefak
+         verifikasi → satu HTML mandiri (CSS inline, tanpa aset/JS) atau
+         ringkasan teks. Sumber: coverage JSON (mcov --json: line/branch/
+         toggle/FSM/covergroup), RegressionDb (.mivon/regression.json: run,
+         pass rate terakhir, trend, flaky), BugTracker (.mivon/bugs.json:
+         total/open/fixed/wontfix + judul bug terbuka). Semua teks
+         di-escape (bug title berisi <script> tidak dieksekusi). Artefak
+         yang tidak ada → section kosong (bukan error); file rusak →
+         E0005. CLI `mivon mdashboard [--coverage f] [--regression f]
+         [--bugs f] [-o out.html] [--text]`.
 FEAT-12:[] License server for floating licenses — High
 FEAT-13:[] IP encryption (IEEE 1735) — Critical
 FEAT-14:[x] IP packaging (IP-XACT) — High
@@ -8687,6 +8697,55 @@ ada blok dump/checks.
      ✅ 3496 passed, 0 failed, 24 skipped.
    - Targeted `-E 'test(/tbgen/)'` → 17 passed (8 baru).
    - iverilog -g2012: OK untuk TB counter & TB pipe (parameter + clk_i).
+
+\\=======================================================================//
+
+═══ ROUND 145 — FEAT-11 verification management dashboard ═══
+
+Fitur baru `crates/mivon-tools/src/verif_dashboard.rs` (1 file = 1
+tanggung jawab: agregasi + render; sumber data tetap milik modul asalnya).
+
+Model:
+  - `CoverageSection::from_json_str` — baca `coverage.json` hasil
+    `mcov --json` (line/branch/covergroup percent, toggle signals+
+    transitions, FSM signals+states). `top_module` dibaca dari root
+    dokumen (bukan di dalam objek coverage).
+  - `RegressionSection::from_db` — jumlah run, pass rate & jumlah gagal
+    run terakhir, trend (RegressionTrend), daftar flaky, branch/commit.
+  - `BugSection::from_tracker` — total/open/fixed/wontfix + judul bug
+    yang masih terbuka.
+  - `Dashboard::collect` — file tidak ada → section None (dashboard tetap
+    bisa dirender); file ada tapi rusak → error (data korup tidak
+    disembunyikan).
+
+Render:
+  - `render_html` — satu file HTML (CSS inline, tanpa JS), kartu metrik
+    coverage (hijau ≥ 90%, merah di bawah), tabel regression + daftar
+    flaky, tabel bug + daftar open bugs. SEMUA teks dari artefak
+    di-escape (`& < > \" '`) — judul bug berisi `<script>` tidak
+    dieksekusi.
+  - `render_text` — ringkasan 3 baris untuk terminal.
+
+CLI `mivon mdashboard` (alias mdashboard): `--coverage`, `--regression`
+(default .mivon/regression.json), `--bugs` (default .mivon/bugs.json),
+`-o/--output`, `--text`. Output HTML membuat direktori induk bila perlu.
+Error format → E0005 (DataFormatError), I/O → E0004.
+
+Test baru (7): parse_coverage_json, malformed_coverage_is_error,
+regression_section_uses_latest_run, bug_section_counts_status,
+html_escapes_untrusted_text, collect_missing_files_yields_empty_sections,
+collect_reads_real_artifacts.
+
+E2E (/tmp): mregression record → mbugtrack add (judul berisi <script>)
+→ `mdashboard --coverage cov.json --text` →
+`coverage: line 90.0%, branch 75.0%, functional 75.0%` /
+`regression: 1 runs, latest 66.7%, 1 failed` / `bugs: 1 total, 1 open`;
+HTML berisi `fifo overflow &lt;script&gt;` (ter-escape) dan `90.0%`.
+
+📊 VERIFIKASI ROUND 145:
+   - cargo nextest run --workspace --features dev --no-fail-fast:
+     ✅ 3503 passed, 0 failed, 24 skipped.
+   - Targeted `-E 'test(/verif_dashboard/)'` → 7 passed.
 
 \\=======================================================================//
 

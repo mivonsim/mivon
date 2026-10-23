@@ -178,6 +178,44 @@ fn parse_tb_ports(spec: Option<&str>, what: &str) -> Result<Vec<(String, u32)>, 
     Ok(out)
 }
 
+pub(crate) fn dispatch_verif_dashboard(a: &crate::cli::MdashboardArgs) -> ! {
+    let result: Result<(), SimError> = (|| {
+        use mivon_api::tools::verif_dashboard::Dashboard;
+        let coverage = a.coverage.as_ref().map(std::path::PathBuf::from);
+        let dash = Dashboard::collect(
+            coverage.as_deref(),
+            std::path::Path::new(&a.regression),
+            std::path::Path::new(&a.bugs),
+        )
+        .map_err(|e| SimError::with_diag(DiagCode::DataFormatError, e))?;
+        if a.text {
+            print!("{}", dash.render_text());
+            return Ok(());
+        }
+        let html = dash.render_html();
+        if let Some(out) = &a.output {
+            if let Some(parent) = std::path::Path::new(out).parent() {
+                if !parent.as_os_str().is_empty() {
+                    std::fs::create_dir_all(parent).map_err(|e| {
+                        SimError::with_diag(
+                            DiagCode::IoError,
+                            format!("buat direktori {}: {}", parent.display(), e),
+                        )
+                    })?;
+                }
+            }
+            std::fs::write(out, &html).map_err(|e| {
+                SimError::with_diag(DiagCode::IoError, format!("{}: {}", out, e))
+            })?;
+            println!("Dashboard written to {}", out);
+        } else {
+            print!("{}", html);
+        }
+        Ok(())
+    })();
+    exit_tool(result);
+}
+
 pub(crate) fn dispatch_waiver(a: &crate::cli::MwaiverArgs) -> ! {
     let result: Result<(), SimError> = (|| {
         use mivon_api::tools::waiver::WaiverStore;

@@ -109,6 +109,9 @@ pub enum MivonCmd {
     /// mbugtrack — bug tracking integration (link test → bug)
     #[command(alias = "mbugtrack")]
     Bugtrack(MbugtrackArgs),
+    /// mdashboard — verification management dashboard (coverage + regression + bugs)
+    #[command(alias = "mdashboard")]
+    VerifDashboard(MdashboardArgs),
 }
 
 /// minspect — Mivon Inspect.
@@ -1324,6 +1327,26 @@ pub struct MtbgenArgs {
     /// Output ports: name=width (comma-separated)
     #[arg(long = "outputs")]
     pub outputs: Option<String>,
+}
+
+/// mdashboard — verification management dashboard.
+#[derive(clap::Args, Clone)]
+pub struct MdashboardArgs {
+    /// File coverage JSON (output mivon mcov --json)
+    #[arg(long = "coverage")]
+    pub coverage: Option<String>,
+    /// File regression database
+    #[arg(long = "regression", default_value = ".mivon/regression.json")]
+    pub regression: String,
+    /// File bug database
+    #[arg(long = "bugs", default_value = ".mivon/bugs.json")]
+    pub bugs: String,
+    /// Output HTML (default: stdout)
+    #[arg(short = 'o', long = "output")]
+    pub output: Option<String>,
+    /// Cetak ringkasan teks, bukan HTML
+    #[arg(long = "text")]
+    pub text: bool,
 }
 
 /// mwaiver — Waiver management.
