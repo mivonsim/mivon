@@ -3120,7 +3120,20 @@ DEBT-20:[x] No Debug/Deref implementations consistent across types
 FEAT-01:[] Design database server (persistent compile cache across
          projects and users) — Critical
 FEAT-02:[] Collaborative debug (multi-user debugging session) — High
-FEAT-03:[] Web-based simulation control dashboard — High
+FEAT-03: ✅ Web-based simulation control dashboard (ROUND 151) — modul
+         crates/mivon-tools/src/sim_dashboard/{mod,api,page}.rs di atas
+         SimServer (ENT-18) + RestServer (FEAT-04): GET / (HTML: form
+         submit, tabel sesi, tombol cancel, refresh tiap 2s), GET
+         /api/v1/sessions[?user=], POST /api/v1/sessions?user=&files=
+         &max_time= (201; 400 param invalid; 429 kuota), POST
+         /api/v1/cancel?id= (400/404/409), GET /api/v1/stats. CLI
+         `mivon mweb` (alias mweb; --addr/--print-html/--max-sessions).
+         Perbaikan pendukung: parse_query percent-decode ('+' → spasi,
+         form URLSearchParams), ApiResponse::created + status 201/400/
+         409/429, body error JSON di-escape, SimServer::submit ID atomik
+         (dua submit paralel tidak boleh ID sama), cancel mengeluarkan
+         antrean, queue_depth hanya menghitung Queued, SimServer::
+         list_all. 24 test baru. (High)
 FEAT-04:[x] REST/gRPC API for automation — Critical
 FEAT-05:[x] Python bindings (like cocotb integration) — High
 FEAT-06: ✅ Tcl scripting interface (ROUND 135) — interpreter Tcl 8.6 subset
@@ -8948,6 +8961,74 @@ mojibake karena `advance() as char`; jalur legacy benar.
    - cargo nextest run --workspace --features dev --no-fail-fast:
      ✅ 3521 passed, 0 failed, 24 skipped.
    - Targeted `-E 'test(/parser_fastlexer/)'` → 4 passed.
+
+\\=======================================================================//
+
+═══ ROUND 151 — FEAT-03: web dashboard kontrol simulasi ═══
+
+Sebelumnya hanya ada library RestServer (FEAT-04) dan SimServer (ENT-18)
+yang tidak terhubung: tidak ada satu pun halaman/endpoint yang bisa
+dipakai untuk mengendalikan sesi simulasi dari browser.
+
+Implementasi (3 file, satu tanggung jawab per file):
+  - sim_dashboard/mod.rs — `WebDashboard`: `new(config)`,
+    `from_server(Arc<SimServer>)`, `render_html()`,
+    `into_rest_server(addr)`, `serve(addr)`.
+  - sim_dashboard/api.rs — registrasi route + handler JSON. Parameter
+    divalidasi di boundary: user wajib (400), max_time harus > 0 (400),
+    submit ditolak kuota → 429, cancel id tak dikenal → 404, cancel
+    sesi terminal → 409. Daftar sesi diurutkan (created_at, id) agar
+    output deterministik walau HashMap.
+  - sim_dashboard/page.rs — HTML + CSS + JS. Tabel di-render server
+    (halaman tetap berguna tanpa JS) dan di-refresh klien lewat
+    /api/v1/sessions; `escape_html` dipakai untuk semua teks dinamis
+    (nama user, file, alasan Failed) — di body maupun atribut data-id.
+
+Perbaikan yang diperlukan agar dashboard benar (bukan sekadar wiring):
+  1. `parse_query` tidak melakukan percent-decoding. Form mengirim via
+     URLSearchParams sehingga koma jadi %2C dan spasi jadi '+' — tanpa
+     decode, "a.sv,b.sv" dianggap satu nama file. Kini decode %XX dan
+     '+' → spasi (input tidak valid dibiarkan apa adanya).
+  2. `ApiResponse::error` menyisipkan pesan mentah ke JSON — pesan kuota
+     berisi kutip/backslash bisa menghasilkan body tidak valid. Kini
+     lewat serde_json (di-escape) dan ada `ApiResponse::created` (201)
+     plus teks status 201/400/409/429.
+  3. `SimServer::submit` menghitung ID dari `sessions.len()` SETELAH
+     melepas lock — dua submit paralel bisa mendapat ID sama, sehingga
+     tombol Cancel bisa membatalkan sesi yang salah. ID kini dihitung di
+     dalam lock yang sama dengan insert (fungsi bebas `next_id(&sessions)`).
+  4. `cancel` tidak mengeluarkan sesi dari antrean → `queue_depth`
+     melaporkan angka hantu. Cancel kini `retain` antrean, dan
+     `queue_depth` hanya menghitung sesi yang masih Queued.
+  5. Ditambah `SimServer::list_all()` (termasuk completed/failed/
+     cancelled) — dashboard perlu riwayat, bukan hanya sesi aktif.
+
+CLI: `mivon mweb` (alias `mweb`) — `--addr` (default 127.0.0.1:8090),
+`--print-html` (cetak halaman lalu keluar, tanpa socket), `--max-sessions`.
+Smoke test socket nyata: GET / → 200 text/html, POST /api/v1/sessions →
+201 {"id":"sim_alice_1",...}, GET /api/v1/sessions → sesi + queue_depth,
+GET /api/v1/stats → hitungan per status.
+
+Test baru (24):
+  - dashboard (12): root HTML, 404 route tak dikenal, query string tidak
+    merusak routing, user wajib, max_time invalid (abc/0/-5), roundtrip
+    create+list (file & max_time tersimpan), filter per user, cancel
+    tak dikenal 404, cancel dua kali 409, kuota habis 429, stats per
+    status, body error JSON valid.
+  - page (5): form+tabel, baris sesi + badge + tombol cancel, escape
+    user/file/Failed (payload <script>/<img> tidak lolos), status
+    terminal tanpa tombol cancel, escape_html semua karakter khusus.
+  - api (2): split_files trim/buang kosong, urutan deterministik.
+  - sim_server (3): ID unik pada 8 thread × 4 submit, cancel sesi
+    queued mengosongkan antrean, list_all memuat sesi cancelled.
+  - rest_api (2): decode %2C/'+'/'%ZZ', decode UTF-8 (caf%C3%A9).
+
+📊 VERIFIKASI ROUND 151:
+   - cargo nextest run --workspace --features dev --no-fail-fast:
+     ✅ 3545 passed, 0 failed, 24 skipped.
+   - Targeted `-E 'test(/sim_dashboard|sim_server|rest_api/)'` → 36 passed.
+   - Smoke test HTTP nyata via `mivon mweb --addr 127.0.0.1:18091` +
+     curl (root/create/list/stats) → sesuai kontrak.
 
 \\=======================================================================//
 

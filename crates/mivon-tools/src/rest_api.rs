@@ -52,10 +52,30 @@ impl ApiResponse {
         }
     }
 
+    /// Respons HTML (dashboard).
+    pub fn html(body: &str) -> Self {
+        ApiResponse {
+            status: 200,
+            body: body.to_string(),
+            content_type: "text/html; charset=utf-8".to_string(),
+        }
+    }
+
+    /// 201 Created (submit sesi dashboard).
+    pub fn created(body: &str) -> Self {
+        ApiResponse {
+            status: 201,
+            body: body.to_string(),
+            content_type: "application/json".to_string(),
+        }
+    }
+
+    /// Error JSON — pesan di-escape agar body selalu JSON valid walau pesan
+    /// berisi kutip/backslash (mis. pesan kuota dari SimServer).
     pub fn error(status: u16, body: &str) -> Self {
         ApiResponse {
             status,
-            body: format!(r#"{{"error":"{}"}}"#, body),
+            body: serde_json::json!({ "error": body }).to_string(),
             content_type: "application/json".to_string(),
         }
     }
@@ -67,8 +87,12 @@ impl ApiResponse {
     pub fn to_http_response(&self) -> String {
         let status_text = match self.status {
             200 => "OK",
+            201 => "Created",
+            400 => "Bad Request",
             404 => "Not Found",
             405 => "Method Not Allowed",
+            409 => "Conflict",
+            429 => "Too Many Requests",
             500 => "Internal Server Error",
             _ => "Unknown",
         };
@@ -120,6 +144,19 @@ impl RestServer {
         self.routes.insert(key, Box::new(handler));
     }
 
+    /// Dispatch satu request tanpa socket (dipakai test & handler internal).
+    ///
+    /// Route dicocokkan TANPA query string; handler tetap menerima path penuh
+    /// agar bisa mem-parse parameter (`parse_query`).
+    pub fn handle_request(&self, method: &str, path: &str) -> String {
+        let route_path = path.split('?').next().unwrap_or(path);
+        let key = format!("{} {}", method, route_path);
+        match self.routes.get(&key) {
+            Some(handler) => handler(method, path),
+            None => ApiResponse::not_found().to_http_response(),
+        }
+    }
+
     /// Start the server (blocking).
     pub fn start(&self) -> Result<(), String> {
         let listener = TcpListener::bind(&self.addr).map_err(|e| format!("bind failed: {}", e))?;
@@ -158,12 +195,7 @@ impl RestServer {
             }
         }
 
-        let key = format!("{} {}", method, path);
-        let response = if let Some(handler) = self.routes.get(&key) {
-            handler(&method, &path)
-        } else {
-            ApiResponse::not_found().to_http_response()
-        };
+        let response = self.handle_request(&method, &path);
 
         stream
             .write_all(response.as_bytes())
@@ -172,17 +204,54 @@ impl RestServer {
     }
 }
 
-/// Parse query string from URL path.
+/// Parse query string from URL path (percent-decoding + '+' → spasi).
+///
+/// Form dashboard mengirim lewat URLSearchParams, sehingga koma pada daftar
+/// file datang sebagai %2C dan spasi sebagai '+'. Tanpa decode, nilai akan
+/// salah (mis. "a%2Cb.sv" dianggap satu nama file).
 pub fn parse_query(path: &str) -> HashMap<String, String> {
     let mut params = HashMap::new();
     if let Some(query) = path.split('?').nth(1) {
         for pair in query.split('&') {
             if let Some((key, val)) = pair.split_once('=') {
-                params.insert(key.to_string(), val.to_string());
+                params.insert(percent_decode(key), percent_decode(val));
             }
         }
     }
     params
+}
+
+/// Decode percent-encoding; urutan '%' yang tidak valid dibiarkan apa adanya.
+pub fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            b'%' if i + 2 < bytes.len() => {
+                let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).ok();
+                match hex.and_then(|h| u8::from_str_radix(h, 16).ok()) {
+                    Some(b) => {
+                        out.push(b);
+                        i += 3;
+                    }
+                    None => {
+                        out.push(bytes[i]);
+                        i += 1;
+                    }
+                }
+            }
+            b => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// Format JSON response.
@@ -223,6 +292,20 @@ mod tests {
         let q = parse_query("/api/v1/search?q=test&limit=10");
         assert_eq!(q.get("q").unwrap(), "test");
         assert_eq!(q.get("limit").unwrap(), "10");
+    }
+
+    #[test]
+    fn test_parse_query_decodes_percent_and_plus() {
+        let q = parse_query("/api/v1/sessions?user=alice+bob&files=a%2Cb.sv&x=%ZZ");
+        assert_eq!(q.get("user").unwrap(), "alice bob");
+        assert_eq!(q.get("files").unwrap(), "a,b.sv");
+        assert_eq!(q.get("x").unwrap(), "%ZZ");
+    }
+
+    #[test]
+    fn test_percent_decode_utf8() {
+        assert_eq!(percent_decode("caf%C3%A9"), "café");
+        assert_eq!(percent_decode("100%"), "100%");
     }
 
     #[test]

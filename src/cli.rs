@@ -115,6 +115,9 @@ pub enum MivonCmd {
     /// mlicense — floating license server (checkout/checkin/heartbeat)
     #[command(alias = "mlicense")]
     License(MlicenseArgs),
+    /// mweb — web dashboard kontrol simulasi (HTML + REST JSON)
+    #[command(alias = "mweb")]
+    WebDashboard(MwebArgs),
 }
 
 /// minspect — Mivon Inspect.
@@ -1350,6 +1353,20 @@ pub struct MdashboardArgs {
     /// Cetak ringkasan teks, bukan HTML
     #[arg(long = "text")]
     pub text: bool,
+}
+
+/// mweb — web dashboard kontrol simulasi.
+#[derive(clap::Args, Clone)]
+pub struct MwebArgs {
+    /// Alamat bind (host:port)
+    #[arg(long = "addr", default_value = "127.0.0.1:8090")]
+    pub addr: String,
+    /// Cetak HTML dashboard ke stdout lalu keluar (tanpa membuka socket)
+    #[arg(long = "print-html")]
+    pub print_html: bool,
+    /// Batas total sesi aktif (sisanya masuk antrean)
+    #[arg(long = "max-sessions", default_value_t = 32)]
+    pub max_sessions: usize,
 }
 
 /// mlicense — floating license server.

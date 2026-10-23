@@ -56,6 +56,7 @@ pub mod rest_api;
 pub mod sdc;
 pub mod sim;
 pub mod sim_farm;
+pub mod sim_dashboard;
 pub mod sim_server;
 pub mod sta_interface;
 pub mod synth;

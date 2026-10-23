@@ -501,3 +501,28 @@ pub(crate) fn dispatch_ipxact(a: &crate::cli::MipxactArgs) -> ! {
     })();
     exit_tool(result);
 }
+
+/// mweb — dashboard web kontrol simulasi (FEAT-03).
+///
+/// --print-html mencetak halaman (snapshot kosong) tanpa membuka socket —
+/// berguna untuk smoke test / pratinjau di CI. Mode default menjalankan
+/// listener blocking di alamat yang diberikan.
+pub(crate) fn dispatch_web_dashboard(a: &crate::cli::MwebArgs) -> ! {
+    let result: Result<(), SimError> = (|| {
+        use mivon_api::tools::sim_dashboard::WebDashboard;
+        use mivon_api::tools::sim_server::ServerConfig;
+        let cfg = ServerConfig {
+            max_total_sessions: a.max_sessions.max(1),
+            ..Default::default()
+        };
+        let dash = WebDashboard::new(cfg);
+        if a.print_html {
+            print!("{}", dash.render_html());
+            return Ok(());
+        }
+        println!("Mivon simulation dashboard: http://{}/", a.addr);
+        dash.serve(&a.addr)
+            .map_err(|e| SimError::with_diag(DiagCode::IoError, e))
+    })();
+    exit_tool(result);
+}
