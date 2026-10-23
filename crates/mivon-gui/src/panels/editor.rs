@@ -1054,19 +1054,22 @@ fn draw_minimap(ui: &mut egui::Ui, content: &str, file_diags: &[&DiagEntry]) -> 
     let total = content.lines().count().max(1);
     let line_h = rect.height() / total as f32;
 
-    // Severity terparah per baris (Error > Warning > Info)
+    // Severity terparah per baris — peringkat dari tipe pusat (mivon-diag):
+    // Fatal/Bug/Error > Warning > sisanya (Note/Info/Help/Trace/Debug).
     let mut sev: std::collections::HashMap<usize, DiagLevel> = std::collections::HashMap::new();
     for d in file_diags {
         if d.line == 0 {
             continue;
         }
-        let cur = sev.get(&d.line).copied().unwrap_or(DiagLevel::Info);
-        // Severity terparah menang (Error > Warning > Info) — match ini
-        // mencakup semua 3×3 kombinasi tanpa arm tak terjangkau.
-        let new = match (cur, d.level) {
-            (DiagLevel::Error, _) | (_, DiagLevel::Error) => DiagLevel::Error,
-            (DiagLevel::Warning, _) | (_, DiagLevel::Warning) => DiagLevel::Warning,
-            _ => DiagLevel::Info,
+        let rank = |l: DiagLevel| match l {
+            DiagLevel::Fatal | DiagLevel::Bug | DiagLevel::Error => 2,
+            DiagLevel::Warning => 1,
+            _ => 0,
+        };
+        let cur = sev.get(&d.line).copied();
+        let new = match cur {
+            Some(prev) if rank(prev) >= rank(d.level) => prev,
+            _ => d.level,
         };
         sev.insert(d.line, new);
     }
@@ -1107,10 +1110,11 @@ fn draw_minimap(ui: &mut egui::Ui, content: &str, file_diags: &[&DiagEntry]) -> 
                 .iter()
                 .filter(|d| d.line == line_no)
                 .map(|d| {
+                    // Icon per level tipe pusat: Fatal/Bug/Error → ✖.
                     let icon = match d.level {
-                        DiagLevel::Error => "✖",
+                        DiagLevel::Error | DiagLevel::Bug | DiagLevel::Fatal => "✖",
                         DiagLevel::Warning => "⚠",
-                        DiagLevel::Info => "ℹ",
+                        _ => "ℹ",
                     };
                     (d.level, format!("{} L{}: {}", icon, d.line, d.message))
                 })
@@ -1119,9 +1123,9 @@ fn draw_minimap(ui: &mut egui::Ui, content: &str, file_diags: &[&DiagEntry]) -> 
                 resp.clone().on_hover_ui(|ui| {
                     for (level, m) in msgs {
                         let color = match level {
-                            DiagLevel::Error => red,
+                            DiagLevel::Error | DiagLevel::Bug | DiagLevel::Fatal => red,
                             DiagLevel::Warning => yellow,
-                            DiagLevel::Info => egui::Color32::from_rgb(59, 130, 246),
+                            _ => egui::Color32::from_rgb(59, 130, 246),
                         };
                         ui.label(egui::RichText::new(m).monospace().size(11.0).color(color));
                     }

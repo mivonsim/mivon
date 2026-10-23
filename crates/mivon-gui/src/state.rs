@@ -106,13 +106,11 @@ pub struct OpenFile {
     pub completion_end: usize,
 }
 
-/// Level diagnostic.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DiagLevel {
-    Error,
-    Warning,
-    Info,
-}
+/// Level diagnostic — **bukan definisi sendiri**: `pub use` tipe pusat dari
+/// `mivon-diag` (aturan "1 diag pusat": GUI hanya consumer; level tunggal
+/// `Fatal/Bug/Error/Warning/Note/Info/Help/Trace/Debug` dipakai seluruh
+/// sistem — MICD, core, GUI).
+pub use mivon_core::diagnostics::DiagLevel;
 
 /// Jenis perbaikan otomatis (Quick Fix) yang bisa diterapkan pada satu
 /// diagnostic di Problems tab.
@@ -143,6 +141,28 @@ pub struct DiagEntry {
     pub level: DiagLevel,
     /// Aksi perbaikan otomatis (None = tidak ada Quick Fix).
     pub fix: Option<QuickFix>,
+}
+
+impl DiagEntry {
+    /// Baris Problems dari `Diagnostic` pusat — satu diagnostic = satu baris.
+    /// Lokasi memakai `source_snippet` (file:line) bila ada; tanpa snippet →
+    /// baris global (file kosong, line 0). QuickFix tidak inferrable → None.
+    ///
+    /// GUI TIDAK memetakan ulang enum level — `d.level` tipe pusat langsung.
+    pub fn from_diagnostic(d: &mivon_core::diagnostics::Diagnostic) -> Self {
+        let (file, line) = d
+            .source_snippet
+            .as_ref()
+            .map(|s| (s.file.clone(), s.line))
+            .unwrap_or_default();
+        DiagEntry {
+            file,
+            line,
+            message: d.message.to_string(),
+            level: d.level,
+            fix: None,
+        }
+    }
 }
 
 /// Pratinjau deklarasi untuk Peek Definition (Alt+Click di editor) — sesuai

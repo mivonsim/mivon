@@ -123,9 +123,13 @@ fn problems_tab(ui: &mut egui::Ui, state: &mut GuiState) {
     let mut fix_idx: Option<usize> = None;
     for (i, d) in all.iter().enumerate() {
         let (icon, color) = match d.level {
-            DiagLevel::Error => ("✖", egui::Color32::from_rgb(239, 68, 68)),
+            // Fatal/Bug/Error → icon error; lainnya per level UI GUI.
+            DiagLevel::Error | DiagLevel::Bug | DiagLevel::Fatal => {
+                ("✖", egui::Color32::from_rgb(239, 68, 68))
+            }
             DiagLevel::Warning => ("⚠", egui::Color32::from_rgb(234, 179, 8)),
-            DiagLevel::Info => ("ℹ", egui::Color32::from_rgb(59, 130, 246)),
+            // Note/Info/Help/Trace/Debug → tampilan info.
+            _ => ("ℹ", egui::Color32::from_rgb(59, 130, 246)),
         };
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new(icon).color(color));

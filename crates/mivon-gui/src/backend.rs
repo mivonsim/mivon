@@ -149,28 +149,12 @@ pub fn spawn_compile(tx: Sender<GuiEvent>, paths: Vec<PathBuf>, project_root: Op
 /// Ubah `SimError` menjadi daftar `DiagEntry` (dengan `file`/`line` bila tersedia
 /// dari source snippet). Dipakai supaya Mini Map editor & Problems tab bisa
 /// menunjuk baris yang salah, bukan cuma error global.
+///
+/// Konversi lewat `DiagEntry::from_diagnostic` — mode (file, line, message,
+/// level) pemetaan TIDAK diduplikasi di sini; level diambil dari Diagnostic
+/// pusat, bukan di-hardcode `Error`.
 fn simerr_to_diags(err: &SimError) -> Vec<DiagEntry> {
-    let diag = err.to_diagnostic();
-    let mut out = Vec::new();
-    if let Some(snip) = &diag.source_snippet {
-        out.push(DiagEntry {
-            file: snip.file.clone(),
-            line: snip.line,
-            message: diag.message.to_string(),
-            level: DiagLevel::Error,
-            fix: None,
-        });
-    }
-    if out.is_empty() {
-        out.push(DiagEntry {
-            file: String::new(),
-            line: 0,
-            message: diag.message.to_string(),
-            level: DiagLevel::Error,
-            fix: None,
-        });
-    }
-    out
+    vec![DiagEntry::from_diagnostic(&err.to_diagnostic())]
 }
 
 /// Compile + elaborate semua file. Mengembalikan info + design ter-elaborasi,
