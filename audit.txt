@@ -3106,7 +3106,10 @@ FEAT-02:[] Collaborative debug (multi-user debugging session) — High
 FEAT-03:[] Web-based simulation control dashboard — High
 FEAT-04:[x] REST/gRPC API for automation — Critical
 FEAT-05:[x] Python bindings (like cocotb integration) — High
-FEAT-06:[] Tcl scripting interface — High
+FEAT-06: ✅ Tcl scripting interface (ROUND 135) — interpreter Tcl 8.6 subset
+         (substitusi $var/[cmd], if/while/for/foreach/proc, list/string/info,
+         catch/source) + bridge `mivon compile|simulate|get|time|signals|reset`;
+         CLI `mivon tcl <script.tcl>` (alias mtcl). 17 test. (High)
 FEAT-07:[] Regression management system with pass/fail analytics — Critical
 FEAT-08:[] Bug tracking integration — Medium
 FEAT-09:[] Requirements traceability — Medium
@@ -8215,4 +8218,32 @@ WAJIB DI UPDATE TEXT SETELAH SELESAI
    - cargo nextest run --workspace --features dev --no-fail-fast:
      ✅ 3379 passed, 0 failed, 24 skipped (kanari fuzz juga hijau
      setelah user regenerate via 0e0a705 lanjutan).
+\\=======================================================================//
+
+═══ ROUND 135 — FEAT-06 Tcl scripting interface ═══
+📊 VERIFIKASI ROUND 135:
+   - Audit item: "FEAT-06:[] Tcl scripting interface — High" → ✅ SELESAI.
+   - Implementasi (3 file baru di crates/mivon-tools/src/tcl/ + wiring CLI):
+     * mod.rs — interpreter Tcl 8.6 subset: substitusi $var/${var}/[cmd],
+       escape backslash, word braced {..} (tanpa substitusi) & quoted "..";
+       perintah set/puts/incr/append/lappend/unset/expr/if/while/for/
+       foreach/proc/return/break/continue/list/lindex/llength/lrange/
+       string/info/catch/error/eval/source/exit. Scope variabel proc lokal
+       (save-restore), guard MAX_LOOP 10 juta iterasi + kedalaman call 64,
+       argv/argc di-seed dari CLI.
+     * expr.rs — evaluator ekspresi: integer des/hex/bin, aritmetika
+       + - * / %, perbandingan == != < <= > >=, eq/ne string, logika
+       && || !, bitwise & | ^ << >>, tanda kurung, unary -/!.
+     * bridge.rs — bridge simulasi: mivon compile ?-top|-I|-D? file...,
+       mivon simulate ?-T N?, mivon get ?-dec|-hex|-bin? SINYAL,
+       mivon time, mivon signals, mivon reset (open_elaborated +
+       SimulationEngine; lookup sinyal exact lalu suffix .nama).
+   - CLI: subcommand `mivon tcl <script.tcl> [args...]` (alias mtcl) →
+     src/dispatch/tcl.rs (adaptor tipis; exit code skrip diteruskan).
+   - Tests: 17 (10 interpreter: substitusi/puts, if-elseif-else, while+for,
+     proc rekursif, list roundtrip, foreach, catch, unknown command,
+     break/continue, argv; 4 expr; 3 bridge: e2e compile→simulate→get
+     (8'd5 + 3 = 8, bin 00001000), get tanpa desain = error, reset).
+   - cargo nextest run --workspace --features dev --no-fail-fast:
+     ✅ 3432 passed, 0 failed, 24 skipped.
 \\=======================================================================//

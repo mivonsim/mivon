@@ -22,8 +22,8 @@ use dispatch::{
     dispatch_fmt,
     dispatch_gen, dispatch_inspect, dispatch_ipxact, dispatch_lint, dispatch_memcheck,
     dispatch_prof, dispatch_project, dispatch_regression, dispatch_sdc, dispatch_sim,
-    dispatch_synth, dispatch_tbgen, dispatch_update, dispatch_vault, dispatch_waiver,
-    dispatch_wave,
+    dispatch_synth, dispatch_tbgen, dispatch_tcl, dispatch_update, dispatch_vault,
+    dispatch_waiver, dispatch_wave,
 };
 use std::process;
 
@@ -492,6 +492,7 @@ fn real_main() {
             crate::cli::MivonCmd::Regression(a) => dispatch_regression(a),
             crate::cli::MivonCmd::Eco(a) => dispatch_eco(a),
             crate::cli::MivonCmd::CovClosure(a) => dispatch_cov_closure(a),
+            crate::cli::MivonCmd::Tcl(a) => dispatch_tcl(a),
         }
     }
 

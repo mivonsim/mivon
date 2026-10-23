@@ -61,6 +61,7 @@ pub mod sta_interface;
 pub mod synth;
 pub mod synth_interface;
 pub mod tbgen;
+pub mod tcl;
 pub mod testdb;
 pub mod update;
 pub mod vault;

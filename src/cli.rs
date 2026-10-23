@@ -100,6 +100,9 @@ pub enum MivonCmd {
     /// mcov-closure — coverage closure analytics
     #[command(alias = "mcov-closure")]
     CovClosure(McovClosureArgs),
+    /// mtcl — Tcl scripting interface (otomasi simulasi)
+    #[command(alias = "mtcl")]
+    Tcl(MtclArgs),
 }
 
 /// minspect — Mivon Inspect.
@@ -1718,4 +1721,14 @@ pub enum McovClosureCmd {
         #[arg(short = 'i', long = "input")]
         input: String,
     },
+}
+
+/// mtcl — Tcl scripting interface (FEAT-06).
+#[derive(clap::Args, Clone)]
+pub struct MtclArgs {
+    /// File skrip Tcl yang dijalankan
+    pub script: String,
+    /// Argumen tambahan untuk skrip (tersedia sebagai $argv/$argc)
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    pub args: Vec<String>,
 }

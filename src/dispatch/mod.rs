@@ -18,11 +18,13 @@
 mod emu;
 mod extra;
 mod manage;
+mod tcl;
 mod tools;
 
 pub(crate) use emu::*;
 pub(crate) use extra::*;
 pub(crate) use manage::*;
+pub(crate) use tcl::*;
 pub(crate) use tools::*;
 
 use mivon_core::error::SimError;
