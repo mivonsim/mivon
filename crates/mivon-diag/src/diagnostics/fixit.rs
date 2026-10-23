@@ -1,5 +1,25 @@
 //! Fix-it hint — representasi edit kode konkret yang bisa diterapkan otomatis.
 
+use serde::{Deserialize, Serialize};
+
+/// Fix-it: saran perbaikan otomatis (rentang + teks pengganti) — tipe rich
+/// entry (Kritik-12) untuk struktur terserialisasi (MICD `FileDiags`); file
+/// memegang `FileDiags::path`, jadi rentang TIDAK membawa file. Pindah dari
+/// micd 2026-10 (konsolidasi diag — satu sumber tipe); wire format tetap.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FixIt {
+    pub range: super::span::TextSpan,
+    pub replacement: String,
+    pub description: String,
+}
+
+/// Code action: aksi bernama yang ditawarkan IDE (bisa memuat edit).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CodeAction {
+    pub title: String,
+    pub edit: Option<FixIt>,
+}
+
 /// Fix-it hint — representasi edit kode konkret yang bisa diterapkan otomatis.
 #[derive(Debug, Clone)]
 pub struct FixItHint {

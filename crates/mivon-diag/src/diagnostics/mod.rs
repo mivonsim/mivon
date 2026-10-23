@@ -5,6 +5,7 @@
 pub mod codes;
 pub mod diagnostic;
 pub mod emitter;
+pub mod entry;
 pub mod fixit;
 pub mod global;
 pub mod level;
@@ -18,13 +19,14 @@ pub mod suggest;
 
 pub use codes::{all_codes, lookup_code};
 pub use diagnostic::DiagCode;
+pub use entry::{DiagEntry, FileDiags};
 pub use level::DiagLevel;
-pub use fixit::FixItHint;
+pub use fixit::{CodeAction, FixIt, FixItHint};
 pub use record::Diagnostic;
 pub use snippet::SourceSnippet;
 pub use runtime::RuntimeContext;
 pub use sink::DiagSink;
-pub use span::{DiagNote, DiagSpan};
+pub use span::{DiagNote, DiagSpan, RelatedInfo, TextSpan};
 pub use emitter::{format_diagnostic, TerminalEmitter};
 pub use global::{diag_global, GlobalDiagnosticEngine};
 pub use recovery::ParserRecovery;
