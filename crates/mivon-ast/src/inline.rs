@@ -1521,6 +1521,8 @@ fn inline_funcs_in_stmt_inner(
             array_var,
             index_vars,
             stmts,
+            line,
+            col,
         } => {
             let stmts = stmts
                 .into_iter()
@@ -1532,6 +1534,8 @@ fn inline_funcs_in_stmt_inner(
                 array_var,
                 index_vars,
                 stmts,
+                line,
+                col,
             }
         }
         Stmt::Break => Stmt::Break,
@@ -2235,10 +2239,14 @@ fn convert_returns_to_assign(stmt: Stmt, ret: Symbol) -> Stmt {
             array_var,
             index_vars,
             stmts,
+            line,
+            col,
         } => Stmt::ForeachLoop {
             array_var,
             index_vars,
             stmts: stmts.into_iter().map(conv).collect(),
+            line,
+            col,
         },
         Stmt::Delay { delay, stmt } => Stmt::Delay {
             delay,

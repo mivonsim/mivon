@@ -1702,10 +1702,14 @@ fn scope_rename_stmt(stmt: &Stmt, map: &HashMap<Symbol, Symbol>) -> Stmt {
             array_var,
             index_vars,
             stmts,
+            line,
+            col,
         } => Stmt::ForeachLoop {
             array_var: *array_var,
             index_vars: index_vars.clone(),
             stmts: scope_rename_stmts(stmts, map),
+            line: *line,
+            col: *col,
         },
         Stmt::NamedBlock { name, stmts, decls } => Stmt::NamedBlock {
             name: *name,

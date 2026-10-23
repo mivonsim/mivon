@@ -1930,6 +1930,7 @@ impl SimulationEngine {
                 array_var,
                 index_vars,
                 stmts,
+                ..
             } => {
                 let count = self.get_foreach_count(array_var.as_str());
                 let iv = index_vars

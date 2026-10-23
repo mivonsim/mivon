@@ -484,6 +484,7 @@ pub(crate) fn scan_stmt_reads(
                 array_var,
                 index_vars,
                 stmts,
+                ..
             } => {
                 reads.insert(*array_var);
                 for iv in index_vars {

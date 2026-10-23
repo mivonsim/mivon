@@ -542,6 +542,8 @@ pub(crate) fn rename_in_stmt(stmt: &Stmt, rename_map: &HashMap<Symbol, Symbol>) 
             array_var,
             index_vars,
             stmts,
+            line,
+            col,
         } => Stmt::ForeachLoop {
             // F44: array formal task/function (`ref queue d_in [$]`) — nama
             // array di-rename saat inline agar foreach tetap ter-resolve.
@@ -551,6 +553,8 @@ pub(crate) fn rename_in_stmt(stmt: &Stmt, rename_map: &HashMap<Symbol, Symbol>) 
                 .into_iter()
                 .map(|s| rename_in_stmt(&s, rename_map))
                 .collect(),
+            line,
+            col,
         },
         Stmt::Break => Stmt::Break,
         Stmt::Continue => Stmt::Continue,

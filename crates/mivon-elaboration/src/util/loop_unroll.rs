@@ -679,10 +679,14 @@ pub fn substitute_loop_var_in_stmt(stmt: &Stmt, var_name: &str, value: i64) -> S
             array_var,
             index_vars,
             stmts,
+            line,
+            col,
         } => Stmt::ForeachLoop {
             array_var: *array_var,
             index_vars: index_vars.clone(),
             stmts: substitute_loop_var_in_stmts(stmts, var_name, value),
+            line: *line,
+            col: *col,
         },
         Stmt::NamedBlock { name, stmts, decls } => Stmt::NamedBlock {
             name: *name,

@@ -2373,6 +2373,9 @@ impl Parser {
     }
 
     pub(crate) fn parse_foreach_stmt(&mut self) -> Result<Stmt, SimError> {
+        // Posisi keyword `foreach` (1-based) — diagnostic elaborator.
+        let fline = self.peek_line();
+        let fcol = self.peek_col();
         self.advance();
         self.expect(Token::LParen)?;
         let mut array_var = String::new();
@@ -2451,6 +2454,8 @@ impl Parser {
                             array_var: Symbol::intern(&array_var),
                             index_vars,
                             stmts,
+                            line: fline,
+                            col: fcol,
                         });
                     }
                     // Path index group: `xbar_hosts[i]` — salin teks `[...]`.
@@ -2487,6 +2492,8 @@ impl Parser {
             array_var: Symbol::intern(&array_var),
             index_vars: vec![],
             stmts,
+            line: fline,
+            col: fcol,
         })
     }
 

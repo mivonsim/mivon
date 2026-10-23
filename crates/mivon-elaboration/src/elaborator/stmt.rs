@@ -2082,24 +2082,27 @@ impl Elaborator {
                 array_var,
                 index_vars,
                 stmts,
+                line,
+                col,
             } => {
                 // F44: array foreach tak ter-resolve (queue port task yang
                 // tidak di-rename saat inline, array milik UVM/class, dll) —
                 // degrade warning + skip body, bukan hard error.
                 let Some(sig_id) = signal_map.get(array_var) else {
-                    let (l, c) = (0, 0);
                     self.elab_warn_at(
                         DiagCode::NotImplemented,
                         format!("array '{}' not found for foreach — loop skipped", array_var),
-                        l,
-                        c,
+                        *line,
+                        *col,
                     );
                     return Ok(IrStmt::Null);
                 };
                 let sig_info = signals.get(*sig_id).ok_or_else(|| {
-                    self.elab_diag(
+                    self.elab_diag_at(
                         DiagCode::ModuleNotFound,
                         format!("signal info not found for '{}'", array_var),
+                        *line,
+                        *col,
                     )
                 })?;
                 if sig_info.is_dynamic || sig_info.is_queue {

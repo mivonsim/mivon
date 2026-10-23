@@ -1677,6 +1677,7 @@ fn eval_stmt(
             array_var,
             index_vars,
             stmts,
+            ..
         } => {
             let Some(arr) = arrays.get(array_var).cloned() else {
                 return Ok(None);

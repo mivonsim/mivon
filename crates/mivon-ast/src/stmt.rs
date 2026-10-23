@@ -166,6 +166,9 @@ pub enum Stmt {
         array_var: Symbol,
         index_vars: Vec<Symbol>,
         stmts: Vec<Stmt>,
+        /// Posisi keyword `foreach` (1-based) — diagnostic elaborator.
+        line: usize,
+        col: usize,
     },
     // Unique/Priority case qualifiers. `kind` = jenis case yang
     // di-qualify (`case`/`casex`/`casez`) — qualifier & kind ortogonal
