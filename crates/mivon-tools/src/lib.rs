@@ -79,6 +79,7 @@ pub use render::{bullet, expr_to_string, footer, human_bytes, kv, section};
 /// Bridge konversi tipe diagnostik paralel (mv, micd, ...) → `Diagnostic` core
 /// agar seluruh jalur error dirender lewat renderer tunggal `format_diagnostic`.
 pub mod bridge;
+pub mod bugtrack;
 pub use bridge::{mv_error_to_diagnostic, mv_warning_to_diagnostic};
 
 use std::path::{Path, PathBuf};

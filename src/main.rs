@@ -17,7 +17,8 @@ use clap::Parser as ClapParser;
 use cli::Cli;
 use run_legacy::run;
 use dispatch::{
-    dispatch_batch, dispatch_bench, dispatch_check, dispatch_cov, dispatch_cov_closure,
+    dispatch_batch, dispatch_bench, dispatch_bugtrack, dispatch_check, dispatch_cov,
+    dispatch_cov_closure,
     dispatch_design_repo, dispatch_eco, dispatch_elab, dispatch_emu, dispatch_equiv_check,
     dispatch_fmt,
     dispatch_gen, dispatch_inspect, dispatch_ipxact, dispatch_lint, dispatch_memcheck,
@@ -494,6 +495,7 @@ fn real_main() {
             crate::cli::MivonCmd::CovClosure(a) => dispatch_cov_closure(a),
             crate::cli::MivonCmd::Tcl(a) => dispatch_tcl(a),
             crate::cli::MivonCmd::Requirements(a) => dispatch_requirements(a),
+            crate::cli::MivonCmd::Bugtrack(a) => dispatch_bugtrack(a),
         }
     }
 
@@ -697,6 +699,33 @@ mod tests {
                 assert_eq!(format, crate::cli::RequirementsFormat::Csv);
             }
             _ => panic!("bukan Requirements::Report"),
+        }
+    }
+
+    /// FEAT-08: wiring CLI bug tracking.
+    #[test]
+    fn bugtrack_subcommand_parses() {
+        use clap::Parser;
+        let cli = crate::cli::Cli::try_parse_from([
+            "mivon",
+            "mbugtrack",
+            "link",
+            "--id",
+            "BUG-1",
+            "--test",
+            "test_counter",
+        ])
+        .expect("mbugtrack link harus parse");
+        match cli.cmd {
+            Some(crate::cli::MivonCmd::Bugtrack(crate::cli::MbugtrackArgs {
+                db,
+                cmd: crate::cli::MbugtrackCmd::Link { id, test },
+            })) => {
+                assert_eq!(db, ".mivon/bugs.json");
+                assert_eq!(id, "BUG-1");
+                assert_eq!(test, "test_counter");
+            }
+            _ => panic!("bukan Bugtrack::Link"),
         }
     }
 

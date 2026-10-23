@@ -106,6 +106,9 @@ pub enum MivonCmd {
     /// mrequirements — requirements traceability (requirement → test → status)
     #[command(alias = "mrequirements")]
     Requirements(MrequirementsArgs),
+    /// mbugtrack — bug tracking integration (link test → bug)
+    #[command(alias = "mbugtrack")]
+    Bugtrack(MbugtrackArgs),
 }
 
 /// minspect — Mivon Inspect.
@@ -1723,6 +1726,55 @@ pub enum McovClosureCmd {
         /// Coverage data file (JSON)
         #[arg(short = 'i', long = "input")]
         input: String,
+    },
+}
+
+/// mbugtrack — bug tracking integration (FEAT-08).
+#[derive(clap::Args, Clone)]
+pub struct MbugtrackArgs {
+    /// Path database bug (JSON)
+    #[arg(long = "db", default_value = ".mivon/bugs.json")]
+    pub db: String,
+    #[command(subcommand)]
+    pub cmd: MbugtrackCmd,
+}
+
+/// Subcommand mbugtrack.
+#[derive(Subcommand, Clone)]
+pub enum MbugtrackCmd {
+    /// Tambah bug baru
+    Add {
+        /// ID bug (unik)
+        #[arg(long)]
+        id: String,
+        /// Judul bug
+        #[arg(long)]
+        title: String,
+    },
+    /// Tautkan test ke bug
+    Link {
+        /// ID bug
+        #[arg(long)]
+        id: String,
+        /// Nama test
+        #[arg(long)]
+        test: String,
+    },
+    /// Tutup bug (status Fixed)
+    Close {
+        /// ID bug
+        #[arg(long)]
+        id: String,
+    },
+    /// Daftar semua bug
+    List,
+    /// Ringkasan jumlah bug
+    Summary,
+    /// Cek apakah test punya bug terbuka (exit 0 = ada)
+    Check {
+        /// Nama test
+        #[arg(long)]
+        test: String,
     },
 }
 

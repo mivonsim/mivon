@@ -488,3 +488,64 @@ pub(crate) fn dispatch_requirements(a: &crate::cli::MrequirementsArgs) -> ! {
     })();
     exit_tool(result);
 }
+
+pub(crate) fn dispatch_bugtrack(a: &crate::cli::MbugtrackArgs) -> ! {
+    let result: Result<(), SimError> = (|| {
+        use mivon_api::tools::bugtrack::{BugStatus, BugTracker};
+        use std::path::Path;
+        let path = Path::new(&a.db);
+        let mut tracker = if path.exists() {
+            BugTracker::load(path)
+                .map_err(|e| SimError::with_diag(DiagCode::DataFormatError, e))?
+        } else {
+            BugTracker::new()
+        };
+        let model_err = |e: String| SimError::with_diag(DiagCode::InvalidSyntax, e);
+        match &a.cmd {
+            crate::cli::MbugtrackCmd::Add { id, title } => {
+                tracker.add(id, title).map_err(model_err)?;
+                tracker
+                    .save(path)
+                    .map_err(|e| SimError::with_diag(DiagCode::IoError, e))?;
+                println!("Added bug {}", id);
+            }
+            crate::cli::MbugtrackCmd::Link { id, test } => {
+                tracker.link(id, test).map_err(model_err)?;
+                tracker
+                    .save(path)
+                    .map_err(|e| SimError::with_diag(DiagCode::IoError, e))?;
+                println!("Linked {} -> {}", id, test);
+            }
+            crate::cli::MbugtrackCmd::Close { id } => {
+                tracker.set_status(id, BugStatus::Fixed).map_err(model_err)?;
+                tracker
+                    .save(path)
+                    .map_err(|e| SimError::with_diag(DiagCode::IoError, e))?;
+                println!("Closed {}", id);
+            }
+            crate::cli::MbugtrackCmd::List => {
+                if tracker.bugs.is_empty() {
+                    println!("No bugs tracked");
+                }
+                for bug in &tracker.bugs {
+                    let tests = if bug.tests.is_empty() {
+                        "-".to_string()
+                    } else {
+                        bug.tests.join(",")
+                    };
+                    println!("{} [{}] {} ({})", bug.id, bug.status, bug.title, tests);
+                }
+            }
+            crate::cli::MbugtrackCmd::Summary => println!("{}", tracker.summary()),
+            crate::cli::MbugtrackCmd::Check { test } => {
+                if tracker.has_open_bug(test) {
+                    println!("open bug linked to {}", test);
+                } else {
+                    println!("no open bug for {}", test);
+                }
+            }
+        }
+        Ok(())
+    })();
+    exit_tool(result);
+}

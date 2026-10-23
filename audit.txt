@@ -3115,7 +3115,12 @@ FEAT-07: ✅ Regression management (ROUND 137) — RegressionDb (record run,
          cap 100 run/50 history) + CLI `mivon regression record|summary|
          flaky|trend` (alias mregression) + DB `.mivon/regression.json`.
          Fix: save() membuat direktori induk. 9 test. (Critical)
-FEAT-08:[] Bug tracking integration — Medium
+FEAT-08: ✅ Bug tracking integration (ROUND 138) — crates/mivon-tools/src/
+         bugtrack.rs: BugTracker JSON (.mivon/bugs.json) — add (id unik),
+         link test↔bug (idempoten), close, bugs_for_test, has_open_bug
+         (gate CI: kegagalan yang sudah punya bug terbuka bukan regresi
+         baru), summary. CLI `mivon bugtrack add|link|close|list|summary|
+         check` (alias mbugtrack, --db override). 6 test. (Medium)
 FEAT-09: ✅ Requirements traceability (ROUND 136) — modul requirements
          (CSV mapping requirement→test + JSON hasil test → report CSV/JSON
          + summary) kini ter-wire CLI: `mivon requirements report|summary`
@@ -8351,4 +8356,24 @@ WAJIB DI UPDATE TEXT SETELAH SELESAI
      DataFormatError (bukan IoError).
    - cargo nextest run --workspace --features dev --no-fail-fast:
      ✅ 3461 passed, 0 failed, 24 skipped.
+\\=======================================================================//
+
+═══ ROUND 138 — FEAT-08 bug tracking integration ═══
+📊 VERIFIKASI ROUND 138:
+   - Audit item: "FEAT-08:[] Bug tracking integration — Medium" → ✅ SELESAI.
+   - Implementasi baru: crates/mivon-tools/src/bugtrack.rs (model Bug/
+     BugStatus/BugTracker + persistensi JSON): add id unik, link test
+     idempoten, set_status, bugs_for_test, has_open_bug, open_count,
+     summary, save (create_dir_all) / load.
+   - CLI: `mivon bugtrack add|link|close|list|summary|check` (alias
+     mbugtrack) dengan --db (default .mivon/bugs.json) →
+     src/dispatch/manage.rs::dispatch_bugtrack.
+   - Kegunaan gate: has_open_bug(test) membedakan kegagalan yang sudah
+     dilaporkan dari regresi baru (dipakai alur CI).
+   - E2E diverifikasi: add BUG-1 → link test_counter → check (open) →
+     close → check (no open) → summary "1 total, 0 open, 1 fixed".
+   - Tests: 5 modul (add/link idempoten, duplikat id, close membuka gate,
+     save/load nested, link bug tak dikenal) + 1 parse CLI.
+   - cargo nextest run --workspace --features dev --no-fail-fast:
+     ✅ 3467 passed, 0 failed, 24 skipped.
 \\=======================================================================//
