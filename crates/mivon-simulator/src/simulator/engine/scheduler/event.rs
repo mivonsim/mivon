@@ -1033,6 +1033,7 @@ impl SimulationEngine {
         }
 
         // ── Phase 2c: Sequential — evaluate clock/reset/iff per candidate ──
+        let mut seq_batch: Vec<usize> = Vec::new();
         for (pid, _clock, reset, iff, clock_trigger) in seq_candidates {
             // LANG-27: guard `iff (cond)` — evaluate with &mut self
             let trigger = clock_trigger
@@ -1081,12 +1082,100 @@ impl SimulationEngine {
                     self.evaluate_clock_domain(&domain)?;
                     continue;
                 }
+                // Par-02 tahap 1: kandidat batch paralel — whitelist ketat
+                // (`is_sequential_body_batch_safe`) karena evaluator paralel
+                // melewatkan stmt tak-dukung secara senyap (arm default
+                // parallel.rs: Force/Wait/NamedBlock/dst di-skip tanpa error).
+                if self.use_dag_parallel && self.process_body_arcs.contains_key(&pid) {
+                    let batch_safe = self.process_body_arcs.get(&pid).is_some_and(|b| {
+                        crate::scheduler::sim_dag::is_sequential_body_batch_safe(b.as_slice())
+                    });
+                    if batch_safe {
+                        seq_batch.push(pid);
+                        continue;
+                    }
+                }
                 // Clone body per-pid (only triggered, not all 176K)
                 let body = match &self.design.top.processes[pid] {
                     Process::Sequential { body, .. } => body.clone(),
                     _ => continue,
                 };
                 self.evaluate_stmt_block(&body)?;
+            }
+        }
+        // Par-02 tahap 1: batch FF bebas-konflik dieval paralel (snapshot
+        // pre-edge; writes di-schedule sebagai NBA pending — commit tetap
+        // di NBA region, identik jalur serial). <2 kandidat -> serial.
+        if seq_batch.len() >= 2 {
+            self.evaluate_sequential_batch_parallel(&seq_batch)?;
+        } else {
+            for pid in seq_batch {
+                let body = match &self.design.top.processes[pid] {
+                    Process::Sequential { body, .. } => body.clone(),
+                    _ => continue,
+                };
+                self.evaluate_stmt_block(&body)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Par-02 tahap 1: batch-parallel eval triggered Sequential processes
+    /// (whitelist `is_sequential_body_batch_safe`, write set disjoint via
+    /// `layered_groups`). Snapshot pre-edge diambil SEKALI — NBA pending
+    /// tidak menyentuh storage current sebelum commit, jadi snapshot valid
+    /// untuk semua grup. Semua writes di-schedule via `push_nba_pending`:
+    /// urutan push = urutan pid serial (greedy ascending) -> last-write-wins
+    /// NBA identik jalur serial; deteksi konflik RT1006 tetap jalan.
+    fn evaluate_sequential_batch_parallel(&mut self, batch: &[usize]) -> Result<(), SimError> {
+        // Analisis akses dense (batch pids -> index 0..n) — hindari alloc
+        // access vec seukuran seluruh process design.
+        let access: Vec<crate::scheduler::sim_dag::SignalAccess> = batch
+            .iter()
+            .map(|&pid| {
+                crate::scheduler::sim_dag::analyze_process_access(&self.design.top.processes[pid])
+            })
+            .collect();
+        let dense_batch: Vec<usize> = (0..batch.len()).collect();
+        let groups = Self::layered_groups(&dense_batch, &access);
+        crate::dbg_sim!(
+            3,
+            "t={} delta={} par-02 seq-batch: {} kandidat, {} grup",
+            self.current_time,
+            self.current_delta,
+            batch.len(),
+            groups.len()
+        );
+        // Snapshot pre-edge sekali untuk semua grup.
+        let snapshot: Vec<std::sync::Arc<LogicVec>> = (0..self.state.signals.len())
+            .map(|i| std::sync::Arc::new(self.state.snapshot_signal(i)))
+            .collect();
+        let body_map: std::collections::HashMap<usize, std::sync::Arc<Vec<IrStmt>>> = batch
+            .iter()
+            .filter_map(|&pid| {
+                self.process_body_arcs
+                    .get(&pid)
+                    .map(|b| (pid, std::sync::Arc::clone(b)))
+            })
+            .collect();
+        for group in &groups {
+            let pids: Vec<&usize> = group.iter().map(|&i| &batch[i]).collect();
+            let writes = crate::scheduler::sim_dag::evaluate_bodies_parallel(
+                &pids,
+                &body_map,
+                &snapshot,
+                &self.design.top.signals,
+            )?;
+            for (sig_id, start, val) in writes {
+                debug_assert_eq!(start, 0, "batch whitelist hanya full-signal NBA");
+                let width = self
+                    .design
+                    .top
+                    .signals
+                    .get(sig_id)
+                    .map(|i| i.width)
+                    .unwrap_or(val.width);
+                self.push_nba_pending(IrLValue::Signal(sig_id, width), val);
             }
         }
         Ok(())

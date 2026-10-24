@@ -185,3 +185,44 @@ fn dag_differential_snapshot_cross_layer_chain() {
     assert_eq!(fg, fd, "f dag harus identik default");
     assert_eq!(fg, "11111111", "f = 5A ^ A5 = FF ter-pinned");
 }
+
+/// Par-02 tahap 1 (batch-parallel sequential): 4 always_ff independen pada
+/// clock sama -> dalam satu delta posedge keempatnya ter-trigger dan (mode
+/// DAG) dieval paralel via snapshot pre-edge + writes sebagai NBA pending.
+/// Hasil akhir wajib identik jalur default/serial.
+const FF_BATCH_SRC: &str = r#"
+module ff_batch_top;
+  logic clk;
+  logic [7:0] a, b, c, d;
+  logic [7:0] x, y, z, w;
+  initial begin
+    clk = 1'b0;
+    a = 8'h10; b = 8'h20; c = 8'h30; d = 8'h40;
+    #12;
+    a = 8'h50; b = 8'h60; c = 8'h70; d = 8'h80;
+    #10;
+  end
+  always #5 clk = ~clk;
+  always_ff @(posedge clk) x <= a + 8'd1;
+  always_ff @(posedge clk) y <= b + 8'd2;
+  always_ff @(posedge clk) z <= c + 8'd3;
+  always_ff @(posedge clk) w <= d + 8'd4;
+endmodule
+"#;
+
+#[test]
+fn dag_sequential_ff_batch_parallel_diff() {
+    // Pinned: posedge t=15 dst memakai nilai a..d update t=12.
+    let cases = [
+        ("x", "01010001"), // 0x50 + 1 = 0x51
+        ("y", "01100010"), // 0x60 + 2 = 0x62
+        ("z", "01110011"), // 0x70 + 3 = 0x73
+        ("w", "10000100"), // 0x80 + 4 = 0x84
+    ];
+    for (name, expect) in cases {
+        let serial = run_signal_bits(FF_BATCH_SRC, name, false);
+        let dag = run_signal_bits(FF_BATCH_SRC, name, true);
+        assert_eq!(dag, serial, "{name}: dag harus identik serial");
+        assert_eq!(dag, expect, "{name}: nilai akhir ter-pinned");
+    }
+}

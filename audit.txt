@@ -498,13 +498,22 @@ Par-01: ✅ Work-stealing paralel produk = rayon; executor kustom dead-code diha
   Test: task_survives_without_scheduler_executor (mivon-compiler).
   Severity: High -> CLOSED.
 
-Par-02: ⚠️ DAG hanya combinational — masih open
+Par-02: ⚠️ tahap 1 selesai (ROUND 184) — DAG hanya combinational — masih open
   Root Cause: Sequential processes (AlwaysFF, AlwyasWithDelay)
   bypass DAG dan jalan sequential.
+  Tahap 1 (ROUND 184): triggered Sequential yang lolos whitelist ketat
+  is_sequential_body_batch_safe (NBA full-signal tanpa delay + If/Case/
+  Block/Null saja) di-batch paralel pada pemicu clock sama — snapshot
+  pre-edge, grup disjoint deterministik (layered_groups), writes
+  di-schedule NBA pending agar commit NBA region identik serial.
+  Gated use_dag_parallel (--parallel).
+  Tahap 2 (open): AlwaysWithDelay, FF dgn blocking assign/loop/event
+  control, cycle-fusion domain.
   Impact: Sebagian besar processes di desain sinkron —
   paralelisme rendah.
   Severity: High
   Fix: Clock-domain-based parallel scheduling untuk sequential
+  processes (tahap 2).
   processes.
 
 Par-03: ⚠️ Clone bodies di parallel eval — masih open
@@ -10237,5 +10246,55 @@ Status PAR-01: SELESAI (CLOSED) — work-stealing produk = rayon
 (parallel compile + parallel layer eval); skeleton no-op dihapus agar
 audit tidak menyesatkan. Item open berikutnya: Par-02 (DAG hanya
 combinational), Arsitektur-01..04, JIT-01/02.
+
+
+═══ ROUND 184 — PAR-02 tahap 1: batch-parallel sequential (FF) pada pemicu clock sama ═══
+
+Investigasi (Par-02):
+  1. Jalur DAG parallel hanya mem-paralelkan Combinational/CombReactive
+     (is_process_parallelizable); Sequential (always_ff) dieval serial
+     satu per satu di Phase 2c trigger_sensitive_processes (event.rs).
+  2. Evaluator paralel (parallel.rs) melewatkan stmt tak-dukung secara
+     SENYAP (arm default: Force/Wait/NamedBlock/EventControl/Fork/dst)
+     — whitelist body WAJIB, bukan sekadar konservatif.
+  3. apply_parallel_writes menulis storage current (semantik blocking);
+     untuk NBA sequential, writes harus masuk nba_pending agar commit
+     tetap di NBA region.
+
+Perubahan (CRITICAL-area, gated --parallel / use_dag_parallel):
+  1. sim_dag.rs: is_sequential_body_batch_safe(body) — whitelist ketat:
+     NonBlockingAssign{lhs Signal, delay None} + If/Case/Block/Null.
+     Blocking assign, loop, syscall, event control -> serial fallback.
+  2. event.rs Phase 2c: triggered Sequential non-fused yang lolos
+     whitelist dikumpulkan; batch >= 2 ->
+     evaluate_sequential_batch_parallel:
+     - access analysis dense per kandidat (tanpa alloc seukuran design);
+     - grup disjoint via layered_groups (BTreeSet deterministik; urutan
+       grup = urutan pid serial);
+     - snapshot pre-edge SEKALI untuk semua grup (NBA pending tidak
+       menyentuh storage current sebelum commit);
+     - evaluate_bodies_parallel per grup (rayon);
+     - semua writes -> push_nba_pending (deteksi konflik RT1006 dan
+       is_forced di commit tetap jalan; last-write-wins identik serial).
+     Kandidat tunggal / tak lolos whitelist -> serial path lama.
+     Cycle-fusion path tidak disentuh.
+
+Test:
+  dag_sequential_ff_batch_parallel_diff (mivon-tests): 4 always_ff
+  independen pada clock sama (clk didrive always #5; input di-update
+  di t=12) — nilai akhir x/y/z/w ter-pinned + identik default vs DAG.
+  Eksekusi jalur paralel DIBUKTIKAN via DBG_SIM=3: "par-02 seq-batch:
+  4 kandidat, 1 grup" di tiap posedge pada run DAG (serial bebas trace).
+
+VERIFIKASI ROUND 184:
+   - cargo fmt --all --check -> bersih.
+   - cargo nextest run --workspace --features dev: 3619 passed,
+     24 skipped (3618 -> 3619, +1 test).
+   - Bukti eksekusi batch: DBG_SIM=3 + --success-output=immediate.
+
+Status PAR-02: TAHAP 1 SELESAI (partial) — FF whitelist-only batch
+paralel ter-lock diferensial. Tahap 2 (AlwaysWithDelay, FF blocking/
+loop/event-control, cycle-fusion) masih open. Item open berikutnya:
+Par-02 tahap 2, Arsitektur-01..04, JIT-01/02.
 
 \\=======================================================================//

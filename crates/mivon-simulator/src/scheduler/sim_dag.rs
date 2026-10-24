@@ -740,6 +740,43 @@ pub fn is_process_parallelizable(process: &Process) -> bool {
     )
 }
 
+/// Par-02 tahap 1: apakah body Sequential aman di-batch-parallel pada
+/// pemicu clock yang sama?
+///
+/// Whitelist ketat — WAJIB, karena evaluator paralel melewatkan stmt
+/// tak-dukung secara SENYAP (parallel.rs arm default: Force/Wait/
+/// NamedBlock/EventControl/dll di-skip tanpa error). Hanya NBA
+/// full-signal tanpa intra-assignment delay + kontrol aliran murni
+/// (If/Case/Block/Null) yang diizinkan. Blocking assign di dalam
+/// always_ff dikecualikan (defer-vs-immediate bisa divergen), demikian
+/// pula loop, syscall berdampak, event control, fork, dst.
+pub fn is_sequential_body_batch_safe(body: &[IrStmt]) -> bool {
+    fn stmt_ok(stmt: &IrStmt) -> bool {
+        match stmt {
+            IrStmt::NonBlockingAssign {
+                lhs: IrLValue::Signal(..),
+                delay: None,
+                ..
+            } => true,
+            IrStmt::If {
+                true_branch,
+                false_branch,
+                ..
+            } => block_ok(true_branch) && block_ok(false_branch),
+            IrStmt::Case { items, default, .. } => {
+                items.iter().all(|it| block_ok(&it.body)) && block_ok(default)
+            }
+            IrStmt::Block { stmts } => block_ok(stmts),
+            IrStmt::Null => true,
+            _ => false,
+        }
+    }
+    fn block_ok(stmts: &[IrStmt]) -> bool {
+        stmts.iter().all(stmt_ok)
+    }
+    block_ok(body)
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Tests
 // ═══════════════════════════════════════════════════════════════════════════
