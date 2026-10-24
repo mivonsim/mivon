@@ -999,14 +999,25 @@ endmodule
     fn labeled_unsupported_assertion_in_generate_block_is_reported() {
         let src = "module m(input logic clk, a, b);\n  if (1) begin : g\n    chk: assert property (@(posedge clk) a[*2] |-> b);\n  end\n  logic x;\nendmodule\n";
         let (design, diags) = parse_with_diags(src);
-        assert!(
-            diags
-                .iter()
-                .any(|d| d.code == DiagCode::UnsupportedAssertion),
-            "E1007 hilang utk assertion berlabel di generate block; diags = {:?}",
+        let n = diags
+            .iter()
+            .filter(|d| d.code == DiagCode::UnsupportedAssertion)
+            .count();
+        assert_eq!(
+            n, 1,
+            "harus tepat 1 E1007 (bukan dobel); diags = {:?}",
             diags
         );
         assert_eq!(design.modules.len(), 1);
+        // skip_assert_item tidak boleh menelan 'end' generate / item sesudahnya.
+        assert!(
+            design.modules[0]
+                .decls
+                .iter()
+                .any(|d| d.names.iter().any(|n| n.name.as_str() == "x")),
+            "deklarasi x setelah generate block hilang: {:?}",
+            design.modules[0].decls
+        );
     }
 
     /// label: property ... adalah DEKLARASI, bukan assertion — tidak boleh
@@ -1028,6 +1039,53 @@ endmodule
                 .iter()
                 .any(|i| matches!(i, crate::types::ModuleItem::PropertyAssert(_))),
             "assert property p1 harus ter-parse"
+        );
+    }
+
+    /// 'label: restrict property' juga assertion — dulu senyap total karena
+    /// gate jalur berlabel tidak memuat Token::Restrict.
+    #[test]
+    fn labeled_restrict_property_is_reported() {
+        let src = "module m(input logic clk, a);\n  chk: restrict property (@(posedge clk) a[*2]);\nendmodule\n";
+        let (design, diags) = parse_with_diags(src);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code == DiagCode::UnsupportedAssertion),
+            "E1007 hilang utk 'label: restrict property'; diags = {:?}",
+            diags
+        );
+        assert_eq!(design.modules.len(), 1);
+    }
+
+    /// E1007 tidak boleh membawa fix-it ';' (dulu dipasang karena pesan
+    /// warning menyalin alasan parse asli yang memuat "expected ';'").
+    #[test]
+    fn unsupported_assertion_has_no_semicolon_fixit() {
+        // Jalur snippet hanya aktif bila source_lines diisi (jalur produksi).
+        let src = "module m;\nendmodule\n";
+        let mut lexer = Lexer::new(src);
+        let mut tokens = Vec::new();
+        loop {
+            let (tok, line, col) = lexer.next_token();
+            if tok == Token::Eof {
+                break;
+            }
+            tokens.push((tok, line, col));
+        }
+        let mut p = Parser::new(tokens, "t.sv").with_source_lines(src);
+        p.push_warning_code_at(
+            DiagCode::UnsupportedAssertion,
+            "assertion skipped, not simulated: expected ';'",
+            2,
+            3,
+        );
+        let warn = p.errors.last().expect("warning harus tercatat");
+        assert_eq!(warn.code, DiagCode::UnsupportedAssertion);
+        assert!(
+            warn.fix_its.is_empty(),
+            "E1007 tidak boleh punya fix-it: {:?}",
+            warn.fix_its
         );
     }
 }

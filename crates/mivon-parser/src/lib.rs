@@ -706,7 +706,13 @@ impl Parser {
                 // Fix-it untuk semicolon: titik sisip = `col` yang sama dengan
                 // caret (dulu dihitung ulang dari baris TOKEN BERIKUT → lokasi
                 // fix-it meleset dari caret dan kadang merusak baris lain).
-                if msg.contains("missing semicolon") || msg.contains("expected ';'") {
+                // Jangan pasang fix-it ';' pada E1007: pesan warning itu
+                // MENYALIN alasan parse asli, jadi bisa memuat "expected ';'"
+                // padahal titik sisipnya (kolom keyword assert) bukan tempat
+                // yang salah. Fix-it hanya untuk diagnostic sintaks langsung.
+                if code != DiagCode::UnsupportedAssertion
+                    && (msg.contains("missing semicolon") || msg.contains("expected ';'"))
+                {
                     let fix_it = FixItHint::insert(
                         display_file.clone(),
                         display_line,
@@ -2301,7 +2307,11 @@ impl Parser {
                 if matches!(self.peek_ahead(1), Token::Colon)
                     && matches!(
                         self.peek_ahead(2),
-                        Token::Assert | Token::Assume | Token::Cover | Token::Property
+                        Token::Assert
+                            | Token::Assume
+                            | Token::Cover
+                            | Token::Restrict
+                            | Token::Property
                     )
                 {
                     let save_pos = self.pos.get();
@@ -2322,8 +2332,11 @@ impl Parser {
                             // `label: assert ...` yang tak bisa diparse TIDAK
                             // boleh hilang senyap. Di generate block jalur ini
                             // dulu ditelan skip_until_semi_or_end (tanpa diag).
-                            // Bentuk `label: property ...` BUKAN assertion —
-                            // dibiarkan ke jalur retry deklarasi SVA bernama.
+                            // Bentuk `label: property ...` BUKAN assertion:
+                            // di level module deklarasinya masih ter-parse via
+                            // retry (loop module advance 1 token lalu arm
+                            // Token::Property); di generate block deklarasi itu
+                            // SUDAH rusak sebelum perubahan ini (pre-existing).
                             if matches!(
                                 self.peek_ahead(2),
                                 Token::Assert | Token::Assume | Token::Cover | Token::Restrict

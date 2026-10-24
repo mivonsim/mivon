@@ -9892,3 +9892,42 @@ di E1007 karena sniff pesan), MEDIUM 6 (test jalur with_source_lines), plus
 dukungan @(posedge !sig) yang kini muncul sebagai E1007.
 
 \\=======================================================================//
+
+═══ ROUND 174 — PARSER-09: 'label: restrict' senyap + fix-it palsu E1007 ═══
+
+Review ROUND 173 menemukan MAJOR: gate jalur assertion berlabel hanya memuat
+Assert|Assume|Cover|Property, sehingga 'label: restrict property (...)' jatuh
+ke catch-all 'label :' -> skip_until_semi_or_end TANPA diagnostik (probe:
+0 diagnostik, 0 processes). Akibat lanjut: Token::Restrict di cek dalam arm
+menjadi dead code (himpunan efektif ⊆ gate).
+
+Diperbaiki:
+- lib.rs: Token::Restrict ditambahkan ke gate arm berlabel -> restrict
+  berlabel kini diparse (valid) atau di-warn E1007 (tak didukung).
+- lib.rs: fix-it ';' TIDAK lagi dipasang pada E1007. push_warning_code_at
+  menambal fix-it berdasarkan isi pesan ("expected ';'"), sedangkan pesan
+  E1007 menyalin alasan parse asli -> fix-it nyasar di kolom keyword assert.
+- Komentar arm diperbaiki: klaim "label: property dibiarkan ke jalur retry"
+  hanya benar di level module; di generate block deklarasi itu sudah rusak
+  sebelum perubahan ini (pre-existing, bukan regresi).
+- +2 test: labeled_restrict_property_is_reported,
+  unsupported_assertion_has_no_semicolon_fixit (memanggil
+  push_warning_code_at langsung dengan source_lines agar jalur snippet aktif).
+- Test generate block diperkuat: tepat 1 warning (bukan dobel) + deklarasi
+  setelah generate block harus selamat.
+- Regresi terbukti: (a) Restrict dihapus dari gate -> test restrict FAIL
+  (diags kosong); (b) guard fix-it dihapus -> test fix-it FAIL (fix-it ';'
+  muncul di 2:3). Keduanya dipulihkan lalu 29/29 passed.
+
+📊 VERIFIKASI ROUND 174:
+   - cargo nextest run -p mivon-parser sva::tests -> 29 passed.
+   - cargo nextest run --workspace --features dev --no-fail-fast:
+     ✅ 3610 passed, 0 failed, 24 skipped (3608 -> 3610).
+   - cargo fmt --all --check -> bersih.
+
+Sisa review ROUND 171/173: MAJOR 3 (baris bergeser utk assertion hasil ekspansi
+makro multi-baris + dedup emit_diags per (code,file,line)), MEDIUM 4 (cap
+default warning), MEDIUM 6 (test jalur with_source_lines/file_line_map untuk
+baris+kolom), Token::Expect senyap, dan dukungan @(posedge !sig).
+
+\\=======================================================================//
