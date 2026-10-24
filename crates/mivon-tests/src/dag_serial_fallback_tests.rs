@@ -226,3 +226,87 @@ fn dag_sequential_ff_batch_parallel_diff() {
         assert_eq!(dag, expect, "{name}: nilai akhir ter-pinned");
     }
 }
+
+/// Par-02 review fix A (intra-body RAW): `x <= x+1; y <= x` — evaluator
+/// paralel memperlakukan NBA sebagai blocking intra-body (overlay), serial
+/// tidak. Guard A menolak body ini dari batch → kedua jalur serial-equivalent.
+/// y wajib lag satu (nilai x PRA-kenaikan).
+const FF_RAW_SRC: &str = r#"
+module ff_raw_top;
+  logic clk;
+  logic [7:0] x, y, w;
+  logic [7:0] a;
+  initial begin clk = 0; x = 0; a = 5; #40; end
+  always #5 clk = ~clk;
+  always_ff @(posedge clk) begin x <= x + 8'd1; y <= x; end
+  always_ff @(posedge clk) w <= a;
+endmodule
+"#;
+
+#[test]
+fn dag_ff_intra_body_raw_diff() {
+    let xd = run_signal_bits(FF_RAW_SRC, "x", false);
+    let xg = run_signal_bits(FF_RAW_SRC, "x", true);
+    assert_eq!(xg, xd, "x dag harus identik serial (guard A)");
+    assert_eq!(xg, "00001010", "x = 10 posedge ter-pinned");
+    let yd = run_signal_bits(FF_RAW_SRC, "y", false);
+    let yg = run_signal_bits(FF_RAW_SRC, "y", true);
+    assert_eq!(yg, yd, "y dag harus identik serial");
+    assert_eq!(yg, "00001001", "y = x pra-kenaikan (9) ter-pinned");
+}
+
+/// Par-02 review fix B (serial-inline writes vs batch reads): kandidat
+/// batch (x) membaca b yang ditulis kandidat serial inline (b = ~b).
+/// Tanpa guard B, snapshot post-loop membuat x membaca b PASCA-tulis —
+/// divergen dari serial. Guard B membatalkan keanggotaan x → serial.
+const FF_CROSS_SRC: &str = r#"
+module ff_cross_top;
+  logic clk;
+  logic [3:0] b;
+  logic [3:0] x, w;
+  initial begin clk = 0; b = 4'd3; #11; b = 4'd7; #20; end
+  always #5 clk = ~clk;
+  always_ff @(posedge clk) x <= b + 4'd1;
+  always_ff @(posedge clk) begin b = ~b; end
+  always_ff @(posedge clk) w <= 4'd1;
+endmodule
+"#;
+
+#[test]
+fn dag_ff_cross_serial_write_diff() {
+    let xd = run_signal_bits(FF_CROSS_SRC, "x", false);
+    let xg = run_signal_bits(FF_CROSS_SRC, "x", true);
+    assert_eq!(xg, xd, "x dag harus identik serial (guard B)");
+    let wd = run_signal_bits(FF_CROSS_SRC, "w", false);
+    let wg = run_signal_bits(FF_CROSS_SRC, "w", true);
+    assert_eq!(wg, wd, "w dag harus identik serial");
+    assert_eq!(wg, "0001", "w = 1 ter-pinned");
+}
+
+/// Par-02 review fix C (WAW lintas grup): p0 q<=b, p1 (b<=c; x<=e),
+/// p2 x<=f. Greedy: grup1=[p0,p2], grup2=[p1]. Serial pid-order: x terakhir
+/// ditulis p2 (f). Push ter-tag terurut pid → x=f (4), bukan x=e (3).
+const FF_WAW_SRC: &str = r#"
+module ff_waw_top;
+  logic clk;
+  logic [3:0] b, c, e, f;
+  logic [3:0] q, x;
+  initial begin clk = 0; b = 1; c = 2; e = 3; f = 4; #40; end
+  always #5 clk = ~clk;
+  always_ff @(posedge clk) q <= b;
+  always_ff @(posedge clk) begin b <= c; x <= e; end
+  always_ff @(posedge clk) x <= f;
+endmodule
+"#;
+
+#[test]
+fn dag_ff_waw_cross_group_order_diff() {
+    let xd = run_signal_bits(FF_WAW_SRC, "x", false);
+    let xg = run_signal_bits(FF_WAW_SRC, "x", true);
+    assert_eq!(xg, xd, "x dag harus identik serial (urutan push WAW)");
+    assert_eq!(xg, "0100", "x = f = 4 (pid 2 terakhir) ter-pinned");
+    let qd = run_signal_bits(FF_WAW_SRC, "q", false);
+    let qg = run_signal_bits(FF_WAW_SRC, "q", true);
+    assert_eq!(qg, qd, "q dag harus identik serial");
+    assert_eq!(qg, "0010", "q mengikuti b (c=2) pasca-posedge-2 ter-pinned");
+}

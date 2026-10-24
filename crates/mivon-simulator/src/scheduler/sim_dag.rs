@@ -36,6 +36,10 @@ pub struct SignalAccess {
     /// VirtualIfaceAccess, This, dst.) — process dengan flag ini TIDAK boleh
     /// memakai snapshot sparse (harus full snapshot agar tidak salah hasil).
     pub has_unresolved: bool,
+    /// True bila ekspresi body memuat FuncCall/MethodCall — evaluator
+    /// paralel meng-Err (FuncCall) atau meng-X senyap (MethodCall) untuk
+    /// varian ini; kandidat batch Par-02 tahap 1 menolaknya.
+    pub has_call_expr: bool,
 }
 
 /// Analyze which signals a process reads and writes.
@@ -373,6 +377,7 @@ fn expr_signal_reads(expr: &IrExpr, access: &mut SignalAccess) {
             with_clause,
             ..
         } => {
+            access.has_call_expr = true;
             expr_signal_reads(obj, access);
             for arg in args {
                 expr_signal_reads(arg, access);
@@ -390,6 +395,7 @@ fn expr_signal_reads(expr: &IrExpr, access: &mut SignalAccess) {
             }
         }
         IrExpr::FuncCall { args, .. } => {
+            access.has_call_expr = true;
             for arg in args {
                 expr_signal_reads(arg, access);
             }
@@ -723,6 +729,53 @@ pub fn evaluate_bodies_parallel(
     Ok(all_writes)
 }
 
+/// Varian `evaluate_bodies_parallel` yang mengembalikan writes TER-TAG
+/// per-pid (urutan hasil = urutan input, rayon indexed collect). Dipakai
+/// jalur batch Sequential Par-02 tahap 1 agar push NBA bisa diurutkan
+/// pid-ascending = urutan push serial persis (WAW antar grup →
+/// last-write-wins identik serial).
+pub fn evaluate_bodies_parallel_tagged(
+    layer_pids: &[&usize],
+    body_map: &std::collections::HashMap<usize, Arc<Vec<IrStmt>>>,
+    signals: &[Arc<LogicVec>],
+    sig_info: &[mivon_ir::SignalInfo],
+) -> Result<Vec<(usize, Vec<ParallelWrite>)>, mivon_core::error::SimError> {
+    use rayon::prelude::*;
+
+    // SIM-28: per-process overlay kosong — tanpa clone seluruh sinyal.
+    let identity: Vec<Option<usize>> = (0..signals.len()).map(Some).collect();
+    let results: Vec<Result<Vec<ParallelWrite>, mivon_core::error::SimError>> = layer_pids
+        .par_iter()
+        .map(
+            |&&pid| -> Result<Vec<ParallelWrite>, mivon_core::error::SimError> {
+                let body = match body_map.get(&pid) {
+                    Some(b) => b.as_slice(),
+                    None => return Ok(Vec::new()),
+                };
+
+                let mut writes: Vec<ParallelWrite> = Vec::new();
+                let mut overlay: std::collections::HashMap<SignalId, Arc<LogicVec>> =
+                    std::collections::HashMap::new();
+                let mut view =
+                    crate::simulator::parallel::SignalView::new(signals, &identity, &mut overlay);
+                crate::simulator::parallel::evaluate_stmt_block_parallel(
+                    body,
+                    &mut view,
+                    &mut writes,
+                    sig_info,
+                )?;
+                Ok(writes)
+            },
+        )
+        .collect();
+
+    let mut tagged: Vec<(usize, Vec<ParallelWrite>)> = Vec::with_capacity(layer_pids.len());
+    for (i, result) in results.into_iter().enumerate() {
+        tagged.push((*layer_pids[i], result?));
+    }
+    Ok(tagged)
+}
+
 /// Check if a process type is suitable for DAG-parallel evaluation.
 /// Sequential and AlwaysWithDelay processes have timing/state that
 /// makes parallel evaluation unsafe — skip them.
@@ -818,11 +871,13 @@ mod tests {
             reads: [1, 2].into_iter().collect(),
             writes: HashSet::new(),
             has_unresolved: false,
+            has_call_expr: false,
         };
         let b = SignalAccess {
             reads: [2, 3].into_iter().collect(),
             writes: HashSet::new(),
             has_unresolved: false,
+            has_call_expr: false,
         };
         // Both only read — no conflict
         assert!(!processes_conflict(&a, &b));
@@ -834,11 +889,13 @@ mod tests {
             reads: HashSet::new(),
             writes: [5].into_iter().collect(),
             has_unresolved: false,
+            has_call_expr: false,
         };
         let b = SignalAccess {
             reads: [5].into_iter().collect(),
             writes: HashSet::new(),
             has_unresolved: false,
+            has_call_expr: false,
         };
         // A writes signal 5, B reads it → conflict
         assert!(processes_conflict(&a, &b));
@@ -850,11 +907,13 @@ mod tests {
             reads: HashSet::new(),
             writes: [10].into_iter().collect(),
             has_unresolved: false,
+            has_call_expr: false,
         };
         let b = SignalAccess {
             reads: HashSet::new(),
             writes: [10].into_iter().collect(),
             has_unresolved: false,
+            has_call_expr: false,
         };
         // Both write signal 10 → conflict
         assert!(processes_conflict(&a, &b));

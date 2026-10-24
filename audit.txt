@@ -10286,10 +10286,43 @@ Test:
   Eksekusi jalur paralel DIBUKTIKAN via DBG_SIM=3: "par-02 seq-batch:
   4 kandidat, 1 grup" di tiap posedge pada run DAG (serial bebas trace).
 
+Review agent (round 1) menemukan 5 bug — SEMUA diperbaiki di commit yang
+sama (crates/mivon-simulator):
+  A (High, silent wrong): NBA diperlakukan blocking intra-body oleh
+     evaluator paralel (overlay) — `x <= x+1; y <= x` membaca x BARU.
+     Fix: guard A — kandidat dgn reads ∩ writes ≠ ∅ ditolak dari batch.
+  B (High, silent wrong): kandidat batch dieval SETELAH kandidat serial
+     inline → snapshot membaca tulisan serial yg di serial-all belum
+     terjadi. Fix: restructure DUA FASE — fase 1 klasifikasi (tanpa eval),
+     fase 2 eval inline urutan pid utk non-batch, hanya kandidat bebas
+     dgn serial_writes yang ditunda; ditolak guard B dieval SERIAL pada
+     posisinya (bukan dibuang).
+  C (Medium): urutan push NBA antar-grup ≠ urutan pid utk WAW. Fix:
+     evaluate_bodies_parallel_tagged — writes ter-tag per-pid, push
+     diurutkan pid ascending = urutan push serial persis.
+  D (Medium, error keras): evaluator paralel Err (mis. FuncCall) propas
+     keluar tanpa fallback. Fix: per-group Err → fallback serial SELURUH
+     batch; deteksi FuncCall/MethodCall via SignalAccess.has_call_expr
+     (di-set di expr_signal_reads) → kandidat call ditolak dari batch.
+  E (Low-Medium): guard has_wide_signals tak ada → FF membaca memori
+     besar via snapshot lazy-X. Fix: helper menolak batch bila
+     has_wide_signals() (mirror jalur comb) → serial.
+
+Test (4, semua diferensial default vs DAG + pinned):
+  dag_sequential_ff_batch_parallel_diff — 4 always_ff independen pada
+  clock sama; eksekusi batch DIBUKTIKAN via DBG_SIM=3 ("par-02
+  seq-batch: 4 kandidat, 1 grup" tiap posedge pada run DAG; serial bebas
+  trace).
+  dag_ff_intra_body_raw_diff — lock guard A: y = x PRA-kenaikan.
+  dag_ff_cross_serial_write_diff — lock guard B: x tak membaca tulisan
+  blocking b = ~b yang serial-inline.
+  dag_ff_waw_cross_group_order_diff — lock fix C: x = f (pid 2 terakhir)
+  lintas grup [p0,p2],[p1]; q mengikuti b pasca-posedge-2.
+
 VERIFIKASI ROUND 184:
    - cargo fmt --all --check -> bersih.
-   - cargo nextest run --workspace --features dev: 3619 passed,
-     24 skipped (3618 -> 3619, +1 test).
+   - cargo nextest run --workspace --features dev: 3622 passed,
+     24 skipped (3618 -> 3622, +4 test).
    - Bukti eksekusi batch: DBG_SIM=3 + --success-output=immediate.
 
 Status PAR-02: TAHAP 1 SELESAI (partial) — FF whitelist-only batch
