@@ -9435,7 +9435,7 @@ Catatan: marker ⚠️ (belum ✅ penuh) — baru fondasi; integrasi belum.
 
 Item High: "Tidak ada parser for SVA properties full syntax". Faktanya parser
 SVA sudah ada dan cukup luas (LANG-06 + LANG-42) di crates/mivon-parser/src/
-stmt/sva.rs: sequence (##N / ##[min:max]), implikasi (|-> / |->), repetition,
+stmt/sva.rs: sequence (##N / ##[min:max]), implikasi (|-> / |=>), repetition,
 named sequence/property + formal args, clocking event (@(posedge clk)), dan
 substitusi argumen. Statement assert/cover/assume property ter-parse.
 
@@ -9443,12 +9443,49 @@ Tahap ini: +1 regression test parses_assert_property_named_seq_and_implication
 (assert property dengan named sequence + implication + clocking -> parse sukses).
 Mengunci fitur yang sudah ada agar tidak regresi.
 
-Sisa "full syntax" (belum): property-level operator always/eventually/until/
-implies, disable iff, repetition range [*m:n]/[=n]/[->n], first_match, dll.
+Sisa "full syntax" (belum): repetition range [*m:n]/[=n]/[->n], until/within,
+first_match, property-level eventually/s_eventually. (always dan disable iff
+SUDAH ada — LANG-49 / stmt.rs:232.)
 Marker ⚠️ (belum ✅ penuh).
 
 📊 VERIFIKASI ROUND 162:
    - cargo nextest run -p mivon-parser sva::tests -> 2 passed.
    - cargo check -p mivon-parser -> bersih.
+
+\=======================================================================//
+
+═══ ROUND 163 — PARSER-09: follow-up review (bug nyata di antecedent) ═══
+
+Review agent (Explore) menemukan 2 MAJOR pada ROUND 162:
+(1) Test vacuous — hanya assert modules.len()==1, padahal assert property yang
+    gagal parse di-rollback diam-diam (lib.rs skip_assert_item), jadi test tak
+    bisa gagal.
+(2) BUG NYATA: named sequence di antecedent implication tidak di-resolve.
+    `assert property (@(posedge clk) s1 |-> c)` -> elaborator E2001
+    "signal 's1' not found", karena resolusi deklarasi bernama hanya diterapkan
+    pada body berbentuk Expr tunggal (stmt.rs:382-404), sedangkan jalur
+    sequence return lebih awal (stmt.rs:434).
+
+Diperbaiki:
+- stmt.rs: helper lookup_named_seq(name,args) + resolve_named_in_sequence()
+  (rekursif: Expr/Concat/Or/And/Repeat/Implication) — substitusi formal->aktual
+  dan clock deklarasi. Dipanggil setelah blok `resolved`, sebelum fail_stmt.
+  Hasil: smoke test `s1 |-> c` kini elaborasi tanpa E2001.
+- stmt/sva.rs: test diperkuat — assert AST nyata
+  (ModuleItem::PropertyAssert -> Stmt::PropertySeq -> Sequence::Implication)
+  DAN antecedent bukan Ident mentah (bukti substitusi).
+- +1 test parses_named_sequence_with_args_in_antecedent: `s1(a,b) |-> c`
+  -> nama deklarasi hilang, argumen aktual a/b masuk.
+- mivon-ast/src/types.rs:862: doc usang "temporal di-skip parser" dikoreksi.
+- audit.txt: typo `|-> / |->` -> `|-> / |=>`; daftar sisa "full syntax"
+  dikoreksi (always + disable iff SUDAH ada; yang belum: [*m:n], until/within,
+  first_match, eventually/s_eventually).
+
+📊 VERIFIKASI ROUND 163:
+   - cargo nextest run -p mivon-parser sva::tests -> 3 passed.
+   - cargo check -p mivon-parser -> bersih; rustfmt bersih pada baris baru.
+   - Smoke: mivon /tmp/feat09_sva.sv -> "Simulation completed", tanpa E2001.
+   - cargo nextest run --workspace --features dev --no-fail-fast:
+     ✅ 3583 passed, 0 failed, 24 skipped.
 
 \=======================================================================//

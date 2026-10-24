@@ -424,6 +424,17 @@ impl Parser {
                     clock_event = decl_clock;
                 }
             }
+            // LANG-42b: resolusi deklarasi bernama pada sequence (termasuk
+            // antecedent implication). Blok `resolved` di atas hanya menangani
+            // body berbentuk Expr tunggal; jalur sequence di sini belum.
+            if let Some(seq) = sequence.take() {
+                let mut decl_clock = None;
+                let resolved_seq = self.resolve_named_in_sequence(&seq, &mut decl_clock);
+                if clock_event.is_none() {
+                    clock_event = decl_clock;
+                }
+                sequence = Some(resolved_seq);
+            }
             let fail_stmt = if self.peek() == &Token::Else {
                 self.advance();
                 Some(Box::new(self.parse_stmt()?))
@@ -699,6 +710,76 @@ impl Parser {
             i += 1;
         }
         false
+    }
+    /// LANG-42b: cari deklarasi named sequence/property lalu substitusi body-nya
+    /// (parameter formal -> argumen aktual). Mengembalikan body + clock deklarasi.
+    fn lookup_named_seq(
+        &self,
+        name: &Symbol,
+        args: &[Expr],
+    ) -> Option<(super::types::Sequence, Option<ClockEvent>)> {
+        let v = self
+            .named_sequences
+            .get(name)
+            .or_else(|| self.named_properties.get(name))?;
+        let (formals, body, clock) = v.clone();
+        let map: std::collections::HashMap<Symbol, &Expr> =
+            formals.iter().copied().zip(args.iter()).collect();
+        Some((Self::subst_sequence(&body, &map), clock))
+    }
+
+    /// LANG-42b: resolusi referensi deklarasi bernama DI DALAM sequence,
+    /// termasuk antecedent implication (`s1 |-> c`). Sebelumnya hanya body
+    /// berbentuk Expr tunggal yang di-resolve, sehingga antecedent
+    /// `Sequence::Expr(Ident("s1"))` lolos ke elaborator -> E2001.
+    fn resolve_named_in_sequence(
+        &self,
+        seq: &super::types::Sequence,
+        decl_clock: &mut Option<ClockEvent>,
+    ) -> super::types::Sequence {
+        use super::types::Sequence;
+        match seq {
+            Sequence::Expr(Expr::Ident { name, .. }) => match self.lookup_named_seq(name, &[]) {
+                Some((body, clock)) => {
+                    if decl_clock.is_none() {
+                        *decl_clock = clock;
+                    }
+                    body
+                }
+                None => seq.clone(),
+            },
+            Sequence::Expr(Expr::FuncCall { name, args, .. }) => {
+                match self.lookup_named_seq(name, args) {
+                    Some((body, clock)) => {
+                        if decl_clock.is_none() {
+                            *decl_clock = clock;
+                        }
+                        body
+                    }
+                    None => seq.clone(),
+                }
+            }
+            Sequence::Implication(a, c) => Sequence::Implication(
+                Box::new(self.resolve_named_in_sequence(a, decl_clock)),
+                Box::new(self.resolve_named_in_sequence(c, decl_clock)),
+            ),
+            Sequence::Concat(a, c) => Sequence::Concat(
+                Box::new(self.resolve_named_in_sequence(a, decl_clock)),
+                Box::new(self.resolve_named_in_sequence(c, decl_clock)),
+            ),
+            Sequence::Or(a, c) => Sequence::Or(
+                Box::new(self.resolve_named_in_sequence(a, decl_clock)),
+                Box::new(self.resolve_named_in_sequence(c, decl_clock)),
+            ),
+            Sequence::And(a, c) => Sequence::And(
+                Box::new(self.resolve_named_in_sequence(a, decl_clock)),
+                Box::new(self.resolve_named_in_sequence(c, decl_clock)),
+            ),
+            Sequence::Repeat(s, n) => {
+                Sequence::Repeat(Box::new(self.resolve_named_in_sequence(s, decl_clock)), *n)
+            }
+            other => other.clone(),
+        }
     }
 
     /// Deteksi operator temporal PSL di body paren assertion (`a |-> b`,

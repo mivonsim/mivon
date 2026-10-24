@@ -309,7 +309,101 @@ endmodule
             tokens.push((tok, line, col));
         }
         let mut p = Parser::new(tokens, "t.sv");
-        let design = p.parse_design().expect("assert property dengan named sequence + implication harus parse");
+        let design = p
+            .parse_design()
+            .expect("assert property dengan named sequence + implication harus parse");
         assert_eq!(design.modules.len(), 1);
+        // Regression lock yang NYATA: pastikan assertion tidak di-skip diam-diam.
+        let mut ante_shape = None;
+        for item in &design.modules[0].items {
+            if let crate::types::ModuleItem::PropertyAssert(s) = item {
+                if let crate::Stmt::PropertySeq {
+                    sequence: crate::types::Sequence::Implication(ante, _),
+                    ..
+                } = &**s
+                {
+                    ante_shape = Some((**ante).clone());
+                }
+            }
+        }
+        let ante = ante_shape.expect(
+            "assert property harus menghasilkan PropertyAssert ber-Sequence::Implication, bukan di-skip",
+        );
+        // LANG-42b: antecedent s1 harus tersubstitusi menjadi body deklarasi
+        // (a ##1 b), bukan Ident mentah yang memicu E2001 di elaborator.
+        assert!(
+            !matches!(
+                ante,
+                crate::types::Sequence::Expr(crate::Expr::Ident { .. })
+            ),
+            "antecedent harus tersubstitusi, dapat {:?}",
+            ante
+        );
+    }
+    /// Kumpulkan nama Ident di dalam sequence (rekursif) untuk assertion test.
+    fn seq_idents(seq: &crate::types::Sequence, out: &mut Vec<String>) {
+        use crate::types::Sequence;
+        match seq {
+            Sequence::Expr(crate::Expr::Ident { name, .. }) => out.push(name.as_str().to_string()),
+            Sequence::Concat(a, c)
+            | Sequence::Or(a, c)
+            | Sequence::And(a, c)
+            | Sequence::Implication(a, c) => {
+                seq_idents(a, out);
+                seq_idents(c, out);
+            }
+            Sequence::Repeat(s, _) => seq_idents(s, out),
+            _ => {}
+        }
+    }
+
+    /// LANG-42b: named sequence ber-argumen di antecedent implication harus
+    /// disubstitusi (formal x/y -> aktual a/b), bukan diteruskan mentah.
+    #[test]
+    fn parses_named_sequence_with_args_in_antecedent() {
+        let src = "module m(input logic clk, a, b, c);\n  sequence s1(x, y); x ##1 y; endsequence\n  assert property (@(posedge clk) s1(a, b) |-> c);\nendmodule\n";
+        let mut lexer = Lexer::new(src);
+        let mut tokens = Vec::new();
+        loop {
+            let (tok, line, col) = lexer.next_token();
+            if tok == Token::Eof {
+                break;
+            }
+            tokens.push((tok, line, col));
+        }
+        let mut p = Parser::new(tokens, "t.sv");
+        let design = p
+            .parse_design()
+            .expect("named sequence ber-argumen di antecedent harus parse");
+        let mut ante_shape = None;
+        for item in &design.modules[0].items {
+            if let crate::types::ModuleItem::PropertyAssert(s) = item {
+                if let crate::Stmt::PropertySeq {
+                    sequence: crate::types::Sequence::Implication(ante, _),
+                    ..
+                } = &**s
+                {
+                    ante_shape = Some((**ante).clone());
+                }
+            }
+        }
+        let ante = ante_shape.expect("harus ada PropertyAssert ber-Implication");
+        let mut ids = Vec::new();
+        seq_idents(&ante, &mut ids);
+        assert!(
+            !ids.iter().any(|n| n == "s1"),
+            "nama deklarasi harus hilang: {:?}",
+            ids
+        );
+        assert!(
+            ids.iter().any(|n| n == "a"),
+            "argumen aktual a harus masuk: {:?}",
+            ids
+        );
+        assert!(
+            ids.iter().any(|n| n == "b"),
+            "argumen aktual b harus masuk: {:?}",
+            ids
+        );
     }
 }
