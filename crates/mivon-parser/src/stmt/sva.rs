@@ -972,4 +972,62 @@ endmodule
             "assertion boolean ber-kurung harus tetap ter-parse"
         );
     }
+
+    /// Assertion BERLABEL yang tak didukung harus tetap di-warn E1007.
+    #[test]
+    fn labeled_unsupported_assertion_is_reported() {
+        let src = "module m(input logic clk, a, b);\n  chk: assert property (@(posedge clk) a[*2] |-> b);\n  logic x;\nendmodule\n";
+        let (design, diags) = parse_with_diags(src);
+        let warn = diags
+            .iter()
+            .find(|d| d.code == DiagCode::UnsupportedAssertion)
+            .unwrap_or_else(|| panic!("E1007 hilang utk assertion berlabel; diags = {:?}", diags));
+        // Span harus menunjuk keyword assert (baris 2), bukan label.
+        assert_eq!(warn.spans.first().map(|s| s.start), Some(2));
+        assert!(
+            design.modules[0]
+                .decls
+                .iter()
+                .any(|d| d.names.iter().any(|n| n.name.as_str() == "x")),
+            "deklarasi x setelah assertion berlabel hilang"
+        );
+    }
+
+    /// Assertion berlabel di dalam GENERATE block dulu ditelan
+    /// skip_until_semi_or_end tanpa diagnostik sama sekali.
+    #[test]
+    fn labeled_unsupported_assertion_in_generate_block_is_reported() {
+        let src = "module m(input logic clk, a, b);\n  if (1) begin : g\n    chk: assert property (@(posedge clk) a[*2] |-> b);\n  end\n  logic x;\nendmodule\n";
+        let (design, diags) = parse_with_diags(src);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code == DiagCode::UnsupportedAssertion),
+            "E1007 hilang utk assertion berlabel di generate block; diags = {:?}",
+            diags
+        );
+        assert_eq!(design.modules.len(), 1);
+    }
+
+    /// label: property ... adalah DEKLARASI, bukan assertion — tidak boleh
+    /// di-warn E1007 dan deklarasinya harus tetap terdaftar.
+    #[test]
+    fn labeled_property_declaration_is_not_warned() {
+        let src = "module m(input logic clk, a, b);\n  p1: property p1; a |-> b; endproperty\n  assert property (@(posedge clk) p1);\nendmodule\n";
+        let (design, diags) = parse_with_diags(src);
+        assert!(
+            diags
+                .iter()
+                .all(|d| d.code != DiagCode::UnsupportedAssertion),
+            "deklarasi property berlabel tidak boleh di-warn E1007: {:?}",
+            diags
+        );
+        assert!(
+            design.modules[0]
+                .items
+                .iter()
+                .any(|i| matches!(i, crate::types::ModuleItem::PropertyAssert(_))),
+            "assert property p1 harus ter-parse"
+        );
+    }
 }

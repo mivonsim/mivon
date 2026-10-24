@@ -9848,3 +9848,47 @@ warning berbeda), MEDIUM (cap default warning, fix-it dari pesan, test
 berlabel/generate-block).
 
 \\=======================================================================//
+
+═══ ROUND 173 — PARSER-09: assertion berlabel (generate block) senyap ═══
+
+Review ROUND 171 MAJOR 2: jalur assertion BERLABEL (lib.rs, arm Ident+':'+
+assert/assume/cover/property) masih rollback tanpa diagnostik. Di level module
+hal ini "terselamatkan" kebetulan: skip_assert_item berhenti di label (Ident
+depth 0), loop module advance 1 token, ':' ditelan catch-all, lalu assert
+diparse ulang oleh arm unlabeled -> E1007. Di GENERATE block langkah itu
+berbeda: parse_generate_block_body memanggil skip_until_semi_or_end() sehingga
+assertion ditelan TANPA warning (tlul_assert.sv: 7 assertion 'and' di
+if (1) begin : gen_* hilang senyap).
+
+Diperbaiki (lib.rs):
+- Err(reason) pada jalur berlabel: bila peek_ahead(2) adalah Assert/Assume/
+  Cover/Restrict -> pancarkan E1007 di posisi keyword assertion (tokens
+  [save_pos+2]), lalu advance label+':' dan skip_assert_item() dari keyword.
+- label: property ... (DEKLARASI, bukan assertion) sengaja TIDAK di-warn agar
+  tidak false-positive; jalur retry deklarasi SVA bernama tetap utuh.
+- +3 test: labeled_unsupported_assertion_is_reported,
+  labeled_unsupported_assertion_in_generate_block_is_reported (regresi nyata),
+  labeled_property_declaration_is_not_warned.
+- Regresi terbukti: dengan kondisi warning dipaksa false, test generate-block
+  FAIL (test level module tetap lulus -> membuktikan analisis review bahwa
+  level module hanya selamat kebetulan).
+
+Bukti RTL (opentitan/hw/ip/tlul/rtl/tlul_assert.sv): sebelumnya hanya 2 lokasi
+E1007 (yang tak berlabel); sekarang 29 warning dengan posisi tepat —
+281:9, 284:9, 302:9, 316:9 (a and b |-> c) dan 440:15/441:26
+(cover property @(posedge !clk_i)) — semuanya konstruk yang memang belum
+didukung, bukan lagi hilang diam-diam.
+
+📊 VERIFIKASI ROUND 173:
+   - cargo nextest run -p mivon-parser sva::tests -> 27 passed.
+   - cargo nextest run --workspace --features dev --no-fail-fast:
+     ✅ 3608 passed, 0 failed, 24 skipped (3605 -> 3608).
+   - cargo fmt --all --check -> bersih.
+
+Sisa review ROUND 171: MAJOR 3 (baris bergeser utk assertion hasil ekspansi
+makro multi-baris + dedup emit_diags per (code,file,line) menelan warning
+berbeda), MEDIUM 4 (cap default warning), MEDIUM 5 (fix-it ';' ikut terpasang
+di E1007 karena sniff pesan), MEDIUM 6 (test jalur with_source_lines), plus
+dukungan @(posedge !sig) yang kini muncul sebagai E1007.
+
+\\=======================================================================//

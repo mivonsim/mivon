@@ -2312,13 +2312,44 @@ impl Parser {
                     self.advance(); // ':'
                     match self.parse_immediate_assertion() {
                         Ok(stmt) => return Ok(Some(ModuleItem::PropertyAssert(Box::new(stmt)))),
-                        Err(_) => {
+                        Err(reason) => {
                             // Rollback: kembalikan posisi token + hapus error
                             // parsing yang ditambahkan, lalu skip seluruh item.
                             self.pos.set(save_pos);
                             self.errors.truncate(save_errs);
                             self.parse_steps = save_steps;
                             self.peek_count.set(save_peek);
+                            // `label: assert ...` yang tak bisa diparse TIDAK
+                            // boleh hilang senyap. Di generate block jalur ini
+                            // dulu ditelan skip_until_semi_or_end (tanpa diag).
+                            // Bentuk `label: property ...` BUKAN assertion —
+                            // dibiarkan ke jalur retry deklarasi SVA bernama.
+                            if matches!(
+                                self.peek_ahead(2),
+                                Token::Assert | Token::Assume | Token::Cover | Token::Restrict
+                            ) {
+                                let (a_line, a_col) = self
+                                    .tokens
+                                    .get(save_pos + 2)
+                                    .map(|(_, l, c)| (*l, *c))
+                                    .unwrap_or((0, 0));
+                                let reason_text = match &reason {
+                                    SimError::Diagnostic(d) => d.message.to_string(),
+                                    other => other.to_string(),
+                                };
+                                self.push_warning_code_at(
+                                    DiagCode::UnsupportedAssertion,
+                                    format!("assertion skipped, not simulated: {}", reason_text),
+                                    a_line,
+                                    a_col,
+                                );
+                                // Lewati label + ':' agar skip mulai dari
+                                // keyword assertion (bukan no-op di label).
+                                self.advance();
+                                self.advance();
+                                self.skip_assert_item();
+                                return Ok(None);
+                            }
                             self.skip_assert_item();
                             return Ok(None);
                         }
