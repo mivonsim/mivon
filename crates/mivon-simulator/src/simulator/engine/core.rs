@@ -270,6 +270,7 @@ impl SimulationEngine {
             signal_delays: std::collections::HashMap::new(),
             power_intent: None,
             process_body_cache: HashMap::new(),
+            process_body_arcs: HashMap::new(),
             notimpl_warned: Default::default(),
         }
     }
@@ -972,18 +973,30 @@ impl SimulationEngine {
         }
 
         // ── Build process body cache for DAG parallel eval ──
-        // Hindari clone bodies setiap cycle dengan cache sekali.
+        // Par-03: Arc body sharing — body di-clone DALAM Arc sekali per sim,
+        // lalu dibagi murah (Arc::clone) ke DAG layer maupun evaluasi
+        // clock-domain (dulu: deep clone Vec body per evaluasi domain).
+        // Dibangun SELALU: jalur clock-domain memakainya terlepas dari
+        // jalur DAG parallel.
+        self.process_body_arcs.clear();
+        for (pid, process) in self.design.top.processes.iter().enumerate() {
+            let body = match process {
+                Process::Combinational { body, .. }
+                | Process::CombReactive { body, .. }
+                | Process::Initial { body, .. }
+                | Process::Sequential { body, .. } => body,
+                _ => continue,
+            };
+            let arc = std::sync::Arc::new(body.clone());
+            self.process_body_arcs.insert(pid, arc);
+        }
         if self.use_dag_parallel {
             self.process_body_cache.clear();
             for (pid, process) in self.design.top.processes.iter().enumerate() {
                 if crate::scheduler::sim_dag::is_process_parallelizable(process) {
-                    if let Some(body) = match process {
-                        Process::Combinational { body, .. }
-                        | Process::CombReactive { body, .. }
-                        | Process::Initial { body, .. } => Some(body.clone()),
-                        _ => None,
-                    } {
-                        self.process_body_cache.insert(pid, body);
+                    if let Some(a) = self.process_body_arcs.get(&pid) {
+                        self.process_body_cache
+                            .insert(pid, std::sync::Arc::clone(a));
                     }
                 }
             }
@@ -2220,19 +2233,22 @@ impl SimulationEngine {
         let num_sigs = self.state.signals.len();
 
         // Collect sequential process bodies
-        let seq_bodies: Vec<(usize, Vec<IrStmt>)> = domain
+        let seq_bodies: Vec<(usize, std::sync::Arc<Vec<IrStmt>>)> = domain
             .sequential_processes
             .iter()
             .filter_map(|&pid| {
                 if pid < self.design.top.processes.len() {
-                    if let Process::Sequential { body, .. } = self
+                    if let Process::Sequential { .. } = self
                         .design
                         .top
                         .processes
                         .get(pid)
                         .expect("process pid out of bounds in clock domain eval")
                     {
-                        return Some((pid, body.clone()));
+                        // Par-03: Arc::clone murah — tanpa deep clone body.
+                        if let Some(b) = self.process_body_arcs.get(&pid) {
+                            return Some((pid, std::sync::Arc::clone(b)));
+                        }
                     }
                 }
                 None
@@ -2240,7 +2256,7 @@ impl SimulationEngine {
             .collect();
 
         // Collect follower combinational process bodies
-        let follower_bodies: Vec<(usize, Vec<IrStmt>)> = domain
+        let follower_bodies: Vec<(usize, std::sync::Arc<Vec<IrStmt>>)> = domain
             .follower_processes
             .iter()
             .filter_map(|&pid| {
@@ -2252,8 +2268,12 @@ impl SimulationEngine {
                         .get(pid)
                         .expect("process pid out of bounds in follower bodies")
                     {
-                        Process::Combinational { body, .. }
-                        | Process::CombReactive { body, .. } => Some((pid, body.clone())),
+                        Process::Combinational { .. } | Process::CombReactive { .. } => {
+                            // Par-03: Arc::clone murah — tanpa deep clone body.
+                            self.process_body_arcs
+                                .get(&pid)
+                                .map(|b| (pid, std::sync::Arc::clone(b)))
+                        }
                         _ => None,
                     }
                 } else {

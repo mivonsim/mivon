@@ -581,7 +581,13 @@ pub struct SimulationEngine {
 
     /// Process body cache for DAG parallel evaluation.
     /// Dibangun sekali di run() untuk menghindari clone bodies setiap cycle.
-    pub process_body_cache: HashMap<usize, Vec<IrStmt>>,
+    /// Par-03: Arc-based — dibagi ke layer DAG tanpa deep clone.
+    pub process_body_cache: HashMap<usize, std::sync::Arc<Vec<IrStmt>>>,
+
+    /// Par-03: Arc body SEMUA proses ber-body (termasuk Sequential) untuk
+    /// evaluasi clock-domain — Arc::clone murah per evaluasi domain, tanpa
+    /// deep clone Vec body per panggilan. Dibangun sekali di run().
+    pub process_body_arcs: HashMap<usize, std::sync::Arc<Vec<IrStmt>>>,
 
     /// Fungsi system yang sudah diberi warning RT9003 sekali (dedup) — hindari
     /// spam 20 warning per penggunaan utk `$realtobits`/`$bitstoreal` dll.

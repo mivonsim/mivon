@@ -10112,6 +10112,37 @@ VERIFIKASI ROUND 180:
      (3619 -> 3620, +1 test).
    - cargo fmt --all --check -> bersih.
 
-Status PARSER-09: seluruh temuan review ROUND 171-179 SELESAI (MAJOR 1-3,
-MEDIUM 1-6, Token::Expect + varian berlabel, refactor helper clock).
+═══ ROUND 181 — PAR-03 tahap 1: Arc-based process body sharing ═══
+
+Item Par-03: setiap evaluasi clock-domain, seluruh body proses sequential +
+follower di-deep-clone (Vec<IrStmt>) — memory thrashing + allocator pressure.
+Bagian signal snapshot sudah termitigasi SIM-28 (COW overlay); tahap ini
+menutup bagian body sharing sesuai saran fix di item (Arc-based sharing).
+
+Perubahan (manual, perilaku dipertahankan):
+  1. engine/mod.rs: field baru process_body_arcs: HashMap<usize,
+     Arc<Vec<IrStmt>>> (SEMUA proses ber-body, incl. Sequential);
+     process_body_cache ikut ber-tipe Arc.
+  2. core.rs run(): arcs dibangun SEKALI per sim (selalu, bukan hanya jalur
+     DAG); cache DAG mengambil Arc::clone utk proses parallelizable.
+  3. core.rs evaluate_clock_domain: seq_bodies/follower_bodies kini
+     Vec<(usize, Arc<Vec<IrStmt>>)> via Arc::clone dari cache — tanpa deep
+     clone body per evaluasi domain.
+  4. sim_dag.rs evaluate_bodies_parallel: body_map Arc-based; body di-pass
+     sebagai &[IrStmt] via as_slice() (deref Arc->Vec->slice).
+
+Test baru:
+  evaluate_bodies_parallel_arc_body_map (sim_dag.rs): regression utk
+  signature Arc — body BlockingAssign a=b dievaluasi, write (0, One)
+  benar; menutup jalur Arc body_map yang sebelumnya tanpa unit test.
+
+VERIFIKASI ROUND 181:
+   - cargo test -p mivon-simulator evaluate_bodies_parallel_arc_body_map -> 1 passed.
+   - cargo nextest run --workspace --features dev: 3621 passed, 24 skipped
+     (3620 -> 3621, +1 test).
+   - cargo fmt --all --check -> bersih.
+
+Sisa Par-03 (tahap berikutnya): differential snapshot — snapshot sinyal
+per DAG layer masih materialisasi LogicVec penuh tiap layer (core.rs
+2163-2170); idealnya rebuild hanya sinyal yang berubah sejak layer lalu.
 \\=======================================================================//

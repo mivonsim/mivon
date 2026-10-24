@@ -681,7 +681,7 @@ pub fn evaluate_layer_parallel(
 /// Writes dikumpulkan dan digabungkan setelah semua process dalam layer selesai.
 pub fn evaluate_bodies_parallel(
     layer_pids: &[&usize],
-    body_map: &std::collections::HashMap<usize, Vec<IrStmt>>,
+    body_map: &std::collections::HashMap<usize, Arc<Vec<IrStmt>>>,
     signals: &[Arc<LogicVec>],
     sig_info: &[mivon_ir::SignalInfo],
 ) -> Result<Vec<ParallelWrite>, mivon_core::error::SimError> {
@@ -694,7 +694,7 @@ pub fn evaluate_bodies_parallel(
         .map(
             |&&pid| -> Result<Vec<ParallelWrite>, mivon_core::error::SimError> {
                 let body = match body_map.get(&pid) {
-                    Some(b) => b,
+                    Some(b) => b.as_slice(),
                     None => return Ok(Vec::new()),
                 };
 
@@ -1048,5 +1048,45 @@ mod tests {
             iface_type: None,
             iface_modport: None,
         }
+    }
+
+    /// Par-03: evaluate_bodies_parallel menerima body_map berbasis Arc —
+    /// body dibagikan antar layer tanpa deep clone (regression utk
+    /// perubahan signature HashMap<usize, Arc<Vec<IrStmt>>>).
+    #[test]
+    fn evaluate_bodies_parallel_arc_body_map() {
+        let body = vec![IrStmt::BlockingAssign {
+            lhs: IrLValue::Signal(0, 8),
+            rhs: IrExpr::Signal(1, 8),
+            delay: None,
+        }];
+        let mut body_map: HashMap<usize, Arc<Vec<IrStmt>>> = HashMap::new();
+        body_map.insert(0, Arc::new(body));
+        let signals = vec![
+            Arc::new(LogicVec::fill(LogicVal::X, 8)),
+            Arc::new(LogicVec::fill(LogicVal::One, 8)),
+        ];
+        let sig_info = vec![
+            SignalInfo {
+                name: Symbol::intern("a"),
+                width: 8,
+                ..default_signal_info()
+            },
+            SignalInfo {
+                name: Symbol::intern("b"),
+                width: 8,
+                ..default_signal_info()
+            },
+        ];
+        let pids: Vec<&usize> = body_map.keys().collect();
+        let writes = evaluate_bodies_parallel(&pids, &body_map, &signals, &sig_info)
+            .expect("eval harus sukses");
+        assert_eq!(writes.len(), 1, "satu write dari satu proses");
+        assert_eq!(writes[0].0, 0, "write ke signal 0");
+        assert_eq!(
+            writes[0].2,
+            LogicVec::fill(LogicVal::One, 8),
+            "nilai = b (One)"
+        );
     }
 }
