@@ -10529,6 +10529,21 @@ diperbaiki di commit lanjutan tahap ini:
     event.rs membesar — ekstraksi modul phase2c saat tahap
     lanjutan.
 
+Re-review agent atas 92cc4c8: LOLOS — tidak ada bug blokir.
+  Kelima fix diverifikasi kebenarannya (bukan cuma keberadaan):
+  exemption own_blocking aman (overlay meniru blocking serial
+  intra-body; WAW tetap ter-guard); nba_write_counts menutup
+  celah urutan push lintas grup jalur Err (WAW Nba-Nba lintas
+  grup mustahil — keduanya ter-demosi); err_rest + flush tanpa
+  double-push (evaluate_bodies_parallel_tagged murni, writes
+  hanya via Ok); delay: Option<u64> terverifikasi (ir.rs);
+  body_write_kinds satu-satunya gate batchable (Foreach tertutup
+  penuh). 6 test regresi bermakna; dag_ff_ 13/13 PASS oleh
+  reviewer. RISK backlog tambahan dari re-review: coupling daftar
+  stmt walk vs evaluator tak di-enforce (saran debug_assert/
+  test paritas); NIT: body_write_kinds dihitung 2× utk kandidat
+  non-batchable (bisa disimpan di SeqCand).
+
 Test baru (mivon-tests/dag_serial_fallback_tests.rs, pinned +
 differential default vs --parallel):
   1. dag_ff_blocking_tmp_batch_diff — FF BlockingOnly dgn RAW
