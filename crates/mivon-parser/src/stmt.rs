@@ -403,6 +403,7 @@ impl Parser {
                 }
                 _ => {}
             }
+            let mut seq_resolved = false;
             if let Some((formals, body, decl_clock, args)) = resolved {
                 let map: std::collections::HashMap<Symbol, &Expr> =
                     formals.iter().copied().zip(args.iter()).collect();
@@ -411,9 +412,10 @@ impl Parser {
                 // juga harus ditelusuri agar s2 -> expr.
                 let mut alias_clock = None;
                 let subst = self.resolve_named_in_sequence(&subst, &mut alias_clock);
-                // Properti boolean murni (`property p; a; endproperty`) identik
+                // Properti boolean murni (property p; a; endproperty) identik
                 // dengan assertion boolean inline — jangan lewat jalur
                 // SequenceAttempt (tidak menghasilkan statistik pass/fail).
+                seq_resolved = true;
                 match subst {
                     super::types::Sequence::Expr(e) => {
                         expr_opt = Some(e);
@@ -429,15 +431,17 @@ impl Parser {
                 }
             }
             // LANG-42b: resolusi deklarasi bernama pada sequence (termasuk
-            // antecedent implication). Blok `resolved` di atas hanya menangani
+            // antecedent implication). Blok resolved di atas hanya menangani
             // body berbentuk Expr tunggal; jalur sequence di sini belum.
-            if let Some(seq) = sequence.take() {
-                let mut decl_clock = None;
-                let resolved_seq = self.resolve_named_in_sequence(&seq, &mut decl_clock);
-                if clock_event.is_none() {
-                    clock_event = decl_clock;
+            if !seq_resolved {
+                if let Some(seq) = sequence.take() {
+                    let mut decl_clock = None;
+                    let resolved_seq = self.resolve_named_in_sequence(&seq, &mut decl_clock);
+                    if clock_event.is_none() {
+                        clock_event = decl_clock;
+                    }
+                    sequence = Some(resolved_seq);
                 }
-                sequence = Some(resolved_seq);
             }
             let fail_stmt = if self.peek() == &Token::Else {
                 self.advance();
@@ -733,52 +737,72 @@ impl Parser {
         Some((Self::subst_sequence(&body, &map), clock))
     }
 
+    /// Budget total node hasil ekspansi alias SVA. Alias bercabang
+    /// (s_n = s_{n-1} ##1 s_{n-1}) tumbuh 2^n, jadi batas kedalaman saja tidak
+    /// cukup: budget node menghentikan ekspansi sebelum kehabisan memori.
+    const SVA_EXPAND_NODE_BUDGET: usize = 50_000;
+
+    /// Hitung node sebuah sequence (dipakai untuk budget ekspansi).
+    fn seq_nodes(seq: &super::types::Sequence) -> usize {
+        use super::types::Sequence;
+        match seq {
+            Sequence::Concat(a, c)
+            | Sequence::Or(a, c)
+            | Sequence::And(a, c)
+            | Sequence::Implication(a, c) => 1 + Self::seq_nodes(a) + Self::seq_nodes(c),
+            Sequence::Repeat(s, _) => 1 + Self::seq_nodes(s),
+            _ => 1,
+        }
+    }
+
     /// LANG-42b: resolusi referensi deklarasi bernama DI DALAM sequence,
     /// termasuk antecedent implication (s1 |-> c). Sebelumnya hanya body
     /// berbentuk Expr tunggal yang di-resolve, sehingga antecedent
     /// Sequence::Expr(Ident(s1)) lolos ke elaborator -> E2001.
     fn resolve_named_in_sequence(
-        &self,
+        &mut self,
         seq: &super::types::Sequence,
         decl_clock: &mut Option<ClockEvent>,
     ) -> super::types::Sequence {
-        self.resolve_named_in_sequence_inner(seq, decl_clock, &mut Vec::new())
+        let mut seen = Vec::new();
+        let mut budget = Self::SVA_EXPAND_NODE_BUDGET;
+        self.resolve_named_in_sequence_inner(seq, decl_clock, &mut seen, &mut budget)
     }
 
-    /// Rekursi + guard anti-siklus: nama yang sudah ada di stack ekspansi tidak
-    /// di-expand lagi (sequence s1; s1 ##1 a; endsequence tidak hang).
+    /// Rekursi + guard anti-siklus + budget node.
     fn resolve_named_in_sequence_inner(
-        &self,
+        &mut self,
         seq: &super::types::Sequence,
         decl_clock: &mut Option<ClockEvent>,
         seen: &mut Vec<Symbol>,
+        budget: &mut usize,
     ) -> super::types::Sequence {
         use super::types::Sequence;
         match seq {
             Sequence::Expr(Expr::Ident { name, .. }) => {
-                self.expand_named(seq, *name, &[], decl_clock, seen)
+                self.expand_named(seq, *name, &[], decl_clock, seen, budget)
             }
             Sequence::Expr(Expr::FuncCall { name, args, .. }) => {
-                self.expand_named(seq, *name, args, decl_clock, seen)
+                self.expand_named(seq, *name, args, decl_clock, seen, budget)
             }
             Sequence::Implication(a, c) => Sequence::Implication(
-                Box::new(self.resolve_named_in_sequence_inner(a, decl_clock, seen)),
-                Box::new(self.resolve_named_in_sequence_inner(c, decl_clock, seen)),
+                Box::new(self.resolve_named_in_sequence_inner(a, decl_clock, seen, budget)),
+                Box::new(self.resolve_named_in_sequence_inner(c, decl_clock, seen, budget)),
             ),
             Sequence::Concat(a, c) => Sequence::Concat(
-                Box::new(self.resolve_named_in_sequence_inner(a, decl_clock, seen)),
-                Box::new(self.resolve_named_in_sequence_inner(c, decl_clock, seen)),
+                Box::new(self.resolve_named_in_sequence_inner(a, decl_clock, seen, budget)),
+                Box::new(self.resolve_named_in_sequence_inner(c, decl_clock, seen, budget)),
             ),
             Sequence::Or(a, c) => Sequence::Or(
-                Box::new(self.resolve_named_in_sequence_inner(a, decl_clock, seen)),
-                Box::new(self.resolve_named_in_sequence_inner(c, decl_clock, seen)),
+                Box::new(self.resolve_named_in_sequence_inner(a, decl_clock, seen, budget)),
+                Box::new(self.resolve_named_in_sequence_inner(c, decl_clock, seen, budget)),
             ),
             Sequence::And(a, c) => Sequence::And(
-                Box::new(self.resolve_named_in_sequence_inner(a, decl_clock, seen)),
-                Box::new(self.resolve_named_in_sequence_inner(c, decl_clock, seen)),
+                Box::new(self.resolve_named_in_sequence_inner(a, decl_clock, seen, budget)),
+                Box::new(self.resolve_named_in_sequence_inner(c, decl_clock, seen, budget)),
             ),
             Sequence::Repeat(s, n) => Sequence::Repeat(
-                Box::new(self.resolve_named_in_sequence_inner(s, decl_clock, seen)),
+                Box::new(self.resolve_named_in_sequence_inner(s, decl_clock, seen, budget)),
                 *n,
             ),
             other => other.clone(),
@@ -787,28 +811,41 @@ impl Parser {
 
     /// Ekspansi satu referensi bernama (dengan substitusi argumen) lalu telusuri
     /// body hasil ekspansi agar alias bertingkat (s1 -> s2 -> expr) ikut
-    /// tersubstitusi. Parameter seen mencegah siklus.
+    /// tersubstitusi. seen mencegah siklus; budget mencegah ledakan ukuran.
     fn expand_named(
-        &self,
+        &mut self,
         original: &super::types::Sequence,
         name: Symbol,
         args: &[Expr],
         decl_clock: &mut Option<ClockEvent>,
         seen: &mut Vec<Symbol>,
+        budget: &mut usize,
     ) -> super::types::Sequence {
-        // Guard resource-exhaustion: alias bercabang (s_n = s_{n-1} ##1 s_{n-1})
-        // tumbuh eksponensial. Batas 32 level jauh di atas pemakaian nyata dan
-        // mencegah OOM pada input adversarial.
-        if seen.contains(&name) || seen.len() >= 32 {
+        if seen.contains(&name) {
             return original.clone();
         }
         match self.lookup_named_seq(&name, args) {
             Some((body, clock)) => {
+                let nodes = Self::seq_nodes(&body);
+                if nodes > *budget {
+                    // Jangan diam-diam: beri warning agar pengguna tahu kenapa
+                    // referensi dibiarkan unresolved (bukan sekadar E2001).
+                    self.push_warning_at(
+                        format!(
+                            "ekspansi SVA sequence/property melebihi budget {} node; referensi dibiarkan unresolved",
+                            Self::SVA_EXPAND_NODE_BUDGET
+                        ),
+                        0,
+                        0,
+                    );
+                    return original.clone();
+                }
+                *budget -= nodes;
                 if decl_clock.is_none() {
                     *decl_clock = clock;
                 }
                 seen.push(name);
-                let out = self.resolve_named_in_sequence_inner(&body, decl_clock, seen);
+                let out = self.resolve_named_in_sequence_inner(&body, decl_clock, seen, budget);
                 seen.pop();
                 out
             }

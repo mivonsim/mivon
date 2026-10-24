@@ -2737,7 +2737,7 @@ impl Parser {
             Token::Checker => {
                 // LANG-10/41: `checker name (ports); items endchecker` —
                 // deklarasi checker (module scope & compilation-unit scope).
-                let cd = self.parse_checker_decl()?;
+                let cd = self.with_named_scope(|p| p.parse_checker_decl())?;
                 Ok(Some(ModuleItem::Checker(cd)))
             }
             Token::Alias => {

@@ -560,4 +560,76 @@ endmodule
         }
         assert!(found, "assertion p1 harus jadi PropertySeq, bukan di-skip");
     }
+
+    /// LANG-42b: checker di dalam module punya scope SVA sendiri.
+    #[test]
+    fn named_sequence_does_not_leak_from_checker() {
+        let src = "module m(input logic clk, a, cs);\n  checker chk(input x);\n    sequence cs; x ##1 x; endsequence\n  endchecker\n  assert property (@(posedge clk) a |-> cs);\nendmodule\n";
+        let design = parse_src(src);
+        let mut cons_ids = Vec::new();
+        for item in &design.modules[0].items {
+            if let crate::types::ModuleItem::PropertyAssert(s) = item {
+                if let crate::Stmt::PropertySeq {
+                    sequence: crate::types::Sequence::Implication(_, c),
+                    ..
+                } = &**s
+                {
+                    seq_idents(c, &mut cons_ids);
+                }
+            }
+        }
+        assert_eq!(
+            cons_ids,
+            vec!["cs".to_string()],
+            "cs di module adalah sinyal, bukan sequence checker"
+        );
+    }
+
+    /// Budget ekspansi: alias bercabang 2^n harus berhenti cepat, bukan OOM.
+    #[test]
+    fn exponential_alias_expansion_is_bounded() {
+        let mut src = String::from("module m(input logic clk, a, b);\n");
+        src.push_str("  sequence s0; a; endsequence\n");
+        for i in 1..=24 {
+            src.push_str(&format!(
+                "  sequence s{}; s{} ##1 s{}; endsequence\n",
+                i,
+                i - 1,
+                i - 1
+            ));
+        }
+        src.push_str("  assert property (@(posedge clk) s24 |-> b);\nendmodule\n");
+        let start = std::time::Instant::now();
+        let design = parse_src(&src);
+        let elapsed = start.elapsed();
+        let ante = first_antecedent(&design);
+        let mut ids = Vec::new();
+        seq_idents(&ante, &mut ids);
+        assert!(
+            ids.len() < 50_000,
+            "hasil ekspansi harus dibatasi budget, dapat {}",
+            ids.len()
+        );
+        assert!(
+            elapsed.as_secs() < 10,
+            "ekspansi harus berhenti cepat, butuh {:?}",
+            elapsed
+        );
+    }
+
+    /// Clock dari deklarasi alias harus terbawa bila assertion tanpa clock.
+    #[test]
+    fn alias_declaration_clock_is_propagated() {
+        let src = "module m(input logic clk, a, b);\n  sequence s2; @(posedge clk) a ##1 b; endsequence\n  property p1; s2; endproperty\n  assert property (p1);\nendmodule\n";
+        let design = parse_src(src);
+        let mut clock_ok = false;
+        for item in &design.modules[0].items {
+            if let crate::types::ModuleItem::PropertyAssert(s) = item {
+                if let crate::Stmt::PropertySeq { clock_event, .. } = &**s {
+                    clock_ok = matches!(clock_event, Some(crate::types::ClockEvent::Posedge(_)));
+                }
+            }
+        }
+        assert!(clock_ok, "clock deklarasi alias harus dipakai assertion");
+    }
 }

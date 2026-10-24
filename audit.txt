@@ -9549,6 +9549,8 @@ Diperbaiki:
 - lib.rs: helper with_named_scope(f) (snapshot/restore) dipakai di arm Module,
   Interface, Program, dan Checker (sebelumnya blok snapshot diduplikasi 2x).
 - stmt.rs expand_named: cap seen.len() >= 32 (selain guard siklus).
+  CATATAN: cap ini salah dimensi (kedalaman, bukan ukuran) — diganti budget
+  node di ROUND 166.
 - stmt.rs blok resolved: subst hasil substitusi ditelusuri lagi
   (resolve_named_in_sequence), clock = decl_clock.or(alias_clock).
 - test leak diperbaiki: assert antecedent = [a] DAN consequent = [ack].
@@ -9571,5 +9573,43 @@ dan CU-scope lintas FILE belum didukung (Parser per file) — pre-existing.
      program -> mode analisis, tanpa E2001.
    - cargo nextest run --workspace --features dev --no-fail-fast:
      ✅ 3588 passed, 0 failed, 24 skipped.
+
+\=======================================================================//
+
+═══ ROUND 166 — PARSER-09: budget node + scoping checker ═══
+
+Review agent (Explore) atas ROUND 165: fix scoping benar & non-vakum, tetapi
+guard resource salah dimensi.
+
+MAJOR: cap seen.len() >= 32 membatasi KEDALAMAN, bukan UKURAN. Pola
+s_n = s_{n-1} ##1 s_{n-1} tumbuh 2^n: n=20 tetap 12,8 s / 528 MB (tidak
+berubah dari pra-fix), dan OOM sebelum depth 32. Klaim ROUND 165 bahwa
+ledakan eksponensial tertutup karena itu TIDAK akurat.
+
+MEDIUM: (a) checker di dalam module tidak di-scope (hanya checker unit scope);
+(b) cap depth memotong chain linear legal >= 33 secara senyap; (c) tidak ada
+test untuk cap, arm checker, dan propagasi clock alias.
+
+Diperbaiki:
+- stmt.rs: SVA_EXPAND_NODE_BUDGET = 50_000 node + seq_nodes(). expand_named
+  mengurangi budget per ekspansi; bila habis -> push_warning_at (tidak lagi
+  senyap) dan referensi dibiarkan unresolved. Cap depth dihapus (guard siklus
+  seen.contains tetap).
+- stmt.rs: flag seq_resolved — jalur resolved tidak di-resolve dua kali.
+- lib.rs: parse_checker_decl di module item dibungkus with_named_scope.
+- +3 test: named_sequence_does_not_leak_from_checker,
+  exponential_alias_expansion_is_bounded (24 level selesai 0,13 s),
+  alias_declaration_clock_is_propagated.
+- audit.txt: klaim ROUND 165 dikoreksi (lihat baris cap di atas).
+
+Sisa (pre-existing, dicatat): sequence di package membuat parse package gagal
+lalu skip_to_next_top_level() membuang sisa file — bug robustness terpisah.
+
+📊 VERIFIKASI ROUND 166:
+   - cargo nextest run -p mivon-parser sva::tests -> 11 passed.
+   - cargo check -p mivon-parser --all-targets -> 0 warning, 0 error.
+   - Ekspansi 2^24 level: 0,13 s (sebelumnya >12 s pada 2^20).
+   - cargo nextest run --workspace --features dev --no-fail-fast:
+     ✅ 3591 passed, 0 failed, 24 skipped.
 
 \=======================================================================//
