@@ -825,8 +825,22 @@ pub fn body_write_kinds(body: &[IrStmt]) -> Option<(HashSet<SignalId>, HashSet<S
     ) -> Option<()> {
         for stmt in stmts {
             match stmt {
-                IrStmt::BlockingAssign { lhs, .. } => lvalue_ids(lhs, blocking)?,
-                IrStmt::NonBlockingAssign { lhs, .. } => lvalue_ids(lhs, nba)?,
+                // Review R186 BUG-4: assign ber-delay wajib serial — serial
+                // sample sekarang + tulis di t+d dan block di-abort sampai
+                // t+d (block.rs); evaluator paralel mengabaikan delay →
+                // tulis segera + lanjut stmt berikutnya → divergen.
+                IrStmt::BlockingAssign { lhs, delay, .. } => {
+                    if delay.is_some() {
+                        return None;
+                    }
+                    lvalue_ids(lhs, blocking)?
+                }
+                IrStmt::NonBlockingAssign { lhs, delay, .. } => {
+                    if delay.is_some() {
+                        return None;
+                    }
+                    lvalue_ids(lhs, nba)?
+                }
                 IrStmt::Block { stmts } => walk(stmts, blocking, nba)?,
                 IrStmt::If {
                     true_branch,
@@ -855,10 +869,14 @@ pub fn body_write_kinds(body: &[IrStmt]) -> Option<(HashSet<SignalId>, HashSet<S
                 }
                 IrStmt::LoopWhile { body, .. }
                 | IrStmt::LoopDoWhile { body, .. }
-                | IrStmt::Repeat { body, .. }
-                | IrStmt::Foreach { body, .. } => {
+                | IrStmt::Repeat { body, .. } => {
                     walk(body, blocking, nba)?;
                 }
+                // Review R186 BUG-5: Foreach wajib serial — evaluator
+                // paralel hardcode elem_width = 1 sementara serial pakai
+                // sig_info.elem_width; array elemen >1 bit → iterasi/index
+                // salah → divergen.
+                IrStmt::Foreach { .. } => return None,
                 IrStmt::Null => {}
                 _ => return None,
             }

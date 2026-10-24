@@ -10485,6 +10485,50 @@ Self-review ROUND 186 menemukan 1 bug — diperbaiki:
   + FF serial ($display; s <= s+1) + FF batchable (w <= 5);
   serial inline harus pemenang (s = 10), w = 5.
 
+Review agent ROUND 186 (commit 89d55c2) menemukan 5 bug — semua
+diperbaiki di commit lanjutan tahap ini:
+  BUG-1: guard "Blocking membaca blocking write kandidat batch
+    lain" hilang (komentar mengklaim ada, implementasi tidak) —
+    pembaca di-defer membaca snapshot pasca-loop (nilai baru)
+    sementara serial membaca nilai lama. Fix: reads/iff ∩
+    blocking_writes (exclude own_blocking — RAW intra-body aman
+    via overlay) → demosi. Test: dag_ff_reads_batch_blocking_write_diff.
+  BUG-2: WAW antar dua kandidat NbaOnly batch tak ter-guard —
+    salah satu ter-demosi-inline → push NBA-nya saat fase 2,
+    yang lain di-defer → pemenang WAW terbalik. Fix: agregat
+    nba_write_counts (batchable NbaOnly) + demosi overlap writeset.
+    Test: dag_ff_waw_nba_pair_diff (x <= 5 vs x <= y; pemenang
+    serial = pid terbesar → x = y = 3).
+  BUG-3: Err evaluator di grup akhir → return dini melewati flush
+    nba_pushes → push NBA grup sukses hilang senyap. Fix: flag
+    err_rest + break; serial rest dieval lalu flush batch tetap
+    jalan (urutan konsisten jalur normal: inline serial dulu,
+    flush batch terakhir). Test: dag_ff_err_group_keeps_batch_
+    nba_pushes_diff ($countones → SysFunc → Err; push d wajib
+    ter-commit, d = q = 3, e = 1).
+  BUG-4: body_write_kinds tidak mengecek delay assign — assign
+    ber-delay (BlockingAssign/NonBlockingAssign delay Some) lolos
+    klasifikasi padahal evaluator paralel mengabaikan delay. Fix:
+    delay Some → None → serial (konservatif). Catatan verifikasi:
+    probe menunjukkan final-state serial juga mengabaikan delay
+    (q = r = d lama) — test dag_ff_delayed_assign_serial_diff
+    mengunci klasifikasi + pinned (differential penangkap regresi
+    bila evaluator paralel menyimpang).
+  BUG-5: Foreach diizinkan padahal evaluator paralel hardcode
+    elem_width = 1 (serial pakai sig_info.elem_width) — array
+    elemen >1 bit → iterasi/index salah. Fix: Foreach → None →
+    serial. Test: dag_ff_foreach_wide_elems_serial_diff (unpacked
+    int uarr[4]; probe serial foreach unpacked ter-index benar:
+    a0 = 1, a1 = 3).
+  RISK (backlog, tidak blokir): batas iterasi loop beda (serial
+    100_000 error vs parallel 1_000_000 lanjut normal — loop
+    runaway divergen + diag hilang); snapshot penuh per grup
+    O(grup × sinyal) — sarankan snapshot sparse union access
+    (mirror jalur comb); guard others_read over-demosi (pola FF
+    menulis reg yang dibaca FF lain → serial — tahap lanjutan);
+    event.rs membesar — ekstraksi modul phase2c saat tahap
+    lanjutan.
+
 Test baru (mivon-tests/dag_serial_fallback_tests.rs, pinned +
 differential default vs --parallel):
   1. dag_ff_blocking_tmp_batch_diff — FF BlockingOnly dgn RAW
@@ -10494,7 +10538,14 @@ differential default vs --parallel):
      LoopFor berbatas RUNTIME (i < n, n sinyal — tak di-unroll
      elaborator; arm LoopFor body_write_kinds terlatih). acc = b
      = 6 (n = 3 × +2), w = 5.
-  3. dag_ff_waw_batch_vs_serial_inline_diff — regresi di atas.
+  3. dag_ff_waw_batch_vs_serial_inline_diff — regresi self-review.
+  4. dag_ff_reads_serial_blocking_write_diff — regresi BUG-1.
+  5. dag_ff_reads_batch_blocking_write_diff — regresi BUG-2 guard
+     pembaca (q2 = q1 pra-toggle; ~4-bit → q1 bergantian 0/15).
+  6. dag_ff_err_group_keeps_batch_nba_pushes_diff — regresi BUG-3.
+  7. dag_ff_waw_nba_pair_diff — regresi BUG-2 (WAW Nba-vs-Nba).
+  8. dag_ff_delayed_assign_serial_diff — regresi BUG-4.
+  9. dag_ff_foreach_wide_elems_serial_diff — regresi BUG-5.
   Regresi lama lulus: dag_ff_iff_position_diff (BUG-1 R186: iff
   membaca blocking-write FF lain kini terdeteksi via iff_reads —
   kandidat penulis didemosi; q = 10 ter-pinned kembali),
@@ -10505,8 +10556,8 @@ differential default vs --parallel):
 
 VERIFIKASI ROUND 186 (final):
    - cargo fmt --all --check -> bersih.
-   - cargo nextest run --workspace --features dev: 3628 passed,
-     24 skipped (3625 -> 3628, +3 test).
+   - cargo nextest run --workspace --features dev: 3634 passed,
+     24 skipped (3625 -> 3634, +9 test).
 
 Status PAR-02: tahap 3 SELESAI. Open: AlwaysWithDelay,
 parallelisasi seq_bodies dalam domain, kebijakan gate statement

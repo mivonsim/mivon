@@ -553,3 +553,207 @@ fn dag_ff_waw_batch_vs_serial_inline_diff() {
         );
     }
 }
+
+/// Regresi review R186 BUG-1: FF NbaOnly batch membaca sinyal yang
+/// ditulis BLOCKING oleh FF serial inline ($display -> kinds None).
+/// Serial: q membaca en lama. Tanpa guard, q di-defer -> snapshot
+/// batch pasca-loop berisi en baru -> q = en baru (divergen). Guard
+/// serial_blocking_writes mendemosi q -> inline di posisinya.
+const FF_BUG1_SRC: &str = r#"
+module ff_bug1_top;
+  logic clk;
+  logic [3:0] en, q, w;
+  initial begin clk = 0; en = 0; q = 0; w = 0; #40; end
+  always #5 clk = ~clk;
+  always_ff @(posedge clk) q <= en;
+  always_ff @(posedge clk) begin
+    $display("t");
+    en = en + 4'd1;
+  end
+  always_ff @(posedge clk) w <= 4'd5;
+endmodule
+"#;
+
+#[test]
+fn dag_ff_reads_serial_blocking_write_diff() {
+    for (name, expect) in [("q", "1001"), ("en", "1010"), ("w", "0101")] {
+        let d = run_signal_bits(FF_BUG1_SRC, name, false);
+        let g = run_signal_bits(FF_BUG1_SRC, name, true);
+        assert_eq!(
+            g, d,
+            "{name}: DAG harus identik serial (baca blocking write serial inline)"
+        );
+        assert_eq!(g, expect, "{name}: q harus membaca en PRA-increment (9)");
+    }
+}
+
+/// Regresi review R186 BUG-2: FF BlockingOnly PEMBACA blocking write
+/// FF batch lain tidak didemosi (hanya penulisnya, via stale readers).
+/// Serial: q2 = q1 lama. Tanpa guard: penulis q1 didemosi-inline,
+/// pembaca q2 tetap ter-batch -> snapshot pasca-loop berisi q1 baru.
+const FF_BUG2_SRC: &str = r#"
+module ff_bug2_top;
+  logic clk;
+  logic [3:0] q1, q2, w;
+  initial begin clk = 0; q1 = 0; q2 = 0; w = 0; #40; end
+  always #5 clk = ~clk;
+  always_ff @(posedge clk) q2 = q1;
+  always_ff @(posedge clk) q1 = ~q1;
+  always_ff @(posedge clk) w <= 4'd5;
+endmodule
+"#;
+
+#[test]
+fn dag_ff_reads_batch_blocking_write_diff() {
+    for (name, expect) in [("q1", "0000"), ("q2", "1111"), ("w", "0101")] {
+        let d = run_signal_bits(FF_BUG2_SRC, name, false);
+        let g = run_signal_bits(FF_BUG2_SRC, name, true);
+        assert_eq!(
+            g, d,
+            "{name}: DAG harus identik serial (RAW lintas FF blocking)"
+        );
+        assert_eq!(g, expect, "{name}: q2 harus membaca q1 PRA-toggle (15)");
+    }
+}
+
+/// Regresi review R186 BUG-3: Err evaluator paralel di grup akhir
+/// membuat push NBA grup sukses hilang senyap (return dini melewati
+/// flush). $countones -> SysFunc -> Err di evaluate_expr_simple; FF
+/// d (grup sukses) push NBA tertahan wajib tetap ter-flush.
+const FF_BUG3_SRC: &str = r#"
+module ff_bug3_top;
+  logic clk;
+  logic [3:0] en, d, q, e, w;
+  initial begin clk = 0; en = 3; d = 0; q = 0; e = 0; w = 0; #40; end
+  always #5 clk = ~clk;
+  always_ff @(posedge clk) d <= en;
+  always_ff @(posedge clk) q <= d;
+  always_ff @(posedge clk) e <= ($countones(q) > 0) ? 4'd1 : 4'd2;
+  always_ff @(posedge clk) w <= 4'd5;
+endmodule
+"#;
+
+#[test]
+fn dag_ff_err_group_keeps_batch_nba_pushes_diff() {
+    for (name, expect) in [("d", "0011"), ("q", "0011"), ("e", "0001"), ("w", "0101")] {
+        let dflt = run_signal_bits(FF_BUG3_SRC, name, false);
+        let g = run_signal_bits(FF_BUG3_SRC, name, true);
+        assert_eq!(
+            g, dflt,
+            "{name}: DAG harus identik serial (Err grup tidak boleh buang push NBA)"
+        );
+        assert_eq!(g, expect, "{name}: push NBA grup sukses wajib ter-commit");
+    }
+}
+
+/// Regresi review R186 BUG-2: WAW antar dua kandidat NbaOnly batch.
+/// N1 (x <= 5) dan N2 (x <= y; y ditulis blocking FF C) sama-sama
+/// menulis x. N2 ter-demosi (baca blocking write y) -> push NBA x
+/// inline saat fase 2; tanpa guard WAW Nba-vs-Nba, N1 di-defer ->
+/// push-nya SETELAH N2 -> x = 5, padahal serial pemenangnya N2
+/// (pid lebih besar) -> x = y = 3.
+const FF_BUG2WAW_SRC: &str = r#"
+module ff_bug2waw_top;
+  logic clk;
+  logic [3:0] x, y;
+  initial begin clk = 0; x = 0; y = 0; #40; end
+  always #5 clk = ~clk;
+  always_ff @(posedge clk) x <= 4'd5;
+  always_ff @(posedge clk) x <= y;
+  always_ff @(posedge clk) y = 4'd3;
+endmodule
+"#;
+
+#[test]
+fn dag_ff_waw_nba_pair_diff() {
+    for (name, expect) in [("x", "0011"), ("y", "0011")] {
+        let d = run_signal_bits(FF_BUG2WAW_SRC, name, false);
+        let g = run_signal_bits(FF_BUG2WAW_SRC, name, true);
+        assert_eq!(
+            g, d,
+            "{name}: DAG harus identik serial (WAW dua kandidat NbaOnly)"
+        );
+        assert_eq!(
+            g, expect,
+            "{name}: pemenang WAW harus N2 pid-terbesar (x = y = 3)"
+        );
+    }
+}
+
+/// Regresi review R186 BUG-4: assign NBA ber-delay (`q <= #2 d`)
+/// wajib serial (body_write_kinds None utk delay Some). Catatan: pada
+/// engine ini serial juga mengabaikan delay secara final-state (q = r
+/// = d lama) — test ini mengunci klasifikasi serial + pinned; bila
+/// klasifikasi dilonggarkan dan evaluator paralel berbeda, differential
+/// menangkap.
+const FF_BUG4_SRC: &str = r#"
+module ff_bug4_top;
+  logic clk;
+  logic [3:0] d, q, r, w;
+  initial begin clk = 0; d = 0; q = 0; r = 0; w = 0; #40; end
+  always #5 clk = ~clk;
+  always_ff @(posedge clk) d <= d + 4'd1;
+  always_ff @(posedge clk) begin
+    q <= #2 d;
+    r <= d;
+  end
+  always_ff @(posedge clk) w <= 4'd5;
+endmodule
+"#;
+
+#[test]
+fn dag_ff_delayed_assign_serial_diff() {
+    for (name, expect) in [("d", "1010"), ("q", "1001"), ("r", "1001"), ("w", "0101")] {
+        let dflt = run_signal_bits(FF_BUG4_SRC, name, false);
+        let g = run_signal_bits(FF_BUG4_SRC, name, true);
+        assert_eq!(
+            g, dflt,
+            "{name}: DAG harus identik serial (assign ber-delay -> serial)"
+        );
+        assert_eq!(
+            g, expect,
+            "{name}: pinned serial (delay tak mengubah final-state)"
+        );
+    }
+}
+
+/// Regresi review R186 BUG-5: Foreach wajib serial — evaluator
+/// paralel hardcode elem_width = 1 (serial pakai sig_info.elem_width);
+/// unpacked int array (elemen 32-bit) -> iterasi/index salah di jalur
+/// paralel. Probe serial: foreach unpacked array ter-index benar.
+const FF_BUG5_SRC: &str = r#"
+module ff_bug5_top;
+  logic clk;
+  int uarr[4];
+  logic [7:0] a0, a1;
+  logic [3:0] w;
+  initial begin
+    clk = 0; uarr[0] = 1; uarr[1] = 3; uarr[2] = 0; uarr[3] = 0;
+    a0 = 0; a1 = 0; w = 0; #40;
+  end
+  always #5 clk = ~clk;
+  always_ff @(posedge clk) begin
+    foreach (uarr[j]) begin
+      if (j == 0) a0 <= uarr[j][7:0];
+      else if (j == 1) a1 <= uarr[j][7:0];
+    end
+  end
+  always_ff @(posedge clk) w <= 4'd5;
+endmodule
+"#;
+
+#[test]
+fn dag_ff_foreach_wide_elems_serial_diff() {
+    for (name, expect) in [("a0", "00000001"), ("a1", "00000011"), ("w", "0101")] {
+        let d = run_signal_bits(FF_BUG5_SRC, name, false);
+        let g = run_signal_bits(FF_BUG5_SRC, name, true);
+        assert_eq!(
+            g, d,
+            "{name}: DAG harus identik serial (Foreach elemen 32-bit -> serial)"
+        );
+        assert_eq!(
+            g, expect,
+            "{name}: elemen array harus ter-copy utuh per 8-bit"
+        );
+    }
+}

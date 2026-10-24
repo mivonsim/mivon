@@ -1162,25 +1162,59 @@ impl SimulationEngine {
             }
             return Ok(());
         }
-        // Agregat fase 1: serial_writes (non-batchable), blocking_writes +
-        // counts (blocking batchable), reads_count (efektif = body ∪ iff,
+        // Agregat fase 1: serial_writes (non-batchable) dipecah blocking
+        // vs NBA — hanya blocking write serial yang berbahaya dibaca batch
+        // (diterapkan inline segera; NBA write serial commit di NBA region
+        // sehingga aman dibaca stale — review R186 BUG-1). Kind None →
+        // semua tulisannya dianggap blocking (konservatif). blocking_writes
+        // + counts (blocking batchable), reads_count (efektif = body ∪ iff,
         // per kandidat sekali per sinyal).
         let mut serial_writes: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        let mut serial_blocking_writes: std::collections::HashSet<usize> =
+            std::collections::HashSet::new();
         let mut blocking_writes: std::collections::HashSet<usize> =
             std::collections::HashSet::new();
         let mut blocking_write_counts: std::collections::HashMap<usize, usize> =
+            std::collections::HashMap::new();
+        let mut nba_write_counts: std::collections::HashMap<usize, usize> =
             std::collections::HashMap::new();
         let mut reads_count: std::collections::HashMap<usize, usize> =
             std::collections::HashMap::new();
         for c in &cands {
             if !c.batchable {
                 serial_writes.extend(c.access.writes.iter().copied());
+                let kinds = self
+                    .process_body_arcs
+                    .get(&c.pid)
+                    .and_then(|b| crate::scheduler::sim_dag::body_write_kinds(b.as_slice()));
+                match kinds {
+                    Some((bw, nw)) => {
+                        for s in c.access.writes.iter() {
+                            if bw.contains(s) || !nw.contains(s) {
+                                serial_blocking_writes.insert(*s);
+                            }
+                        }
+                    }
+                    None => {
+                        serial_blocking_writes.extend(c.access.writes.iter().copied());
+                    }
+                }
             }
             if c.batchable && c.blocking_only {
                 for s in c.own_blocking.iter() {
                     *blocking_write_counts.entry(*s).or_insert(0) += 1;
                 }
                 blocking_writes.extend(c.own_blocking.iter().copied());
+            }
+            // Review R186 BUG-2: WAW antar kandidat NbaOnly batch — bila
+            // salah satu ter-demosi-inline (mis. baca blocking write), push
+            // NBA-nya terjadi saat fase 2 sementara kandidat lain di-defer
+            // (push setelahnya) → pemenang WAW terbalik. Tulisannya dihitung
+            // di sini; overlap → demosi keduanya (konservatif).
+            if c.batchable && !c.blocking_only {
+                for s in c.access.writes.iter() {
+                    *nba_write_counts.entry(*s).or_insert(0) += 1;
+                }
             }
             let mut effective = c.access.reads.clone();
             effective.extend(c.iff_reads.iter().copied());
@@ -1218,30 +1252,40 @@ impl SimulationEngine {
                 reads_count.get(s).copied().unwrap_or(0) > if own_effective(s) { 1 } else { 0 }
             };
             let demote = if c.blocking_only {
-                // Blocking: (i) membaca tulisan serial inline; (ii) membaca
-                // blocking write kandidat lain (urutan grup ≠ pid);
-                // (iii) WAW dgn serial/blocking lain; (iv) menulis sinyal
-                // yang dibaca kandidat lain (defer → basi).
-                !c.access.reads.is_disjoint(&serial_writes)
-                    || !c.iff_reads.is_disjoint(&serial_writes)
+                // Blocking: (i) membaca blocking write serial inline;
+                // (ii) membaca blocking write kandidat batch lain (urutan
+                // grup ≠ pid — review R186 BUG-2; RAW intra-body dikecualikan
+                // via own_blocking, aman via overlay); (iii) WAW dgn
+                // serial/blocking lain; (iv) menulis sinyal yang dibaca
+                // kandidat lain (defer → basi).
+                !c.access.reads.is_disjoint(&serial_blocking_writes)
+                    || !c.iff_reads.is_disjoint(&serial_blocking_writes)
                     || !c.access.writes.is_disjoint(&serial_writes)
+                    || c.access
+                        .reads
+                        .iter()
+                        .chain(c.iff_reads.iter())
+                        .any(|s| blocking_writes.contains(s) && !c.own_blocking.contains(s))
                     || c.own_blocking.iter().any(|s| {
                         blocking_writes.contains(s)
                             && blocking_write_counts.get(s).copied().unwrap_or(0) > 1
                     })
                     || c.own_blocking.iter().any(&others_read)
-                    || c.iff_reads.iter().any(|s| {
-                        serial_writes.contains(s)
-                            || (blocking_writes.contains(s)
-                                && blocking_write_counts.get(s).copied().unwrap_or(0) > 1)
-                    })
             } else {
-                // Nba: membaca blocking write kandidat lain (body/iff)
-                // → defer membaca nilai basi; WAW dgn serial inline
-                // (urutan push NBA berubah bila defer).
+                // Nba: membaca blocking write (serial inline ATAU batch
+                // lain, body/iff — review R186 BUG-1: blocking write serial
+                // diterapkan inline segera, snapshot batch melihat nilai
+                // baru sementara serial asli membaca nilai lama); WAW dgn
+                // serial inline (urutan push NBA berubah bila defer).
                 !c.access.reads.is_disjoint(&blocking_writes)
+                    || !c.access.reads.is_disjoint(&serial_blocking_writes)
+                    || !c.iff_reads.is_disjoint(&blocking_writes)
+                    || !c.iff_reads.is_disjoint(&serial_blocking_writes)
                     || !c.access.writes.is_disjoint(&serial_writes)
-                    || c.iff_reads.iter().any(|s| blocking_writes.contains(s))
+                    || c.access
+                        .writes
+                        .iter()
+                        .any(|s| nba_write_counts.get(s).copied().unwrap_or(0) > 1)
             };
             if demote {
                 let body = match &self.design.top.processes[c.pid] {
@@ -1312,10 +1356,13 @@ impl SimulationEngine {
         // berikutnya melihatnya), NBA writes dikumpulkan ter-tag lalu
         // di-push terurut pid setelah semua grup (commit identik serial).
         // Err grup → fallback serial grup itu + grup berikutnya (urutan
-        // pid; grup sebelumnya sudah ter-apply dan konvergen dgn
-        // fixed-point loop domain).
+        // pid); flush NBA batch tetap jalan di akhir (review R186 BUG-3:
+        // return dini membuat push grup sukses hilang senyap). Urutan
+        // konsisten dgn jalur normal: inline serial dulu, flush batch
+        // terakhir.
         let mut nba_pushes: Vec<(usize, Vec<crate::scheduler::sim_dag::ParallelWrite>)> =
             Vec::new();
+        let mut err_rest: Option<Vec<usize>> = None;
         for (gi, group) in groups.iter().enumerate() {
             let pids: Vec<&usize> = group.iter().map(|&i| &batch[i].pid).collect();
             // Snapshot penuh per grup — blocking writes grup sebelumnya
@@ -1344,16 +1391,24 @@ impl SimulationEngine {
                         rest.extend(g.iter().copied());
                     }
                     rest.sort_unstable();
-                    for &i in &rest {
-                        let pid = batch[i].pid;
-                        let body = match &self.design.top.processes[pid] {
-                            Process::Sequential { body, .. } => body.clone(),
-                            _ => continue,
-                        };
-                        self.evaluate_stmt_block(&body)?;
-                    }
-                    return Ok(());
+                    err_rest = Some(rest);
                 }
+            }
+            if err_rest.is_some() {
+                break;
+            }
+        }
+        // (D) fallback serial: kandidat grup Err + semua grup berikutnya
+        // dieval inline (urutan pid). Flush NBA batch tetap jalan di akhir
+        // — push grup sukses TIDAK boleh hilang (review R186 BUG-3).
+        if let Some(rest) = err_rest {
+            for &i in &rest {
+                let pid = batch[i].pid;
+                let body = match &self.design.top.processes[pid] {
+                    Process::Sequential { body, .. } => body.clone(),
+                    _ => continue,
+                };
+                self.evaluate_stmt_block(&body)?;
             }
         }
         nba_pushes.sort_by_key(|(pid, _)| *pid);
