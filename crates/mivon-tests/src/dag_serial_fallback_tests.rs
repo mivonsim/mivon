@@ -154,3 +154,34 @@ fn dag_vs_default_passive_slice_chain_identical() {
     assert_eq!(qd, expect, "q default beda pin: {qd}");
     assert_eq!(qg, expect, "q dag beda pin: {qg}");
 }
+
+/// Par-03 tahap 2 (differential snapshot): transisi dalam SATU batch DAG.
+/// initial #1 menulis d (X -> A5) di t=1; e dan f KEDUANYA ter-trigger oleh
+/// d (f membaca e DAN d) sehingga satu batch berisi dua layer: e=~d
+/// (layer0) lalu f=e^d (layer1, RAW pada e). Layer1 wajib melihat e hasil
+/// layer0 lewat snapshot yang di-refresh differential — bila basi (e=X),
+/// f=X permanen. Hasil wajib identik default DAN ter-pinned.
+const CHAIN_SRC: &str = r#"
+module chain_top;
+  logic [7:0] d;
+  logic [7:0] e;
+  logic [7:0] f;
+  initial begin
+    #1 d = 8'hA5;
+  end
+  assign e = ~d;
+  assign f = e ^ d;
+endmodule
+"#;
+
+#[test]
+fn dag_differential_snapshot_cross_layer_chain() {
+    let ed = run_signal_bits(CHAIN_SRC, "e", false);
+    let eg = run_signal_bits(CHAIN_SRC, "e", true);
+    assert_eq!(eg, ed, "e dag harus identik default");
+    assert_eq!(eg, "01011010", "e = ~A5 = 5A ter-pinned");
+    let fd = run_signal_bits(CHAIN_SRC, "f", false);
+    let fg = run_signal_bits(CHAIN_SRC, "f", true);
+    assert_eq!(fg, fd, "f dag harus identik default");
+    assert_eq!(fg, "11111111", "f = 5A ^ A5 = FF ter-pinned");
+}

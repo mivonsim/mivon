@@ -2165,6 +2165,12 @@ impl SimulationEngine {
         };
         // Evaluate each layer sequentially (processes WITHIN a layer are parallel)
         // Pass process_body_cache langsung — zero clone per cycle
+        // Par-03 tahap 2 (differential snapshot): snapshot dibangun PENUH
+        // sekali (layer pertama / pasca fallback serial), layer berikutnya
+        // hanya me-refresh Arc sinyal yang ditulis layer sebelumnya.
+        let mut signal_snapshot: Vec<Arc<LogicVec>> = Vec::new();
+        let mut snapshot_dirty_all = true;
+        let mut dirty_signals: Vec<usize> = Vec::new();
         for layer in &dag_layers {
             let layer_pids: Vec<&usize> = layer.iter().filter(|pid| pids.contains(pid)).collect();
             if layer_pids.is_empty() {
@@ -2178,12 +2184,24 @@ impl SimulationEngine {
             // `b[i] = ~a[i]` DAG=128 utk 8 bit, ditemukan fuzzer).
             // Baca nilai PENDING (next_signals bila changed) — write_signal
             // antar layer menulis ke delta-pending, state.signals belum commit.
-            let signal_snapshot: Vec<Arc<LogicVec>> = (0..self.state.signals.len())
-                .map(|i| {
-                    // Sinyal besar belum ditulis → lazy (tanpa materialisasi).
-                    Arc::new(self.state.snapshot_signal(i))
-                })
-                .collect();
+            if snapshot_dirty_all {
+                signal_snapshot = (0..self.state.signals.len())
+                    .map(|i| {
+                        // Sinyal besar belum ditulis -> lazy (tanpa materialisasi).
+                        Arc::new(self.state.snapshot_signal(i))
+                    })
+                    .collect();
+                snapshot_dirty_all = false;
+            } else {
+                // Par-03 tahap 2: differential — rebuild hanya sinyal yang
+                // ditulis layer sebelumnya; sinyal lain pakai Arc lama.
+                for &i in &dirty_signals {
+                    if let Some(slot) = signal_snapshot.get_mut(i) {
+                        *slot = Arc::new(self.state.snapshot_signal(i));
+                    }
+                }
+            }
+            dirty_signals.clear();
 
             // Evaluate all processes in this layer in parallel via rayon
             // Each worker gets its own signal clone + body reference.
@@ -2208,6 +2226,21 @@ impl SimulationEngine {
                     // jalur default — tanpa ini DAG last-write-wins → differential
                     // vs default pada net 2-driver (fuzz bug 0366cd02200e).
                     self.apply_parallel_writes(&writes);
+                    // Par-03 tahap 2: tandai sinyal yang ditulis utk refresh
+                    // differential layer berikutnya. Redirect ke canonical
+                    // (mirror write_signal) — storage yang berubah hanyalah
+                    // canonical; snapshot id asli tidak berubah nilainya.
+                    for (sig_id, _, _) in &writes {
+                        let cid = self
+                            .state
+                            .alias_redirect
+                            .get(*sig_id)
+                            .copied()
+                            .unwrap_or(*sig_id);
+                        if !dirty_signals.contains(&cid) {
+                            dirty_signals.push(cid);
+                        }
+                    }
                 }
                 Err(_) => {
                     // Fallback SERIAL per layer: ekspresi body ada yang tak
@@ -2221,6 +2254,8 @@ impl SimulationEngine {
                             self.current_time as usize,
                         )?;
                     }
+                    // Serial bisa menulis sinyal mana pun -> full rebuild.
+                    snapshot_dirty_all = true;
                 }
             }
         }

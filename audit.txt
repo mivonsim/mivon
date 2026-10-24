@@ -10151,6 +10151,37 @@ VERIFIKASI ROUND 181 (final):
    - cargo nextest run --workspace --features dev: 3621 passed, 24 skipped.
    - cargo fmt --all --check -> bersih.
 
-Sisa Par-03 (tahap berikutnya): differential snapshot — snapshot sinyal per
-DAG layer masih materialisasi LogicVec penuh tiap layer (core.rs 2163-2170);
-idealnya rebuild hanya sinyal yang berubah sejak layer lalu.
+═══ ROUND 182 — PAR-03 tahap 2: differential signal snapshot ═══
+
+Sisa Par-03: snapshot sinyal materialisasi LogicVec PENUH tiap DAG layer
+(O(num_signals) alloc per layer) padahal antar layer hanya write dari layer
+sebelumnya yang mengubah state.
+
+Perubahan (manual, semantik dipertahankan):
+  1. core.rs evaluate_eval_processes_parallel: snapshot diangkat keluar loop
+     — penuh hanya di layer pertama; layer berikutnya me-refresh Arc HANYA
+     utk sinyal dirty (ditulis layer sebelumnya, via apply_parallel_writes).
+  2. Dirty-set di-map lewat alias_redirect (mirror write_signal) — storage
+     yang berubah hanyalah canonical; snapshot id asli tak berubah nilai.
+  3. Fallback serial per layer -> snapshot_dirty_all=true (full rebuild)
+     karena serial bisa menulis sinyal mana pun.
+  4. dirty_signals.clear() setelah dipakai; get_mut guard bounds.
+
+Test:
+  dag_differential_snapshot_cross_layer_chain (mivon-tests): transisi dalam
+  batch — initial #1 menulis d; e=~d dan f=e^d ter-trigger sama; layer f
+  wajib melihat e hasil layer e (bukan X) — f=FF ter-pinned, identik default.
+  CATATAN jujur: suite penuh TIDAK sensitif pd refresh (on/off = hijau semua)
+  — refresh adalah optimasi murni dgn argumen kebenaran konservatif; kasus
+  motivasi per-layer-fresh (WAW bit/range, fuzzer) tercakup korpus fuzz.
+
+VERIFIKASI ROUND 182:
+   - cargo nextest run --workspace --features dev: 3622 passed, 24 skipped
+     (3621 -> 3622, +1 test).
+   - cargo fmt --all --check -> bersih.
+
+Status PAR-03: Arc body sharing (tahap 1) + differential snapshot (tahap 2)
+SELESAI. Item open berikutnya: Par-01 (integrasi work-stealing), Par-02,
+Arsitektur-01..04, JIT-01/02.
+
+\\=======================================================================//
