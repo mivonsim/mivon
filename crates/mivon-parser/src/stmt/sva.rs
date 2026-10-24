@@ -1270,4 +1270,32 @@ endmodule
             "deklarasi setelah expect harus tetap ter-parse"
         );
     }
+
+    /// Varian berlabel: label: expect property(...) juga tidak boleh senyap
+    /// (gate arm berlabel kini memuat Token::Expect).
+    #[test]
+    fn labeled_expect_not_silently_dropped() {
+        let src = "module m(input logic clk, a, b);\n  chk: expect property (@(posedge clk) a |-> b);\n  logic x;\nendmodule\n";
+        let (design, diags) = parse_with_diags(src);
+        let parsed = design.modules[0]
+            .items
+            .iter()
+            .any(|i| matches!(i, crate::types::ModuleItem::PropertyAssert(_)));
+        let warned = diags
+            .iter()
+            .any(|d| d.code == DiagCode::UnsupportedAssertion);
+        assert!(
+            parsed || warned,
+            "label: expect hilang senyap: items={:?} diags={:?}",
+            design.modules[0].items.len(),
+            diags.len()
+        );
+        assert!(
+            design.modules[0]
+                .decls
+                .iter()
+                .any(|d| d.names.iter().any(|n| n.name.as_str() == "x")),
+            "deklarasi setelah label: expect harus tetap ter-parse"
+        );
+    }
 }

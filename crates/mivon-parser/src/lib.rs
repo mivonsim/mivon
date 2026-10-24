@@ -2311,6 +2311,7 @@ impl Parser {
                             | Token::Assume
                             | Token::Cover
                             | Token::Restrict
+                            | Token::Expect
                             | Token::Property
                     )
                 {
@@ -2339,7 +2340,11 @@ impl Parser {
                             // SUDAH rusak sebelum perubahan ini (pre-existing).
                             if matches!(
                                 self.peek_ahead(2),
-                                Token::Assert | Token::Assume | Token::Cover | Token::Restrict
+                                Token::Assert
+                                    | Token::Assume
+                                    | Token::Cover
+                                    | Token::Restrict
+                                    | Token::Expect
                             ) {
                                 let (a_line, a_col) = self
                                     .tokens

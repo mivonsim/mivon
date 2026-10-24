@@ -10075,7 +10075,20 @@ VERIFIKASI ROUND 179:
      (3617 -> 3618, +1 test).
    - cargo fmt --all --check -> bersih.
 
+Follow-up review agent ROUND 179: bentuk BERLABEL label: expect property(...)
+masih bisa senyap (gate arm berlabel + gate E1007 jalur Err tak memuat
+Token::Expect). Diperbaiki di situs yang sama:
+  - gate arm berlabel kini Assert/Assume/Cover/Restrict/Expect/Property.
+  - gate E1007 jalur Err arm berlabel ikut memuat Token::Expect.
+  - test labeled_expect_not_silently_dropped (regresi dikunci: tanpa
+    perbaikan FAILED; dengan perbaikan ok).
+
+VERIFIKASI ROUND 179 (final):
+   - cargo nextest run --workspace --features dev: 3619 passed, 24 skipped
+     (3617 -> 3619, +2 test).
+   - cargo fmt --all --check -> bersih.
+
 Sisa review PARSER-09: refactor ekstraksi helper parse_clock_event() tunggal
 (opsional, menutup drift permanen — 4 situs parse clock masih copy-paste).
-Token::Expect SUDAH SELESAI di ROUND 179.
+Token::Expect (termasuk varian berlabel) SUDAH SELESAI di ROUND 179.
 \\=======================================================================//
