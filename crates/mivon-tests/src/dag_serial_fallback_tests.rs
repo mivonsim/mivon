@@ -404,3 +404,41 @@ fn dag_cycle_fusion_followers_parallel_diff() {
         assert_eq!(cf, expect, "{name}: nilai akhir ter-pinned");
     }
 }
+
+/// Par-02 tahap 2 re-review: pola inversi greedy non-transitif —
+/// konflik (f0,f1) dan (f1,f2), f0-f2 bebas → G1=[f0,f2], G2=[f1].
+/// f2 (G1) membaca B tulisan f1 (G2) → stale di iterasi 1, dikoreksi
+/// fixed-point domain (iterasi ekstra) → hasil akhir identik serial.
+/// Non-racy: tiap sinyal satu driver.
+const CF_WAW_SRC: &str = r#"
+module cf_waw_top;
+  logic clk;
+  logic [7:0] a;
+  logic [7:0] x, A, B, C;
+  initial begin clk = 0; a = 8'd5; #40; end
+  always #5 clk = ~clk;
+  always_ff @(posedge clk) x <= a;
+  assign A = x + 8'd1;
+  always_comb B = A + x;
+  assign C = B + x;
+endmodule
+"#;
+
+#[test]
+fn dag_cf_waw_cross_group_diff() {
+    let cases = [
+        ("x", "00000101"), // 5
+        ("A", "00000110"), // x + 1 = 6
+        ("B", "00001011"), // A + x = 11
+        ("C", "00010000"), // B + x = 16 (konvergen via fixed-point)
+    ];
+    for (name, expect) in cases {
+        let dflt = run_cf(CF_WAW_SRC, name, false, false);
+        let cf = run_cf(CF_WAW_SRC, name, true, true);
+        assert_eq!(cf, dflt, "{name}: fusion+DAG harus identik default");
+        assert_eq!(
+            cf, expect,
+            "{name}: nilai akhir ter-pinned (konvergensi fixed-point)"
+        );
+    }
+}

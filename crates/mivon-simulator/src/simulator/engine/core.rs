@@ -2382,10 +2382,12 @@ impl SimulationEngine {
     /// Par-02 tahap 2: follower combinational dalam satu clock domain
     /// dieval paralel per grup disjoint — mesin comb murni (blocking
     /// semantics): writes grup di-apply via apply_parallel_writes SEBELUM
-    /// grup berikutnya dieval, dengan snapshot di-rebuild per grup agar
-    /// rantai read-after-write antar grup terlihat (urutan grup = urutan
-    /// pid serial; greedy layered_groups). Err evaluator paralel (mis.
-    /// ekspresi tak-dukung) → fallback serial sisa grup, urutan pid.
+    /// grup berikutnya dieval, snapshot di-rebuild per grup agar rantai
+    /// read-after-write antar grup terlihat. CATATAN (re-review ROUND
+    /// 185): urutan apply grup TIDAK selalu = urutan pid (greedy
+    /// non-transitif — G1=[0,2], G2=[1] utk pola rantai), sehingga WAW
+    /// lintas grup didemosi ke serial di bawah; RAW lintas grup dikoreksi
+    /// fixed-point loop (iterasi ekstra).
     fn evaluate_followers_parallel(
         &mut self,
         followers: &[(usize, std::sync::Arc<Vec<IrStmt>>)],
@@ -2396,18 +2398,55 @@ impl SimulationEngine {
                 crate::scheduler::sim_dag::analyze_process_access(&self.design.top.processes[*pid])
             })
             .collect();
+        // Re-review ROUND 185: gate kebijakan tahap 1 — kandidat dgn
+        // FuncCall/MethodCall (evaluator paralel: Err / X-32-bit senyap)
+        // atau akses tak-resolvable (HierRef) TIDAK boleh paralel.
+        if access.iter().any(|a| a.has_call_expr || a.has_unresolved) {
+            for (_, body) in followers {
+                self.evaluate_stmt_block(body)?;
+            }
+            return Ok(());
+        }
         let dense: Vec<usize> = (0..followers.len()).collect();
         let groups = Self::layered_groups(&dense, &access);
-        let body_map: std::collections::HashMap<usize, std::sync::Arc<Vec<IrStmt>>> = followers
-            .iter()
-            .map(|(pid, b)| (*pid, std::sync::Arc::clone(b)))
-            .collect();
+        // Re-review ROUND 185: WAW lintas grup — urutan apply grup tidak
+        // menjamin urutan pid utk pola rantai (non-transitif) → blocking
+        // WAW bisa terbalik. Demosi ke serial penuh bila ada sinyal yang
+        // ditulis oleh >1 grup.
+        let mut seen_writes: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        let mut waw_cross = false;
+        for group in &groups {
+            for &i in group {
+                for s in &access[i].writes {
+                    if !seen_writes.insert(*s) {
+                        waw_cross = true;
+                        break;
+                    }
+                }
+                if waw_cross {
+                    break;
+                }
+            }
+            if waw_cross {
+                break;
+            }
+        }
+        if waw_cross {
+            for (_, body) in followers {
+                self.evaluate_stmt_block(body)?;
+            }
+            return Ok(());
+        }
         crate::dbg_sim!(
             3,
             "par-02 tahap-2 domain-follower: {} follower, {} grup",
             followers.len(),
             groups.len()
         );
+        let body_map: std::collections::HashMap<usize, std::sync::Arc<Vec<IrStmt>>> = followers
+            .iter()
+            .map(|(pid, b)| (*pid, std::sync::Arc::clone(b)))
+            .collect();
         for (gi, group) in groups.iter().enumerate() {
             let pids: Vec<&usize> = group.iter().map(|&i| &followers[i].0).collect();
             // Snapshot penuh per grup — blocking writes grup sebelumnya
@@ -2428,8 +2467,8 @@ impl SimulationEngine {
                 }
                 Err(_) => {
                     // Fallback serial: grup ini + semua grup berikutnya,
-                    // urutan pid (concat grup greedy ascending = urutan
-                    // pid serial; grup sebelumnya sudah ter-apply).
+                    // urutan pid ascending (grup sebelumnya sudah ter-apply
+                    // dan idempoten — inputnya tak berubah).
                     let mut rest: Vec<usize> = Vec::new();
                     for g in &groups[gi..] {
                         rest.extend(g.iter().copied());
@@ -2445,6 +2484,7 @@ impl SimulationEngine {
         }
         Ok(())
     }
+
     fn initialize_time_zero(&mut self) -> Result<(), SimError> {
         // BUG FIX (co-sim/debugger): `run()` bisa dipanggil berulang (pause +
         // continue / step). Inisialisasi time-0 HANYA sekali — re-run setelah
