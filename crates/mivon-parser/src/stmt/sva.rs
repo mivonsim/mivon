@@ -292,4 +292,24 @@ mod tests {
         let design = p.parse_design().expect("SVA delay range harus parse");
         assert_eq!(design.modules.len(), 1);
     }
+    #[test]
+    fn parses_assert_property_named_seq_and_implication() {
+        let src = "module m(input logic clk, a, b, c);
+  sequence s1; a ##1 b; endsequence
+  assert property (@(posedge clk) s1 |-> c);
+endmodule
+";
+        let mut lexer = Lexer::new(src);
+        let mut tokens = Vec::new();
+        loop {
+            let (tok, line, col) = lexer.next_token();
+            if tok == Token::Eof {
+                break;
+            }
+            tokens.push((tok, line, col));
+        }
+        let mut p = Parser::new(tokens, "t.sv");
+        let design = p.parse_design().expect("assert property dengan named sequence + implication harus parse");
+        assert_eq!(design.modules.len(), 1);
+    }
 }

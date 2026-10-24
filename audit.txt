@@ -1007,7 +1007,7 @@ PARSER-08: ✅ STALE — FastLexer SUDAH terintegrasi dengan Parser baru
            memproduksi token `|->`/`|=>` (relevan saat PARSER-09 SVA) dan
            string non-ASCII (`é`) di FastLexer bisa mojibake karena
            byte→char; jalur legacy benar.
-PARSER-09:[] Tidak ada parser for SVA properties full syntax (High)
+PARSER-09:⚠️ parser SVA properties (substantial, LANG-06/42) — High
 PARSER-10: ✅ Module/interface parameter type list edge cases (ROUND 85b)
            — parse_type_expr fix: scoped type (pkg::type_name), signed/byte/
            shortint/longint/real type keywords in param list. Double-advance
@@ -9427,6 +9427,28 @@ Catatan: marker ⚠️ (belum ✅ penuh) — baru fondasi; integrasi belum.
 
 📊 VERIFIKASI ROUND 161:
    - cargo nextest run -p mivon-parser incremental -> 4 passed.
+   - cargo check -p mivon-parser -> bersih.
+
+\=======================================================================//
+
+═══ ROUND 162 — PARSER-09: SVA property parsing (progress) ═══
+
+Item High: "Tidak ada parser for SVA properties full syntax". Faktanya parser
+SVA sudah ada dan cukup luas (LANG-06 + LANG-42) di crates/mivon-parser/src/
+stmt/sva.rs: sequence (##N / ##[min:max]), implikasi (|-> / |->), repetition,
+named sequence/property + formal args, clocking event (@(posedge clk)), dan
+substitusi argumen. Statement assert/cover/assume property ter-parse.
+
+Tahap ini: +1 regression test parses_assert_property_named_seq_and_implication
+(assert property dengan named sequence + implication + clocking -> parse sukses).
+Mengunci fitur yang sudah ada agar tidak regresi.
+
+Sisa "full syntax" (belum): property-level operator always/eventually/until/
+implies, disable iff, repetition range [*m:n]/[=n]/[->n], first_match, dll.
+Marker ⚠️ (belum ✅ penuh).
+
+📊 VERIFIKASI ROUND 162:
+   - cargo nextest run -p mivon-parser sva::tests -> 2 passed.
    - cargo check -p mivon-parser -> bersih.
 
 \=======================================================================//
