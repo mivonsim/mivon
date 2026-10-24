@@ -10026,8 +10026,31 @@ VERIFIKASI ROUND 177:
      ✅ 3616 passed, 0 failed, 24 skipped (3613 -> 3616, +3 test).
    - cargo fmt --all --check -> bersih.
 
-Sisa review PARSER-09 (belum di round ini): MEDIUM 4 (cap default --max-warnings
-untuk flood E1007 pada makro berulang), Token::Expect senyap di level module, dan
-refactor ekstraksi helper parse_clock_event() tunggal (opsional, menutup drift
-permanen). MAJOR 3 + MEDIUM 6 SUDAH SELESAI di ROUND 177.
+═══ ROUND 178 — PARSER-09: MEDIUM 4 — cap default warning cegah flood E1007 ═══
+
+Review ROUND 171/173/175 sisa MEDIUM 4: warning E1007 dapat membanjiri output
+saat makro assertion di-ekspansi berulang (flood). emit_diags sudah punya cap
+--max-warnings, tapi default-nya usize::MAX (mati). Default kini 200 agar flood
+terpotong + ringkasan more warnings suppressed.
+
+Perubahan (minimal, manual):
+  1. src/main.rs init_warn_filter: default WARN_FILTER_MAX = unwrap_or(200)
+     (sebelumnya usize::MAX).
+  2. ekstrak helper murni cap_warn_indices(diags, keep, max): error tetap
+     di-emit, warning dibatasi max buah; emit_diags memanggilnya setelah dedup
+     dan cetak ringkasan sekali bila cap terlewati; hapus static WARN_COUNT.
+
+Verifikasi:
+  - cap_warn_indices_limits_warnings_keeps_errors: 4 warning + 1 error, max=2
+    -> 3 di-emit (2 warning + 1 error); error tidak dibatasi.
+
+VERIFIKASI ROUND 178:
+   - cargo test -p mivon cap_warn_indices -> 1 passed.
+   - cargo nextest run --workspace --features dev: 3617 passed, 24 skipped
+     (3616 -> 3617, +1 test).
+   - cargo fmt --all --check -> bersih.
+
+Sisa review PARSER-09 (belum di round ini): Token::Expect senyap di level module,
+dan refactor ekstraksi helper parse_clock_event() tunggal (opsional, menutup
+drift permanen). MEDIUM 4 SUDAH SELESAI di ROUND 178.
 \\=======================================================================//

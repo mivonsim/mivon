@@ -67,7 +67,7 @@ fn truncate_ellipsis(s: &str, max: usize) -> String {
 fn init_warn_filter(cli: &Cli) {
     WARN_FILTER_NO_WARN.store(cli.no_warn, std::sync::atomic::Ordering::Relaxed);
     let _ = WARN_FILTER_ALLOW.set(cli.allow_codes.clone());
-    let _ = WARN_FILTER_MAX.set(cli.max_warnings.unwrap_or(usize::MAX));
+    let _ = WARN_FILTER_MAX.set(cli.max_warnings.unwrap_or(200));
 }
 
 pub(crate) fn emit_diags(diags: &[mivon_core::diagnostics::diagnostic::Diagnostic]) {
@@ -77,9 +77,19 @@ pub(crate) fn emit_diags(diags: &[mivon_core::diagnostics::diagnostic::Diagnosti
     if diags.is_empty() {
         return;
     }
-    let keep: std::collections::HashSet<usize> = dedup_diag_indices(diags).into_iter().collect();
+    let mut keep: Vec<usize> = dedup_diag_indices(diags);
+    if let Some(max) = max_warn {
+        let warn_in_keep = keep
+            .iter()
+            .filter(|&&i| diags[i].level == mivon_core::diagnostics::DiagLevel::Warning)
+            .count();
+        if warn_in_keep > max {
+            keep = cap_warn_indices(diags, &keep, max);
+            eprintln!("\n... more warnings suppressed (use --max-warnings to adjust)");
+        }
+    }
+    let keep: std::collections::HashSet<usize> = keep.into_iter().collect();
     let mut emitter = mivon_core::diagnostics::TerminalEmitter::new();
-    static WARN_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     for (idx, diag) in diags.iter().enumerate() {
         if !keep.contains(&idx) {
             continue;
@@ -91,17 +101,6 @@ pub(crate) fn emit_diags(diags: &[mivon_core::diagnostics::diagnostic::Diagnosti
             let code_str = format!("{}", diag.code);
             if allow_codes.iter().any(|c| c == &code_str) {
                 continue;
-            }
-        }
-        if let Some(max) = max_warn {
-            if diag.level == mivon_core::diagnostics::DiagLevel::Warning {
-                let count = WARN_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-                if count > max {
-                    if count == max + 1 {
-                        eprintln!("\n... more warnings suppressed (use --max-warnings to adjust)");
-                    }
-                    continue;
-                }
             }
         }
         let _ = emitter.emit(diag);
@@ -131,6 +130,26 @@ fn dedup_diag_indices(diags: &[mivon_core::diagnostics::diagnostic::Diagnostic])
             let col = diag.source_snippet.as_ref().map(|s| s.col).unwrap_or(0);
             let key = (format!("{}", diag.code), file, line, col);
             if !seen.insert(key) {
+                continue;
+            }
+        }
+        out.push(i);
+    }
+    out
+}
+
+/// Batasi jumlah warning yang di-emit (flood protection, MEDIUM 4).
+fn cap_warn_indices(
+    diags: &[mivon_core::diagnostics::diagnostic::Diagnostic],
+    keep: &[usize],
+    max: usize,
+) -> Vec<usize> {
+    let mut out = Vec::with_capacity(keep.len());
+    let mut warn_count = 0usize;
+    for &i in keep {
+        if diags[i].level == mivon_core::diagnostics::DiagLevel::Warning {
+            warn_count += 1;
+            if warn_count > max {
                 continue;
             }
         }
@@ -970,5 +989,50 @@ mod tests {
         };
         let diags = vec![mk(), mk()];
         assert_eq!(crate::dedup_diag_indices(&diags).len(), 2);
+    }
+
+    /// MEDIUM 4: cap_warn_indices membatasi jumlah warning yang di-emit namun
+    /// mempertahankan seluruh Error. 4 warning + 1 error, max=2 -> 2 warning
+    /// + 1 error = 3 di-emit.
+    #[test]
+    fn cap_warn_indices_limits_warnings_keeps_errors() {
+        use mivon_core::diagnostics::diagnostic::Diagnostic;
+        use mivon_core::diagnostics::{DiagCode, DiagLevel, SourceSnippet};
+        let mk_warn = |c: usize| {
+            let mut d = Diagnostic::new(DiagLevel::Warning, DiagCode::UnsupportedAssertion, "w");
+            d.source_snippet = Some(SourceSnippet::new("f.sv", 1, c, "x"));
+            d
+        };
+        let mk_err = || {
+            let mut d = Diagnostic::new(DiagLevel::Error, DiagCode::InvalidSyntax, "e");
+            d.source_snippet = Some(SourceSnippet::new("f.sv", 1, 1, "x"));
+            d
+        };
+        let diags = vec![mk_warn(1), mk_warn(2), mk_warn(3), mk_err(), mk_warn(4)];
+        let keep = crate::dedup_diag_indices(&diags);
+        let capped = crate::cap_warn_indices(&diags, &keep, 2);
+        assert_eq!(capped.len(), 3, "harus 2 warning + 1 error");
+        let warns: usize = capped
+            .iter()
+            .map(|&i| {
+                if diags[i].level == DiagLevel::Warning {
+                    1
+                } else {
+                    0
+                }
+            })
+            .sum();
+        assert_eq!(warns, 2, "hanya 2 warning yang di-emit");
+        let errs: usize = capped
+            .iter()
+            .map(|&i| {
+                if diags[i].level == DiagLevel::Error {
+                    1
+                } else {
+                    0
+                }
+            })
+            .sum();
+        assert_eq!(errs, 1, "error tidak boleh dibatasi cap");
     }
 }
