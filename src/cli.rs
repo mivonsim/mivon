@@ -363,7 +363,21 @@ pub enum MwaveCmd {
         #[arg(short = 'o', long = "output")]
         output: Option<String>,
     },
-    /// Gabungkan beberapa VCD menjadi satu (offset waktu otomatis kumulatif)
+    /// Align pre-silicon vs post-silicon VCD (FEAT-18): trigger-based correlation
+    Align {
+        /// Pre-silicon (golden) VCD
+        #[arg(required = true)]
+        pre: String,
+        /// Post-silicon capture VCD
+        #[arg(required = true)]
+        post: String,
+        /// Trigger signal name (alignment anchor)
+        #[arg(short = 't', long = "trigger", required = true)]
+        trigger: String,
+        /// Output JSON report (default: stdout)
+        #[arg(short = 'o', long = "output")]
+        output: Option<String>,
+    },
     Merge {
         /// VCD input (2+)
         #[arg(required = true)]

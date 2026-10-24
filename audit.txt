@@ -3204,7 +3204,7 @@ FEAT-13:[] IP encryption (IEEE 1735) — Critical
 FEAT-14:[x] IP packaging (IP-XACT) — High
 FEAT-15:✅ (ROUND 157) Design-for-debug infrastructure — Medium
 FEAT-16:[x] Simulation farm orchestration — Critical
-FEAT-18:[] Post-silicon validation alignment — Medium
+FEAT-18:✅ (ROUND 159) Post-silicon validation alignment — Medium
 FEAT-19:[] Emulation/prototyping integration — High
 FEAT-20:[] Hardware acceleration co-simulation — High
 FEAT-21: ✅ ECO support (Engineering Change Order) — ROUND 141
@@ -9348,5 +9348,38 @@ Diperbaiki:
    - cargo nextest run -p mivon-tools debug -> 5 passed.
    - cargo nextest run --workspace --features dev --no-fail-fast:
      ✅ 3573 passed, 0 failed, 24 skipped.
+
+\=======================================================================//
+
+═══ ROUND 159 — FEAT-18: post-silicon validation alignment ═══
+
+Implementasi subset "post-silicon validation alignment" (Medium) sebagai
+subkomando mwave align: korelasikan VCD pre-silicon (golden) vs VCD
+post-silicon (capture) via sinyal trigger sebagai jangkar waktu.
+
+File baru: crates/mivon-tools/src/wave/align.rs (1 tanggung jawab).
+- AlignReport { trigger, pre/post_anchor_time, shared_signals, aligned_cycles,
+  first_mismatch (offset, signal, pre/post), pre_only, post_only } (serde).
+- align_signals(pre, post, trigger): cari anchor = waktu pertama trigger==1 di
+  masing-masing, lalu banding sinyal bersama per offset cycle (value_at =
+  nilai terakhir <= t, default "x"). max_off = min(max_time-anchor).
+- align(pre, post, trigger, output): parse dua VCD, cetak JSON (atau -o file).
+  Reuse parse_vcd existing (tanpa duplikasi parser).
+
+Integrasi:
+- wave/mod.rs: pub(crate) mod align;
+- wave/args.rs: WaveArgs::Align { pre, post, trigger, output } + dispatch.
+- src/cli.rs: MwaveCmd::Align (pre/post required, -t trigger, -o output).
+- src/dispatch/tools.rs: arm dispatch Align.
+
+Test (3, di wave::align::tests):
+- align_finds_first_mismatch_at_offset (anchor 5/7, offset 5, data 0010 vs 1111).
+- align_identical_has_no_mismatch (aligned_cycles=6, first_mismatch None).
+- align_reports_only_side_signals (pre_only=["extra"]).
+
+📊 VERIFIKASI ROUND 159:
+   - cargo nextest run -p mivon-tools align → 3 passed.
+   - cargo nextest run --workspace --features dev --no-fail-fast:
+     ✅ 3576 passed, 0 failed, 24 skipped.
 
 \=======================================================================//

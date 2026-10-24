@@ -29,6 +29,7 @@ pub mod args;
 pub(crate) mod compare;
 pub(crate) mod data;
 pub(crate) mod debug;
+pub(crate) mod align;
 pub(crate) mod decode;
 pub(crate) mod export;
 pub(crate) mod filter;
