@@ -10624,6 +10624,24 @@ Test baru (mivon-tests/dag_serial_fallback_tests.rs):
   false (default classify) → semua ter-skip → batch kosong → b = 0;
   fix: clock_trigger = true eksplisit di core.rs.
 
+Review agent atas a347696: LOLOS — tidak ada bug blokir.
+  Ekstraksi run_seq_batch/classify terverifikasi identik Phase 2c
+  lama; batch per iterasi fixed-point stateless (klasifikasi ulang,
+  guard dihitung ulang — tanpa state stale); semua kandidat dieval
+  tepat 1× per iterasi (semantik lama terjaga); urutan NBA per-
+  sinyal identik serial (WAW semua ter-demosi, blocking-vs-NBA
+  NBA-wins invarian); deferred-writer/inline-reader tak mungkin
+  (guard ii/iv + reads_count mencakup non-batchable); jumlah
+  iterasi fixed-point tidak berubah oleh batch. Test dieksekusi
+  di jalur batch (reviewer jalankan DBG_SIM=3: 1 passed).
+  RISK backlog: (1) test demosi dalam konteks domain belum ada
+  (cross-FF RAW, non-batchable di domain, >= 3 kandidat, fallback
+  Err/D) — saran tahap berikutnya; (2) silent-skip $display/
+  Force/Wait evaluator paralel — permukaan makin luas di jalur
+  domain (pre-existing, kebijakan gate tahap lanjutan). NIT:
+  gate Step 1 tak cek !has_wide_signals eksplisit (asimetri gaya);
+  import panjang SeqCand; NIT body_write_kinds 2× (non-batchable).
+
 VERIFIKASI ROUND 187 (final):
    - cargo fmt --all --check -> bersih.
    - cargo nextest run --workspace --features dev: 3635 passed,
