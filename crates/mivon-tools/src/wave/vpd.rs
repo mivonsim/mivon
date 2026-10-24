@@ -169,7 +169,13 @@ pub fn parse_vpd(path: &str) -> Result<VcdData, SimError> {
                     });
                 }
             } else if let Some(rest) = line.strip_prefix("$timescale") {
-                timescale = rest.split_whitespace().next().unwrap_or("1ns").to_string();
+                // Gabungkan token (tangani "$timescale 1 ns $end" -> "1ns").
+                let joined: String = rest
+                    .split_whitespace()
+                    .filter(|t| *t != "$end")
+                    .collect::<Vec<&str>>()
+                    .concat();
+                timescale = if joined.is_empty() { "1ns".to_string() } else { joined };
             } else if line.starts_with("$comment") {
                 in_comment = true;
             } else if line.starts_with("$enddefinitions") {
@@ -255,7 +261,7 @@ mod tests {
         p.to_string_lossy().into_owned()
     }
 
-    fn sample() -> (String, Vec<VcdSignal>, Vec<(u64, String, String)>) {
+    fn sample(name: &str) -> (String, Vec<VcdSignal>, Vec<(u64, String, String)>) {
         let signals = vec![
             VcdSignal {
                 id: "c".to_string(),
@@ -279,12 +285,14 @@ mod tests {
             (20, "D".to_string(), "z".to_string()),
             (25, "c".to_string(), "x".to_string()),
         ];
-        (tmp_path("sample.vpd"), signals, changes)
+        // Nama file unik per pemanggil agar test tidak saling menimpa saat
+        // dijalankan paralel (cargo test default / nextest).
+        (tmp_path(name), signals, changes)
     }
 
     #[test]
     fn write_then_parse_roundtrip() {
-        let (path, signals, changes) = sample();
+        let (path, signals, changes) = sample("roundtrip.vpd");
         write_vpd(&path, "1ns", &signals, &changes, &HashMap::new()).unwrap();
         let parsed = parse_vpd(&path).unwrap();
         assert_eq!(parsed.signals, signals, "signals harus sama");
@@ -296,7 +304,7 @@ mod tests {
 
     #[test]
     fn vpd_contains_required_keywords() {
-        let (path, signals, changes) = sample();
+        let (path, signals, changes) = sample("keywords.vpd");
         write_vpd(&path, "1ps", &signals, &changes, &HashMap::new()).unwrap();
         let s = std::fs::read_to_string(&path).unwrap();
         assert!(s.contains("$comment"));
@@ -312,7 +320,7 @@ mod tests {
 
     #[test]
     fn id_map_is_applied() {
-        let (path, signals, changes) = sample();
+        let (path, signals, changes) = sample("idmap.vpd");
         let mut map = HashMap::new();
         map.insert("c".to_string(), "a".to_string());
         map.insert("D".to_string(), "b".to_string());
@@ -323,6 +331,26 @@ mod tests {
         let parsed = parse_vpd(&path).unwrap();
         assert_eq!(parsed.signals[0].id, "a");
         assert_eq!(parsed.signals[1].id, "b");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn timescale_with_space_is_joined() {
+        // VPD eksternal legal: "$timescale 1 ns $end" -> "1ns".
+        let path = tmp_path("timescale.vpd");
+        let signals = vec![VcdSignal {
+            id: "c".to_string(),
+            name: "clk".to_string(),
+            width: 1,
+            scope: vec!["top".to_string()],
+        }];
+        let changes = vec![(0, "c".to_string(), "1".to_string())];
+        write_vpd(&path, "1ns", &signals, &changes, &HashMap::new()).unwrap();
+        // Tulis ulang dengan spasi untuk mensimulasikan VPD eksternal.
+        let s = std::fs::read_to_string(&path).unwrap().replace("$timescale 1ns $end", "$timescale 1 ns $end");
+        std::fs::write(&path, s).unwrap();
+        let parsed = parse_vpd(&path).unwrap();
+        assert_eq!(parsed.timescale, "1ns");
         let _ = std::fs::remove_file(&path);
     }
 

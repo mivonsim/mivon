@@ -1379,7 +1379,7 @@ SIM-30: ✅ $coverage_control all modes implemented (Medium)
 4.6 WAVEFORM GAPS
 
 WAV-01:[] No FSDB format (Synopsys standard) (Critical)
-WAV-02: ✅ VPD format support (ROUND 155) — crates/mivon-tools/src/wave/vpd.rs:
+WAV-02: ✅ VPD format support (ROUND 155-156) — crates/mivon-tools/src/wave/vpd.rs:
          write_vpd() + parse_vpd() di atas model VcdData (sama dengan VCD,
          sehingga reuse semua subkomando mwave). Subset praktis: $date/$version/
          $comment/$timescale, $scope module hierarki, $var, $enddefinitions,
@@ -1388,8 +1388,8 @@ WAV-02: ✅ VPD format support (ROUND 155) — crates/mivon-tools/src/wave/vpd.r
          parse_vpd(write_vpd(data)) == data (reader mengabaikan isi $dumpvars
          saat membangun changes, karena body sudah memuat semua transisi).
          Terhubung ke CLI: 'mivon wave export <vcd> -f vpd -o <out>.vpd'
-         (export.rs + args help diperbarui). 4 test unit (roundtrip, keyword
-         wajib, id_map, reject non-vpd). (Critical)
+         (export.rs + args help diperbarui). 5 test unit (roundtrip, keyword
+         wajib, id_map, reject non-vpd, timescale-ber-spasi). (Critical)
 WAV-03:[] No SHM/WDB format (Cadence/Siemens) (Critical)
 WAV-04: ✅ Compressed waveform database (ROUND 85b) — gzip VCD output:
          - VcdWriter::new_compressed() + enable_compression() — gzip encoder
@@ -9257,6 +9257,37 @@ VcdSignal ke pub agar API publik tidak bocor tipe privat.
      ✅ 3567 passed, 0 failed, 24 skipped.
    - Targeted vpd module → 4 passed.
    - Smoke test CLI: mivon wave export -f vpd menghasilkan VPD valid.
+
+\\=======================================================================//
+
+═══ ROUND 156 — perbaikan review WAV-02 ═══
+
+Review menemukan 1 MAJOR + 1 MEDIUM:
+
+MAJOR — test tidak isolasi (flaky di runner paralel). Tiga test berbagi nama
+file temp sama (sample.vpd): write_then_parse_roundtrip,
+vpd_contains_required_keywords, id_map_is_applied. Di bawah cargo test default
+(paralel) 2 test gagal (file saling menimpa). Diperbaiki: tiap test kini pakai
+nama temp unik (roundtrip.vpd / keywords.vpd / idmap.vpd) via sample(name).
+Verifikasi: cargo test -p mivon-tools vpd (paralel) → 5 passed; cargo nextest
+→ 5 passed.
+
+MEDIUM — parsing $timescale hanya mengambil token pertama. VPD eksternal legal
+"$timescale 1 ns $end" tertangkap sebagai "1" bukan "1ns". Diperbaiki: token
+digabung (filter $end) → "1ns". Test timescale_with_space_is_joined
+menulis ulang VPD dengan spasi lalu memverifikasi parse menghasilkan "1ns".
+
+LOW (diabaikan, sama dengan write_vcd): $upscope penutup satu level; baris
+stray berawalan 0/1/x/z diurai sebagai nilai (aman untuk subset). input_name
+hardcode "vcd" (kosmetik pesan export).
+
+Test: 1 test baru (timescale_with_space_is_joined). Total vpd = 5.
+
+📊 VERIFIKASI ROUND 156:
+   - cargo test -p mivon-tools vpd (paralel, default) → 5 passed.
+   - cargo nextest run -p mivon-tools vpd → 5 passed.
+   - cargo nextest run --workspace --features dev --no-fail-fast:
+     ✅ 3567 passed, 0 failed, 24 skipped.
 
 \\=======================================================================//
 
