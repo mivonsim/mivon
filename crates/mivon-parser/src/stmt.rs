@@ -178,6 +178,37 @@ impl Parser {
             Ok((stmts, None))
         }
     }
+    /// Parse satu event clock: posedge [!]sig / negedge [!]sig / sig (Edge).
+    /// Pemanggil sudah mengonsumsi '@' dan '('; helper TIDAK mengonsumsi ')'.
+    /// Satu sumber kebenaran untuk semua situs parse clock (ROUND 180:
+    /// menutup drift copy-paste 4 situs — dulu posedge !clk hanya diperbaiki
+    /// di sebagian situs).
+    pub(crate) fn parse_clock_event_edge(&mut self) -> Result<ClockEvent, SimError> {
+        if self.peek() == &Token::PosEdge {
+            self.advance();
+            if self.peek() == &Token::Not {
+                self.advance();
+                let sig = self.expect_ident()?;
+                Ok(ClockEvent::Negedge(sig))
+            } else {
+                let sig = self.expect_ident()?;
+                Ok(ClockEvent::Posedge(sig))
+            }
+        } else if self.peek() == &Token::NegEdge {
+            self.advance();
+            if self.peek() == &Token::Not {
+                self.advance();
+                let sig = self.expect_ident()?;
+                Ok(ClockEvent::Posedge(sig))
+            } else {
+                let sig = self.expect_ident()?;
+                Ok(ClockEvent::Negedge(sig))
+            }
+        } else {
+            let sig = self.expect_ident()?;
+            Ok(ClockEvent::Edge(sig))
+        }
+    }
 
     pub(crate) fn parse_immediate_assertion(&mut self) -> Result<Stmt, SimError> {
         let kind = match self.peek() {
@@ -216,30 +247,7 @@ impl Parser {
             let mut clock_event = if self.peek() == &Token::At {
                 self.advance();
                 self.expect(Token::LParen)?;
-                let ce = if self.peek() == &Token::PosEdge {
-                    self.advance();
-                    if self.peek() == &Token::Not {
-                        self.advance();
-                        let sig = self.expect_ident()?;
-                        Some(ClockEvent::Negedge(sig))
-                    } else {
-                        let sig = self.expect_ident()?;
-                        Some(ClockEvent::Posedge(sig))
-                    }
-                } else if self.peek() == &Token::NegEdge {
-                    self.advance();
-                    if self.peek() == &Token::Not {
-                        self.advance();
-                        let sig = self.expect_ident()?;
-                        Some(ClockEvent::Posedge(sig))
-                    } else {
-                        let sig = self.expect_ident()?;
-                        Some(ClockEvent::Negedge(sig))
-                    }
-                } else {
-                    let sig = self.expect_ident()?;
-                    Some(ClockEvent::Edge(sig))
-                };
+                let ce = Some(self.parse_clock_event_edge()?);
                 self.expect(Token::RParen)?;
                 ce
             } else {
@@ -317,30 +325,7 @@ impl Parser {
                     if self.peek() == &Token::At {
                         self.advance();
                         self.expect(Token::LParen)?;
-                        let ce = if self.peek() == &Token::PosEdge {
-                            self.advance();
-                            if self.peek() == &Token::Not {
-                                self.advance();
-                                let sig = self.expect_ident()?;
-                                ClockEvent::Negedge(sig)
-                            } else {
-                                let sig = self.expect_ident()?;
-                                ClockEvent::Posedge(sig)
-                            }
-                        } else if self.peek() == &Token::NegEdge {
-                            self.advance();
-                            if self.peek() == &Token::Not {
-                                self.advance();
-                                let sig = self.expect_ident()?;
-                                ClockEvent::Posedge(sig)
-                            } else {
-                                let sig = self.expect_ident()?;
-                                ClockEvent::Negedge(sig)
-                            }
-                        } else {
-                            let sig = self.expect_ident()?;
-                            ClockEvent::Edge(sig)
-                        };
+                        let ce = self.parse_clock_event_edge()?;
                         self.expect(Token::RParen)?;
                         if clock_event.is_none() {
                             clock_event = Some(ce);
@@ -575,30 +560,7 @@ impl Parser {
             let clock_event = if self.peek() == &Token::At {
                 self.advance();
                 self.expect(Token::LParen)?;
-                let ce = if self.peek() == &Token::PosEdge {
-                    self.advance();
-                    if self.peek() == &Token::Not {
-                        self.advance();
-                        let sig = self.expect_ident()?;
-                        Some(ClockEvent::Negedge(sig))
-                    } else {
-                        let sig = self.expect_ident()?;
-                        Some(ClockEvent::Posedge(sig))
-                    }
-                } else if self.peek() == &Token::NegEdge {
-                    self.advance();
-                    if self.peek() == &Token::Not {
-                        self.advance();
-                        let sig = self.expect_ident()?;
-                        Some(ClockEvent::Posedge(sig))
-                    } else {
-                        let sig = self.expect_ident()?;
-                        Some(ClockEvent::Negedge(sig))
-                    }
-                } else {
-                    let sig = self.expect_ident()?;
-                    Some(ClockEvent::Edge(sig))
-                };
+                let ce = Some(self.parse_clock_event_edge()?);
                 self.expect(Token::RParen)?;
                 ce
             } else {

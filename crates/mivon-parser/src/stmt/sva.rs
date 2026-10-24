@@ -229,30 +229,7 @@ impl Parser {
         let decl_clock = if self.peek() == &Token::At {
             self.advance();
             self.expect(Token::LParen)?;
-            let ce = if self.peek() == &Token::PosEdge {
-                self.advance();
-                if self.peek() == &Token::Not {
-                    self.advance();
-                    let sig = self.expect_ident()?;
-                    Some(ClockEvent::Negedge(sig))
-                } else {
-                    let sig = self.expect_ident()?;
-                    Some(ClockEvent::Posedge(sig))
-                }
-            } else if self.peek() == &Token::NegEdge {
-                self.advance();
-                if self.peek() == &Token::Not {
-                    self.advance();
-                    let sig = self.expect_ident()?;
-                    Some(ClockEvent::Posedge(sig))
-                } else {
-                    let sig = self.expect_ident()?;
-                    Some(ClockEvent::Negedge(sig))
-                }
-            } else {
-                let sig = self.expect_ident()?;
-                Some(ClockEvent::Edge(sig))
-            };
+            let ce = Some(self.parse_clock_event_edge()?);
             self.expect(Token::RParen)?;
             ce
         } else {
@@ -1296,6 +1273,29 @@ endmodule
                 .iter()
                 .any(|d| d.names.iter().any(|n| n.name.as_str() == "x")),
             "deklarasi setelah label: expect harus tetap ter-parse"
+        );
+    }
+
+    /// ROUND 180: event clock TANPA edge (bare @(clk)) harus diparse sebagai
+    /// ClockEvent::Edge via helper parse_clock_event_edge (cabang else).
+    #[test]
+    fn parses_bare_clock_edge() {
+        let src =
+            "module m(input logic clk, a, b);\n  assert property (@(clk) a |-> b);\nendmodule\n";
+        let (design, diags) = parse_with_diags(src);
+        assert!(
+            diags
+                .iter()
+                .all(|d| d.code != DiagCode::UnsupportedAssertion),
+            "bare @(clk) tidak boleh di-warn E1007: {:?}",
+            diags
+        );
+        let clk = first_clock_event(&design).expect("clock harus ada");
+        assert_eq!(
+            clk,
+            crate::types::ClockEvent::Edge(mivon_core::intern::Symbol::intern("clk")),
+            "bare @(clk) harus menjadi Edge(clk), dapat {:?}",
+            clk
         );
     }
 }

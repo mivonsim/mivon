@@ -10088,7 +10088,30 @@ VERIFIKASI ROUND 179 (final):
      (3617 -> 3619, +2 test).
    - cargo fmt --all --check -> bersih.
 
-Sisa review PARSER-09: refactor ekstraksi helper parse_clock_event() tunggal
-(opsional, menutup drift permanen — 4 situs parse clock masih copy-paste).
-Token::Expect (termasuk varian berlabel) SUDAH SELESAI di ROUND 179.
+═══ ROUND 180 — PARSER-09: ekstraksi helper parse_clock_event_edge (drift ditutup) ═══
+
+Review ROUND 175 sisa (opsional): 4 situs parse clock masih copy-paste
+(posedge/negedge + varian !sig) — dulu posedge !clk hanya diperbaiki di
+sebagian situs karena drift ini.
+
+Perubahan (manual, perilaku dipertahankan):
+  1. stmt.rs: helper baru Parser::parse_clock_event_edge() — satu sumber
+     kebenaran event clock (Posedge/NegEdge + varian !sig, dan bare sig ->
+     Edge). Pemanggil sudah konsumsi '@(' ; helper tidak konsumsi ')'.
+  2. Keempat situs kini memanggil helper: stmt.rs (immediate assertion,
+     PSL always, site always@(posedge ...) di ekspresi) + stmt/sva.rs
+     (clock deklarasi property bernama).
+
+Test baru:
+  parses_bare_clock_edge: bare @(clk) -> ClockEvent::Edge(clk) via cabang
+  else helper (cabang yang paling jarang tercakup sebelumnya).
+
+VERIFIKASI ROUND 180:
+   - cargo test -p mivon-parser parses_bare_clock_edge -> 1 passed.
+   - cargo nextest run --workspace --features dev: 3620 passed, 24 skipped
+     (3619 -> 3620, +1 test).
+   - cargo fmt --all --check -> bersih.
+
+Status PARSER-09: seluruh temuan review ROUND 171-179 SELESAI (MAJOR 1-3,
+MEDIUM 1-6, Token::Expect + varian berlabel, refactor helper clock).
 \\=======================================================================//
