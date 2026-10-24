@@ -76,8 +76,16 @@ fn validate_files(files: &[String]) -> Result<(), String> {
         // Path absolut / home / drive-letter ditolak: server tanpa auth tidak
         // boleh bisa membaca file mana pun di mesin (isi bisa bocor lewat
         // pesan Failed).
-        if f.starts_with('/') || f.starts_with('\\') || f.starts_with('~') || f.contains(':') {
+        if f.starts_with('/') || f.starts_with('\\') || f.starts_with('~') {
             return Err(format!("path harus relatif terhadap direktori kerja: {}", f));
+        }
+        // Drive-letter Windows (C:) ditolak; nama file sah yang mengandung ':'
+        // (mis. "a:b.sv") tetap diizinkan.
+        if f.len() >= 2
+            && f.as_bytes()[1] == b':'
+            && f.as_bytes()[0].is_ascii_alphabetic()
+        {
+            return Err(format!("path drive-letter tidak diizinkan: {}", f));
         }
         let ext = std::path::Path::new(f)
             .extension()

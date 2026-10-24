@@ -180,7 +180,12 @@ impl Store {
     }
 
     fn release_slot(&self) {
-        self.active.fetch_sub(1, Ordering::SeqCst);
+        // Guard underflow: release hanya bila > 0. Di jalur normal 1 acquire
+        // selalu berpasangan dengan 1 release, tapi ini mencegah kebocoran
+        // slot berubah jadi DoS total bila ada path tak seimbang.
+        if self.active.load(Ordering::SeqCst) > 0 {
+            self.active.fetch_sub(1, Ordering::SeqCst);
+        }
     }
 }
 
@@ -436,17 +441,26 @@ fn start_worker(
     let Some(runner) = runner else {
         return false;
     };
-    std::thread::spawn(move || {
-        // Panic di runner (parser/elaborator atas input klien) tidak boleh
-        // membuat sesi Running selamanya.
-        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            runner(&files, max_time)
-        }))
-        .unwrap_or_else(|_| Err("runner panic".to_string()));
-        store.release_slot();
-        finish_session(&store, &config, &id, outcome);
-    });
-    true
+    // Pakai Builder::spawn (bukan std::thread::spawn) agar kegagalan pembuatan
+    // thread oleh OS ditangkap sebagai Err, bukan panic di caller. Bila spawn
+    // gagal, kembalikan false agar pemanggil (promote) melepas slot & mengembalikan
+    // status sesi ke Queued (tidak macet Running tanpa worker).
+    let handle = std::thread::Builder::new()
+        .name(format!("sim-worker-{}", id))
+        .spawn(move || {
+            // Panic di runner (parser/elaborator atas input klien) tidak boleh
+            // membuat sesi Running selamanya.
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                runner(&files, max_time)
+            }))
+            .unwrap_or_else(|_| Err("runner panic".to_string()));
+            store.release_slot();
+            finish_session(&store, &config, &id, outcome);
+        });
+    match handle {
+        Ok(_) => true,
+        Err(_) => false,
+    }
 }
 
 /// Simpan hasil eksekusi. Sesi yang sudah dibatalkan tidak ditimpa.

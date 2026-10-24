@@ -3120,7 +3120,7 @@ DEBT-20:[x] No Debug/Deref implementations consistent across types
 FEAT-01:[] Design database server (persistent compile cache across
          projects and users) — Critical
 FEAT-02:[] Collaborative debug (multi-user debugging session) — High
-FEAT-03: ✅ Web-based simulation control dashboard (ROUND 151-153) —
+FEAT-03: ✅ Web-based simulation control dashboard (ROUND 151-154, review tuntas) —
          modul crates/mivon-tools/src/sim_dashboard/{mod,api,page}.rs di
          atas SimServer (ENT-18) + RestServer (FEAT-04): GET / (HTML:
          form submit, tabel sesi, tombol cancel, refresh tiap 2s), GET
@@ -9133,9 +9133,9 @@ MAJOR:
       `history_cap_rejects_when_all_active`.
 
 MEDIUM/LOW:
-  - `validate_files` menolak path absolut (`/`, `~`, `C:\\`, berisi
-    `:`) — server tanpa auth tidak boleh bisa membaca file mana pun di
-    mesin (isi berpotensi bocor lewat pesan Failed). Test
+  - `validate_files` menolak path absolut (`/`, `~`, drive-letter
+    Windows `C:`) — server tanpa auth tidak boleh bisa membaca file mana
+    pun di mesin (isi berpotensi bocor lewat pesan Failed). Test
     `absolute_paths_are_rejected`.
   - `max_time` diikat atas (10_000_000) agar satu request tidak menahan
     worker tanpa batas.
@@ -9146,13 +9146,58 @@ MEDIUM/LOW:
   - `CancelError`/status-code mapping dan doc kontrak sudah benar sejak
     ROUND 152; tidak diubah.
 
-Test: 8 test baru di sim_server (slot/panic/evict/FIFO) + 1 di api
-(absolute path). Total workspace naik 3558 → 3563.
+Test (ROUND 153): 5 test baru di sim_server (submit_without_runner_is_rejected,
+runner_panic_marks_failed_and_frees_slot, max_workers_limits_parallel_execution,
+new_submit_does_not_overtake_queue, history_cap_evicts_oldest_terminal) +
+3 test lama yang diganti namanya (queued_session_is_promoted_when_slot_frees,
+cancelling_running_session_does_not_oversubscribe, history_cap_rejects_when_all_active)
++ 1 test api pengganti (absolute_paths_are_rejected menggantikan
+sorted_is_stable_by_created_at_then_id). Total workspace net +5: 3558 → 3563.
 
 📊 VERIFIKASI ROUND 153:
    - cargo nextest run --workspace --features dev --no-fail-fast:
      ✅ 3563 passed, 0 failed, 24 skipped.
    - Targeted `-E 'test(/sim_dashboard|sim_server|rest_api/)'` → 54 passed.
+
+\\=======================================================================//
+
+═══ ROUND 154 — perbaikan review ke-3 (FEAT-03) ═══
+
+Review ke-2 (commit 17342c5) mengonfirmasi MAJOR R152 tertutup, namun
+menyisakan 1 MEDIUM kecil + 1 MEDIUM dokumentasi + 2 LOW. Diperbaiki:
+
+MEDIUM — kebocoran slot saat `thread::spawn` gagal (low-likelihood tapi
+nyata): OS bisa menolak pembuatan thread. `std::thread::spawn` panik di
+caller (di luar catch_unwind milik worker), sehingga slot sudah di-fetch_add
+tidak dilepas dan sesi macet Running tanpa worker. Kini pakai
+`Builder::new().name(...).spawn(...)` — kegagalan dikembalikan sebagai
+`Err` → `start_worker` return false → pemanggil (`promote`) melepas slot
+dan mengembalikan status ke Queued + mengantre ulang di depan. Worker juga
+diberi nama `sim-worker-<id>` (berguna saat debugging).
+
+LOW — `release_slot` guard underflow: tadinya `fetch_sub(1)` mentah, bisa
+wrap ke usize::MAX bila ada path tak seimbang. Kini hanya kurangi bila
+`active > 0` (mencegah kebocoran kecil jadi DoS slot total).
+
+LOW — `validate_files` menolak semua path ber-`:` (termasuk nama file sah
+`a:b.sv`). Dipersempit ke drive-letter Windows (`C:`) saja; `a:b.sv` kini
+diizinkan.
+
+MEDIUM (dokumentasi) — klaim "8 test baru sim_server + 1 api" salah; sudah
+dikoreksi di blok ROUND 153: sim_server net +5 (5 baru + 3 ganti nama),
+api net 0 (1 ganti 1), total workspace +5 (3558 → 3563) tetap benar.
+
+Test: tidak ada test baru (perubahan pada jalur error spawn jarang terjadi
+di CI); cakupan perilaku sudah ada di `max_workers_limits_parallel_execution`
+dan `runner_panic_marks_failed_and_frees_slot`. Jalur spawn-gagal
+ditambahkan sebagai test unit deterministik lewat `Builder`-failure tidak
+praktis tanpa fault-injection, sehingga diverifikasi statis + test existing.
+
+📊 VERIFIKASI ROUND 154:
+   - cargo nextest run --workspace --features dev --no-fail-fast:
+     ✅ 3563 passed, 0 failed, 24 skipped.
+   - Targeted `-E 'test(/sim_dashboard|sim_server|rest_api/)'` → 54 passed.
+   - cargo check -p mivon-tools --all-targets → bersih.
 
 \\=======================================================================//
 
