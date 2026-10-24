@@ -20,6 +20,4 @@ pub mod scheduler;
 pub use frontend::{CompileSession, FileDiscovery, ModuleIndex, PackageResolver};
 pub use micd::cache::{CacheCategory, CacheLayer, CacheLayerStats};
 pub use micd::MicdDatabase;
-pub use scheduler::{
-    DependencyGraph, IncrementalTracker, NodeId, Priority, PriorityQueue, Scheduler, Task,
-};
+pub use scheduler::{DependencyGraph, IncrementalTracker, NodeId, Priority, PriorityQueue, Task};

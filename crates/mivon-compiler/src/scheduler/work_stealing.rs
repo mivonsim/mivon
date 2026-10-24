@@ -1,17 +1,12 @@
-//! Work-Stealing Task Scheduler.
+//! Tipe `Task` untuk cluster scheduler kompilasi.
 //!
-//! Menggunakan crossbeam-deque untuk work-stealing antar threads.
-//! Setiap thread punya local queue, dan thread idle bisa steal dari thread lain.
-
-use crossbeam::deque::Worker;
-use mivon_parser::lexer::{Lexer, Token};
-use mivon_parser::preprocessor::Preprocessor;
-use mivon_parser::Parser;
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::thread;
-
-// ─── Task ───
+//! Catatan Par-01 (audit.txt): work-stealing paralel pada produk disediakan
+//! rayon — `files.par_iter()` di `CompileSession` (preprocess/lex/parse) dan
+//! evaluasi layer DAG di `mivon-simulator/src/scheduler/sim_dag.rs`.
+//! Executor `Scheduler` kustom (queue + worker loop dengan handler no-op)
+//! sebelumnya dead code dan telah dihapus; tipe `Task` dipertahankan karena
+//! masih hidup sebagai payload `DependencyGraph` (compile_session) dan
+//! pemetaan prioritas (`priority::task_priority`).
 
 /// Task types untuk scheduler.
 #[derive(Debug, Clone)]
@@ -34,291 +29,26 @@ pub enum Task {
     Custom(String),
 }
 
-// ─── Task ───
-
-/// Work-stealing task scheduler.
-///
-/// # Examples
-///
-/// ```
-/// use mivon_compiler::scheduler::{Scheduler, Task};
-///
-/// let scheduler = Scheduler::new(2);
-/// scheduler.submit(Task::ParseFile("test.sv".into()));
-/// scheduler.wait_for_completion();
-/// ```
-pub struct Scheduler {
-    /// Global work-stealing deque
-    global_queue: crossbeam::queue::SegQueue<Task>,
-    /// Number of worker threads
-    num_threads: usize,
-    /// Total tasks submitted
-    pub total_submitted: AtomicUsize,
-    /// Total tasks completed
-    pub completed: AtomicUsize,
-    /// Pending task count (submitted - completed)
-    pending: AtomicUsize,
-}
-
-impl Scheduler {
-    /// Create a new scheduler with specified number of worker threads.
-    pub fn new(num_threads: usize) -> Self {
-        Scheduler {
-            global_queue: crossbeam::queue::SegQueue::new(),
-            num_threads,
-            total_submitted: AtomicUsize::new(0),
-            completed: AtomicUsize::new(0),
-            pending: AtomicUsize::new(0),
-        }
-    }
-
-    /// Create scheduler with number of threads = num_cpus.
-    pub fn new_default() -> Self {
-        Self::new(num_cpus::get())
-    }
-
-    /// Submit a task to the scheduler.
-    pub fn submit(&self, task: Task) {
-        self.total_submitted.fetch_add(1, Ordering::Relaxed);
-        self.pending.fetch_add(1, Ordering::Relaxed);
-        self.global_queue.push(task);
-    }
-
-    /// Submit tasks in batch (better cache locality).
-    pub fn submit_batch(&self, tasks: Vec<Task>) {
-        let n = tasks.len();
-        self.total_submitted.fetch_add(n, Ordering::Relaxed);
-        self.pending.fetch_add(n, Ordering::Relaxed);
-        for task in tasks {
-            self.global_queue.push(task);
-        }
-    }
-
-    /// Run the scheduler with worker threads.
-    pub fn run(&self) {
-        let global = &self.global_queue as *const crossbeam::queue::SegQueue<Task>;
-        let completed = &self.completed as *const AtomicUsize;
-        let pending = &self.pending as *const AtomicUsize;
-
-        thread::scope(|s| {
-            for id in 0..self.num_threads {
-                let global = unsafe { &*global };
-                let completed = unsafe { &*completed };
-                let pending = unsafe { &*pending };
-                s.spawn(move || {
-                    let worker = Worker::new_fifo();
-                    Self::worker_loop(id, &worker, global, completed, pending);
-                });
-            }
-        });
-    }
-
-    /// Wait for all tasks to complete.
-    pub fn wait_for_completion(&self) {
-        self.run();
-    }
-
-    /// Get number of pending tasks.
-    pub fn pending_count(&self) -> usize {
-        self.global_queue.len()
-    }
-
-    /// Get number of tasks that have been submitted but not yet completed.
-    pub fn pending_tasks(&self) -> usize {
-        self.pending.load(Ordering::Relaxed)
-    }
-
-    fn worker_loop(
-        _id: usize,
-        worker: &Worker<Task>,
-        global: &crossbeam::queue::SegQueue<Task>,
-        completed: &AtomicUsize,
-        pending: &AtomicUsize,
-    ) {
-        loop {
-            // 1. Try local queue
-            if let Some(task) = worker.pop() {
-                Self::execute_task(task, completed, pending);
-                continue;
-            }
-
-            // 2. Try global queue
-            if let Some(task) = global.pop() {
-                Self::execute_task(task, completed, pending);
-                continue;
-            }
-
-            // 3. No tasks — check if all pending tasks done
-            let p = pending.load(Ordering::Acquire);
-            if p == 0 {
-                break;
-            }
-
-            // 4. Yield to avoid busy-wait
-            thread::yield_now();
-        }
-    }
-
-    /// Execute a single task with actual compilation pipeline logic.
-    fn execute_task(task: Task, completed: &AtomicUsize, pending: &AtomicUsize) {
-        match task {
-            Task::PreprocessFile(path) => {
-                Self::preprocess_file(&PathBuf::from(path));
-            }
-            Task::TokenizeFile(path) => {
-                Self::tokenize_file(&PathBuf::from(path));
-            }
-            Task::ParseFile(path) => {
-                Self::parse_file(&PathBuf::from(path));
-            }
-            Task::TypeCheck(module) => {
-                // Type checking - placeholder for future implementation
-                eprintln!("[Task] TypeCheck: {}", module);
-            }
-            Task::ElaborateModule(module) => {
-                // Module elaboration - placeholder for future implementation
-                eprintln!("[Task] ElaborateModule: {}", module);
-            }
-            Task::ResolvePackage(pkg) => {
-                // Package resolution - placeholder for future implementation
-                eprintln!("[Task] ResolvePackage: {}", pkg);
-            }
-            Task::FlattenHierarchy => {
-                eprintln!("[Task] FlattenHierarchy");
-            }
-            Task::LowerToSimIr => {
-                eprintln!("[Task] LowerToSimIr");
-            }
-            Task::DiagnosticFlush => {
-                eprintln!("[Task] DiagnosticFlush");
-            }
-            Task::CacheEviction => {
-                eprintln!("[Task] CacheEviction");
-            }
-            Task::Custom(msg) => {
-                eprintln!("[Task] Custom: {}", msg);
-            }
-        }
-        completed.fetch_add(1, Ordering::Relaxed);
-        pending.fetch_sub(1, Ordering::Release);
-    }
-
-    /// Preprocess a single file.
-    fn preprocess_file(path: &PathBuf) {
-        if let Ok(content) = std::fs::read_to_string(path) {
-            let mut pp = Preprocessor::new();
-            match pp.preprocess(&content, None) {
-                Ok(preprocessed) => {
-                    eprintln!(
-                        "[Preprocess] {} -> {} chars",
-                        path.display(),
-                        preprocessed.len()
-                    );
-                }
-                Err(e) => {
-                    eprintln!("[Preprocess] {} ERROR: {}", path.display(), e);
-                }
-            }
-        } else {
-            eprintln!("[Preprocess] {} ERROR: file not found", path.display());
-        }
-    }
-
-    /// Tokenize a single file.
-    fn tokenize_file(path: &PathBuf) {
-        if let Ok(content) = std::fs::read_to_string(path) {
-            let mut pp = Preprocessor::new();
-            if let Ok(preprocessed) = pp.preprocess(&content, None) {
-                let mut lexer = Lexer::new(&preprocessed);
-                let mut count = 0;
-                loop {
-                    let (tok, _, _) = lexer.next_token();
-                    if tok == Token::Eof {
-                        break;
-                    }
-                    count += 1;
-                }
-                eprintln!("[Tokenize] {} -> {} tokens", path.display(), count);
-            } else {
-                eprintln!("[Tokenize] {} ERROR: preprocess failed", path.display());
-            }
-        } else {
-            eprintln!("[Tokenize] {} ERROR: file not found", path.display());
-        }
-    }
-
-    /// Parse a single file.
-    fn parse_file(path: &PathBuf) {
-        if let Ok(content) = std::fs::read_to_string(path) {
-            let mut pp = Preprocessor::new();
-            if let Ok(preprocessed) = pp.preprocess(&content, None) {
-                let mut lexer = Lexer::new(&preprocessed);
-                let mut tokens = Vec::new();
-                loop {
-                    let (tok, line, col) = lexer.next_token();
-                    if tok == Token::Eof {
-                        break;
-                    }
-                    tokens.push((tok, line, col));
-                }
-                let mut parser = Parser::new(tokens, &path.to_string_lossy());
-                match parser.parse_design() {
-                    Ok(design) => {
-                        eprintln!(
-                            "[Parse] {} -> {} modules, {} packages",
-                            path.display(),
-                            design.modules.len(),
-                            design.packages.len()
-                        );
-                    }
-                    Err(e) => {
-                        eprintln!("[Parse] {} ERROR: {}", path.display(), e);
-                    }
-                }
-            } else {
-                eprintln!("[Parse] {} ERROR: preprocess failed", path.display());
-            }
-        } else {
-            eprintln!("[Parse] {} ERROR: file not found", path.display());
-        }
-    }
-}
-
-// ─── Tests ───
-
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::Task;
+    use crate::scheduler::priority::{task_priority, Priority};
 
+    /// Regresi Par-01: `Task` tetap terpakai sebagai API publik tanpa
+    /// executor `Scheduler` — payload DependencyGraph + pemetaan prioritas.
     #[test]
-    fn test_scheduler_new() {
-        let scheduler = Scheduler::new(4);
-        assert_eq!(scheduler.num_threads, 4);
-    }
-
-    #[test]
-    fn test_scheduler_submit() {
-        let scheduler = Scheduler::new(2);
-        scheduler.submit(Task::ParseFile("test.sv".into()));
-        assert_eq!(scheduler.pending_count(), 1);
-    }
-
-    #[test]
-    fn test_scheduler_batch() {
-        let scheduler = Scheduler::new(2);
-        let tasks: Vec<Task> = (0..10)
-            .map(|i| Task::ParseFile(format!("file_{}.sv", i)))
-            .collect();
-        scheduler.submit_batch(tasks);
-        assert_eq!(scheduler.pending_count(), 10);
-    }
-
-    #[test]
-    fn test_scheduler_run_completes() {
-        let scheduler = Scheduler::new(2);
-        scheduler.submit(Task::ParseFile("a.sv".into()));
-        scheduler.submit(Task::ParseFile("b.sv".into()));
-        scheduler.wait_for_completion();
-        assert_eq!(scheduler.completed.load(Ordering::Relaxed), 2);
+    fn task_survives_without_scheduler_executor() {
+        let t = Task::ParseFile("design.sv".into());
+        let cloned = t.clone();
+        assert!(format!("{cloned:?}").contains("ParseFile"));
+        assert_eq!(
+            task_priority(&Task::PreprocessFile("a.sv".into())),
+            Priority::Critical
+        );
+        assert_eq!(
+            task_priority(&Task::ParseFile("a.sv".into())),
+            Priority::High
+        );
+        assert_eq!(task_priority(&Task::CacheEviction), Priority::Low);
     }
 }

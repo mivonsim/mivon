@@ -485,14 +485,18 @@ JIT-02: ⚠️ JIT tidak cache di disk — masih open
 
 ═══ 2.5 PARALLEL ARCHITECTURE ═══
 
-Par-01: ⚠️ Work-stealing scheduler — skeleton ada, tidak terintegrasi (ROUND 77)
-  Scheduler/work_stealing.rs: crossbeam-segqueue + Worker + 12 test
-  lulus, tapi semua execute_task() branch no-op. Tidak terhubung ke
-  CompileSession atau SimulationEngine. Butuh implementasi task
-  handlers + integrasi pipeline.
-  Impact: CPU utilization rendah saat sim.
-  Severity: High
-  Fix: Implement task handlers + integrasi ke CompileSession::compile().
+Par-01: ✅ Work-stealing paralel produk = rayon; executor kustom dead-code dihapus (ROUND 183)
+  Investigasi: CompileSession SUDAH paralel via rayon — files.par_iter()
+  (preprocess/lex/parse, compile_session.rs) + evaluasi layer DAG
+  (sim_dag.rs, rayon). Executor kustom work_stealing.rs ternyata dead
+  code: semua execute_task() no-op, nol call-site; SchedulerHandle +
+  RuntimeContext.scheduler juga tanpa pemakai (hanya test sendiri).
+  Task enum HIDUP (payload DependencyGraph compile_session, task_priority).
+  Fix (diterapkan): executor Scheduler + SchedulerHandle +
+  RuntimeContext.scheduler + re-export terkait + deps orphan
+  (crossbeam, num_cpus di mivon-compiler) dihapus; Task dipertahankan.
+  Test: task_survives_without_scheduler_executor (mivon-compiler).
+  Severity: High -> CLOSED.
 
 Par-02: ⚠️ DAG hanya combinational — masih open
   Root Cause: Sequential processes (AlwaysFF, AlwyasWithDelay)
@@ -10183,5 +10187,55 @@ VERIFIKASI ROUND 182:
 Status PAR-03: Arc body sharing (tahap 1) + differential snapshot (tahap 2)
 SELESAI. Item open berikutnya: Par-01 (integrasi work-stealing), Par-02,
 Arsitektur-01..04, JIT-01/02.
+
+
+═══ ROUND 183 — PAR-01: work-stealing = rayon; executor kustom dead-code dihapus ═══
+
+Investigasi (Par-01):
+  1. Work-stealing paralel di produk disediakan rayon: CompileSession
+     Phase 3 files.par_iter() (preprocess/MmapFile/inline-sources/
+     timescale) + parse into_par_iter(); evaluasi paralel simulasi via
+     rayon di layer DAG (mivon-simulator/src/scheduler/sim_dag.rs).
+  2. Executor kustom Scheduler (work_stealing.rs): nol pemakai produk —
+     hanya test/doc-test sendiri; semua handler execute_task() no-op
+     (eprintln). SchedulerHandle (mivon-env) murni fasad di atas
+     executor dead itu; RuntimeContext.scheduler nol call-site
+     .scheduler. di luar shutdown() sendiri.
+  3. Task enum tetap HIDUP: payload DependencyGraph::add_node di
+     compile_session.rs (dep graph build), dipakai dag.rs/
+     incremental.rs/priority.rs, di-reexport mivon-simulator (path
+     legacy).
+
+Perubahan (dead-code removal, MEDIUM — manual per lokasi):
+  1. work_stealing.rs: 324 -> 51 baris — hanya Task + doc + test;
+     executor, worker_loop, doc-test, 4 test Scheduler dihapus.
+  2. Re-exports: Scheduler dibuang dari mivon-compiler lib.rs +
+     scheduler/mod.rs + mivon-simulator scheduler/mod.rs.
+  3. mivon-env: runtime/scheduler.rs (SchedulerHandle) dihapus; field
+     RuntimeContext.scheduler + 2 inisialisasi + method shutdown()
+     dihapus; panggilan env.runtime.shutdown() di global/shutdown.rs
+     dihapus; re-export env/mod.rs dibersihkan.
+  4. mivon-compiler/Cargo.toml: deps orphan crossbeam + num_cpus
+     dibuang (pemakai satu-satunya executor yang dihapus).
+
+Test:
+  task_survives_without_scheduler_executor (mivon-compiler,
+  work_stealing.rs): Task clone/Debug + pemetaan task_priority
+  (PreprocessFile=Critical, ParseFile=High, CacheEviction=Low) —
+  mengunci Task sebagai API publik pasca-penghapusan executor.
+  Regresi terdampak lulus: test_shutdown_no_panic,
+  test_runtime_init_respects_config, test_task_priority.
+
+VERIFIKASI ROUND 183:
+   - cargo check --workspace --all-targets: bersih.
+   - cargo nextest run --workspace --features dev: 3618 passed,
+     24 skipped (3622 -> 3618: -4 test Scheduler, -1 test
+     SchedulerHandle, +1 test regresi Task).
+   - cargo fmt --all --check -> bersih.
+
+Status PAR-01: SELESAI (CLOSED) — work-stealing produk = rayon
+(parallel compile + parallel layer eval); skeleton no-op dihapus agar
+audit tidak menyesatkan. Item open berikutnya: Par-02 (DAG hanya
+combinational), Arsitektur-01..04, JIT-01/02.
 
 \\=======================================================================//

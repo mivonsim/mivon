@@ -24,5 +24,5 @@ pub use sim_dag::{
 // valid bagi konsumen yang belum dimigrasi.
 pub use mivon_compiler::scheduler::priority::task_priority;
 pub use mivon_compiler::scheduler::{
-    DependencyGraph, IncrementalTracker, NodeId, Priority, PriorityQueue, Scheduler, Task,
+    DependencyGraph, IncrementalTracker, NodeId, Priority, PriorityQueue, Task,
 };

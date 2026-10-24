@@ -1,10 +1,10 @@
 use crate::env::config::ConfigContext;
-use crate::env::runtime::{CpuInfo, MemoryInfo, SchedulerHandle, ThreadPoolHandle};
+use crate::env::runtime::{CpuInfo, MemoryInfo, ThreadPoolHandle};
 use std::path::PathBuf;
 use std::sync::Arc;
 
 /// RuntimeContext — mengatur seluruh resource host: CPU, memori, thread pool,
-/// scheduler, temp directory.
+/// temp directory.
 ///
 /// Compiler cukup meminta `runtime.thread_pool.spawn(...)` atau
 /// `runtime.spawn(...)` tanpa tahu implementasi thread.
@@ -13,7 +13,6 @@ pub struct RuntimeContext {
     pub cpu: CpuInfo,
     pub memory: MemoryInfo,
     pub thread_pool: Arc<ThreadPoolHandle>,
-    pub scheduler: SchedulerHandle,
     pub temp_dir: PathBuf,
 }
 
@@ -25,7 +24,6 @@ impl RuntimeContext {
             cpu: CpuInfo::detect(),
             memory: MemoryInfo::read(),
             thread_pool: Arc::new(ThreadPoolHandle::new(threads)),
-            scheduler: SchedulerHandle::new(threads),
             temp_dir: std::env::temp_dir(),
         }
     }
@@ -37,7 +35,6 @@ impl RuntimeContext {
             cpu: CpuInfo::detect(),
             memory: MemoryInfo::read(),
             thread_pool: Arc::new(ThreadPoolHandle::new(threads)),
-            scheduler: SchedulerHandle::new(threads),
             temp_dir: std::env::temp_dir(),
         })
     }
@@ -52,11 +49,6 @@ impl RuntimeContext {
         F: FnOnce() + Send + 'static,
     {
         self.thread_pool.spawn(f);
-    }
-
-    /// Shutdown runtime: tunggu task pending scheduler selesai.
-    pub fn shutdown(&self) {
-        self.scheduler.wait();
     }
 
     pub fn summary(&self) -> String {

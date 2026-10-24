@@ -34,7 +34,7 @@ pub use database::DatabaseContext;
 pub use diagnostics::DiagnosticsContext;
 pub use global::{for_cli, shutdown, startup, startup_with, BuildInfo, GlobalEnv};
 pub use plugins::{PluginContext, PluginManagerHandle, PluginRegistry, SandboxPolicy};
-pub use runtime::{CpuInfo, MemoryInfo, RuntimeContext, SchedulerHandle, ThreadPoolHandle};
+pub use runtime::{CpuInfo, MemoryInfo, RuntimeContext, ThreadPoolHandle};
 pub use security::{FileAccessPolicy, PermissionSet, SecurityContext};
 pub use simulation::{SimulationContext, SimulationKernel, WaveformOptions};
 pub use telemetry::{Metrics, PhaseTimings, ProfilerHandle, TelemetryContext, TraceHandle};

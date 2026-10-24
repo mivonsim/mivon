@@ -17,9 +17,6 @@ pub fn shutdown(env: &mut GlobalEnv) {
         }
     }
 
-    // Runtime: tunggu task pending scheduler selesai.
-    env.runtime.shutdown();
-
     // Diagnostics: drain tersimpan (untuk laporan akhir caller).
     let _ = env.diagnostics.drain();
 }
