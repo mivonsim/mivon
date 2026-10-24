@@ -10142,7 +10142,15 @@ VERIFIKASI ROUND 181:
      (3620 -> 3621, +1 test).
    - cargo fmt --all --check -> bersih.
 
-Sisa Par-03 (tahap berikutnya): differential snapshot — snapshot sinyal
-per DAG layer masih materialisasi LogicVec penuh tiap layer (core.rs
-2163-2170); idealnya rebuild hanya sinyal yang berubah sejak layer lalu.
-\\=======================================================================//
+Follow-up review agent ROUND 181: silent-skip coupling — bila arcs stale,
+proses clock-domain terlewat diam-diam (dulu clone langsung dari design).
+Mitigasi murah diterapkan: debug_assert!(process_body_arcs.contains_key)
+di kedua situs (seq + follower) — panic di debug bila arcs stale.
+
+VERIFIKASI ROUND 181 (final):
+   - cargo nextest run --workspace --features dev: 3621 passed, 24 skipped.
+   - cargo fmt --all --check -> bersih.
+
+Sisa Par-03 (tahap berikutnya): differential snapshot — snapshot sinyal per
+DAG layer masih materialisasi LogicVec penuh tiap layer (core.rs 2163-2170);
+idealnya rebuild hanya sinyal yang berubah sejak layer lalu.

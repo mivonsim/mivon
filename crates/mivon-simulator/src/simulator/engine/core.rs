@@ -2246,6 +2246,13 @@ impl SimulationEngine {
                         .expect("process pid out of bounds in clock domain eval")
                     {
                         // Par-03: Arc::clone murah — tanpa deep clone body.
+                        // debug_assert: pid Sequential HARUS ada di arcs (dibangun
+                        // di run()); bila tidak, proses akan terlewat diam-diam.
+                        debug_assert!(
+                            self.process_body_arcs.contains_key(&pid),
+                            "process_body_arcs stale: Sequential pid {} hilang",
+                            pid
+                        );
                         if let Some(b) = self.process_body_arcs.get(&pid) {
                             return Some((pid, std::sync::Arc::clone(b)));
                         }
@@ -2270,6 +2277,12 @@ impl SimulationEngine {
                     {
                         Process::Combinational { .. } | Process::CombReactive { .. } => {
                             // Par-03: Arc::clone murah — tanpa deep clone body.
+                            // debug_assert: pid Comb HARUS ada di arcs.
+                            debug_assert!(
+                                self.process_body_arcs.contains_key(&pid),
+                                "process_body_arcs stale: Comb pid {} hilang",
+                                pid
+                            );
                             self.process_body_arcs
                                 .get(&pid)
                                 .map(|b| (pid, std::sync::Arc::clone(b)))
