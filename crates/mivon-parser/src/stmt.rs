@@ -742,6 +742,11 @@ impl Parser {
     /// cukup: budget node menghentikan ekspansi sebelum kehabisan memori.
     const SVA_EXPAND_NODE_BUDGET: usize = 50_000;
 
+    /// Batas kedalaman rekursi ekspansi. Budget node tidak membatasi kedalaman:
+    /// rantai linear 1 node/level bisa membuat rekursi ~50.000 level dan
+    /// menabrak stack. 256 jauh di atas pemakaian nyata (alias biasanya 1-3).
+    const SVA_EXPAND_MAX_DEPTH: usize = 256;
+
     /// Hitung node sebuah sequence (dipakai untuk budget ekspansi).
     fn seq_nodes(seq: &super::types::Sequence) -> usize {
         use super::types::Sequence;
@@ -766,43 +771,45 @@ impl Parser {
     ) -> super::types::Sequence {
         let mut seen = Vec::new();
         let mut budget = Self::SVA_EXPAND_NODE_BUDGET;
-        self.resolve_named_in_sequence_inner(seq, decl_clock, &mut seen, &mut budget)
+        let mut warned = false;
+        self.resolve_named_in_sequence_inner(seq, decl_clock, &mut seen, &mut budget, &mut warned)
     }
 
-    /// Rekursi + guard anti-siklus + budget node.
+    /// Rekursi + guard siklus + budget node + batas kedalaman.
     fn resolve_named_in_sequence_inner(
         &mut self,
         seq: &super::types::Sequence,
         decl_clock: &mut Option<ClockEvent>,
         seen: &mut Vec<Symbol>,
         budget: &mut usize,
+        warned: &mut bool,
     ) -> super::types::Sequence {
         use super::types::Sequence;
         match seq {
             Sequence::Expr(Expr::Ident { name, .. }) => {
-                self.expand_named(seq, *name, &[], decl_clock, seen, budget)
+                self.expand_named(seq, *name, &[], decl_clock, seen, budget, warned)
             }
             Sequence::Expr(Expr::FuncCall { name, args, .. }) => {
-                self.expand_named(seq, *name, args, decl_clock, seen, budget)
+                self.expand_named(seq, *name, args, decl_clock, seen, budget, warned)
             }
             Sequence::Implication(a, c) => Sequence::Implication(
-                Box::new(self.resolve_named_in_sequence_inner(a, decl_clock, seen, budget)),
-                Box::new(self.resolve_named_in_sequence_inner(c, decl_clock, seen, budget)),
+                Box::new(self.resolve_named_in_sequence_inner(a, decl_clock, seen, budget, warned)),
+                Box::new(self.resolve_named_in_sequence_inner(c, decl_clock, seen, budget, warned)),
             ),
             Sequence::Concat(a, c) => Sequence::Concat(
-                Box::new(self.resolve_named_in_sequence_inner(a, decl_clock, seen, budget)),
-                Box::new(self.resolve_named_in_sequence_inner(c, decl_clock, seen, budget)),
+                Box::new(self.resolve_named_in_sequence_inner(a, decl_clock, seen, budget, warned)),
+                Box::new(self.resolve_named_in_sequence_inner(c, decl_clock, seen, budget, warned)),
             ),
             Sequence::Or(a, c) => Sequence::Or(
-                Box::new(self.resolve_named_in_sequence_inner(a, decl_clock, seen, budget)),
-                Box::new(self.resolve_named_in_sequence_inner(c, decl_clock, seen, budget)),
+                Box::new(self.resolve_named_in_sequence_inner(a, decl_clock, seen, budget, warned)),
+                Box::new(self.resolve_named_in_sequence_inner(c, decl_clock, seen, budget, warned)),
             ),
             Sequence::And(a, c) => Sequence::And(
-                Box::new(self.resolve_named_in_sequence_inner(a, decl_clock, seen, budget)),
-                Box::new(self.resolve_named_in_sequence_inner(c, decl_clock, seen, budget)),
+                Box::new(self.resolve_named_in_sequence_inner(a, decl_clock, seen, budget, warned)),
+                Box::new(self.resolve_named_in_sequence_inner(c, decl_clock, seen, budget, warned)),
             ),
             Sequence::Repeat(s, n) => Sequence::Repeat(
-                Box::new(self.resolve_named_in_sequence_inner(s, decl_clock, seen, budget)),
+                Box::new(self.resolve_named_in_sequence_inner(s, decl_clock, seen, budget, warned)),
                 *n,
             ),
             other => other.clone(),
@@ -811,7 +818,8 @@ impl Parser {
 
     /// Ekspansi satu referensi bernama (dengan substitusi argumen) lalu telusuri
     /// body hasil ekspansi agar alias bertingkat (s1 -> s2 -> expr) ikut
-    /// tersubstitusi. seen mencegah siklus; budget mencegah ledakan ukuran.
+    /// tersubstitusi. seen mencegah siklus; budget/kedalaman mencegah ledakan.
+    #[allow(clippy::too_many_arguments)]
     fn expand_named(
         &mut self,
         original: &super::types::Sequence,
@@ -820,24 +828,31 @@ impl Parser {
         decl_clock: &mut Option<ClockEvent>,
         seen: &mut Vec<Symbol>,
         budget: &mut usize,
+        warned: &mut bool,
     ) -> super::types::Sequence {
-        if seen.contains(&name) {
+        if seen.contains(&name) || seen.len() >= Self::SVA_EXPAND_MAX_DEPTH {
             return original.clone();
         }
         match self.lookup_named_seq(&name, args) {
             Some((body, clock)) => {
                 let nodes = Self::seq_nodes(&body);
                 if nodes > *budget {
-                    // Jangan diam-diam: beri warning agar pengguna tahu kenapa
-                    // referensi dibiarkan unresolved (bukan sekadar E2001).
-                    self.push_warning_at(
-                        format!(
-                            "ekspansi SVA sequence/property melebihi budget {} node; referensi dibiarkan unresolved",
-                            Self::SVA_EXPAND_NODE_BUDGET
-                        ),
-                        0,
-                        0,
-                    );
+                    // Sekali per resolusi (bukan per sibling) agar tidak spam,
+                    // dengan posisi nyata + kode limit (bukan E1005 sintaks).
+                    if !*warned {
+                        *warned = true;
+                        let line = self.peek_line();
+                        let col = self.peek_col();
+                        self.push_warning_code_at(
+                            DiagCode::ExpansionLimit,
+                            format!(
+                                "ekspansi SVA sequence/property melebihi budget {} node; referensi dibiarkan unresolved",
+                                Self::SVA_EXPAND_NODE_BUDGET
+                            ),
+                            line,
+                            col,
+                        );
+                    }
                     return original.clone();
                 }
                 *budget -= nodes;
@@ -845,14 +860,14 @@ impl Parser {
                     *decl_clock = clock;
                 }
                 seen.push(name);
-                let out = self.resolve_named_in_sequence_inner(&body, decl_clock, seen, budget);
+                let out =
+                    self.resolve_named_in_sequence_inner(&body, decl_clock, seen, budget, warned);
                 seen.pop();
                 out
             }
             None => original.clone(),
         }
     }
-
     /// Deteksi operator temporal PSL di body paren assertion (`a |-> b`,
     /// `a until b`, `a before b`) — lexer/expr parser tidak support.
     /// Precondition: pos di dalam `(` (setelah expect LParen di LANG-03 path).

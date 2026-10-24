@@ -606,8 +606,8 @@ endmodule
         let mut ids = Vec::new();
         seq_idents(&ante, &mut ids);
         assert!(
-            ids.len() < 50_000,
-            "hasil ekspansi harus dibatasi budget, dapat {}",
+            !ids.is_empty() && ids.len() < 20_000,
+            "hasil ekspansi harus terisi dan dibatasi budget, dapat {}",
             ids.len()
         );
         assert!(
@@ -631,5 +631,22 @@ endmodule
             }
         }
         assert!(clock_ok, "clock deklarasi alias harus dipakai assertion");
+    }
+
+    /// Rantai alias sangat dalam harus berhenti di batas kedalaman, bukan
+    /// menabrak stack (SIGABRT).
+    #[test]
+    fn deep_alias_chain_does_not_overflow_stack() {
+        let mut src = String::from("module m(input logic clk, a, b);\n");
+        src.push_str("  sequence c0; a; endsequence\n");
+        for i in 1..=400 {
+            src.push_str(&format!("  sequence c{}; c{}; endsequence\n", i, i - 1));
+        }
+        src.push_str("  assert property (@(posedge clk) c400 |-> b);\nendmodule\n");
+        let design = parse_src(&src);
+        let ante = first_antecedent(&design);
+        let mut ids = Vec::new();
+        seq_idents(&ante, &mut ids);
+        assert!(!ids.is_empty(), "antecedent harus tetap ter-parse");
     }
 }

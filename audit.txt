@@ -9613,3 +9613,41 @@ lalu skip_to_next_top_level() membuang sisa file — bug robustness terpisah.
      ✅ 3591 passed, 0 failed, 24 skipped.
 
 \=======================================================================//
+
+═══ ROUND 167 — PARSER-09: diag E1006 + depth cap + warning akurat ═══
+
+Review agent (Explore) atas ROUND 166: budget node benar, tetapi 2 MEDIUM:
+
+(a) Depth cap dihapus -> rantai alias linear dalam (~1.000 level pada stack 2 MB)
+    menyebabkan SIGABRT stack overflow, bukan warning.
+(b) push_warning_at(0,0): render "--> file:0:0" (melanggar aturan line/col
+    akurat), kode E1005 + Explanation "syntax" menyesatkan, dan dedup lokasi
+    0:0 menggabungkan semua warning budget lintas file menjadi satu.
+Plus LOW: ambang test ekspansional longgar (ids < 50k tidak terkait budget),
+dan test clock sebenarnya menjaga ROUND 165, bukan 166.
+
+Diperbaiki:
+- mivon-diag: variant baru DiagCode::ExpansionLimit = E1006 (kategori Parse,
+  description "implementation limit exceeded", explanation + help khusus limit).
+- stmt.rs: warning memakai ExpansionLimit + posisi nyata (peek_line/peek_col),
+  dan hanya SEKALI per resolusi (flag warned) -> tidak spam.
+- stmt.rs: SVA_EXPAND_MAX_DEPTH = 256 dikembalikan sebagai guard stack
+  (budget node tetap ada; keduanya independen).
+- test: exponential_alias_expansion_is_bounded diperketat
+  (!ids.is_empty() && ids.len() < 20_000).
+- +1 test: deep_alias_chain_does_not_overflow_stack (400 level -> selesai,
+  bukan SIGABRT).
+- Koreksi klaim ROUND 166: warning 0:0 dan penghapusan depth cap TIDAK lagi
+  berlaku; test clock memang menjaga ROUND 165.
+
+Bukti: file 24 level -> warning[E1006] di /tmp/p09_big.sv:27:45, parse 0,83 s
+/ 77 MB (sebelumnya 165,7 s pada 2^20).
+
+📊 VERIFIKASI ROUND 167:
+   - cargo nextest run -p mivon-parser sva::tests -> 12 passed.
+   - cargo check -p mivon-parser --all-targets -> 0 warning, 0 error.
+   - Smoke: warning[E1006] dengan file:line:col benar; 0,83 s / 77 MB.
+   - cargo nextest run --workspace --features dev --no-fail-fast:
+     ✅ 3592 passed, 0 failed, 24 skipped.
+
+\=======================================================================//

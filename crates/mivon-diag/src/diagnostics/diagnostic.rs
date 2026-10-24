@@ -65,6 +65,10 @@ pub enum DiagCode {
     ExpectedSemi,
     UnclosedBlock,
     InvalidSyntax,
+    /// Ekspansi/limit implementasi terlampaui (E1006) — mis. ekspansi alias SVA
+    /// sequence/property melebihi budget node. Di-warn agar tidak OOM, bukan
+    /// karena sintaks salah.
+    ExpansionLimit,
 
     // ── Semantic errors: E2xxx ──
     UndefinedSignal,
@@ -246,6 +250,7 @@ impl DiagCode {
             DiagCode::ExpectedSemi => "E1003",
             DiagCode::UnclosedBlock => "E1004",
             DiagCode::InvalidSyntax => "E1005",
+            DiagCode::ExpansionLimit => "E1006",
             // Semantic
             DiagCode::UndefinedSignal => "E2001",
             DiagCode::TypeMismatch => "E2002",
@@ -344,6 +349,7 @@ impl DiagCode {
             DiagCode::ExpectedSemi => "expected ';'",
             DiagCode::UnclosedBlock => "unclosed block",
             DiagCode::InvalidSyntax => "invalid syntax",
+            DiagCode::ExpansionLimit => "implementation limit exceeded",
             // Semantic
             DiagCode::UndefinedSignal => "undefined signal",
             DiagCode::TypeMismatch => "type mismatch",
@@ -446,6 +452,8 @@ impl DiagCode {
                 "A block (begin/end, module/endmodule, etc.) was opened but never closed.",
             DiagCode::InvalidSyntax =>
                 "The source code contains syntax that does not conform to the SystemVerilog language specification.",
+            DiagCode::ExpansionLimit =>
+                "The design exceeds an implementation limit (for example SVA sequence/property alias expansion); the construct was left unexpanded to avoid excessive memory use.",
             DiagCode::UndefinedSignal =>
                 "A signal name was referenced but has not been declared in the current scope.",
             DiagCode::TypeMismatch =>
@@ -593,15 +601,17 @@ impl DiagCode {
     pub fn help(&self) -> &'static str {
         match self {
             DiagCode::UnexpectedToken =>
-                "Review the syntax near the indicated position and check for typos or missing operators.",
+                "Check the code near the indicated position for missing keywords or operators.",
+            DiagCode::InvalidSyntax =>
+                "Review the code at the indicated location and fix the reported issue.",
+            DiagCode::ExpansionLimit =>
+                "Reduce the nesting or size of the sequence/property alias expansion.",
             DiagCode::ExpectedToken =>
                 "Check the code near the indicated position for missing keywords or operators.",
             DiagCode::ExpectedSemi =>
                 "Add a semicolon at the end of the statement.",
             DiagCode::UnclosedBlock =>
                 "Add the closing keyword (end, endmodule, endinterface, etc.) for the block.",
-            DiagCode::InvalidSyntax =>
-                "Review the code at the indicated location and fix the reported issue.",
             DiagCode::UndefinedSignal =>
                 "Declare the signal before using it, or check for typos in the signal name.",
             DiagCode::TypeMismatch =>
@@ -752,7 +762,8 @@ impl DiagCode {
             | DiagCode::ExpectedToken
             | DiagCode::ExpectedSemi
             | DiagCode::UnclosedBlock
-            | DiagCode::InvalidSyntax => "Parse",
+            | DiagCode::InvalidSyntax
+            | DiagCode::ExpansionLimit => "Parse",
             DiagCode::UndefinedSignal
             | DiagCode::TypeMismatch
             | DiagCode::WidthMismatch
