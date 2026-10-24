@@ -1240,4 +1240,34 @@ endmodule
             assert_eq!(snip.line, 500);
         }
     }
+
+    /// ROUND 179: 'expect property' di level module TIDAK boleh hilang
+    /// senyap (dulu ditelan skip_until_semi_or_end tanpa diag). Invariant:
+    /// entah ter-parse jadi PropertyAssert, entah memicu E1007 — dan parsing
+    /// item setelahnya harus tetap utuh.
+    #[test]
+    fn module_level_expect_not_silently_dropped() {
+        let src = "module m(input logic clk, a, b);\n  expect property (@(posedge clk) a |-> b);\n  logic x;\nendmodule\n";
+        let (design, diags) = parse_with_diags(src);
+        let parsed = design.modules[0]
+            .items
+            .iter()
+            .any(|i| matches!(i, crate::types::ModuleItem::PropertyAssert(_)));
+        let warned = diags
+            .iter()
+            .any(|d| d.code == DiagCode::UnsupportedAssertion);
+        assert!(
+            parsed || warned,
+            "expect level module hilang senyap: items={:?} diags={:?}",
+            design.modules[0].items.len(),
+            diags.len()
+        );
+        assert!(
+            design.modules[0]
+                .decls
+                .iter()
+                .any(|d| d.names.iter().any(|n| n.name.as_str() == "x")),
+            "deklarasi setelah expect harus tetap ter-parse"
+        );
+    }
 }

@@ -10050,7 +10050,32 @@ VERIFIKASI ROUND 178:
      (3616 -> 3617, +1 test).
    - cargo fmt --all --check -> bersih.
 
-Sisa review PARSER-09 (belum di round ini): Token::Expect senyap di level module,
-dan refactor ekstraksi helper parse_clock_event() tunggal (opsional, menutup
-drift permanen). MEDIUM 4 SUDAH SELESAI di ROUND 178.
+═══ ROUND 179 — PARSER-09: Token::Expect di level module tidak lagi senyap ═══
+
+Review ROUND 171 sisa: expect property (...) di level module ditelan
+skip_until_semi_or_end TANPA diagnostic (arm fallback
+Assert/Assume/Cover/Expect) — user mengira expect aktif padahal dibuang.
+
+Perubahan (minimal, manual):
+  1. crates/mivon-parser/src/lib.rs — arm assertion module-level kini
+     Assert/Assume/Cover/Restrict/EXPECT: expect di-parse via
+     parse_immediate_assertion (sudah menerima Token::Expect sejak awal);
+     bila gagal -> rollback + E1007 (sama seperti assert/assume/cover).
+  2. Arm fallback senyap kehilangan Token::Expect + komentar jaring pengaman.
+
+Test regression (invariant, tahan perbaikan parser masa depan):
+  module_level_expect_not_silently_dropped: expect property (@(posedge clk)
+  a |-> b); di level module -> harus PropertyAssert ATAU E1007 (bukan hilang
+  senyap), dan deklarasi logic x; sesudahnya tetap ter-parse.
+  Regresi dikunci: tanpa perbaikan test FAILED; dengan perbaikan ok.
+
+VERIFIKASI ROUND 179:
+   - cargo test -p mivon-parser module_level_expect_not_silently_dropped -> 1 passed.
+   - cargo nextest run --workspace --features dev: 3618 passed, 24 skipped
+     (3617 -> 3618, +1 test).
+   - cargo fmt --all --check -> bersih.
+
+Sisa review PARSER-09: refactor ekstraksi helper parse_clock_event() tunggal
+(opsional, menutup drift permanen — 4 situs parse clock masih copy-paste).
+Token::Expect SUDAH SELESAI di ROUND 179.
 \\=======================================================================//

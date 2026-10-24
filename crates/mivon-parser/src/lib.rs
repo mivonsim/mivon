@@ -2214,7 +2214,7 @@ impl Parser {
                 let dp = self.parse_defparam()?;
                 Ok(Some(ModuleItem::DefParam(dp)))
             }
-            Token::Assert | Token::Assume | Token::Cover | Token::Restrict => {
+            Token::Assert | Token::Assume | Token::Cover | Token::Restrict | Token::Expect => {
                 // Concurrent assertion SVA module-level. Bentuk BOOLEAN
                 // `assert property (@(posedge clk) expr)` di-parse penuh menjadi
                 // ModuleItem::PropertyAssert (LANG-04/11/12/13) — elaborator
@@ -3153,7 +3153,11 @@ impl Parser {
                 }
             }
             #[allow(unreachable_patterns)]
-            Token::Assert | Token::Assume | Token::Cover | Token::Expect => {
+            Token::Assert | Token::Assume | Token::Cover => {
+                // Fallback: assertion module-level sudah ditangani arm
+                // Assert/Assume/Cover/Restrict/Expect di atas (parse + E1007
+                // saat tidak didukung). Arm ini hanya jaring pengaman —
+                // JANGAN menelan senyap.
                 self.skip_until_semi_or_end()?;
                 Ok(None)
             }
