@@ -1244,4 +1244,215 @@ mod tests {
             "nilai = b (One)"
         );
     }
+
+    /// Par-02 tahap 5 — kunci kebijakan gate statement tak-dukung
+    /// (review R186 RISK-3 / R187 RISK-2): evaluator paralel punya arm
+    /// `_ => {}` (skip senyap). body_write_kinds adalah gerbang batch:
+    /// varian yang di-SKIP evaluator WAJIB diklasifikasi None (serial).
+    /// varian yang di-walk wajib Some dengan set (blocking, nba) benar.
+    /// Bila seseorang menambah arm walk utk varian yang evaluator-nya
+    /// skip senyap, assertion (a) gagal dan memaksa verifikasi manual.
+    #[test]
+    fn body_write_kinds_gate_policy() {
+        use mivon_ir::{CaseType, IrCaseItem, IrExpr, IrJoinType, IrLValue, IrStmt};
+
+        let sig = |id: SignalId| IrLValue::Signal(id, 8);
+        let c1 = IrExpr::Const(LogicVec::from_u64(1, 1));
+        let blocking = |id: SignalId| IrStmt::BlockingAssign {
+            lhs: sig(id),
+            rhs: c1.clone(),
+            delay: None,
+        };
+        let nba = |id: SignalId| IrStmt::NonBlockingAssign {
+            lhs: sig(id),
+            rhs: c1.clone(),
+            delay: None,
+        };
+
+        // (a) varian skip senyap evaluator / tak didukung -> None.
+        let rejected: Vec<(&str, IrStmt)> = vec![
+            (
+                "NamedBlock",
+                IrStmt::NamedBlock {
+                    name: Symbol::intern("nb"),
+                    stmts: vec![blocking(1)],
+                    decls: vec![],
+                },
+            ),
+            (
+                "Delay",
+                IrStmt::Delay {
+                    delay: 2,
+                    body: vec![blocking(1)],
+                },
+            ),
+            (
+                "Force",
+                IrStmt::Force {
+                    lvalue: sig(1),
+                    rhs: c1.clone(),
+                },
+            ),
+            (
+                "Wait",
+                IrStmt::Wait {
+                    cond: c1.clone(),
+                    body: vec![blocking(1)],
+                },
+            ),
+            (
+                "SysCall",
+                IrStmt::SysCall {
+                    name: Symbol::intern("display"),
+                    args: vec![],
+                    line: 0,
+                    col: 0,
+                },
+            ),
+            ("SysFinish", IrStmt::SysFinish),
+            (
+                "EventControl",
+                IrStmt::EventControl {
+                    sigs: vec![(1, None)],
+                    body: vec![blocking(1)],
+                    iff: None,
+                },
+            ),
+            ("EventTrigger", IrStmt::EventTrigger { sig_id: 1 }),
+            (
+                "MethodCallStmt",
+                IrStmt::MethodCallStmt {
+                    obj: c1.clone(),
+                    method: Symbol::intern("m"),
+                    args: vec![],
+                    with_clause: None,
+                },
+            ),
+            ("Break", IrStmt::Break),
+            ("Continue", IrStmt::Continue),
+            (
+                "Disable",
+                IrStmt::Disable {
+                    name: Symbol::intern("blk"),
+                },
+            ),
+            ("Release", IrStmt::Release { lvalue: sig(1) }),
+            ("Deassign", IrStmt::Deassign { lvalue: sig(1) }),
+            (
+                "Fork",
+                IrStmt::Fork {
+                    processes: vec![vec![blocking(1)]],
+                    join_type: IrJoinType::Join,
+                    label: None,
+                },
+            ),
+            (
+                "Foreach",
+                IrStmt::Foreach {
+                    array_var: c1.clone(),
+                    index_var: Symbol::intern("i"),
+                    body: vec![blocking(1)],
+                },
+            ),
+            (
+                "delayed BlockingAssign",
+                IrStmt::BlockingAssign {
+                    lhs: sig(1),
+                    rhs: c1.clone(),
+                    delay: Some(2),
+                },
+            ),
+            (
+                "delayed NonBlockingAssign",
+                IrStmt::NonBlockingAssign {
+                    lhs: sig(1),
+                    rhs: c1.clone(),
+                    delay: Some(2),
+                },
+            ),
+        ];
+        for (name, stmt) in rejected {
+            assert!(
+                body_write_kinds(std::slice::from_ref(&stmt)).is_none(),
+                "{name} wajib None (serial) — evaluator paralel skip senyap"
+            );
+        }
+
+        // (b) varian yang di-walk -> Some dengan set (blocking, nba) benar.
+        let case = IrStmt::Case {
+            case_type: CaseType::Normal,
+            expr: c1.clone(),
+            items: vec![IrCaseItem {
+                labels: vec![c1.clone()],
+                body: vec![nba(2)],
+            }],
+            default: vec![],
+        };
+        let loop_for = IrStmt::LoopFor {
+            init: Some(Box::new(blocking(3))),
+            cond: c1.clone(),
+            step: Some(Box::new(blocking(3))),
+            body: vec![nba(4)],
+        };
+        let accepted: Vec<(&str, IrStmt, Vec<SignalId>, Vec<SignalId>)> = vec![
+            ("Null", IrStmt::Null, vec![], vec![]),
+            (
+                "Block",
+                IrStmt::Block {
+                    stmts: vec![blocking(7), nba(8)],
+                },
+                vec![7],
+                vec![8],
+            ),
+            (
+                "If",
+                IrStmt::If {
+                    cond: c1.clone(),
+                    true_branch: vec![nba(5)],
+                    false_branch: vec![blocking(6)],
+                },
+                vec![6],
+                vec![5],
+            ),
+            ("Case", case, vec![], vec![2]),
+            ("LoopFor", loop_for, vec![3], vec![4]),
+            (
+                "LoopWhile",
+                IrStmt::LoopWhile {
+                    cond: c1.clone(),
+                    body: vec![nba(9)],
+                },
+                vec![],
+                vec![9],
+            ),
+            (
+                "LoopDoWhile",
+                IrStmt::LoopDoWhile {
+                    cond: c1.clone(),
+                    body: vec![nba(10)],
+                },
+                vec![],
+                vec![10],
+            ),
+            (
+                "Repeat",
+                IrStmt::Repeat {
+                    count: c1.clone(),
+                    body: vec![nba(11)],
+                },
+                vec![],
+                vec![11],
+            ),
+        ];
+        for (name, stmt, want_blocking, want_nba) in accepted {
+            let kinds = body_write_kinds(std::slice::from_ref(&stmt))
+                .unwrap_or_else(|| panic!("{name} wajib Some"));
+            let mut bw: Vec<SignalId> = kinds.0.into_iter().collect();
+            let mut nw: Vec<SignalId> = kinds.1.into_iter().collect();
+            bw.sort_unstable();
+            nw.sort_unstable();
+            assert_eq!(bw, want_blocking, "{name}: set blocking");
+            assert_eq!(nw, want_nba, "{name}: set nba");
+        }
+    }
 }

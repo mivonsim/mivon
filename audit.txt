@@ -10652,4 +10652,43 @@ kebijakan gate statement tak-dukung evaluator paralel
 (silent-skip $display/Force/Wait), VifField writes tak tercakup
 analyze_process_access (pre-existing). Item open berikutnya:
 Par-02 tahap lanjutan, Arsitektur-01..04, JIT-01/02.
+
+═══ ROUND 188 — kebijakan gate statement tak-dukung evaluator paralel ═══
+
+Ruang lingkup tahap 5: kunci coupling antara arm walk body_write_kinds
+dan arm evaluate_stmt_block_parallel (review R186 RISK-3 / R187
+RISK-2: stmt baru yang hanya ditambahkan ke parallel.rs akan
+silent-skip bila klasifikasinya keliru diizinkan).
+
+Verifikasi manual (review R188): arm walk saat ini ⊆ arm evaluator
+(Block, BlockingAssign, NonBlockingAssign, If, Case, LoopFor,
+LoopWhile, LoopDoWhile, Repeat, Null — semuanya ditangani
+parallel.rs; Foreach/SysCall/SysFinish ditangani evaluator tapi
+tetap ditolak walk = konservatif; sisanya skip senyap → wajib None).
+
+Perubahan:
+  Test body_write_kinds_gate_policy (unit test mivon-simulator/
+  scheduler/sim_dag.rs):
+  (a) 18 varian skip-senyap/tak-dukung (NamedBlock, Delay, Force,
+      Wait, SysCall, SysFinish, EventControl, EventTrigger,
+      MethodCallStmt, Break, Continue, Disable, Release, Deassign,
+      Fork, Foreach, delayed BlockingAssign, delayed
+      NonBlockingAssign) wajib diklasifikasi None — bila seseorang
+      menambah arm walk utk varian yang evaluator-nya skip senyap,
+      test gagal dan memaksa verifikasi manual;
+  (b) 8 varian yang di-walk (Null, Block, If, Case, LoopFor,
+      LoopWhile, LoopDoWhile, Repeat) wajib Some dengan set
+      (blocking, nba) persis.
+  Tidak ada perubahan perilaku engine — test pengunci kebijakan.
+
+VERIFIKASI ROUND 188 (final):
+   - cargo fmt --all --check -> bersih.
+   - cargo nextest run --workspace --features dev: 3636 passed,
+     24 skipped (3635 -> 3636, +1 test).
+
+Status PAR-02: kebijakan gate TERKUNCI. Open: AlwaysWithDelay,
+VifField writes tak tercakup analyze_process_access
+(pre-existing), test demosi dalam konteks domain (backlog R187).
+Item open berikutnya: Par-02 tahap lanjutan, Arsitektur-01..04,
+JIT-01/02.
 \\=======================================================================//
