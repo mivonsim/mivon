@@ -516,13 +516,17 @@ Par-02: ⚠️ tahap 1 selesai (ROUND 184) — DAG hanya combinational — masih
   processes (tahap 2).
   processes.
 
-Par-03: ⚠️ Clone bodies di parallel eval — masih open
+Par-03: ✅ Arc body sharing + differential snapshot (ROUND 181-182)
   Root Cause: Setiap DAG layer, seluruh body proses di-clone.
   Signal snapshot di-clone.
-  Impact: Memory thrashing untuk body besar. Allocator pressure.
-  Severity: High
-  Fix: Arc-based process body sharing, differential snapshot.
-
+  Fix (diterapkan, 2 tahap): process_body_arcs — Arc<Vec<IrStmt>> dibangun
+  sekali per run() utk semua varian body (Combinational/CombReactive/
+  Initial/Sequential), dibagi murah via Arc::clone ke DAG layer maupun
+  evaluasi clock-domain; differential snapshot — signal_snapshot
+  Vec<Arc<LogicVec>> di-hoist antar layer, refresh hanya sinyal dirty
+  (dimap via alias_redirect), fallback serial -> full rebuild.
+  Detail + test: blok ROUND 181-182 di bawah.
+  Severity: High -> CLOSED.
 
 ═══════════════════════════════════════════════════════════════════════════════
 3. GAP ANALYSIS vs INDUSTRY STANDARDS
