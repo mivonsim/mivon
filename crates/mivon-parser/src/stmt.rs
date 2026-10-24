@@ -282,6 +282,12 @@ impl Parser {
                     );
                 }
                 sequence = Some(self.wrap_implication(seq)?);
+            } else if self.paren_starts_sequence() {
+                // `( sequence )` — bentuk yang dihasilkan makro assertion
+                // (mis. `(a |-> b)`). parse_expr akan gagal di `|->`, jadi
+                // seluruh assertion dulu di-rollback; sekarang diparse
+                // sebagai sequence.
+                sequence = Some(self.parse_sequence_expr()?);
             } else {
                 // LANG-49: operator temporal property `always (p)` / `never (p)`
                 // di awal body (IEEE 1800-2017 §16.14), tanpa antecedent.

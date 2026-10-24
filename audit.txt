@@ -9802,3 +9802,49 @@ bukan hilang diam-diam; leading-delay assertion belum masuk laporan coverage
    - cargo fmt --all --check -> bersih.
 
 \\=======================================================================//
+
+═══ ROUND 172 — PARSER-09: property ber-kurung (a |-> b) (review MAJOR 1) ═══
+
+Review agent atas ROUND 171 (MAJOR 1) menemukan E1007 FALSE-POSITIVE pada
+assertion yang VALID: makro prim_assert membungkus properti dengan kurung —
+assert property (@(posedge clk) disable iff (...) (a |-> b)) — dan parse_expr
+untuk '(' gagal di '|->' (bukan operator ekspresi) sehingga assertion VALID
+dibuang. 96 dari 127 warning adalah |->/|=> di dalam kurung: kode/pesan E1007
+menyesatkan (help justru menyarankan bentuk yang sudah dipakai user).
+
+Diperbaiki:
+- stmt/sva.rs: helper paren_starts_sequence() — '(' dianggap pembungkus
+  SEQUENCE hanya bila di dalam kurung berimbang ada ##/|->/|=> (kurung
+  ekspresi biasa seperti (a && b) tetap lewat parse_expr).
+- stmt/sva.rs: cabang kurung di parse_sequence_expr dan
+  parse_sequence_after_consequent (rekursif, jadi ((a ##1 b) |-> c) benar).
+- stmt.rs: cabang kurung di jalur inline assert (sebelum parse_expr).
+- +4 test: parses_parenthesized_implication,
+  parses_disable_iff_with_parenthesized_property (bentuk makro OpenTitan),
+  parses_parenthesized_concat_antecedent,
+  parenthesized_boolean_property_stays_expression (anti-regresi: kurung
+  ekspresi tidak boleh dianggap sequence).
+- Regresi terbukti: dengan paren_starts_sequence() dipaksa false, 3 test
+  (implication/disable-iff/concat-antecedent) FAIL; setelah dipulihkan 24/24
+  passed.
+
+Bukti RTL nyata (opentitan/hw/ip/prim/rtl, 165 file, dijalankan per file):
+- Total E1007 per-file turun ke 10 (dari pola |-> dalam kurung yang sebelumnya
+  membanjiri). Sisa 10 semuanya konstruk yang MEMANG belum didukung:
+  a[*N] (Star), ##[1:$] (number), a or b (or).
+- prim_alert_rxtx_assert_fpv.sv: hanya 1 warning (repetition [*N]); bentuk
+  ASSERT(...) ber-kurung tidak lagi di-warn.
+
+📊 VERIFIKASI ROUND 172:
+   - cargo nextest run -p mivon-parser sva::tests -> 24 passed.
+   - cargo nextest run --workspace --features dev --no-fail-fast:
+     ✅ 3605 passed, 0 failed, 24 skipped (3601 -> 3605).
+   - cargo fmt --all --check -> bersih.
+
+Sisa review ROUND 171 yang BELUM dikerjakan: MAJOR 2 (assertion berlabel di
+generate block masih senyap — jalur lib.rs:2315 Err(_) tanpa diagnostik),
+MAJOR 3 (baris E1007 bergeser pada file ber-makro + dedup per-baris menelan
+warning berbeda), MEDIUM (cap default warning, fix-it dari pesan, test
+berlabel/generate-block).
+
+\\=======================================================================//

@@ -34,6 +34,39 @@ impl Parser {
         }
     }
 
+    /// Apakah token '(' di posisi sekarang membungkus SEQUENCE (bukan ekspresi
+    /// biasa)? Benar bila di dalam kurung berimbang ada operator temporal
+    /// (##, |->, |=>). Tanpa ini '(a |-> b)' — bentuk yang dihasilkan semua
+    /// makro assertion OpenTitan — gagal di parse_expr lalu assertion dibuang.
+    pub(super) fn paren_starts_sequence(&self) -> bool {
+        if self.peek() != &Token::LParen {
+            return false;
+        }
+        let mut depth = 0usize;
+        let mut i = self.pos.get();
+        while i < self.tokens.len() {
+            match &self.tokens[i].0 {
+                Token::LParen => depth += 1,
+                Token::RParen => {
+                    if depth == 0 {
+                        return false;
+                    }
+                    depth -= 1;
+                    if depth == 0 {
+                        return false;
+                    }
+                }
+                Token::HashHash | Token::PipeArrow | Token::PipeFatArrow if depth >= 1 => {
+                    return true
+                }
+                Token::Eof => return false,
+                _ => {}
+            }
+            i += 1;
+        }
+        false
+    }
+
     /// LANG-06 (SVA temporal): parse delay sequence setelah `##` — bentuk
     /// `##N` (Delay konstan) atau `##[min:max]` (DelayRange). Caller sudah
     /// meng-consume `##`.
@@ -82,6 +115,11 @@ impl Parser {
                 Box::new(delay),
                 Box::new(super::types::Sequence::Expr(expr)),
             )
+        } else if self.paren_starts_sequence() {
+            self.advance(); // '('
+            let inner = self.parse_sequence_expr()?;
+            self.expect(Token::RParen)?;
+            inner
         } else {
             super::types::Sequence::Expr(self.parse_expr(0)?)
         };
@@ -111,6 +149,11 @@ impl Parser {
                 Box::new(delay),
                 Box::new(super::types::Sequence::Expr(first)),
             )
+        } else if self.paren_starts_sequence() {
+            self.advance(); // '('
+            let inner = self.parse_sequence_expr()?;
+            self.expect(Token::RParen)?;
+            inner
         } else {
             super::types::Sequence::Expr(self.parse_expr(0)?)
         };
@@ -838,6 +881,95 @@ endmodule
                 .iter()
                 .any(|i| matches!(i, crate::types::ModuleItem::PropertyAssert(_))),
             "assertion didukung harus jadi PropertyAssert"
+        );
+    }
+
+    /// Property yang dibungkus kurung (a |-> b) — bentuk yang dihasilkan
+    /// makro assertion (prim_assert ASSERT(name, clk, rst, prop)) — harus
+    /// diparse sebagai sequence, bukan dibuang dengan E1007.
+    #[test]
+    fn parses_parenthesized_implication() {
+        let src = "module m(input logic clk, a, b);\n  assert property (@(posedge clk) (a |-> b));\nendmodule\n";
+        let (design, diags) = parse_with_diags(src);
+        assert!(
+            diags
+                .iter()
+                .all(|d| d.code != DiagCode::UnsupportedAssertion),
+            "bentuk ber-kurung tidak boleh di-warn E1007: {:?}",
+            diags
+        );
+        let ante = first_antecedent(&design);
+        let mut ids = Vec::new();
+        seq_idents(&ante, &mut ids);
+        assert!(
+            ids.iter().any(|n| n == "a"),
+            "antecedent a hilang: {:?}",
+            ids
+        );
+    }
+
+    /// Bentuk lengkap makro OpenTitan: disable iff (...) + properti ber-kurung.
+    #[test]
+    fn parses_disable_iff_with_parenthesized_property() {
+        let src = "module m(input logic clk, rst, a, b);\n  assert property (@(posedge clk) disable iff ((rst) !== 1'b0) (a |-> b));\nendmodule\n";
+        let (design, diags) = parse_with_diags(src);
+        assert!(
+            diags
+                .iter()
+                .all(|d| d.code != DiagCode::UnsupportedAssertion),
+            "disable iff + kurung tidak boleh di-warn E1007: {:?}",
+            diags
+        );
+        let ante = first_antecedent(&design);
+        let mut ids = Vec::new();
+        seq_idents(&ante, &mut ids);
+        assert!(
+            ids.iter().any(|n| n == "a"),
+            "antecedent a hilang: {:?}",
+            ids
+        );
+    }
+
+    /// Antecedent ber-kurung yang berisi concat: ((a ##1 b) |-> c).
+    #[test]
+    fn parses_parenthesized_concat_antecedent() {
+        let src = "module m(input logic clk, a, b, c);\n  assert property (@(posedge clk) ((a ##1 b) |-> c));\nendmodule\n";
+        let (design, diags) = parse_with_diags(src);
+        assert!(
+            diags
+                .iter()
+                .all(|d| d.code != DiagCode::UnsupportedAssertion),
+            "antecedent ber-kurung tidak boleh di-warn E1007: {:?}",
+            diags
+        );
+        let ante = first_antecedent(&design);
+        let mut ids = Vec::new();
+        seq_idents(&ante, &mut ids);
+        assert!(
+            ids.iter().any(|n| n == "a") && ids.iter().any(|n| n == "b"),
+            "antecedent harus a dan b: {:?}",
+            ids
+        );
+    }
+
+    /// Kurung yang TIDAK berisi operator temporal tetap ekspresi biasa.
+    #[test]
+    fn parenthesized_boolean_property_stays_expression() {
+        let src = "module m(input logic clk, a, b);\n  assert property (@(posedge clk) (a && b));\nendmodule\n";
+        let (design, diags) = parse_with_diags(src);
+        assert!(
+            diags
+                .iter()
+                .all(|d| d.code != DiagCode::UnsupportedAssertion),
+            "ekspresi ber-kurung tidak boleh di-warn E1007: {:?}",
+            diags
+        );
+        assert!(
+            design.modules[0]
+                .items
+                .iter()
+                .any(|i| matches!(i, crate::types::ModuleItem::PropertyAssert(_))),
+            "assertion boolean ber-kurung harus tetap ter-parse"
         );
     }
 }
