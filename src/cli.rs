@@ -363,12 +363,12 @@ pub enum MwaveCmd {
         #[arg(short = 'o', long = "output")]
         output: Option<String>,
     },
-    /// Ekspor VCD ke format lain (csv/txt)
+    /// Ekspor VCD ke format lain (csv/txt/vpd)
     Export {
         /// VCD input
         #[arg(required = true)]
         input: String,
-        /// Format output: csv (default) | txt
+        /// Format output: csv (default) | txt | vpd (VPD, WAV-02)
         #[arg(short = 'f', long = "format", default_value = "csv")]
         format: String,
         /// Output file

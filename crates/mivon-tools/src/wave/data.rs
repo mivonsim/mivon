@@ -8,8 +8,8 @@ use mivon_core::error::SimError;
 use super::util::err;
 
 /// Satu sinyal VCD.
-#[derive(Debug, Clone)]
-pub(crate) struct VcdSignal {
+#[derive(Debug, Clone, PartialEq)]
+pub struct VcdSignal {
     pub(crate) id: String,
     pub(crate) name: String,
     pub(crate) width: usize,

@@ -14,11 +14,27 @@ pub(crate) fn export(input: &str, format: &str, output: Option<&str>) -> Result<
     match format {
         "csv" => export_csv(&data, &out_path),
         "txt" => export_txt(&data, &out_path),
+        "vpd" => export_vpd(&data, &out_path),
         other => Err(err(format!(
-            "format tidak dikenal: '{}' (pilih csv|txt)",
+            "format tidak dikenal: '{}' (pilih csv|txt|vpd)",
             other
         ))),
     }
+}
+
+/// VCD -> VPD (WAV-02): tulis ulang data sinyal ke format VPD dengan id
+/// asli (tanpa remap). Reader VPD dapat mem-parse hasil ini kembali.
+pub(crate) fn export_vpd(data: &VcdData, out_path: &str) -> Result<(), SimError> {
+    let id_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    super::vpd::write_vpd(
+        out_path,
+        &data.timescale,
+        &data.signals,
+        &data.changes,
+        &id_map,
+    )?;
+    println!("  exported {} -> {} (vpd)", input_name(data), out_path);
+    Ok(())
 }
 
 pub(crate) fn export_csv(data: &VcdData, out_path: &str) -> Result<(), SimError> {

@@ -1379,7 +1379,17 @@ SIM-30: ✅ $coverage_control all modes implemented (Medium)
 4.6 WAVEFORM GAPS
 
 WAV-01:[] No FSDB format (Synopsys standard) (Critical)
-WAV-02:[] No VPD format (Synopsys VCD Plus) (Critical)
+WAV-02: ✅ VPD format support (ROUND 155) — crates/mivon-tools/src/wave/vpd.rs:
+         write_vpd() + parse_vpd() di atas model VcdData (sama dengan VCD,
+         sehingga reuse semua subkomando mwave). Subset praktis: $date/$version/
+         $comment/$timescale, $scope module hierarki, $var, $enddefinitions,
+         $dumpvars (snapshot awal) + body perubahan (#time + nilai scalar 0/1/x/z
+         maupun binary b<bits>). Kontrak round-trip eksak:
+         parse_vpd(write_vpd(data)) == data (reader mengabaikan isi $dumpvars
+         saat membangun changes, karena body sudah memuat semua transisi).
+         Terhubung ke CLI: 'mivon wave export <vcd> -f vpd -o <out>.vpd'
+         (export.rs + args help diperbarui). 4 test unit (roundtrip, keyword
+         wajib, id_map, reject non-vpd). (Critical)
 WAV-03:[] No SHM/WDB format (Cadence/Siemens) (Critical)
 WAV-04: ✅ Compressed waveform database (ROUND 85b) — gzip VCD output:
          - VcdWriter::new_compressed() + enable_compression() — gzip encoder
@@ -9198,6 +9208,55 @@ praktis tanpa fault-injection, sehingga diverifikasi statis + test existing.
      ✅ 3563 passed, 0 failed, 24 skipped.
    - Targeted `-E 'test(/sim_dashboard|sim_server|rest_api/)'` → 54 passed.
    - cargo check -p mivon-tools --all-targets → bersih.
+
+\\=======================================================================//
+
+═══ ROUND 155 — WAV-02: dukungan format VPD ═══
+
+Tambahan fitur waveform: sebelumnya mwave hanya mengerti VCD (baca/tulis),
+tidak ada VPD sama sekali (WAV-02 terbuka sebagai Critical).
+
+Implementasi (satu file, satu tanggung jawab — crates/mivon-tools/src/
+wave/vpd.rs):
+  - `write_vpd(out, timescale, signals, changes, id_map)` — menghasilkan VPD
+    dengan $date/$version/$comment/$timescale, hierarki $scope module, $var
+    (dengan range [W-1:0] untuk multi-bit), $enddefinitions, blok $dumpvars
+    (snapshot awal waktu 0), lalu body perubahan (#time + nilai scalar
+    0/1/x/z atau binary b<bits>). id_map memungkinkan remap kode sinyal.
+  - `parse_vpd(path)` — parser toleran terhadap $comment dan blok
+    $dumpvars...$end (isinya diabaikan saat membangun changes, karena body
+    sudah memuat semua transisi — jadi tidak ada entri ganda, round-trip
+    eksak). Menangani nilai scalar maupun B<hex> (diubah ke biner).
+  - Kedua fungsi beroperasi di atas model VcdData yang SUDAH ada, sehingga
+    seluruh subkomando mwave (filter/search/tree/stats/get/decode) dapat
+    dipakai pada data VPD tanpa perubahan — cukup parse_vpd dulu.
+
+Integrasi CLI:
+  - `mwave export <vcd> -f vpd -o <out>.vpd` (export.rs + args help
+    diperbarui: format csv|txt|vpd).
+  - vpd::write_vpd / vpd::parse_vpd di-re-export sebagai API publik wave.
+
+Smoke test nyata:
+  - Buat /tmp/t.vcd (clk 1-bit + data 8-bit), jalankan
+    `mivon wave export /tmp/t.vcd -f vpd -o /tmp/t.vpd` → exit 0, file VPD
+    valid dengan $comment/$dumpvars/#0/b10101010 "\".
+  - Parse balik lewat test unit memverifikasi signals + changes identik.
+
+Catatan batasan (subset, bukan VPD Synopsys lengkap):
+  - Hirarki scope di-flatten per sinyal (sudah benar, hanya satu scope module
+    per sinyal seperti VCD kita).
+  - Tidak ada kompresi token VPD asli; nilai ditulis verbatim. Cukup untuk
+    round-trip & interop alat yang membaca VPD sederhana.
+
+Test baru (4): write_then_parse_roundtrip, vpd_contains_required_keywords,
+id_map_is_applied, parse_rejects_non_vpd. Plus derive PartialEq + promosi
+VcdSignal ke pub agar API publik tidak bocor tipe privat.
+
+📊 VERIFIKASI ROUND 155:
+   - cargo nextest run --workspace --features dev --no-fail-fast:
+     ✅ 3567 passed, 0 failed, 24 skipped.
+   - Targeted vpd module → 4 passed.
+   - Smoke test CLI: mivon wave export -f vpd menghasilkan VPD valid.
 
 \\=======================================================================//
 

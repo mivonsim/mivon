@@ -12,11 +12,14 @@
 //!   timeline penuh (WAV-07)
 //! - `decode`  — protokol-aware decode transaksi bus dari VCD: apb /
 //!   axi4lite / ahb (WAV-16)
+//! - `export` juga mendukung format `vpd` — VCD → VPD (WAV-02)
 //!
 //! Peta modul:
 //! - `args`   — enum [`WaveArgs`] + dispatcher [`run`]
 //! - `data`   — parser/writer VCD ([`data::parse_vcd`], [`data::write_vcd`],
 //!   [`data::VcdData`])
+//! - `vpd`    — writer/reader VPD ([`vpd::write_vpd`], [`vpd::parse_vpd`],
+//!   WAV-02)
 //! - `util`   — helper bersama (err, nama penuh, wildcard, sample, timeline)
 //! - satu modul per subkomando: `merge`, `export`, `filter`, `compare`,
 //!   `search`, `tree`, `get`, `stats`, `decode`
@@ -34,6 +37,7 @@ pub(crate) mod search;
 pub(crate) mod stats;
 pub(crate) mod tree;
 pub(crate) mod util;
+pub(crate) mod vpd;
 
 #[cfg(test)]
 mod tests;
@@ -44,3 +48,5 @@ pub use args::{run, WaveArgs};
 /// sebelum pemecahan modul).
 pub use data::VcdData;
 pub use decode::{DecodedTx, ahb_decode, apb_decode, axi4lite_decode};
+/// VPD read/write (WAV-02) - dipakai mwave export dan dapat dipanggil langsung.
+pub use vpd::{parse_vpd, write_vpd};
