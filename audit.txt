@@ -10691,4 +10691,21 @@ VifField writes tak tercakup analyze_process_access
 (pre-existing), test demosi dalam konteks domain (backlog R187).
 Item open berikutnya: Par-02 tahap lanjutan, Arsitektur-01..04,
 JIT-01/02.
+
+Review agent atas 5d73e4b: LOLOS — tidak ada bug blokir.
+  18 varian rejected terverifikasi satu per satu terhadap
+  evaluate_stmt_block_parallel (12 skip senyap `_ => {}`, SysCall/
+  SysFinish no-op eksplisit, Foreach + delayed assign ditangani
+  evaluator tapi salah semantik — klasifikasi None KRITIS utk
+  delayed assign: evaluator mengabaikan delay → tulis di t bukan
+  t+delay). 8 varian accepted sesuai semantik walk; test tidak
+  flaky, assertion informatif.
+  Tindak lanjut RISK-1 (diterapkan di commit ini): 8 varian
+  assertion/procedural yang hilang (Assert, Assume, Cover, Expect,
+  WaitOrder, WaitFork, RandCase, RandSequence — semua skip senyap
+  evaluator) ditambahkan ke daftar rejected → test kini mencakup
+  26 varian; drift arm-walk-tanpa-arm-evaluator tetap tertangkap.
+  NIT (dicatat, tidak dikerjakan): pesan assertion kurang presisi
+  utk 4 varian (delayed/Foreach = salah semantik, bukan skip
+  murni); SysCall = no-op eksplisit, bukan skip senyap.
 \\=======================================================================//

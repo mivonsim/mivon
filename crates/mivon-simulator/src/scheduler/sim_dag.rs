@@ -1370,6 +1370,78 @@ mod tests {
                     delay: Some(2),
                 },
             ),
+            // Review R188 RISK-1: 8 varian assertion/procedural lain yang
+            // juga jatuh ke arm skip-senyap evaluator — dikunci None agar
+            // drift (arm walk baru tanpa arm evaluator) tetap tertangkap.
+            (
+                "Assert",
+                IrStmt::Assert {
+                    cond: c1.clone(),
+                    pass_stmt: vec![blocking(1)],
+                    fail_stmt: vec![],
+                    clock_event: None,
+                    disable_iff: None,
+                    sequence: None,
+                    line: 0,
+                    col: 0,
+                },
+            ),
+            (
+                "Assume",
+                IrStmt::Assume {
+                    cond: c1.clone(),
+                    pass_stmt: vec![blocking(1)],
+                    fail_stmt: vec![],
+                    clock_event: None,
+                    disable_iff: None,
+                    sequence: None,
+                    line: 0,
+                    col: 0,
+                },
+            ),
+            (
+                "Cover",
+                IrStmt::Cover {
+                    cond: c1.clone(),
+                    pass_stmt: vec![blocking(1)],
+                    clock_event: None,
+                    disable_iff: None,
+                    sequence: None,
+                },
+            ),
+            (
+                "Expect",
+                IrStmt::Expect {
+                    cond: c1.clone(),
+                    pass_stmt: vec![blocking(1)],
+                    fail_stmt: vec![],
+                    line: 0,
+                    col: 0,
+                },
+            ),
+            (
+                "WaitOrder",
+                IrStmt::WaitOrder {
+                    events: vec![1],
+                    failure_stmts: vec![blocking(1)],
+                },
+            ),
+            ("WaitFork", IrStmt::WaitFork),
+            (
+                "RandCase",
+                IrStmt::RandCase {
+                    items: vec![(c1.clone(), vec![blocking(1)])],
+                },
+            ),
+            (
+                "RandSequence",
+                IrStmt::RandSequence {
+                    productions: vec![(
+                        Symbol::intern("prod"),
+                        vec![(c1.clone(), vec![blocking(1)])],
+                    )],
+                },
+            ),
         ];
         for (name, stmt) in rejected {
             assert!(
