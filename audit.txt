@@ -959,7 +959,7 @@ LANG-57: [x] $dimensions system function (IEEE 1800-2017 §20.9) — FIXED (2026
 
 4.2 PARSER GAPS
 
-PARSER-01:[] Tidak ada incremental parsing (Critical)
+PARSER-01:⚠️ incremental parsing (scaffold) — Critical
 PARSER-02: ✅ error recovery — PARTIAL (ROUND 76): parser sudah punya
            `skip_until_semi_or_end()` (31 call sites) + `skip_to_next_top_level()`
            untuk skip bad stmt/module lalu continue parse. Multiple errors
@@ -9403,5 +9403,30 @@ Diperbaiki:
    - cargo nextest run -p mivon-tools align -> 4 passed.
    - cargo nextest run --workspace --features dev --no-fail-fast:
      ✅ 3577 passed, 0 failed, 24 skipped.
+
+\=======================================================================//
+
+═══ ROUND 161 — PARSER-01: incremental parsing (foundational) ═══
+
+Item Critical: tidak ada incremental parsing. Dikerjakan secara bertahap.
+Tahap 1: primitive dasar (aman, tanpa ubah alur parse existing).
+
+File baru: crates/mivon-parser/src/incremental.rs (1 tanggung jawab).
+- IncrementalCache { hashes: HashMap<PathBuf,u64> }: lacak hash konten tiap
+  file sumber. needs_reparse(path, content) -> true bila konten berubah / belum
+  pernah terlihat (update state). from_map / into_map untuk simpan ke disk.
+- Ini memungkinkan parser hanya mem-parse ulang file yang berubah, bukan
+  seluruh design. Integrasi penuh ke Parser::parse_design (cache per-file AST,
+  reload dari disk) menyusul di tahap berikutnya.
+
+Test (4, di incremental::tests):
+- unchanged_file_skips_reparse, changed_content_triggers_reparse,
+  distinct_files_tracked_separately, map_roundtrip_preserves_state.
+
+Catatan: marker ⚠️ (belum ✅ penuh) — baru fondasi; integrasi belum.
+
+📊 VERIFIKASI ROUND 161:
+   - cargo nextest run -p mivon-parser incremental -> 4 passed.
+   - cargo check -p mivon-parser -> bersih.
 
 \=======================================================================//

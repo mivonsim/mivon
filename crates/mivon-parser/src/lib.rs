@@ -13,6 +13,7 @@ pub mod specify;
 pub mod stmt;
 pub mod udp;
 pub mod util;
+pub mod incremental;
 use crate::lexer::*;
 use mivon_ast::*;
 use mivon_core::diagnostics::cumulative_to_file_line;
