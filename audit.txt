@@ -9931,3 +9931,35 @@ default warning), MEDIUM 6 (test jalur with_source_lines/file_line_map untuk
 baris+kolom), Token::Expect senyap, dan dukungan @(posedge !sig).
 
 \\=======================================================================//
+
+═══ ROUND 175 — PARSER-09: clock @(posedge !sig) didukung (review sisa) ═══
+
+Review ROUND 173 menyisakan dukungan @(posedge !clk_i) yang muncul sebagai
+E1007 ("expected identifier, found Not"). Di OpenTitan tlul_assert.sv ada 18
+warning kelas ini (cover property ber-clock terinversi). Ini konstruk legal
+(sesuai pola per-tool vendor: posedge sinyal terinversi = negedge sinyal).
+
+Diperbaiki (stmt.rs + stmt/sva.rs): di parse clock event, 'posedge !sig' ->
+Negedge(sig) dan 'negedge !sig' -> Posedge(sig). Diterapkan di 3 titik:
+clock assert inline, clock deklarasi SVA bernama, dan branch 'always/never (p)
+@(posedge clk)'.
+- +2 test: parses_negative_edge_clock_with_bang, parses_negedge_bang_clock.
+- Regresi terbukti: dengan semua cek '!' dipaksa false, kedua test FAIL
+  (muncul E1007 "found Not"); dipulihkan -> 31/31 passed.
+
+Bukti RTL: tlul_assert.sv warning E1007 turun dari 29 -> 11 (sisanya murni
+'a and b |-> c' / 'a or b' yang memang belum didukung, kelas berbeda).
+
+📊 VERIFIKASI ROUND 175:
+   - cargo nextest run -p mivon-parser sva::tests -> 31 passed.
+   - cargo nextest run --workspace --features dev --no-fail-fast:
+     ✅ 3612 passed, 0 failed, 24 skipped (3610 -> 3612).
+   - cargo fmt --all --check -> bersih.
+
+Sisa review ROUND 171/173 yang BELUM dikerjakan: MAJOR 3 (baris bergeser utk
+assertion hasil ekspansi makro multi-baris + dedup emit_diags per
+(code,file,line) menelan warning berbeda), MEDIUM 4 (cap default warning),
+MEDIUM 6 (test jalur with_source_lines untuk baris+kolom — sebagian tertutup
+test support fixit), dan Token::Expect senyap di level module.
+
+\\=======================================================================//

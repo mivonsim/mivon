@@ -231,12 +231,24 @@ impl Parser {
             self.expect(Token::LParen)?;
             let ce = if self.peek() == &Token::PosEdge {
                 self.advance();
-                let sig = self.expect_ident()?;
-                Some(ClockEvent::Posedge(sig))
+                if self.peek() == &Token::Not {
+                    self.advance();
+                    let sig = self.expect_ident()?;
+                    Some(ClockEvent::Negedge(sig))
+                } else {
+                    let sig = self.expect_ident()?;
+                    Some(ClockEvent::Posedge(sig))
+                }
             } else if self.peek() == &Token::NegEdge {
                 self.advance();
-                let sig = self.expect_ident()?;
-                Some(ClockEvent::Negedge(sig))
+                if self.peek() == &Token::Not {
+                    self.advance();
+                    let sig = self.expect_ident()?;
+                    Some(ClockEvent::Posedge(sig))
+                } else {
+                    let sig = self.expect_ident()?;
+                    Some(ClockEvent::Negedge(sig))
+                }
             } else {
                 let sig = self.expect_ident()?;
                 Some(ClockEvent::Edge(sig))
@@ -1086,6 +1098,49 @@ endmodule
             warn.fix_its.is_empty(),
             "E1007 tidak boleh punya fix-it: {:?}",
             warn.fix_its
+        );
+    }
+
+    /// Clock event @(posedge !clk) (negedge pada sinyal terinversi) harus
+    /// diparse sebagai Negedge, bukan memicu E1007.
+    #[test]
+    fn parses_negative_edge_clock_with_bang() {
+        let src = "module m(input logic clk, a, b);\n  assert property (@(posedge !clk) a |-> b);\nendmodule\n";
+        let (design, diags) = parse_with_diags(src);
+        assert!(
+            diags
+                .iter()
+                .all(|d| d.code != DiagCode::UnsupportedAssertion),
+            "posedge !clk tidak boleh di-warn E1007: {:?}",
+            diags
+        );
+        assert!(
+            design.modules[0]
+                .items
+                .iter()
+                .any(|i| matches!(i, crate::types::ModuleItem::PropertyAssert(_))),
+            "assertion harus tetap ter-parse"
+        );
+    }
+
+    /// Bentuk @(negedge !clk) juga harus diterima (jadi Posedge).
+    #[test]
+    fn parses_negedge_bang_clock() {
+        let src = "module m(input logic clk, a, b);\n  assert property (@(negedge !clk) a |-> b);\nendmodule\n";
+        let (design, diags) = parse_with_diags(src);
+        assert!(
+            diags
+                .iter()
+                .all(|d| d.code != DiagCode::UnsupportedAssertion),
+            "negedge !clk tidak boleh di-warn E1007: {:?}",
+            diags
+        );
+        assert!(
+            design.modules[0]
+                .items
+                .iter()
+                .any(|i| matches!(i, crate::types::ModuleItem::PropertyAssert(_))),
+            "assertion harus tetap ter-parse"
         );
     }
 }
