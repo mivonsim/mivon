@@ -757,3 +757,46 @@ fn dag_ff_foreach_wide_elems_serial_diff() {
         );
     }
 }
+
+/// Par-02 tahap 4: seq_bodies dalam clock-domain fused dieval via
+/// mesinari batch tahap 3 (SeqCand::classify + run_seq_batch di
+/// evaluate_clock_domain Step 1). Domain = 2 FF clock sama: FF1
+/// BlockingOnly dgn RAW intra-body, FF2 NbaOnly — keduanya batchable
+/// tanpa demosi -> jalur batch paralel di dalam domain (fixed-point
+/// Step 1), commit NBA identik serial. CATATAN: FF TANPA self-feedback
+/// — fixed-point domain me-re-eval bodies tiap iterasi (commit_nba di
+/// dalam loop), FF self-feedback terakumulasi di mode fusion (pre-
+/// existing, beda dari default) — desain ini konvergen di semua mode.
+const CF_DOMAIN_SEQ_SRC: &str = r#"
+module ff_domain_top;
+  logic clk;
+  logic [7:0] a, b, tmp, w;
+  initial begin clk = 0; a = 5; b = 0; tmp = 0; w = 0; #40; end
+  always #5 clk = ~clk;
+  always_ff @(posedge clk) begin
+    tmp = a + 8'd1;
+    b = tmp;
+  end
+  always_ff @(posedge clk) w <= 8'd5;
+endmodule
+"#;
+
+#[test]
+fn dag_cf_domain_seq_batch_diff() {
+    for (name, expect) in [
+        ("a", "00000101"),
+        ("b", "00000110"),
+        ("tmp", "00000110"),
+        ("w", "00000101"),
+    ] {
+        let dflt = run_cf(CF_DOMAIN_SEQ_SRC, name, false, false);
+        let fus = run_cf(CF_DOMAIN_SEQ_SRC, name, true, false);
+        let gd = run_cf(CF_DOMAIN_SEQ_SRC, name, true, true);
+        assert_eq!(fus, dflt, "{name}: fusion saja harus identik default");
+        assert_eq!(
+            gd, fus,
+            "{name}: batch domain (tahap 4) harus identik serial domain"
+        );
+        assert_eq!(gd, expect, "{name}: nilai akhir ter-pinned (konvergen)");
+    }
+}

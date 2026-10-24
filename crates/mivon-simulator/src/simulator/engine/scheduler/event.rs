@@ -33,17 +33,55 @@ fn sensitivity_triggered(
 }
 
 /// Kandidat sequential triggered utk batch paralel Par-02 (tahap 3).
-struct SeqCand {
-    pid: usize,
-    clock_trigger: bool,
-    iff: Option<mivon_ir::IrExpr>,
-    async_trig: bool,
-    fused: Option<crate::scheduler::clock_domain::ClockDomain>,
-    access: crate::scheduler::sim_dag::SignalAccess,
-    iff_reads: std::collections::HashSet<usize>,
-    blocking_only: bool,
-    own_blocking: std::collections::HashSet<usize>,
-    batchable: bool,
+/// Tahap 4: pub(crate) — dipakai juga oleh jalur clock-domain
+/// (core.rs evaluate_clock_domain Step 1).
+pub(crate) struct SeqCand {
+    pub(crate) pid: usize,
+    pub(crate) clock_trigger: bool,
+    pub(crate) iff: Option<mivon_ir::IrExpr>,
+    pub(crate) async_trig: bool,
+    pub(crate) fused: Option<crate::scheduler::clock_domain::ClockDomain>,
+    pub(crate) access: crate::scheduler::sim_dag::SignalAccess,
+    pub(crate) iff_reads: std::collections::HashSet<usize>,
+    pub(crate) blocking_only: bool,
+    pub(crate) own_blocking: std::collections::HashSet<usize>,
+    pub(crate) batchable: bool,
+}
+
+impl SeqCand {
+    /// Klasifikasi tahap 3 utk satu Sequential pid (base all-triggered:
+    /// clock_trigger=false/iff=None/async_trig=false/fused=None — pemanggil
+    /// event.rs mengisi field trigger; jalur domain memakai apa adanya).
+    pub(crate) fn classify(engine: &SimulationEngine, pid: usize) -> SeqCand {
+        let access =
+            crate::scheduler::sim_dag::analyze_process_access(&engine.design.top.processes[pid]);
+        let kinds = engine
+            .process_body_arcs
+            .get(&pid)
+            .and_then(|b| crate::scheduler::sim_dag::body_write_kinds(b.as_slice()));
+        let use_dag = engine.use_dag_parallel;
+        let (blocking_only, own_blocking, batchable) = match kinds {
+            Some((bw, nw)) if nw.is_empty() && use_dag => (true, bw, true),
+            Some((bw, nw)) if bw.is_empty() && use_dag => {
+                let ok = access.reads.is_disjoint(&nw);
+                (false, bw, ok)
+            }
+            _ => (false, Default::default(), false),
+        };
+        let batchable = batchable && !access.has_call_expr && !access.has_unresolved;
+        SeqCand {
+            pid,
+            clock_trigger: false,
+            iff: None,
+            async_trig: false,
+            fused: None,
+            access,
+            iff_reads: Default::default(),
+            blocking_only,
+            own_blocking,
+            batchable,
+        }
+    }
 }
 impl SimulationEngine {
     pub(crate) fn process_event(&mut self, event: EventKind, t: usize) -> Result<(), SimError> {
@@ -1101,38 +1139,16 @@ impl SimulationEngine {
             if fused_domain.is_some() {
                 any_fused = true;
             }
-            let access =
-                crate::scheduler::sim_dag::analyze_process_access(&self.design.top.processes[pid]);
-            let iff_reads = match &iff {
+            let mut cand = SeqCand::classify(self, pid);
+            cand.clock_trigger = clock_trigger;
+            cand.iff = iff;
+            cand.async_trig = async_trig;
+            cand.fused = fused_domain;
+            cand.iff_reads = match &cand.iff {
                 Some(cond) => crate::scheduler::sim_dag::expr_signal_reads_of(cond),
                 None => Default::default(),
             };
-            // Klasifikasi kinds body (None → serial; mixed → serial).
-            let kinds = self
-                .process_body_arcs
-                .get(&pid)
-                .and_then(|b| crate::scheduler::sim_dag::body_write_kinds(b.as_slice()));
-            let (blocking_only, own_blocking, batchable) = match kinds {
-                Some((bw, nw)) if nw.is_empty() && self.use_dag_parallel => (true, bw, true),
-                Some((bw, nw)) if bw.is_empty() && self.use_dag_parallel => {
-                    let ok = access.reads.is_disjoint(&nw);
-                    (false, bw, ok)
-                }
-                _ => (false, Default::default(), false),
-            };
-            let batchable = batchable && !access.has_call_expr && !access.has_unresolved;
-            cands.push(SeqCand {
-                pid,
-                clock_trigger,
-                iff,
-                async_trig,
-                fused: fused_domain,
-                access,
-                iff_reads,
-                blocking_only,
-                own_blocking,
-                batchable,
-            });
+            cands.push(cand);
         }
         if any_fused {
             // Re-review BUG-2 (R184): satu loop interleaved — iff dan fused
@@ -1162,6 +1178,14 @@ impl SimulationEngine {
             }
             return Ok(());
         }
+        self.run_seq_batch(&cands)
+    }
+
+    /// Agregat fase 1 + fase 2 (demosi) + dispatch batch Par-02 tahap
+    /// 3/4 — dipakai event.rs Phase 2c (trigger/iff/fused ditangani
+    /// pemanggil) dan core.rs evaluate_clock_domain Step 1 (semua
+    /// kandidat domain triggered, iff kosong).
+    pub(crate) fn run_seq_batch(&mut self, cands: &[SeqCand]) -> Result<(), SimError> {
         // Agregat fase 1: serial_writes (non-batchable) dipecah blocking
         // vs NBA — hanya blocking write serial yang berbahaya dibaca batch
         // (diterapkan inline segera; NBA write serial commit di NBA region
@@ -1180,7 +1204,7 @@ impl SimulationEngine {
             std::collections::HashMap::new();
         let mut reads_count: std::collections::HashMap<usize, usize> =
             std::collections::HashMap::new();
-        for c in &cands {
+        for c in cands {
             if !c.batchable {
                 serial_writes.extend(c.access.writes.iter().copied());
                 let kinds = self
@@ -1225,7 +1249,7 @@ impl SimulationEngine {
         // Fase 2 — urutan pid: iff dieval pada posisi kandidat; demosi;
         // defer hanya kandidat yang lolos semua guard.
         let mut seq_batch: Vec<&SeqCand> = Vec::new();
-        for c in &cands {
+        for c in cands {
             // LANG-27: guard `iff (cond)` — pada POSISI kandidat.
             let mut trigger = c.clock_trigger
                 && match &c.iff {

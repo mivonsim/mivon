@@ -2337,9 +2337,29 @@ impl SimulationEngine {
                 .map(|i| self.state.read_signal(i).clone())
                 .collect();
 
-            // Step 1: Evaluate all sequential processes in the domain
-            for (_, body) in &seq_bodies {
-                self.evaluate_stmt_block(body)?;
+            // Step 1: Evaluate all sequential processes in the domain.
+            // Par-02 tahap 4: bila --parallel dan domain punya >= 2 proses
+            // sequential, pakai mesinari batch tahap 3 (SeqCand::classify +
+            // run_seq_batch: demosi + dua jalur apply, commit NBA identik
+            // serial); selain itu serial pid-order (referensi).
+            if self.use_dag_parallel && seq_bodies.len() >= 2 {
+                let cands: Vec<crate::simulator::engine::scheduler::event::SeqCand> = seq_bodies
+                    .iter()
+                    .map(|(pid, _)| {
+                        let mut c = crate::simulator::engine::scheduler::event::SeqCand::classify(
+                            self, *pid,
+                        );
+                        // Kandidat domain unconditional triggered — eval domain
+                        // sendiri adalah pemicu (tanpa iff/async).
+                        c.clock_trigger = true;
+                        c
+                    })
+                    .collect();
+                self.run_seq_batch(&cands)?;
+            } else {
+                for (_, body) in &seq_bodies {
+                    self.evaluate_stmt_block(body)?;
+                }
             }
 
             // Commit NBA from sequential process evaluations

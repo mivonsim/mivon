@@ -10580,4 +10580,58 @@ tak-dukung evaluator paralel (silent-skip $display/Force/Wait),
 VifField writes tak tercakup analyze_process_access (pre-existing).
 Item open berikutnya: Par-02 tahap lanjutan, Arsitektur-01..04,
 JIT-01/02.
+
+═══ ROUND 187 — PAR-02 tahap 4: seq_bodies clock-domain paralel ═══
+
+Ruang lingkup tahap 4: parallelisasi Step 1 evaluate_clock_domain
+(sequential processes dalam domain fused) memakai mesinari batch
+tahap 3 — aktif saat --cycle-fusion + --parallel dan domain punya
+>= 2 proses sequential.
+
+Perubahan:
+  1. event.rs: SeqCand jadi pub(crate) (fields pub(crate)) +
+     constructor SeqCand::classify(engine, pid) — klasifikasi tahap 3
+     (body_write_kinds, guard call/unresolved) diekstrak dari loop
+     Phase 2c.
+  2. event.rs: agregat fase 1 + fase 2 demosi + dispatch batch
+     diekstrak jadi pub(crate) fn run_seq_batch(&[SeqCand]) —
+     dipakai Phase 2c (trigger/iff/fused ditangani pemanggil) dan
+     jalur domain. Phase 2c loop kini memakai classify + mengisi
+     field trigger (perilaku identik).
+  3. core.rs evaluate_clock_domain Step 1: bila use_dag_parallel &&
+     seq_bodies.len() >= 2 → cands via classify (clock_trigger=true —
+     eval domain adalah pemicu; tanpa iff/async) → run_seq_batch;
+     selain itu serial pid-order (referensi). commit_nba setelahnya
+     tak berubah — push NBA batch masuk nba_pending terurut pid.
+
+Semantik: dalam satu iterasi fixed-point, kandidat non-batchable/
+ DEMOSI dieval inline pid-order; kandidat lolos guard di-defer ke
+batch (blocking immediate per grup, NBA flush terurut pid) —
+guard set tahap 3 penuh berlaku (serial_blocking_writes,
+blocking_writes excl own, WAW blocking/Nba, stale readers).
+
+Test baru (mivon-tests/dag_serial_fallback_tests.rs):
+  dag_cf_domain_seq_batch_diff — domain fused 2 FF (BlockingOnly
+  RAW intra-body + NbaOnly), tanpa self-feedback. CATATAN desain:
+  fixed-point domain me-re-eval bodies tiap iterasi (commit_nba di
+  dalam loop) — FF self-feedback terakumulasi di mode fusion vs
+  default (pre-existing, terdokumentasi; bukan regresi tahap 4) —
+  desain test konvergen sehingga ketiga mode (default, fusion,
+  fusion+DAG) identik + pinned (a=5, b=tmp=6, w=5). Jalur paralel
+  domain DIBUKTIKAN via DBG_SIM=3: "par-02 seq-batch: 2 kandidat,
+  1 grup" per iterasi fixed-point.
+  Bug perbaikan selama tahap: kandidat domain awalnya clock_trigger
+  false (default classify) → semua ter-skip → batch kosong → b = 0;
+  fix: clock_trigger = true eksplisit di core.rs.
+
+VERIFIKASI ROUND 187 (final):
+   - cargo fmt --all --check -> bersih.
+   - cargo nextest run --workspace --features dev: 3635 passed,
+     24 skipped (3634 -> 3635, +1 test).
+
+Status PAR-02: tahap 4 SELESAI. Open: AlwaysWithDelay,
+kebijakan gate statement tak-dukung evaluator paralel
+(silent-skip $display/Force/Wait), VifField writes tak tercakup
+analyze_process_access (pre-existing). Item open berikutnya:
+Par-02 tahap lanjutan, Arsitektur-01..04, JIT-01/02.
 \\=======================================================================//
