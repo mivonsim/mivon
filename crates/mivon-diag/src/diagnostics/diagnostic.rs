@@ -30,8 +30,8 @@
 //!
 //! Initialize the interface before using it.
 
-use std::fmt;
 pub use super::fixit::FixItHint;
+use std::fmt;
 
 // ─── Severity ───
 

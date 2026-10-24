@@ -7,11 +7,11 @@ pub mod diagnostics;
 pub mod envdiag;
 pub mod intern;
 
-pub use intern::{Span, Symbol, init_string_table};
-pub use envdiag::{DiagnosticsContext, EmitterHandle};
 pub use diagnostics::{
-    all_codes, lookup_code, DiagCode, DiagLevel, FixItHint, Diagnostic, SourceSnippet,
-    RuntimeContext, DiagSink, DiagNote, DiagSpan, format_diagnostic, TerminalEmitter,
-    diag_global, GlobalDiagnosticEngine, ParserRecovery, format_suggestion, levenshtein,
-    suggest_name, cumulative_to_file_line, resolve_source_location,
+    all_codes, cumulative_to_file_line, diag_global, format_diagnostic, format_suggestion,
+    levenshtein, lookup_code, resolve_source_location, suggest_name, DiagCode, DiagLevel, DiagNote,
+    DiagSink, DiagSpan, Diagnostic, FixItHint, GlobalDiagnosticEngine, ParserRecovery,
+    RuntimeContext, SourceSnippet, TerminalEmitter,
 };
+pub use envdiag::{DiagnosticsContext, EmitterHandle};
+pub use intern::{init_string_table, Span, Symbol};

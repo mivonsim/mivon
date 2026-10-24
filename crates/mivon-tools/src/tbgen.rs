@@ -339,7 +339,6 @@ fn detect_reset(ports: &[PortInfo]) -> Option<(String, bool)> {
         .map(|p| (p.name.clone(), reset_active_high(&p.name)))
 }
 
-
 /// Generate testbench langsung dari module di design (port dibaca dari AST).
 ///
 /// Clock/reset dideteksi otomatis dari nama port. Module dipilih dari
@@ -371,8 +370,11 @@ pub fn generate_for_module(
         .ok_or_else(|| format!("module '{}' tidak ditemukan di design", name))?;
 
     let ports = ports_from_module(module);
-    let is_input =
-        |n: &str| ports.iter().any(|p| p.name == n && matches!(p.dir, PortDir::Input));
+    let is_input = |n: &str| {
+        ports
+            .iter()
+            .any(|p| p.name == n && matches!(p.dir, PortDir::Input))
+    };
     let mut cfg = config.clone();
     cfg.module_name = module.name.to_string();
 
@@ -548,7 +550,11 @@ mod tests {
             "module dut(input logic clk, input logic rst_n, input logic [7:0] a, output logic [7:0] y);\nendmodule\n",
         );
         let tb = generate_for_module(&design, Some("dut"), &TbConfig::default()).unwrap();
-        assert_eq!(tb.matches("reg clk").count(), 1, "clk dideklarasikan sekali");
+        assert_eq!(
+            tb.matches("reg clk").count(),
+            1,
+            "clk dideklarasikan sekali"
+        );
         assert_eq!(tb.matches("reg rst_n").count(), 1, "rst_n sekali");
         assert!(tb.contains("always #5 clk = ~clk;"));
         assert!(tb.contains("dut u_dut"));
@@ -565,14 +571,21 @@ mod tests {
         let design = parse_design("module dut(input logic clk, output logic q);\nendmodule\n");
         let tb = generate_for_module(&design, Some("dut"), &TbConfig::default()).unwrap();
         assert!(tb.contains("reg clk = 0;"));
-        assert!(!tb.contains("rst"), "module tanpa reset tidak boleh punya rst");
+        assert!(
+            !tb.contains("rst"),
+            "module tanpa reset tidak boleh punya rst"
+        );
     }
 
     #[test]
     fn generate_for_module_without_clock_skips_clock_block() {
-        let design = parse_design("module dut(input logic [3:0] a, output logic [3:0] y);\nendmodule\n");
+        let design =
+            parse_design("module dut(input logic [3:0] a, output logic [3:0] y);\nendmodule\n");
         let tb = generate_for_module(&design, Some("dut"), &TbConfig::default()).unwrap();
-        assert!(!tb.contains("always #"), "tanpa port clock tidak ada clock gen");
+        assert!(
+            !tb.contains("always #"),
+            "tanpa port clock tidak ada clock gen"
+        );
         assert!(!tb.contains("posedge clk"));
     }
 
@@ -614,12 +627,13 @@ mod tests {
 
     #[test]
     fn output_named_clk_is_not_driven() {
-        let design = parse_design(
-            "module dut(input logic clk_in, output logic clk);\nendmodule\n",
-        );
+        let design = parse_design("module dut(input logic clk_in, output logic clk);\nendmodule\n");
         let tb = generate_for_module(&design, Some("dut"), &TbConfig::default()).unwrap();
         assert!(tb.contains("always #5 clk_in"));
-        assert!(!tb.contains("reg clk = 0;"), "output clk tidak boleh di-drive");
+        assert!(
+            !tb.contains("reg clk = 0;"),
+            "output clk tidak boleh di-drive"
+        );
         assert!(tb.contains("wire clk;"));
     }
 
@@ -634,9 +648,8 @@ mod tests {
 
     #[test]
     fn wide_inputs_get_stimulus() {
-        let design = parse_design(
-            "module dut(input logic [31:0] d, output logic [31:0] q);\nendmodule\n",
-        );
+        let design =
+            parse_design("module dut(input logic [31:0] d, output logic [31:0] q);\nendmodule\n");
         let tb = generate_for_module(&design, Some("dut"), &TbConfig::default()).unwrap();
         assert!(tb.contains("        d = 0;"), "input 32-bit harus di-drive");
         assert!(tb.contains("        d = 1;"));

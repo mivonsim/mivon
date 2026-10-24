@@ -6,8 +6,7 @@ use super::*;
 // mencakup interface) sehingga clock/field tidak tersambung.
 
 fn sim(source: &str, max_time: u64) -> Vec<(String, mivon_ir::LogicVec)> {
-    simulate_signals(source, max_time)
-        .unwrap_or_else(|e| panic!("sim gagal: {e}\n{source}"))
+    simulate_signals(source, max_time).unwrap_or_else(|e| panic!("sim gagal: {e}\n{source}"))
 }
 
 fn get(sigs: &[(String, mivon_ir::LogicVec)], name: &str) -> mivon_ir::LogicVec {
@@ -40,7 +39,11 @@ module tb;
 endmodule
 "#;
     let sigs = sim(source, 40);
-    assert_eq!(get(&sigs, "b.data").to_u64(), 0x33, "field via interface port terhubung ke instance");
+    assert_eq!(
+        get(&sigs, "b.data").to_u64(),
+        0x33,
+        "field via interface port terhubung ke instance"
+    );
 }
 
 #[test]
@@ -68,7 +71,11 @@ module tb;
 endmodule
 "#;
     let sigs = sim(source, 40);
-    assert_eq!(get(&sigs, "b.data").to_u64(), 0xA5, "modport master write sampai ke instance");
+    assert_eq!(
+        get(&sigs, "b.data").to_u64(),
+        0xA5,
+        "modport master write sampai ke instance"
+    );
 }
 
 #[test]

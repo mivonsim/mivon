@@ -16,11 +16,10 @@ use crate::pipeline_config::{micd_root_for, pick_elab_mode};
 use crate::sim_finish;
 use crate::source_io::load_project_foreign_libs;
 use crate::{
-    DEFAULT_MAX_TIME_NS, apply_engine_flags, emit_diags, micd_save_and_print, print_ir_mem_stats,
-    trim_heap, truncate_ellipsis,
+    apply_engine_flags, emit_diags, micd_save_and_print, print_ir_mem_stats, trim_heap,
+    truncate_ellipsis, DEFAULT_MAX_TIME_NS,
 };
 
-use mivon_api::SessionConfig;
 use mivon_api::debugger::Debugger;
 use mivon_api::read_project_file;
 use mivon_api::simulator::Breakpoint;
@@ -28,6 +27,7 @@ use mivon_api::simulator::DebugMode;
 use mivon_api::simulator::SimulationEngine;
 use mivon_api::simulator::Watchpoint;
 use mivon_api::waveform::VcdWriter;
+use mivon_api::SessionConfig;
 use mivon_compiler::frontend::CompileSession;
 use mivon_core::animasi::{Phase, PipelineAnimator};
 use mivon_core::diagnostics::DiagCode;

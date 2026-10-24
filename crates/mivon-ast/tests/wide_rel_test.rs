@@ -21,8 +21,16 @@ fn eval_rel(a: &[i64], b: &[i64], op: BinaryOp) -> i64 {
     };
     let e = Expr::BinaryOp {
         op,
-        lhs: Box::new(Expr::Ident { name: Symbol::intern("A"), line: 0, col: 0 }),
-        rhs: Box::new(Expr::Ident { name: Symbol::intern("B"), line: 0, col: 0 }),
+        lhs: Box::new(Expr::Ident {
+            name: Symbol::intern("A"),
+            line: 0,
+            col: 0,
+        }),
+        rhs: Box::new(Expr::Ident {
+            name: Symbol::intern("B"),
+            line: 0,
+            col: 0,
+        }),
     };
     match eval_expr(&e, &ctx, None) {
         Ok(CVal::Scalar(v)) => v,

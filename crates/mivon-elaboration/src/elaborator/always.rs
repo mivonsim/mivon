@@ -46,8 +46,13 @@ impl Elaborator {
                 })
             }
             AlwaysKind::AlwaysFF => {
-                let (clock, reset, iff) =
-                    self.extract_clock_reset(&always.sensitivity, signal_map, signals, always.line, always.col)?;
+                let (clock, reset, iff) = self.extract_clock_reset(
+                    &always.sensitivity,
+                    signal_map,
+                    signals,
+                    always.line,
+                    always.col,
+                )?;
                 let body = self.elaborate_stmt_block(&always.stmts, signal_map, &[], signals)?;
                 let reset = reset.or_else(|| detect_sync_reset(&body));
                 Ok(Process::Sequential {

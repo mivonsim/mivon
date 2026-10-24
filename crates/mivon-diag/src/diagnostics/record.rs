@@ -1,9 +1,7 @@
 use std::borrow::Cow;
 use std::fmt;
 
-use super::{
-    DiagCode, DiagLevel, DiagNote, DiagSpan, FixItHint, RuntimeContext, SourceSnippet,
-};
+use super::{DiagCode, DiagLevel, DiagNote, DiagSpan, FixItHint, RuntimeContext, SourceSnippet};
 
 /// Structured diagnostic ala Rust/Cargo (error/warning/note/help).
 ///

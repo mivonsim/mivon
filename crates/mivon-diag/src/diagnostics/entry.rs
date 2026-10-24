@@ -70,9 +70,10 @@ impl DiagEntry {
         let raw = self.code.as_str();
         let (code, message) = match lookup_code(raw) {
             Some(c) => (c, self.message.clone()),
-            None if !raw.is_empty() => {
-                (DiagCode::SimulationError, format!("[{}] {}", raw, self.message))
-            }
+            None if !raw.is_empty() => (
+                DiagCode::SimulationError,
+                format!("[{}] {}", raw, self.message),
+            ),
             None => (DiagCode::SimulationError, self.message.clone()),
         };
         let mut d = Diagnostic::new(self.severity, code, message);

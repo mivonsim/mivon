@@ -4,16 +4,7 @@ use std::fmt;
 /// (`FileDiags`/`DiagEntry`) — satu enum level untuk seluruh sistem, tanpa
 /// enum duplikat `DiagSeverity`.
 #[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    PartialOrd,
-    Ord,
-    Hash,
-    serde::Serialize,
-    serde::Deserialize,
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
 )]
 pub enum DiagLevel {
     /// Fatal — simulasi harus dihentikan segera.

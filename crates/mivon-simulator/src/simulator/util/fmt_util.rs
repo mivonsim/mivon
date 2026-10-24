@@ -115,7 +115,13 @@ pub(super) fn fmt_arg_as_real(val: &LogicVec, is_real: bool, is_signed: bool) ->
 
 /// Dorong string hasil format ke output dengan padding `width` (space default,
 /// `'0'` bila zero-fill `%0`, rata kiri bila flag `-`).
-pub(super) fn push_padded(out: &mut String, s: &str, width: usize, zero_fill: bool, left_align: bool) {
+pub(super) fn push_padded(
+    out: &mut String,
+    s: &str,
+    width: usize,
+    zero_fill: bool,
+    left_align: bool,
+) {
     if width > s.len() {
         let extra = width - s.len();
         if left_align {

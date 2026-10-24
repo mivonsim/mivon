@@ -212,14 +212,11 @@ impl Elaborator {
                     // sinyal PARENT (tidak ada sinyal bernama `inst.field`),
                     // jadi cari dulu di hier_signal_map hasil flatten, baru
                     // fallback ke daftar sinyal top.
-                    let field_sid = map
-                        .get(&Symbol::intern(&parent_key))
-                        .copied()
-                        .or_else(|| {
-                            top.signals
-                                .iter()
-                                .position(|s| s.name.as_str() == parent_key)
-                        });
+                    let field_sid = map.get(&Symbol::intern(&parent_key)).copied().or_else(|| {
+                        top.signals
+                            .iter()
+                            .position(|s| s.name.as_str() == parent_key)
+                    });
                     if let Some(field_sid) = field_sid {
                         map.insert(Symbol::intern(&child_key), field_sid);
                     }
@@ -1188,11 +1185,7 @@ impl Elaborator {
     fn translate_lvalue(&self, lv: &IrLValue, map_sig: &dyn Fn(SignalId) -> SignalId) -> IrLValue {
         match lv {
             IrLValue::Signal(id, w) => IrLValue::Signal(map_sig(*id), *w),
-            IrLValue::VifField {
-                vif,
-                field,
-                width,
-            } => IrLValue::VifField {
+            IrLValue::VifField { vif, field, width } => IrLValue::VifField {
                 vif: *vif,
                 field: *field,
                 width: *width,

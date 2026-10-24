@@ -1,5 +1,5 @@
-use crate::diagnostics::{DiagLevel, DiagSink, Diagnostic};
 use super::EmitterHandle;
+use crate::diagnostics::{DiagLevel, DiagSink, Diagnostic};
 
 /// DiagnosticsContext — pusat penerima diagnostik dari seluruh pipeline.
 ///
@@ -96,7 +96,12 @@ mod tests {
         let ctx = DiagnosticsContext::new();
         ctx.push(Diagnostic::warning(DiagCode::WaveformError, "w"));
         ctx.push(Diagnostic::warning(DiagCode::WaveformError, "w2"));
-        assert_eq!(ctx.sink().total_pushed.load(std::sync::atomic::Ordering::Relaxed), 2);
+        assert_eq!(
+            ctx.sink()
+                .total_pushed
+                .load(std::sync::atomic::Ordering::Relaxed),
+            2
+        );
         assert!(!ctx.has_errors());
     }
 

@@ -4,6 +4,7 @@ pub mod class;
 pub mod config;
 pub mod decl;
 pub mod expr;
+pub mod incremental;
 pub mod instance;
 pub mod lexer;
 pub mod package;
@@ -13,7 +14,6 @@ pub mod specify;
 pub mod stmt;
 pub mod udp;
 pub mod util;
-pub mod incremental;
 use crate::lexer::*;
 use mivon_ast::*;
 use mivon_core::diagnostics::cumulative_to_file_line;
@@ -388,7 +388,10 @@ impl Parser {
         // Nesting statement/ekspresi >1024 tidak ada di HDL nyata.
         if self.recursion_depth > 1024 {
             self.recursion_depth = 0;
-            return Err(self.err_with_code(DiagCode::InvalidSyntax, "parser recursion depth exceeded (possible infinite recursion)"));
+            return Err(self.err_with_code(
+                DiagCode::InvalidSyntax,
+                "parser recursion depth exceeded (possible infinite recursion)",
+            ));
         }
         Ok(())
     }
@@ -794,7 +797,10 @@ impl Parser {
             self.advance();
             Ok(())
         } else {
-            Err(self.err_with_code(DiagCode::ExpectedToken, format!("expected {}, found {}", expected, self.peek())))
+            Err(self.err_with_code(
+                DiagCode::ExpectedToken,
+                format!("expected {}, found {}", expected, self.peek()),
+            ))
         }
     }
 
@@ -840,7 +846,10 @@ impl Parser {
                 self.advance();
                 Ok(Symbol::intern("some"))
             }
-            _ => Err(self.err_with_code(DiagCode::ExpectedToken, format!("expected identifier, found {}", self.peek()))),
+            _ => Err(self.err_with_code(
+                DiagCode::ExpectedToken,
+                format!("expected identifier, found {}", self.peek()),
+            )),
         }
     }
 
@@ -941,7 +950,10 @@ impl Parser {
         while self.peek() != &Token::Eof {
             // Step limit guard: prevent infinite loops
             if self.parse_steps > self.step_limit() {
-                return Err(self.err_with_code(DiagCode::InvalidSyntax, "parser exceeded maximum step limit (possible infinite loop)"));
+                return Err(self.err_with_code(
+                    DiagCode::InvalidSyntax,
+                    "parser exceeded maximum step limit (possible infinite loop)",
+                ));
             }
             // Stuck detection: if pos hasn't changed for too many iterations, abort
             if self.pos.get() == _last_pos {
@@ -1260,7 +1272,10 @@ impl Parser {
         while self.peek() != &Token::Eof {
             // Step limit guard: prevent infinite loops
             if self.parse_steps > self.step_limit() {
-                return Err(self.err_with_code(DiagCode::InvalidSyntax, "parser exceeded maximum step limit (possible infinite loop)"));
+                return Err(self.err_with_code(
+                    DiagCode::InvalidSyntax,
+                    "parser exceeded maximum step limit (possible infinite loop)",
+                ));
             }
             // Stuck detection: if pos hasn't changed for too many iterations, abort
             if self.pos.get() == _last_pos {
@@ -1376,7 +1391,10 @@ impl Parser {
                             }
                         };
                         if self.peek() != &Token::Scope {
-                            let err = self.err_with_code(DiagCode::ExpectedToken, "expected '::' after package name");
+                            let err = self.err_with_code(
+                                DiagCode::ExpectedToken,
+                                "expected '::' after package name",
+                            );
                             self.errors.push(err.to_diagnostic());
                             self.skip_to_next_top_level();
                             break;
@@ -1980,10 +1998,12 @@ impl Parser {
                         .borrow_mut()
                         .push(ModuleItem::Assign(extra));
                 }
-                let first = assigns
-                    .into_iter()
-                    .next()
-                    .ok_or_else(|| self.err_with_code(DiagCode::ExpectedToken, "expected assignment after 'assign'"))?;
+                let first = assigns.into_iter().next().ok_or_else(|| {
+                    self.err_with_code(
+                        DiagCode::ExpectedToken,
+                        "expected assignment after 'assign'",
+                    )
+                })?;
                 Ok(Some(ModuleItem::Assign(first)))
             }
             Token::Dollar => {
@@ -3341,7 +3361,10 @@ impl Parser {
             if self.pos.get() == _last_pos {
                 _stuck += 1;
                 if _stuck > 5_000 {
-                    return Err(self.err_with_code(DiagCode::InvalidSyntax, "parser stuck (no progress) in skip_until_semi_or_end"));
+                    return Err(self.err_with_code(
+                        DiagCode::InvalidSyntax,
+                        "parser stuck (no progress) in skip_until_semi_or_end",
+                    ));
                 }
             } else {
                 _stuck = 0;

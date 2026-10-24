@@ -45,8 +45,7 @@ impl Parser {
                         // `assert property (@());` yang TIDAK sah di SV (LRM
                         // §16.12: kontrol event wajib punya ekspresi clocking)
                         // → hasil transpile tak parseable (fuzz bug_490d4c855149).
-                        let norm: String =
-                            sliced.split_whitespace().collect::<Vec<_>>().join("");
+                        let norm: String = sliced.split_whitespace().collect::<Vec<_>>().join("");
                         if norm.contains("@()") {
                             return Err(MvError::new(
                                 sl,

@@ -232,10 +232,8 @@ impl LicenseServer {
             .unwrap_or_else(|| std::ffi::OsString::from("licenses.json"));
         temp_name.push(format!(".{}.tmp", std::process::id()));
         let temp = path.with_file_name(temp_name);
-        std::fs::write(&temp, json)
-            .map_err(|e| format!("gagal tulis {}: {e}", temp.display()))?;
-        std::fs::rename(&temp, path)
-            .map_err(|e| format!("gagal rename {}: {e}", path.display()))
+        std::fs::write(&temp, json).map_err(|e| format!("gagal tulis {}: {e}", temp.display()))?;
+        std::fs::rename(&temp, path).map_err(|e| format!("gagal rename {}: {e}", path.display()))
     }
 
     /// Muat state server dari JSON + normalisasi.
@@ -367,7 +365,10 @@ pub fn with_locked_db<T>(
         .map(|n| n.to_os_string())
         .unwrap_or_else(|| std::ffi::OsString::from("licenses.json"));
     lock_name.push(".lock");
-    let lock = DbLock::acquire(&path.with_file_name(lock_name), std::time::Duration::from_secs(5))?;
+    let lock = DbLock::acquire(
+        &path.with_file_name(lock_name),
+        std::time::Duration::from_secs(5),
+    )?;
     let mut server = if path.exists() {
         LicenseServer::load(path)?
     } else {
@@ -441,7 +442,10 @@ mod tests {
         assert_eq!(server.pool_status("sim").unwrap().1, 0);
         // Melewati expires_at (1 jam): lease dibuang, lisensi kembali.
         server.expire_stale_at(now + 4000);
-        assert!(server.active_leases().is_empty(), "lease {id} harus expired");
+        assert!(
+            server.active_leases().is_empty(),
+            "lease {id} harus expired"
+        );
         assert_eq!(server.pool_status("sim").unwrap().1, 1);
     }
 
@@ -480,7 +484,10 @@ mod tests {
         let id = server.checkout("sim", "alice", "h").unwrap();
         // Paksa lease lewat masa berlaku absolut.
         server.leases[0].max_expires_at = now_secs().saturating_sub(1);
-        assert!(server.heartbeat(&id).is_err(), "lease mati tidak boleh hidup lagi");
+        assert!(
+            server.heartbeat(&id).is_err(),
+            "lease mati tidak boleh hidup lagi"
+        );
         assert!(server.active_leases().is_empty());
         assert_eq!(server.pool_status("sim").unwrap().1, 1);
     }
@@ -507,7 +514,11 @@ mod tests {
             "next_id":1,"heartbeat_timeout":300}"#;
         std::fs::write(&path, json).unwrap();
         let mut s = LicenseServer::load(&path).unwrap();
-        assert_eq!(s.pool_status("sim"), Some((2, 1, 1)), "available dihitung ulang");
+        assert_eq!(
+            s.pool_status("sim"),
+            Some((2, 1, 1)),
+            "available dihitung ulang"
+        );
         let id = s.checkout("sim", "b", "h2").unwrap();
         assert_eq!(id, "L-000006", "next_id melewati ID terpakai");
     }
@@ -548,9 +559,12 @@ mod tests {
         let ok2 = t2.join().unwrap();
         assert!(ok1 ^ ok2, "tepat satu checkout berhasil (pool=1)");
         let s = LicenseServer::load(&path).unwrap();
-        assert_eq!(s.active_leases().len(), 1, "tidak ada lease hilang/duplikat");
+        assert_eq!(
+            s.active_leases().len(),
+            1,
+            "tidak ada lease hilang/duplikat"
+        );
     }
-
 
     #[test]
     fn load_rejects_malformed_json() {

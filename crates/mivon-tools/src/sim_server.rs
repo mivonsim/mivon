@@ -102,8 +102,15 @@ impl ServerConfig {
 /// (kuota → 429, kapasitas → 503, tanpa runner → 503).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SubmitError {
-    Quota { user: String, active: usize, max: usize },
-    Capacity { total: usize, max: usize },
+    Quota {
+        user: String,
+        active: usize,
+        max: usize,
+    },
+    Capacity {
+        total: usize,
+        max: usize,
+    },
     NoRunner,
 }
 
@@ -169,10 +176,12 @@ impl Store {
             if cur >= max {
                 return false;
             }
-            match self
-                .active
-                .compare_exchange_weak(cur, cur + 1, Ordering::SeqCst, Ordering::SeqCst)
-            {
+            match self.active.compare_exchange_weak(
+                cur,
+                cur + 1,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
                 Ok(_) => return true,
                 Err(observed) => cur = observed,
             }
@@ -213,11 +222,7 @@ impl SimServer {
 
     /// Pasang runner eksekusi (wajib sebelum submit).
     pub fn set_runner(&self, runner: SessionRunner) {
-        *self
-            .store
-            .runner
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = Some(runner);
+        *self.store.runner.lock().unwrap_or_else(|e| e.into_inner()) = Some(runner);
     }
 
     /// True bila runner sudah terpasang.
@@ -246,8 +251,7 @@ impl SimServer {
 
         let mut sessions = self.store.sessions();
 
-        if sessions.len() >= self.config.max_sessions_total
-            && !evict_oldest_terminal(&mut sessions)
+        if sessions.len() >= self.config.max_sessions_total && !evict_oldest_terminal(&mut sessions)
         {
             return Err(SubmitError::Capacity {
                 total: sessions.len(),
@@ -404,9 +408,7 @@ fn evict_oldest_terminal(sessions: &mut HashMap<String, SimSession>) -> bool {
         .filter(|s| {
             matches!(
                 s.status,
-                SessionStatus::Completed
-                    | SessionStatus::Failed(_)
-                    | SessionStatus::Cancelled
+                SessionStatus::Completed | SessionStatus::Failed(_) | SessionStatus::Cancelled
             )
         })
         .min_by(|a, b| {
@@ -450,10 +452,9 @@ fn start_worker(
         .spawn(move || {
             // Panic di runner (parser/elaborator atas input klien) tidak boleh
             // membuat sesi Running selamanya.
-            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                runner(&files, max_time)
-            }))
-            .unwrap_or_else(|_| Err("runner panic".to_string()));
+            let outcome =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| runner(&files, max_time)))
+                    .unwrap_or_else(|_| Err("runner panic".to_string()));
             store.release_slot();
             finish_session(&store, &config, &id, outcome);
         });

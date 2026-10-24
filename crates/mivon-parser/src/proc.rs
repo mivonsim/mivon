@@ -518,7 +518,10 @@ impl Parser {
                     self.advance();
                     Symbol::intern("new")
                 }
-                _ => return Err(self.err_with_code(DiagCode::ExpectedToken, "expected method name after ::")),
+                _ => {
+                    return Err(self
+                        .err_with_code(DiagCode::ExpectedToken, "expected method name after ::"))
+                }
             }
         } else {
             let name_tok = self.peek().clone();
@@ -546,7 +549,11 @@ impl Parser {
                     self.advance();
                     Symbol::intern("new")
                 }
-                _ => return Err(self.err_with_code(DiagCode::ExpectedToken, "expected function name")),
+                _ => {
+                    return Err(
+                        self.err_with_code(DiagCode::ExpectedToken, "expected function name")
+                    )
+                }
             }
         };
         // Parse ANSI-style port list in parens (e.g., function new(int level, string name))
@@ -889,7 +896,10 @@ impl Parser {
                         }
                         decls.push(decl);
                     } else {
-                        return Err(self.err_with_code(DiagCode::ExpectedToken, "expected declaration after automatic/static"));
+                        return Err(self.err_with_code(
+                            DiagCode::ExpectedToken,
+                            "expected declaration after automatic/static",
+                        ));
                     }
                 }
                 Token::Begin => {
@@ -987,7 +997,8 @@ impl Parser {
                     *m
                 }
                 _ => {
-                    return Err(self.err_with_code(DiagCode::ExpectedToken, "expected method name after ::"));
+                    return Err(self
+                        .err_with_code(DiagCode::ExpectedToken, "expected method name after ::"));
                 }
             }
         } else {
@@ -1309,7 +1320,10 @@ impl Parser {
                         }
                         decls.push(decl);
                     } else {
-                        return Err(self.err_with_code(DiagCode::ExpectedToken, "expected declaration after automatic/static"));
+                        return Err(self.err_with_code(
+                            DiagCode::ExpectedToken,
+                            "expected declaration after automatic/static",
+                        ));
                     }
                 }
                 Token::Begin => {
@@ -1387,7 +1401,10 @@ impl Parser {
                     return Ok(GenerateBlock { items });
                 }
                 Token::Eof => {
-                    return Err(self.err_with_code(DiagCode::ExpectedToken, "unexpected EOF in generate block"));
+                    return Err(self.err_with_code(
+                        DiagCode::ExpectedToken,
+                        "unexpected EOF in generate block",
+                    ));
                 }
                 _ => {
                     let item = self.parse_generate_item()?;
@@ -1472,7 +1489,11 @@ impl Parser {
                         self.advance();
                         *n
                     }
-                    _ => return Err(self.err_with_code(DiagCode::ExpectedToken, "expected genvar name")),
+                    _ => {
+                        return Err(
+                            self.err_with_code(DiagCode::ExpectedToken, "expected genvar name")
+                        )
+                    }
                 };
                 // Parse init: i = <expr>
                 let _init = if self.peek() != &Token::Semi {
@@ -1636,7 +1657,9 @@ impl Parser {
                 let item = self.parse_module_item()?;
                 match item {
                     Some(mi) => Ok(GenerateItem::Items(vec![mi])),
-                    None => Err(self.err_with_code(DiagCode::ExpectedToken, "expected generate item")),
+                    None => {
+                        Err(self.err_with_code(DiagCode::ExpectedToken, "expected generate item"))
+                    }
                 }
             }
         }

@@ -3,6 +3,7 @@
 
 mod anim_glue;
 mod cli;
+mod dispatch;
 #[cfg(feature = "formal")]
 mod formal_run;
 mod pipeline_config;
@@ -11,22 +12,19 @@ mod run_fast;
 mod run_legacy;
 mod sim_finish;
 mod source_io;
-mod dispatch;
 
 use clap::Parser as ClapParser;
 use cli::Cli;
-use run_legacy::run;
 use dispatch::{
     dispatch_batch, dispatch_bench, dispatch_bugtrack, dispatch_check, dispatch_cov,
-    dispatch_cov_closure,
-    dispatch_design_repo, dispatch_eco, dispatch_elab, dispatch_emu, dispatch_equiv_check,
-    dispatch_fmt,
-    dispatch_gen, dispatch_inspect, dispatch_ipxact, dispatch_lint, dispatch_memcheck,
-    dispatch_prof, dispatch_project, dispatch_regression, dispatch_requirements,
-    dispatch_sdc, dispatch_sim, dispatch_synth, dispatch_tbgen, dispatch_tcl,
-    dispatch_license, dispatch_update, dispatch_vault, dispatch_verif_dashboard, dispatch_waiver,
-    dispatch_wave, dispatch_web_dashboard,
+    dispatch_cov_closure, dispatch_design_repo, dispatch_eco, dispatch_elab, dispatch_emu,
+    dispatch_equiv_check, dispatch_fmt, dispatch_gen, dispatch_inspect, dispatch_ipxact,
+    dispatch_license, dispatch_lint, dispatch_memcheck, dispatch_prof, dispatch_project,
+    dispatch_regression, dispatch_requirements, dispatch_sdc, dispatch_sim, dispatch_synth,
+    dispatch_tbgen, dispatch_tcl, dispatch_update, dispatch_vault, dispatch_verif_dashboard,
+    dispatch_waiver, dispatch_wave, dispatch_web_dashboard,
 };
+use run_legacy::run;
 use std::process;
 
 use mivon_api::read_project_file;
@@ -691,12 +689,13 @@ mod tests {
         .expect("mrequirements report harus parse");
         match cli.cmd {
             Some(crate::cli::MivonCmd::Requirements(crate::cli::MrequirementsArgs {
-                cmd: crate::cli::MrequirementsCmd::Report {
-                    mappings,
-                    results,
-                    format,
-                    ..
-                },
+                cmd:
+                    crate::cli::MrequirementsCmd::Report {
+                        mappings,
+                        results,
+                        format,
+                        ..
+                    },
             })) => {
                 assert_eq!(mappings, "req.csv");
                 assert_eq!(results, "res.json");
@@ -764,8 +763,8 @@ mod tests {
             })) => assert_eq!(input, "x.json"),
             _ => panic!("bukan CovClosure::Analyze"),
         }
-        let cli = crate::cli::Cli::try_parse_from(["mivon", "msdc", "x.sdc"])
-            .expect("msdc harus parse");
+        let cli =
+            crate::cli::Cli::try_parse_from(["mivon", "msdc", "x.sdc"]).expect("msdc harus parse");
         assert!(matches!(cli.cmd, Some(crate::cli::MivonCmd::Sdc(_))));
         // Field-level: menukar -g/-i akan tertangkap (assert varian saja tidak).
         let cli =
@@ -843,13 +842,9 @@ mod tests {
     #[test]
     fn engine_flags_cover_both_pipelines() {
         use clap::Parser;
-        let cli = crate::cli::Cli::try_parse_from([
-            "mivon",
-            "--jit-body",
-            "--cycle-fusion",
-            "a.sv",
-        ])
-        .expect("flag harus parse");
+        let cli =
+            crate::cli::Cli::try_parse_from(["mivon", "--jit-body", "--cycle-fusion", "a.sv"])
+                .expect("flag harus parse");
         let f = crate::engine_flags(&cli);
         assert!(f.mir_jit, "--jit-body harus terbaca");
         assert!(f.cycle_fusion, "--cycle-fusion harus terbaca");

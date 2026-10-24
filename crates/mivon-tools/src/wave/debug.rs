@@ -53,11 +53,7 @@ impl DebugManifest {
                 transitions: *transitions.get(&s.id).unwrap_or(&0),
             })
             .collect();
-        probes.sort_by(|a, b| {
-            a.scope
-                .cmp(&b.scope)
-                .then_with(|| a.name.cmp(&b.name))
-        });
+        probes.sort_by(|a, b| a.scope.cmp(&b.scope).then_with(|| a.name.cmp(&b.name)));
         DebugManifest {
             timescale: data.timescale.clone(),
             max_time: data.max_time,
@@ -176,12 +172,26 @@ mod tests {
         let n = N.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let dir = std::env::temp_dir();
         let vcd = dir.join(format!("feat15_e2e_{}_{}.vcd", std::process::id(), n));
-        let json = dir.join(format!("feat15_e2e_{}_{}.vcd.debug.json", std::process::id(), n));
+        let json = dir.join(format!(
+            "feat15_e2e_{}_{}.vcd.debug.json",
+            std::process::id(),
+            n
+        ));
         let vcdp = vcd.to_str().unwrap();
         let jsonp = json.to_str().unwrap();
         let signals = vec![
-            VcdSignal { id: "a".to_string(), name: "clk".to_string(), width: 1, scope: vec!["top".to_string()] },
-            VcdSignal { id: "b".to_string(), name: "data".to_string(), width: 4, scope: vec!["top".to_string(), "alu".to_string()] },
+            VcdSignal {
+                id: "a".to_string(),
+                name: "clk".to_string(),
+                width: 1,
+                scope: vec!["top".to_string()],
+            },
+            VcdSignal {
+                id: "b".to_string(),
+                name: "data".to_string(),
+                width: 4,
+                scope: vec!["top".to_string(), "alu".to_string()],
+            },
         ];
         let changes = vec![
             (0u64, "a".to_string(), "1".to_string()),

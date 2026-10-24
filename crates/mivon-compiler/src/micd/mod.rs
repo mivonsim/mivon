@@ -1480,9 +1480,7 @@ mod tests {
         let base = COMPILER_VERSION
             .strip_prefix("Mivon ")
             .expect("format 'Mivon x.y.z-pN'");
-        let (ver, rev) = base
-            .rsplit_once("-p")
-            .expect("suffix '-pN' wajib ada");
+        let (ver, rev) = base.rsplit_once("-p").expect("suffix '-pN' wajib ada");
         let cur: u64 = rev.parse().expect("revisi harus integer");
         assert!(cur >= 1, "revisi semantik mulai 1");
         // Versi lebih tua (cur-1) dan lebih baru (cur+1) → ditolak.

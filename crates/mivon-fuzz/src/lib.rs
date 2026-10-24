@@ -969,10 +969,7 @@ fn eval_case(
     if result.category.is_bug() {
         let sig = result.signature();
         // Poison recovery: isi set tetap valid (flag saja) → dedup tetap betul.
-        let fresh = sigs
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .insert(sig);
+        let fresh = sigs.lock().unwrap_or_else(|p| p.into_inner()).insert(sig);
         if fresh {
             // AUTO-DISMISS hang via replay tenang: replay dgn budget 6× —
             // tak selesai → hang asli (simpan sbg bug); selesai dgn kategori
@@ -1069,12 +1066,7 @@ fn run_single(cfg: FuzzConfig, corpus: &corpus::Corpus) -> FuzzReport {
             let key = corpus.seed_at(i).map(crate::ledger::seed_key);
             let seen_now = key
                 .as_ref()
-                .is_some_and(|k| {
-                    ledger
-                        .lock()
-                        .unwrap_or_else(|p| p.into_inner())
-                        .is_seen(k)
-                });
+                .is_some_and(|k| ledger.lock().unwrap_or_else(|p| p.into_inner()).is_seen(k));
             match key {
                 Some(_) if seen_now => seen.push(i),
                 _ => unseen.push(i),
@@ -1115,10 +1107,7 @@ fn run_single(cfg: FuzzConfig, corpus: &corpus::Corpus) -> FuzzReport {
                 break;
             }
             if (slot + 1) % progress_every == 0 {
-                let _ = ledger
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .save();
+                let _ = ledger.lock().unwrap_or_else(|p| p.into_inner()).save();
                 eprint!(
                     "\r  [{}/{}] bugs: {} large: {}",
                     slot + 1,
@@ -1153,25 +1142,22 @@ fn run_single(cfg: FuzzConfig, corpus: &corpus::Corpus) -> FuzzReport {
             for _ in 0..jobs {
                 let pool = pool.clone();
                 let tx = tx.clone();
-                let _worker = scope.spawn(
-                    move || loop {
-                        if pool.stop.load(Ordering::Relaxed) != 0 {
-                            break;
-                        }
-                        let slot = pool.next.fetch_add(1, Ordering::AcqRel);
-                        if slot >= cases {
-                            break;
-                        }
-                        let agg =
-                            eval_case(cfg_ref, corpus_ref, plan_ref, slot, ledger_ref, sigs_ref);
-                        if agg.leak_cap_hit {
-                            pool.stop.store(1, Ordering::Relaxed);
-                        }
-                        if tx.send(agg).is_err() {
-                            break;
-                        }
-                    },
-                );
+                let _worker = scope.spawn(move || loop {
+                    if pool.stop.load(Ordering::Relaxed) != 0 {
+                        break;
+                    }
+                    let slot = pool.next.fetch_add(1, Ordering::AcqRel);
+                    if slot >= cases {
+                        break;
+                    }
+                    let agg = eval_case(cfg_ref, corpus_ref, plan_ref, slot, ledger_ref, sigs_ref);
+                    if agg.leak_cap_hit {
+                        pool.stop.store(1, Ordering::Relaxed);
+                    }
+                    if tx.send(agg).is_err() {
+                        break;
+                    }
+                });
             }
             drop(tx);
         });
@@ -1193,13 +1179,13 @@ fn run_single(cfg: FuzzConfig, corpus: &corpus::Corpus) -> FuzzReport {
                 );
             }
             if merged % progress_every == 0 {
-                let _ = ledger
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .save();
+                let _ = ledger.lock().unwrap_or_else(|p| p.into_inner()).save();
                 eprint!(
                     "\r  [{}/{}] bugs: {} large: {}",
-                    merged, cases, results.len(), large_evaluated
+                    merged,
+                    cases,
+                    results.len(),
+                    large_evaluated
                 );
             }
         }
@@ -1208,11 +1194,7 @@ fn run_single(cfg: FuzzConfig, corpus: &corpus::Corpus) -> FuzzReport {
     if cfg.cases >= progress_every {
         eprintln!();
     }
-    if let Err(e) = ledger
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .save()
-    {
+    if let Err(e) = ledger.lock().unwrap_or_else(|p| p.into_inner()).save() {
         eprintln!("  (ledger: gagal simpan: {e})");
     }
     crate::feedback::flush();
@@ -1220,7 +1202,10 @@ fn run_single(cfg: FuzzConfig, corpus: &corpus::Corpus) -> FuzzReport {
         .lock()
         .map(|l| (l.len(), l.new_marks()))
         .unwrap_or((0, 0));
-    eprintln!("  (ledger: {} kunci total, +{} baru kampanye ini)", n_total, n_new);
+    eprintln!(
+        "  (ledger: {} kunci total, +{} baru kampanye ini)",
+        n_total, n_new
+    );
 
     let summary = TargetSummary {
         target: cfg.target,
@@ -1617,7 +1602,10 @@ mod bugdb_tests {
         assert_eq!(case_jobs(1), 1);
         assert_eq!(case_jobs(99), 99);
         let auto = case_jobs(0);
-        assert!((1..=8).contains(&auto), "auto = cores/2 clamp 1-8, dapat {auto}");
+        assert!(
+            (1..=8).contains(&auto),
+            "auto = cores/2 clamp 1-8, dapat {auto}"
+        );
     }
 
     /// Nama artefak bug: stabil untuk signature sama, unik untuk beda.

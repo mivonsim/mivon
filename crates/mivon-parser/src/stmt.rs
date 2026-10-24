@@ -203,7 +203,12 @@ impl Parser {
                 self.advance();
                 "assume"
             }
-            _ => return Err(self.err_with_code(DiagCode::ExpectedToken, "expected assert/assume/cover/expect")),
+            _ => {
+                return Err(self.err_with_code(
+                    DiagCode::ExpectedToken,
+                    "expected assert/assume/cover/expect",
+                ))
+            }
         };
         if self.peek() == &Token::Property {
             self.advance();
@@ -234,7 +239,12 @@ impl Parser {
                     Token::Ident(s) if s == "iff" => {
                         self.advance();
                     }
-                    _ => return Err(self.err_with_code(DiagCode::ExpectedToken, "expected 'iff' after 'disable'")),
+                    _ => {
+                        return Err(self.err_with_code(
+                            DiagCode::ExpectedToken,
+                            "expected 'iff' after 'disable'",
+                        ))
+                    }
                 }
                 self.expect(Token::LParen)?;
                 let expr = self.parse_expr(0)?;
@@ -317,47 +327,48 @@ impl Parser {
                 } else {
                     let expr = self.parse_expr(0)?;
                     if self.peek() == &Token::PipeArrow {
-                    // `expr |-> consequent` — overlap implication (SVA §16.9.2)
-                    self.advance(); // consume |->
-                    let cons = self.parse_sequence_after_consequent()?;
-                    let ante = super::types::Sequence::Expr(expr);
-                    let seq = super::types::Sequence::Implication(Box::new(ante), Box::new(cons));
-                    sequence = Some(seq);
-                } else if self.peek() == &Token::PipeFatArrow {
-                    // `expr |=> consequent` — non-overlap implication (SVA
-                    // §16.9.2): consequent mulai satu cycle SETELAH antecedent.
-                    // Representasi ekuivalen: `expr ##1 consequent` di bawah
-                    // umbrella implication — Delay(1) dipakai sebagai leader
-                    // concat sehingga evaluasi consequent jatuh tepat pada
-                    // posedge berikutnya (encoding ini tidak menambah variant
-                    // IR dan memakai back-end `|->` yang sudah tervalidasi).
-                    self.advance(); // consume |=>
-                    let cons = self.parse_sequence_after_consequent()?;
-                    let ante = super::types::Sequence::Expr(expr);
-                    let seq = super::types::Sequence::Implication(
-                        Box::new(ante),
-                        Box::new(super::types::Sequence::Concat(
-                            Box::new(super::types::Sequence::Delay(1)),
-                            Box::new(cons),
-                        )),
-                    );
-                    sequence = Some(seq);
-                } else if self.peek() == &Token::HashHash {
-                    // bentuk `expr ##N expr ...`
-                    let mut seq = super::types::Sequence::Expr(expr);
-                    while self.peek() == &Token::HashHash {
-                        self.advance();
-                        let delay = self.parse_sequence_delay()?;
-                        let next = self.parse_expr(0)?;
-                        seq = super::types::Sequence::Concat(
-                            Box::new(seq),
+                        // `expr |-> consequent` — overlap implication (SVA §16.9.2)
+                        self.advance(); // consume |->
+                        let cons = self.parse_sequence_after_consequent()?;
+                        let ante = super::types::Sequence::Expr(expr);
+                        let seq =
+                            super::types::Sequence::Implication(Box::new(ante), Box::new(cons));
+                        sequence = Some(seq);
+                    } else if self.peek() == &Token::PipeFatArrow {
+                        // `expr |=> consequent` — non-overlap implication (SVA
+                        // §16.9.2): consequent mulai satu cycle SETELAH antecedent.
+                        // Representasi ekuivalen: `expr ##1 consequent` di bawah
+                        // umbrella implication — Delay(1) dipakai sebagai leader
+                        // concat sehingga evaluasi consequent jatuh tepat pada
+                        // posedge berikutnya (encoding ini tidak menambah variant
+                        // IR dan memakai back-end `|->` yang sudah tervalidasi).
+                        self.advance(); // consume |=>
+                        let cons = self.parse_sequence_after_consequent()?;
+                        let ante = super::types::Sequence::Expr(expr);
+                        let seq = super::types::Sequence::Implication(
+                            Box::new(ante),
                             Box::new(super::types::Sequence::Concat(
-                                Box::new(delay),
-                                Box::new(super::types::Sequence::Expr(next)),
+                                Box::new(super::types::Sequence::Delay(1)),
+                                Box::new(cons),
                             )),
                         );
-                    }
-                    sequence = Some(seq);
+                        sequence = Some(seq);
+                    } else if self.peek() == &Token::HashHash {
+                        // bentuk `expr ##N expr ...`
+                        let mut seq = super::types::Sequence::Expr(expr);
+                        while self.peek() == &Token::HashHash {
+                            self.advance();
+                            let delay = self.parse_sequence_delay()?;
+                            let next = self.parse_expr(0)?;
+                            seq = super::types::Sequence::Concat(
+                                Box::new(seq),
+                                Box::new(super::types::Sequence::Concat(
+                                    Box::new(delay),
+                                    Box::new(super::types::Sequence::Expr(next)),
+                                )),
+                            );
+                        }
+                        sequence = Some(seq);
                     } else if matches!(self.peek(), Token::Ident(s) if s.as_str() == "iff") {
                         // LANG-49: property connective `left iff right`
                         // (IEEE 1800-2017 §16.10): true ketika kedua sisi
@@ -1254,7 +1265,10 @@ impl Parser {
                     | Expr::BitSelect { .. }
                     | Expr::RangeSelect { .. }
                     | Expr::PartSelect { .. } => Ok(Stmt::Release { expr }),
-                    _ => Err(self.err_with_code(DiagCode::ExpectedToken, "expected signal name after release")),
+                    _ => Err(self.err_with_code(
+                        DiagCode::ExpectedToken,
+                        "expected signal name after release",
+                    )),
                 }
             }
             Token::Deassign => {
@@ -2784,7 +2798,11 @@ impl Parser {
                         label: fork_label,
                     });
                 }
-                Token::Eof => return Err(self.err_with_code(DiagCode::ExpectedToken, "unexpected EOF in fork block")),
+                Token::Eof => {
+                    return Err(
+                        self.err_with_code(DiagCode::ExpectedToken, "unexpected EOF in fork block")
+                    )
+                }
                 // DV style (macro wait/SPINWAIT): `fork ... end join` /
                 // `... end join_any` — `end` sebelum join menutup block ENCLOSING
                 // (fork tanpa begin di dalam begin luar). Toleransi: konsumsi
@@ -2845,7 +2863,10 @@ impl Parser {
                 self.advance();
                 Symbol::intern("realtime")
             }
-            _ => return Err(self.err_with_code(DiagCode::ExpectedToken, "expected system call name after $")),
+            _ => {
+                return Err(self
+                    .err_with_code(DiagCode::ExpectedToken, "expected system call name after $"))
+            }
         };
         match name.as_str() {
             "finish" | "stop" => {

@@ -701,7 +701,11 @@ impl Elaborator {
                 if member_expr.is_some() && val.is_none() && warned.insert(*member_name) {
                     // Posisi: dari ekspresi nilai member (ident/func/token)
                     // bila tersedia — fallback nama tetap di find_name_in_source.
-                    let (l, c) = member_expr.iter().map(|e| expr_location(e)).next().unwrap_or((0, 0));
+                    let (l, c) = member_expr
+                        .iter()
+                        .map(|e| expr_location(e))
+                        .next()
+                        .unwrap_or((0, 0));
                     self.elab_warn_at(
                         DiagCode::ParamMismatch,
                         format!(

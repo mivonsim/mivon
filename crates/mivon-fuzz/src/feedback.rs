@@ -247,12 +247,20 @@ mod tests {
 
     #[test]
     fn debug_cov_tokens_upper_variants_only() {
-        let toks = debug_cov_tokens("BlockingAssign { hmac: IrExpr::Concat(..), Other(x) lowercase: keep_out }");
+        let toks = debug_cov_tokens(
+            "BlockingAssign { hmac: IrExpr::Concat(..), Other(x) lowercase: keep_out }",
+        );
         assert!(toks.iter().any(|t| t == "BlockingAssign"), "{toks:?}");
         assert!(toks.iter().any(|t| t == "Concat"), "{toks:?}");
         assert!(toks.iter().any(|t| t == "IrExpr"), "{toks:?}");
-        assert!(!toks.iter().any(|t| t == "hmac"), "huruf kecil = bukan token: {toks:?}");
-        assert!(!toks.iter().any(|t| t == "keep"), "huruf kecil lain = bukan token: {toks:?}");
+        assert!(
+            !toks.iter().any(|t| t == "hmac"),
+            "huruf kecil = bukan token: {toks:?}"
+        );
+        assert!(
+            !toks.iter().any(|t| t == "keep"),
+            "huruf kecil lain = bukan token: {toks:?}"
+        );
     }
 
     #[test]
@@ -278,7 +286,11 @@ mod tests {
         .expect("compile");
         let keys = ir_cov_keys(&ir);
         assert!(!keys.is_empty(), "harus ada keys");
-        assert!(keys.iter().all(|k| k.starts_with("ir|k|")), "{:?}", &keys[..keys.len().min(8)]);
+        assert!(
+            keys.iter().all(|k| k.starts_with("ir|k|")),
+            "{:?}",
+            &keys[..keys.len().min(8)]
+        );
         // Deterministik: two calls sama.
         let ir2 = mivon_api::compile_str_quiet(
             "module kp(input logic a, output logic b);\n  assign b = ~a;\nendmodule\n",

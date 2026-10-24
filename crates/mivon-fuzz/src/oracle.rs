@@ -2989,8 +2989,12 @@ pub(crate) fn first_num_pair(msg: &str) -> Option<(u64, u64)> {
                 epath -= 1;
             }
             let mut p = epath;
-            while p > 0 && (b[p - 1].is_ascii_alphanumeric() || b[p - 1] == b'.' || b[p - 1] == b'_'
-                || b[p - 1] == b'/' || b[p - 1] == b'-')
+            while p > 0
+                && (b[p - 1].is_ascii_alphanumeric()
+                    || b[p - 1] == b'.'
+                    || b[p - 1] == b'_'
+                    || b[p - 1] == b'/'
+                    || b[p - 1] == b'-')
             {
                 p -= 1;
             }
@@ -3197,10 +3201,8 @@ mod watchdog_leak_tests {
         // 2) Worker tak pernah selesai (sleep-loop abadi, ~0 CPU) → hang asli
         //    (grace 2× habis) → counter +1. Thread uji hidup sampai proses
         //    test keluar — sleep murni, tanpa CPU.
-        let hang_r = run_with_watchdog(Target::Lexer, "hang", 50, "fuzz-test-hang", |_src| {
-            loop {
-                std::thread::sleep(std::time::Duration::from_secs(3600));
-            }
+        let hang_r = run_with_watchdog(Target::Lexer, "hang", 50, "fuzz-test-hang", |_src| loop {
+            std::thread::sleep(std::time::Duration::from_secs(3600));
         });
         assert_eq!(hang_r.category, Category::Hang, "hang asli = kategori Hang");
         assert_eq!(

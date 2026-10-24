@@ -65,7 +65,12 @@ pub fn write_vpd(
         } else {
             String::new()
         };
-        writeln!(out, "$var wire {} {} {}{} $end", sig.width, id, sig.name, range).unwrap();
+        writeln!(
+            out,
+            "$var wire {} {} {}{} $end",
+            sig.width, id, sig.name, range
+        )
+        .unwrap();
     }
     if prev_scope.is_some() {
         writeln!(out, "$upscope $end").unwrap();
@@ -93,10 +98,7 @@ pub fn write_vpd(
     // Body: SELURUH perubahan (termasuk waktu 0) diurutkan per waktu.
     let mut cur: Option<u64> = None;
     for (t, id, val) in changes {
-        let mapped = id_map
-            .get(id)
-            .cloned()
-            .unwrap_or_else(|| id.clone());
+        let mapped = id_map.get(id).cloned().unwrap_or_else(|| id.clone());
         if cur != Some(*t) {
             writeln!(out, "#{}", t).unwrap();
             cur = Some(*t);
@@ -175,7 +177,11 @@ pub fn parse_vpd(path: &str) -> Result<VcdData, SimError> {
                     .filter(|t| *t != "$end")
                     .collect::<Vec<&str>>()
                     .concat();
-                timescale = if joined.is_empty() { "1ns".to_string() } else { joined };
+                timescale = if joined.is_empty() {
+                    "1ns".to_string()
+                } else {
+                    joined
+                };
             } else if line.starts_with("$comment") {
                 in_comment = true;
             } else if line.starts_with("$enddefinitions") {
@@ -296,7 +302,10 @@ mod tests {
         write_vpd(&path, "1ns", &signals, &changes, &HashMap::new()).unwrap();
         let parsed = parse_vpd(&path).unwrap();
         assert_eq!(parsed.signals, signals, "signals harus sama");
-        assert_eq!(parsed.changes, changes, "changes harus sama (round-trip eksak)");
+        assert_eq!(
+            parsed.changes, changes,
+            "changes harus sama (round-trip eksak)"
+        );
         assert_eq!(parsed.timescale, "1ns");
         assert_eq!(parsed.max_time, 25);
         let _ = std::fs::remove_file(&path);
@@ -347,7 +356,9 @@ mod tests {
         let changes = vec![(0, "c".to_string(), "1".to_string())];
         write_vpd(&path, "1ns", &signals, &changes, &HashMap::new()).unwrap();
         // Tulis ulang dengan spasi untuk mensimulasikan VPD eksternal.
-        let s = std::fs::read_to_string(&path).unwrap().replace("$timescale 1ns $end", "$timescale 1 ns $end");
+        let s = std::fs::read_to_string(&path)
+            .unwrap()
+            .replace("$timescale 1ns $end", "$timescale 1 ns $end");
         std::fs::write(&path, s).unwrap();
         let parsed = parse_vpd(&path).unwrap();
         assert_eq!(parsed.timescale, "1ns");
@@ -357,8 +368,12 @@ mod tests {
     #[test]
     fn parse_rejects_non_vpd() {
         let path = tmp_path("bad.vpd");
-        std::fs::write(&path, "ini bukan vpd
-hanya teks acak").unwrap();
+        std::fs::write(
+            &path,
+            "ini bukan vpd
+hanya teks acak",
+        )
+        .unwrap();
         let res = parse_vpd(&path);
         assert!(res.is_err(), "file tanpa $var harus ditolak");
         let _ = std::fs::remove_file(&path);

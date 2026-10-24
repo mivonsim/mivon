@@ -651,7 +651,9 @@ pub fn format_diagnostic(diag: &Diagnostic) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::diagnostics::diagnostic::{DiagCode, DiagSpan, FixItHint, RuntimeContext, SourceSnippet};
+    use crate::diagnostics::diagnostic::{
+        DiagCode, DiagSpan, FixItHint, RuntimeContext, SourceSnippet,
+    };
     use crate::intern::Symbol;
 
     #[test]

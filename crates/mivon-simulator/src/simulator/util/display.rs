@@ -436,7 +436,11 @@ pub(super) fn format_display_core_scoped(
                                     continue;
                                 }
                                 seen_nonzero = true;
-                                chars_out.push(if matches!(bit, LogicVal::One) { '1' } else { '0' });
+                                chars_out.push(if matches!(bit, LogicVal::One) {
+                                    '1'
+                                } else {
+                                    '0'
+                                });
                             }
                             if !seen_nonzero {
                                 chars_out.push('0');
@@ -445,7 +449,11 @@ pub(super) fn format_display_core_scoped(
                             chars_out.push('0');
                         } else {
                             for bit in val.bits.iter().rev() {
-                                chars_out.push(if matches!(bit, LogicVal::One) { '1' } else { '0' });
+                                chars_out.push(if matches!(bit, LogicVal::One) {
+                                    '1'
+                                } else {
+                                    '0'
+                                });
                             }
                         }
                         let out_len = chars_out.len();
@@ -567,8 +575,15 @@ impl SimulationEngine {
                     let cleaned = tok.trim_start_matches("0x").trim_start_matches("0X");
                     if let Ok(val) = i64::from_str_radix(cleaned, radix) {
                         if let Some(IrExpr::Signal(sid, _)) = ir_args.get(2 + ai) {
-                            let w = self.design.top.signals.get(*sid).map(|s| s.width.max(1)).unwrap_or(32);
-                            self.state.write_signal(*sid, LogicVec::from_u64(val as u64, w));
+                            let w = self
+                                .design
+                                .top
+                                .signals
+                                .get(*sid)
+                                .map(|s| s.width.max(1))
+                                .unwrap_or(32);
+                            self.state
+                                .write_signal(*sid, LogicVec::from_u64(val as u64, w));
                             count += 1;
                         }
                         ai += 1;
@@ -586,7 +601,8 @@ impl SimulationEngine {
                 'c' => {
                     if let Some(IrExpr::Signal(sid, _)) = ir_args.get(2 + ai) {
                         let b = tok.as_bytes().first().copied().unwrap_or(0);
-                        self.state.write_signal(*sid, LogicVec::from_u64(b as u64, 8));
+                        self.state
+                            .write_signal(*sid, LogicVec::from_u64(b as u64, 8));
                         count += 1;
                     }
                     ti += 1;
@@ -595,7 +611,8 @@ impl SimulationEngine {
                 'f' | 'e' | 'g' => {
                     if let Ok(f) = tok.parse::<f64>() {
                         if let Some(IrExpr::Signal(sid, _)) = ir_args.get(2 + ai) {
-                            self.state.write_signal(*sid, LogicVec::from_u64(f.to_bits(), 64));
+                            self.state
+                                .write_signal(*sid, LogicVec::from_u64(f.to_bits(), 64));
                             count += 1;
                         }
                         ai += 1;
@@ -681,9 +698,6 @@ mod tests {
             format_display_core_scoped(fmt, args(), 7, &tf, "")
         );
         // Nilai literal (width 32 → %h/%b dipad penuh), %m kosong tanpa scope.
-        assert_eq!(
-            non_scoped,
-            "42|0000002a|00000000000000000000000000101010|"
-        );
+        assert_eq!(non_scoped, "42|0000002a|00000000000000000000000000101010|");
     }
 }

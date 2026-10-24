@@ -10,16 +10,15 @@ mod fmt_util;
 pub mod io;
 pub mod value;
 
-use display::format_display_core_scoped;
 #[cfg(test)]
 use display::format_display_core;
+use display::format_display_core_scoped;
 
 pub use deps::*;
 pub use fmt_util::escape_xml;
+use fmt_util::*;
 pub use io::*;
 pub use value::*;
-use fmt_util::*;
-
 
 // ─── Display formatting ────────────────────────────────────────────────────
 
@@ -153,13 +152,17 @@ impl SimulationEngine {
                 });
             }
         }
-        LogicVec { width: bits.len(), bits }
+        LogicVec {
+            width: bits.len(),
+            bits,
+        }
     }
 
     /// F17: format `$display`/`$sformatf` di jalur AST (body method class) —
     /// argumen dievaluasi via `evaluate_ast_expr` (field class `it.addr` dkk
     /// ter-resolve via current_this), lalu format spec identik dengan jalur IR.
-    pub(crate) fn format_display_ast(&mut self, ast_args: &[mivon_ast::Expr]) -> String {        let (fmt_str, start_idx) = if let Some(mivon_ast::Expr::String(s)) = ast_args.first() {
+    pub(crate) fn format_display_ast(&mut self, ast_args: &[mivon_ast::Expr]) -> String {
+        let (fmt_str, start_idx) = if let Some(mivon_ast::Expr::String(s)) = ast_args.first() {
             (s.as_str(), 1)
         } else {
             let mut out = String::with_capacity(ast_args.len() * 8);
@@ -355,7 +358,10 @@ pub(crate) fn mem_to_text(
         while bits.len() < elem_w {
             bits.push(LogicVal::Zero);
         }
-        let word = LogicVec { bits, width: elem_w };
+        let word = LogicVec {
+            bits,
+            width: elem_w,
+        };
         out.push_str(&format_display_core_scoped(
             spec,
             std::iter::once((word, false, false)),
@@ -435,7 +441,10 @@ mod tests {
         .unwrap();
         let mut e = SimulationEngine::new(design, 100);
         e.run().unwrap();
-        assert!(e.monitor_enabled, "$monitoron harus mengaktifkan kembali monitor");
+        assert!(
+            e.monitor_enabled,
+            "$monitoron harus mengaktifkan kembali monitor"
+        );
 
         let design = crate::test_util::compile_str(
             "module top; initial begin $monitoron; #1 $monitoroff; $finish; end endmodule",
@@ -443,7 +452,10 @@ mod tests {
         .unwrap();
         let mut e = SimulationEngine::new(design, 100);
         e.run().unwrap();
-        assert!(!e.monitor_enabled, "$monitoroff harus menonaktifkan monitor");
+        assert!(
+            !e.monitor_enabled,
+            "$monitoroff harus menonaktifkan monitor"
+        );
     }
 
     #[test]
@@ -905,7 +917,12 @@ mod tests {
     #[test]
     fn test_fmt_i_alias_decimal() {
         assert_eq!(
-            format_display_core("%0i", vec![(LogicVec::from_u64(42, 32), false, false)].into_iter(), 0, &tf()),
+            format_display_core(
+                "%0i",
+                vec![(LogicVec::from_u64(42, 32), false, false)].into_iter(),
+                0,
+                &tf()
+            ),
             "42"
         );
     }
@@ -913,15 +930,30 @@ mod tests {
     #[test]
     fn test_fmt_uppercase_variants() {
         assert_eq!(
-            format_display_core("%0D", vec![(LogicVec::from_u64(42, 32), false, false)].into_iter(), 0, &tf()),
+            format_display_core(
+                "%0D",
+                vec![(LogicVec::from_u64(42, 32), false, false)].into_iter(),
+                0,
+                &tf()
+            ),
             "42"
         );
         assert_eq!(
-            format_display_core("%0B", vec![(LogicVec::from_u64(5, 8), false, false)].into_iter(), 0, &tf()),
+            format_display_core(
+                "%0B",
+                vec![(LogicVec::from_u64(5, 8), false, false)].into_iter(),
+                0,
+                &tf()
+            ),
             "101"
         );
         assert_eq!(
-            format_display_core("%0O", vec![(LogicVec::from_u64(8, 32), false, false)].into_iter(), 0, &tf()),
+            format_display_core(
+                "%0O",
+                vec![(LogicVec::from_u64(8, 32), false, false)].into_iter(),
+                0,
+                &tf()
+            ),
             "10"
         );
     }
@@ -929,7 +961,12 @@ mod tests {
     #[test]
     fn test_fmt_u_2state_binary() {
         assert_eq!(
-            format_display_core("%0u", vec![(LogicVec::from_u64(42, 32), false, false)].into_iter(), 0, &tf()),
+            format_display_core(
+                "%0u",
+                vec![(LogicVec::from_u64(42, 32), false, false)].into_iter(),
+                0,
+                &tf()
+            ),
             "101010"
         );
     }
@@ -937,11 +974,21 @@ mod tests {
     #[test]
     fn test_fmt_z_and_p_binary() {
         assert_eq!(
-            format_display_core("%0z", vec![(LogicVec::from_u64(5, 8), false, false)].into_iter(), 0, &tf()),
+            format_display_core(
+                "%0z",
+                vec![(LogicVec::from_u64(5, 8), false, false)].into_iter(),
+                0,
+                &tf()
+            ),
             "101"
         );
         assert_eq!(
-            format_display_core("%0p", vec![(LogicVec::from_u64(5, 8), false, false)].into_iter(), 0, &tf()),
+            format_display_core(
+                "%0p",
+                vec![(LogicVec::from_u64(5, 8), false, false)].into_iter(),
+                0,
+                &tf()
+            ),
             "101"
         );
     }
@@ -987,7 +1034,12 @@ mod tests {
     #[test]
     fn test_fmt_v_strength() {
         assert_eq!(
-            format_display_core("%v", vec![(LogicVec::from_u64(1, 8), false, false)].into_iter(), 0, &tf()),
+            format_display_core(
+                "%v",
+                vec![(LogicVec::from_u64(1, 8), false, false)].into_iter(),
+                0,
+                &tf()
+            ),
             "Strong"
         );
     }
@@ -1021,9 +1073,18 @@ mod tests {
     fn test_file_display_task_radix_mapping() {
         assert_eq!(file_display_task_radix("fdisplay"), Some((true, None)));
         assert_eq!(file_display_task_radix("fwrite"), Some((false, None)));
-        assert_eq!(file_display_task_radix("fdisplayb"), Some((true, Some('b'))));
-        assert_eq!(file_display_task_radix("fdisplayh"), Some((true, Some('h'))));
-        assert_eq!(file_display_task_radix("fdisplayo"), Some((true, Some('o'))));
+        assert_eq!(
+            file_display_task_radix("fdisplayb"),
+            Some((true, Some('b')))
+        );
+        assert_eq!(
+            file_display_task_radix("fdisplayh"),
+            Some((true, Some('h')))
+        );
+        assert_eq!(
+            file_display_task_radix("fdisplayo"),
+            Some((true, Some('o')))
+        );
         assert_eq!(file_display_task_radix("fwriteb"), Some((false, Some('b'))));
         assert_eq!(file_display_task_radix("fwriteh"), Some((false, Some('h'))));
         assert_eq!(file_display_task_radix("fwriteo"), Some((false, Some('o'))));
@@ -1053,8 +1114,14 @@ mod tests {
 
     #[test]
     fn test_read_bin_text_whitespace_tokens() {
-        let data =
-            read_bin_text("00000001 00000010\n# komentar\n00000011\n", 8, 3, None, None).unwrap();
+        let data = read_bin_text(
+            "00000001 00000010\n# komentar\n00000011\n",
+            8,
+            3,
+            None,
+            None,
+        )
+        .unwrap();
         assert_eq!(data.len(), 3);
         assert_eq!(data[0].1.to_u64(), 1);
         assert_eq!(data[2].1.to_u64(), 3);

@@ -10,8 +10,7 @@ use super::*;
 // untuk SETIAP module.
 
 fn sim(source: &str, max_time: u64) -> Vec<(String, mivon_ir::LogicVec)> {
-    simulate_signals(source, max_time)
-        .unwrap_or_else(|e| panic!("sim gagal: {e}\n{source}"))
+    simulate_signals(source, max_time).unwrap_or_else(|e| panic!("sim gagal: {e}\n{source}"))
 }
 
 fn get_u64(sigs: &[(String, mivon_ir::LogicVec)], name: &str) -> u64 {

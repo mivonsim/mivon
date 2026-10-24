@@ -114,9 +114,13 @@ mod tests {
     /// Directive `timescale` dikenali (termasuk indentasi), komentar diabaikan.
     #[test]
     fn timescale_directive_detected() {
-        assert!(content_has_timescale(b"  `timescale 1ns/1ps\nmodule m; endmodule"));
+        assert!(content_has_timescale(
+            b"  `timescale 1ns/1ps\nmodule m; endmodule"
+        ));
         assert!(content_has_timescale(b"`timescale 10ps/1ps"));
-        assert!(!content_has_timescale(b"// `timescale 1ns/1ps\nmodule m; endmodule"));
+        assert!(!content_has_timescale(
+            b"// `timescale 1ns/1ps\nmodule m; endmodule"
+        ));
         assert!(!content_has_timescale(b"module m; endmodule"));
     }
 
@@ -126,7 +130,10 @@ mod tests {
         let p = PathBuf::from("/nonexistent/mivon/inline.mv");
         let mut inline = std::collections::HashMap::new();
         inline.insert(p.clone(), b"module x; endmodule".to_vec());
-        assert_eq!(read_source_bytes(&p, &inline).unwrap(), b"module x; endmodule");
+        assert_eq!(
+            read_source_bytes(&p, &inline).unwrap(),
+            b"module x; endmodule"
+        );
         assert!(read_source_bytes(Path::new("/nonexistent/mivon/none.sv"), &inline).is_err());
     }
 }

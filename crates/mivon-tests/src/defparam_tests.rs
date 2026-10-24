@@ -11,8 +11,7 @@
 use super::*;
 
 fn sim(source: &str, max_time: u64) -> Vec<(String, mivon_ir::LogicVec)> {
-    simulate_signals(source, max_time)
-        .unwrap_or_else(|e| panic!("sim gagal: {e}\n{source}"))
+    simulate_signals(source, max_time).unwrap_or_else(|e| panic!("sim gagal: {e}\n{source}"))
 }
 
 fn get_u64(sigs: &[(String, mivon_ir::LogicVec)], name: &str) -> u64 {
@@ -160,7 +159,11 @@ endmodule
     );
     // Tidak panic: kedua defparam bermasalah hanya warning.
     let sigs = sim(&source, 5);
-    assert_eq!(get_u64(&sigs, "u0.val"), 4, "u0 tetap default (tak ter-override)");
+    assert_eq!(
+        get_u64(&sigs, "u0.val"),
+        4,
+        "u0 tetap default (tak ter-override)"
+    );
 }
 
 /// Defparam di file setelah endmodule (compilation-unit scope, second pass).

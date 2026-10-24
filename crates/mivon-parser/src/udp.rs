@@ -49,7 +49,10 @@ impl Parser {
                         let edge = trimmed[1..end].to_string();
                         Ok(UdpSymbol::Edge(Symbol::intern(&edge)))
                     }
-                    _ => Err(self.err_with_code(DiagCode::InvalidSyntax, format!("invalid UDP table symbol '{}'", trimmed))),
+                    _ => Err(self.err_with_code(
+                        DiagCode::InvalidSyntax,
+                        format!("invalid UDP table symbol '{}'", trimmed),
+                    )),
                 }
             }
             Token::Number { value, .. } if value == "0" || value == "1" => {
@@ -125,7 +128,10 @@ impl Parser {
                 self.advance();
                 Ok(UdpSymbol::Edge(Symbol::intern("??")))
             }
-            _ => Err(self.err_with_code(DiagCode::UnexpectedToken, format!("unexpected token in UDP table: {}", tok))),
+            _ => Err(self.err_with_code(
+                DiagCode::UnexpectedToken,
+                format!("unexpected token in UDP table: {}", tok),
+            )),
         }
     }
 
@@ -143,7 +149,9 @@ impl Parser {
                 break;
             }
             if self.peek() == &Token::Eof {
-                return Err(self.err_with_code(DiagCode::ExpectedToken, "unexpected EOF in UDP table"));
+                return Err(
+                    self.err_with_code(DiagCode::ExpectedToken, "unexpected EOF in UDP table")
+                );
             }
             // Parse one line
             let mut inputs = Vec::new();
@@ -246,7 +254,10 @@ impl Parser {
                 }
                 continue;
             } else {
-                return Err(self.err_with_code(DiagCode::ExpectedToken, "expected direction (input/output) in UDP port list"));
+                return Err(self.err_with_code(
+                    DiagCode::ExpectedToken,
+                    "expected direction (input/output) in UDP port list",
+                ));
             };
 
             let name = self.expect_ident()?;

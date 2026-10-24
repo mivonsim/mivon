@@ -10,5 +10,5 @@
 //! identik → tanpa bump VERSION MICD.
 
 pub use mivon_core::diagnostics::entry::{DiagEntry, FileDiags};
-pub use mivon_core::diagnostics::{CodeAction, FixIt, RelatedInfo};
 pub use mivon_core::diagnostics::TextSpan as Span;
+pub use mivon_core::diagnostics::{CodeAction, FixIt, RelatedInfo};

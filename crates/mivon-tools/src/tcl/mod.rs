@@ -469,9 +469,9 @@ impl Interp {
             "string" => self.cmd_string(args),
             "info" => self.cmd_info(args),
             "catch" => {
-                let script_word = args
-                    .first()
-                    .ok_or_else(|| TclError::Msg("wrong # args: should be \"catch script ?varName?\"".to_string()))?;
+                let script_word = args.first().ok_or_else(|| {
+                    TclError::Msg("wrong # args: should be \"catch script ?varName?\"".to_string())
+                })?;
                 let var = if args.len() > 1 {
                     Some(self.word_value(&args[1])?)
                 } else {
@@ -532,9 +532,7 @@ impl Interp {
                     TclError::Msg(format!("couldn't read file \"{}\": {}", path, e))
                 })?;
                 if self.depth >= MAX_DEPTH {
-                    return Err(TclError::Msg(
-                        "too many nested source calls".to_string(),
-                    ));
+                    return Err(TclError::Msg("too many nested source calls".to_string()));
                 }
                 self.depth += 1;
                 let result = self.eval_script(&src);
@@ -552,10 +550,7 @@ impl Interp {
                 Err(TclError::Exit(code))
             }
             "mivon" => self.cmd_mivon(args),
-            other => Err(TclError::Msg(format!(
-                "invalid command name \"{}\"",
-                other
-            ))),
+            other => Err(TclError::Msg(format!("invalid command name \"{}\"", other))),
         }
     }
 
@@ -626,25 +621,25 @@ impl Interp {
                 if i < args.len() && args[i].raw == "if" {
                     return self.cmd_if(&args[i + 1..]);
                 }
-                let body = args
-                    .get(i)
-                    .ok_or_else(|| TclError::Msg("wrong # args: no script following \"else\"".to_string()))?;
+                let body = args.get(i).ok_or_else(|| {
+                    TclError::Msg("wrong # args: no script following \"else\"".to_string())
+                })?;
                 return self.eval_body(body);
             }
             if args[i].raw == "elseif" {
                 i += 1;
             }
-            let cond_word = args
-                .get(i)
-                .ok_or_else(|| TclError::Msg("wrong # args: no expression after \"if\"".to_string()))?;
+            let cond_word = args.get(i).ok_or_else(|| {
+                TclError::Msg("wrong # args: no expression after \"if\"".to_string())
+            })?;
             let cond = self.eval_condition(cond_word)?;
             i += 1;
             if i < args.len() && args[i].raw == "then" {
                 i += 1;
             }
-            let body = args
-                .get(i)
-                .ok_or_else(|| TclError::Msg("wrong # args: no script following expression".to_string()))?;
+            let body = args.get(i).ok_or_else(|| {
+                TclError::Msg("wrong # args: no script following expression".to_string())
+            })?;
             if cond {
                 return self.eval_body(body);
             }
@@ -653,12 +648,12 @@ impl Interp {
     }
 
     fn cmd_while(&mut self, args: &[Word]) -> TclResult {
-        let cond = args
-            .first()
-            .ok_or_else(|| TclError::Msg("wrong # args: should be \"while test command\"".to_string()))?;
-        let body = args
-            .get(1)
-            .ok_or_else(|| TclError::Msg("wrong # args: should be \"while test command\"".to_string()))?;
+        let cond = args.first().ok_or_else(|| {
+            TclError::Msg("wrong # args: should be \"while test command\"".to_string())
+        })?;
+        let body = args.get(1).ok_or_else(|| {
+            TclError::Msg("wrong # args: should be \"while test command\"".to_string())
+        })?;
         let mut iterations = 0usize;
         while self.eval_condition(cond)? {
             iterations += 1;
@@ -776,7 +771,9 @@ impl Interp {
                 let idx = self.need(args, 2, "string index")?;
                 let chars: Vec<char> = s.chars().collect();
                 let i = resolve_index(&idx, chars.len());
-                Ok(i.and_then(|i| chars.get(i)).map(|c| c.to_string()).unwrap_or_default())
+                Ok(i.and_then(|i| chars.get(i))
+                    .map(|c| c.to_string())
+                    .unwrap_or_default())
             }
             "range" => {
                 let s = self.need(args, 1, "string range")?;
@@ -811,7 +808,12 @@ impl Interp {
         match sub.as_str() {
             "exists" => {
                 let name = self.need(args, 1, "info exists")?;
-                Ok(if self.vars.contains_key(&name) { "1" } else { "0" }.to_string())
+                Ok(if self.vars.contains_key(&name) {
+                    "1"
+                } else {
+                    "0"
+                }
+                .to_string())
             }
             "procs" => {
                 let mut names: Vec<String> = self.procs.keys().cloned().collect();
@@ -1099,9 +1101,9 @@ fn format_list(items: &[String]) -> String {
     let mut parts = Vec::with_capacity(items.len());
     for item in items {
         if item.is_empty()
-            || item
-                .chars()
-                .any(|c| c.is_whitespace() || matches!(c, '{' | '}' | '"' | '\\' | '$' | '[' | ']' | ';'))
+            || item.chars().any(|c| {
+                c.is_whitespace() || matches!(c, '{' | '}' | '"' | '\\' | '$' | '[' | ']' | ';')
+            })
         {
             parts.push(format!("{{{}}}", item));
         } else {
@@ -1125,7 +1127,11 @@ fn resolve_index(text: &str, len: usize) -> Option<usize> {
     let value: i64 = t.parse().ok()?;
     if value < 0 {
         let index = len as i64 + value;
-        return if index < 0 { None } else { Some(index as usize) };
+        return if index < 0 {
+            None
+        } else {
+            Some(index as usize)
+        };
     }
     Some(value as usize)
 }
@@ -1149,44 +1155,36 @@ mod tests {
 
     #[test]
     fn if_elseif_else_branches() {
-        let (interp, _) = run(
-            "set v 5\n\
-             if {$v > 10} { puts big } elseif {$v > 3} { puts mid } else { puts small }",
-        );
+        let (interp, _) = run("set v 5\n\
+             if {$v > 10} { puts big } elseif {$v > 3} { puts mid } else { puts small }");
         assert_eq!(interp.output(), &["mid".to_string()]);
     }
 
     #[test]
     fn while_and_for_loops() {
-        let (interp, _) = run(
-            "set i 0\nset sum 0\n\
+        let (interp, _) = run("set i 0\nset sum 0\n\
              while {$i < 5} { incr i; incr sum $i }\n\
              set acc 0\nfor {set j 1} {$j <= 3} {incr j} { incr acc $j }\n\
-             puts \"$sum/$acc\"",
-        );
+             puts \"$sum/$acc\"");
         assert_eq!(interp.output(), &["15/6".to_string()]);
     }
 
     #[test]
     fn proc_with_return_and_recursion() {
-        let (interp, _) = run(
-            "proc fact {n} {\n\
+        let (interp, _) = run("proc fact {n} {\n\
                if {$n <= 1} { return 1 }\n\
                return [expr {$n * [fact [expr {$n - 1}]]}]\n\
              }\n\
-             puts [fact 5]",
-        );
+             puts [fact 5]");
         assert_eq!(interp.output(), &["120".to_string()]);
     }
 
     #[test]
     fn list_commands_roundtrip() {
-        let (interp, _) = run(
-            "set l [list a {b c} d]\n\
+        let (interp, _) = run("set l [list a {b c} d]\n\
              puts [llength $l]\n\
              puts [lindex $l 1]\n\
-             puts [lrange $l 0 1]",
-        );
+             puts [lrange $l 0 1]");
         assert_eq!(
             interp.output(),
             &["3".to_string(), "b c".to_string(), "a {b c}".to_string()]
@@ -1195,17 +1193,13 @@ mod tests {
 
     #[test]
     fn foreach_over_list() {
-        let (interp, _) = run(
-            "set total 0\nforeach v {1 2 3 4} { incr total $v }\nputs $total",
-        );
+        let (interp, _) = run("set total 0\nforeach v {1 2 3 4} { incr total $v }\nputs $total");
         assert_eq!(interp.output(), &["10".to_string()]);
     }
 
     #[test]
     fn catch_captures_error_message() {
-        let (interp, _) = run(
-            "set code [catch { error boom } msg]\nputs \"$code:$msg\"",
-        );
+        let (interp, _) = run("set code [catch { error boom } msg]\nputs \"$code:$msg\"");
         assert_eq!(interp.output(), &["1:boom".to_string()]);
     }
 
@@ -1217,15 +1211,13 @@ mod tests {
 
     #[test]
     fn break_and_continue_control_loop() {
-        let (interp, _) = run(
-            "set out {}\n\
+        let (interp, _) = run("set out {}\n\
              for {set i 0} {$i < 6} {incr i} {\n\
                if {$i == 2} { continue }\n\
                if {$i == 5} { break }\n\
                lappend out $i\n\
              }\n\
-             puts $out",
-        );
+             puts $out");
         assert_eq!(interp.output(), &["0 1 3 4".to_string()]);
     }
 

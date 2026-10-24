@@ -205,9 +205,8 @@ fn dispatch(routes: &HashMap<String, Handler>, method: &str, path: &str) -> Stri
     let key = format!("{} {}", method, route_path);
     match routes.get(&key) {
         Some(handler) => {
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                handler(method, path)
-            }));
+            let result =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| handler(method, path)));
             match result {
                 Ok(resp) => resp,
                 Err(_) => ApiResponse::error(500, "internal server error").to_http_response(),
@@ -229,7 +228,10 @@ fn origin_allowed(origin: &str, host: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn handle_connection(routes: Arc<HashMap<String, Handler>>, mut stream: TcpStream) -> Result<(), String> {
+fn handle_connection(
+    routes: Arc<HashMap<String, Handler>>,
+    mut stream: TcpStream,
+) -> Result<(), String> {
     stream
         .set_read_timeout(Some(READ_TIMEOUT))
         .map_err(|e| e.to_string())?;
@@ -349,7 +351,12 @@ pub fn percent_decode(s: &str) -> String {
 pub fn json_object(fields: &[(&str, &str)]) -> String {
     let map: serde_json::Map<String, serde_json::Value> = fields
         .iter()
-        .map(|(k, v)| ((*k).to_string(), serde_json::Value::String((*v).to_string())))
+        .map(|(k, v)| {
+            (
+                (*k).to_string(),
+                serde_json::Value::String((*v).to_string()),
+            )
+        })
         .collect();
     serde_json::Value::Object(map).to_string()
 }

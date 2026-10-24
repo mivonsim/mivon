@@ -1,7 +1,7 @@
 //! Lint cache persistence for `mlint`.
 
-use super::LintArgs;
 use super::Finding;
+use super::LintArgs;
 
 pub(crate) fn save_lint_cache(args: &LintArgs, findings: &[Finding]) {
     use mivon_compiler::micd::cache::pipeline::LintPayload;

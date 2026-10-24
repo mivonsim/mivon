@@ -627,14 +627,19 @@ impl Elaborator {
                             // when bounds can't be const-evaluated.
                             if let Some(msb_v) = msb_v {
                                 if let Some(lsb_v) = lsb_v {
-                                    let (msb_c, lsb_c) = (msb_v.max(0) as usize, lsb_v.max(0) as usize);
+                                    let (msb_c, lsb_c) =
+                                        (msb_v.max(0) as usize, lsb_v.max(0) as usize);
                                     if let IrExpr::Signal(sid, _) = &inner_expr {
                                         let sig = &signals[*sid];
                                         let msb_p = index_to_bitpos(msb_c, sig.msb, sig.lsb);
                                         let lsb_p = index_to_bitpos(lsb_c, sig.msb, sig.lsb);
                                         return Ok(IrExpr::RangeSelect(*sid, msb_p, lsb_p));
                                     } else {
-                                        return Ok(IrExpr::ExprRangeSelect(Box::new(inner_expr), msb_c, lsb_c));
+                                        return Ok(IrExpr::ExprRangeSelect(
+                                            Box::new(inner_expr),
+                                            msb_c,
+                                            lsb_c,
+                                        ));
                                     }
                                 }
                             }
@@ -1451,7 +1456,10 @@ impl Elaborator {
                 if args.len() != 1 {
                     return Err(self.elab_diag_at(
                         DiagCode::ParamMismatch,
-                        "$signed requires exactly one argument", *line, *col));
+                        "$signed requires exactly one argument",
+                        *line,
+                        *col,
+                    ));
                 }
                 let inner = self.elaborate_expr(&args[0], signal_map, signals)?;
                 Ok(IrExpr::Signed(Box::new(inner)))
@@ -1460,7 +1468,10 @@ impl Elaborator {
                 if args.len() != 1 {
                     return Err(self.elab_diag_at(
                         DiagCode::ParamMismatch,
-                        "$unsigned requires exactly one argument", *line, *col));
+                        "$unsigned requires exactly one argument",
+                        *line,
+                        *col,
+                    ));
                 }
                 // LRM §6.24.3: $unsigned(x) memperlakukan x sebagai UNSIGNED
                 // (ekstensi nol saat penugasan/lebar-konteks, perbandingan &
@@ -1502,7 +1513,12 @@ impl Elaborator {
                         }
                     }
                 } else {
-                    Err(self.elab_diag_at(DiagCode::ParamMismatch, "$clog2 requires one argument", *line, *col))
+                    Err(self.elab_diag_at(
+                        DiagCode::ParamMismatch,
+                        "$clog2 requires one argument",
+                        *line,
+                        *col,
+                    ))
                 }
             }
             "$bits" => {
@@ -1543,11 +1559,19 @@ impl Elaborator {
                         .ok_or_else(|| {
                             self.elab_diag_at(
                                 DiagCode::ModuleNotFound,
-                                "$bits argument must resolve to a signal or computable expression", *line, *col)
+                                "$bits argument must resolve to a signal or computable expression",
+                                *line,
+                                *col,
+                            )
                         })?;
                     Ok(IrExpr::Const(LogicVec::from_u64(width as u64, 32)))
                 } else {
-                    Err(self.elab_diag_at(DiagCode::ParamMismatch, "$bits requires one argument", *line, *col))
+                    Err(self.elab_diag_at(
+                        DiagCode::ParamMismatch,
+                        "$bits requires one argument",
+                        *line,
+                        *col,
+                    ))
                 }
             }
             "$high" => {
@@ -1555,13 +1579,21 @@ impl Elaborator {
                     let sig_id = resolve_expr_signal(arg, signal_map).ok_or_else(|| {
                         self.elab_diag_at(
                             DiagCode::ModuleNotFound,
-                            "$high argument must resolve to a signal", *line, *col)
+                            "$high argument must resolve to a signal",
+                            *line,
+                            *col,
+                        )
                     })?;
                     let info = &signals[sig_id];
                     let high = info.msb.max(info.lsb);
                     Ok(IrExpr::Const(LogicVec::from_u64(high as u64, 32)))
                 } else {
-                    Err(self.elab_diag_at(DiagCode::ParamMismatch, "$high requires one argument", *line, *col))
+                    Err(self.elab_diag_at(
+                        DiagCode::ParamMismatch,
+                        "$high requires one argument",
+                        *line,
+                        *col,
+                    ))
                 }
             }
             "$low" => {
@@ -1569,13 +1601,21 @@ impl Elaborator {
                     let sig_id = resolve_expr_signal(arg, signal_map).ok_or_else(|| {
                         self.elab_diag_at(
                             DiagCode::ModuleNotFound,
-                            "$low argument must resolve to a signal", *line, *col)
+                            "$low argument must resolve to a signal",
+                            *line,
+                            *col,
+                        )
                     })?;
                     let info = &signals[sig_id];
                     let low = info.msb.min(info.lsb);
                     Ok(IrExpr::Const(LogicVec::from_u64(low as u64, 32)))
                 } else {
-                    Err(self.elab_diag_at(DiagCode::ParamMismatch, "$low requires one argument", *line, *col))
+                    Err(self.elab_diag_at(
+                        DiagCode::ParamMismatch,
+                        "$low requires one argument",
+                        *line,
+                        *col,
+                    ))
                 }
             }
             "$left" => {
@@ -1583,12 +1623,20 @@ impl Elaborator {
                     let sig_id = resolve_expr_signal(arg, signal_map).ok_or_else(|| {
                         self.elab_diag_at(
                             DiagCode::ModuleNotFound,
-                            "$left argument must resolve to a signal", *line, *col)
+                            "$left argument must resolve to a signal",
+                            *line,
+                            *col,
+                        )
                     })?;
                     let info = &signals[sig_id];
                     Ok(IrExpr::Const(LogicVec::from_u64(info.msb as u64, 32)))
                 } else {
-                    Err(self.elab_diag_at(DiagCode::ParamMismatch, "$left requires one argument", *line, *col))
+                    Err(self.elab_diag_at(
+                        DiagCode::ParamMismatch,
+                        "$left requires one argument",
+                        *line,
+                        *col,
+                    ))
                 }
             }
             "$right" => {
@@ -1596,12 +1644,20 @@ impl Elaborator {
                     let sig_id = resolve_expr_signal(arg, signal_map).ok_or_else(|| {
                         self.elab_diag_at(
                             DiagCode::ModuleNotFound,
-                            "$right argument must resolve to a signal", *line, *col)
+                            "$right argument must resolve to a signal",
+                            *line,
+                            *col,
+                        )
                     })?;
                     let info = &signals[sig_id];
                     Ok(IrExpr::Const(LogicVec::from_u64(info.lsb as u64, 32)))
                 } else {
-                    Err(self.elab_diag_at(DiagCode::ParamMismatch, "$right requires one argument", *line, *col))
+                    Err(self.elab_diag_at(
+                        DiagCode::ParamMismatch,
+                        "$right requires one argument",
+                        *line,
+                        *col,
+                    ))
                 }
             }
             "$size" => {
@@ -1609,7 +1665,10 @@ impl Elaborator {
                     let sig_id = resolve_expr_signal(arg, signal_map).ok_or_else(|| {
                         self.elab_diag_at(
                             DiagCode::ModuleNotFound,
-                            "$size argument must resolve to a signal", *line, *col)
+                            "$size argument must resolve to a signal",
+                            *line,
+                            *col,
+                        )
                     })?;
                     let info = &signals[sig_id];
                     // Dimensi: unpacked dulu, lalu packed (urutan LRM).
@@ -1637,7 +1696,12 @@ impl Elaborator {
                     };
                     Ok(IrExpr::Const(LogicVec::from_u64(size as u64, 32)))
                 } else {
-                    Err(self.elab_diag_at(DiagCode::ParamMismatch, "$size requires one argument", *line, *col))
+                    Err(self.elab_diag_at(
+                        DiagCode::ParamMismatch,
+                        "$size requires one argument",
+                        *line,
+                        *col,
+                    ))
                 }
             }
             "$countones" => {
@@ -1655,14 +1719,22 @@ impl Elaborator {
                         })
                     }
                 } else {
-                    Err(self.elab_diag_at(DiagCode::ParamMismatch, "$countones requires one argument", *line, *col))
+                    Err(self.elab_diag_at(
+                        DiagCode::ParamMismatch,
+                        "$countones requires one argument",
+                        *line,
+                        *col,
+                    ))
                 }
             }
             "$countbits" => {
                 if args.is_empty() {
                     return Err(self.elab_diag_at(
                         DiagCode::ParamMismatch,
-                        "$countbits requires at least one argument", *line, *col));
+                        "$countbits requires at least one argument",
+                        *line,
+                        *col,
+                    ));
                 }
                 let mut ir_args = Vec::with_capacity(args.len());
                 for a in args {
@@ -1689,10 +1761,9 @@ impl Elaborator {
                     // punya 8 bit yang dihitung.
                     let width = match ir_args.first() {
                         Some(IrExpr::Const(v)) => v.width,
-                        Some(IrExpr::Signal(id, _)) => signals
-                            .get(*id)
-                            .map(|s| s.width)
-                            .unwrap_or(64),
+                        Some(IrExpr::Signal(id, _)) => {
+                            signals.get(*id).map(|s| s.width).unwrap_or(64)
+                        }
                         _ => 64,
                     }
                     .clamp(1, 64);
@@ -1734,8 +1805,12 @@ impl Elaborator {
                         })
                     }
                 } else {
-                    Err(self
-                        .elab_diag_at(DiagCode::ParamMismatch, "$dimensions requires one argument", *line, *col))
+                    Err(self.elab_diag_at(
+                        DiagCode::ParamMismatch,
+                        "$dimensions requires one argument",
+                        *line,
+                        *col,
+                    ))
                 }
             }
             "$onehot" => {
@@ -1756,7 +1831,12 @@ impl Elaborator {
                         })
                     }
                 } else {
-                    Err(self.elab_diag_at(DiagCode::ParamMismatch, "$onehot requires one argument", *line, *col))
+                    Err(self.elab_diag_at(
+                        DiagCode::ParamMismatch,
+                        "$onehot requires one argument",
+                        *line,
+                        *col,
+                    ))
                 }
             }
             "$isunknown" => {
@@ -1777,7 +1857,12 @@ impl Elaborator {
                         })
                     }
                 } else {
-                    Err(self.elab_diag_at(DiagCode::ParamMismatch, "$isunknown requires one argument", *line, *col))
+                    Err(self.elab_diag_at(
+                        DiagCode::ParamMismatch,
+                        "$isunknown requires one argument",
+                        *line,
+                        *col,
+                    ))
                 }
             }
             "$onehot0" => {
@@ -1798,7 +1883,12 @@ impl Elaborator {
                         })
                     }
                 } else {
-                    Err(self.elab_diag_at(DiagCode::ParamMismatch, "$onehot0 requires one argument", *line, *col))
+                    Err(self.elab_diag_at(
+                        DiagCode::ParamMismatch,
+                        "$onehot0 requires one argument",
+                        *line,
+                        *col,
+                    ))
                 }
             }
             "$cast" => {
@@ -1812,7 +1902,12 @@ impl Elaborator {
                         col: *col,
                     })
                 } else {
-                    Err(self.elab_diag_at(DiagCode::ParamMismatch, "$cast requires two arguments", *line, *col))
+                    Err(self.elab_diag_at(
+                        DiagCode::ParamMismatch,
+                        "$cast requires two arguments",
+                        *line,
+                        *col,
+                    ))
                 }
             }
             "$typename" => {
@@ -1820,7 +1915,12 @@ impl Elaborator {
                     let type_name = self.resolve_typename_for_expr(arg, signal_map, signals);
                     Ok(IrExpr::Const(LogicVec::from_string(&type_name)))
                 } else {
-                    Err(self.elab_diag_at(DiagCode::ParamMismatch, "$typename requires one argument", *line, *col))
+                    Err(self.elab_diag_at(
+                        DiagCode::ParamMismatch,
+                        "$typename requires one argument",
+                        *line,
+                        *col,
+                    ))
                 }
             }
             _ => {

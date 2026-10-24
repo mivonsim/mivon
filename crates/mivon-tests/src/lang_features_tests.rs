@@ -5,8 +5,7 @@ use super::*;
 // static/automatic qualifier, dan final block.
 
 fn sim(source: &str, max_time: u64) -> Vec<(String, mivon_ir::LogicVec)> {
-    simulate_signals(source, max_time)
-        .unwrap_or_else(|e| panic!("sim gagal: {e}\n{source}"))
+    simulate_signals(source, max_time).unwrap_or_else(|e| panic!("sim gagal: {e}\n{source}"))
 }
 
 fn get(sigs: &[(String, mivon_ir::LogicVec)], name: &str) -> mivon_ir::LogicVec {
@@ -62,6 +61,10 @@ endmodule
     assert_eq!(get(&sigs, "out_add").to_u64(), 5, "package import function");
     assert_eq!(get(&sigs, "out_vf").to_u64(), 2, "virtual method override");
     assert_eq!(get(&sigs, "out_cf").to_u64(), 1, "base virtual method");
-    assert_eq!(get(&sigs, "out_cnt").to_u64(), 1, "static/automatic qualifier");
+    assert_eq!(
+        get(&sigs, "out_cnt").to_u64(),
+        1,
+        "static/automatic qualifier"
+    );
     assert_eq!(get(&sigs, "out_fin").to_u64(), 1, "final block runs");
 }

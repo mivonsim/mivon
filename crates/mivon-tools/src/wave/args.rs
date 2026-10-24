@@ -3,9 +3,9 @@
 
 use mivon_core::error::SimError;
 
+use super::align::align;
 use super::compare::compare;
 use super::debug::debug;
-use super::align::align;
 use super::decode::decode;
 use super::export::export;
 use super::filter::filter;
@@ -107,6 +107,11 @@ pub fn run(args: &WaveArgs) -> Result<(), SimError> {
         } => get(input, signals, *at, *range),
         WaveArgs::Decode { input, proto } => decode(input, proto),
         WaveArgs::Debug { input, output } => debug(input, output.as_deref()),
-        WaveArgs::Align { pre, post, trigger, output } => align(pre, post, trigger, output.as_deref()),
+        WaveArgs::Align {
+            pre,
+            post,
+            trigger,
+            output,
+        } => align(pre, post, trigger, output.as_deref()),
     }
 }

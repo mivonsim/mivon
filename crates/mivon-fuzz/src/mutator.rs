@@ -262,8 +262,7 @@ impl<'r> Mutator<'r> {
                         // Tidak di dalam identifier: byte sebelum = alnum/_.
                         let prev_byte = if k > 0 { lb[k - 1] } else { 0 };
                         let next_byte = if k + len < lb.len() { lb[k + len] } else { 0 };
-                        let before =
-                            prev_byte.is_ascii_alphanumeric() || prev_byte == b'_';
+                        let before = prev_byte.is_ascii_alphanumeric() || prev_byte == b'_';
                         // Guard tok: `+:`/`-:` step-range, `*::` import,
                         // attribute `(*`/`*)`, dan jemp `*/` (comment).
                         let is_pm = matched == "+" || matched == "-";
@@ -1056,7 +1055,10 @@ mod tests {
             let mut rng = crate::Rng::new(seed);
             let mut m = Mutator::new(&mut rng);
             let out = m.swap_operator(src);
-            assert!(out.contains("assign b = a "), "struktur baris assign pecah: {out}");
+            assert!(
+                out.contains("assign b = a "),
+                "struktur baris assign pecah: {out}"
+            );
             if out != src {
                 changed += 1;
             }

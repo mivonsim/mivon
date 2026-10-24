@@ -194,11 +194,30 @@ mod tests {
 
     fn base(pre: bool) -> VcdData {
         let signals = vec![
-            VcdSignal { id: "c".to_string(), name: "clk".to_string(), width: 1, scope: vec!["top".to_string()] },
-            VcdSignal { id: "D".to_string(), name: "data".to_string(), width: 4, scope: vec!["top".to_string()] },
-            VcdSignal { id: "T".to_string(), name: "trig".to_string(), width: 1, scope: vec!["top".to_string()] },
+            VcdSignal {
+                id: "c".to_string(),
+                name: "clk".to_string(),
+                width: 1,
+                scope: vec!["top".to_string()],
+            },
+            VcdSignal {
+                id: "D".to_string(),
+                name: "data".to_string(),
+                width: 4,
+                scope: vec!["top".to_string()],
+            },
+            VcdSignal {
+                id: "T".to_string(),
+                name: "trig".to_string(),
+                width: 1,
+                scope: vec!["top".to_string()],
+            },
         ];
-        let (trig_t, data_off) = if pre { (5u64, "0010".to_string()) } else { (7u64, "1111".to_string()) };
+        let (trig_t, data_off) = if pre {
+            (5u64, "0010".to_string())
+        } else {
+            (7u64, "1111".to_string())
+        };
         let changes = vec![
             (0u64, "T".to_string(), "0".to_string()),
             (trig_t, "T".to_string(), "1".to_string()),
@@ -207,7 +226,12 @@ mod tests {
             (trig_t + 5, "D".to_string(), data_off),
         ];
         let max_time = trig_t + 5;
-        VcdData { timescale: "1ns".to_string(), signals, changes, max_time }
+        VcdData {
+            timescale: "1ns".to_string(),
+            signals,
+            changes,
+            max_time,
+        }
     }
 
     #[test]
@@ -238,31 +262,46 @@ mod tests {
     #[test]
     fn align_reports_only_side_signals() {
         let mut pre = base(true);
-        pre.signals.push(VcdSignal { id: "X".to_string(), name: "extra".to_string(), width: 1, scope: vec!["top".to_string()] });
+        pre.signals.push(VcdSignal {
+            id: "X".to_string(),
+            name: "extra".to_string(),
+            width: 1,
+            scope: vec!["top".to_string()],
+        });
         let post = base(true);
         let r = align_signals(&pre, &post, "trig").unwrap();
         assert_eq!(r.pre_only_signals, vec!["extra"]);
         assert!(r.post_only_signals.is_empty());
     }
 }
-    #[test]
-    fn align_handles_constant_and_no_trigger_assert() {
-        fn mk() -> VcdData {
-            VcdData {
-                timescale: "1ns".to_string(),
-                signals: vec![
-                    crate::wave::data::VcdSignal { id: "T".to_string(), name: "trig".to_string(), width: 1, scope: vec!["top".to_string()] },
-                    crate::wave::data::VcdSignal { id: "D".to_string(), name: "data".to_string(), width: 4, scope: vec!["top".to_string()] },
-                ],
-                changes: vec![(0u64, "T".to_string(), "0".to_string())],
-                max_time: 10,
-            }
+#[test]
+fn align_handles_constant_and_no_trigger_assert() {
+    fn mk() -> VcdData {
+        VcdData {
+            timescale: "1ns".to_string(),
+            signals: vec![
+                crate::wave::data::VcdSignal {
+                    id: "T".to_string(),
+                    name: "trig".to_string(),
+                    width: 1,
+                    scope: vec!["top".to_string()],
+                },
+                crate::wave::data::VcdSignal {
+                    id: "D".to_string(),
+                    name: "data".to_string(),
+                    width: 4,
+                    scope: vec!["top".to_string()],
+                },
+            ],
+            changes: vec![(0u64, "T".to_string(), "0".to_string())],
+            max_time: 10,
         }
-        let pre = mk();
-        let post = mk();
-        let r = align_signals(&pre, &post, "trig").unwrap();
-        assert_eq!(r.pre_anchor_time, 0);
-        assert_eq!(r.post_anchor_time, 0);
-        assert_eq!(r.aligned_cycles, 11);
-        assert!(r.first_mismatch.is_none());
     }
+    let pre = mk();
+    let post = mk();
+    let r = align_signals(&pre, &post, "trig").unwrap();
+    assert_eq!(r.pre_anchor_time, 0);
+    assert_eq!(r.post_anchor_time, 0);
+    assert_eq!(r.aligned_cycles, 11);
+    assert!(r.first_mismatch.is_none());
+}

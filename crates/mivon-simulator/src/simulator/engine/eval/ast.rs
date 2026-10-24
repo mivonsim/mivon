@@ -1509,7 +1509,9 @@ impl SimulationEngine {
                 let val = self.eval_ast_assign_rhs(rhs, lhs)?;
                 match lhs {
                     Expr::Ident { name, .. } => self.write_local_or_field(name.as_str(), val),
-                    Expr::MemberAccess { obj, field } => self.write_ast_member_field(obj, *field, val),
+                    Expr::MemberAccess { obj, field } => {
+                        self.write_ast_member_field(obj, *field, val)
+                    }
                     Expr::BitSelect { expr: inner, index } => {
                         let idx_val = self.evaluate_ast_expr(index)?;
                         let idx = idx_val.to_u64() as usize;
@@ -1602,7 +1604,9 @@ impl SimulationEngine {
                 let val = self.eval_ast_assign_rhs(rhs, lhs)?;
                 match lhs {
                     Expr::Ident { name, .. } => self.write_local_or_field(name.as_str(), val),
-                    Expr::MemberAccess { obj, field } => self.write_ast_member_field(obj, *field, val),
+                    Expr::MemberAccess { obj, field } => {
+                        self.write_ast_member_field(obj, *field, val)
+                    }
                     Expr::BitSelect { expr: inner, index } => {
                         let idx_val = self.evaluate_ast_expr(index)?;
                         let idx = idx_val.to_u64() as usize;
@@ -2020,7 +2024,9 @@ impl SimulationEngine {
                 let val = self.evaluate_ast_expr(rhs)?;
                 match lhs {
                     Expr::Ident { name, .. } => self.write_local_or_field(name.as_str(), val),
-                    Expr::MemberAccess { obj, field } => self.write_ast_member_field(obj, *field, val),
+                    Expr::MemberAccess { obj, field } => {
+                        self.write_ast_member_field(obj, *field, val)
+                    }
                     _ => self.write_ast_lvalue(lhs, val),
                 }
             }
@@ -2077,9 +2083,7 @@ impl SimulationEngine {
                     Ok(())
                 }
             }
-            Stmt::Assert { cond, .. }
-            | Stmt::Assume { cond, .. }
-            | Stmt::Cover { cond, .. } => {
+            Stmt::Assert { cond, .. } | Stmt::Assume { cond, .. } | Stmt::Cover { cond, .. } => {
                 let _ = self.evaluate_ast_expr(cond)?;
                 Ok(())
             }

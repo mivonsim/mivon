@@ -4991,9 +4991,8 @@ impl Elaborator {
                         // ada di `design.modules` (hanya `design.interfaces`),
                         // jadi daftar port diambil dari interface agar koneksi
                         // positional/named ikut ter-wire saat flatten.
-                        let target_ports: Option<&Vec<Port>> = target_module
-                            .map(|m| &m.ports)
-                            .or_else(|| {
+                        let target_ports: Option<&Vec<Port>> =
+                            target_module.map(|m| &m.ports).or_else(|| {
                                 self.design
                                     .interfaces
                                     .iter()

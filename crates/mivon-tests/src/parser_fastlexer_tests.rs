@@ -126,9 +126,11 @@ fn signature(d: &Design) -> Vec<String> {
             )
         })
         .collect();
-    out.extend(d.packages.iter().map(|p| {
-        format!("package {} items={}", p.name, p.items.len())
-    }));
+    out.extend(
+        d.packages
+            .iter()
+            .map(|p| format!("package {} items={}", p.name, p.items.len())),
+    );
     out.sort();
     out
 }
@@ -160,7 +162,11 @@ fn fast_lexer_session_matches_legacy() {
     let out = session_design(&[("design.sv", SRC)], "single", true);
     assert_eq!(out.error_count, 0, "parse harus tanpa error");
     assert!(out.fast_files > 0, "cabang FastLexer harus dieksekusi");
-    assert_eq!(signature(&out.design), legacy, "AST jalur FastLexer = legacy");
+    assert_eq!(
+        signature(&out.design),
+        legacy,
+        "AST jalur FastLexer = legacy"
+    );
 }
 
 #[test]

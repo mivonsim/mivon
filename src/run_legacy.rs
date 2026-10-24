@@ -20,8 +20,8 @@ use crate::source_io::{content_has_timescale, read_source_bytes};
 // name sama → body verbatim tanpa path-rewrite.
 use crate::run_fast::run_fast;
 use crate::{
-    DEFAULT_MAX_TIME_NS, apply_engine_flags, elab_abort_diag, emit_diags, print_ir_mem_stats,
-    trim_heap, truncate_ellipsis,
+    apply_engine_flags, elab_abort_diag, emit_diags, print_ir_mem_stats, trim_heap,
+    truncate_ellipsis, DEFAULT_MAX_TIME_NS,
 };
 
 use mivon_api::debugger::Debugger;
@@ -1983,8 +1983,7 @@ mod tests {
     /// antarmuka dijaga agar call-site root tidak berubah perilaku.
     #[test]
     fn run_signature_unchanged() {
-        let _f: fn(Cli, &mut mivon_api::env::GlobalEnv) -> Result<(), SimError> =
-            self::run;
+        let _f: fn(Cli, &mut mivon_api::env::GlobalEnv) -> Result<(), SimError> = self::run;
         // Konstanta default masih pub (dipakai sig sim_limit di run()).
         assert!(crate::DEFAULT_MAX_TIME_NS > 0);
     }

@@ -39,7 +39,10 @@ endmodule
 "#;
     let (pass, fail) = run(source, 60);
     println!("LAZY_TEST pass={pass} fail={fail}");
-    assert!(pass >= 1, "lazy snapshot: concurrent sequence match: pass={pass} fail={fail}");
+    assert!(
+        pass >= 1,
+        "lazy snapshot: concurrent sequence match: pass={pass} fail={fail}"
+    );
 }
 
 #[test]
@@ -82,7 +85,10 @@ endmodule
 "#;
     let (pass, fail) = run(source, 60);
     assert!(pass >= 2, "named property decl clock: pass={pass}");
-    assert!(fail >= 1, "named property decl clock: fail saat cnt>3={fail}");
+    assert!(
+        fail >= 1,
+        "named property decl clock: fail saat cnt>3={fail}"
+    );
 }
 
 #[test]
@@ -157,5 +163,8 @@ module tb;
 endmodule
 "#;
     let (pass, _fail) = run(source, 80);
-    assert!(pass >= 1, "sequence bentuk ringkas harus match, pass={pass}");
+    assert!(
+        pass >= 1,
+        "sequence bentuk ringkas harus match, pass={pass}"
+    );
 }

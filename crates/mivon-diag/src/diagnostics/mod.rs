@@ -9,27 +9,27 @@ pub mod entry;
 pub mod fixit;
 pub mod global;
 pub mod level;
-pub mod snippet;
-pub mod span;
-pub mod recovery;
 pub mod record;
+pub mod recovery;
 pub mod runtime;
 pub mod sink;
+pub mod snippet;
+pub mod span;
 pub mod suggest;
 
 pub use codes::{all_codes, lookup_code};
 pub use diagnostic::DiagCode;
+pub use emitter::{format_diagnostic, TerminalEmitter};
 pub use entry::{DiagEntry, FileDiags};
-pub use level::DiagLevel;
 pub use fixit::{CodeAction, FixIt, FixItHint};
+pub use global::{diag_global, GlobalDiagnosticEngine};
+pub use level::DiagLevel;
 pub use record::Diagnostic;
-pub use snippet::SourceSnippet;
+pub use recovery::ParserRecovery;
 pub use runtime::RuntimeContext;
 pub use sink::DiagSink;
+pub use snippet::SourceSnippet;
 pub use span::{DiagNote, DiagSpan, RelatedInfo, TextSpan};
-pub use emitter::{format_diagnostic, TerminalEmitter};
-pub use global::{diag_global, GlobalDiagnosticEngine};
-pub use recovery::ParserRecovery;
 pub use suggest::{format_suggestion, levenshtein, suggest_name};
 
 /// Konversi baris cumulative (merged source) → baris relatif-file berdasar

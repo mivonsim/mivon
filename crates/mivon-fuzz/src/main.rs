@@ -120,9 +120,7 @@ fn cmd_run(args: &[String]) -> i32 {
         .unwrap_or(FuzzConfig::default().timeout_ms);
     let corpus_dir = corpus_s.map(PathBuf::from);
     // `--jobs N`: 0/absen = auto (cores/2 clamp 1-8), 1 = serial jalur lama.
-    let jobs: usize = jobs_s
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0);
+    let jobs: usize = jobs_s.and_then(|s| s.parse().ok()).unwrap_or(0);
 
     let cfg = FuzzConfig {
         target,
@@ -141,7 +139,11 @@ fn cmd_run(args: &[String]) -> i32 {
         cases,
         seed,
         timeout,
-        if jobs == 0 { "auto".to_string() } else { jobs.to_string() }
+        if jobs == 0 {
+            "auto".to_string()
+        } else {
+            jobs.to_string()
+        }
     );
     let report = run(cfg);
     let text = triage::render_report(&report.bugs);

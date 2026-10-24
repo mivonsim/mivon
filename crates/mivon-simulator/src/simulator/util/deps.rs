@@ -217,7 +217,13 @@ mod tests {
     /// khusus di IR ini).
     #[test]
     fn wildcard_ops_map_to_eq_neq() {
-        assert_eq!(map_ast_binary_op(&BinaryOp::EqWild).unwrap(), BinaryIrOp::Eq);
-        assert_eq!(map_ast_binary_op(&BinaryOp::NeqWild).unwrap(), BinaryIrOp::Neq);
+        assert_eq!(
+            map_ast_binary_op(&BinaryOp::EqWild).unwrap(),
+            BinaryIrOp::Eq
+        );
+        assert_eq!(
+            map_ast_binary_op(&BinaryOp::NeqWild).unwrap(),
+            BinaryIrOp::Neq
+        );
     }
 }

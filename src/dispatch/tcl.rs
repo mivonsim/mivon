@@ -11,9 +11,8 @@ use super::exit_tool;
 
 pub(crate) fn dispatch_tcl(a: &crate::cli::MtclArgs) -> ! {
     let result: Result<(), SimError> = (|| {
-        let script = std::fs::read_to_string(&a.script).map_err(|e| {
-            SimError::with_diag(DiagCode::IoError, format!("{}: {}", a.script, e))
-        })?;
+        let script = std::fs::read_to_string(&a.script)
+            .map_err(|e| SimError::with_diag(DiagCode::IoError, format!("{}: {}", a.script, e)))?;
         let mut interp = mivon_api::tools::tcl::Interp::new();
         interp.set_argv(&a.args);
         interp.run(&script).map_err(|e| {

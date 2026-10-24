@@ -16,12 +16,12 @@ pub mod template;
 
 // Diagnostics + intern dipindah ke mivon-diag (single owner). Re-export agar
 // path `mivon_core::diagnostics::*` dan `mivon_core::intern::*` tetap valid.
-pub use mivon_diag::diagnostics;
-pub use mivon_diag::intern;
-pub use mivon_diag::{init_string_table, Span, Symbol};
 /// Tipe nilai logika inti — dipakai langsung (`mivon_core::LogicVec`) dan
 /// di-reexport oleh `mivon-ir` agar `mivon_ir::LogicVec` tetap valid.
 pub use logic::{LogicVal, LogicVec};
+pub use mivon_diag::diagnostics;
+pub use mivon_diag::intern;
+pub use mivon_diag::{init_string_table, Span, Symbol};
 
 /// Fast content hashing (xxhash3) — dipakai cache/MICD/elaboration. Dipindah
 /// dari src/cache/checksum.rs (crate 5/6 depend pada ini); cache re-export

@@ -429,9 +429,7 @@ pub(crate) fn scan_stmt_reads(
                 }
             }
             Stmt::WaitOrder {
-                events,
-                fail_stmt,
-                ..
+                events, fail_stmt, ..
             } => {
                 for e in events {
                     reads.insert(*e);

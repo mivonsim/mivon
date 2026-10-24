@@ -143,8 +143,12 @@ impl Preprocessor {
         self.cur_path = Some(filename.to_string());
         let path = Path::new(filename);
         let dir = path.parent().map(|p| p.to_path_buf()).unwrap_or_default();
-        let source = fs::read_to_string(filename)
-            .map_err(|e| SimError::with_diag(mivon_core::diagnostics::DiagCode::PreprocessorError, format!("cannot read '{}': {}", filename, e)))?;
+        let source = fs::read_to_string(filename).map_err(|e| {
+            SimError::with_diag(
+                mivon_core::diagnostics::DiagCode::PreprocessorError,
+                format!("cannot read '{}': {}", filename, e),
+            )
+        })?;
         let processed = self.preprocess(&source, Some(&dir))?;
         Ok(processed)
     }
@@ -315,10 +319,13 @@ impl Preprocessor {
                                     )));
                                 }
                                 if self.include_set.contains(&resolved) {
-                                    return Err(SimError::with_diag(mivon_core::diagnostics::DiagCode::PreprocessorError, format!(
+                                    return Err(SimError::with_diag(
+                                        mivon_core::diagnostics::DiagCode::PreprocessorError,
+                                        format!(
                                         "circular include detected: '{}' already in include stack",
                                         inc_path
-                                    )));
+                                    ),
+                                    ));
                                 }
                                 self.include_stack.push(resolved.clone());
                                 self.include_set.insert(resolved.clone());
@@ -442,13 +449,16 @@ impl Preprocessor {
                 }
                 "elsif" => {
                     let frame = cond_stack.last_mut().ok_or_else(|| {
-                        SimError::with_diag(mivon_core::diagnostics::DiagCode::PreprocessorError, format!(
-                            "{}:{}:{}: line {}: `elsif without matching `ifdef/`ifndef",
-                            self.cur_path.as_deref().unwrap_or("<string>"),
-                            i + 1,
-                            1,
-                            i + 1
-                        ))
+                        SimError::with_diag(
+                            mivon_core::diagnostics::DiagCode::PreprocessorError,
+                            format!(
+                                "{}:{}:{}: line {}: `elsif without matching `ifdef/`ifndef",
+                                self.cur_path.as_deref().unwrap_or("<string>"),
+                                i + 1,
+                                1,
+                                i + 1
+                            ),
+                        )
                     })?;
                     if frame.branch_taken {
                         frame.taking_branch = false;
@@ -463,13 +473,16 @@ impl Preprocessor {
                 }
                 "else" => {
                     let frame = cond_stack.last_mut().ok_or_else(|| {
-                        SimError::with_diag(mivon_core::diagnostics::DiagCode::PreprocessorError, format!(
-                            "{}:{}:{}: line {}: `else without matching `ifdef/`ifndef",
-                            self.cur_path.as_deref().unwrap_or("<string>"),
-                            i + 1,
-                            1,
-                            i + 1
-                        ))
+                        SimError::with_diag(
+                            mivon_core::diagnostics::DiagCode::PreprocessorError,
+                            format!(
+                                "{}:{}:{}: line {}: `else without matching `ifdef/`ifndef",
+                                self.cur_path.as_deref().unwrap_or("<string>"),
+                                i + 1,
+                                1,
+                                i + 1
+                            ),
+                        )
                     })?;
                     if frame.branch_taken {
                         frame.taking_branch = false;
@@ -481,13 +494,16 @@ impl Preprocessor {
                 }
                 "endif" => {
                     cond_stack.pop().ok_or_else(|| {
-                        SimError::with_diag(mivon_core::diagnostics::DiagCode::PreprocessorError, format!(
-                            "{}:{}:{}: line {}: `endif without matching `ifdef/`ifndef",
-                            self.cur_path.as_deref().unwrap_or("<string>"),
-                            i + 1,
-                            1,
-                            i + 1
-                        ))
+                        SimError::with_diag(
+                            mivon_core::diagnostics::DiagCode::PreprocessorError,
+                            format!(
+                                "{}:{}:{}: line {}: `endif without matching `ifdef/`ifndef",
+                                self.cur_path.as_deref().unwrap_or("<string>"),
+                                i + 1,
+                                1,
+                                i + 1
+                            ),
+                        )
                     })?;
                     emitting = cond_stack.iter().all(|f| f.taking_branch);
                 }
@@ -649,26 +665,35 @@ impl Preprocessor {
     fn parse_include_path(&self, rest: &str) -> Result<String, SimError> {
         let s = rest.trim();
         if s.starts_with('`') {
-            return Err(SimError::with_diag(mivon_core::diagnostics::DiagCode::PreprocessorError, format!(
-                "include path is a macro reference (not a string literal): {}",
-                s
-            )));
+            return Err(SimError::with_diag(
+                mivon_core::diagnostics::DiagCode::PreprocessorError,
+                format!(
+                    "include path is a macro reference (not a string literal): {}",
+                    s
+                ),
+            ));
         }
         if let Some(rest) = s.strip_prefix('"') {
-            let end = rest
-                .find('"')
-                .ok_or_else(|| SimError::with_diag(mivon_core::diagnostics::DiagCode::PreprocessorError, "unterminated include path"))?;
+            let end = rest.find('"').ok_or_else(|| {
+                SimError::with_diag(
+                    mivon_core::diagnostics::DiagCode::PreprocessorError,
+                    "unterminated include path",
+                )
+            })?;
             Ok(rest[..end].to_string())
         } else if let Some(rest) = s.strip_prefix('<') {
-            let end = rest
-                .find('>')
-                .ok_or_else(|| SimError::with_diag(mivon_core::diagnostics::DiagCode::PreprocessorError, "unterminated include path"))?;
+            let end = rest.find('>').ok_or_else(|| {
+                SimError::with_diag(
+                    mivon_core::diagnostics::DiagCode::PreprocessorError,
+                    "unterminated include path",
+                )
+            })?;
             Ok(rest[..end].to_string())
         } else {
-            Err(SimError::with_diag(mivon_core::diagnostics::DiagCode::PreprocessorError, format!(
-                "invalid include syntax: {}",
-                s
-            )))
+            Err(SimError::with_diag(
+                mivon_core::diagnostics::DiagCode::PreprocessorError,
+                format!("invalid include syntax: {}", s),
+            ))
         }
     }
 
@@ -693,10 +718,10 @@ impl Preprocessor {
         if candidate.exists() {
             return Ok(candidate);
         }
-        Err(SimError::with_diag(mivon_core::diagnostics::DiagCode::PreprocessorError, format!(
-            "include file '{}' not found",
-            inc_path
-        )))
+        Err(SimError::with_diag(
+            mivon_core::diagnostics::DiagCode::PreprocessorError,
+            format!("include file '{}' not found", inc_path),
+        ))
     }
 
     fn parse_define(&mut self, rest: &str) {

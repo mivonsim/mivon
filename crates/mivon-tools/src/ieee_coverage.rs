@@ -71,7 +71,9 @@ impl CoverageReport {
             section: "3.6".into(),
             name: "Aggregate types (array, struct, union, enum)".into(),
             status: SupportStatus::Full,
-            notes: Some("struct/enum/assoc (num/exists/delete/first/next/last/prev) penuh (LANG-55)".into()),
+            notes: Some(
+                "struct/enum/assoc (num/exists/delete/first/next/last/prev) penuh (LANG-55)".into(),
+            ),
         });
         features.push(FeatureEntry {
             section: "3.10".into(),
@@ -575,7 +577,10 @@ mod tests {
         assert!(
             not_supported.is_empty(),
             "masih ada fitur NotSupported: {:?}",
-            not_supported.iter().map(|f| f.name.as_str()).collect::<Vec<_>>()
+            not_supported
+                .iter()
+                .map(|f| f.name.as_str())
+                .collect::<Vec<_>>()
         );
         // `Partial` tetap boleh ada (dukungan sebagian, bukan tidak didukung).
         let _ = has_partial;

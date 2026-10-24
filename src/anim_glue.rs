@@ -56,7 +56,12 @@ pub(crate) fn anim_set_modules(anim: &Option<PipelineAnimator>, n: u64) {
     }
 }
 
-pub(crate) fn anim_finish(anim: &mut Option<PipelineAnimator>, ok: bool, errors: usize, warnings: usize) {
+pub(crate) fn anim_finish(
+    anim: &mut Option<PipelineAnimator>,
+    ok: bool,
+    errors: usize,
+    warnings: usize,
+) {
     if let Some(a) = anim.as_mut() {
         a.finish(ok, errors, warnings);
     }
@@ -92,7 +97,10 @@ pub(crate) fn emit_diags_anim(
 
 /// Hitung jumlah file per ekstensi `[sv, svh, v, vh]` lalu pasang ke animasi
 /// (tampil di baris idle: `Compiling 128 file · sv 112 · svh 14`).
-pub(crate) fn anim_set_exts<P: AsRef<std::path::Path>>(anim: &Option<PipelineAnimator>, files: &[P]) {
+pub(crate) fn anim_set_exts<P: AsRef<std::path::Path>>(
+    anim: &Option<PipelineAnimator>,
+    files: &[P],
+) {
     if let Some(a) = anim.as_ref() {
         let mut exts = [0u64; 4];
         for f in files {

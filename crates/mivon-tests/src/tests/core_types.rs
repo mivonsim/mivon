@@ -2906,7 +2906,10 @@ endmodule
     );
     let _ = simulate_signals(&source, 10).unwrap();
     let content = fs::read_to_string(test_file).unwrap_or_default();
-    assert_eq!(content, "a\nb\n", "bentuk ekspresi $fdisplay juga menambah newline");
+    assert_eq!(
+        content, "a\nb\n",
+        "bentuk ekspresi $fdisplay juga menambah newline"
+    );
     let _ = fs::remove_file(test_file);
 }
 
@@ -2931,7 +2934,10 @@ endmodule
     );
     let _ = simulate_signals(&source, 10).unwrap();
     let content = fs::read_to_string(test_file).unwrap_or_default();
-    assert_eq!(content, "old\nnew\n", "mode \"a\" harus append, bukan truncate");
+    assert_eq!(
+        content, "old\nnew\n",
+        "mode \"a\" harus append, bukan truncate"
+    );
     let _ = fs::remove_file(test_file);
 }
 
@@ -3045,7 +3051,11 @@ endmodule
     };
     assert_ne!(get("s1"), 1, "$random(seed) harus memperbarui seed");
     assert_ne!(get("s2"), get("s1"), "seed berubah tiap panggilan");
-    assert_ne!(get("r1"), get("r2"), "dua panggilan dengan seed inout berbeda hasil");
+    assert_ne!(
+        get("r1"),
+        get("r2"),
+        "dua panggilan dengan seed inout berbeda hasil"
+    );
 }
 
 #[test]
@@ -3150,7 +3160,11 @@ endmodule
             .unwrap_or(u64::MAX)
     };
     let u = get("u");
-    assert!((5..=10).contains(&u), "$dist_uniform di [5,10], dapat {}", u);
+    assert!(
+        (5..=10).contains(&u),
+        "$dist_uniform di [5,10], dapat {}",
+        u
+    );
     assert!(get("e") <= 100_000, "$dist_exponential wajar");
     assert!(get("p") <= 10_000, "$dist_poisson wajar");
     assert!(get("c") <= 100_000, "$dist_chi_square wajar");
@@ -3318,7 +3332,10 @@ endmodule
         .find(|(n, _)| n == "a0")
         .map(|(_, v)| v.to_u64())
         .unwrap_or(u64::MAX);
-    assert_eq!(a0, 0x11, "file hilang: peringatan, memori tidak berubah, simulasi lanjut");
+    assert_eq!(
+        a0, 0x11,
+        "file hilang: peringatan, memori tidak berubah, simulasi lanjut"
+    );
 }
 
 #[test]
@@ -3348,7 +3365,10 @@ endmodule
             .map(|(_, v)| v.to_u64())
             .unwrap_or(u64::MAX)
     };
-    assert_eq!((get("a0"), get("a1"), get("a2"), get("a3")), (0xaa, 0x22, 0xcc, 0x44));
+    assert_eq!(
+        (get("a0"), get("a1"), get("a2"), get("a3")),
+        (0xaa, 0x22, 0xcc, 0x44)
+    );
     let _ = fs::remove_file(file);
 }
 
@@ -3387,9 +3407,15 @@ endmodule
             .unwrap_or(u64::MAX)
     };
     // File penuh → semua word terisi.
-    assert_eq!((get("a0"), get("a1"), get("a2"), get("a3")), (0xaa, 0xbb, 0xcc, 0xdd));
+    assert_eq!(
+        (get("a0"), get("a1"), get("a2"), get("a3")),
+        (0xaa, 0xbb, 0xcc, 0xdd)
+    );
     // start=2, end=3 → hanya word 2,3 yang berubah.
-    assert_eq!((get("b0"), get("b1"), get("b2"), get("b3")), (0x11, 0x22, 0xaa, 0xbb));
+    assert_eq!(
+        (get("b0"), get("b1"), get("b2"), get("b3")),
+        (0x11, 0x22, 0xaa, 0xbb)
+    );
     let _ = fs::remove_file(full);
     let _ = fs::remove_file(part);
 }

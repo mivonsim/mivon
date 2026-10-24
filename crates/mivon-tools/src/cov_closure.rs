@@ -298,7 +298,11 @@ mod tests {
             .iter()
             .map(|t| t.test_name.as_str())
             .collect();
-        assert_eq!(critical, vec!["real"], "duplikat tidak menghapus status unik");
+        assert_eq!(
+            critical,
+            vec!["real"],
+            "duplikat tidak menghapus status unik"
+        );
     }
 
     #[test]

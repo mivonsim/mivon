@@ -77,7 +77,10 @@ impl Parser {
                     names,
                 });
             }
-            return Err(self.err_with_code(DiagCode::ExpectedToken, "expected interface type after virtual"));
+            return Err(self.err_with_code(
+                DiagCode::ExpectedToken,
+                "expected interface type after virtual",
+            ));
         }
         let kind = match self.peek() {
             Token::Wire => DeclKind::Wire,
@@ -351,7 +354,7 @@ impl Parser {
                 });
             }
             _ => {
-                return Err(self.err_with_code(DiagCode::ExpectedToken, 
+                return Err(self.err_with_code(DiagCode::ExpectedToken,
                     "expected wire/reg/logic/int/byte/shortint/longint/enum/struct/union/wand/wor/tri",
                 ));
             }
@@ -1094,7 +1097,11 @@ impl Parser {
                         }
                     }
                 }
-                _ => return Err(self.err_with_code(DiagCode::ExpectedToken, "expected identifier in enum")),
+                _ => {
+                    return Err(
+                        self.err_with_code(DiagCode::ExpectedToken, "expected identifier in enum")
+                    )
+                }
             }
             if self.peek() == &Token::Comma {
                 self.advance();
@@ -1117,10 +1124,18 @@ impl Parser {
                     Some(10) => s.parse::<i64>(),
                     Some(b) => i64::from_str_radix(&s, b as u32),
                 }
-                .map_err(|_| self.err_with_code(DiagCode::InvalidSyntax, "invalid integer literal in enum range"))?;
+                .map_err(|_| {
+                    self.err_with_code(
+                        DiagCode::InvalidSyntax,
+                        "invalid integer literal in enum range",
+                    )
+                })?;
                 Ok(n)
             }
-            _ => Err(self.err_with_code(DiagCode::ExpectedToken, "expected integer literal in enum range")),
+            _ => Err(self.err_with_code(
+                DiagCode::ExpectedToken,
+                "expected integer literal in enum range",
+            )),
         }
     }
 
@@ -1250,7 +1265,12 @@ impl Parser {
                         DataType::UserDefined(name)
                     }
                 }
-                _ => return Err(self.err_with_code(DiagCode::ExpectedToken, "expected type in struct/union member")),
+                _ => {
+                    return Err(self.err_with_code(
+                        DiagCode::ExpectedToken,
+                        "expected type in struct/union member",
+                    ))
+                }
             };
             // Modifier signed/unsigned SETELAH tipe dasar: `int unsigned id;`
             // (umum di struct OpenTitan). unsigned = no-op; signed dibungkus.
@@ -1381,7 +1401,6 @@ impl Parser {
         })
     }
 
-
     /// ELAB-09: `defparam <hier-path>.<param> = <expr>;` (IEEE 1800-2017
     /// §23.11, warisan Verilog-2001). Path = rantai ident dengan opsi indeks
     /// array `[N]` per segmen; segmen terakhir = nama parameter.
@@ -1424,9 +1443,12 @@ impl Parser {
             }
             break;
         }
-        let param = path
-            .pop()
-            .ok_or_else(|| self.err_with_code(DiagCode::ExpectedToken, "expected parameter name after hierarchical path"))?;
+        let param = path.pop().ok_or_else(|| {
+            self.err_with_code(
+                DiagCode::ExpectedToken,
+                "expected parameter name after hierarchical path",
+            )
+        })?;
         self.expect(Token::BlockingAssign)?;
         let value = self.parse_expr(0)?;
         self.skip_semi();
@@ -1483,7 +1505,11 @@ impl Parser {
                 self.advance();
                 DataType::UserDefined(name)
             }
-            _ => return Err(self.err_with_code(DiagCode::ExpectedToken, "expected base type after nettype")),
+            _ => {
+                return Err(
+                    self.err_with_code(DiagCode::ExpectedToken, "expected base type after nettype")
+                )
+            }
         };
         let range = if self.peek() == &Token::LBrack {
             self.parse_range()?
@@ -1559,11 +1585,7 @@ impl Parser {
                 items.push(item)
             }
         }
-        Ok(CheckerDecl {
-            name,
-            ports,
-            items,
-        })
+        Ok(CheckerDecl { name, ports, items })
     }
 
     pub(crate) fn parse_typedef(&mut self) -> Result<TypedefDecl, SimError> {
@@ -1637,7 +1659,10 @@ impl Parser {
                         self.advance();
                         (name, DataType::EnumType { base, members }, er, Vec::new())
                     } else {
-                        return Err(self.err_with_code(DiagCode::ExpectedToken, "expected name after typedef enum"));
+                        return Err(self.err_with_code(
+                            DiagCode::ExpectedToken,
+                            "expected name after typedef enum",
+                        ));
                     }
                 } else {
                     let members = self.parse_enum_members()?;
@@ -1646,7 +1671,10 @@ impl Parser {
                         self.advance();
                         (name, DataType::EnumType { base, members }, None, Vec::new())
                     } else {
-                        return Err(self.err_with_code(DiagCode::ExpectedToken, "expected name after typedef enum"));
+                        return Err(self.err_with_code(
+                            DiagCode::ExpectedToken,
+                            "expected name after typedef enum",
+                        ));
                     }
                 }
             }
@@ -1671,7 +1699,10 @@ impl Parser {
                     self.advance();
                     (name, dtype, range, extra_packed_dims)
                 } else {
-                    return Err(self.err_with_code(DiagCode::ExpectedToken, "expected name after typedef bit"));
+                    return Err(self.err_with_code(
+                        DiagCode::ExpectedToken,
+                        "expected name after typedef bit",
+                    ));
                 }
             }
             Token::Byte => {
@@ -1695,7 +1726,10 @@ impl Parser {
                     self.advance();
                     (name, dtype, range, extra_packed_dims)
                 } else {
-                    return Err(self.err_with_code(DiagCode::ExpectedToken, "expected name after typedef byte"));
+                    return Err(self.err_with_code(
+                        DiagCode::ExpectedToken,
+                        "expected name after typedef byte",
+                    ));
                 }
             }
             Token::Shortint => {
@@ -1719,7 +1753,10 @@ impl Parser {
                     self.advance();
                     (name, dtype, range, extra_packed_dims)
                 } else {
-                    return Err(self.err_with_code(DiagCode::ExpectedToken, "expected name after typedef shortint"));
+                    return Err(self.err_with_code(
+                        DiagCode::ExpectedToken,
+                        "expected name after typedef shortint",
+                    ));
                 }
             }
             Token::Longint => {
@@ -1743,7 +1780,10 @@ impl Parser {
                     self.advance();
                     (name, dtype, range, extra_packed_dims)
                 } else {
-                    return Err(self.err_with_code(DiagCode::ExpectedToken, "expected name after typedef longint"));
+                    return Err(self.err_with_code(
+                        DiagCode::ExpectedToken,
+                        "expected name after typedef longint",
+                    ));
                 }
             }
             Token::Time => {
@@ -1759,7 +1799,10 @@ impl Parser {
                     self.advance();
                     (name, DataType::Time, range, extra_packed_dims)
                 } else {
-                    return Err(self.err_with_code(DiagCode::ExpectedToken, "expected name after typedef time"));
+                    return Err(self.err_with_code(
+                        DiagCode::ExpectedToken,
+                        "expected name after typedef time",
+                    ));
                 }
             }
             Token::Int => {
@@ -1783,7 +1826,10 @@ impl Parser {
                     self.advance();
                     (name, dtype, range, extra_packed_dims)
                 } else {
-                    return Err(self.err_with_code(DiagCode::ExpectedToken, "expected name after typedef int"));
+                    return Err(self.err_with_code(
+                        DiagCode::ExpectedToken,
+                        "expected name after typedef int",
+                    ));
                 }
             }
             Token::Integer => {
@@ -1807,7 +1853,10 @@ impl Parser {
                     self.advance();
                     (name, dtype, range, extra_packed_dims)
                 } else {
-                    return Err(self.err_with_code(DiagCode::ExpectedToken, "expected name after typedef integer"));
+                    return Err(self.err_with_code(
+                        DiagCode::ExpectedToken,
+                        "expected name after typedef integer",
+                    ));
                 }
             }
             Token::Logic => {
@@ -1831,7 +1880,10 @@ impl Parser {
                     self.advance();
                     (name, dtype, range, extra_packed_dims)
                 } else {
-                    return Err(self.err_with_code(DiagCode::ExpectedToken, "expected name after typedef logic"));
+                    return Err(self.err_with_code(
+                        DiagCode::ExpectedToken,
+                        "expected name after typedef logic",
+                    ));
                 }
             }
             Token::Reg => {
@@ -1848,7 +1900,10 @@ impl Parser {
                     self.advance();
                     (name, dtype, range, extra_packed_dims)
                 } else {
-                    return Err(self.err_with_code(DiagCode::ExpectedToken, "expected name after typedef reg"));
+                    return Err(self.err_with_code(
+                        DiagCode::ExpectedToken,
+                        "expected name after typedef reg",
+                    ));
                 }
             }
             Token::Struct => {
@@ -1862,7 +1917,10 @@ impl Parser {
                     self.advance();
                     (name, DataType::StructType { members }, None, Vec::new())
                 } else {
-                    return Err(self.err_with_code(DiagCode::ExpectedToken, "expected name after typedef struct"));
+                    return Err(self.err_with_code(
+                        DiagCode::ExpectedToken,
+                        "expected name after typedef struct",
+                    ));
                 }
             }
             Token::Union => {
@@ -1876,7 +1934,10 @@ impl Parser {
                     self.advance();
                     (name, DataType::UnionType { members }, None, Vec::new())
                 } else {
-                    return Err(self.err_with_code(DiagCode::ExpectedToken, "expected name after typedef union"));
+                    return Err(self.err_with_code(
+                        DiagCode::ExpectedToken,
+                        "expected name after typedef union",
+                    ));
                 }
             }
             // User-defined base type: typedef some_type_t name; or
@@ -1939,10 +2000,17 @@ impl Parser {
                     }
                     (name, dtype, range, extra_packed_dims)
                 } else {
-                    return Err(self.err_with_code(DiagCode::ExpectedToken, "expected name after typedef type"));
+                    return Err(self.err_with_code(
+                        DiagCode::ExpectedToken,
+                        "expected name after typedef type",
+                    ));
                 }
             }
-            _ => return Err(self.err_with_code(DiagCode::ExpectedToken, "expected type after typedef")),
+            _ => {
+                return Err(
+                    self.err_with_code(DiagCode::ExpectedToken, "expected type after typedef")
+                )
+            }
         };
         // Unpacked dims SETELAH nama typedef (`[]`, `[$]`, `[type]`, `[N]`)
         // — konsumsi untuk semua branch (logic/bit/int/enum/struct/user-defined).
@@ -1986,7 +2054,10 @@ impl Parser {
                 }
                 return Ok((DataType::UserDefined(name), None));
             }
-            return Err(self.err_with_code(DiagCode::ExpectedToken, "expected interface type after virtual"));
+            return Err(self.err_with_code(
+                DiagCode::ExpectedToken,
+                "expected interface type after virtual",
+            ));
         }
         let dt = match self.peek() {
             Token::Struct => {
@@ -2356,7 +2427,10 @@ impl Parser {
             loop {
                 match self.peek() {
                     Token::Eof => {
-                        return Err(self.err_with_code(DiagCode::ExpectedToken, "unexpected EOF in typedef unpacked dimension"))
+                        return Err(self.err_with_code(
+                            DiagCode::ExpectedToken,
+                            "unexpected EOF in typedef unpacked dimension",
+                        ))
                     }
                     Token::LBrack => {
                         depth += 1;

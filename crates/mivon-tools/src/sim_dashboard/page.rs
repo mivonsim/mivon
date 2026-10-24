@@ -69,15 +69,31 @@ pub fn render_page(sessions: &[SimSession]) -> String {
     let rows = if sessions.is_empty() {
         "<tr><td colspan=\"7\" class=\"empty\">Belum ada sesi.</td></tr>".to_string()
     } else {
-        sessions.iter().map(render_row).collect::<Vec<_>>().join("\n")
+        sessions
+            .iter()
+            .map(render_row)
+            .collect::<Vec<_>>()
+            .join("\n")
     };
     let summary = format!(
         "{} sesi — {} running, {} queued, {} selesai, {} dibatalkan",
         sessions.len(),
-        sessions.iter().filter(|s| matches!(s.status, SessionStatus::Running)).count(),
-        sessions.iter().filter(|s| matches!(s.status, SessionStatus::Queued)).count(),
-        sessions.iter().filter(|s| matches!(s.status, SessionStatus::Completed)).count(),
-        sessions.iter().filter(|s| matches!(s.status, SessionStatus::Cancelled)).count(),
+        sessions
+            .iter()
+            .filter(|s| matches!(s.status, SessionStatus::Running))
+            .count(),
+        sessions
+            .iter()
+            .filter(|s| matches!(s.status, SessionStatus::Queued))
+            .count(),
+        sessions
+            .iter()
+            .filter(|s| matches!(s.status, SessionStatus::Completed))
+            .count(),
+        sessions
+            .iter()
+            .filter(|s| matches!(s.status, SessionStatus::Cancelled))
+            .count(),
     );
     PAGE.replace("<!--ROWS-->", &rows)
         .replace("<!--SUMMARY-->", &escape_html(&summary))
@@ -291,9 +307,6 @@ mod tests {
 
     #[test]
     fn escape_html_covers_all_specials() {
-        assert_eq!(
-            escape_html("&<>\"'"),
-            "&amp;&lt;&gt;&quot;&#39;"
-        );
+        assert_eq!(escape_html("&<>\"'"), "&amp;&lt;&gt;&quot;&#39;");
     }
 }

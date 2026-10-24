@@ -457,11 +457,11 @@ mod tests {
         let mut live = std::collections::HashSet::new();
         live.insert(entries[0].name.clone());
         let canary = emit_rust_tests(&entries, &dir, &live);
+        assert!(canary.contains("assert_eq!"), "live harus canary: {canary}");
         assert!(
-            canary.contains("assert_eq!"),
-            "live harus canary: {canary}"
+            canary.contains("canary: bug_c_dag"),
+            "pesan canary: {canary}"
         );
-        assert!(canary.contains("canary: bug_c_dag"), "pesan canary: {canary}");
         let fixed = emit_rust_tests(&entries, &dir, &Default::default());
         assert!(
             fixed.contains("assert_ne!"),

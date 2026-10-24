@@ -173,8 +173,8 @@ impl Dashboard {
     ) -> Result<Self, String> {
         let coverage = match coverage_path {
             Some(p) if p.exists() => {
-                let src = std::fs::read_to_string(p)
-                    .map_err(|e| format!("baca {}: {e}", p.display()))?;
+                let src =
+                    std::fs::read_to_string(p).map_err(|e| format!("baca {}: {e}", p.display()))?;
                 Some(CoverageSection::from_json_str(&src)?)
             }
             _ => None,
@@ -265,7 +265,8 @@ impl Dashboard {
             Some(r) => {
                 // Hijau hanya bila ada test yang benar-benar lulus semua;
                 // 0 run / all-Skip tidak boleh tampil sebagai badge hijau.
-                let cls = if r.latest_total == 0 || r.latest_failed > 0 || r.latest_pass_rate < 99.9 {
+                let cls = if r.latest_total == 0 || r.latest_failed > 0 || r.latest_pass_rate < 99.9
+                {
                     if r.latest_total == 0 {
                         ""
                     } else {
@@ -316,7 +317,9 @@ impl Dashboard {
         h.push_str("<section><h2>Bugs</h2>\n");
         match &self.bugs {
             Some(b) => {
-                h.push_str("<table><tr><th>Total</th><th>Open</th><th>Fixed</th><th>WontFix</th></tr>\n");
+                h.push_str(
+                    "<table><tr><th>Total</th><th>Open</th><th>Fixed</th><th>WontFix</th></tr>\n",
+                );
                 h.push_str(&format!(
                     "<tr><td>{}</td><td class=\"{}\">{}</td><td>{}</td><td>{}</td></tr></table>\n",
                     b.total,
@@ -425,7 +428,7 @@ mod tests {
             "toggle":{"signals":8,"transitions":17},
             "fsm":{"signals":2,"states":5},
             "covergroup":{"points":20,"covered":15,"percent":75.0}}}"#
-        .to_string()
+            .to_string()
     }
 
     #[test]
@@ -588,12 +591,7 @@ mod tests {
         assert_eq!(c.fsm_signals, u32::MAX as u64);
     }
 
-    fn section(
-        runs: usize,
-        total: usize,
-        failed: usize,
-        skipped: usize,
-    ) -> RegressionSection {
+    fn section(runs: usize, total: usize, failed: usize, skipped: usize) -> RegressionSection {
         RegressionSection {
             runs,
             latest_pass_rate: if total == 0 { 0.0 } else { 100.0 },

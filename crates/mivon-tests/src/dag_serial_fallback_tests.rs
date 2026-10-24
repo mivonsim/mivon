@@ -142,7 +142,10 @@ endmodule
 fn dag_vs_default_passive_slice_chain_identical() {
     let def = run_signal_bits(PASSIVE_CHAIN_SRC, "dout_lo", false);
     let dag = run_signal_bits(PASSIVE_CHAIN_SRC, "dout_lo", true);
-    assert_eq!(def, dag, "dout_lo beda antar jalur: default={def} dag={dag}");
+    assert_eq!(
+        def, dag,
+        "dout_lo beda antar jalur: default={def} dag={dag}"
+    );
     // PINNED — bukan sekadar identik: bit58 undriven z, 58 bit cover q = x.
     let expect = format!("z{}", "x".repeat(58));
     assert_eq!(def, "x".repeat(29), "dout_lo harus X semua (reg masih X)");

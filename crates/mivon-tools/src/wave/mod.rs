@@ -25,11 +25,11 @@
 //!   `search`, `tree`, `get`, `stats`, `decode`
 //! - `tests`  — unit test per subkomando
 
+pub(crate) mod align;
 pub mod args;
 pub(crate) mod compare;
 pub(crate) mod data;
 pub(crate) mod debug;
-pub(crate) mod align;
 pub(crate) mod decode;
 pub(crate) mod export;
 pub(crate) mod filter;
@@ -49,6 +49,6 @@ pub use args::{run, WaveArgs};
 /// Re-export API publik lama (jalur `wave::VcdData` / `wave::*_decode`
 /// sebelum pemecahan modul).
 pub use data::VcdData;
-pub use decode::{DecodedTx, ahb_decode, apb_decode, axi4lite_decode};
+pub use decode::{ahb_decode, apb_decode, axi4lite_decode, DecodedTx};
 /// VPD read/write (WAV-02) - dipakai mwave export dan dapat dipanggil langsung.
 pub use vpd::{parse_vpd, write_vpd};

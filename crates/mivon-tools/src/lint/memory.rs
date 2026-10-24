@@ -17,7 +17,10 @@ pub(crate) fn find_memory_inference(
                     module: scope.to_string(),
                     check: "memory",
                     severity: "I",
-                    message: format!("reg '{}' array — kandidat inferred RAM/ROM", v.name.as_str()),
+                    message: format!(
+                        "reg '{}' array — kandidat inferred RAM/ROM",
+                        v.name.as_str()
+                    ),
                 });
             }
         }

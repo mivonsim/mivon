@@ -45,13 +45,19 @@ fn eval_wide_cmp(a: &[i64], b: &[i64], op: BinaryOp) -> i64 {
 #[test]
 fn test_wide_vector_eq_equal() {
     assert_eq!(eval_wide_cmp(&[1, 2, 3, 4], &[1, 2, 3, 4], BinaryOp::Eq), 1);
-    assert_eq!(eval_wide_cmp(&[1, 2, 3, 4], &[1, 2, 3, 4], BinaryOp::Neq), 0);
+    assert_eq!(
+        eval_wide_cmp(&[1, 2, 3, 4], &[1, 2, 3, 4], BinaryOp::Neq),
+        0
+    );
 }
 
 #[test]
 fn test_wide_vector_eq_different() {
     assert_eq!(eval_wide_cmp(&[1, 2, 3, 4], &[9, 9, 9, 9], BinaryOp::Eq), 0);
-    assert_eq!(eval_wide_cmp(&[1, 2, 3, 4], &[9, 9, 9, 9], BinaryOp::Neq), 1);
+    assert_eq!(
+        eval_wide_cmp(&[1, 2, 3, 4], &[9, 9, 9, 9], BinaryOp::Neq),
+        1
+    );
 }
 
 #[test]

@@ -258,10 +258,8 @@ impl SimulationEngine {
                     }
                 }
                 _ => {
-                    return Err(self.diag_error(
-                        DiagCode::DpiError,
-                        "sreadmem requires a string data source",
-                    ));
+                    return Err(self
+                        .diag_error(DiagCode::DpiError, "sreadmem requires a string data source"));
                 }
             };
             let sig_id = ir_args
@@ -313,10 +311,8 @@ impl SimulationEngine {
                     }
                 }
                 _ => {
-                    return Err(self.diag_error(
-                        DiagCode::DpiError,
-                        "writemem requires a filename argument",
-                    ));
+                    return Err(self
+                        .diag_error(DiagCode::DpiError, "writemem requires a filename argument"));
                 }
             };
             let sig_id = ir_args
@@ -584,8 +580,7 @@ impl SimulationEngine {
                     }
                 }
             }
-        } else if let Some((newline, radix)) =
-            crate::simulator::util::file_display_task_radix(name)
+        } else if let Some((newline, radix)) = crate::simulator::util::file_display_task_radix(name)
         {
             let handle = ir_args
                 .first()
@@ -1528,8 +1523,7 @@ impl SimulationEngine {
                     }
                 }
             }
-        } else if let Some((newline, radix)) =
-            crate::simulator::util::file_display_task_radix(name)
+        } else if let Some((newline, radix)) = crate::simulator::util::file_display_task_radix(name)
         {
             let handle = ir_args
                 .first()

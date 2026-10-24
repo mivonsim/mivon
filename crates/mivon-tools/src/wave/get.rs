@@ -3,7 +3,7 @@
 use mivon_core::error::SimError;
 
 use super::data::{parse_vcd, VcdData};
-use super::util::{err, full_name, format_bits, sample_at, timeline_of, wildcard_match};
+use super::util::{err, format_bits, full_name, sample_at, timeline_of, wildcard_match};
 
 /// Satu entri hasil query: sinyal + daftar (waktu, nilai mentah bits).
 #[derive(Debug, Clone)]

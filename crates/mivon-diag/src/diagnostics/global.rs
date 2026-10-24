@@ -108,9 +108,7 @@ impl GlobalDiagnosticEngine {
         }
         // Sampel kode tak terdaftar (registry coverage). Kode di luar registry
         // jarang — juga bounded.
-        if !registry_codes().contains(&diag.code)
-            && st.unregistered_sample.len() < SAMPLE_CAP
-        {
+        if !registry_codes().contains(&diag.code) && st.unregistered_sample.len() < SAMPLE_CAP {
             st.unregistered_sample.push(diag);
         }
     }
@@ -347,7 +345,10 @@ mod tests {
         assert_eq!(engine.dropped(), 50);
         // Counter tetap akurat meski sampel penuh.
         assert_eq!(engine.total(), SAMPLE_CAP + 50);
-        assert_eq!(engine.code_count(DiagCode::UndefinedSignal), SAMPLE_CAP + 50);
+        assert_eq!(
+            engine.code_count(DiagCode::UndefinedSignal),
+            SAMPLE_CAP + 50
+        );
     }
 
     #[test]

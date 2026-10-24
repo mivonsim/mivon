@@ -355,7 +355,8 @@ pub(crate) fn check_expr<'a>(
                 // func_arity di-key nama polos; kandidat = nama penuh dulu,
                 // lalu suffix item. Bila semua miss → E2001.
                 let known = scope.func_arity.contains_key(name.as_str())
-                    || name.split_once("::")
+                    || name
+                        .split_once("::")
                         .map(|(_, item)| scope.func_arity.contains_key(item))
                         .unwrap_or(false);
                 if !known {

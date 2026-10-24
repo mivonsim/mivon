@@ -108,31 +108,31 @@ mod cva6_struct_param_regression_tests;
 
 // REGRESI Tahap 1: nested bit/part-select pada lvalue.
 #[cfg(test)]
-mod nested_select_tests;
+mod defparam_tests;
 #[cfg(test)]
-mod unit_scope_tests;
+mod fork_tracking_tests;
 #[cfg(test)]
-mod named_sva_tests;
+mod formal_connectivity_tests;
 #[cfg(test)]
 mod hier_lvalue_tests;
-#[cfg(test)]
-mod vif_write_tests;
 #[cfg(test)]
 mod interface_port_tests;
 #[cfg(test)]
 mod lang_features_tests;
 #[cfg(test)]
-mod synth_sir_tests;
+mod named_sva_tests;
 #[cfg(test)]
-mod defparam_tests;
+mod nested_select_tests;
 #[cfg(test)]
 mod parser_fastlexer_tests;
 #[cfg(test)]
 mod parser_recovery_tests;
 #[cfg(test)]
-mod fork_tracking_tests;
+mod synth_sir_tests;
 #[cfg(test)]
-mod formal_connectivity_tests;
+mod unit_scope_tests;
+#[cfg(test)]
+mod vif_write_tests;
 
 // Guided structure-aware fuzzer (metode test fuzzing "tidak buta"):
 // grammar-aware generation + coverage feedback + differential oracle.

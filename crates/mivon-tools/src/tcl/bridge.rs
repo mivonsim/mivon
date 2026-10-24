@@ -76,9 +76,7 @@ impl Interp {
             i += 1;
         }
         if files.is_empty() {
-            return Err(TclError::Msg(
-                "mivon compile: no input files".to_string(),
-            ));
+            return Err(TclError::Msg("mivon compile: no input files".to_string()));
         }
         // Compile gagal tidak boleh meninggalkan state desain lama.
         self.design = None;
@@ -117,7 +115,9 @@ impl Interp {
             i += 1;
         }
         let design = self.design.clone().ok_or_else(|| {
-            TclError::Msg("mivon simulate: no design compiled (run \"mivon compile\" first)".to_string())
+            TclError::Msg(
+                "mivon simulate: no design compiled (run \"mivon compile\" first)".to_string(),
+            )
         })?;
         let mut engine = SimulationEngine::new(design, max_time);
         engine.run().map_err(|e| TclError::Msg(e.to_string()))?;
@@ -129,7 +129,10 @@ impl Interp {
             );
         }
         for (name, id) in &engine.design.hier_signal_map {
-            signals.insert(name.as_str().to_string(), engine.state.read_signal(*id).clone());
+            signals.insert(
+                name.as_str().to_string(),
+                engine.state.read_signal(*id).clone(),
+            );
         }
         self.sim_time = engine.state.time;
         let count = signals.len();
@@ -150,7 +153,9 @@ impl Interp {
             }
         }
         let name = name.ok_or_else(|| {
-            TclError::Msg("wrong # args: should be \"mivon get ?-dec|-hex|-bin? SIGNAL\"".to_string())
+            TclError::Msg(
+                "wrong # args: should be \"mivon get ?-dec|-hex|-bin? SIGNAL\"".to_string(),
+            )
         })?;
         let value = self.lookup_signal(&name)?.ok_or_else(|| {
             TclError::Msg(format!(
@@ -276,7 +281,10 @@ mod tests {
         interp
             .run(&format!("mivon compile {}\nmivon simulate -T 5", path))
             .expect("sim");
-        assert!(interp.run("mivon get a").is_err(), "X/Z must not be reported as 0");
+        assert!(
+            interp.run("mivon get a").is_err(),
+            "X/Z must not be reported as 0"
+        );
         interp.run("puts [mivon get -bin a]").expect("bin");
         assert_eq!(interp.output(), &["xxxx".to_string()]);
     }

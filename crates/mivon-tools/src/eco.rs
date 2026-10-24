@@ -204,8 +204,7 @@ impl EcoDb {
         let temp = path.with_file_name(temp_name);
         std::fs::write(&temp, json)
             .map_err(|e| format!("gagal tulis {}: {}", temp.display(), e))?;
-        std::fs::rename(&temp, path)
-            .map_err(|e| format!("gagal rename {}: {}", path.display(), e))
+        std::fs::rename(&temp, path).map_err(|e| format!("gagal rename {}: {}", path.display(), e))
     }
 
     /// Load from JSON.

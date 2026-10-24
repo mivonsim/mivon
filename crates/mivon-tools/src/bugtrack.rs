@@ -126,7 +126,10 @@ impl BugTracker {
     }
 
     pub fn open_count(&self) -> usize {
-        self.bugs.iter().filter(|b| b.status == BugStatus::Open).count()
+        self.bugs
+            .iter()
+            .filter(|b| b.status == BugStatus::Open)
+            .count()
     }
 
     /// Exit code gate CI: 0 = test punya bug Open (kegagalan diketahui),
@@ -212,8 +215,7 @@ impl BugTracker {
         let temp = path.with_extension("json.tmp");
         std::fs::write(&temp, json)
             .map_err(|e| format!("gagal tulis {}: {}", temp.display(), e))?;
-        std::fs::rename(&temp, path)
-            .map_err(|e| format!("gagal rename {}: {}", path.display(), e))
+        std::fs::rename(&temp, path).map_err(|e| format!("gagal rename {}: {}", path.display(), e))
     }
 
     pub fn load(path: &Path) -> Result<Self, String> {
@@ -226,9 +228,7 @@ impl BugTracker {
 
 /// Escape satu field CSV (kutip ganda, newline jadi spasi).
 fn escape_csv(value: &str) -> String {
-    value
-        .replace(['\n', '\r'], " ")
-        .replace('"', "\"\"")
+    value.replace(['\n', '\r'], " ").replace('"', "\"\"")
 }
 
 #[cfg(test)]

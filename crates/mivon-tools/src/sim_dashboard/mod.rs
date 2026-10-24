@@ -84,10 +84,11 @@ mod tests {
         let d = WebDashboard::new(ServerConfig::default());
         let (tx, rx) = std::sync::mpsc::channel::<()>();
         let rx = std::sync::Arc::new(std::sync::Mutex::new(rx));
-        d.server().set_runner(std::sync::Arc::new(move |_files, _max_time| {
-            let guard = rx.lock().unwrap_or_else(|e| e.into_inner());
-            guard.recv().map(|_| 1).map_err(|e| e.to_string())
-        }));
+        d.server()
+            .set_runner(std::sync::Arc::new(move |_files, _max_time| {
+                let guard = rx.lock().unwrap_or_else(|e| e.into_inner());
+                guard.recv().map(|_| 1).map_err(|e| e.to_string())
+            }));
         (d, tx)
     }
 

@@ -24,9 +24,11 @@ fn reg_bug_0000_diag_missing() {
     let expected = Category::from_label("diag_missing").expect("category valid");
     let r = oracle::evaluate(target, src, 20000);
     assert_ne!(
-        r.category, expected,
+        r.category,
+        expected,
         "regression: bug_0000_diag_missing reproduced ({:?}): {}",
-        r.category, r.detail.lines().next().unwrap_or("")
+        r.category,
+        r.detail.lines().next().unwrap_or("")
     );
 }
 
@@ -37,9 +39,11 @@ fn reg_bug_0000_panic() {
     let expected = Category::from_label("panic").expect("category valid");
     let r = oracle::evaluate(target, src, 20000);
     assert_ne!(
-        r.category, expected,
+        r.category,
+        expected,
         "regression: bug_0000_panic reproduced ({:?}): {}",
-        r.category, r.detail.lines().next().unwrap_or("")
+        r.category,
+        r.detail.lines().next().unwrap_or("")
     );
 }
 
@@ -50,9 +54,11 @@ fn reg_bug_0000_roundtrip_mismatch() {
     let expected = Category::from_label("roundtrip_mismatch").expect("category valid");
     let r = oracle::evaluate(target, src, 20000);
     assert_ne!(
-        r.category, expected,
+        r.category,
+        expected,
         "regression: bug_0000_roundtrip_mismatch reproduced ({:?}): {}",
-        r.category, r.detail.lines().next().unwrap_or("")
+        r.category,
+        r.detail.lines().next().unwrap_or("")
     );
 }
 
@@ -63,9 +69,11 @@ fn reg_bug_0012_lrm_violation() {
     let expected = Category::from_label("lrm_violation").expect("category valid");
     let r = oracle::evaluate(target, src, 20000);
     assert_ne!(
-        r.category, expected,
+        r.category,
+        expected,
         "regression: bug_0012_lrm_violation reproduced ({:?}): {}",
-        r.category, r.detail.lines().next().unwrap_or("")
+        r.category,
+        r.detail.lines().next().unwrap_or("")
     );
 }
 
@@ -76,9 +84,11 @@ fn reg_bug_0031_lrm_violation() {
     let expected = Category::from_label("lrm_violation").expect("category valid");
     let r = oracle::evaluate(target, src, 20000);
     assert_ne!(
-        r.category, expected,
+        r.category,
+        expected,
         "regression: bug_0031_lrm_violation reproduced ({:?}): {}",
-        r.category, r.detail.lines().next().unwrap_or("")
+        r.category,
+        r.detail.lines().next().unwrap_or("")
     );
 }
 
@@ -89,9 +99,11 @@ fn reg_bug_0081_lrm_violation() {
     let expected = Category::from_label("lrm_violation").expect("category valid");
     let r = oracle::evaluate(target, src, 20000);
     assert_ne!(
-        r.category, expected,
+        r.category,
+        expected,
         "regression: bug_0081_lrm_violation reproduced ({:?}): {}",
-        r.category, r.detail.lines().next().unwrap_or("")
+        r.category,
+        r.detail.lines().next().unwrap_or("")
     );
 }
 
@@ -102,9 +114,11 @@ fn reg_bug_0084_lrm_violation() {
     let expected = Category::from_label("lrm_violation").expect("category valid");
     let r = oracle::evaluate(target, src, 20000);
     assert_ne!(
-        r.category, expected,
+        r.category,
+        expected,
         "regression: bug_0084_lrm_violation reproduced ({:?}): {}",
-        r.category, r.detail.lines().next().unwrap_or("")
+        r.category,
+        r.detail.lines().next().unwrap_or("")
     );
 }
 
@@ -115,9 +129,11 @@ fn reg_bug_0127_hidden_bug() {
     let expected = Category::from_label("hidden_bug").expect("category valid");
     let r = oracle::evaluate(target, src, 20000);
     assert_ne!(
-        r.category, expected,
+        r.category,
+        expected,
         "regression: bug_0127_hidden_bug reproduced ({:?}): {}",
-        r.category, r.detail.lines().next().unwrap_or("")
+        r.category,
+        r.detail.lines().next().unwrap_or("")
     );
 }
 
@@ -128,9 +144,11 @@ fn reg_bug_0227_lrm_violation() {
     let expected = Category::from_label("lrm_violation").expect("category valid");
     let r = oracle::evaluate(target, src, 20000);
     assert_ne!(
-        r.category, expected,
+        r.category,
+        expected,
         "regression: bug_0227_lrm_violation reproduced ({:?}): {}",
-        r.category, r.detail.lines().next().unwrap_or("")
+        r.category,
+        r.detail.lines().next().unwrap_or("")
     );
 }
 
@@ -141,9 +159,11 @@ fn reg_bug_0248_lrm_violation() {
     let expected = Category::from_label("lrm_violation").expect("category valid");
     let r = oracle::evaluate(target, src, 20000);
     assert_ne!(
-        r.category, expected,
+        r.category,
+        expected,
         "regression: bug_0248_lrm_violation reproduced ({:?}): {}",
-        r.category, r.detail.lines().next().unwrap_or("")
+        r.category,
+        r.detail.lines().next().unwrap_or("")
     );
 }
 
@@ -154,9 +174,11 @@ fn reg_bug_0366cd02200e_differential() {
     let expected = Category::from_label("differential").expect("category valid");
     let r = oracle::evaluate(target, src, 20000);
     assert_ne!(
-        r.category, expected,
+        r.category,
+        expected,
         "regression: bug_0366cd02200e_differential reproduced ({:?}): {}",
-        r.category, r.detail.lines().next().unwrap_or("")
+        r.category,
+        r.detail.lines().next().unwrap_or("")
     );
 }
 
@@ -167,9 +189,11 @@ fn reg_bug_0395_lrm_violation() {
     let expected = Category::from_label("lrm_violation").expect("category valid");
     let r = oracle::evaluate(target, src, 20000);
     assert_ne!(
-        r.category, expected,
+        r.category,
+        expected,
         "regression: bug_0395_lrm_violation reproduced ({:?}): {}",
-        r.category, r.detail.lines().next().unwrap_or("")
+        r.category,
+        r.detail.lines().next().unwrap_or("")
     );
 }
 
@@ -180,9 +204,11 @@ fn reg_bug_0472_panic() {
     let expected = Category::from_label("panic").expect("category valid");
     let r = oracle::evaluate(target, src, 20000);
     assert_ne!(
-        r.category, expected,
+        r.category,
+        expected,
         "regression: bug_0472_panic reproduced ({:?}): {}",
-        r.category, r.detail.lines().next().unwrap_or("")
+        r.category,
+        r.detail.lines().next().unwrap_or("")
     );
 }
 
@@ -193,9 +219,11 @@ fn reg_bug_0473_roundtrip_mismatch() {
     let expected = Category::from_label("roundtrip_mismatch").expect("category valid");
     let r = oracle::evaluate(target, src, 20000);
     assert_ne!(
-        r.category, expected,
+        r.category,
+        expected,
         "regression: bug_0473_roundtrip_mismatch reproduced ({:?}): {}",
-        r.category, r.detail.lines().next().unwrap_or("")
+        r.category,
+        r.detail.lines().next().unwrap_or("")
     );
 }
 
@@ -206,9 +234,11 @@ fn reg_bug_0474_roundtrip_mismatch() {
     let expected = Category::from_label("roundtrip_mismatch").expect("category valid");
     let r = oracle::evaluate(target, src, 20000);
     assert_ne!(
-        r.category, expected,
+        r.category,
+        expected,
         "regression: bug_0474_roundtrip_mismatch reproduced ({:?}): {}",
-        r.category, r.detail.lines().next().unwrap_or("")
+        r.category,
+        r.detail.lines().next().unwrap_or("")
     );
 }
 
@@ -219,9 +249,11 @@ fn reg_bug_0667_hang() {
     let expected = Category::from_label("hang").expect("category valid");
     let r = oracle::evaluate(target, src, 20000);
     assert_ne!(
-        r.category, expected,
+        r.category,
+        expected,
         "regression: bug_0667_hang reproduced ({:?}): {}",
-        r.category, r.detail.lines().next().unwrap_or("")
+        r.category,
+        r.detail.lines().next().unwrap_or("")
     );
 }
 
@@ -232,9 +264,11 @@ fn reg_bug_0711_hang() {
     let expected = Category::from_label("hang").expect("category valid");
     let r = oracle::evaluate(target, src, 20000);
     assert_ne!(
-        r.category, expected,
+        r.category,
+        expected,
         "regression: bug_0711_hang reproduced ({:?}): {}",
-        r.category, r.detail.lines().next().unwrap_or("")
+        r.category,
+        r.detail.lines().next().unwrap_or("")
     );
 }
 
@@ -258,9 +292,11 @@ fn reg_bug_151139797a01_roundtrip_mismatch() {
     let expected = Category::from_label("roundtrip_mismatch").expect("category valid");
     let r = oracle::evaluate(target, src, 20000);
     assert_ne!(
-        r.category, expected,
+        r.category,
+        expected,
         "regression: bug_151139797a01_roundtrip_mismatch reproduced ({:?}): {}",
-        r.category, r.detail.lines().next().unwrap_or("")
+        r.category,
+        r.detail.lines().next().unwrap_or("")
     );
 }
 
@@ -271,9 +307,11 @@ fn reg_bug_1879_panic() {
     let expected = Category::from_label("panic").expect("category valid");
     let r = oracle::evaluate(target, src, 20000);
     assert_ne!(
-        r.category, expected,
+        r.category,
+        expected,
         "regression: bug_1879_panic reproduced ({:?}): {}",
-        r.category, r.detail.lines().next().unwrap_or("")
+        r.category,
+        r.detail.lines().next().unwrap_or("")
     );
 }
 
@@ -284,9 +322,11 @@ fn reg_bug_1883_panic() {
     let expected = Category::from_label("panic").expect("category valid");
     let r = oracle::evaluate(target, src, 20000);
     assert_ne!(
-        r.category, expected,
+        r.category,
+        expected,
         "regression: bug_1883_panic reproduced ({:?}): {}",
-        r.category, r.detail.lines().next().unwrap_or("")
+        r.category,
+        r.detail.lines().next().unwrap_or("")
     );
 }
 
@@ -310,9 +350,11 @@ fn reg_bug_2028_lrm_violation() {
     let expected = Category::from_label("lrm_violation").expect("category valid");
     let r = oracle::evaluate(target, src, 20000);
     assert_ne!(
-        r.category, expected,
+        r.category,
+        expected,
         "regression: bug_2028_lrm_violation reproduced ({:?}): {}",
-        r.category, r.detail.lines().next().unwrap_or("")
+        r.category,
+        r.detail.lines().next().unwrap_or("")
     );
 }
 
@@ -323,9 +365,11 @@ fn reg_bug_3813d7d69afe_lrm_violation() {
     let expected = Category::from_label("lrm_violation").expect("category valid");
     let r = oracle::evaluate(target, src, 20000);
     assert_ne!(
-        r.category, expected,
+        r.category,
+        expected,
         "regression: bug_3813d7d69afe_lrm_violation reproduced ({:?}): {}",
-        r.category, r.detail.lines().next().unwrap_or("")
+        r.category,
+        r.detail.lines().next().unwrap_or("")
     );
 }
 
@@ -336,9 +380,11 @@ fn reg_bug_490d4c855149_roundtrip_mismatch() {
     let expected = Category::from_label("roundtrip_mismatch").expect("category valid");
     let r = oracle::evaluate(target, src, 20000);
     assert_ne!(
-        r.category, expected,
+        r.category,
+        expected,
         "regression: bug_490d4c855149_roundtrip_mismatch reproduced ({:?}): {}",
-        r.category, r.detail.lines().next().unwrap_or("")
+        r.category,
+        r.detail.lines().next().unwrap_or("")
     );
 }
 
@@ -349,9 +395,11 @@ fn reg_bug_4dcdecaac736_diag_missing() {
     let expected = Category::from_label("diag_missing").expect("category valid");
     let r = oracle::evaluate(target, src, 20000);
     assert_ne!(
-        r.category, expected,
+        r.category,
+        expected,
         "regression: bug_4dcdecaac736_diag_missing reproduced ({:?}): {}",
-        r.category, r.detail.lines().next().unwrap_or("")
+        r.category,
+        r.detail.lines().next().unwrap_or("")
     );
 }
 
@@ -362,9 +410,11 @@ fn reg_bug_5d8cf7409413_diag_loc_range() {
     let expected = Category::from_label("diag_loc_range").expect("category valid");
     let r = oracle::evaluate(target, src, 20000);
     assert_ne!(
-        r.category, expected,
+        r.category,
+        expected,
         "regression: bug_5d8cf7409413_diag_loc_range reproduced ({:?}): {}",
-        r.category, r.detail.lines().next().unwrap_or("")
+        r.category,
+        r.detail.lines().next().unwrap_or("")
     );
 }
 
@@ -375,9 +425,11 @@ fn reg_bug_6365eafcd317_roundtrip_mismatch() {
     let expected = Category::from_label("roundtrip_mismatch").expect("category valid");
     let r = oracle::evaluate(target, src, 20000);
     assert_ne!(
-        r.category, expected,
+        r.category,
+        expected,
         "regression: bug_6365eafcd317_roundtrip_mismatch reproduced ({:?}): {}",
-        r.category, r.detail.lines().next().unwrap_or("")
+        r.category,
+        r.detail.lines().next().unwrap_or("")
     );
 }
 
@@ -388,9 +440,11 @@ fn reg_bug_63d353b8c78f_differential() {
     let expected = Category::from_label("differential").expect("category valid");
     let r = oracle::evaluate(target, src, 20000);
     assert_ne!(
-        r.category, expected,
+        r.category,
+        expected,
         "regression: bug_63d353b8c78f_differential reproduced ({:?}): {}",
-        r.category, r.detail.lines().next().unwrap_or("")
+        r.category,
+        r.detail.lines().next().unwrap_or("")
     );
 }
 
@@ -401,9 +455,11 @@ fn reg_bug_73041522a5c7_roundtrip_mismatch() {
     let expected = Category::from_label("roundtrip_mismatch").expect("category valid");
     let r = oracle::evaluate(target, src, 20000);
     assert_ne!(
-        r.category, expected,
+        r.category,
+        expected,
         "regression: bug_73041522a5c7_roundtrip_mismatch reproduced ({:?}): {}",
-        r.category, r.detail.lines().next().unwrap_or("")
+        r.category,
+        r.detail.lines().next().unwrap_or("")
     );
 }
 
@@ -414,9 +470,11 @@ fn reg_bug_7313335569a9_nondeterministic() {
     let expected = Category::from_label("nondeterministic").expect("category valid");
     let r = oracle::evaluate(target, src, 20000);
     assert_ne!(
-        r.category, expected,
+        r.category,
+        expected,
         "regression: bug_7313335569a9_nondeterministic reproduced ({:?}): {}",
-        r.category, r.detail.lines().next().unwrap_or("")
+        r.category,
+        r.detail.lines().next().unwrap_or("")
     );
 }
 
@@ -427,9 +485,11 @@ fn reg_bug_857019e4a126_differential() {
     let expected = Category::from_label("differential").expect("category valid");
     let r = oracle::evaluate(target, src, 20000);
     assert_ne!(
-        r.category, expected,
+        r.category,
+        expected,
         "regression: bug_857019e4a126_differential reproduced ({:?}): {}",
-        r.category, r.detail.lines().next().unwrap_or("")
+        r.category,
+        r.detail.lines().next().unwrap_or("")
     );
 }
 
@@ -453,9 +513,11 @@ fn reg_bug_9f1347db4111_roundtrip_mismatch() {
     let expected = Category::from_label("roundtrip_mismatch").expect("category valid");
     let r = oracle::evaluate(target, src, 20000);
     assert_ne!(
-        r.category, expected,
+        r.category,
+        expected,
         "regression: bug_9f1347db4111_roundtrip_mismatch reproduced ({:?}): {}",
-        r.category, r.detail.lines().next().unwrap_or("")
+        r.category,
+        r.detail.lines().next().unwrap_or("")
     );
 }
 
@@ -466,9 +528,11 @@ fn reg_bug_a6a2036648f7_roundtrip_mismatch() {
     let expected = Category::from_label("roundtrip_mismatch").expect("category valid");
     let r = oracle::evaluate(target, src, 20000);
     assert_ne!(
-        r.category, expected,
+        r.category,
+        expected,
         "regression: bug_a6a2036648f7_roundtrip_mismatch reproduced ({:?}): {}",
-        r.category, r.detail.lines().next().unwrap_or("")
+        r.category,
+        r.detail.lines().next().unwrap_or("")
     );
 }
 
@@ -479,9 +543,11 @@ fn reg_bug_d2919857ef6d_differential() {
     let expected = Category::from_label("differential").expect("category valid");
     let r = oracle::evaluate(target, src, 20000);
     assert_ne!(
-        r.category, expected,
+        r.category,
+        expected,
         "regression: bug_d2919857ef6d_differential reproduced ({:?}): {}",
-        r.category, r.detail.lines().next().unwrap_or("")
+        r.category,
+        r.detail.lines().next().unwrap_or("")
     );
 }
 
@@ -492,9 +558,11 @@ fn reg_bug_ee569a845cbe_roundtrip_mismatch() {
     let expected = Category::from_label("roundtrip_mismatch").expect("category valid");
     let r = oracle::evaluate(target, src, 20000);
     assert_ne!(
-        r.category, expected,
+        r.category,
+        expected,
         "regression: bug_ee569a845cbe_roundtrip_mismatch reproduced ({:?}): {}",
-        r.category, r.detail.lines().next().unwrap_or("")
+        r.category,
+        r.detail.lines().next().unwrap_or("")
     );
 }
 
@@ -505,9 +573,11 @@ fn reg_verify_bad_0011() {
     let expected = Category::from_label("differential").expect("category valid");
     let r = oracle::evaluate(target, src, 20000);
     assert_ne!(
-        r.category, expected,
+        r.category,
+        expected,
         "regression: verify_bad_0011 reproduced ({:?}): {}",
-        r.category, r.detail.lines().next().unwrap_or("")
+        r.category,
+        r.detail.lines().next().unwrap_or("")
     );
 }
 
@@ -518,9 +588,11 @@ fn reg_verify_bad_0016() {
     let expected = Category::from_label("differential").expect("category valid");
     let r = oracle::evaluate(target, src, 20000);
     assert_ne!(
-        r.category, expected,
+        r.category,
+        expected,
         "regression: verify_bad_0016 reproduced ({:?}): {}",
-        r.category, r.detail.lines().next().unwrap_or("")
+        r.category,
+        r.detail.lines().next().unwrap_or("")
     );
 }
 
@@ -531,9 +603,11 @@ fn reg_verify_bad_0025() {
     let expected = Category::from_label("differential").expect("category valid");
     let r = oracle::evaluate(target, src, 20000);
     assert_ne!(
-        r.category, expected,
+        r.category,
+        expected,
         "regression: verify_bad_0025 reproduced ({:?}): {}",
-        r.category, r.detail.lines().next().unwrap_or("")
+        r.category,
+        r.detail.lines().next().unwrap_or("")
     );
 }
 
@@ -544,9 +618,10 @@ fn reg_verify_bad_0048() {
     let expected = Category::from_label("differential").expect("category valid");
     let r = oracle::evaluate(target, src, 20000);
     assert_ne!(
-        r.category, expected,
+        r.category,
+        expected,
         "regression: verify_bad_0048 reproduced ({:?}): {}",
-        r.category, r.detail.lines().next().unwrap_or("")
+        r.category,
+        r.detail.lines().next().unwrap_or("")
     );
 }
-

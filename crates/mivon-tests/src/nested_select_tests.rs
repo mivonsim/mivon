@@ -13,8 +13,7 @@ use super::*;
 // Sekarang didukung penuh (array unpacked + part-select dinamis).
 
 fn sim(source: &str, max_time: u64) -> Vec<(String, mivon_ir::LogicVec)> {
-    simulate_signals(source, max_time)
-        .unwrap_or_else(|e| panic!("sim gagal: {e}\n{source}"))
+    simulate_signals(source, max_time).unwrap_or_else(|e| panic!("sim gagal: {e}\n{source}"))
 }
 
 fn get_u64(sigs: &[(String, mivon_ir::LogicVec)], name: &str) -> u64 {
@@ -57,7 +56,11 @@ fn nested_bitselect_on_arrayrangeselect() {
   end
 endmodule";
     let sigs = sim(src, 10);
-    assert_eq!(get_mem_elem(&sigs, "mem", 1, 32), 0x8, "mem[1] bit3 harus 1");
+    assert_eq!(
+        get_mem_elem(&sigs, "mem", 1, 32),
+        0x8,
+        "mem[1] bit3 harus 1"
+    );
 }
 
 #[test]
@@ -85,7 +88,11 @@ fn nested_bitselect_on_arraybitselect() {
   end
 endmodule";
     let sigs = sim(src, 10);
-    assert_eq!(get_mem_elem(&sigs, "mem", 0, 32), 0x2000, "mem[0] bit13 harus 1");
+    assert_eq!(
+        get_mem_elem(&sigs, "mem", 0, 32),
+        0x2000,
+        "mem[0] bit13 harus 1"
+    );
 }
 
 #[test]
@@ -99,7 +106,11 @@ fn nested_rangeselect_on_arraybitselect() {
   end
 endmodule";
     let sigs = sim(src, 10);
-    assert_eq!(get_mem_elem(&sigs, "mem", 3, 32), 0x300000, "mem[3][22:20]=011");
+    assert_eq!(
+        get_mem_elem(&sigs, "mem", 3, 32),
+        0x300000,
+        "mem[3][22:20]=011"
+    );
 }
 
 #[test]

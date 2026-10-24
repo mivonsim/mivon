@@ -37,11 +37,7 @@ fn parse_errors(src: &str) -> Vec<Diagnostic> {
         .with_source_lines(src)
         .with_file_line_map(file_line_map);
     let _ = parser.parse_design();
-    parser
-        .errors
-        .into_iter()
-        .filter(|d| d.is_error())
-        .collect()
+    parser.errors.into_iter().filter(|d| d.is_error()).collect()
 }
 
 /// Posisi diag: parser error mengisi source_snippet (bukan spans);
@@ -304,6 +300,8 @@ endmodule
     assert!(
         errs.is_empty(),
         "source valid tak boleh menghasilkan error: {:?}",
-        errs.iter().map(|e| e.message.to_string()).collect::<Vec<_>>()
+        errs.iter()
+            .map(|e| e.message.to_string())
+            .collect::<Vec<_>>()
     );
 }

@@ -1626,7 +1626,10 @@ endmodule
         .find(|(n, _)| n == "r")
         .map(|(_, v)| v.to_u64())
         .unwrap_or(99);
-    assert_eq!(r, 1, "get_name() pada objek ovm_object::new harus 'Abc', got r={r}");
+    assert_eq!(
+        r, 1,
+        "get_name() pada objek ovm_object::new harus 'Abc', got r={r}"
+    );
 }
 
 #[test]
@@ -2936,8 +2939,7 @@ endmodule
 "#;
     let sigs = crate::simulate_signals(src, 60).expect("sim realtoa+psprintf");
     let find = |name: &str| {
-        sigs
-            .iter()
+        sigs.iter()
             .find(|(n, _)| n == name)
             .map(|(_, v)| v.to_bool() == Some(true))
             .unwrap_or(false)
@@ -2979,7 +2981,10 @@ endmodule
         .find(|(n, _)| n == "ok_all")
         .map(|(_, v)| v.to_bool() == Some(true))
         .unwrap_or(false);
-    assert!(ok, "assoc first/next/last/prev LRM: ok_all harus 1 (vi=255)");
+    assert!(
+        ok,
+        "assoc first/next/last/prev LRM: ok_all harus 1 (vi=255)"
+    );
 }
 
 #[test]

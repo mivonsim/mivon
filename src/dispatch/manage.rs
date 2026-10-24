@@ -440,28 +440,30 @@ pub(crate) fn dispatch_requirements(a: &crate::cli::MrequirementsArgs) -> ! {
     let result: Result<(), SimError> = (|| {
         use mivon_api::tools::requirements::{load_mappings, load_results, RequirementsReport};
         use std::path::Path;
-        let load = |path: &str| -> Result<Vec<mivon_api::tools::requirements::RequirementMapping>, SimError> {
+        let load = |path: &str| -> Result<
+            Vec<mivon_api::tools::requirements::RequirementMapping>,
+            SimError,
+        > {
             if !Path::new(path).exists() {
                 return Err(SimError::with_diag(
                     DiagCode::IoError,
                     format!("{}: file tidak ditemukan", path),
                 ));
             }
-            load_mappings(Path::new(path)).map_err(|e| {
-                SimError::with_diag(DiagCode::DataFormatError, e)
-            })
+            load_mappings(Path::new(path))
+                .map_err(|e| SimError::with_diag(DiagCode::DataFormatError, e))
         };
-        let load_res = |path: &str| -> Result<Vec<mivon_api::tools::requirements::TestResult>, SimError> {
-            if !Path::new(path).exists() {
-                return Err(SimError::with_diag(
-                    DiagCode::IoError,
-                    format!("{}: file tidak ditemukan", path),
-                ));
-            }
-            load_results(Path::new(path)).map_err(|e| {
-                SimError::with_diag(DiagCode::DataFormatError, e)
-            })
-        };
+        let load_res =
+            |path: &str| -> Result<Vec<mivon_api::tools::requirements::TestResult>, SimError> {
+                if !Path::new(path).exists() {
+                    return Err(SimError::with_diag(
+                        DiagCode::IoError,
+                        format!("{}: file tidak ditemukan", path),
+                    ));
+                }
+                load_results(Path::new(path))
+                    .map_err(|e| SimError::with_diag(DiagCode::DataFormatError, e))
+            };
         match &a.cmd {
             crate::cli::MrequirementsCmd::Report {
                 mappings,
@@ -525,8 +527,7 @@ pub(crate) fn dispatch_bugtrack(a: &crate::cli::MbugtrackArgs) -> ! {
         use std::path::Path;
         let path = Path::new(&a.db);
         let mut tracker = if path.exists() {
-            BugTracker::load(path)
-                .map_err(|e| SimError::with_diag(DiagCode::DataFormatError, e))?
+            BugTracker::load(path).map_err(|e| SimError::with_diag(DiagCode::DataFormatError, e))?
         } else {
             BugTracker::new()
         };
@@ -547,7 +548,9 @@ pub(crate) fn dispatch_bugtrack(a: &crate::cli::MbugtrackArgs) -> ! {
                 println!("Linked {} -> {}", id, test);
             }
             crate::cli::MbugtrackCmd::Close { id } => {
-                tracker.set_status(id, BugStatus::Fixed).map_err(model_err)?;
+                tracker
+                    .set_status(id, BugStatus::Fixed)
+                    .map_err(model_err)?;
                 tracker
                     .save(path)
                     .map_err(|e| SimError::with_diag(DiagCode::IoError, e))?;

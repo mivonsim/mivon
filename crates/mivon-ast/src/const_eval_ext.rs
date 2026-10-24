@@ -141,8 +141,16 @@ fn array_cmp(a: &CVal, b: &CVal) -> std::cmp::Ordering {
     let yv = flatten(y);
     let n = xv.len().max(yv.len());
     for i in 0..n {
-        let xi = if i < n - xv.len() { 0 } else { xv[i - (n - xv.len())] };
-        let yi = if i < n - yv.len() { 0 } else { yv[i - (n - yv.len())] };
+        let xi = if i < n - xv.len() {
+            0
+        } else {
+            xv[i - (n - xv.len())]
+        };
+        let yi = if i < n - yv.len() {
+            0
+        } else {
+            yv[i - (n - yv.len())]
+        };
         let o = (xi as u64).cmp(&(yi as u64));
         if o != Ordering::Equal {
             return o;
@@ -715,13 +723,15 @@ pub fn eval_expr(e: &Expr, ctx: &PkgCtx, cur_pkg: Option<&str>) -> Result<CVal, 
                 _ => Err("member access on non-struct constant".to_string()),
             }
         }
-        Expr::Inside {
-            expr,
-            range_list,
-        } => {
+        Expr::Inside { expr, range_list } => {
             let val = scalar(eval_expr(expr, ctx, cur_pkg)?)?;
             for item in range_list {
-                if let Expr::RangeSelect { expr: base, msb, lsb } = item {
+                if let Expr::RangeSelect {
+                    expr: base,
+                    msb,
+                    lsb,
+                } = item
+                {
                     if matches!(base.as_ref(), Expr::Value(Value::Decimal(0))) {
                         let lo = scalar(eval_expr(msb, ctx, cur_pkg)?)?;
                         let hi = scalar(eval_expr(lsb, ctx, cur_pkg)?)?;
@@ -739,7 +749,11 @@ pub fn eval_expr(e: &Expr, ctx: &PkgCtx, cur_pkg: Option<&str>) -> Result<CVal, 
         }
         Expr::IncDec { expr, inc, pre } => {
             let v = scalar(eval_expr(expr, ctx, cur_pkg)?)?;
-            let new = if *inc { v.wrapping_add(1) } else { v.wrapping_sub(1) };
+            let new = if *inc {
+                v.wrapping_add(1)
+            } else {
+                v.wrapping_sub(1)
+            };
             Ok(CVal::Scalar(if *pre { new } else { v }))
         }
         Expr::Dist { expr, .. } => eval_expr(expr, ctx, cur_pkg),
@@ -762,26 +776,24 @@ pub fn eval_expr(e: &Expr, ctx: &PkgCtx, cur_pkg: Option<&str>) -> Result<CVal, 
             method,
             args,
             with_clause: _,
-        } => {
-            match method.as_str() {
-                "size" | "len" | "num" => {
-                    if let Expr::String(s) = obj.as_ref() {
-                        return Ok(CVal::Scalar(s.chars().count() as i64));
-                    }
-                    match eval_expr(obj, ctx, cur_pkg)? {
-                        CVal::Array(a) => Ok(CVal::Scalar(a.len() as i64)),
-                        CVal::Struct(s) => Ok(CVal::Scalar(s.len() as i64)),
-                        CVal::Scalar(_) => Ok(CVal::Scalar(1)),
-                    }
+        } => match method.as_str() {
+            "size" | "len" | "num" => {
+                if let Expr::String(s) = obj.as_ref() {
+                    return Ok(CVal::Scalar(s.chars().count() as i64));
                 }
-                _ => {
-                    for a in args {
-                        let _ = eval_expr(a, ctx, cur_pkg)?;
-                    }
-                    Ok(CVal::Scalar(0))
+                match eval_expr(obj, ctx, cur_pkg)? {
+                    CVal::Array(a) => Ok(CVal::Scalar(a.len() as i64)),
+                    CVal::Struct(s) => Ok(CVal::Scalar(s.len() as i64)),
+                    CVal::Scalar(_) => Ok(CVal::Scalar(1)),
                 }
             }
-        }
+            _ => {
+                for a in args {
+                    let _ = eval_expr(a, ctx, cur_pkg)?;
+                }
+                Ok(CVal::Scalar(0))
+            }
+        },
     }
 }
 

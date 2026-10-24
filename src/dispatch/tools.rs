@@ -172,7 +172,12 @@ pub(crate) fn dispatch_wave(a: &crate::cli::MwaveArgs) -> ! {
             input: input.clone(),
             output: output.clone(),
         },
-        crate::cli::MwaveCmd::Align { pre, post, trigger, output } => mivon_api::tools::wave::WaveArgs::Align {
+        crate::cli::MwaveCmd::Align {
+            pre,
+            post,
+            trigger,
+            output,
+        } => mivon_api::tools::wave::WaveArgs::Align {
             pre: pre.clone(),
             post: post.clone(),
             trigger: trigger.clone(),

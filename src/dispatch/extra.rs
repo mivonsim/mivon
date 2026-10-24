@@ -103,8 +103,7 @@ pub(crate) fn dispatch_tbgen(a: &crate::cli::MtbgenArgs) -> ! {
         } else {
             let inputs = parse_tb_ports(a.inputs.as_deref(), "--inputs")?;
             let outputs = parse_tb_ports(a.outputs.as_deref(), "--outputs")?;
-            let in_refs: Vec<(&str, u32)> =
-                inputs.iter().map(|(n, w)| (n.as_str(), *w)).collect();
+            let in_refs: Vec<(&str, u32)> = inputs.iter().map(|(n, w)| (n.as_str(), *w)).collect();
             let out_refs: Vec<(&str, u32)> =
                 outputs.iter().map(|(n, w)| (n.as_str(), *w)).collect();
             let ports = tbgen::ports_from_lists(&in_refs, &out_refs);
@@ -164,7 +163,12 @@ fn parse_tb_ports(spec: Option<&str>, what: &str) -> Result<Vec<(String, u32)>, 
         let width: u32 = width.trim().parse().map_err(|_| {
             SimError::with_diag(
                 DiagCode::InvalidSyntax,
-                format!("{}: lebar '{}' bukan angka pada '{}'", what, width.trim(), part),
+                format!(
+                    "{}: lebar '{}' bukan angka pada '{}'",
+                    what,
+                    width.trim(),
+                    part
+                ),
             )
         })?;
         if width == 0 {
@@ -214,7 +218,6 @@ pub(crate) fn dispatch_verif_dashboard(a: &crate::cli::MdashboardArgs) -> ! {
     })();
     exit_tool(result);
 }
-
 
 /// Tulis laporan (HTML/teks) — membuat direktori induk bila perlu.
 fn write_report(path: &str, content: &str) -> Result<(), SimError> {
@@ -282,32 +285,32 @@ pub(crate) fn dispatch_license(a: &crate::cli::MlicenseArgs) -> ! {
                 host,
             } => {
                 let (feature, user, host) = (feature.clone(), user.clone(), host.clone());
-                let id = with_locked_db(path, default_timeout, move |s| s.checkout(&feature, &user, &host))
-                    .map_err(|e| {
-                        // Pool habis = resource limit; feature tak dikenal = referensi.
-                        let code = if e.contains("unknown feature") {
-                            DiagCode::InvalidReference
-                        } else {
-                            DiagCode::ResourceLimit
-                        };
-                        SimError::with_diag(code, e)
-                    })?;
+                let id = with_locked_db(path, default_timeout, move |s| {
+                    s.checkout(&feature, &user, &host)
+                })
+                .map_err(|e| {
+                    // Pool habis = resource limit; feature tak dikenal = referensi.
+                    let code = if e.contains("unknown feature") {
+                        DiagCode::InvalidReference
+                    } else {
+                        DiagCode::ResourceLimit
+                    };
+                    SimError::with_diag(code, e)
+                })?;
                 println!("{}", id);
             }
             crate::cli::MlicenseCmd::Checkin { lease } => {
                 let lease = lease.clone();
                 let arg = lease.clone();
-                with_locked_db(path, default_timeout, move |s| s.checkin(&arg)).map_err(|e| {
-                    SimError::with_diag(DiagCode::InvalidReference, e)
-                })?;
+                with_locked_db(path, default_timeout, move |s| s.checkin(&arg))
+                    .map_err(|e| SimError::with_diag(DiagCode::InvalidReference, e))?;
                 println!("Lease {} dikembalikan", lease);
             }
             crate::cli::MlicenseCmd::Heartbeat { lease } => {
                 let lease = lease.clone();
                 let arg = lease.clone();
-                with_locked_db(path, default_timeout, move |s| s.heartbeat(&arg)).map_err(
-                    |e| SimError::with_diag(DiagCode::InvalidReference, e),
-                )?;
+                with_locked_db(path, default_timeout, move |s| s.heartbeat(&arg))
+                    .map_err(|e| SimError::with_diag(DiagCode::InvalidReference, e))?;
                 println!("Heartbeat lease {}", lease);
             }
         }

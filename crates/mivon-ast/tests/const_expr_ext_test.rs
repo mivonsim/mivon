@@ -49,17 +49,32 @@ fn test_inside_exact_and_miss() {
 
 #[test]
 fn test_incdec() {
-    let pre_inc = Expr::IncDec { expr: Box::new(Expr::Value(Value::Decimal(5))), inc: true, pre: true };
+    let pre_inc = Expr::IncDec {
+        expr: Box::new(Expr::Value(Value::Decimal(5))),
+        inc: true,
+        pre: true,
+    };
     assert_eq!(eval(&pre_inc), CVal::Scalar(6));
-    let post_inc = Expr::IncDec { expr: Box::new(Expr::Value(Value::Decimal(5))), inc: true, pre: false };
+    let post_inc = Expr::IncDec {
+        expr: Box::new(Expr::Value(Value::Decimal(5))),
+        inc: true,
+        pre: false,
+    };
     assert_eq!(eval(&post_inc), CVal::Scalar(5));
-    let pre_dec = Expr::IncDec { expr: Box::new(Expr::Value(Value::Decimal(5))), inc: false, pre: true };
+    let pre_dec = Expr::IncDec {
+        expr: Box::new(Expr::Value(Value::Decimal(5))),
+        inc: false,
+        pre: true,
+    };
     assert_eq!(eval(&pre_dec), CVal::Scalar(4));
 }
 
 #[test]
 fn test_dist_returns_value() {
-    let e = Expr::Dist { expr: Box::new(Expr::Value(Value::Decimal(9))), items: vec![] };
+    let e = Expr::Dist {
+        expr: Box::new(Expr::Value(Value::Decimal(9))),
+        items: vec![],
+    };
     assert_eq!(eval(&e), CVal::Scalar(9));
 }
 
@@ -68,15 +83,27 @@ fn test_streaming_concat_order() {
     let right = Expr::StreamingConcat {
         op: String::from(">>"),
         slice_size: None,
-        slices: vec![Expr::Value(Value::Decimal(1)), Expr::Value(Value::Decimal(2))],
+        slices: vec![
+            Expr::Value(Value::Decimal(1)),
+            Expr::Value(Value::Decimal(2)),
+        ],
     };
-    assert_eq!(eval(&right), CVal::Array(vec![CVal::Scalar(1), CVal::Scalar(2)]));
+    assert_eq!(
+        eval(&right),
+        CVal::Array(vec![CVal::Scalar(1), CVal::Scalar(2)])
+    );
     let left = Expr::StreamingConcat {
         op: String::from("<<"),
         slice_size: None,
-        slices: vec![Expr::Value(Value::Decimal(1)), Expr::Value(Value::Decimal(2))],
+        slices: vec![
+            Expr::Value(Value::Decimal(1)),
+            Expr::Value(Value::Decimal(2)),
+        ],
     };
-    assert_eq!(eval(&left), CVal::Array(vec![CVal::Scalar(2), CVal::Scalar(1)]));
+    assert_eq!(
+        eval(&left),
+        CVal::Array(vec![CVal::Scalar(2), CVal::Scalar(1)])
+    );
 }
 
 #[test]

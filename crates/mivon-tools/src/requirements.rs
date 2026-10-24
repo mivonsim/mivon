@@ -339,12 +339,10 @@ pub fn load_mappings(path: &Path) -> Result<Vec<RequirementMapping>, String> {
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty())
         };
-        let requirement_id = get(Some(columns.id)).ok_or_else(|| {
-            format!("baris {}: kolom requirement id kosong", line_no)
-        })?;
-        let test_name = get(Some(columns.test)).ok_or_else(|| {
-            format!("baris {}: kolom test name kosong", line_no)
-        })?;
+        let requirement_id = get(Some(columns.id))
+            .ok_or_else(|| format!("baris {}: kolom requirement id kosong", line_no))?;
+        let test_name = get(Some(columns.test))
+            .ok_or_else(|| format!("baris {}: kolom test name kosong", line_no))?;
         mappings.push(RequirementMapping {
             requirement_id,
             test_name,
@@ -388,11 +386,14 @@ fn normalize_header(value: &str) -> String {
 fn detect_columns(first: &[String]) -> Result<Columns, String> {
     let norm: Vec<String> = first.iter().map(|s| normalize_header(s)).collect();
     let id_pos = norm.iter().position(|h| {
-        matches!(h.as_str(), "requirement_id" | "req_id" | "requirement" | "id")
+        matches!(
+            h.as_str(),
+            "requirement_id" | "req_id" | "requirement" | "id"
+        )
     });
-    let test_pos = norm.iter().position(|h| {
-        matches!(h.as_str(), "test_name" | "testname" | "test" | "tests")
-    });
+    let test_pos = norm
+        .iter()
+        .position(|h| matches!(h.as_str(), "test_name" | "testname" | "test" | "tests"));
     if id_pos.is_none() && test_pos.is_none() {
         return Ok(Columns {
             has_header: false,

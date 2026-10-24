@@ -381,7 +381,10 @@ impl SimulationEngine {
                     };
                     // next: kunci pertama yang > cur (sudah ada idx: pasangan
                     // langsung; cur tak ada: smallest key > cur — LRM §7.10.6).
-                    if let Some(k) = keys.iter().find(|k| assoc_key_cmp(k, &cur) == std::cmp::Ordering::Greater) {
+                    if let Some(k) = keys
+                        .iter()
+                        .find(|k| assoc_key_cmp(k, &cur) == std::cmp::Ordering::Greater)
+                    {
                         let k = (*k).clone();
                         if let Some(IrExpr::Signal(id, _)) = args.first() {
                             self.state.write_signal(*id, k.clone());

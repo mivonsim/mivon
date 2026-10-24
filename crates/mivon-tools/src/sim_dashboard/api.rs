@@ -45,9 +45,7 @@ pub(crate) fn register(rest: &mut RestServer, server: Arc<SimServer>) {
         cancel_response(&s, path)
     });
 
-    rest.add_route("GET", "/api/v1/stats", move |_, _| {
-        stats_response(&server)
-    });
+    rest.add_route("GET", "/api/v1/stats", move |_, _| stats_response(&server));
 }
 
 /// Pisahkan daftar file `a.sv,b.sv` — buang entri kosong.
@@ -77,14 +75,14 @@ fn validate_files(files: &[String]) -> Result<(), String> {
         // boleh bisa membaca file mana pun di mesin (isi bisa bocor lewat
         // pesan Failed).
         if f.starts_with('/') || f.starts_with('\\') || f.starts_with('~') {
-            return Err(format!("path harus relatif terhadap direktori kerja: {}", f));
+            return Err(format!(
+                "path harus relatif terhadap direktori kerja: {}",
+                f
+            ));
         }
         // Drive-letter Windows (C:) ditolak; nama file sah yang mengandung ':'
         // (mis. "a:b.sv") tetap diizinkan.
-        if f.len() >= 2
-            && f.as_bytes()[1] == b':'
-            && f.as_bytes()[0].is_ascii_alphabetic()
-        {
+        if f.len() >= 2 && f.as_bytes()[1] == b':' && f.as_bytes()[0].is_ascii_alphabetic() {
             return Err(format!("path drive-letter tidak diizinkan: {}", f));
         }
         let ext = std::path::Path::new(f)
@@ -206,7 +204,8 @@ fn cancel_response(server: &SimServer, path: &str) -> String {
 
 fn stats_response(server: &SimServer) -> String {
     let sessions = server.list_all();
-    let count = |pred: fn(&SessionStatus) -> bool| sessions.iter().filter(|s| pred(&s.status)).count();
+    let count =
+        |pred: fn(&SessionStatus) -> bool| sessions.iter().filter(|s| pred(&s.status)).count();
     let body = serde_json::json!({
         "total": sessions.len(),
         "running": count(|s| matches!(s, SessionStatus::Running)),

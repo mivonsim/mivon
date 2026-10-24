@@ -114,7 +114,13 @@ impl Elaborator {
                         Ok(IrLValue::RangeSelect(sid, end, start))
                     }
                     // Range-select di atas ArrayRangeSelect (`mem[i][15:8][2:0]`).
-                    IrLValue::ArrayRangeSelect { sig_id, index, elem_width, msb, lsb } => {
+                    IrLValue::ArrayRangeSelect {
+                        sig_id,
+                        index,
+                        elem_width,
+                        msb,
+                        lsb,
+                    } => {
                         let inner_min = msb.min(lsb);
                         let sub_min = msb_c.min(lsb_c);
                         let sub_max = msb_c.max(lsb_c);
@@ -127,7 +133,12 @@ impl Elaborator {
                         })
                     }
                     // Range-select di atas ArrayBitSelect (`mem[i][j][2:0]`).
-                    IrLValue::ArrayBitSelect { sig_id, index, elem_width, bit } => {
+                    IrLValue::ArrayBitSelect {
+                        sig_id,
+                        index,
+                        elem_width,
+                        bit,
+                    } => {
                         let sub_min = msb_c.min(lsb_c);
                         let sub_count = msb_c.max(lsb_c) - msb_c.min(lsb_c) + 1;
                         match *bit {
@@ -145,7 +156,10 @@ impl Elaborator {
                                 let elem_off = IrExpr::BinaryOp(
                                     BinaryIrOp::Mul,
                                     index.clone(),
-                                    Box::new(IrExpr::Const(LogicVec::from_u64(elem_width as u64, 32))),
+                                    Box::new(IrExpr::Const(LogicVec::from_u64(
+                                        elem_width as u64,
+                                        32,
+                                    ))),
                                 );
                                 let base = IrExpr::BinaryOp(
                                     BinaryIrOp::Add,
@@ -166,7 +180,11 @@ impl Elaborator {
                         }
                     }
                     // Range-select di atas ExprPartSelect dinamis (`sig[b+:8][2:0]`).
-                    IrLValue::ExprPartSelect { sig_id, base, width: _ } => {
+                    IrLValue::ExprPartSelect {
+                        sig_id,
+                        base,
+                        width: _,
+                    } => {
                         let sub_min = msb_c.min(lsb_c);
                         let sub_count = msb_c.max(lsb_c) - msb_c.min(lsb_c) + 1;
                         let new_base = IrExpr::BinaryOp(
@@ -250,12 +268,12 @@ impl Elaborator {
             } => {
                 let inner_lv = self.elaborate_lvalue(inner, signal_map, signals)?;
                 match inner_lv {
-IrLValue::VifField { .. } => Err(self.elab_diag_at(
-                            DiagCode::NotImplemented,
-                            "select pada field virtual interface tidak dapat di-resolve statis",
-                            expr_location(expr).0,
-                            expr_location(expr).1,
-                        )),
+                    IrLValue::VifField { .. } => Err(self.elab_diag_at(
+                        DiagCode::NotImplemented,
+                        "select pada field virtual interface tidak dapat di-resolve statis",
+                        expr_location(expr).0,
+                        expr_location(expr).1,
+                    )),
                     IrLValue::Signal(sid, _) => {
                         let sig = &signals[sid];
                         // Check for multi-dim packed array: packed_dims.len() > 1
@@ -480,7 +498,13 @@ IrLValue::VifField { .. } => Err(self.elab_diag_at(
                     }
                     // Bit-select di atas ArrayRangeSelect (`mem[i][7:0][k]`):
                     // `k` relatif thd base elemen slice (offset = min(msb,lsb)).
-                    IrLValue::ArrayRangeSelect { sig_id, index, elem_width, msb, lsb } => {
+                    IrLValue::ArrayRangeSelect {
+                        sig_id,
+                        index,
+                        elem_width,
+                        msb,
+                        lsb,
+                    } => {
                         let inner_base = msb.min(lsb);
                         if let Ok(idx) = const_eval_params(bs_index, &self.param_vals) {
                             Ok(IrLValue::ArrayBitSelect {
@@ -509,7 +533,12 @@ IrLValue::VifField { .. } => Err(self.elab_diag_at(
                     }
                     // Bit-select di atas ArrayBitSelect (`arr[i][j][k]`):
                     // akumulasi offset bit dalam elemen.
-                    IrLValue::ArrayBitSelect { sig_id, index, elem_width, bit } => {
+                    IrLValue::ArrayBitSelect {
+                        sig_id,
+                        index,
+                        elem_width,
+                        bit,
+                    } => {
                         if let Ok(idx) = const_eval_params(bs_index, &self.param_vals) {
                             let new_bit = match *bit {
                                 IrExpr::Const(lv) => IrExpr::Const(LogicVec::from_u64(
@@ -530,7 +559,8 @@ IrLValue::VifField { .. } => Err(self.elab_diag_at(
                             })
                         } else {
                             let index_expr = self.elaborate_expr(bs_index, signal_map, signals)?;
-                            let new_bit = IrExpr::BinaryOp(BinaryIrOp::Add, bit, Box::new(index_expr));
+                            let new_bit =
+                                IrExpr::BinaryOp(BinaryIrOp::Add, bit, Box::new(index_expr));
                             Ok(IrLValue::ArrayBitSelect {
                                 sig_id,
                                 index,
@@ -540,7 +570,11 @@ IrLValue::VifField { .. } => Err(self.elab_diag_at(
                         }
                     }
                     // Bit-select di atas ExprPartSelect dinamis (`sig[base+:w][k]`).
-                    IrLValue::ExprPartSelect { sig_id, base, width: _ } => {
+                    IrLValue::ExprPartSelect {
+                        sig_id,
+                        base,
+                        width: _,
+                    } => {
                         if let Ok(idx) = const_eval_params(bs_index, &self.param_vals) {
                             let new_base = IrExpr::BinaryOp(
                                 BinaryIrOp::Add,
@@ -554,7 +588,8 @@ IrLValue::VifField { .. } => Err(self.elab_diag_at(
                             })
                         } else {
                             let index_expr = self.elaborate_expr(bs_index, signal_map, signals)?;
-                            let new_base = IrExpr::BinaryOp(BinaryIrOp::Add, base, Box::new(index_expr));
+                            let new_base =
+                                IrExpr::BinaryOp(BinaryIrOp::Add, base, Box::new(index_expr));
                             Ok(IrLValue::ExprPartSelect {
                                 sig_id,
                                 base: Box::new(new_base),
@@ -599,12 +634,12 @@ IrLValue::VifField { .. } => Err(self.elab_diag_at(
                     (Ok(b), Ok(w)) => {
                         let (base_c, width_c) = (b as usize, w as usize);
                         match inner_lv {
-IrLValue::VifField { .. } => Err(self.elab_diag_at(
-                            DiagCode::NotImplemented,
-                            "select pada field virtual interface tidak dapat di-resolve statis",
-                            expr_location(expr).0,
-                            expr_location(expr).1,
-                        )),
+                            IrLValue::VifField { .. } => Err(self.elab_diag_at(
+                                DiagCode::NotImplemented,
+                                "select pada field virtual interface tidak dapat di-resolve statis",
+                                expr_location(expr).0,
+                                expr_location(expr).1,
+                            )),
                             IrLValue::Signal(sid, _) => {
                                 let sig = &signals[sid];
                                 if width_c > 0 {
@@ -671,11 +706,19 @@ IrLValue::VifField { .. } => Err(self.elab_diag_at(
                             }
                             // Part-select di atas ArrayBitSelect (`arr[i][j][base+:w]`).
                             // physical = idx*elem_width + bit + base_c .. + (w-1).
-                            IrLValue::ArrayBitSelect { sig_id, index, elem_width, bit } => {
+                            IrLValue::ArrayBitSelect {
+                                sig_id,
+                                index,
+                                elem_width,
+                                bit,
+                            } => {
                                 let elem_off = IrExpr::BinaryOp(
                                     BinaryIrOp::Mul,
                                     index.clone(),
-                                    Box::new(IrExpr::Const(LogicVec::from_u64(elem_width as u64, 32))),
+                                    Box::new(IrExpr::Const(LogicVec::from_u64(
+                                        elem_width as u64,
+                                        32,
+                                    ))),
                                 );
                                 let total = IrExpr::BinaryOp(
                                     BinaryIrOp::Add,
@@ -693,7 +736,13 @@ IrLValue::VifField { .. } => Err(self.elab_diag_at(
                                 })
                             }
                             // Part-select di atas ArrayRangeSelect (`mem[i][7:0][base+:w]`).
-                            IrLValue::ArrayRangeSelect { sig_id, index, elem_width, msb, lsb } => {
+                            IrLValue::ArrayRangeSelect {
+                                sig_id,
+                                index,
+                                elem_width,
+                                msb,
+                                lsb,
+                            } => {
                                 let inner_base = msb.min(lsb);
                                 let hi = base_c + width_c - 1;
                                 Ok(IrLValue::ArrayRangeSelect {
@@ -705,7 +754,11 @@ IrLValue::VifField { .. } => Err(self.elab_diag_at(
                                 })
                             }
                             // Part-select di atas ExprPartSelect (`sig[b+:w2][base+:w]`).
-                            IrLValue::ExprPartSelect { sig_id, base, width: _ } => {
+                            IrLValue::ExprPartSelect {
+                                sig_id,
+                                base,
+                                width: _,
+                            } => {
                                 let new_base = IrExpr::BinaryOp(
                                     BinaryIrOp::Add,
                                     base,
@@ -759,10 +812,8 @@ IrLValue::VifField { .. } => Err(self.elab_diag_at(
                                         index: Box::new(index_expr),
                                     })
                                 } else {
-                                    let base_ir =
-                                        self.elaborate_expr(base, signal_map, signals)?;
-                                    let mut parts: Vec<IrLValue> =
-                                        Vec::with_capacity(width_c);
+                                    let base_ir = self.elaborate_expr(base, signal_map, signals)?;
+                                    let mut parts: Vec<IrLValue> = Vec::with_capacity(width_c);
                                     for k in (0..width_c).rev() {
                                         let idx = if k == 0 {
                                             base_ir.clone()
@@ -770,9 +821,9 @@ IrLValue::VifField { .. } => Err(self.elab_diag_at(
                                             IrExpr::BinaryOp(
                                                 BinaryIrOp::Add,
                                                 Box::new(base_ir.clone()),
-                                                Box::new(IrExpr::Const(
-                                                    LogicVec::from_u64(k as u64, 64),
-                                                )),
+                                                Box::new(IrExpr::Const(LogicVec::from_u64(
+                                                    k as u64, 64,
+                                                ))),
                                             )
                                         };
                                         parts.push(IrLValue::HierRefIndex {
@@ -818,12 +869,12 @@ IrLValue::VifField { .. } => Err(self.elab_diag_at(
                             }
                         };
                         match inner_lv {
-IrLValue::VifField { .. } => Err(self.elab_diag_at(
-                            DiagCode::NotImplemented,
-                            "select pada field virtual interface tidak dapat di-resolve statis",
-                            expr_location(expr).0,
-                            expr_location(expr).1,
-                        )),
+                            IrLValue::VifField { .. } => Err(self.elab_diag_at(
+                                DiagCode::NotImplemented,
+                                "select pada field virtual interface tidak dapat di-resolve statis",
+                                expr_location(expr).0,
+                                expr_location(expr).1,
+                            )),
                             IrLValue::Signal(sid, _) => Ok(IrLValue::ExprPartSelect {
                                 sig_id: sid,
                                 base: Box::new(base_ir),
@@ -871,8 +922,7 @@ IrLValue::VifField { .. } => Err(self.elab_diag_at(
                             // (`u.data[base +: 4]`): dekomposisi ke concat
                             // HierRefIndex, offset dievaluasi saat write.
                             IrLValue::HierRef(name) => {
-                                let mut parts: Vec<IrLValue> =
-                                    Vec::with_capacity(width_c);
+                                let mut parts: Vec<IrLValue> = Vec::with_capacity(width_c);
                                 for k in (0..width_c).rev() {
                                     let idx = if k == 0 {
                                         base_ir.clone()
@@ -881,8 +931,7 @@ IrLValue::VifField { .. } => Err(self.elab_diag_at(
                                             BinaryIrOp::Add,
                                             Box::new(base_ir.clone()),
                                             Box::new(IrExpr::Const(LogicVec::from_u64(
-                                                k as u64,
-                                                64,
+                                                k as u64, 64,
                                             ))),
                                         )
                                     };
@@ -894,8 +943,7 @@ IrLValue::VifField { .. } => Err(self.elab_diag_at(
                                 Ok(IrLValue::Concat(parts))
                             }
                             IrLValue::HierRefIndex { name, index } => {
-                                let mut parts: Vec<IrLValue> =
-                                    Vec::with_capacity(width_c);
+                                let mut parts: Vec<IrLValue> = Vec::with_capacity(width_c);
                                 for k in (0..width_c).rev() {
                                     let idx = if k == 0 {
                                         (*index).clone()
@@ -904,8 +952,7 @@ IrLValue::VifField { .. } => Err(self.elab_diag_at(
                                             BinaryIrOp::Add,
                                             index.clone(),
                                             Box::new(IrExpr::Const(LogicVec::from_u64(
-                                                k as u64,
-                                                64,
+                                                k as u64, 64,
                                             ))),
                                         )
                                     };
@@ -944,14 +991,24 @@ IrLValue::VifField { .. } => Err(self.elab_diag_at(
                                 })
                             }
                             // Part-select dinamis di atas ArrayBitSelect (`arr[i][j][base+:w]`).
-                            IrLValue::ArrayBitSelect { sig_id, index, elem_width, bit } => {
+                            IrLValue::ArrayBitSelect {
+                                sig_id,
+                                index,
+                                elem_width,
+                                bit,
+                            } => {
                                 let elem_off = IrExpr::BinaryOp(
                                     BinaryIrOp::Mul,
                                     index.clone(),
-                                    Box::new(IrExpr::Const(LogicVec::from_u64(elem_width as u64, 32))),
+                                    Box::new(IrExpr::Const(LogicVec::from_u64(
+                                        elem_width as u64,
+                                        32,
+                                    ))),
                                 );
                                 let bit_off = match *bit {
-                                    IrExpr::Const(lv) => IrExpr::Const(LogicVec::from_u64(lv.to_u64(), 32)),
+                                    IrExpr::Const(lv) => {
+                                        IrExpr::Const(LogicVec::from_u64(lv.to_u64(), 32))
+                                    }
                                     other => other,
                                 };
                                 let total = IrExpr::BinaryOp(
@@ -970,12 +1027,21 @@ IrLValue::VifField { .. } => Err(self.elab_diag_at(
                                 })
                             }
                             // Part-select dinamis di atas ArrayRangeSelect.
-                            IrLValue::ArrayRangeSelect { sig_id, index, elem_width, msb, lsb } => {
+                            IrLValue::ArrayRangeSelect {
+                                sig_id,
+                                index,
+                                elem_width,
+                                msb,
+                                lsb,
+                            } => {
                                 let inner_base = msb.min(lsb) as u64;
                                 let elem_off = IrExpr::BinaryOp(
                                     BinaryIrOp::Mul,
                                     index.clone(),
-                                    Box::new(IrExpr::Const(LogicVec::from_u64(elem_width as u64, 32))),
+                                    Box::new(IrExpr::Const(LogicVec::from_u64(
+                                        elem_width as u64,
+                                        32,
+                                    ))),
                                 );
                                 let total = IrExpr::BinaryOp(
                                     BinaryIrOp::Add,
@@ -993,12 +1059,13 @@ IrLValue::VifField { .. } => Err(self.elab_diag_at(
                                 })
                             }
                             // Part-select dinamis di atas ExprPartSelect.
-                            IrLValue::ExprPartSelect { sig_id, base, width: _ } => {
-                                let total = IrExpr::BinaryOp(
-                                    BinaryIrOp::Add,
-                                    base,
-                                    Box::new(base_ir),
-                                );
+                            IrLValue::ExprPartSelect {
+                                sig_id,
+                                base,
+                                width: _,
+                            } => {
+                                let total =
+                                    IrExpr::BinaryOp(BinaryIrOp::Add, base, Box::new(base_ir));
                                 Ok(IrLValue::ExprPartSelect {
                                     sig_id,
                                     base: Box::new(total),

@@ -858,7 +858,9 @@ impl SimulationEngine {
     ) -> Result<(), SimError> {
         match lhs {
             mivon_ast::Expr::Ident { name, .. } => self.write_local_or_field(name.as_str(), val),
-            mivon_ast::Expr::MemberAccess { obj, field } => self.write_ast_member_field(obj, *field, val),
+            mivon_ast::Expr::MemberAccess { obj, field } => {
+                self.write_ast_member_field(obj, *field, val)
+            }
             mivon_ast::Expr::BitSelect { expr: inner, index } => {
                 // `arr[idx] = rhs` — array element (array field/queue) ATAU
                 // bit select pada vector. Konsisten dgn evaluate_ast_stmt.

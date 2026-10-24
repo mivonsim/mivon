@@ -163,7 +163,10 @@ impl Parser {
                         line,
                         col,
                     );
-                    return Err(self.err_with_code(DiagCode::InvalidSyntax, "parser stuck (no progress) in module body"));
+                    return Err(self.err_with_code(
+                        DiagCode::InvalidSyntax,
+                        "parser stuck (no progress) in module body",
+                    ));
                 }
             } else {
                 _stuck = 0;
@@ -429,7 +432,12 @@ impl Parser {
                         break;
                     }
                 }
-                Token::Eof => return Err(self.err_with_code(DiagCode::ExpectedToken, "unexpected EOF in balanced paren")),
+                Token::Eof => {
+                    return Err(self.err_with_code(
+                        DiagCode::ExpectedToken,
+                        "unexpected EOF in balanced paren",
+                    ))
+                }
                 _ => {
                     self.advance();
                 }
@@ -567,7 +575,10 @@ impl Parser {
                         line,
                         col,
                     );
-                    return Err(self.err_with_code(DiagCode::InvalidSyntax, "parser stuck (no progress) in interface body"));
+                    return Err(self.err_with_code(
+                        DiagCode::InvalidSyntax,
+                        "parser stuck (no progress) in interface body",
+                    ));
                 }
             } else {
                 _stuck = 0;
@@ -693,7 +704,10 @@ impl Parser {
                     self.advance();
                     PortDirection::Inout
                 }
-                _ => return Err(self.err_with_code(DiagCode::ExpectedToken, "expected direction in modport")),
+                _ => {
+                    return Err(self
+                        .err_with_code(DiagCode::ExpectedToken, "expected direction in modport"))
+                }
             };
             // Collect all signals under this direction, comma-separated
             loop {
@@ -703,7 +717,12 @@ impl Parser {
                         self.advance();
                         n
                     }
-                    _ => return Err(self.err_with_code(DiagCode::ExpectedToken, "expected signal name in modport")),
+                    _ => {
+                        return Err(self.err_with_code(
+                            DiagCode::ExpectedToken,
+                            "expected signal name in modport",
+                        ))
+                    }
                 };
                 items.push(ModportItem {
                     name: sig_name,
@@ -1185,7 +1204,10 @@ impl Parser {
                             self.advance();
                             *s
                         }
-                        _ => return Err(self.err_with_code(DiagCode::ExpectedToken, "expected parameter name")),
+                        _ => {
+                            return Err(self
+                                .err_with_code(DiagCode::ExpectedToken, "expected parameter name"))
+                        }
                     };
                     self.expect(Token::LParen)?;
                     if self.is_type_token() {
@@ -1351,7 +1373,10 @@ impl Parser {
                                 self.advance();
                                 *s
                             }
-                            _ => return Err(self.err_with_code(DiagCode::ExpectedToken, "expected port name")),
+                            _ => {
+                                return Err(self
+                                    .err_with_code(DiagCode::ExpectedToken, "expected port name"))
+                            }
                         };
 
                         if self.peek() == &Token::LParen {
@@ -1417,7 +1442,10 @@ impl Parser {
                         n
                     }
                     _ => {
-                        return Err(self.err_with_code(DiagCode::ExpectedToken, "expected port name after '.' in instance connection"))
+                        return Err(self.err_with_code(
+                            DiagCode::ExpectedToken,
+                            "expected port name after '.' in instance connection",
+                        ))
                     }
                 };
                 let expr = if self.peek() == &Token::LParen {
@@ -1582,7 +1610,11 @@ impl Parser {
                     self.advance();
                     Some(s)
                 }
-                _ => return Err(self.err_with_code(DiagCode::ExpectedToken, "expected gate instance name")),
+                _ => {
+                    return Err(
+                        self.err_with_code(DiagCode::ExpectedToken, "expected gate instance name")
+                    )
+                }
             };
             name
         };

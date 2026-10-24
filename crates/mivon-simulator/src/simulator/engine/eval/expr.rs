@@ -856,7 +856,11 @@ impl SimulationEngine {
                     let (elem_w, total_words, is_mem) = match self.design.top.signals.get(sid) {
                         Some(si) => {
                             let ew = si.elem_width.max(1);
-                            (ew, si.width / ew, si.elem_width > 0 && si.width > si.elem_width)
+                            (
+                                ew,
+                                si.width / ew,
+                                si.elem_width > 0 && si.width > si.elem_width,
+                            )
                         }
                         None => (0, 0, false),
                     };
@@ -1014,9 +1018,7 @@ impl SimulationEngine {
                 match handle {
                     // fd 1 = stdout selalu valid.
                     Some(1) => Ok(LogicVec::from_u64(0, 32)),
-                    Some(h) if self.file_handles.contains_key(&h) => {
-                        Ok(LogicVec::from_u64(0, 32))
-                    }
+                    Some(h) if self.file_handles.contains_key(&h) => Ok(LogicVec::from_u64(0, 32)),
                     _ => Ok(LogicVec::from_u64(1, 32)),
                 }
             }
@@ -1809,8 +1811,15 @@ impl SimulationEngine {
                         }
                         return Ok(LogicVec::from_u64(0, 64));
                     }
-                    "$bits" | "$size" | "$high" | "$low" | "$left" | "$right"
-                    | "$increment" | "$dimensions" | "$unpacked_dimensions" => {
+                    "$bits"
+                    | "$size"
+                    | "$high"
+                    | "$low"
+                    | "$left"
+                    | "$right"
+                    | "$increment"
+                    | "$dimensions"
+                    | "$unpacked_dimensions" => {
                         // Query dimensi/lebar butuh metadata SignalInfo.
                         let dim = args
                             .get(1)
@@ -1829,8 +1838,7 @@ impl SimulationEngine {
                                     if dim == 0 {
                                         sig.width as i64
                                     } else {
-                                        sig.array_dims.get(dim - 1).copied().unwrap_or(1)
-                                            as i64
+                                        sig.array_dims.get(dim - 1).copied().unwrap_or(1) as i64
                                     }
                                 }
                                 "$high" => sig.msb.max(sig.lsb) as i64,
