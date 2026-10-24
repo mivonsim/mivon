@@ -813,6 +813,21 @@ endmodule
     }
 
     /// Parse dan kembalikan Design + diagnostik parser (warning ikut).
+
+    fn first_clock_event(design: &crate::types::Design) -> Option<crate::types::ClockEvent> {
+        for item in &design.modules[0].items {
+            match item {
+                crate::types::ModuleItem::PropertyAssert(s) => {
+                    if let crate::Stmt::PropertySeq { clock_event, .. } = &**s {
+                        return clock_event.clone();
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
     fn parse_with_diags(
         src: &str,
     ) -> (
@@ -1121,6 +1136,12 @@ endmodule
                 .any(|i| matches!(i, crate::types::ModuleItem::PropertyAssert(_))),
             "assertion harus tetap ter-parse"
         );
+        let clk = first_clock_event(&design).expect("clock harus ada");
+        assert!(
+            matches!(clk, crate::types::ClockEvent::Negedge(s) if s.as_str() == "clk"),
+            "posedge !clk harus Negedge(clk), dapat {:?}",
+            clk
+        );
     }
 
     /// Bentuk @(negedge !clk) juga harus diterima (jadi Posedge).
@@ -1141,6 +1162,40 @@ endmodule
                 .iter()
                 .any(|i| matches!(i, crate::types::ModuleItem::PropertyAssert(_))),
             "assertion harus tetap ter-parse"
+        );
+        let clk = first_clock_event(&design).expect("clock harus ada");
+        assert!(
+            matches!(clk, crate::types::ClockEvent::Posedge(s) if s.as_str() == "clk"),
+            "negedge !clk harus Posedge(clk), dapat {:?}",
+            clk
+        );
+    }
+
+    /// 'assert always (x) @(posedge !clk)' (PSL, site ke-3 di stmt.rs) juga
+    /// harus menerima clock terinversi -> Negedge(clk), tanpa E1007.
+    #[test]
+    fn parses_psl_always_with_negated_clock() {
+        let src = "module m(input logic clk, a);
+  assert always (a) @(posedge !clk);
+endmodule
+";
+        let (design, diags) = parse_with_diags(src);
+        assert!(
+            diags
+                .iter()
+                .all(|d| d.code != DiagCode::UnsupportedAssertion),
+            "assert always @(posedge !clk) tidak boleh di-warn E1007: {:?}",
+            diags
+        );
+        // Site ke-3 (PSL assert always) kini menerima clock terinversi -> salah
+        // satu bentuk assertion VALID tidak lagi dibuang (di-wrap sebagai
+        // PropertyAssert berisi Stmt::Assert).
+        assert!(
+            design.modules[0]
+                .items
+                .iter()
+                .any(|i| matches!(i, crate::types::ModuleItem::PropertyAssert(_))),
+            "assert always harus menghasilkan item, bukan di-skip"
         );
     }
 }

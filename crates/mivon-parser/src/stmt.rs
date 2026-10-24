@@ -577,12 +577,24 @@ impl Parser {
                 self.expect(Token::LParen)?;
                 let ce = if self.peek() == &Token::PosEdge {
                     self.advance();
-                    let sig = self.expect_ident()?;
-                    Some(ClockEvent::Posedge(sig))
+                    if self.peek() == &Token::Not {
+                        self.advance();
+                        let sig = self.expect_ident()?;
+                        Some(ClockEvent::Negedge(sig))
+                    } else {
+                        let sig = self.expect_ident()?;
+                        Some(ClockEvent::Posedge(sig))
+                    }
                 } else if self.peek() == &Token::NegEdge {
                     self.advance();
-                    let sig = self.expect_ident()?;
-                    Some(ClockEvent::Negedge(sig))
+                    if self.peek() == &Token::Not {
+                        self.advance();
+                        let sig = self.expect_ident()?;
+                        Some(ClockEvent::Posedge(sig))
+                    } else {
+                        let sig = self.expect_ident()?;
+                        Some(ClockEvent::Negedge(sig))
+                    }
                 } else {
                     let sig = self.expect_ident()?;
                     Some(ClockEvent::Edge(sig))

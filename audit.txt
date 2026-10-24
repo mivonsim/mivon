@@ -9963,3 +9963,38 @@ MEDIUM 6 (test jalur with_source_lines untuk baris+kolom — sebagian tertutup
 test support fixit), dan Token::Expect senyap di level module.
 
 \\=======================================================================//
+
+═══ ROUND 176 — PARSER-09: clock negated di site PSL + penguatan test ═══
+
+Review ROUND 175 (MAJOR): parse clock negated @(posedge !sig) diterapkan di 3
+titik tapi ada SITE KE-4 yang terlewat: PSL 'assert always (x) @(posedge !clk)'
+(stmt.rs:578, branch LANG-03). Akar: blok parse clock di-copy-paste ke >=4
+titik tanpa helper bersama (drift). Juga test baru tidak mengunci arah edge
+(Negedge vs Posedge) dan tidak menutup site #2/#3/#4.
+
+Diperbaiki:
+- stmt.rs site #3 (PSL assert always/never dengan clock): tambah cabang '!'
+  -> posedge !sig = Negedge, negedge !sig = Posedge (konsisten dg site #1/#2/#4).
+- +3 test & penguatan: parses_negative_edge_clock_with_bang dan
+  parses_negedge_bang_clock kini juga men-assert clock_event == Negedge(clk) /
+  Posedge(clk) (mengunci semantik, bukan sekadar 'tidak ada E1007');
+  parses_psl_always_with_negated_clock menutup site #3.
+- +helper first_clock_event() membaca clock_event dari PropertyAssert/Assert.
+- Regresi: (a) dengan semua cek '!' dimatikan, 2 test bang FAIL (muncul
+  E1007 "found Not"); (b) test arah edge gagal bila mapping dibalik (diuji
+  manual). PSL test lulus hanya setelah site #3 diperbaiki.
+
+📊 VERIFIKASI ROUND 176:
+   - cargo nextest run -p mivon-parser sva::tests -> 32 passed.
+   - cargo nextest run --workspace --features dev --no-fail-fast:
+     ✅ 3613 passed, 0 failed, 24 skipped (3612 -> 3613).
+   - cargo fmt --all --check -> bersih.
+
+Sisa review ROUND 171/173/175: MAJOR 3 (baris bergeser utk assertion hasil
+ekspansi makro multi-baris + dedup emit_diags per (code,file,line) menelan
+warning berbeda), MEDIUM 4 (cap default warning), MEDIUM 6 lanjutan (test
+with_source_lines/file_line_map untuk baris+kolom pada jalur rollback),
+Token::Expect senyap, dan refactor ekstraksi helper parse_clock_event() tunggal
+(opsional, menutup drift permanen).
+
+\\=======================================================================//
