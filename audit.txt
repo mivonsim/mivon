@@ -9383,3 +9383,25 @@ Test (3, di wave::align::tests):
      ✅ 3576 passed, 0 failed, 24 skipped.
 
 \=======================================================================//
+
+═══ ROUND 160 — FEAT-18: follow-up review fixes ═══
+
+Review agent (Explore) menyatakan build bersih, 3 test pass, integrasi selaras.
+Satu MEDIUM: indeks HashMap timeline tanpa guard dapat PANIC bila ada sinyal
+(termasuk trigger) yang dideklarasikan tapi tak punya baris perubahan di VCD
+(lazim untuk sinyal konstan di capture post-silicon).
+
+Diperbaiki:
+- align.rs:101-102,135-136: pre_tl[id]/post_tl[id] -> .get(id).map(|v|
+  v.as_slice()).unwrap_or(&[]) (hilangkan panic pada sinyal konstan).
+- +1 test align_handles_constant_and_no_trigger_assert: trig tak pernah "1"
+  (anchor 0), data konstan tanpa change -> value_at "x" kedua sisi, tidak panic,
+  aligned_cycles=11, first_mismatch None.
+
+📊 VERIFIKASI ROUND 160:
+   - cargo check -p mivon-tools: 0 warning, 0 error.
+   - cargo nextest run -p mivon-tools align -> 4 passed.
+   - cargo nextest run --workspace --features dev --no-fail-fast:
+     ✅ 3577 passed, 0 failed, 24 skipped.
+
+\=======================================================================//

@@ -98,8 +98,8 @@ pub fn align_signals(
     let pre_tl = build_timelines(pre);
     let post_tl = build_timelines(post);
 
-    let pre_anchor = find_anchor(&pre_tl[pre_trig]);
-    let post_anchor = find_anchor(&post_tl[post_trig]);
+    let pre_anchor = find_anchor(pre_tl.get(pre_trig).map(|v| v.as_slice()).unwrap_or(&[]));
+    let post_anchor = find_anchor(post_tl.get(post_trig).map(|v| v.as_slice()).unwrap_or(&[]));
 
     let mut shared: Vec<String> = pre_ids
         .keys()
@@ -132,8 +132,8 @@ pub fn align_signals(
         for name in &shared {
             let pid = &pre_ids[name];
             let qid = &post_ids[name];
-            let pv = value_at(&pre_tl[pid], pt);
-            let qv = value_at(&post_tl[qid], pot);
+            let pv = value_at(pre_tl.get(pid).map(|v| v.as_slice()).unwrap_or(&[]), pt);
+            let qv = value_at(post_tl.get(qid).map(|v| v.as_slice()).unwrap_or(&[]), pot);
             if pv != qv && first_mismatch.is_none() {
                 first_mismatch = Some(Mismatch {
                     offset: i,
@@ -245,3 +245,24 @@ mod tests {
         assert!(r.post_only_signals.is_empty());
     }
 }
+    #[test]
+    fn align_handles_constant_and_no_trigger_assert() {
+        fn mk() -> VcdData {
+            VcdData {
+                timescale: "1ns".to_string(),
+                signals: vec![
+                    crate::wave::data::VcdSignal { id: "T".to_string(), name: "trig".to_string(), width: 1, scope: vec!["top".to_string()] },
+                    crate::wave::data::VcdSignal { id: "D".to_string(), name: "data".to_string(), width: 4, scope: vec!["top".to_string()] },
+                ],
+                changes: vec![(0u64, "T".to_string(), "0".to_string())],
+                max_time: 10,
+            }
+        }
+        let pre = mk();
+        let post = mk();
+        let r = align_signals(&pre, &post, "trig").unwrap();
+        assert_eq!(r.pre_anchor_time, 0);
+        assert_eq!(r.post_anchor_time, 0);
+        assert_eq!(r.aligned_cycles, 11);
+        assert!(r.first_mismatch.is_none());
+    }
