@@ -310,3 +310,35 @@ fn dag_ff_waw_cross_group_order_diff() {
     assert_eq!(qg, qd, "q dag harus identik serial");
     assert_eq!(qg, "0010", "q mengikuti b (c=2) pasca-posedge-2 ter-pinned");
 }
+
+/// Par-02 re-review fix BUG-1: iff wajib dieval PADA POSISI kandidat
+/// (urutan pid), bukan di fase klasifikasi. en-FF (pid lebih kecil,
+/// blocking) menulis en=1 pada posedge pertama; q (iff en) wajib
+/// ter-trigger pada posedge PERTAMA juga (iff melihat en pasca-tulis).
+/// Jika iff dieval terlalu dini, q kehilangan 1 trigger → q=9, bukan 10.
+const FF_IFF_SRC: &str = r#"
+module ff_iff_top;
+  logic clk;
+  logic en;
+  logic [3:0] q;
+  logic [3:0] d;
+  logic [3:0] w;
+  initial begin clk = 0; en = 0; q = 0; d = 4'd3; w = 0; #40; end
+  always #5 clk = ~clk;
+  always_ff @(posedge clk) if (!en) en = 1'b1;
+  always_ff @(posedge clk iff en) q <= q + 4'd1;
+  always_ff @(posedge clk) w <= d;
+endmodule
+"#;
+
+#[test]
+fn dag_ff_iff_position_diff() {
+    let qd = run_signal_bits(FF_IFF_SRC, "q", false);
+    let qg = run_signal_bits(FF_IFF_SRC, "q", true);
+    assert_eq!(qg, qd, "q dag harus identik serial (iff di posisi)");
+    assert_eq!(qg, "1010", "q = 10 trigger (posedge pertama terhitung)");
+    let ed = run_signal_bits(FF_IFF_SRC, "en", false);
+    let eg = run_signal_bits(FF_IFF_SRC, "en", true);
+    assert_eq!(eg, ed, "en dag harus identik serial");
+    assert_eq!(eg, "1", "en = 1 (ditulis sekali) ter-pinned");
+}

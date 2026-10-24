@@ -1033,54 +1033,52 @@ impl SimulationEngine {
         }
 
         // ── Phase 2c: Sequential — evaluate clock/reset/iff per candidate ──
-        // Par-02 tahap 1: dua fase agar urutan serial terjaga.
-        //   Fase 1 (klasifikasi, tanpa evaluasi kandidat): hitung akses per
-        //   kandidat triggered; tulisan kandidat non-batchable dikumpulkan.
-        //   Fase 2 (urutan pid): kandidat serial/ditolak dieval inline pada
-        //   posisi aslinya; hanya kandidat batchable yang TIDAK membaca
-        //   sinyal tulisan kandidat serial yang ditunda ke batch — guards:
-        //   (A) tolak intra-body RAW (evaluator paralel memperlakukan NBA
-        //       sebagai blocking intra-body via overlay, serial tidak);
-        //   (B) tolak kandidat batch yang membaca sinyal yang ditulis
-        //       kandidat serial inline (snapshot post-fase-2 vs pre-tulis);
-        //   (call) tolak FuncCall/MethodCall (evaluator paralel -> Err/X);
-        //   (fused) bila ada kandidat cycle-fusion, TIDAK ada defer sama
-        //       sekali round ini (commit domain sinkron mengubah urutan).
-        let mut triggered: Vec<(usize, crate::scheduler::sim_dag::SignalAccess, bool)> = Vec::new();
-        let mut serial_writes: std::collections::HashSet<usize> = std::collections::HashSet::new();
-        let mut saw_fused = false;
+        // Par-02 tahap 1: dua fase, urutan semantik serial terjaga.
+        //   Fase 1 (immutable): kumpulkan kandidat clock/async-triggered
+        //   TANPA evaluasi iff (iff wajib dieval pada posisi kandidat —
+        //   re-review BUG-1), klasifikasi batchable (whitelist + guard A
+        //   RAW + call-expr), deteksi cycle-fusion, dan kumpulkan tulisan
+        //   kandidat non-batchable (serial_writes; over-conservative —
+        //   mencakup kandidat yang mungkin tak triggered oleh iff, hanya
+        //   mengetatkan guard B).
+        //   Fase 2 (urutan pid): iff dieval PADA POSISI kandidat; hanya
+        //   kandidat batchable yang bebas serial_writes ditunda ke batch;
+        //   sisanya dieval inline pada posisinya.
+        //   (fused) bila ada kandidat cycle-fusion: fallback penuh ke loop
+        //       serial satu-pass (fused commit di tengah urutan — re-review
+        //       BUG-2; hanya saat --cycle-fusion aktif).
+        let mut cands: Vec<(
+            usize,
+            bool,
+            Option<mivon_ir::ResetInfo>,
+            Option<mivon_ir::IrExpr>,
+            bool,
+            Option<crate::scheduler::clock_domain::ClockDomain>,
+            Option<crate::scheduler::sim_dag::SignalAccess>,
+            bool, // batchable
+        )> = Vec::new();
+        let mut any_fused = false;
         for (pid, _clock, reset, iff, clock_trigger) in seq_candidates {
-            // LANG-27: guard `iff (cond)` — evaluate with &mut self
-            let trigger = clock_trigger
-                && match &iff {
-                    Some(cond) => match self.evaluate_expr(cond) {
-                        Ok(v) => v.to_bool().unwrap_or(false),
-                        Err(_) => false,
-                    },
-                    None => true,
-                };
-            // F40 fix: async reset edge
-            let trigger = trigger
-                || reset
-                    .as_ref()
-                    .filter(|r| r.r#async)
-                    .map(|r| {
-                        let sid = r.signal;
-                        let active_high = r.polarity;
-                        changed.iter().any(|(id, old, new)| {
-                            *id == sid
-                                && if active_high {
-                                    old.to_bool() != Some(true) && new.to_bool() == Some(true)
-                                } else {
-                                    old.to_bool() != Some(false) && new.to_bool() == Some(false)
-                                }
-                        })
+            // F40 fix: async reset edge (immutable — aman di fase 1)
+            let async_trig = reset
+                .as_ref()
+                .filter(|r| r.r#async)
+                .map(|r| {
+                    let sid = r.signal;
+                    let active_high = r.polarity;
+                    changed.iter().any(|(id, old, new)| {
+                        *id == sid
+                            && if active_high {
+                                old.to_bool() != Some(true) && new.to_bool() == Some(true)
+                            } else {
+                                old.to_bool() != Some(false) && new.to_bool() == Some(false)
+                            }
                     })
-                    .unwrap_or(false);
-            if !trigger {
+                })
+                .unwrap_or(false);
+            if !clock_trigger && !async_trig {
                 continue;
             }
-            // ── Cycle-Based Fusion ──
             let fused_domain = if self.use_cycle_fusion {
                 self.clock_analysis.as_ref().and_then(|a| {
                     if a.fused_processes.contains(&pid) {
@@ -1095,10 +1093,8 @@ impl SimulationEngine {
             } else {
                 None
             };
-            if let Some(domain) = fused_domain {
-                self.evaluate_clock_domain(&domain)?;
-                saw_fused = true;
-                continue;
+            if fused_domain.is_some() {
+                any_fused = true;
             }
             let access =
                 crate::scheduler::sim_dag::analyze_process_access(&self.design.top.processes[pid]);
@@ -1109,15 +1105,77 @@ impl SimulationEngine {
                 && body_ok
                 && access.reads.is_disjoint(&access.writes)
                 && !access.has_call_expr;
-            if !batchable {
-                serial_writes.extend(access.writes.iter().copied());
-            }
-            triggered.push((pid, access, batchable));
+            cands.push((
+                pid,
+                clock_trigger,
+                reset,
+                iff,
+                async_trig,
+                fused_domain,
+                Some(access),
+                batchable,
+            ));
         }
-        // Fase 2 — urutan pid, eval inline utk non-batch; defer utk batch.
+        if any_fused {
+            // Re-review BUG-2: satu loop interleaved — iff dan fused domain
+            // dieval pada posisi kandidat, persis perilaku pra-Par-02.
+            for (pid, clock_trigger, reset, iff, async_trig, fused_domain, _, _) in cands {
+                let _ = reset;
+                // LANG-27: guard `iff (cond)` — evaluate with &mut self
+                let mut trigger = clock_trigger
+                    && match &iff {
+                        Some(cond) => match self.evaluate_expr(cond) {
+                            Ok(v) => v.to_bool().unwrap_or(false),
+                            Err(_) => false,
+                        },
+                        None => true,
+                    };
+                trigger = trigger || async_trig;
+                if !trigger {
+                    continue;
+                }
+                if let Some(domain) = fused_domain {
+                    self.evaluate_clock_domain(&domain)?;
+                    continue;
+                }
+                let body = match &self.design.top.processes[pid] {
+                    Process::Sequential { body, .. } => body.clone(),
+                    _ => continue,
+                };
+                self.evaluate_stmt_block(&body)?;
+            }
+            return Ok(());
+        }
+        // serial_writes: tulisan kandidat non-batchable (guard B fase 2).
+        let mut serial_writes: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        for (_, _, _, _, _, _, access, batchable) in &cands {
+            if let Some(a) = access {
+                if !batchable {
+                    serial_writes.extend(a.writes.iter().copied());
+                }
+            }
+        }
+        // Fase 2 — urutan pid: iff dieval pada posisi kandidat.
         let mut seq_batch: Vec<(usize, crate::scheduler::sim_dag::SignalAccess)> = Vec::new();
-        for (pid, access, batchable) in triggered {
-            if !saw_fused && batchable && access.reads.is_disjoint(&serial_writes) {
+        for (pid, clock_trigger, _, iff, async_trig, _, access, batchable) in cands {
+            let access = match access {
+                Some(a) => a,
+                None => continue,
+            };
+            // LANG-27: guard `iff (cond)` — pada POSISI kandidat.
+            let mut trigger = clock_trigger
+                && match &iff {
+                    Some(cond) => match self.evaluate_expr(cond) {
+                        Ok(v) => v.to_bool().unwrap_or(false),
+                        Err(_) => false,
+                    },
+                    None => true,
+                };
+            trigger = trigger || async_trig;
+            if !trigger {
+                continue;
+            }
+            if batchable && access.reads.is_disjoint(&serial_writes) {
                 seq_batch.push((pid, access));
                 continue;
             }
@@ -1129,15 +1187,13 @@ impl SimulationEngine {
             self.evaluate_stmt_block(&body)?;
         }
         let batch_pids: Vec<usize> = seq_batch.iter().map(|(p, _)| *p).collect();
-        if !saw_fused && batch_pids.len() >= 2 {
+        if batch_pids.len() >= 2 {
             self.evaluate_sequential_batch_parallel(&seq_batch)?;
         } else {
             self.evaluate_batch_serially(&batch_pids)?;
         }
         Ok(())
     }
-
-    /// Fallback serial seluruh batch (urutan pid) — dipakai saat batch
     /// terlalu kecil, ada kandidat cycle-fusion, sinyal ultra-lebar (E),
     /// atau evaluator paralel gagal (D).
     fn evaluate_batch_serially(&mut self, batch: &[usize]) -> Result<(), SimError> {

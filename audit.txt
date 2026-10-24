@@ -10319,11 +10319,28 @@ Test (4, semua diferensial default vs DAG + pinned):
   dag_ff_waw_cross_group_order_diff — lock fix C: x = f (pid 2 terakhir)
   lintas grup [p0,p2],[p1]; q mengikuti b pasca-posedge-2.
 
-VERIFIKASI ROUND 184:
+Re-review round 2 menemukan 2 bug interleaving dari restructure dua-fase
+— SEMUA diperbaiki:
+  BUG-1 (realistis, semua konfigurasi): iff dievaluasi di fase klasifikasi
+     (sebelum body fase 2) → keputusan trigger membaca state pra-body
+     kandidat pid lebih kecil; kode serial mengevaluasi iff pada posisi
+     kandidat. Fix: iff dieval PADA POSISI kandidat di fase 2;
+     serial_writes tetap dikumpulkan fase 1 (over-conservative).
+     Regresi ter-lock: dag_ff_iff_position_diff (q=10, bukan 9).
+  BUG-2 (gated --cycle-fusion): fused domain commit di TENGAH fase 1 →
+     kandidat non-fused pid lebih kecil dieval setelah commit. Fix: bila
+     ada kandidat fused, fallback penuh ke loop serial satu-pass lama
+     (iff + fused pada posisi; tanpa defer sama sekali).
+  Verifikasi reviewer: klaim A–E tertutup; rayon indexed-collect
+  terjamin urutan input + sort pid; jalur comb tak tersentuh.
+
+VERIFIKASI ROUND 184 (final):
    - cargo fmt --all --check -> bersih.
-   - cargo nextest run --workspace --features dev: 3622 passed,
-     24 skipped (3618 -> 3622, +4 test).
-   - Bukti eksekusi batch: DBG_SIM=3 + --success-output=immediate.
+   - cargo nextest run --workspace --features dev: 3623 passed,
+     24 skipped (3618 -> 3623, +5 test).
+   - Bukti eksekusi batch: DBG_SIM=3 + --success-output=immediate
+     ("par-02 seq-batch: 4 kandidat, 1 grup" per posedge, 40× di 4 run
+     DAG; serial bebas trace).
 
 Status PAR-02: TAHAP 1 SELESAI (partial) — FF whitelist-only batch
 paralel ter-lock diferensial. Tahap 2 (AlwaysWithDelay, FF blocking/
