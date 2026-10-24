@@ -498,7 +498,7 @@ Par-01: ✅ Work-stealing paralel produk = rayon; executor kustom dead-code diha
   Test: task_survives_without_scheduler_executor (mivon-compiler).
   Severity: High -> CLOSED.
 
-Par-02: ⚠️ tahap 1 selesai (ROUND 184) — DAG hanya combinational — masih open
+Par-02: ⚠️ tahap 1+2a+3 selesai (ROUND 184-186) — masih open (tahap lanjutan)
   Root Cause: Sequential processes (AlwaysFF, AlwyasWithDelay)
   bypass DAG dan jalan sequential.
   Tahap 1 (ROUND 184): triggered Sequential yang lolos whitelist ketat
@@ -507,8 +507,13 @@ Par-02: ⚠️ tahap 1 selesai (ROUND 184) — DAG hanya combinational — masih
   pre-edge, grup disjoint deterministik (layered_groups), writes
   di-schedule NBA pending agar commit NBA region identik serial.
   Gated use_dag_parallel (--parallel).
-  Tahap 2 (open): AlwaysWithDelay, FF dgn blocking assign/loop/event
-  control, cycle-fusion domain.
+  Tahap 2a (ROUND 185): follower combinational dalam
+  evaluate_clock_domain dieval paralel per grup disjoint.
+  Tahap 3 (ROUND 186): klasifikasi body via body_write_kinds —
+  BlockingOnly/NbaOnly batch (dua jalur apply), Mixed/unsupported
+  → serial; guard iff_reads (BUG-1) + WAW + stale readers.
+  Open: AlwaysWithDelay, seq_bodies paralel dalam domain,
+  kebijakan gate statement tak-dukung evaluator paralel.
   Impact: Sebagian besar processes di desain sinkron —
   paralelisme rendah.
   Severity: High
@@ -10431,4 +10436,82 @@ NBA-vs-blocking utk relaxasi guard A), AlwaysWithDelay, parallelisasi
 seq_bodies dalam domain. Item open berikutnya: Par-02 tahap 3,
 Arsitektur-01..04, JIT-01/02.
 
+
+═══ ROUND 186 — PAR-02 tahap 3: klasifikasi body_write_kinds + dua jalur apply ═══
+
+Ruang lingkup tahap 3: FF dgn blocking assign dan loop (runtime)
+kini bisa masuk batch paralel — klasifikasi per-body menggantikan
+whitelist ketat tahap 1 (is_sequential_body_batch_safe dihapus).
+
+Perubahan:
+  1. sim_dag.rs: body_write_kinds(body) -> Option<(blocking, nba)>
+     per sinyal — BlockingAssign/NonBlockingAssign/Block/If/Case/
+     LoopFor (init+step BlockingAssign terhitung)/LoopWhile/
+     LoopDoWhile/Repeat/Foreach direkursi; stmt lain (Force/Wait/
+     NamedBlock/EventControl/Assert/SysCall/dll.) → None (evaluator
+     paralel melewatkannya senyap) → kandidat wajib serial.
+     Lvalue non-full-signal (bit/range/hier/array) → None.
+  2. sim_dag.rs: expr_signal_reads_of(expr) -> HashSet<SignalId>
+     (pub(crate); reads iff tanpa full access analysis).
+  3. event.rs Phase 2c ditulis ulang: struct SeqCand (module-level);
+     fase 1 klasifikasi (BlockingOnly = semua blocking; NbaOnly =
+     semua NBA + reads ∩ own-nba kosong = guard A'; mixed/None →
+     serial; has_call_expr/has_unresolved → serial) + agregat
+     (serial_writes, blocking_writes + counts, reads_count per
+     sinyal = body ∪ iff); fase 2 urutan pid — iff dieval pada
+     posisi kandidat, demosi:
+       - Blocking: baca tulisan serial (body/iff); WAW blocking
+         (counts > 1); menulis sinyal yang dibaca kandidat lain
+         (stale readers, incl. iff); WAW dgn serial inline;
+       - Nba: baca blocking write kandidat lain (body/iff);
+         WAW dgn serial inline.
+     any_fused → fallback loop serial lama (BUG-2 R184).
+  4. evaluate_sequential_batch_parallel(&[&SeqCand]): dua jalur
+     apply per grup — BlockingOnly → apply_parallel_writes segera
+     (snapshot grup berikutnya melihatnya; blocking RAW intra-body
+     aman via overlay); NbaOnly → kumpulkan tagged lalu push
+     nba_pending terurut pid (commit identik serial). Gate (E)
+     wide-signal → serial; Err evaluator → fallback serial grup
+     itu + berikutnya urutan pid.
+
+Self-review ROUND 186 menemukan 1 bug — diperbaiki:
+  Regresi WAW batch-vs-serial inline: guard tahap 1 (access.writes
+  ∩ serial_writes → tolak) hilang saat penulisan ulang. Kandidat
+  batch yang menulis sinyal yang sama dengan kandidat serial
+  inline di-defer → push NBA-nya jadi terakhir → pemenang WAW
+  berubah (divergen). Fix: WAW-vs-serial ditambahkan ke kedua arm
+  demote (Blocking + Nba). Test regresi:
+  dag_ff_waw_batch_vs_serial_inline_diff — FF batchable (s <= 7)
+  + FF serial ($display; s <= s+1) + FF batchable (w <= 5);
+  serial inline harus pemenang (s = 10), w = 5.
+
+Test baru (mivon-tests/dag_serial_fallback_tests.rs, pinned +
+differential default vs --parallel):
+  1. dag_ff_blocking_tmp_batch_diff — FF BlockingOnly dgn RAW
+     intra-body (tmp = a+1; b = tmp; a = tmp) + companion NbaOnly
+     (w <= 5) → batch >= 2, jalur apply ganda. a = b = 10, w = 5.
+  2. dag_ff_loop_runtime_bound_batch_diff — FF BlockingOnly dgn
+     LoopFor berbatas RUNTIME (i < n, n sinyal — tak di-unroll
+     elaborator; arm LoopFor body_write_kinds terlatih). acc = b
+     = 6 (n = 3 × +2), w = 5.
+  3. dag_ff_waw_batch_vs_serial_inline_diff — regresi di atas.
+  Regresi lama lulus: dag_ff_iff_position_diff (BUG-1 R186: iff
+  membaca blocking-write FF lain kini terdeteksi via iff_reads —
+  kandidat penulis didemosi; q = 10 ter-pinned kembali),
+  dag_ff_intra_body_raw_diff, dag_ff_cross_serial_write_diff,
+  dag_ff_waw_cross_group_order_diff, dag_cycle_fusion_followers_
+  parallel_diff, dag_cf_waw_cross_group_diff,
+  dag_sequential_ff_batch_parallel_diff.
+
+VERIFIKASI ROUND 186 (final):
+   - cargo fmt --all --check -> bersih.
+   - cargo nextest run --workspace --features dev: 3628 passed,
+     24 skipped (3625 -> 3628, +3 test).
+
+Status PAR-02: tahap 3 SELESAI. Open: AlwaysWithDelay,
+parallelisasi seq_bodies dalam domain, kebijakan gate statement
+tak-dukung evaluator paralel (silent-skip $display/Force/Wait),
+VifField writes tak tercakup analyze_process_access (pre-existing).
+Item open berikutnya: Par-02 tahap lanjutan, Arsitektur-01..04,
+JIT-01/02.
 \\=======================================================================//

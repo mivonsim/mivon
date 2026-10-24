@@ -32,6 +32,19 @@ fn sensitivity_triggered(
     })
 }
 
+/// Kandidat sequential triggered utk batch paralel Par-02 (tahap 3).
+struct SeqCand {
+    pid: usize,
+    clock_trigger: bool,
+    iff: Option<mivon_ir::IrExpr>,
+    async_trig: bool,
+    fused: Option<crate::scheduler::clock_domain::ClockDomain>,
+    access: crate::scheduler::sim_dag::SignalAccess,
+    iff_reads: std::collections::HashSet<usize>,
+    blocking_only: bool,
+    own_blocking: std::collections::HashSet<usize>,
+    batchable: bool,
+}
 impl SimulationEngine {
     pub(crate) fn process_event(&mut self, event: EventKind, t: usize) -> Result<(), SimError> {
         self.current_time = t as u64;
@@ -1033,30 +1046,22 @@ impl SimulationEngine {
         }
 
         // ── Phase 2c: Sequential — evaluate clock/reset/iff per candidate ──
-        // Par-02 tahap 1: dua fase, urutan semantik serial terjaga.
-        //   Fase 1 (immutable): kumpulkan kandidat clock/async-triggered
-        //   TANPA evaluasi iff (iff wajib dieval pada posisi kandidat —
-        //   re-review BUG-1), klasifikasi batchable (whitelist + guard A
-        //   RAW + call-expr), deteksi cycle-fusion, dan kumpulkan tulisan
-        //   kandidat non-batchable (serial_writes; over-conservative —
-        //   mencakup kandidat yang mungkin tak triggered oleh iff, hanya
-        //   mengetatkan guard B).
-        //   Fase 2 (urutan pid): iff dieval PADA POSISI kandidat; hanya
-        //   kandidat batchable yang bebas serial_writes ditunda ke batch;
-        //   sisanya dieval inline pada posisinya.
-        //   (fused) bila ada kandidat cycle-fusion: fallback penuh ke loop
-        //       serial satu-pass (fused commit di tengah urutan — re-review
-        //       BUG-2; hanya saat --cycle-fusion aktif).
-        let mut cands: Vec<(
-            usize,
-            bool,
-            Option<mivon_ir::ResetInfo>,
-            Option<mivon_ir::IrExpr>,
-            bool,
-            Option<crate::scheduler::clock_domain::ClockDomain>,
-            Option<crate::scheduler::sim_dag::SignalAccess>,
-            bool, // batchable
-        )> = Vec::new();
+        // Par-02 tahap 3: klasifikasi body per kandidat (NbaOnly /
+        // BlockingOnly / Serial) via body_write_kinds; dua jalur apply:
+        // Blocking → apply_parallel_writes immediate, Nba → push_nba_pending
+        // (commit identik serial). Guards:
+        //   (A') tolak kandidat yang membaca sinyal NBA-writen dirinya
+        //        (overlay terlihat; serial defer); blocking RAW intra-body
+        //        AMAN (overlay = blocking serial);
+        //   (B)  tolak kandidat yang membaca tulisan kandidat serial inline;
+        //   (B2) demosi berbasis pembaca-lain: blocking write yang dibaca
+        //        kandidat lain (body ATAU iff — re-review: iff membaca
+        //        blocking write kandidat lain = BUG-1 R186) → demosi penulis;
+        //        kandidat Nba yang membaca blocking write lain (body/iff)
+        //        → demosi (stale); WAW blocking vs serial/blocking → demosi;
+        //   (call/unresolved) FuncCall/MethodCall/HierRef → serial;
+        //   (fused) ada kandidat cycle-fusion → fallback loop serial lama.
+        let mut cands: Vec<SeqCand> = Vec::new();
         let mut any_fused = false;
         for (pid, _clock, reset, iff, clock_trigger) in seq_candidates {
             // F40 fix: async reset edge (immutable — aman di fase 1)
@@ -1098,51 +1103,58 @@ impl SimulationEngine {
             }
             let access =
                 crate::scheduler::sim_dag::analyze_process_access(&self.design.top.processes[pid]);
-            let body_ok = self.process_body_arcs.get(&pid).is_some_and(|b| {
-                crate::scheduler::sim_dag::is_sequential_body_batch_safe(b.as_slice())
-            });
-            let batchable = self.use_dag_parallel
-                && body_ok
-                && access.reads.is_disjoint(&access.writes)
-                && !access.has_call_expr
-                // Re-review round 3: HierRef/akses tak-resolvable tak masuk
-                // set reads/writes — guard B buta terhadapnya → tolak dari
-                // batch (mirror snapshot-sparse gate jalur comb).
-                && !access.has_unresolved;
-            cands.push((
+            let iff_reads = match &iff {
+                Some(cond) => crate::scheduler::sim_dag::expr_signal_reads_of(cond),
+                None => Default::default(),
+            };
+            // Klasifikasi kinds body (None → serial; mixed → serial).
+            let kinds = self
+                .process_body_arcs
+                .get(&pid)
+                .and_then(|b| crate::scheduler::sim_dag::body_write_kinds(b.as_slice()));
+            let (blocking_only, own_blocking, batchable) = match kinds {
+                Some((bw, nw)) if nw.is_empty() && self.use_dag_parallel => (true, bw, true),
+                Some((bw, nw)) if bw.is_empty() && self.use_dag_parallel => {
+                    let ok = access.reads.is_disjoint(&nw);
+                    (false, bw, ok)
+                }
+                _ => (false, Default::default(), false),
+            };
+            let batchable = batchable && !access.has_call_expr && !access.has_unresolved;
+            cands.push(SeqCand {
                 pid,
                 clock_trigger,
-                reset,
                 iff,
                 async_trig,
-                fused_domain,
-                Some(access),
+                fused: fused_domain,
+                access,
+                iff_reads,
+                blocking_only,
+                own_blocking,
                 batchable,
-            ));
+            });
         }
         if any_fused {
-            // Re-review BUG-2: satu loop interleaved — iff dan fused domain
-            // dieval pada posisi kandidat, persis perilaku pra-Par-02.
-            for (pid, clock_trigger, reset, iff, async_trig, fused_domain, _, _) in cands {
-                let _ = reset;
-                // LANG-27: guard `iff (cond)` — evaluate with &mut self
-                let mut trigger = clock_trigger
-                    && match &iff {
+            // Re-review BUG-2 (R184): satu loop interleaved — iff dan fused
+            // domain dieval pada posisi kandidat, persis pra-Par-02.
+            for c in &cands {
+                let mut trigger = c.clock_trigger
+                    && match &c.iff {
                         Some(cond) => match self.evaluate_expr(cond) {
                             Ok(v) => v.to_bool().unwrap_or(false),
                             Err(_) => false,
                         },
                         None => true,
                     };
-                trigger = trigger || async_trig;
+                trigger = trigger || c.async_trig;
                 if !trigger {
                     continue;
                 }
-                if let Some(domain) = fused_domain {
-                    self.evaluate_clock_domain(&domain)?;
+                if let Some(domain) = &c.fused {
+                    self.evaluate_clock_domain(domain)?;
                     continue;
                 }
-                let body = match &self.design.top.processes[pid] {
+                let body = match &self.design.top.processes[c.pid] {
                     Process::Sequential { body, .. } => body.clone(),
                     _ => continue,
                 };
@@ -1150,53 +1162,98 @@ impl SimulationEngine {
             }
             return Ok(());
         }
-        // serial_writes: tulisan kandidat non-batchable (guard B fase 2).
+        // Agregat fase 1: serial_writes (non-batchable), blocking_writes +
+        // counts (blocking batchable), reads_count (efektif = body ∪ iff,
+        // per kandidat sekali per sinyal).
         let mut serial_writes: std::collections::HashSet<usize> = std::collections::HashSet::new();
-        for (_, _, _, _, _, _, access, batchable) in &cands {
-            if let Some(a) = access {
-                if !batchable {
-                    serial_writes.extend(a.writes.iter().copied());
+        let mut blocking_writes: std::collections::HashSet<usize> =
+            std::collections::HashSet::new();
+        let mut blocking_write_counts: std::collections::HashMap<usize, usize> =
+            std::collections::HashMap::new();
+        let mut reads_count: std::collections::HashMap<usize, usize> =
+            std::collections::HashMap::new();
+        for c in &cands {
+            if !c.batchable {
+                serial_writes.extend(c.access.writes.iter().copied());
+            }
+            if c.batchable && c.blocking_only {
+                for s in c.own_blocking.iter() {
+                    *blocking_write_counts.entry(*s).or_insert(0) += 1;
                 }
+                blocking_writes.extend(c.own_blocking.iter().copied());
+            }
+            let mut effective = c.access.reads.clone();
+            effective.extend(c.iff_reads.iter().copied());
+            for s in effective {
+                *reads_count.entry(s).or_insert(0) += 1;
             }
         }
-        // Fase 2 — urutan pid: iff dieval pada posisi kandidat.
-        let mut seq_batch: Vec<(usize, crate::scheduler::sim_dag::SignalAccess)> = Vec::new();
-        for (pid, clock_trigger, _, iff, async_trig, _, access, batchable) in cands {
-            let access = match access {
-                Some(a) => a,
-                None => continue,
-            };
+        // Fase 2 — urutan pid: iff dieval pada posisi kandidat; demosi;
+        // defer hanya kandidat yang lolos semua guard.
+        let mut seq_batch: Vec<&SeqCand> = Vec::new();
+        for c in &cands {
             // LANG-27: guard `iff (cond)` — pada POSISI kandidat.
-            let mut trigger = clock_trigger
-                && match &iff {
+            let mut trigger = c.clock_trigger
+                && match &c.iff {
                     Some(cond) => match self.evaluate_expr(cond) {
                         Ok(v) => v.to_bool().unwrap_or(false),
                         Err(_) => false,
                     },
                     None => true,
                 };
-            trigger = trigger || async_trig;
+            trigger = trigger || c.async_trig;
             if !trigger {
                 continue;
             }
-            // Re-review round 3: WAW batch-vs-inline — kandidat batch yang
-            // MENULIS sinyal yang juga ditulis kandidat inline non-batchable
-            // didemosi (urutan push NBA tergantung posisi; defer mengubahnya).
-            if batchable
-                && access.reads.is_disjoint(&serial_writes)
-                && access.writes.is_disjoint(&serial_writes)
-            {
-                seq_batch.push((pid, access));
+            if !c.batchable {
+                let body = match &self.design.top.processes[c.pid] {
+                    Process::Sequential { body, .. } => body.clone(),
+                    _ => continue,
+                };
+                self.evaluate_stmt_block(&body)?;
                 continue;
             }
-            // Clone body per-pid (only triggered, not all 176K)
-            let body = match &self.design.top.processes[pid] {
-                Process::Sequential { body, .. } => body.clone(),
-                _ => continue,
+            let own_effective = |s: &usize| c.access.reads.contains(s) || c.iff_reads.contains(s);
+            let others_read = |s: &usize| {
+                reads_count.get(s).copied().unwrap_or(0) > if own_effective(s) { 1 } else { 0 }
             };
-            self.evaluate_stmt_block(&body)?;
+            let demote = if c.blocking_only {
+                // Blocking: (i) membaca tulisan serial inline; (ii) membaca
+                // blocking write kandidat lain (urutan grup ≠ pid);
+                // (iii) WAW dgn serial/blocking lain; (iv) menulis sinyal
+                // yang dibaca kandidat lain (defer → basi).
+                !c.access.reads.is_disjoint(&serial_writes)
+                    || !c.iff_reads.is_disjoint(&serial_writes)
+                    || !c.access.writes.is_disjoint(&serial_writes)
+                    || c.own_blocking.iter().any(|s| {
+                        blocking_writes.contains(s)
+                            && blocking_write_counts.get(s).copied().unwrap_or(0) > 1
+                    })
+                    || c.own_blocking.iter().any(&others_read)
+                    || c.iff_reads.iter().any(|s| {
+                        serial_writes.contains(s)
+                            || (blocking_writes.contains(s)
+                                && blocking_write_counts.get(s).copied().unwrap_or(0) > 1)
+                    })
+            } else {
+                // Nba: membaca blocking write kandidat lain (body/iff)
+                // → defer membaca nilai basi; WAW dgn serial inline
+                // (urutan push NBA berubah bila defer).
+                !c.access.reads.is_disjoint(&blocking_writes)
+                    || !c.access.writes.is_disjoint(&serial_writes)
+                    || c.iff_reads.iter().any(|s| blocking_writes.contains(s))
+            };
+            if demote {
+                let body = match &self.design.top.processes[c.pid] {
+                    Process::Sequential { body, .. } => body.clone(),
+                    _ => continue,
+                };
+                self.evaluate_stmt_block(&body)?;
+                continue;
+            }
+            seq_batch.push(c);
         }
-        let batch_pids: Vec<usize> = seq_batch.iter().map(|(p, _)| *p).collect();
+        let batch_pids: Vec<usize> = seq_batch.iter().map(|c| c.pid).collect();
         if batch_pids.len() >= 2 {
             self.evaluate_sequential_batch_parallel(&seq_batch)?;
         } else {
@@ -1204,6 +1261,8 @@ impl SimulationEngine {
         }
         Ok(())
     }
+
+    /// Fallback serial seluruh batch (urutan pid) — dipakai saat batch
     /// terlalu kecil, ada kandidat cycle-fusion, sinyal ultra-lebar (E),
     /// atau evaluator paralel gagal (D).
     fn evaluate_batch_serially(&mut self, batch: &[usize]) -> Result<(), SimError> {
@@ -1217,27 +1276,18 @@ impl SimulationEngine {
         Ok(())
     }
 
-    /// Par-02 tahap 1: batch-parallel eval triggered Sequential processes
-    /// (whitelist `is_sequential_body_batch_safe`, write set disjoint via
-    /// `layered_groups`, guard RAW/call/serial-writes di situs pemanggil).
-    /// Snapshot pre-edge SEKALI untuk semua grup — NBA pending tidak
-    /// menyentuh storage current sebelum commit. Writes di-tag per-pid lalu
-    /// di-push ke nba_pending terurut pid ascending = urutan push serial
-    /// persis (WAW antar grup → last-write-wins identik serial).
-    fn evaluate_sequential_batch_parallel(
-        &mut self,
-        batch: &[(usize, crate::scheduler::sim_dag::SignalAccess)],
-    ) -> Result<(), SimError> {
-        // (E) sinyal ultra-lebar: snapshot penuh berisiko OOM / lazy-X —
-        // mirror penggerbang jalur comb (evaluate_eval_processes_parallel).
+    /// Par-02 tahap 3: batch-parallel eval triggered Sequential processes.
+    /// Dua jalur apply per grup: BlockingOnly → apply_parallel_writes
+    /// (blocking immediate, snapshot rebuild grup berikutnya melihatnya);
+    /// NbaOnly → push_nba_pending terurut pid (commit identik serial).
+    fn evaluate_sequential_batch_parallel(&mut self, batch: &[&SeqCand]) -> Result<(), SimError> {
+        // (E) sinyal ultra-lebar: snapshot penuh berisiko OOM / lazy-X.
         if self.has_wide_signals() {
-            let pids: Vec<usize> = batch.iter().map(|(p, _)| *p).collect();
+            let pids: Vec<usize> = batch.iter().map(|c| c.pid).collect();
             return self.evaluate_batch_serially(&pids);
         }
-        // Analisis akses dense (batch pids -> index 0..n) — hindari alloc
-        // access vec seukuran seluruh process design.
         let access: Vec<crate::scheduler::sim_dag::SignalAccess> =
-            batch.iter().map(|(_, a)| a.clone()).collect();
+            batch.iter().map(|c| c.access.clone()).collect();
         let dense_batch: Vec<usize> = (0..batch.len()).collect();
         let groups = Self::layered_groups(&dense_batch, &access);
         crate::dbg_sim!(
@@ -1248,39 +1298,66 @@ impl SimulationEngine {
             batch.len(),
             groups.len()
         );
-        // Snapshot pre-edge sekali untuk semua grup.
-        let snapshot: Vec<std::sync::Arc<LogicVec>> = (0..self.state.signals.len())
-            .map(|i| std::sync::Arc::new(self.state.snapshot_signal(i)))
-            .collect();
         let body_map: std::collections::HashMap<usize, std::sync::Arc<Vec<IrStmt>>> = batch
             .iter()
-            .filter_map(|(pid, _)| {
+            .filter_map(|c| {
                 self.process_body_arcs
-                    .get(pid)
-                    .map(|b| (*pid, std::sync::Arc::clone(b)))
+                    .get(&c.pid)
+                    .map(|b| (c.pid, std::sync::Arc::clone(b)))
             })
             .collect();
-        // (C) writes ter-tag per-pid; TIDAK ada push sebelum semua grup
-        // selesai — Err grup mana pun (D) membatalkan seluruh hasil dan
-        // fallback serial tanpa efek sisa.
-        let mut tagged: Vec<(usize, Vec<crate::scheduler::sim_dag::ParallelWrite>)> = Vec::new();
-        for group in &groups {
-            let pids: Vec<&usize> = group.iter().map(|&i| &batch[i].0).collect();
+        let blocking_only_by_pid: std::collections::HashMap<usize, bool> =
+            batch.iter().map(|c| (c.pid, c.blocking_only)).collect();
+        // (C) per grup: blocking writes di-apply SEGERA (snapshot grup
+        // berikutnya melihatnya), NBA writes dikumpulkan ter-tag lalu
+        // di-push terurut pid setelah semua grup (commit identik serial).
+        // Err grup → fallback serial grup itu + grup berikutnya (urutan
+        // pid; grup sebelumnya sudah ter-apply dan konvergen dgn
+        // fixed-point loop domain).
+        let mut nba_pushes: Vec<(usize, Vec<crate::scheduler::sim_dag::ParallelWrite>)> =
+            Vec::new();
+        for (gi, group) in groups.iter().enumerate() {
+            let pids: Vec<&usize> = group.iter().map(|&i| &batch[i].pid).collect();
+            // Snapshot penuh per grup — blocking writes grup sebelumnya
+            // wajib terlihat (rantai comb antar grup = urutan serial).
+            let snapshot: Vec<std::sync::Arc<LogicVec>> = (0..self.state.signals.len())
+                .map(|i| std::sync::Arc::new(self.state.snapshot_signal(i)))
+                .collect();
             match crate::scheduler::sim_dag::evaluate_bodies_parallel_tagged(
                 &pids,
                 &body_map,
                 &snapshot,
                 &self.design.top.signals,
             ) {
-                Ok(part) => tagged.extend(part),
+                Ok(part) => {
+                    for (pid, ws) in part {
+                        if blocking_only_by_pid.get(&pid).copied().unwrap_or(false) {
+                            self.apply_parallel_writes(&ws);
+                        } else {
+                            nba_pushes.push((pid, ws));
+                        }
+                    }
+                }
                 Err(_) => {
-                    let pids: Vec<usize> = batch.iter().map(|(p, _)| *p).collect();
-                    return self.evaluate_batch_serially(&pids);
+                    let mut rest: Vec<usize> = Vec::new();
+                    for g in &groups[gi..] {
+                        rest.extend(g.iter().copied());
+                    }
+                    rest.sort_unstable();
+                    for &i in &rest {
+                        let pid = batch[i].pid;
+                        let body = match &self.design.top.processes[pid] {
+                            Process::Sequential { body, .. } => body.clone(),
+                            _ => continue,
+                        };
+                        self.evaluate_stmt_block(&body)?;
+                    }
+                    return Ok(());
                 }
             }
         }
-        tagged.sort_by_key(|(pid, _)| *pid);
-        for (_, writes) in tagged {
+        nba_pushes.sort_by_key(|(pid, _)| *pid);
+        for (_, writes) in nba_pushes {
             for (sig_id, start, val) in writes {
                 debug_assert_eq!(start, 0, "batch whitelist hanya full-signal NBA");
                 let width = self

@@ -442,3 +442,114 @@ fn dag_cf_waw_cross_group_diff() {
         );
     }
 }
+
+/// Par-02 tahap 3 (body_write_kinds): FF BlockingOnly dgn RAW intra-body —
+/// `tmp` ditulis blocking lalu dibaca di stmt berikutnya (overlay blocking
+/// = semantik serial), commit ke `a` dan `b`. Companion NbaOnly `w <= 5`
+/// membuat batch >= 2 → jalur apply ganda (blocking immediate + NBA push).
+const FF_BLK_TMP_SRC: &str = r#"
+module ff_blk_tmp_top;
+  logic clk;
+  logic [7:0] a, b, tmp;
+  logic [3:0] w;
+  initial begin clk = 0; a = 0; b = 0; tmp = 0; w = 0; #40; end
+  always #5 clk = ~clk;
+  always_ff @(posedge clk) begin
+    tmp = a + 8'd1;
+    b = tmp;
+    a = tmp;
+  end
+  always_ff @(posedge clk) w <= 4'd5;
+endmodule
+"#;
+
+#[test]
+fn dag_ff_blocking_tmp_batch_diff() {
+    for (name, expect) in [("a", "00001010"), ("b", "00001010"), ("w", "0101")] {
+        let d = run_signal_bits(FF_BLK_TMP_SRC, name, false);
+        let g = run_signal_bits(FF_BLK_TMP_SRC, name, true);
+        assert_eq!(
+            g, d,
+            "{name}: DAG harus identik serial (BlockingOnly + RAW intra-body)"
+        );
+        assert_eq!(g, expect, "{name}: nilai akhir ter-pinned (10 posedge)");
+    }
+}
+
+/// Par-02 tahap 3: FF BlockingOnly dgn LoopFor berbatas RUNTIME (`i < n`,
+/// n sinyal — tidak di-unroll elaborator) yang menjumlah, lalu commit
+/// blocking. Companion NbaOnly `w <= 5` → batch >= 2 dgn LoopFor utuh
+/// di IR (body_write_kinds arm LoopFor init/step BlockingAssign).
+const FF_LOOP_RT_SRC: &str = r#"
+module ff_loop_rt_top;
+  logic clk;
+  logic [2:0] n;
+  logic [7:0] acc, b;
+  logic [3:0] w;
+  integer i;
+  initial begin clk = 0; n = 3; acc = 0; b = 0; w = 0; #40; end
+  always #5 clk = ~clk;
+  always_ff @(posedge clk) begin
+    acc = 8'd0;
+    for (i = 0; i < n; i = i + 1)
+      acc = acc + 8'd2;
+    b = acc;
+  end
+  always_ff @(posedge clk) w <= 4'd5;
+endmodule
+"#;
+
+#[test]
+fn dag_ff_loop_runtime_bound_batch_diff() {
+    for (name, expect) in [("acc", "00000110"), ("b", "00000110"), ("w", "0101")] {
+        let d = run_signal_bits(FF_LOOP_RT_SRC, name, false);
+        let g = run_signal_bits(FF_LOOP_RT_SRC, name, true);
+        assert_eq!(
+            g, d,
+            "{name}: DAG harus identik serial (LoopFor runtime-bound)"
+        );
+        assert_eq!(
+            g, expect,
+            "{name}: nilai akhir ter-pinned (n=3 iterasi x 2)"
+        );
+    }
+}
+
+/// Par-02 tahap 3 — regresi WAW batch-vs-serial inline (ditemukan
+/// self-review R186): FF batchable (s <= 7) MENULIS sinyal yang sama
+/// dgn FF non-batchable serial inline ($display → body_write_kinds
+/// None; s <= s+1). Serial: push NBA pid-order → pemenang = FF serial
+/// (s = s_lama+1). Tanpa guard WAW-vs-serial, kandidat batch di-defer
+/// → push-nya TERAKHIR → s = 7 (divergen). Guard demosi FF batch →
+/// urutan push serial dipulihkan.
+const FF_WAW_SERIAL_SRC: &str = r#"
+module ff_waw_serial_top;
+  logic clk;
+  logic [7:0] s;
+  logic [3:0] w;
+  initial begin clk = 0; s = 0; w = 0; #40; end
+  always #5 clk = ~clk;
+  always_ff @(posedge clk) s <= 8'd7;
+  always_ff @(posedge clk) begin
+    $display("tick");
+    s <= s + 8'd1;
+  end
+  always_ff @(posedge clk) w <= 4'd5;
+endmodule
+"#;
+
+#[test]
+fn dag_ff_waw_batch_vs_serial_inline_diff() {
+    for (name, expect) in [("s", "00001010"), ("w", "0101")] {
+        let d = run_signal_bits(FF_WAW_SERIAL_SRC, name, false);
+        let g = run_signal_bits(FF_WAW_SERIAL_SRC, name, true);
+        assert_eq!(
+            g, d,
+            "{name}: DAG harus identik serial (WAW batch vs serial inline)"
+        );
+        assert_eq!(
+            g, expect,
+            "{name}: FF serial inline harus pemenang terakhir (s=10)"
+        );
+    }
+}

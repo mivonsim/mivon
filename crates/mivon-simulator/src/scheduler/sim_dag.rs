@@ -305,6 +305,13 @@ fn lvalue_signal_writes(lvalue: &IrLValue, access: &mut SignalAccess) {
 }
 
 /// Extract signal IDs read by an expression.
+/// Kumpulan sinyal yang dibaca sebuah ekspresi (utk iff-reads guard
+/// Par-02 tahap 3 — iff bukan bagian body access).
+pub(crate) fn expr_signal_reads_of(expr: &IrExpr) -> HashSet<SignalId> {
+    let mut access = SignalAccess::default();
+    expr_signal_reads(expr, &mut access);
+    access.reads
+}
 fn expr_signal_reads(expr: &IrExpr, access: &mut SignalAccess) {
     match expr {
         IrExpr::Signal(sig_id, _)
@@ -793,41 +800,75 @@ pub fn is_process_parallelizable(process: &Process) -> bool {
     )
 }
 
-/// Par-02 tahap 1: apakah body Sequential aman di-batch-parallel pada
-/// pemicu clock yang sama?
-///
-/// Whitelist ketat — WAJIB, karena evaluator paralel melewatkan stmt
-/// tak-dukung secara SENYAP (parallel.rs arm default: Force/Wait/
-/// NamedBlock/EventControl/dll di-skip tanpa error). Hanya NBA
-/// full-signal tanpa intra-assignment delay + kontrol aliran murni
-/// (If/Case/Block/Null) yang diizinkan. Blocking assign di dalam
-/// always_ff dikecualikan (defer-vs-immediate bisa divergen), demikian
-/// pula loop, syscall berdampak, event control, fork, dst.
-pub fn is_sequential_body_batch_safe(body: &[IrStmt]) -> bool {
-    fn stmt_ok(stmt: &IrStmt) -> bool {
-        match stmt {
-            IrStmt::NonBlockingAssign {
-                lhs: IrLValue::Signal(..),
-                delay: None,
-                ..
-            } => true,
-            IrStmt::If {
-                true_branch,
-                false_branch,
-                ..
-            } => block_ok(true_branch) && block_ok(false_branch),
-            IrStmt::Case { items, default, .. } => {
-                items.iter().all(|it| block_ok(&it.body)) && block_ok(default)
+/// Par-02 tahap 3: klasifikasi write body FF utk batch paralel —
+/// (blocking, nba) per sinyal. None bila ada stmt tak didukung evaluator
+/// paralel (di-skip senyap — parallel.rs arm default: Force/Wait/
+/// EventControl/Fork/NamedBlock/Assert/SysCall/dll.) → kandidat wajib
+/// serial. Blocking RAW intra-body AMAN (overlay evaluator paralel
+/// meniru blocking serial); NBA-then-read TIDAK (serial defer commit).
+/// Lvalue non-full-signal (bit/range/hier/array) → None (tahap 3:
+/// full-signal saja; partial patch butuh tag lvalue di push NBA).
+pub fn body_write_kinds(body: &[IrStmt]) -> Option<(HashSet<SignalId>, HashSet<SignalId>)> {
+    fn lvalue_ids(lv: &IrLValue, out: &mut HashSet<SignalId>) -> Option<()> {
+        match lv {
+            IrLValue::Signal(id, _) => {
+                out.insert(*id);
+                Some(())
             }
-            IrStmt::Block { stmts } => block_ok(stmts),
-            IrStmt::Null => true,
-            _ => false,
+            _ => None,
         }
     }
-    fn block_ok(stmts: &[IrStmt]) -> bool {
-        stmts.iter().all(stmt_ok)
+    fn walk(
+        stmts: &[IrStmt],
+        blocking: &mut HashSet<SignalId>,
+        nba: &mut HashSet<SignalId>,
+    ) -> Option<()> {
+        for stmt in stmts {
+            match stmt {
+                IrStmt::BlockingAssign { lhs, .. } => lvalue_ids(lhs, blocking)?,
+                IrStmt::NonBlockingAssign { lhs, .. } => lvalue_ids(lhs, nba)?,
+                IrStmt::Block { stmts } => walk(stmts, blocking, nba)?,
+                IrStmt::If {
+                    true_branch,
+                    false_branch,
+                    ..
+                } => {
+                    walk(true_branch, blocking, nba)?;
+                    walk(false_branch, blocking, nba)?;
+                }
+                IrStmt::Case { items, default, .. } => {
+                    for it in items {
+                        walk(&it.body, blocking, nba)?;
+                    }
+                    walk(default, blocking, nba)?;
+                }
+                IrStmt::LoopFor {
+                    init, step, body, ..
+                } => {
+                    if let Some(i) = init {
+                        walk(std::slice::from_ref(i), blocking, nba)?;
+                    }
+                    if let Some(s) = step {
+                        walk(std::slice::from_ref(s), blocking, nba)?;
+                    }
+                    walk(body, blocking, nba)?;
+                }
+                IrStmt::LoopWhile { body, .. }
+                | IrStmt::LoopDoWhile { body, .. }
+                | IrStmt::Repeat { body, .. }
+                | IrStmt::Foreach { body, .. } => {
+                    walk(body, blocking, nba)?;
+                }
+                IrStmt::Null => {}
+                _ => return None,
+            }
+        }
+        Some(())
     }
-    block_ok(body)
+    let mut blocking = HashSet::new();
+    let mut nba = HashSet::new();
+    walk(body, &mut blocking, &mut nba)?;
+    Some((blocking, nba))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
