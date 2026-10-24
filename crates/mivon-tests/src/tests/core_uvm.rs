@@ -2719,6 +2719,63 @@ endmodule
 }
 
 #[test]
+#[test]
+fn test_sva_multicycle_antecedent_implication_fails() {
+    // Regresi: assertion a ##1 b |-> c — antecedent multi-cycle harus
+    // dievaluasi pada cycle saat ia SELESAI, bukan hanya elapsed==0 (yang
+    // membuatnya selalu vacuous pass / false green).
+    let src = r#"
+module tb_multicycle_fail;
+  reg clk = 0;
+  reg a = 0;
+  reg b = 0;
+  always #5 clk = ~clk;
+  assert property (@(posedge clk) a ##1 b |-> 1'b0);
+  initial begin
+    @(posedge clk) a = 1;
+    @(posedge clk) b = 1;
+    #30; $finish;
+  end
+endmodule
+"#;
+    let design = compile_str(src).expect("compile multicycle fail");
+    let mut engine = crate::simulator::SimulationEngine::new(design, 60);
+    let _ = engine.run();
+    let total_fail: u64 = engine.assertion_stats.values().map(|(_, f)| *f).sum();
+    assert!(
+        total_fail >= 1,
+        "antecedent multi-cycle harus menghasilkan fail, dapat {}",
+        total_fail
+    );
+}
+
+#[test]
+fn test_sva_multicycle_antecedent_vacuous_pass() {
+    // Antecedent tidak pernah selesai -> vacuous pass (IEEE 1800 16.12.2).
+    let src = r#"
+module tb_multicycle_vacuous;
+  reg clk = 0;
+  reg a = 0;
+  reg b = 0;
+  always #5 clk = ~clk;
+  assert property (@(posedge clk) a ##1 b |-> 1'b0);
+  initial begin
+    @(posedge clk) a = 1;
+    #30; $finish;
+  end
+endmodule
+"#;
+    let design = compile_str(src).expect("compile multicycle vacuous");
+    let mut engine = crate::simulator::SimulationEngine::new(design, 60);
+    let _ = engine.run();
+    let total_fail: u64 = engine.assertion_stats.values().map(|(_, f)| *f).sum();
+    assert_eq!(
+        total_fail, 0,
+        "harus vacuous pass, dapat fail={}",
+        total_fail
+    );
+}
+
 fn test_sva_labeled_assertion() {
     // LANG-48: assertion berlabel `lbl: assert property (...)` di level
     // module TIDAK boleh dibuang — label di-consume, body di-parse penuh,

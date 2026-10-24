@@ -9718,3 +9718,43 @@ Bukti end-to-end (stimulus a/b/c):
      ✅ 3595 passed, 0 failed, 24 skipped.
 
 \=======================================================================//
+
+═══ ROUND 170 — PARSER-09/SIM: antecedent multi-cycle (false green) ═══
+
+Review agent (Explore) atas ROUND 169 menemukan MAJOR: parser kini menerima
+a ##1 b |-> c, TETAPI engine hanya mengevaluasi antecedent saat elapsed == 0
+(sequence.rs:76-92). Antecedent multi-cycle tidak pernah true pada elapsed 0,
+sehingga Implication selalu mengembalikan true (vacuous) -> assertion MUSTAHIL
+pun "pass" (false green). Lebih berbahaya daripada bug silent-drop aslinya.
+
+Diperbaiki di engine (bukan sekadar parser):
+- sequence.rs: Implication(ante, cons) = matching ekuivalen Concat(ante, cons):
+  for k in 0..=elapsed { ante(k) && cons(elapsed-k) }. Ini benar untuk
+  |-> (cons mulai saat ante selesai) DAN |=> (cons = Concat(Delay(1), cons)).
+- sequence.rs: vacuous pass sesuai IEEE 1800 §16.12.2 — implication yang
+  antecedent-nya TIDAK PERNAH match di window = pass, bukan fail. Ditopang
+  field SequenceAttempt.ante_matched (sebelumnya tidak pernah dipakai) yang
+  kini di-set saat antecedent selesai.
+- +2 test di mivon-tests/core_uvm.rs:
+  test_sva_multicycle_antecedent_implication_fails (a ##1 b |-> 0 -> fail),
+  test_sva_multicycle_antecedent_vacuous_pass (ante tak pernah selesai -> pass).
+
+Bukti sebelum/sesudah (stimulus a=1 lalu b=1):
+  sebelum: a ##1 b |-> 1'b0 -> 4 evaluated, 0 fail (vacuous palsu)
+  sesudah: a ##1 b |-> 1'b0 -> fail terdeteksi (1 pass / 49996 fail pada
+           stimulus a,b tetap 1); a ##1 b |-> c dengan c telat 1 cycle -> fail.
+  vacuous (a saja, b tak pernah) -> 1 evaluated, 1 pass, 0 fail.
+
+📊 VERIFIKASI ROUND 170:
+   - cargo nextest run --workspace --features dev multicycle -> 3 passed
+     (termasuk 2 test baru).
+   - cargo nextest run --workspace --features dev --no-fail-fast:
+     ✅ 3596 passed, 0 failed, 24 skipped (termasuk regresi |=> yang sempat
+     gagal lalu diperbaiki dengan matching Concat).
+   - cargo fmt --all --check -> bersih.
+
+Sisa temuan review ROUND 169 (dikerjakan bertahap, belum di round ini):
+consequent rantai (a ##1 b |-> c ##1 d), property p1 = ... terpotong,
+named property ber-ante delay, dan rollback assert senyap tanpa diagnostik.
+
+\=======================================================================//

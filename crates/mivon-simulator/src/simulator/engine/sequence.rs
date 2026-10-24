@@ -74,21 +74,19 @@ impl SimulationEngine {
                 Ok(false)
             }
             IrSequence::Implication(ante, cons) => {
-                // overlap implication (IEEE 1800-2017 §16.9.2):
-                // At elapsed=0: check ante at depth=0 (current posedge).
-                // If ante true → check cons starting from same cycle.
-                // If ante false → vacuously true.
-                // At elapsed>0: ante already matched (caller set ante_matched).
-                if elapsed == 0 {
-                    if self.eval_sequence_depth(ante, 0, 0)? {
-                        self.eval_sequence_depth(cons, 0, 0)
-                    } else {
-                        Ok(true) // vacuous
+                // |-> (overlap) dan |=> (non-overlap, di-encode sebagai
+                // Concat(Delay(1), cons)) sama-sama berarti: cari cycle k saat
+                // antecedent SELESAI, lalu consequent berjalan dari situ.
+                // Matching-nya identik dengan Concat(ante, cons).
+                for k in 0..=elapsed {
+                    let cons_depth = depth.saturating_sub(k);
+                    if self.eval_sequence_depth(ante, k, depth)?
+                        && self.eval_sequence_depth(cons, elapsed - k, cons_depth)?
+                    {
+                        return Ok(true);
                     }
-                } else {
-                    // ante already matched at elapsed=0; check cons
-                    self.eval_sequence_depth(cons, elapsed, depth)
                 }
+                Ok(false)
             }
         }
     }
@@ -160,10 +158,20 @@ impl SimulationEngine {
             .collect();
 
         let mut results: Vec<bool> = Vec::new();
+        let mut ante_hits: Vec<Option<bool>> = Vec::new();
         for (seq, cycles) in &seqs {
             // depth = cycles: sequence dimulai cycles posedge lalu
             let r = self.eval_sequence_depth(seq, *cycles, *cycles)?;
             results.push(r);
+            // Lacak apakah antecedent implication selesai pada cycle ini
+            // (dipakai untuk vacuous pass saat attempt habis).
+            let hit = match &**seq {
+                IrSequence::Implication(ante, _) => {
+                    Some(self.eval_sequence_depth(ante, *cycles, *cycles)?)
+                }
+                _ => None,
+            };
+            ante_hits.push(hit);
         }
 
         let mut completed = Vec::new();
@@ -175,12 +183,20 @@ impl SimulationEngine {
                 } else {
                     false
                 };
+                let ante_hit = ante_hits.get(result_idx).copied().flatten();
                 result_idx += 1;
+                if ante_hit == Some(true) {
+                    attempt.ante_matched = Some(true);
+                }
                 let max_cycles = attempt.sequence.max_cycles().unwrap_or(u64::MAX);
                 if matched {
                     completed.push((idx, true));
                 } else if attempt.cycles >= max_cycles {
-                    completed.push((idx, false));
+                    // IEEE 1800-2017 §16.12.2: implication yang antecedent-nya
+                    // TIDAK PERNAH match adalah vacuous pass, bukan fail.
+                    let vacuous = matches!(&*attempt.sequence, IrSequence::Implication(..))
+                        && attempt.ante_matched != Some(true);
+                    completed.push((idx, vacuous));
                 }
                 attempt.cycles += 1;
             }
