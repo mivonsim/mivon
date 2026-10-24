@@ -329,6 +329,11 @@ endmodule
         let ante = ante_shape.expect(
             "assert property harus menghasilkan PropertyAssert ber-Sequence::Implication, bukan di-skip",
         );
+        let mut ids = Vec::new();
+        seq_idents(&ante, &mut ids);
+        assert!(ids.iter().any(|n| n == "a"), "a harus ada: {:?}", ids);
+        assert!(ids.iter().any(|n| n == "b"), "b harus ada: {:?}", ids);
+        assert!(!ids.iter().any(|n| n == "s1"), "s1 harus hilang: {:?}", ids);
         // LANG-42b: antecedent s1 harus tersubstitusi menjadi body deklarasi
         // (a ##1 b), bukan Ident mentah yang memicu E2001 di elaborator.
         assert!(
@@ -405,5 +410,96 @@ endmodule
             "argumen aktual b harus masuk: {:?}",
             ids
         );
+    }
+
+    /// Parse source test dan kembalikan Design (panic bila parse gagal).
+    fn parse_src(src: &str) -> crate::types::Design {
+        let mut lexer = Lexer::new(src);
+        let mut tokens = Vec::new();
+        loop {
+            let (tok, line, col) = lexer.next_token();
+            if tok == Token::Eof {
+                break;
+            }
+            tokens.push((tok, line, col));
+        }
+        let mut p = Parser::new(tokens, "t.sv");
+        p.parse_design().expect("parse gagal")
+    }
+
+    /// Antecedent implication dari assertion pertama module pertama.
+    fn first_antecedent(design: &crate::types::Design) -> crate::types::Sequence {
+        for item in &design.modules[0].items {
+            if let crate::types::ModuleItem::PropertyAssert(s) = item {
+                if let crate::Stmt::PropertySeq {
+                    sequence: crate::types::Sequence::Implication(ante, _),
+                    ..
+                } = &**s
+                {
+                    return (**ante).clone();
+                }
+            }
+        }
+        panic!("tidak ada PropertyAssert ber-Implication");
+    }
+
+    /// LANG-42b: sequence module A tidak boleh bocor ke module B. Bila bocor,
+    /// identifier sinyal ack di module B di-expand menjadi body module A dan
+    /// elaborator melaporkan E2001 palsu.
+    #[test]
+    fn named_sequence_does_not_leak_across_modules() {
+        let src = "module A(input logic clk, x);\n  sequence ack; x ##1 x; endsequence\nendmodule\nmodule B(input logic clk, a, ack);\n  assert property (@(posedge clk) a |-> ack);\nendmodule\n";
+        let design = parse_src(src);
+        let module_b = design
+            .modules
+            .iter()
+            .find(|m| m.name.as_str() == "B")
+            .expect("module B harus ada");
+        let mut ante = None;
+        for item in &module_b.items {
+            if let crate::types::ModuleItem::PropertyAssert(s) = item {
+                if let crate::Stmt::PropertySeq {
+                    sequence: crate::types::Sequence::Implication(a, _),
+                    ..
+                } = &**s
+                {
+                    ante = Some((**a).clone());
+                }
+            }
+        }
+        let mut ids = Vec::new();
+        seq_idents(
+            &ante.expect("assertion di module B harus ter-parse"),
+            &mut ids,
+        );
+        assert_eq!(
+            ids,
+            vec!["a".to_string()],
+            "ack di module B adalah sinyal, bukan sequence module A"
+        );
+    }
+
+    /// LANG-42b: alias bertingkat (s1 -> s2 -> expr) harus tersubstitusi penuh.
+    #[test]
+    fn transitive_named_sequence_alias_is_resolved() {
+        let src = "module m(input logic clk, a, b, c);\n  sequence s2; b; endsequence\n  sequence s1; a ##1 s2; endsequence\n  assert property (@(posedge clk) s1 |-> c);\nendmodule\n";
+        let design = parse_src(src);
+        let ante = first_antecedent(&design);
+        let mut ids = Vec::new();
+        seq_idents(&ante, &mut ids);
+        assert!(!ids.iter().any(|n| n == "s1"), "s1 harus hilang: {:?}", ids);
+        assert!(!ids.iter().any(|n| n == "s2"), "s2 harus hilang: {:?}", ids);
+        assert!(ids.iter().any(|n| n == "a"), "a harus ada: {:?}", ids);
+        assert!(ids.iter().any(|n| n == "b"), "b harus ada: {:?}", ids);
+    }
+
+    /// Guard siklus: sequence yang mereferensikan dirinya sendiri tidak boleh
+    /// membuat parser hang.
+    #[test]
+    fn self_referential_sequence_terminates() {
+        let src = "module m(input logic clk, a);\n  sequence s1; s1 ##1 a; endsequence\n  assert property (@(posedge clk) s1 |-> a);\nendmodule\n";
+        let design = parse_src(src);
+        assert_eq!(design.modules.len(), 1);
+        let _ = first_antecedent(&design);
     }
 }

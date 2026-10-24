@@ -9444,8 +9444,9 @@ Tahap ini: +1 regression test parses_assert_property_named_seq_and_implication
 Mengunci fitur yang sudah ada agar tidak regresi.
 
 Sisa "full syntax" (belum): repetition range [*m:n]/[=n]/[->n], until/within,
-first_match, property-level eventually/s_eventually. (always dan disable iff
-SUDAH ada — LANG-49 / stmt.rs:232.)
+first_match, property-level eventually/s_eventually, dan always(prop) yang
+memuat operator temporal (bentuk boolean always/never sudah ada, LANG-49).
+disable iff SUDAH ada (stmt.rs:232).
 Marker ⚠️ (belum ✅ penuh).
 
 📊 VERIFIKASI ROUND 162:
@@ -9487,5 +9488,44 @@ Diperbaiki:
    - Smoke: mivon /tmp/feat09_sva.sv -> "Simulation completed", tanpa E2001.
    - cargo nextest run --workspace --features dev --no-fail-fast:
      ✅ 3583 passed, 0 failed, 24 skipped.
+
+\=======================================================================//
+
+═══ ROUND 164 — PARSER-09: fix regresi scoping + resolusi transitif ═══
+
+Review agent (Explore) atas ROUND 163 menemukan 1 MAJOR regresi + 1 MEDIUM gap.
+
+MAJOR (M1): named_sequences/named_properties adalah HashMap per-FILE yang tidak
+pernah di-reset per module. Traversal baru mengekspansi identifier apa pun yang
+kebetulan sama dengan nama sequence module LAIN -> E2001 palsu pada desain yang
+sebelumnya valid (probe 3 module: sequence "ack" di module A membuat sinyal
+"ack" di module B dianggap sequence).
+
+MEDIUM (M2): resolusi hanya 1 level. Alias bertingkat (s1 -> s2 -> expr)
+menyisakan nama s2 mentah -> E2001.
+
+Diperbaiki:
+- lib.rs: snapshot/restore named_sequences + named_properties di arm
+  Token::Module dan Token::Interface -> deklarasi bersifat module-scoped
+  (compilation-unit decl sebelum module tetap terlihat).
+- stmt.rs: resolve_named_in_sequence_inner + expand_named — body hasil ekspansi
+  ditelusuri ulang (transitif), dengan guard anti-siklus (Vec<Symbol> seen):
+  sequence s1; s1 ##1 a; endsequence tidak hang.
+- stmt.rs: presedensi lookup disamakan dengan blok resolved (property dulu,
+  lalu sequence) — L2 review.
+- +3 test: named_sequence_does_not_leak_across_modules,
+  transitive_named_sequence_alias_is_resolved, self_referential_sequence_terminates.
+- test 1 diperkuat: assert ids = a,b dan s1 hilang (bukan hanya "bukan Ident").
+- audit.txt: klaim "always sudah ada" dikoreksi (yang ada baru always/never
+  boolean LANG-49; always(prop) bertemporal belum); types.rs:862 tidak lagi
+  mengklaim [*N] diparse.
+
+📊 VERIFIKASI ROUND 164:
+   - cargo nextest run -p mivon-parser sva::tests -> 6 passed.
+   - cargo check -p mivon-parser --all-targets -> 0 warning, 0 error.
+   - Smoke 3 module (xmod) -> "Simulasi: SIAP", tanpa E2001.
+   - Smoke alias transitif (s1 -> s2) -> "Simulasi: SIAP", tanpa E2001.
+   - cargo nextest run --workspace --features dev --no-fail-fast:
+     ✅ 3586 passed, 0 failed, 24 skipped.
 
 \=======================================================================//

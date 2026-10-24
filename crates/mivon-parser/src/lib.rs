@@ -1269,7 +1269,16 @@ impl Parser {
             let had_error = match self.peek() {
                 Token::Module => {
                     _n_module += 1;
-                    match self.parse_module() {
+                    // LANG-42b: sequence/property bersifat module-scoped —
+                    // snapshot lalu restore agar deklarasi module A tidak bocor
+                    // ke module B (sempat memicu E2001 palsu bila nama sinyal
+                    // module B kebetulan sama dengan nama sequence module A).
+                    let saved_seq = self.named_sequences.clone();
+                    let saved_prop = self.named_properties.clone();
+                    let parsed = self.parse_module();
+                    self.named_sequences = saved_seq;
+                    self.named_properties = saved_prop;
+                    match parsed {
                         Ok(m) => {
                             modules.push(m);
                             false
@@ -1282,7 +1291,13 @@ impl Parser {
                 }
                 Token::Interface => {
                     _n_interface += 1;
-                    match self.parse_interface() {
+                    // LANG-42b: scope yang sama seperti module (lihat di atas).
+                    let saved_seq = self.named_sequences.clone();
+                    let saved_prop = self.named_properties.clone();
+                    let parsed = self.parse_interface();
+                    self.named_sequences = saved_seq;
+                    self.named_properties = saved_prop;
+                    match parsed {
                         Ok(iface) => {
                             interfaces.push(iface);
                             false

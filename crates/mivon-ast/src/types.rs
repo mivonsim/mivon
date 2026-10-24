@@ -859,7 +859,7 @@ pub enum ModuleItem {
     /// BOOLEAN (tanpa operator temporal `##`/`|->`/`[*]`). Disimpan sebagai
     /// Stmt::Assert/Assume/Cover dgn clock_event + disable_iff; elaborator
     /// mengubahnya jadi AlwaysBlock ber-clock sehingga dievaluasi tiap edge.
-    /// Property dgn operator temporal (##N, |->, |=>, [*N]) juga masuk sini
+    /// Property dgn operator temporal (##N, |->, |=>) juga masuk sini
     /// sebagai Stmt::PropertySeq (LANG-06/LANG-42), bukan di-skip.
     PropertyAssert(Box<Stmt>),
     /// LANG-10: `checker name (ports); items endchecker` (IEEE 1800-2017

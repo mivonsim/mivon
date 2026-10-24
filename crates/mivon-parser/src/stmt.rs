@@ -713,15 +713,16 @@ impl Parser {
     }
     /// LANG-42b: cari deklarasi named sequence/property lalu substitusi body-nya
     /// (parameter formal -> argumen aktual). Mengembalikan body + clock deklarasi.
+    /// Presedensi sama dengan blok resolved (property dulu, lalu sequence).
     fn lookup_named_seq(
         &self,
         name: &Symbol,
         args: &[Expr],
     ) -> Option<(super::types::Sequence, Option<ClockEvent>)> {
         let v = self
-            .named_sequences
+            .named_properties
             .get(name)
-            .or_else(|| self.named_properties.get(name))?;
+            .or_else(|| self.named_sequences.get(name))?;
         let (formals, body, clock) = v.clone();
         let map: std::collections::HashMap<Symbol, &Expr> =
             formals.iter().copied().zip(args.iter()).collect();
@@ -729,56 +730,82 @@ impl Parser {
     }
 
     /// LANG-42b: resolusi referensi deklarasi bernama DI DALAM sequence,
-    /// termasuk antecedent implication (`s1 |-> c`). Sebelumnya hanya body
+    /// termasuk antecedent implication (s1 |-> c). Sebelumnya hanya body
     /// berbentuk Expr tunggal yang di-resolve, sehingga antecedent
-    /// `Sequence::Expr(Ident("s1"))` lolos ke elaborator -> E2001.
+    /// Sequence::Expr(Ident(s1)) lolos ke elaborator -> E2001.
     fn resolve_named_in_sequence(
         &self,
         seq: &super::types::Sequence,
         decl_clock: &mut Option<ClockEvent>,
     ) -> super::types::Sequence {
+        self.resolve_named_in_sequence_inner(seq, decl_clock, &mut Vec::new())
+    }
+
+    /// Rekursi + guard anti-siklus: nama yang sudah ada di stack ekspansi tidak
+    /// di-expand lagi (sequence s1; s1 ##1 a; endsequence tidak hang).
+    fn resolve_named_in_sequence_inner(
+        &self,
+        seq: &super::types::Sequence,
+        decl_clock: &mut Option<ClockEvent>,
+        seen: &mut Vec<Symbol>,
+    ) -> super::types::Sequence {
         use super::types::Sequence;
         match seq {
-            Sequence::Expr(Expr::Ident { name, .. }) => match self.lookup_named_seq(name, &[]) {
-                Some((body, clock)) => {
-                    if decl_clock.is_none() {
-                        *decl_clock = clock;
-                    }
-                    body
-                }
-                None => seq.clone(),
-            },
+            Sequence::Expr(Expr::Ident { name, .. }) => {
+                self.expand_named(seq, *name, &[], decl_clock, seen)
+            }
             Sequence::Expr(Expr::FuncCall { name, args, .. }) => {
-                match self.lookup_named_seq(name, args) {
-                    Some((body, clock)) => {
-                        if decl_clock.is_none() {
-                            *decl_clock = clock;
-                        }
-                        body
-                    }
-                    None => seq.clone(),
-                }
+                self.expand_named(seq, *name, args, decl_clock, seen)
             }
             Sequence::Implication(a, c) => Sequence::Implication(
-                Box::new(self.resolve_named_in_sequence(a, decl_clock)),
-                Box::new(self.resolve_named_in_sequence(c, decl_clock)),
+                Box::new(self.resolve_named_in_sequence_inner(a, decl_clock, seen)),
+                Box::new(self.resolve_named_in_sequence_inner(c, decl_clock, seen)),
             ),
             Sequence::Concat(a, c) => Sequence::Concat(
-                Box::new(self.resolve_named_in_sequence(a, decl_clock)),
-                Box::new(self.resolve_named_in_sequence(c, decl_clock)),
+                Box::new(self.resolve_named_in_sequence_inner(a, decl_clock, seen)),
+                Box::new(self.resolve_named_in_sequence_inner(c, decl_clock, seen)),
             ),
             Sequence::Or(a, c) => Sequence::Or(
-                Box::new(self.resolve_named_in_sequence(a, decl_clock)),
-                Box::new(self.resolve_named_in_sequence(c, decl_clock)),
+                Box::new(self.resolve_named_in_sequence_inner(a, decl_clock, seen)),
+                Box::new(self.resolve_named_in_sequence_inner(c, decl_clock, seen)),
             ),
             Sequence::And(a, c) => Sequence::And(
-                Box::new(self.resolve_named_in_sequence(a, decl_clock)),
-                Box::new(self.resolve_named_in_sequence(c, decl_clock)),
+                Box::new(self.resolve_named_in_sequence_inner(a, decl_clock, seen)),
+                Box::new(self.resolve_named_in_sequence_inner(c, decl_clock, seen)),
             ),
-            Sequence::Repeat(s, n) => {
-                Sequence::Repeat(Box::new(self.resolve_named_in_sequence(s, decl_clock)), *n)
-            }
+            Sequence::Repeat(s, n) => Sequence::Repeat(
+                Box::new(self.resolve_named_in_sequence_inner(s, decl_clock, seen)),
+                *n,
+            ),
             other => other.clone(),
+        }
+    }
+
+    /// Ekspansi satu referensi bernama (dengan substitusi argumen) lalu telusuri
+    /// body hasil ekspansi agar alias bertingkat (s1 -> s2 -> expr) ikut
+    /// tersubstitusi. Parameter seen mencegah siklus.
+    fn expand_named(
+        &self,
+        original: &super::types::Sequence,
+        name: Symbol,
+        args: &[Expr],
+        decl_clock: &mut Option<ClockEvent>,
+        seen: &mut Vec<Symbol>,
+    ) -> super::types::Sequence {
+        if seen.contains(&name) {
+            return original.clone();
+        }
+        match self.lookup_named_seq(&name, args) {
+            Some((body, clock)) => {
+                if decl_clock.is_none() {
+                    *decl_clock = clock;
+                }
+                seen.push(name);
+                let out = self.resolve_named_in_sequence_inner(&body, decl_clock, seen);
+                seen.pop();
+                out
+            }
+            None => original.clone(),
         }
     }
 
