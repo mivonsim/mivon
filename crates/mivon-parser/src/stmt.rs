@@ -281,7 +281,7 @@ impl Parser {
                         )),
                     );
                 }
-                sequence = Some(seq);
+                sequence = Some(self.wrap_implication(seq)?);
             } else {
                 // LANG-49: operator temporal property `always (p)` / `never (p)`
                 // di awal body (IEEE 1800-2017 §16.14), tanpa antecedent.
@@ -368,7 +368,7 @@ impl Parser {
                                 )),
                             );
                         }
-                        sequence = Some(seq);
+                        sequence = Some(self.wrap_implication(seq)?);
                     } else if matches!(self.peek(), Token::Ident(s) if s.as_str() == "iff") {
                         // LANG-49: property connective `left iff right`
                         // (IEEE 1800-2017 §16.10): true ketika kedua sisi

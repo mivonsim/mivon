@@ -9685,3 +9685,36 @@ Diperbaiki:
      ✅ 3592 passed, 0 failed, 24 skipped.
 
 \=======================================================================//
+
+═══ ROUND 169 — PARSER-09: implication setelah sequence delay ═══
+
+Review agent (Explore) atas ROUND 168: seluruh temuan ROUND 167 terverifikasi
+diperbaiki, tetapi menemukan MAJOR pre-existing di area yang sama:
+
+  assert property (@(posedge clk) a ##1 b |-> c);
+  -> AST items = 0, 0 diagnostik, CLI "Simulasi: SIAP".
+  Assertion DIBUANG DIAM-DIAM (persis kelas "silent truncation" yang sedang
+  dibereskan). Akar: cabang ##N (stmt.rs:262-284 dan 356-374) membangun Concat
+  lalu tidak memeriksa |-> / |=>; expect(RParen) gagal dan item di-rollback
+  tanpa pesan (lib.rs skip_assert_item).
+
+Diperbaiki:
+- stmt/sva.rs: wrap_implication(seq) — bila token berikutnya |-> atau |=>,
+  bungkus jadi Sequence::Implication (|=> = Concat(Delay(1), cons)).
+- stmt.rs: kedua cabang ##N memakai wrap_implication (leading delay dan
+  expr ##N ...).
+- +3 test: parses_delay_sequence_with_implication,
+  parses_leading_delay_with_implication, parses_alias_concat_with_implication.
+
+Bukti end-to-end (stimulus a/b/c):
+  Assert: 8 evaluated (8 pass / 0 fail) 100.0% pass rate
+  (sebelumnya 0 item / "no assertion data").
+
+📊 VERIFIKASI ROUND 169:
+   - cargo nextest run -p mivon-parser sva::tests -> 15 passed.
+   - cargo fmt --all --check -> bersih.
+   - Smoke /tmp/p09_impl2.sv -> 8 evaluated, 8 pass.
+   - cargo nextest run --workspace --features dev --no-fail-fast:
+     ✅ 3595 passed, 0 failed, 24 skipped.
+
+\=======================================================================//

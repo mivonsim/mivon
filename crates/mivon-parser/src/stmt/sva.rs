@@ -5,6 +5,35 @@
 use super::*;
 
 impl Parser {
+    /// LANG-42b: bungkus sequence yang sudah terbentuk dengan implication bila
+    /// diikuti |-> atau |=>. Sebelumnya bentuk `a ##1 b |-> c` membuat
+    /// expect(RParen) gagal lalu seluruh assert di-rollback TANPA diagnostik.
+    pub(super) fn wrap_implication(
+        &mut self,
+        seq: super::types::Sequence,
+    ) -> Result<super::types::Sequence, SimError> {
+        if self.peek() == &Token::PipeArrow {
+            self.advance();
+            let cons = self.parse_sequence_after_consequent()?;
+            Ok(super::types::Sequence::Implication(
+                Box::new(seq),
+                Box::new(cons),
+            ))
+        } else if self.peek() == &Token::PipeFatArrow {
+            self.advance();
+            let cons = self.parse_sequence_after_consequent()?;
+            Ok(super::types::Sequence::Implication(
+                Box::new(seq),
+                Box::new(super::types::Sequence::Concat(
+                    Box::new(super::types::Sequence::Delay(1)),
+                    Box::new(cons),
+                )),
+            ))
+        } else {
+            Ok(seq)
+        }
+    }
+
     /// LANG-06 (SVA temporal): parse delay sequence setelah `##` — bentuk
     /// `##N` (Delay konstan) atau `##[min:max]` (DelayRange). Caller sudah
     /// meng-consume `##`.
@@ -662,5 +691,48 @@ endmodule
             "rantai dalam harus berhenti cepat, butuh {:?}",
             elapsed
         );
+    }
+
+    /// LANG-42b: assertion a ##1 b |-> c harus jadi Implication ber-antecedent
+    /// Concat, bukan di-rollback diam-diam (0 item, 0 diagnostik).
+    #[test]
+    fn parses_delay_sequence_with_implication() {
+        let src = "module m(input logic clk, a, b, c);\n  assert property (@(posedge clk) a ##1 b |-> c);\nendmodule\n";
+        let design = parse_src(src);
+        let ante = first_antecedent(&design);
+        assert!(
+            matches!(ante, crate::types::Sequence::Concat(_, _)),
+            "antecedent harus Concat, dapat {:?}",
+            ante
+        );
+        let mut ids = Vec::new();
+        seq_idents(&ante, &mut ids);
+        assert!(ids.iter().any(|n| n == "a") && ids.iter().any(|n| n == "b"));
+    }
+    /// Bentuk sequence dimulai delay: ##1 a |-> b.
+    /// Bentuk sequence dimulai delay: .
+    #[test]
+    fn parses_leading_delay_with_implication() {
+        let src = "module m(input logic clk, a, b);\n  assert property (@(posedge clk) ##1 a |-> b);\nendmodule\n";
+        let design = parse_src(src);
+        let ante = first_antecedent(&design);
+        assert!(
+            matches!(ante, crate::types::Sequence::Concat(_, _)),
+            "antecedent harus Concat, dapat {:?}",
+            ante
+        );
+    }
+    /// Alias + concat + implication: s1 ##1 s2 |-> c harus resolve keduanya.
+    /// Alias + concat + implication:  harus resolve keduanya.
+    #[test]
+    fn parses_alias_concat_with_implication() {
+        let src = "module m(input logic clk, a, b, c);\n  sequence s1; a; endsequence\n  sequence s2; b; endsequence\n  assert property (@(posedge clk) s1 ##1 s2 |-> c);\nendmodule\n";
+        let design = parse_src(src);
+        let ante = first_antecedent(&design);
+        let mut ids = Vec::new();
+        seq_idents(&ante, &mut ids);
+        assert!(!ids.iter().any(|n| n == "s1"), "s1 harus hilang: {:?}", ids);
+        assert!(!ids.iter().any(|n| n == "s2"), "s2 harus hilang: {:?}", ids);
+        assert!(ids.iter().any(|n| n == "a") && ids.iter().any(|n| n == "b"));
     }
 }
