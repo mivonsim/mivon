@@ -351,7 +351,7 @@ pub struct MwaveArgs {
     pub cmd: MwaveCmd,
 }
 
-    /// mwave subcommand.
+/// mwave subcommand.
 #[derive(Subcommand, Clone)]
 pub enum MwaveCmd {
     /// Debug manifest (FEAT-15): VCD -> JSON probe-point map

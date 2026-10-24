@@ -9327,3 +9327,26 @@ Catatan: 1 warning dead_code pada from_json (pub API, dipakai test) — harmless
      ✅ 3572 passed, 0 failed, 24 skipped.
 
 \=======================================================================//
+
+═══ ROUND 158 — FEAT-15: follow-up review fixes ═══
+
+Review agent (Explore) menyatakan perubahan bersih, tanpa MAJOR/MEDIUM
+correctness bug. Satu MEDIUM gap: debug() belum tertutup tes end-to-end.
+LOW: dead_code warning from_json, indent doc-comment cli.rs:354,
+input.replace(".vcd","") rapuh.
+
+Diperbaiki:
+- +1 test debug_end_to_end_writes_manifest: tulis VCD via write_vcd, panggil
+  debug(), baca JSON, assert probe=2, transisi clk=2, timescale=1ns, total=3.
+  (MEDIUM gap tertutup; total debug test = 5)
+- debug.rs: #[allow(dead_code)] pada from_json (hilangkan warning).
+- debug.rs: input.replace(".vcd","") -> input.strip_suffix(".vcd").unwrap_or(input).
+- cli.rs:354: hapus 4 spasi berlebih pada doc-comment mwave subcommand.
+
+📊 VERIFIKASI ROUND 158:
+   - cargo check -p mivon-tools --all-targets: 0 warning, 0 error.
+   - cargo nextest run -p mivon-tools debug -> 5 passed.
+   - cargo nextest run --workspace --features dev --no-fail-fast:
+     ✅ 3573 passed, 0 failed, 24 skipped.
+
+\=======================================================================//
