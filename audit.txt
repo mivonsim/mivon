@@ -10334,6 +10334,13 @@ Re-review round 2 menemukan 2 bug interleaving dari restructure dua-fase
   Verifikasi reviewer: klaim A–E tertutup; rayon indexed-collect
   terjamin urutan input + sort pid; jalur comb tak tersentuh.
 
+Re-review round 3: "tidak ada BUG baru — aman di-keep". Dua temuan
+pre-existing (bukan blocker) diamankan sekalian dgn guard konservatif
+satu-baris di batchable/defer: (1) WAW batch-vs-inline — kandidat batch
+yang MENULIS sinyal tulisan kandidat inline non-batchable didemosi
+(urutan push NBA tergantung posisi); (2) kandidat dgn has_unresolved
+(HierRef dll. tak masuk set reads/writes) ditolak dari batch — mirror
+snapshot-sparse gate jalur comb.
 VERIFIKASI ROUND 184 (final):
    - cargo fmt --all --check -> bersih.
    - cargo nextest run --workspace --features dev: 3623 passed,

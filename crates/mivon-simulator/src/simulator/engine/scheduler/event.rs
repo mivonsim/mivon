@@ -1105,6 +1105,10 @@ impl SimulationEngine {
                 && body_ok
                 && access.reads.is_disjoint(&access.writes)
                 && !access.has_call_expr;
+            // Re-review round 3: HierRef/akses tak-resolvable tak masuk
+            // set reads/writes — guard B buta terhadapnya → tolak dari
+            // batch (mirror snapshot-sparse gate jalur comb).
+            &&!access.has_unresolved;
             cands.push((
                 pid,
                 clock_trigger,
@@ -1175,7 +1179,13 @@ impl SimulationEngine {
             if !trigger {
                 continue;
             }
-            if batchable && access.reads.is_disjoint(&serial_writes) {
+            // Re-review round 3: WAW batch-vs-inline — kandidat batch yang
+            // MENULIS sinyal yang juga ditulis kandidat inline non-batchable
+            // didemosi (urutan push NBA tergantung posisi; defer mengubahnya).
+            if batchable
+                && access.reads.is_disjoint(&serial_writes)
+                && access.writes.is_disjoint(&serial_writes)
+            {
                 seq_batch.push((pid, access));
                 continue;
             }
