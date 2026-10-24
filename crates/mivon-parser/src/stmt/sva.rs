@@ -637,16 +637,30 @@ endmodule
     /// menabrak stack (SIGABRT).
     #[test]
     fn deep_alias_chain_does_not_overflow_stack() {
+        // 5.000 level: jauh di atas ambang stack overflow (~1.000 pada stack
+        // 2 MB) sehingga test ini gagal (SIGABRT) bila depth cap dihapus.
         let mut src = String::from("module m(input logic clk, a, b);\n");
         src.push_str("  sequence c0; a; endsequence\n");
-        for i in 1..=400 {
+        for i in 1..=5000 {
             src.push_str(&format!("  sequence c{}; c{}; endsequence\n", i, i - 1));
         }
-        src.push_str("  assert property (@(posedge clk) c400 |-> b);\nendmodule\n");
+        src.push_str("  assert property (@(posedge clk) c5000 |-> b);\nendmodule\n");
+        let start = std::time::Instant::now();
         let design = parse_src(&src);
+        let elapsed = start.elapsed();
         let ante = first_antecedent(&design);
         let mut ids = Vec::new();
         seq_idents(&ante, &mut ids);
-        assert!(!ids.is_empty(), "antecedent harus tetap ter-parse");
+        // Cap 256 -> salah satu nama alias tersisa unresolved (bukan hang/crash).
+        assert!(
+            ids.iter().any(|n| n.starts_with('c')),
+            "harus ada alias tersisa yang unresolved: {:?}",
+            ids
+        );
+        assert!(
+            elapsed.as_secs() < 10,
+            "rantai dalam harus berhenti cepat, butuh {:?}",
+            elapsed
+        );
     }
 }

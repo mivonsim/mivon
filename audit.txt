@@ -9651,3 +9651,37 @@ Bukti: file 24 level -> warning[E1006] di /tmp/p09_big.sv:27:45, parse 0,83 s
      ✅ 3592 passed, 0 failed, 24 skipped.
 
 \=======================================================================//
+
+═══ ROUND 168 — PARSER-09: posisi warning + registry E1006 ═══
+
+Review agent (Explore) atas ROUND 167: tidak ada MAJOR, tetapi 4 MEDIUM:
+
+(a) file:0:0 masih mungkin muncul (peek_line/peek_col = 0 di EOF; tidak ada
+    fallback seperti err_with_code).
+(b) posisi warning menunjuk token SETELAH ekspresi (titik koma), bukan
+    referensi alias yang meledak.
+(c) depth cap 256 terpotong DIAM-DIAM -> E2001 menyesatkan; berpotensi silent
+    miscompile bila ada sinyal bernama sama.
+(d) test deep chain 400 level lulus juga tanpa cap (bukan regression test).
+(e) DiagCode::ExpansionLimit tidak terdaftar di PARSE_ERRORS ->
+    lookup_code("E1006") = None (MICD/LSP/GUI kehilangan kode).
+
+Diperbaiki:
+- stmt.rs: posisi warning diambil dari Expr::Ident/FuncCall (line,col) milik
+  referensi alias; fallback peek bila 0.
+- stmt.rs: depth cap juga memancarkan E1006 dengan pesan khusus kedalaman
+  (bukan diam-diam), sekali per resolusi.
+- mivon-diag codes.rs: ExpansionLimit masuk PARSE_ERRORS + test_all_codes_count
+  71 -> 72 + assert lookup_code("E1006").
+- test deep chain: 5.000 level + assert alias unresolved tersisa (gagal/SIGABRT
+  bila cap dihapus) + batas waktu.
+
+📊 VERIFIKASI ROUND 168:
+   - cargo nextest run -p mivon-parser sva::tests -> 12 passed.
+   - cargo nextest run -p mivon-diag -> 76 passed.
+   - Smoke 1.000 level -> warning[E1006] "kedalaman ... 256 level" +
+     E2001 pada alias yang tersisa (sesuai desain).
+   - cargo nextest run --workspace --features dev --no-fail-fast:
+     ✅ 3592 passed, 0 failed, 24 skipped.
+
+\=======================================================================//

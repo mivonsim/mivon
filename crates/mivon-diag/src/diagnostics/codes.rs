@@ -26,6 +26,7 @@ pub const PARSE_ERRORS: &[(DiagCode, &str)] = &[
     (DiagCode::ExpectedSemi, "expected ';'"),
     (DiagCode::UnclosedBlock, "unclosed block"),
     (DiagCode::InvalidSyntax, "invalid syntax"),
+    (DiagCode::ExpansionLimit, "implementation limit exceeded"),
 ];
 
 /// All semantic error codes (E2xxx)
@@ -220,15 +221,16 @@ mod tests {
     #[test]
     fn test_all_codes_count() {
         let codes = all_codes();
-        // Parse: 5, Semantic: 4, Elab: 11, Memory: 5, Signal: 5, Scheduler: 5,
+        // Parse: 6, Semantic: 4, Elab: 11, Memory: 5, Signal: 5, Scheduler: 5,
         // Event: 3, Module: 2, Interface: 2, Clock: 2, Assertion: 4, DPI: 3,
-        // Internal: 3, Infrastructure: 4, Legacy: 3, Other: 1, Warnings: 9 = 71 total
-        assert_eq!(codes.len(), 71);
+        // Internal: 3, Infrastructure: 4, Legacy: 3, Other: 1, Warnings: 9 = 72 total
+        assert_eq!(codes.len(), 72);
     }
 
     #[test]
     fn test_lookup_code() {
         assert_eq!(lookup_code("E1001"), Some(DiagCode::UnexpectedToken));
+        assert_eq!(lookup_code("E1006"), Some(DiagCode::ExpansionLimit));
         assert_eq!(lookup_code("E3001"), Some(DiagCode::ModuleNotFound));
         assert_eq!(lookup_code("E0005"), Some(DiagCode::DataFormatError));
         // E3005 = top resolution (dahulu prefix aneh "EL3001" di luar skema

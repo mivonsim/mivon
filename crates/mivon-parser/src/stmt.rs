@@ -786,12 +786,27 @@ impl Parser {
     ) -> super::types::Sequence {
         use super::types::Sequence;
         match seq {
-            Sequence::Expr(Expr::Ident { name, .. }) => {
-                self.expand_named(seq, *name, &[], decl_clock, seen, budget, warned)
-            }
-            Sequence::Expr(Expr::FuncCall { name, args, .. }) => {
-                self.expand_named(seq, *name, args, decl_clock, seen, budget, warned)
-            }
+            Sequence::Expr(Expr::Ident {
+                name, line, col, ..
+            }) => self.expand_named(
+                seq,
+                *name,
+                &[],
+                *line,
+                *col,
+                decl_clock,
+                seen,
+                budget,
+                warned,
+            ),
+            Sequence::Expr(Expr::FuncCall {
+                name,
+                args,
+                line,
+                col,
+            }) => self.expand_named(
+                seq, *name, args, *line, *col, decl_clock, seen, budget, warned,
+            ),
             Sequence::Implication(a, c) => Sequence::Implication(
                 Box::new(self.resolve_named_in_sequence_inner(a, decl_clock, seen, budget, warned)),
                 Box::new(self.resolve_named_in_sequence_inner(c, decl_clock, seen, budget, warned)),
@@ -815,58 +830,77 @@ impl Parser {
             other => other.clone(),
         }
     }
-
     /// Ekspansi satu referensi bernama (dengan substitusi argumen) lalu telusuri
     /// body hasil ekspansi agar alias bertingkat (s1 -> s2 -> expr) ikut
     /// tersubstitusi. seen mencegah siklus; budget/kedalaman mencegah ledakan.
+    /// line/col = posisi referensi alias (untuk diagnostic yang akurat).
     #[allow(clippy::too_many_arguments)]
     fn expand_named(
         &mut self,
         original: &super::types::Sequence,
         name: Symbol,
         args: &[Expr],
+        line: usize,
+        col: usize,
         decl_clock: &mut Option<ClockEvent>,
         seen: &mut Vec<Symbol>,
         budget: &mut usize,
         warned: &mut bool,
     ) -> super::types::Sequence {
-        if seen.contains(&name) || seen.len() >= Self::SVA_EXPAND_MAX_DEPTH {
+        if seen.contains(&name) {
             return original.clone();
         }
-        match self.lookup_named_seq(&name, args) {
-            Some((body, clock)) => {
-                let nodes = Self::seq_nodes(&body);
-                if nodes > *budget {
-                    // Sekali per resolusi (bukan per sibling) agar tidak spam,
-                    // dengan posisi nyata + kode limit (bukan E1005 sintaks).
-                    if !*warned {
-                        *warned = true;
-                        let line = self.peek_line();
-                        let col = self.peek_col();
-                        self.push_warning_code_at(
-                            DiagCode::ExpansionLimit,
-                            format!(
-                                "ekspansi SVA sequence/property melebihi budget {} node; referensi dibiarkan unresolved",
-                                Self::SVA_EXPAND_NODE_BUDGET
-                            ),
-                            line,
-                            col,
-                        );
-                    }
-                    return original.clone();
-                }
-                *budget -= nodes;
-                if decl_clock.is_none() {
-                    *decl_clock = clock;
-                }
-                seen.push(name);
-                let out =
-                    self.resolve_named_in_sequence_inner(&body, decl_clock, seen, budget, warned);
-                seen.pop();
-                out
+        let Some((body, clock)) = self.lookup_named_seq(&name, args) else {
+            return original.clone();
+        };
+        // Posisi diagnostic: pakai posisi referensi alias; fallback ke token
+        // saat ini bila AST tidak membawa posisi (0,0).
+        let (warn_line, warn_col) = if line > 0 {
+            (line, col)
+        } else {
+            (self.peek_line(), self.peek_col())
+        };
+        if seen.len() >= Self::SVA_EXPAND_MAX_DEPTH {
+            if !*warned {
+                *warned = true;
+                self.push_warning_code_at(
+                    DiagCode::ExpansionLimit,
+                    format!(
+                        "kedalaman ekspansi SVA sequence/property melebihi {} level; referensi dibiarkan unresolved",
+                        Self::SVA_EXPAND_MAX_DEPTH
+                    ),
+                    warn_line,
+                    warn_col,
+                );
             }
-            None => original.clone(),
+            return original.clone();
         }
+        let nodes = Self::seq_nodes(&body);
+        if nodes > *budget {
+            // Sekali per resolusi (bukan per sibling) agar tidak spam,
+            // dengan posisi nyata + kode limit (bukan E1005 sintaks).
+            if !*warned {
+                *warned = true;
+                self.push_warning_code_at(
+                    DiagCode::ExpansionLimit,
+                    format!(
+                        "ekspansi SVA sequence/property melebihi budget {} node; referensi dibiarkan unresolved",
+                        Self::SVA_EXPAND_NODE_BUDGET
+                    ),
+                    warn_line,
+                    warn_col,
+                );
+            }
+            return original.clone();
+        }
+        *budget -= nodes;
+        if decl_clock.is_none() {
+            *decl_clock = clock;
+        }
+        seen.push(name);
+        let out = self.resolve_named_in_sequence_inner(&body, decl_clock, seen, budget, warned);
+        seen.pop();
+        out
     }
     /// Deteksi operator temporal PSL di body paren assertion (`a |-> b`,
     /// `a until b`, `a before b`) — lexer/expr parser tidak support.
