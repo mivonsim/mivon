@@ -1198,4 +1198,46 @@ endmodule
             "assert always harus menghasilkan item, bukan di-skip"
         );
     }
+
+    /// PARSER-09 MAJOR 3(a): posisi E1007 (rollback assertion) harus memetakan
+    /// ke baris FILE ASLI lewat `line directive (file_line_map), bukan baris
+    /// kumulatif source gabungan hasil ekspansi makro lintas file.
+    #[test]
+    fn unsupported_assertion_position_uses_file_line_map() {
+        // Source gabungan dengan `line 500 "real.sv": baris kumulatif 1 =
+        // file-line 499, baris 2 = 500. Map menyatakan directive di posisi
+        // kumulatif 1 bernilai 500.
+        let src = "`line 500 \"real.sv\"\nassert property (@(posedge clk) a |-> b);\n";
+        let map = vec![(1usize, 500usize, "real.sv".to_string())];
+        let mut lexer = Lexer::new(src);
+        let mut tokens = Vec::new();
+        loop {
+            let (tok, line, col) = lexer.next_token();
+            if tok == Token::Eof {
+                break;
+            }
+            tokens.push((tok, line, col));
+        }
+        let mut p = Parser::new(tokens, "real.sv")
+            .with_source_lines(src)
+            .with_file_line_map(map);
+        // Simulasikan rollback assertion di baris kumulatif 2 (token `assert`).
+        p.push_warning_code_at(
+            DiagCode::UnsupportedAssertion,
+            "assertion skipped, not simulated: unsupported construct",
+            2,
+            1,
+        );
+        let warn = p.errors.last().expect("warning harus tercatat");
+        let span = warn.spans.first().expect("span harus ada");
+        assert_eq!(span.file.as_str(), "real.sv", "file harus real.sv");
+        assert_eq!(
+            span.start as usize, 500,
+            "baris harus 500 (file-relative), bukan baris kumulatif"
+        );
+        if let Some(snip) = &warn.source_snippet {
+            assert_eq!(snip.file, "real.sv");
+            assert_eq!(snip.line, 500);
+        }
+    }
 }

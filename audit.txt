@@ -9990,11 +9990,44 @@ Diperbaiki:
      ✅ 3613 passed, 0 failed, 24 skipped (3612 -> 3613).
    - cargo fmt --all --check -> bersih.
 
-Sisa review ROUND 171/173/175: MAJOR 3 (baris bergeser utk assertion hasil
-ekspansi makro multi-baris + dedup emit_diags per (code,file,line) menelan
-warning berbeda), MEDIUM 4 (cap default warning), MEDIUM 6 lanjutan (test
-with_source_lines/file_line_map untuk baris+kolom pada jalur rollback),
-Token::Expect senyap, dan refactor ekstraksi helper parse_clock_event() tunggal
-(opsional, menutup drift permanen).
 
+═══ ROUND 177 — PARSER-09: MAJOR 3 — posisi E1007 akurat + dedup tak menelan warning beda baris ═══
+
+Review ROUND 171/173/175 (MAJOR 3): dua sub-masalah pada warning E1007 hasil
+rollback assertion:
+  (a) baris E1007 bergeser pada file hasil ekspansi makro multi-baris — posisi
+      token kumulatif tidak memetakan ke baris file asli;
+  (b) emit_diags melakukan dedup per (code,file,line) sehingga dua warning
+      BERBEDA pada baris yang SAMA (mis. beberapa assertion hasil ekspansi makro
+      di satu baris fisik) ditelan menjadi satu.
+
+Perubahan (minimal, manual):
+  1. src/main.rs — emit_diags: ekstrak helper murni dedup_diag_indices() dan
+     kunci dedup kini (code, file, line, col). Kolom disertakan agar warning
+     berbeda di baris sama tetap di-emit. Error tidak didedup.
+  2. crates/mivon-parser/src/stmt/sva.rs — test regression
+     unsupported_assertion_position_uses_file_line_map memanggil
+     push_warning_code_at(...) dengan with_file_line_map (simulasi `line
+     directive hasil ekspansi makro) dan mengunci span.file=="real.sv" serta
+     span.start==500 (baris file-relative, bukan kumulatif). Sub-masalah (a)
+     terkunci. MEDIUM 6 (test with_source_lines/file_line_map) terpenuhi.
+
+Verifikasi:
+  - dedup_diag_indices_keeps_distinct_warnings_same_line: dua E1007 di baris sama
+    kolom beda -> 2 dipertahankan; E1007 duplikat persis -> 1 (dedup).
+  - dedup_diag_indices_keeps_all_errors: dua Error identik tetap 2.
+  - unsupported_assertion_position_uses_file_line_map: span memetakan ke baris
+    file asli (500) via file_line_map.
+
+VERIFIKASI ROUND 177:
+   - cargo test -p mivon dedup_diag_indices -> 2 passed.
+   - cargo test -p mivon-parser unsupported_assertion_position_uses_file_line_map -> 1 passed.
+   - cargo nextest run --workspace --features dev --no-fail-fast:
+     ✅ 3616 passed, 0 failed, 24 skipped (3613 -> 3616, +3 test).
+   - cargo fmt --all --check -> bersih.
+
+Sisa review PARSER-09 (belum di round ini): MEDIUM 4 (cap default --max-warnings
+untuk flood E1007 pada makro berulang), Token::Expect senyap di level module, dan
+refactor ekstraksi helper parse_clock_event() tunggal (opsional, menutup drift
+permanen). MAJOR 3 + MEDIUM 6 SUDAH SELESAI di ROUND 177.
 \\=======================================================================//

@@ -77,30 +77,19 @@ pub(crate) fn emit_diags(diags: &[mivon_core::diagnostics::diagnostic::Diagnosti
     if diags.is_empty() {
         return;
     }
-    use std::collections::HashSet;
-    let mut seen: HashSet<(String, String, usize)> = HashSet::new(); // (code, file, line)
+    let keep: std::collections::HashSet<usize> = dedup_diag_indices(diags).into_iter().collect();
     let mut emitter = mivon_core::diagnostics::TerminalEmitter::new();
     static WARN_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-    for diag in diags {
+    for (idx, diag) in diags.iter().enumerate() {
+        if !keep.contains(&idx) {
+            continue;
+        }
         if no_warn && diag.level == mivon_core::diagnostics::DiagLevel::Warning {
             continue;
         }
         if !allow_codes.is_empty() && diag.level == mivon_core::diagnostics::DiagLevel::Warning {
             let code_str = format!("{}", diag.code);
             if allow_codes.iter().any(|c| c == &code_str) {
-                continue;
-            }
-        }
-        // Deduplicate warnings by (code, file, line)
-        if diag.level == mivon_core::diagnostics::DiagLevel::Warning {
-            let file = diag
-                .source_snippet
-                .as_ref()
-                .map(|s| s.file.clone())
-                .unwrap_or_default();
-            let line = diag.source_snippet.as_ref().map(|s| s.line).unwrap_or(0);
-            let key = (format!("{}", diag.code), file, line);
-            if !seen.insert(key) {
                 continue;
             }
         }
@@ -122,6 +111,33 @@ pub(crate) fn emit_diags(diags: &[mivon_core::diagnostics::diagnostic::Diagnosti
 /// Bangun diagnostic E3001 "design not ready" dengan lokasi error elaborasi
 /// pertama (file:line:col) agar user langsung tahu di mana memperbaiki.
 /// Prioritas: source_snippet (punya line:col) → span (byte offset) → tanpa lokasi.
+/// Kembalikan indeks diagnostic yang akan di-emit setelah deduplikasi.
+///
+/// Peringatan (Warning) didedup berdasarkan kunci (code, file, line, col).
+/// Kolom disertakan agar warning BERBEDA pada baris yang SAMA tidak
+/// ditelan menjadi satu (PARSER-09 MAJOR 3). Error tidak didedup.
+fn dedup_diag_indices(diags: &[mivon_core::diagnostics::diagnostic::Diagnostic]) -> Vec<usize> {
+    use std::collections::HashSet;
+    let mut seen: HashSet<(String, String, usize, usize)> = HashSet::new();
+    let mut out = Vec::new();
+    for (i, diag) in diags.iter().enumerate() {
+        if diag.level == mivon_core::diagnostics::DiagLevel::Warning {
+            let file = diag
+                .source_snippet
+                .as_ref()
+                .map(|s| s.file.clone())
+                .unwrap_or_default();
+            let line = diag.source_snippet.as_ref().map(|s| s.line).unwrap_or(0);
+            let col = diag.source_snippet.as_ref().map(|s| s.col).unwrap_or(0);
+            let key = (format!("{}", diag.code), file, line, col);
+            if !seen.insert(key) {
+                continue;
+            }
+        }
+        out.push(i);
+    }
+    out
+}
 fn elab_abort_diag(
     _elab_errs: usize,
     diags: &[mivon_core::diagnostics::diagnostic::Diagnostic],
@@ -890,5 +906,69 @@ mod tests {
         // Tidak dipanggil utk pesan pendek di call-site, tapi helper harus
         // mengembalikan utuh bila <= max.
         assert_eq!(truncate_ellipsis("halo", 77), "halo");
+    }
+
+    /// Dedup peringatan menyertakan kolom (PARSER-09 MAJOR 3): dua warning
+    /// E1007 BERBEDA pada baris yang SAMA (hasil ekspansi makro) tetap
+    /// keduanya di-emit, tidak ditelan menjadi satu.
+    #[test]
+    fn dedup_diag_indices_keeps_distinct_warnings_same_line() {
+        use mivon_core::diagnostics::diagnostic::Diagnostic;
+        use mivon_core::diagnostics::{DiagCode, DiagLevel, SourceSnippet};
+        let mut w1 = Diagnostic::new(
+            DiagLevel::Warning,
+            DiagCode::UnsupportedAssertion,
+            "assertion skipped: a",
+        );
+        w1.source_snippet = Some(SourceSnippet::new(
+            "real.sv",
+            10,
+            1,
+            "assert property (a |-> b);",
+        ));
+        let mut w2 = Diagnostic::new(
+            DiagLevel::Warning,
+            DiagCode::UnsupportedAssertion,
+            "assertion skipped: b",
+        );
+        w2.source_snippet = Some(SourceSnippet::new(
+            "real.sv",
+            10,
+            20,
+            "assert property (c |-> d);",
+        ));
+        let mut w3 = Diagnostic::new(
+            DiagLevel::Warning,
+            DiagCode::UnsupportedAssertion,
+            "assertion skipped: a",
+        );
+        w3.source_snippet = Some(SourceSnippet::new(
+            "real.sv",
+            10,
+            1,
+            "assert property (a |-> b);",
+        ));
+        let diags = vec![w1, w2, w3];
+        let keep = crate::dedup_diag_indices(&diags);
+        assert_eq!(
+            keep.len(),
+            2,
+            "dedup harus mempertahankan 2 warning berbeda"
+        );
+        assert!(keep.contains(&0) && keep.contains(&1));
+    }
+
+    /// Dedup tidak memengaruhi Error: dua error identik tetap di-emit berdua.
+    #[test]
+    fn dedup_diag_indices_keeps_all_errors() {
+        use mivon_core::diagnostics::diagnostic::Diagnostic;
+        use mivon_core::diagnostics::{DiagCode, DiagLevel, SourceSnippet};
+        let mk = || {
+            let mut d = Diagnostic::new(DiagLevel::Error, DiagCode::InvalidSyntax, "boom");
+            d.source_snippet = Some(SourceSnippet::new("f.sv", 1, 1, "x"));
+            d
+        };
+        let diags = vec![mk(), mk()];
+        assert_eq!(crate::dedup_diag_indices(&diags).len(), 2);
     }
 }
