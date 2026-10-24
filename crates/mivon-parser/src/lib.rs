@@ -2220,15 +2220,35 @@ impl Parser {
                 let save_errs = self.errors.len();
                 let save_steps = self.parse_steps;
                 let save_peek = self.peek_count.get();
+                let (assert_line, assert_col) = self
+                    .tokens
+                    .get(save_pos)
+                    .map(|(_, l, c)| (*l, *c))
+                    .unwrap_or((0, 0));
                 match self.parse_immediate_assertion() {
                     Ok(stmt) => Ok(Some(ModuleItem::PropertyAssert(Box::new(stmt)))),
-                    Err(_) => {
+                    Err(reason) => {
+                        // Ambil pesan saja (tanpa prefix file:line:col) — posisi
+                        // sudah dibawa span warning di bawah.
+                        let reason_text = match &reason {
+                            SimError::Diagnostic(d) => d.message.to_string(),
+                            other => other.to_string(),
+                        };
                         // Rollback: kembalikan posisi token + hapus error parsing
                         // yang ditambahkan oleh percobaan, lalu skip penuh.
                         self.pos.set(save_pos);
                         self.errors.truncate(save_errs);
                         self.parse_steps = save_steps;
                         self.peek_count.set(save_peek);
+                        // Jangan buang diam-diam: assertion yang di-skip harus
+                        // terlihat di diagnostik, kalau tidak user mengira
+                        // assertion-nya aktif padahal tidak pernah disimulasikan.
+                        self.push_warning_code_at(
+                            DiagCode::UnsupportedAssertion,
+                            format!("assertion skipped, not simulated: {}", reason_text),
+                            assert_line,
+                            assert_col,
+                        );
                         self.skip_assert_item();
                         Ok(None)
                     }

@@ -70,6 +70,10 @@ pub enum DiagCode {
     /// karena sintaks salah.
     ExpansionLimit,
 
+    /// Konstruksi assertion yang belum didukung di-skip (E1007) — assertion
+    /// tetap dibuang agar modul tidak terpotong, tapi user diberi tahu.
+    UnsupportedAssertion,
+
     // ── Semantic errors: E2xxx ──
     UndefinedSignal,
     TypeMismatch,
@@ -251,6 +255,7 @@ impl DiagCode {
             DiagCode::UnclosedBlock => "E1004",
             DiagCode::InvalidSyntax => "E1005",
             DiagCode::ExpansionLimit => "E1006",
+            DiagCode::UnsupportedAssertion => "E1007",
             // Semantic
             DiagCode::UndefinedSignal => "E2001",
             DiagCode::TypeMismatch => "E2002",
@@ -350,6 +355,7 @@ impl DiagCode {
             DiagCode::UnclosedBlock => "unclosed block",
             DiagCode::InvalidSyntax => "invalid syntax",
             DiagCode::ExpansionLimit => "implementation limit exceeded",
+            DiagCode::UnsupportedAssertion => "unsupported assertion construct",
             // Semantic
             DiagCode::UndefinedSignal => "undefined signal",
             DiagCode::TypeMismatch => "type mismatch",
@@ -454,6 +460,8 @@ impl DiagCode {
                 "The source code contains syntax that does not conform to the SystemVerilog language specification.",
             DiagCode::ExpansionLimit =>
                 "The design exceeds an implementation limit (for example SVA sequence/property alias expansion); the construct was left unexpanded to avoid excessive memory use.",
+            DiagCode::UnsupportedAssertion =>
+                "An assertion uses a SystemVerilog construct that this parser cannot lower to the simulation IR; the assertion was skipped so the rest of the module still parses.",
             DiagCode::UndefinedSignal =>
                 "A signal name was referenced but has not been declared in the current scope.",
             DiagCode::TypeMismatch =>
@@ -606,6 +614,8 @@ impl DiagCode {
                 "Review the code at the indicated location and fix the reported issue.",
             DiagCode::ExpansionLimit =>
                 "Reduce the nesting or size of the sequence/property alias expansion.",
+            DiagCode::UnsupportedAssertion =>
+                "Rewrite the assertion using a supported subset (plain boolean expression, ##N chain, or |-> / |=> implication), or remove it if it is not needed for simulation.",
             DiagCode::ExpectedToken =>
                 "Check the code near the indicated position for missing keywords or operators.",
             DiagCode::ExpectedSemi =>
@@ -763,7 +773,8 @@ impl DiagCode {
             | DiagCode::ExpectedSemi
             | DiagCode::UnclosedBlock
             | DiagCode::InvalidSyntax
-            | DiagCode::ExpansionLimit => "Parse",
+            | DiagCode::ExpansionLimit
+            | DiagCode::UnsupportedAssertion => "Parse",
             DiagCode::UndefinedSignal
             | DiagCode::TypeMismatch
             | DiagCode::WidthMismatch

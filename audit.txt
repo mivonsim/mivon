@@ -1008,6 +1008,12 @@ PARSER-08: ✅ STALE — FastLexer SUDAH terintegrasi dengan Parser baru
            string non-ASCII (`é`) di FastLexer bisa mojibake karena
            byte→char; jalur legacy benar.
 PARSER-09:⚠️ parser SVA properties (substantial, LANG-06/42) — High
+           Progres: implication (|->/|=>) utk antecedent/consequent rantai,
+           named seq/property + substitusi formal, scoping per unit, guard
+           ekspansi (E1006), engine multi-cycle match + vacuous pass. Bentuk
+           yang BELUM didukung (repetition a[*2], a and/or b, paren) kini
+           DIAGNOSA E1007, tidak lagi hilang senyap. Sisa: leading-delay di
+           laporan coverage (sequence_first_loc (0,0)).
 PARSER-10: ✅ Module/interface parameter type list edge cases (ROUND 85b)
            — parse_type_expr fix: scoped type (pkg::type_name), signed/byte/
            shortint/longint/real type keywords in param list. Double-advance
@@ -9758,3 +9764,41 @@ consequent rantai (a ##1 b |-> c ##1 d), property p1 = ... terpotong,
 named property ber-ante delay, dan rollback assert senyap tanpa diagnostik.
 
 \=======================================================================//
+
+═══ ROUND 171 — PARSER-09: consequent rantai + warning E1007 (bukan silent) ═══
+
+Review ROUND 169/170 menyisakan dua temuan: (a) consequent yang berupa rantai
+delay (a ##1 b |-> c ##1 d), bentuk ringkas property p1 = a ##1 b |-> c, dan
+named property ber-antecedent delay terpotong; (b) jalur rollback assertion
+di-skip TANPA diagnostik — user mengira assertion aktif padahal tidak pernah
+disimulasikan.
+
+Diperbaiki:
+- stmt/sva.rs: parse_sequence_expr + parse_sequence_after_consequent disatukan
+  ke satu bentuk [##N] expr (##N expr)* lalu wrap_implication(seq) — consequent
+  boleh rantai delay, bentuk ringkas dan named property ikut jalur yang sama.
+- parser/lib.rs: rollback assert/assume/cover/restrict kini memancarkan warning
+  E1007 (DiagCode::UnsupportedAssertion) di posisi keyword assert, pesan =
+  alasan parse asli (prefix file:line:col dibuang agar tidak menduplikasi span).
+- mivon-diag: DiagCode::UnsupportedAssertion = "E1007" (Parse), deskripsi +
+  explanation + help + kategori; PARSE_ERRORS 6 -> 7 (total kode 72 -> 73),
+  lookup_code("E1007") diuji.
+- +5 test: parses_consequent_with_delay_chain,
+  parses_shorthand_property_with_implication,
+  parses_named_property_with_delay_antecedent (parser/SVA),
+  unsupported_assertion_is_reported_not_silently_dropped (warning E1007 ada,
+  level Warning, span baris 2, module tetap utuh + decl sesudahnya ter-parse),
+  supported_assertion_emits_no_unsupported_warning (tidak ada false positive).
+
+Sisa PARSER-09 (belum di round ini): repetition a[*2] |-> b, a and b |-> c,
+a or b |-> c, (a ##1 b) |-> c masih belum di-parse — kini DIAGNOSA (E1007),
+bukan hilang diam-diam; leading-delay assertion belum masuk laporan coverage
+(sequence_first_loc mengembalikan (0,0) untuk sequence berawalan Delay).
+
+📊 VERIFIKASI ROUND 171:
+   - cargo nextest run -p mivon-parser sva::tests -> 20 passed.
+   - cargo nextest run --workspace --features dev --no-fail-fast:
+     ✅ 3601 passed, 0 failed, 24 skipped (3596 -> 3601).
+   - cargo fmt --all --check -> bersih.
+
+\\=======================================================================//

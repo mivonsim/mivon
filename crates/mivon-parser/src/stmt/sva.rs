@@ -70,75 +70,21 @@ impl Parser {
         }
     }
 
-    /// Parse consequent sequence setelah `|->`. Bisa `##N expr`,
-    /// `##[min:max] expr`, atau `expr` (tanpa delay = same-cycle).
+    /// Parse consequent sequence setelah |->: [##N] expr (##N expr)*.
     pub(super) fn parse_sequence_after_consequent(
         &mut self,
     ) -> Result<super::types::Sequence, SimError> {
-        if self.peek() == &Token::HashHash {
+        let mut seq = if self.peek() == &Token::HashHash {
             self.advance(); // consume ##
             let delay = self.parse_sequence_delay()?;
             let expr = self.parse_expr(0)?;
-            Ok(super::types::Sequence::Concat(
+            super::types::Sequence::Concat(
                 Box::new(delay),
                 Box::new(super::types::Sequence::Expr(expr)),
-            ))
+            )
         } else {
-            let expr = self.parse_expr(0)?;
-            Ok(super::types::Sequence::Expr(expr))
-        }
-    }
-
-    /// LANG-42: parse body sequence/property SVA (IEEE 1800-2017 §16.9):
-    /// `[##N] expr (##N expr)*`, `expr |-> consequent`, atau `expr`.
-    pub(crate) fn parse_sequence_expr(&mut self) -> Result<super::types::Sequence, SimError> {
-        if self.peek() == &Token::HashHash {
-            self.advance();
-            let delay = self.parse_sequence_delay()?;
-            let first = self.parse_expr(0)?;
-            let mut seq = super::types::Sequence::Concat(
-                Box::new(delay),
-                Box::new(super::types::Sequence::Expr(first)),
-            );
-            while self.peek() == &Token::HashHash {
-                self.advance();
-                let delay = self.parse_sequence_delay()?;
-                let next = self.parse_expr(0)?;
-                seq = super::types::Sequence::Concat(
-                    Box::new(seq),
-                    Box::new(super::types::Sequence::Concat(
-                        Box::new(delay),
-                        Box::new(super::types::Sequence::Expr(next)),
-                    )),
-                );
-            }
-            return Ok(seq);
-        }
-        let expr = self.parse_expr(0)?;
-        if self.peek() == &Token::PipeArrow {
-            self.advance();
-            let cons = self.parse_sequence_after_consequent()?;
-            return Ok(super::types::Sequence::Implication(
-                Box::new(super::types::Sequence::Expr(expr)),
-                Box::new(cons),
-            ));
-        }
-        if self.peek() == &Token::PipeFatArrow {
-            // `expr |=> consequent` — non-overlap implication (SVA §16.9.2).
-            // Encoding sama dengan jalur assert inline: Delay(1) sebagai leader
-            // concat di dalam umbrella Implication. Semantik: consequent
-            // dievaluasi dari posedge tepat SETELAH antecedent match.
-            self.advance();
-            let cons = self.parse_sequence_after_consequent()?;
-            return Ok(super::types::Sequence::Implication(
-                Box::new(super::types::Sequence::Expr(expr)),
-                Box::new(super::types::Sequence::Concat(
-                    Box::new(super::types::Sequence::Delay(1)),
-                    Box::new(cons),
-                )),
-            ));
-        }
-        let mut seq = super::types::Sequence::Expr(expr);
+            super::types::Sequence::Expr(self.parse_expr(0)?)
+        };
         while self.peek() == &Token::HashHash {
             self.advance();
             let delay = self.parse_sequence_delay()?;
@@ -152,6 +98,36 @@ impl Parser {
             );
         }
         Ok(seq)
+    }
+
+    /// LANG-42: parse body sequence/property SVA (IEEE 1800-2017 §16.9):
+    /// [##N] expr (##N expr)* lalu implication opsional (|-> / |=>).
+    pub(crate) fn parse_sequence_expr(&mut self) -> Result<super::types::Sequence, SimError> {
+        let mut seq = if self.peek() == &Token::HashHash {
+            self.advance();
+            let delay = self.parse_sequence_delay()?;
+            let first = self.parse_expr(0)?;
+            super::types::Sequence::Concat(
+                Box::new(delay),
+                Box::new(super::types::Sequence::Expr(first)),
+            )
+        } else {
+            super::types::Sequence::Expr(self.parse_expr(0)?)
+        };
+        while self.peek() == &Token::HashHash {
+            self.advance();
+            let delay = self.parse_sequence_delay()?;
+            let next = self.parse_expr(0)?;
+            seq = super::types::Sequence::Concat(
+                Box::new(seq),
+                Box::new(super::types::Sequence::Concat(
+                    Box::new(delay),
+                    Box::new(super::types::Sequence::Expr(next)),
+                )),
+            );
+        }
+        // LANG-42b: implication setelah sequence lengkap (a ##1 b |-> c).
+        self.wrap_implication(seq)
     }
 
     /// LANG-42: deklarasi SVA bernama (IEEE 1800-2017 §16.12):
@@ -734,5 +710,134 @@ endmodule
         assert!(!ids.iter().any(|n| n == "s1"), "s1 harus hilang: {:?}", ids);
         assert!(!ids.iter().any(|n| n == "s2"), "s2 harus hilang: {:?}", ids);
         assert!(ids.iter().any(|n| n == "a") && ids.iter().any(|n| n == "b"));
+    }
+
+    /// Consequent boleh berupa rantai delay: a ##1 b |-> c ##1 d.
+    #[test]
+    fn parses_consequent_with_delay_chain() {
+        let src = "module m(input logic clk, a, b, c, d);\n  assert property (@(posedge clk) a ##1 b |-> c ##1 d);\nendmodule\n";
+        let design = parse_src(src);
+        let mut cons = None;
+        for item in &design.modules[0].items {
+            if let crate::types::ModuleItem::PropertyAssert(s) = item {
+                if let crate::Stmt::PropertySeq {
+                    sequence: crate::types::Sequence::Implication(_, c),
+                    ..
+                } = &**s
+                {
+                    cons = Some((**c).clone());
+                }
+            }
+        }
+        let cons = cons.expect("assertion harus ter-parse");
+        let mut ids = Vec::new();
+        seq_idents(&cons, &mut ids);
+        assert!(ids.iter().any(|n| n == "c") && ids.iter().any(|n| n == "d"));
+    }
+
+    /// Bentuk ringkas property p1 = a ##1 b |-> c; tidak boleh terpotong.
+    #[test]
+    fn parses_shorthand_property_with_implication() {
+        let src = "module m(input logic clk, a, b, c);\n  property p1 = a ##1 b |-> c;\n  assert property (@(posedge clk) p1);\nendmodule\n";
+        let design = parse_src(src);
+        let ante = first_antecedent(&design);
+        let mut ids = Vec::new();
+        seq_idents(&ante, &mut ids);
+        assert!(ids.iter().any(|n| n == "a") && ids.iter().any(|n| n == "b"));
+    }
+
+    /// Named property ber-antecedent delay: property p1; a ##1 b |-> c; endproperty.
+    #[test]
+    fn parses_named_property_with_delay_antecedent() {
+        let src = "module m(input logic clk, a, b, c);\n  property p1; a ##1 b |-> c; endproperty\n  assert property (@(posedge clk) p1);\nendmodule\n";
+        let design = parse_src(src);
+        let ante = first_antecedent(&design);
+        let mut ids = Vec::new();
+        seq_idents(&ante, &mut ids);
+        assert!(ids.iter().any(|n| n == "a") && ids.iter().any(|n| n == "b"));
+    }
+
+    /// Parse dan kembalikan Design + diagnostik parser (warning ikut).
+    fn parse_with_diags(
+        src: &str,
+    ) -> (
+        crate::types::Design,
+        Vec<mivon_core::diagnostics::diagnostic::Diagnostic>,
+    ) {
+        let mut lexer = Lexer::new(src);
+        let mut tokens = Vec::new();
+        loop {
+            let (tok, line, col) = lexer.next_token();
+            if tok == Token::Eof {
+                break;
+            }
+            tokens.push((tok, line, col));
+        }
+        let mut p = Parser::new(tokens, "t.sv");
+        let design = p.parse_design().expect("parse gagal");
+        let diags = std::mem::take(&mut p.errors);
+        (design, diags)
+    }
+
+    /// Assertion dengan konstruksi tak didukung (repetition `[*2]`) harus
+    /// DILAPORKAN (E1007) dan di-skip — bukan hilang diam-diam.
+    #[test]
+    fn unsupported_assertion_is_reported_not_silently_dropped() {
+        let src = "module m(input logic clk, a, b);\n  assert property (@(posedge clk) a[*2] |-> b);\n  logic x;\nendmodule\n";
+        let (design, diags) = parse_with_diags(src);
+        assert_eq!(design.modules.len(), 1);
+        // Assertion tidak boleh muncul sebagai PropertyAssert setengah jadi.
+        assert!(
+            !design.modules[0]
+                .items
+                .iter()
+                .any(|i| matches!(i, crate::types::ModuleItem::PropertyAssert(_))),
+            "assertion tak didukung seharusnya di-skip, bukan di-elaborasi"
+        );
+        // ... tapi user harus tahu.
+        let warn = diags
+            .iter()
+            .find(|d| d.code == DiagCode::UnsupportedAssertion)
+            .unwrap_or_else(|| panic!("warning E1007 hilang; diags = {:?}", diags));
+        assert_eq!(warn.code.as_str(), "E1007");
+        assert_eq!(
+            warn.level,
+            mivon_core::diagnostics::diagnostic::DiagLevel::Warning
+        );
+        // Posisi harus menunjuk keyword `assert` (baris 2), bukan 0:0.
+        assert_eq!(warn.spans.first().map(|s| s.start), Some(2));
+        // Item sesudah assertion harus tetap ter-parse (skip tidak menelan sisa
+        // modul). `logic x;` masuk ke `decls`, bukan `items`.
+        assert!(
+            design.modules[0]
+                .decls
+                .iter()
+                .any(|d| d.names.iter().any(|n| n.name.as_str() == "x")),
+            "deklarasi x setelah assertion hilang: {:?}",
+            design.modules[0].decls
+        );
+    }
+
+    /// Assertion yang DIDUKUNG tidak boleh memunculkan E1007 (tidak ada
+    /// false-positive warning).
+    #[test]
+    fn supported_assertion_emits_no_unsupported_warning() {
+        let src = "module m(input logic clk, a, b);\n  assert property (@(posedge clk) a ##1 b |-> b);\nendmodule\n";
+        let (design, diags) = parse_with_diags(src);
+        assert_eq!(design.modules.len(), 1);
+        assert!(
+            diags
+                .iter()
+                .all(|d| d.code != DiagCode::UnsupportedAssertion),
+            "assertion didukung tidak boleh di-warn E1007: {:?}",
+            diags
+        );
+        assert!(
+            design.modules[0]
+                .items
+                .iter()
+                .any(|i| matches!(i, crate::types::ModuleItem::PropertyAssert(_))),
+            "assertion didukung harus jadi PropertyAssert"
+        );
     }
 }
