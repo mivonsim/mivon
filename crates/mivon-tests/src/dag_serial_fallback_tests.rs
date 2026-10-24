@@ -342,3 +342,65 @@ fn dag_ff_iff_position_diff() {
     assert_eq!(eg, ed, "en dag harus identik serial");
     assert_eq!(eg, "1", "en = 1 (ditulis sekali) ter-pinned");
 }
+
+/// Par-02 tahap 2: follower combinational dalam clock domain (cycle
+/// fusion) dieval paralel per grup disjoint. 1 FF (fused) + rantai 2
+/// follower comb (y = x+1; z = y^FF) — z wajib melihat y grup sebelumnya
+/// (snapshot refresh antar grup). Identik default vs fusion+DAG.
+const CF_SRC: &str = r#"
+module cf_top;
+  logic clk;
+  logic [7:0] a;
+  logic [7:0] x, y, y2, z;
+  initial begin clk = 0; a = 8'h0F; #40; end
+  always #5 clk = ~clk;
+  always_ff @(posedge clk) x <= a + 8'd1;
+  assign y = x + 8'd1;
+  assign y2 = x ^ 8'hAA;
+  assign z = y ^ y2;
+endmodule
+"#;
+
+fn run_cf(src: &str, name: &str, fusion: bool, dag: bool) -> String {
+    let design = compile_str(src).expect("design harus compile");
+    let mut engine = mivon_simulator::simulator::SimulationEngine::new(design, 100);
+    engine.use_cycle_fusion = fusion;
+    engine.use_dag_parallel = dag;
+    engine.run().expect("sim harus jalan");
+    let idx = engine
+        .design
+        .top
+        .signals
+        .iter()
+        .position(|s| s.name == name)
+        .unwrap_or_else(|| panic!("sinyal '{name}' harus ada di design flat"));
+    engine
+        .state
+        .read_signal(idx)
+        .bits
+        .iter()
+        .rev()
+        .map(|b| match b {
+            mivon_ir::LogicVal::Zero => '0',
+            mivon_ir::LogicVal::One => '1',
+            _ => 'x',
+        })
+        .collect()
+}
+
+#[test]
+fn dag_cycle_fusion_followers_parallel_diff() {
+    // Default (tanpa fusion) = referensi.
+    let cases = [
+        ("x", "00010000"),  // 0x0F + 1 = 0x10
+        ("y", "00010001"),  // 0x10 + 1 = 0x11
+        ("y2", "10111010"), // 0x10 ^ 0xAA = 0xBA
+        ("z", "10101011"),  // 0x11 ^ 0xBA = 0xAB
+    ];
+    for (name, expect) in cases {
+        let dflt = run_cf(CF_SRC, name, false, false);
+        let cf = run_cf(CF_SRC, name, true, true);
+        assert_eq!(cf, dflt, "{name}: fusion+DAG harus identik default");
+        assert_eq!(cf, expect, "{name}: nilai akhir ter-pinned");
+    }
+}

@@ -10358,4 +10358,57 @@ paralel ter-lock diferensial. Tahap 2 (AlwaysWithDelay, FF blocking/
 loop/event-control, cycle-fusion) masih open. Item open berikutnya:
 Par-02 tahap 2, Arsitektur-01..04, JIT-01/02.
 
+
+═══ ROUND 185 — PAR-02 tahap 2: follower comb clock-domain paralel ═══
+
+Investigasi:
+  1. Ekstensi whitelist loop (LoopFor/dll) ditunda: evaluator paralel
+     mendukung loop (cap 1M = cap serial ast.rs), TAPI guard A
+     (reads ∩ writes disjoint) memblokir mayoritas loop-body — counter
+     loop selalu RAW intra-body. Relaxasi guard A butuh analisis order
+     NBA-vs-blocking per stmt → ditunda ke tahap 3.
+  2. Target tahap 2 dipilih: FOLLOWER combinational di dalam
+     evaluate_clock_domain (jalur cycle-fusion) — mesin comb murni
+     (blocking semantics), terkandung, memakai layered_groups +
+     evaluate_bodies_parallel_tagged yang sudah ter-review.
+
+Perubahan (gated use_dag_parallel / --parallel):
+  1. core.rs Step 2 evaluate_clock_domain: follower >= 2 dan
+     !has_wide_signals() → evaluate_followers_parallel; selain itu
+     serial path lama.
+  2. evaluate_followers_parallel (baru):
+     - access analysis dense per follower;
+     - grup disjoint via Self::layered_groups (dipublikasikan
+       pub(crate) — dibagi dengan jalur comb event.rs);
+     - snapshot PENUH per grup (blocking writes grup sebelumnya wajib
+       terlihat — rantai comb antar grup = urutan serial; jumlah
+       follower per domain kecil → rebuild murah);
+     - evaluate_bodies_parallel_tagged per grup → writes di-apply via
+       apply_parallel_writes (blocking immediate + resolusi
+       multi-driver, mirror jalur comb);
+     - Err evaluator paralel → fallback serial grup itu + semua grup
+       berikutnya urutan pid (concat grup greedy ascending = urutan
+       pid serial; grup sebelumnya sudah ter-apply dan idempoten).
+  3. Fixed-point loop domain (max_iter 10) tidak berubah — parallel
+     path menggantikan hanya eval follower per iterasi.
+
+Test:
+  dag_cycle_fusion_followers_parallel_diff (mivon-tests): desain
+  cf_top — 1 FF (fused) + 2 follower comb langsung membaca output FF
+  (y = x+1; y2 = x^AA) + ranting z = y^y2 (event-driven, bukan
+  follower). Identik default vs fusion+DAG, nilai ter-pinned.
+  Eksekusi jalur paralel DIBUKTIKAN via DBG_SIM=3: "par-02 tahap-2
+  domain-follower: 2 follower, 1 grup" (44 hit pada run fusion+DAG).
+
+VERIFIKASI ROUND 185:
+   - cargo fmt --all --check -> bersih.
+   - cargo nextest run --workspace --features dev: 3624 passed,
+     24 skipped (3623 -> 3624, +1 test).
+
+Status PAR-02: tahap 2a (follower domain paralel) SELESAI. Tahap 3
+(open): FF dgn blocking assign/loop/event-control (perlu analisis order
+NBA-vs-blocking utk relaxasi guard A), AlwaysWithDelay, parallelisasi
+seq_bodies dalam domain. Item open berikutnya: Par-02 tahap 3,
+Arsitektur-01..04, JIT-01/02.
+
 \\=======================================================================//

@@ -2345,9 +2345,16 @@ impl SimulationEngine {
             // Commit NBA from sequential process evaluations
             self.commit_nba();
 
-            // Step 2: Evaluate all follower combinational processes
-            for (_, body) in &follower_bodies {
-                self.evaluate_stmt_block(body)?;
+            // Step 2: Evaluate all follower combinational processes.
+            // Par-02 tahap 2: follower comb dieval paralel per grup disjoint
+            // (mesin comb — blocking semantics via apply_parallel_writes,
+            // snapshot refresh antar grup) bila --parallel; selain itu serial.
+            if self.use_dag_parallel && follower_bodies.len() >= 2 && !self.has_wide_signals() {
+                self.evaluate_followers_parallel(&follower_bodies)?;
+            } else {
+                for (_, body) in &follower_bodies {
+                    self.evaluate_stmt_block(body)?;
+                }
             }
 
             // Check if stable: no signal changes
@@ -2372,6 +2379,72 @@ impl SimulationEngine {
         Ok(())
     }
 
+    /// Par-02 tahap 2: follower combinational dalam satu clock domain
+    /// dieval paralel per grup disjoint — mesin comb murni (blocking
+    /// semantics): writes grup di-apply via apply_parallel_writes SEBELUM
+    /// grup berikutnya dieval, dengan snapshot di-rebuild per grup agar
+    /// rantai read-after-write antar grup terlihat (urutan grup = urutan
+    /// pid serial; greedy layered_groups). Err evaluator paralel (mis.
+    /// ekspresi tak-dukung) → fallback serial sisa grup, urutan pid.
+    fn evaluate_followers_parallel(
+        &mut self,
+        followers: &[(usize, std::sync::Arc<Vec<IrStmt>>)],
+    ) -> Result<(), SimError> {
+        let access: Vec<crate::scheduler::sim_dag::SignalAccess> = followers
+            .iter()
+            .map(|(pid, _)| {
+                crate::scheduler::sim_dag::analyze_process_access(&self.design.top.processes[*pid])
+            })
+            .collect();
+        let dense: Vec<usize> = (0..followers.len()).collect();
+        let groups = Self::layered_groups(&dense, &access);
+        let body_map: std::collections::HashMap<usize, std::sync::Arc<Vec<IrStmt>>> = followers
+            .iter()
+            .map(|(pid, b)| (*pid, std::sync::Arc::clone(b)))
+            .collect();
+        crate::dbg_sim!(
+            3,
+            "par-02 tahap-2 domain-follower: {} follower, {} grup",
+            followers.len(),
+            groups.len()
+        );
+        for (gi, group) in groups.iter().enumerate() {
+            let pids: Vec<&usize> = group.iter().map(|&i| &followers[i].0).collect();
+            // Snapshot penuh per grup — blocking writes grup sebelumnya
+            // wajib terlihat (rantai comb antar grup = urutan serial).
+            let snapshot: Vec<std::sync::Arc<LogicVec>> = (0..self.state.signals.len())
+                .map(|i| std::sync::Arc::new(self.state.snapshot_signal(i)))
+                .collect();
+            match crate::scheduler::sim_dag::evaluate_bodies_parallel_tagged(
+                &pids,
+                &body_map,
+                &snapshot,
+                &self.design.top.signals,
+            ) {
+                Ok(tagged) => {
+                    for (_, ws) in tagged {
+                        self.apply_parallel_writes(&ws);
+                    }
+                }
+                Err(_) => {
+                    // Fallback serial: grup ini + semua grup berikutnya,
+                    // urutan pid (concat grup greedy ascending = urutan
+                    // pid serial; grup sebelumnya sudah ter-apply).
+                    let mut rest: Vec<usize> = Vec::new();
+                    for g in &groups[gi..] {
+                        rest.extend(g.iter().copied());
+                    }
+                    rest.sort_unstable();
+                    for &i in &rest {
+                        let (_, body) = &followers[i];
+                        self.evaluate_stmt_block(body)?;
+                    }
+                    return Ok(());
+                }
+            }
+        }
+        Ok(())
+    }
     fn initialize_time_zero(&mut self) -> Result<(), SimError> {
         // BUG FIX (co-sim/debugger): `run()` bisa dipanggil berulang (pause +
         // continue / step). Inisialisasi time-0 HANYA sekali — re-run setelah

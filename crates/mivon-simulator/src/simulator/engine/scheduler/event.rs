@@ -652,7 +652,7 @@ impl SimulationEngine {
     /// kelompok. Kelompok dieval SEQUENTIAL (apply antar kelompok), di dalam
     /// kelompok PARALEL. Menghilangkan ketergantungan implisit urutan thread
     /// saat process ber-WAW/RAW dalam delta yang sama.
-    fn layered_groups(
+    pub(crate) fn layered_groups(
         comb_indices: &[usize],
         access: &[crate::scheduler::sim_dag::SignalAccess],
     ) -> Vec<Vec<usize>> {
@@ -1104,11 +1104,11 @@ impl SimulationEngine {
             let batchable = self.use_dag_parallel
                 && body_ok
                 && access.reads.is_disjoint(&access.writes)
-                && !access.has_call_expr;
-            // Re-review round 3: HierRef/akses tak-resolvable tak masuk
-            // set reads/writes — guard B buta terhadapnya → tolak dari
-            // batch (mirror snapshot-sparse gate jalur comb).
-            &&!access.has_unresolved;
+                && !access.has_call_expr
+                // Re-review round 3: HierRef/akses tak-resolvable tak masuk
+                // set reads/writes — guard B buta terhadapnya → tolak dari
+                // batch (mirror snapshot-sparse gate jalur comb).
+                && !access.has_unresolved;
             cands.push((
                 pid,
                 clock_trigger,
