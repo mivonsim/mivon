@@ -407,6 +407,10 @@ impl Parser {
                 let map: std::collections::HashMap<Symbol, &Expr> =
                     formals.iter().copied().zip(args.iter()).collect();
                 let subst = Self::subst_sequence(&body, &map);
+                // LANG-42b: alias body tunggal (property p; s2; endproperty)
+                // juga harus ditelusuri agar s2 -> expr.
+                let mut alias_clock = None;
+                let subst = self.resolve_named_in_sequence(&subst, &mut alias_clock);
                 // Properti boolean murni (`property p; a; endproperty`) identik
                 // dengan assertion boolean inline — jangan lewat jalur
                 // SequenceAttempt (tidak menghasilkan statistik pass/fail).
@@ -421,7 +425,7 @@ impl Parser {
                     }
                 }
                 if clock_event.is_none() {
-                    clock_event = decl_clock;
+                    clock_event = decl_clock.or(alias_clock);
                 }
             }
             // LANG-42b: resolusi deklarasi bernama pada sequence (termasuk
@@ -792,7 +796,10 @@ impl Parser {
         decl_clock: &mut Option<ClockEvent>,
         seen: &mut Vec<Symbol>,
     ) -> super::types::Sequence {
-        if seen.contains(&name) {
+        // Guard resource-exhaustion: alias bercabang (s_n = s_{n-1} ##1 s_{n-1})
+        // tumbuh eksponensial. Batas 32 level jauh di atas pemakaian nyata dan
+        // mencegah OOM pada input adversarial.
+        if seen.contains(&name) || seen.len() >= 32 {
             return original.clone();
         }
         match self.lookup_named_seq(&name, args) {

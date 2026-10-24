@@ -9529,3 +9529,47 @@ Diperbaiki:
      ✅ 3586 passed, 0 failed, 24 skipped.
 
 \=======================================================================//
+
+═══ ROUND 165 — PARSER-09: scoping lengkap + guard resource ═══
+
+Review agent (Explore) atas ROUND 164 menemukan 1 MAJOR + 4 MEDIUM.
+
+MAJOR: test anti-leak mengukur ANTECEDENT, padahal kebocoran terjadi di
+CONSEQUENT (ack). Test tetap lulus bila fix di-revert -> bukan regression lock.
+
+MEDIUM:
+- arm Token::Program tidak di-snapshot -> sequence program bocor ke module.
+- checker di unit scope tidak di-snapshot -> kelas bug sama.
+- ekspansi alias transitif tanpa cap -> ledakan eksponensial (20 level =
+  29 s / 1.4 GB pada probe reviewer).
+- fast-path resolved (property p; s2; endproperty) tidak rekursif -> s2
+  mentah -> E2001.
+
+Diperbaiki:
+- lib.rs: helper with_named_scope(f) (snapshot/restore) dipakai di arm Module,
+  Interface, Program, dan Checker (sebelumnya blok snapshot diduplikasi 2x).
+- stmt.rs expand_named: cap seen.len() >= 32 (selain guard siklus).
+- stmt.rs blok resolved: subst hasil substitusi ditelusuri lagi
+  (resolve_named_in_sequence), clock = decl_clock.or(alias_clock).
+- test leak diperbaiki: assert antecedent = [a] DAN consequent = [ack].
+- +2 test: named_sequence_does_not_leak_from_program,
+  property_alias_to_named_sequence_is_resolved.
+
+Bukti regression lock (fix di-no-op-kan sementara lalu dipulihkan):
+  named_sequence_does_not_leak_across_modules -> FAILED
+  named_sequence_does_not_leak_from_program  -> FAILED
+  (6 passed, 2 failed) — setelah restore: 8 passed.
+
+Sisa keterbatasan (dicatat, bukan bug commit ini): sequence di compilation-unit
+scope menutupi sinyal module bernama sama (parser belum punya tabel sinyal),
+dan CU-scope lintas FILE belum didukung (Parser per file) — pre-existing.
+
+📊 VERIFIKASI ROUND 165:
+   - cargo nextest run -p mivon-parser sva::tests -> 8 passed.
+   - cargo check -p mivon-parser --all-targets -> 0 warning, 0 error.
+   - Smoke xmod / checker / property-alias -> SIAP, tanpa E2001;
+     program -> mode analisis, tanpa E2001.
+   - cargo nextest run --workspace --features dev --no-fail-fast:
+     ✅ 3588 passed, 0 failed, 24 skipped.
+
+\=======================================================================//

@@ -456,25 +456,34 @@ endmodule
             .find(|m| m.name.as_str() == "B")
             .expect("module B harus ada");
         let mut ante = None;
+        let mut cons = None;
         for item in &module_b.items {
             if let crate::types::ModuleItem::PropertyAssert(s) = item {
                 if let crate::Stmt::PropertySeq {
-                    sequence: crate::types::Sequence::Implication(a, _),
+                    sequence: crate::types::Sequence::Implication(a, c),
                     ..
                 } = &**s
                 {
                     ante = Some((**a).clone());
+                    cons = Some((**c).clone());
                 }
             }
         }
-        let mut ids = Vec::new();
+        let mut ante_ids = Vec::new();
         seq_idents(
             &ante.expect("assertion di module B harus ter-parse"),
-            &mut ids,
+            &mut ante_ids,
         );
         assert_eq!(
-            ids,
+            ante_ids,
             vec!["a".to_string()],
+            "antecedent harus tetap sinyal a"
+        );
+        let mut cons_ids = Vec::new();
+        seq_idents(&cons.expect("consequent harus ada"), &mut cons_ids);
+        assert_eq!(
+            cons_ids,
+            vec!["ack".to_string()],
             "ack di module B adalah sinyal, bukan sequence module A"
         );
     }
@@ -501,5 +510,54 @@ endmodule
         let design = parse_src(src);
         assert_eq!(design.modules.len(), 1);
         let _ = first_antecedent(&design);
+    }
+
+    /// LANG-42b: sequence di dalam program juga tidak boleh bocor ke module.
+    #[test]
+    fn named_sequence_does_not_leak_from_program() {
+        let src = "program P(input logic clk, zz);\n  sequence pl; zz ##1 zz; endsequence\nendprogram\nmodule B(input logic clk, a, pl);\n  assert property (@(posedge clk) a |-> pl);\nendmodule\n";
+        let design = parse_src(src);
+        let module_b = design
+            .modules
+            .iter()
+            .find(|m| m.name.as_str() == "B")
+            .expect("module B harus ada");
+        let mut cons_ids = Vec::new();
+        for item in &module_b.items {
+            if let crate::types::ModuleItem::PropertyAssert(s) = item {
+                if let crate::Stmt::PropertySeq {
+                    sequence: crate::types::Sequence::Implication(_, c),
+                    ..
+                } = &**s
+                {
+                    seq_idents(c, &mut cons_ids);
+                }
+            }
+        }
+        assert_eq!(
+            cons_ids,
+            vec!["pl".to_string()],
+            "pl di module B adalah sinyal, bukan sequence program P"
+        );
+    }
+
+    /// LANG-42b: alias lewat property (p1 -> s2 -> expr) harus tersubstitusi.
+    #[test]
+    fn property_alias_to_named_sequence_is_resolved() {
+        let src = "module m(input logic clk, a, b);\n  sequence s2; a ##1 b; endsequence\n  property p1; s2; endproperty\n  assert property (@(posedge clk) p1);\nendmodule\n";
+        let design = parse_src(src);
+        let mut found = false;
+        for item in &design.modules[0].items {
+            if let crate::types::ModuleItem::PropertyAssert(s) = item {
+                if let crate::Stmt::PropertySeq { sequence, .. } = &**s {
+                    let mut ids = Vec::new();
+                    seq_idents(sequence, &mut ids);
+                    assert!(!ids.iter().any(|n| n == "s2"), "s2 harus hilang: {:?}", ids);
+                    assert!(ids.iter().any(|n| n == "a"), "a harus ada: {:?}", ids);
+                    found = true;
+                }
+            }
+        }
+        assert!(found, "assertion p1 harus jadi PropertySeq, bukan di-skip");
     }
 }

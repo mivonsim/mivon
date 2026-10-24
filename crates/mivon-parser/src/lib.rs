@@ -194,6 +194,19 @@ impl Parser {
     fn peek_limit(&self) -> usize {
         self.tokens.len().saturating_mul(64).max(1_000_000)
     }
+    /// LANG-42b: jalankan f dengan scope deklarasi SVA bernama terisolasi.
+    /// Sequence/property bersifat module/interface/program/checker scoped —
+    /// snapshot sebelum, restore sesudah, agar nama dari unit lain tidak bocor
+    /// (menyebabkan E2001 palsu). Deklarasi compilation-unit yang sudah ada
+    /// tetap terlihat di dalam scope.
+    fn with_named_scope<T>(&mut self, f: impl FnOnce(&mut Self) -> T) -> T {
+        let saved_seq = self.named_sequences.clone();
+        let saved_prop = self.named_properties.clone();
+        let out = f(self);
+        self.named_sequences = saved_seq;
+        self.named_properties = saved_prop;
+        out
+    }
 
     pub fn new(tokens: Vec<(Token, usize, usize)>, source_file: &str) -> Self {
         Self {
@@ -1269,15 +1282,8 @@ impl Parser {
             let had_error = match self.peek() {
                 Token::Module => {
                     _n_module += 1;
-                    // LANG-42b: sequence/property bersifat module-scoped —
-                    // snapshot lalu restore agar deklarasi module A tidak bocor
-                    // ke module B (sempat memicu E2001 palsu bila nama sinyal
-                    // module B kebetulan sama dengan nama sequence module A).
-                    let saved_seq = self.named_sequences.clone();
-                    let saved_prop = self.named_properties.clone();
-                    let parsed = self.parse_module();
-                    self.named_sequences = saved_seq;
-                    self.named_properties = saved_prop;
+                    // LANG-42b: deklarasi SVA bersifat module-scoped.
+                    let parsed = self.with_named_scope(|p| p.parse_module());
                     match parsed {
                         Ok(m) => {
                             modules.push(m);
@@ -1291,12 +1297,8 @@ impl Parser {
                 }
                 Token::Interface => {
                     _n_interface += 1;
-                    // LANG-42b: scope yang sama seperti module (lihat di atas).
-                    let saved_seq = self.named_sequences.clone();
-                    let saved_prop = self.named_properties.clone();
-                    let parsed = self.parse_interface();
-                    self.named_sequences = saved_seq;
-                    self.named_properties = saved_prop;
+                    // LANG-42b: deklarasi SVA bersifat interface-scoped.
+                    let parsed = self.with_named_scope(|p| p.parse_interface());
                     match parsed {
                         Ok(iface) => {
                             interfaces.push(iface);
@@ -1334,16 +1336,20 @@ impl Parser {
                         }
                     }
                 }
-                Token::Program => match self.parse_module() {
-                    Ok(m) => {
-                        modules.push(m);
-                        false
+                Token::Program => {
+                    // LANG-42b: deklarasi SVA di program juga ter-scope.
+                    let parsed = self.with_named_scope(|p| p.parse_module());
+                    match parsed {
+                        Ok(m) => {
+                            modules.push(m);
+                            false
+                        }
+                        Err(e) => {
+                            self.errors.push(e.to_diagnostic());
+                            true
+                        }
                     }
-                    Err(e) => {
-                        self.errors.push(e.to_diagnostic());
-                        true
-                    }
-                },
+                }
                 Token::Import => {
                     self.advance();
                     // DPI-C import at file scope: `import "DPI-C" function ...;`
@@ -1589,16 +1595,20 @@ impl Parser {
                         true
                     }
                 },
-                Token::Checker => match self.parse_checker_decl() {
-                    Ok(cd) => {
-                        unit_items.push(ModuleItem::Checker(cd));
-                        false
+                Token::Checker => {
+                    // LANG-42b: checker di unit scope punya scope SVA sendiri.
+                    let parsed = self.with_named_scope(|p| p.parse_checker_decl());
+                    match parsed {
+                        Ok(cd) => {
+                            unit_items.push(ModuleItem::Checker(cd));
+                            false
+                        }
+                        Err(e) => {
+                            self.errors.push(e.to_diagnostic());
+                            true
+                        }
                     }
-                    Err(e) => {
-                        self.errors.push(e.to_diagnostic());
-                        true
-                    }
-                },
+                }
                 Token::Defparam => match self.parse_defparam() {
                     // ELAB-09: `defparam` di compilation-unit scope — path
                     // absolut dari top module (IEEE 1800-2017 §23.11).
