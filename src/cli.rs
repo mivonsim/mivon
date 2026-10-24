@@ -351,9 +351,18 @@ pub struct MwaveArgs {
     pub cmd: MwaveCmd,
 }
 
-/// mwave subcommand.
+    /// mwave subcommand.
 #[derive(Subcommand, Clone)]
 pub enum MwaveCmd {
+    /// Debug manifest (FEAT-15): VCD -> JSON probe-point map
+    Debug {
+        /// VCD input
+        #[arg(required = true)]
+        input: String,
+        /// Output JSON (default: <input>.debug.json)
+        #[arg(short = 'o', long = "output")]
+        output: Option<String>,
+    },
     /// Gabungkan beberapa VCD menjadi satu (offset waktu otomatis kumulatif)
     Merge {
         /// VCD input (2+)

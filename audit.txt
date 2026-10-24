@@ -3202,7 +3202,7 @@ FEAT-12: ✅ License server for floating licenses — ROUND 147/148
          (exit 60); lease/feature tak dikenal → RT0002 (exit 1).
 FEAT-13:[] IP encryption (IEEE 1735) — Critical
 FEAT-14:[x] IP packaging (IP-XACT) — High
-FEAT-15:[] Design-for-debug infrastructure — Medium
+FEAT-15:✅ (ROUND 157) Design-for-debug infrastructure — Medium
 FEAT-16:[x] Simulation farm orchestration — Critical
 FEAT-18:[] Post-silicon validation alignment — Medium
 FEAT-19:[] Emulation/prototyping integration — High
@@ -9291,3 +9291,39 @@ Test: 1 test baru (timescale_with_space_is_joined). Total vpd = 5.
 
 \\=======================================================================//
 
+
+═══ ROUND 157 — FEAT-15: design-for-debug manifest ═══
+
+Implementasi subset "design-for-debug infrastructure" (Medium) sebagai
+subkomando mwave debug: VCD -> manifest JSON probe-point map.
+
+File baru: crates/mivon-tools/src/wave/debug.rs (1 tanggung jawab).
+- ProbePoint { name, scope, width, transitions } — satu titik probe.
+- DebugManifest { timescale, max_time, total_changes, probes } (serde).
+- from_vcd(&VcdData): hitung transisi per sinyal dari data.changes, sort
+  probe by scope lalu name (deterministik).
+- to_json / from_json / write_json — round-trip machine-readable.
+- debug(input, output): parse VCD -> manifest -> tulis
+  <input>.debug.json (atau -o). Reuse model VcdData existing (tanpa
+  duplikasi parser).
+
+Integrasi:
+- wave/mod.rs: pub(crate) mod debug;
+- wave/args.rs: WaveArgs::Debug { input, output } + dispatch.
+- src/cli.rs: MwaveCmd::Debug { input (wajib), output (-o/--output) }.
+- src/dispatch/tools.rs: arm dispatch Debug.
+
+Test (4, di wave::debug::tests):
+- builds_probe_points_with_transitions (transisi clk=3, data=1, total=4).
+- probes_sorted_by_scope_then_name (clk sebelum data).
+- json_roundtrip_is_exact (serialize -> parse == asli).
+- from_json_rejects_garbage (string bukan json -> Err).
+
+Catatan: 1 warning dead_code pada from_json (pub API, dipakai test) — harmless.
+
+📊 VERIFIKASI ROUND 157:
+   - cargo nextest run -p mivon-tools debug → 4 passed.
+   - cargo nextest run --workspace --features dev --no-fail-fast:
+     ✅ 3572 passed, 0 failed, 24 skipped.
+
+\=======================================================================//

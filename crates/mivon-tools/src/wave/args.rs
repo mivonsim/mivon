@@ -4,6 +4,7 @@
 use mivon_core::error::SimError;
 
 use super::compare::compare;
+use super::debug::debug;
 use super::decode::decode;
 use super::export::export;
 use super::filter::filter;
@@ -59,6 +60,13 @@ pub enum WaveArgs {
         /// Protokol bus: apb (default) | axi4lite | ahb
         proto: String,
     },
+    /// Debug manifest (FEAT-15): VCD -> JSON probe-point map.
+    Debug {
+        /// VCD input
+        input: String,
+        /// Output JSON (default: <input>.debug.json)
+        output: Option<String>,
+    },
 }
 
 /// Jalankan mwave.
@@ -86,5 +94,6 @@ pub fn run(args: &WaveArgs) -> Result<(), SimError> {
             range,
         } => get(input, signals, *at, *range),
         WaveArgs::Decode { input, proto } => decode(input, proto),
+        WaveArgs::Debug { input, output } => debug(input, output.as_deref()),
     }
 }
