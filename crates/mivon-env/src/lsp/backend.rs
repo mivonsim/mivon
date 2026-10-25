@@ -225,6 +225,9 @@ pub struct LspBackend {
     /// workspace_folders pertama) — dipakai untuk indeks simbol dari DISK,
     /// bukan hanya dokumen yang sedang terbuka.
     workspace_root: std::sync::Mutex<Option<std::path::PathBuf>>,
+    /// LSP-11 tahap 3: cache indeks disk (mtime+len per file) — file yang
+    /// tidak berubah tidak dibaca ulang antar permintaan.
+    index_cache: std::sync::Arc<std::sync::Mutex<workspace_index::DiskIndexCache>>,
 }
 
 impl LspBackend {
@@ -235,6 +238,9 @@ impl LspBackend {
             semantic_cache: std::sync::Mutex::new(HashMap::new()),
             semantic_seq: std::sync::atomic::AtomicU64::new(1),
             workspace_root: std::sync::Mutex::new(None),
+            index_cache: std::sync::Arc::new(std::sync::Mutex::new(
+                workspace_index::DiskIndexCache::default(),
+            )),
         }
     }
 
@@ -273,9 +279,17 @@ impl LspBackend {
         let skip = workspace_index::collect_skip_paths(&open);
         let disk = match self.workspace_root_path() {
             Some(root) => {
-                tokio::task::spawn_blocking(move || workspace_index::load_disk_docs(&root, &skip))
-                    .await
-                    .unwrap_or_default()
+                // LSP-11 tahap 3: cache di-share lewat Arc agar bisa dipakai
+                // di dalam spawn_blocking (I/O sinkron di luar event loop).
+                let cache = std::sync::Arc::clone(&self.index_cache);
+                tokio::task::spawn_blocking(move || {
+                    // Poison (panic saat memegang lock) tidak boleh membuat
+                    // indeks disk kosong permanen — pakai data yang ada.
+                    let mut guard = cache.lock().unwrap_or_else(|e| e.into_inner());
+                    workspace_index::load_disk_docs_cached(&mut guard, &root, &skip)
+                })
+                .await
+                .unwrap_or_default()
             }
             None => Vec::new(),
         };

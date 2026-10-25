@@ -8,9 +8,10 @@
 //! ukuran per file, total byte, jumlah DIREKTORI dipindai), dan penggabungan
 //! dokumen (dokumen terbuka menang atas versi disk).
 //!
-//! Caching BELUM ada (masih open di audit): pemindaian dilakukan per
-//! permintaan `workspace/symbol` — pemanggil menjalankannya di
-//! `spawn_blocking` supaya event loop LSP tidak stall.
+//! Caching (LSP-11 tahap 3): isi file di-cache lewat DiskIndexCache
+//! (mtime+len) sehingga permintaan berulang tidak membaca ulang korpus;
+//! traversal direktori tetap per permintaan (metadata saja). Pemanggil
+//! menjalankannya di spawn_blocking supaya event loop LSP tidak stall.
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -205,12 +206,14 @@ pub(crate) fn workspace_root_from_params(params: &lsp_types::InitializeParams) -
 ///
 /// Batas: ukuran per file (MAX_INDEX_BYTES) dan TOTAL byte
 /// (MAX_INDEX_TOTAL_BYTES) — berhenti lebih awal saat total terlampaui.
+#[cfg(test)]
 pub(crate) fn load_disk_docs(root: &Path, skip: &[PathBuf]) -> Vec<(String, String)> {
     load_disk_docs_with_limits(root, skip, MAX_INDEX_BYTES, MAX_INDEX_TOTAL_BYTES)
 }
 
 /// Seperti [`load_disk_docs`] tapi batas byte bisa di-inject (dipakai test
 /// untuk mengunci batas TOTAL, bukan hanya batas per file).
+#[cfg(test)]
 pub(crate) fn load_disk_docs_with_limits(
     root: &Path,
     skip: &[PathBuf],
@@ -248,6 +251,129 @@ pub(crate) fn load_disk_docs_with_limits(
         };
         out.push((url.as_str().to_string(), text));
     }
+    out
+}
+
+/// Satu entri cache indeks disk: metadata + isi terakhir yang dibaca.
+struct CachedFile {
+    mtime: Option<std::time::SystemTime>,
+    len: u64,
+    uri: String,
+    text: String,
+}
+
+/// Cache indeks disk (LSP-11 tahap 3) — file yang (mtime, len) tidak
+/// berubah dipakai ulang tanpa baca ulang, sehingga permintaan
+/// workspace/symbol / references berulang tidak membaca seluruh korpus.
+#[derive(Default)]
+pub(crate) struct DiskIndexCache {
+    root: Option<PathBuf>,
+    files: std::collections::HashMap<PathBuf, CachedFile>,
+    /// File yang dibaca dari disk (isi berubah / baru).
+    pub reads: usize,
+    /// File yang dipakai ulang dari cache.
+    pub reuses: usize,
+    /// Jumlah pemindaian direktori (untuk observabilitas).
+    pub scans: usize,
+}
+
+/// Seperti load_disk_docs tetapi memakai DiskIndexCache.
+///
+/// Invarian:
+/// - urutan hasil sama dengan load_disk_docs (collect_source_files);
+/// - entri dibuang bila file hilang, di-skip, melewati batas ukuran, atau
+///   gagal dibaca/dikonversi (tidak ada teks basi yang dikembalikan);
+/// - root berbeda -> cache di-reset (hindari isi root lama);
+/// - batas ukuran/total byte tetap sama.
+pub(crate) fn load_disk_docs_cached(
+    cache: &mut DiskIndexCache,
+    root: &Path,
+    skip: &[PathBuf],
+) -> Vec<(String, String)> {
+    load_disk_docs_cached_with_limits(cache, root, skip, MAX_INDEX_BYTES, MAX_INDEX_TOTAL_BYTES)
+}
+
+/// Seperti load_disk_docs_cached tetapi batas byte bisa di-inject (dipakai
+/// test untuk mengunci batas TOTAL termasuk jalur reuse).
+pub(crate) fn load_disk_docs_cached_with_limits(
+    cache: &mut DiskIndexCache,
+    root: &Path,
+    skip: &[PathBuf],
+    max_file_bytes: u64,
+    max_total_bytes: u64,
+) -> Vec<(String, String)> {
+    use std::collections::HashSet;
+    if cache.root.as_deref() != Some(root) {
+        cache.root = Some(root.to_path_buf());
+        cache.files.clear();
+    }
+    cache.scans += 1;
+    let skip_set: HashSet<PathBuf> = skip
+        .iter()
+        .map(|p| std::fs::canonicalize(p).unwrap_or_else(|_| p.clone()))
+        .collect();
+    let files = collect_source_files(root, MAX_INDEX_FILES, MAX_INDEX_DEPTH);
+    let mut present: HashSet<PathBuf> = HashSet::with_capacity(files.len());
+    let mut out: Vec<(String, String)> = Vec::with_capacity(files.len());
+    let mut total_bytes: u64 = 0;
+    for path in files {
+        let canon = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+        if skip_set.contains(&canon) {
+            continue;
+        }
+        let Ok(meta) = std::fs::metadata(&path) else {
+            continue;
+        };
+        if meta.len() > max_file_bytes {
+            continue;
+        }
+        let mtime = meta.modified().ok();
+        if let Some(entry) = cache.files.get(&path) {
+            // mtime None (FS tak mendukung) -> paksa miss: jangan pernah
+            // menganggap None == None sebagai "tidak berubah".
+            if entry.len == meta.len() && mtime.is_some() && entry.mtime == mtime {
+                if total_bytes + entry.text.len() as u64 > max_total_bytes {
+                    break;
+                }
+                total_bytes += entry.text.len() as u64;
+                present.insert(path.clone());
+                out.push((entry.uri.clone(), entry.text.clone()));
+                cache.reuses += 1;
+                continue;
+            }
+        }
+        if total_bytes + meta.len() > max_total_bytes {
+            break;
+        }
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            // Gagal baca (chmod/non-UTF8): buang entri lama agar scan
+            // berikutnya tidak mengembalikan teks yang tak terpakai.
+            cache.files.remove(&path);
+            continue;
+        };
+        total_bytes += text.len() as u64;
+        let Ok(url) = lsp_types::Url::from_file_path(&path) else {
+            cache.files.remove(&path);
+            continue;
+        };
+        let uri = url.to_string();
+        present.insert(path.clone());
+        // mtime None tidak akan pernah bisa dipakai ulang -> jangan simpan.
+        if mtime.is_some() {
+            cache.files.insert(
+                path.clone(),
+                CachedFile {
+                    mtime,
+                    len: meta.len(),
+                    uri: uri.clone(),
+                    text: text.clone(),
+                },
+            );
+        }
+        cache.reads += 1;
+        out.push((uri, text));
+    }
+    cache.files.retain(|p, _| present.contains(p));
     out
 }
 
@@ -585,6 +711,214 @@ mod tests {
         // Anggaran 0 → tidak ada file.
         let docs = load_disk_docs_with_limits(root, &[], 1024, 0);
         assert!(docs.is_empty(), "{docs:?}");
+    }
+
+    #[test]
+    fn load_disk_docs_cached_reuses_unchanged_files() {
+        // LSP-11 tahap 3: permintaan kedua tidak membaca ulang file yang
+        // (mtime, len) tidak berubah, dan hasilnya identik & terurut.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        std::fs::write(root.join("a.sv"), "module a; endmodule\n").unwrap();
+        std::fs::write(root.join("b.sv"), "module b; endmodule\n").unwrap();
+
+        let mut cache = DiskIndexCache::default();
+        let first = load_disk_docs_cached(&mut cache, root, &[]);
+        assert_eq!(first.len(), 2, "{first:?}");
+        assert_eq!(first, load_disk_docs(root, &[]), "urutan harus sama");
+        assert_eq!((cache.reads, cache.reuses, cache.scans), (2, 0, 1));
+
+        let second = load_disk_docs_cached(&mut cache, root, &[]);
+        assert_eq!(second, first, "isi cache harus sama");
+        assert_eq!((cache.reads, cache.reuses), (2, 2), "tidak ada baca ulang");
+        assert_eq!(cache.scans, 2);
+    }
+
+    #[test]
+    fn load_disk_docs_cached_rereads_changed_and_drops_deleted() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        std::fs::write(root.join("a.sv"), "module a; endmodule\n").unwrap();
+        std::fs::write(root.join("b.sv"), "module b; endmodule\n").unwrap();
+
+        let mut cache = DiskIndexCache::default();
+        let _ = load_disk_docs_cached(&mut cache, root, &[]);
+        let _ = load_disk_docs_cached(&mut cache, root, &[]);
+        assert_eq!((cache.reads, cache.reuses), (2, 2));
+
+        // Ubah isi a.sv (panjang berubah → terdeteksi walau mtime kasar) dan
+        // hapus b.sv.
+        std::fs::write(root.join("a.sv"), "module a; endmodule\n// v2\n").unwrap();
+        std::fs::remove_file(root.join("b.sv")).unwrap();
+
+        let docs = load_disk_docs_cached(&mut cache, root, &[]);
+        assert_eq!(docs.len(), 1, "file terhapus tidak boleh muncul: {docs:?}");
+        assert!(
+            docs[0].1.contains("// v2"),
+            "file berubah harus dibaca ulang: {docs:?}"
+        );
+        assert_eq!(cache.reads, 3, "hanya file berubah yang dibaca ulang");
+        assert_eq!(cache.reuses, 2, "tidak ada file lain untuk dipakai ulang");
+        assert_eq!(cache.files.len(), 1, "entri file terhapus dibuang");
+    }
+
+    #[test]
+    fn load_disk_docs_cached_resets_on_root_change() {
+        let dir1 = tempfile::tempdir().expect("tempdir1");
+        let dir2 = tempfile::tempdir().expect("tempdir2");
+        std::fs::write(dir1.path().join("a.sv"), "module a; endmodule\n").unwrap();
+        std::fs::write(dir2.path().join("b.sv"), "module b; endmodule\n").unwrap();
+
+        let mut cache = DiskIndexCache::default();
+        let d1 = load_disk_docs_cached(&mut cache, dir1.path(), &[]);
+        assert_eq!(d1.len(), 1);
+        assert_eq!(cache.reads, 1);
+
+        let d2 = load_disk_docs_cached(&mut cache, dir2.path(), &[]);
+        assert_eq!(d2.len(), 1, "{d2:?}");
+        assert!(
+            d2[0].0.ends_with("b.sv"),
+            "root baru tidak boleh memakai cache root lama: {d2:?}"
+        );
+        assert_eq!(cache.reads, 2, "root berubah -> baca file root baru");
+        assert_eq!(
+            cache.files.len(),
+            1,
+            "cache root lama harus dibuang, bukan diakumulasi"
+        );
+    }
+
+    #[test]
+    fn load_disk_docs_cached_honours_skip_list() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let a = root.join("a.sv");
+        std::fs::write(&a, "module a; endmodule\n").unwrap();
+        std::fs::write(root.join("b.sv"), "module b; endmodule\n").unwrap();
+
+        let mut cache = DiskIndexCache::default();
+        let docs = load_disk_docs_cached(&mut cache, root, std::slice::from_ref(&a));
+        assert_eq!(docs.len(), 1, "{docs:?}");
+        assert!(docs[0].0.ends_with("b.sv"), "{docs:?}");
+        assert_eq!(cache.reads, 1);
+    }
+
+    #[test]
+    fn load_disk_docs_cached_rereads_when_mtime_changes_same_len() {
+        // Panjang sama tapi mtime berbeda -> wajib baca ulang (mtime ikut
+        // dibandingkan, bukan hanya len).
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("a.sv");
+        std::fs::write(&path, "module a; endmodule\n").unwrap();
+        let mut cache = DiskIndexCache::default();
+        let first = load_disk_docs_cached(&mut cache, dir.path(), &[]);
+        assert!(first[0].1.contains("module a"), "{first:?}");
+
+        let len_before = std::fs::metadata(&path).unwrap().len();
+        std::fs::write(&path, "module b; endmodule\n").unwrap();
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().len(),
+            len_before,
+            "test harus memakai panjang yang sama"
+        );
+        let f = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        let future = std::time::SystemTime::now() + std::time::Duration::from_secs(30);
+        f.set_times(std::fs::FileTimes::new().set_modified(future))
+            .unwrap();
+
+        let second = load_disk_docs_cached(&mut cache, dir.path(), &[]);
+        assert!(
+            second[0].1.contains("module b"),
+            "mtime berubah harus memicu baca ulang: {second:?}"
+        );
+        assert_eq!(cache.reads, 2);
+        assert_eq!(cache.reuses, 0);
+    }
+
+    #[test]
+    fn load_disk_docs_cached_stops_at_total_byte_budget() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        for i in 0..3 {
+            std::fs::write(
+                root.join(format!("m{i}.sv")),
+                format!("module m{i}; endmodule\n"),
+            )
+            .unwrap();
+        }
+        let mut cache = DiskIndexCache::default();
+        let all = load_disk_docs_cached(&mut cache, root, &[]);
+        assert_eq!(all.len(), 3, "{all:?}");
+        assert_eq!(cache.reads, 3);
+
+        let per_file = std::fs::metadata(root.join("m0.sv")).unwrap().len();
+        // Anggaran = 2 file + 1 byte -> hanya 2 file (jalur REUSE).
+        let docs = load_disk_docs_cached_with_limits(&mut cache, root, &[], 1024, per_file * 2 + 1);
+        assert_eq!(docs.len(), 2, "{docs:?}");
+        assert_eq!(cache.reuses, 2, "jalur reuse harus menghormati budget");
+        assert_eq!(cache.reads, 3);
+
+        let docs = load_disk_docs_cached_with_limits(&mut cache, root, &[], 1024, 0);
+        assert!(docs.is_empty(), "budget 0 -> kosong: {docs:?}");
+    }
+
+    #[test]
+    fn load_disk_docs_cached_evicts_entry_when_skipped() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let a = root.join("a.sv");
+        std::fs::write(&a, "module a; endmodule\n").unwrap();
+        std::fs::write(root.join("b.sv"), "module b; endmodule\n").unwrap();
+
+        let mut cache = DiskIndexCache::default();
+        let _ = load_disk_docs_cached(&mut cache, root, &[]);
+        assert_eq!(cache.files.len(), 2);
+
+        // a.sv terbuka di editor -> di-skip; entri cache-nya harus dibuang.
+        let docs = load_disk_docs_cached(&mut cache, root, std::slice::from_ref(&a));
+        assert_eq!(docs.len(), 1, "{docs:?}");
+        assert_eq!(cache.files.len(), 1, "entri file yang di-skip dibuang");
+
+        // Ditutup lagi -> dibaca ulang (bukan entri basi).
+        let docs = load_disk_docs_cached(&mut cache, root, &[]);
+        assert_eq!(docs.len(), 2, "{docs:?}");
+        assert_eq!(cache.reads, 3, "a.sv dibaca ulang setelah tidak di-skip");
+        assert_eq!(cache.reuses, 2, "b.sv dipakai ulang di dua panggilan");
+    }
+
+    #[test]
+    fn load_disk_docs_cached_skips_oversized_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        std::fs::write(root.join("small.sv"), "module s; endmodule\n").unwrap();
+        std::fs::write(root.join("big.sv"), "module big; endmodule\n".repeat(4)).unwrap();
+
+        let mut cache = DiskIndexCache::default();
+        let docs =
+            load_disk_docs_cached_with_limits(&mut cache, root, &[], 32, MAX_INDEX_TOTAL_BYTES);
+        assert_eq!(docs.len(), 1, "file > batas per-file dilewati: {docs:?}");
+        assert!(docs[0].0.ends_with("small.sv"), "{docs:?}");
+        assert_eq!(cache.reads, 1);
+        assert_eq!(cache.files.len(), 1);
+    }
+
+    #[test]
+    fn load_disk_docs_cached_drops_entry_when_read_fails() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("a.sv");
+        std::fs::write(&path, "module a; endmodule\n").unwrap();
+        let mut cache = DiskIndexCache::default();
+        assert_eq!(load_disk_docs_cached(&mut cache, dir.path(), &[]).len(), 1);
+        assert_eq!(cache.files.len(), 1);
+
+        // Isi menjadi non-UTF8 (panjang berubah -> miss, lalu baca gagal).
+        std::fs::write(&path, [0xFFu8, 0xFE, 0xFD]).unwrap();
+        let docs = load_disk_docs_cached(&mut cache, dir.path(), &[]);
+        assert!(
+            docs.is_empty(),
+            "file tak terbaca tidak dikembalikan: {docs:?}"
+        );
+        assert_eq!(cache.files.len(), 0, "entri basi harus dibuang");
     }
 
     #[test]

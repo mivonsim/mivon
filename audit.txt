@@ -2364,7 +2364,7 @@ LSP-10: ✅ Code actions / quick-fix (ROUND 90) — code_action handler di LSP b
            + WorkspaceEdit dengan TextEdit. 3 test: test_actions_from_diagnostic_missing_
            semicolon, test_actions_from_diagnostic_missing_endmodule, test_actions_from_
            diagnostic_no_match. Ter-wire di ServerCapabilities.code_action_provider.
-LSP-11: ⚠️ IN PROGRESS (ROUND 99/192) — workspace symbol tahap 1+2:
+LSP-11: ✅ FIXED (ROUND 99/192/211) — workspace symbol tahap 1+2+3:
          backend.rs — capability workspace_symbol_provider + handler
          symbol; core murni search_workspace_symbols(docs, query):
          flatten outline semua dokumen, filter case-insensitive
@@ -2373,18 +2373,46 @@ LSP-11: ⚠️ IN PROGRESS (ROUND 99/192) — workspace symbol tahap 1+2:
          no-match).
          Tahap 2 (ROUND 192): indeks dari DISK — modul baru
          backend/workspace_index.rs: is_source_file (sv/svh/v/vh/svi,
-         case-insensitive), collect_source_files (DFS iteratif, hasil
+         case-insensitive), collect_source_files (BFS level-order, hasil
          terurut, skip .git/target/node_modules/.svn/build, batas
          MAX_INDEX_FILES=2000 / MAX_INDEX_DEPTH=16), merge_docs
          (dokumen TERBUKA menang atas disk utk uri sama). Backend
          menyimpan workspace_root dari initialize (root_uri, fallback
-         workspace_folders[0]) + workspace_disk_docs() (batas ukuran
+         workspace_folders[0]) + collect_workspace_docs() (batas ukuran
          file 1 MiB, file tak terbaca dilewati). Handler symbol =
          merge(dokumen terbuka, disk). Test: 4 unit workspace_index +
          1 test backend (simbol dari file .sv/.v di disk, .git & .txt
          tidak terindeks, dokumen terbuka menang).
-         MASIH OPEN: caching/incremental index (pemindaian per
-         permintaan, dibatasi keras).
+         Tahap 3 (ROUND 211): cache indeks disk — DiskIndexCache
+         (workspace_index.rs) menyimpan path -> (mtime, len, uri, teks);
+         file yang metadata-nya tidak berubah DIPAKAI ULANG tanpa baca
+         ulang isi. Cache di-share backend lewat Arc<Mutex<...>> agar bisa
+         dipakai di spawn_blocking; entri file yang hilang dibuang
+         (retain), root berubah -> cache di-reset. Batas ukuran/total
+         byte dan urutan hasil identik dengan load_disk_docs; batas bisa
+         di-inject (load_disk_docs_cached_with_limits) untuk test budget
+         termasuk jalur reuse. Lock diambil poison-safe (unwrap_or_else
+         into_inner) agar panic tidak mematikan indeks permanen.
+         Test: _reuses_unchanged_files (baca kedua tidak membaca ulang;
+         hasil identik & urut), _rereads_changed_and_drops_deleted (isi
+         berubah dibaca ulang, file terhapus hilang dari hasil & cache),
+         _rereads_when_mtime_changes_same_len (mtime berubah, panjang
+         sama), _stops_at_total_byte_budget (jalur reuse + budget 0),
+         _evicts_entry_when_skipped (skip membuang entri; ditutup lagi ->
+         baca ulang), _skips_oversized_file (batas per-file),
+         _drops_entry_when_read_fails (non-UTF8), _resets_on_root_change,
+         _honours_skip_list. Entri basi juga
+         dibuang saat baca/konversi URL gagal; entri mtime None tidak
+         disimpan (tak akan pernah bisa dipakai ulang).
+         Mutasi: matikan reuse / abaikan mtime / abaikan budget ->
+         test terkait gagal.
+         Batasan (dicatat): invarian cache = (len, mtime). Edit dengan
+         panjang SAMA pada FS ber-mtime kasar (FAT 2 s) atau salinan
+         yang mempertahankan mtime (cp -p) bisa false-hit sampai file
+         ditulis ulang; mtime None (FS tak mendukung) dipaksa miss.
+         Traversal DIREKTORI masih per permintaan (metadata saja,
+         dibatasi MAX_INDEX_FILES/MAX_SCAN_DIRS); TTL scan belum ada agar file
+         baru tidak terlewat.
 LSP-12: ✅ FIXED (ROUND 96/120/197) — document symbol tahap 1+2a+2b:
          backend.rs — capability document_symbol_provider + handler
          document_symbol → DocumentSymbolResponse::Nested; core murni
