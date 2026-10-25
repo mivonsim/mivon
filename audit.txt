@@ -483,6 +483,19 @@ JIT-02: ⚠️ JIT tidak cache di disk — masih open
   Severity: High
   Fix: Persistent JIT cache dengan content-addressable storage.
 
+JIT-03: ✅ Shift-overflow mask konstanta lebar 64-bit (ROUND 201)
+  Root Cause: di crates/mivon-compiler/src/mir/jit.rs, mask konstanta
+  dihitung `(1u64 << width) - 1`; untuk width==64 menghasilkan
+  `1u64 << 64` yang PANIK (attempt to shift left with overflow) di
+  build debug, dan jika tidak panik mask jadi 0 (salah).
+  Impact: JIT path (--all-features / fitur jit) panic pada design
+  dengan konstanta 64-bit; terdeteksi fuzz regression
+  reg_bug_0366cd02200e_differential (differential: mir-jit panic,
+  default ok).
+  Severity: High (correctness JIT)
+  Fix: cabang eksplisit — width==64 -> mask = u64::MAX, selainnya
+  `(1u64 << w) - 1`. Test: reg_bug_0366cd02200e_differential kini PASS.
+
 ═══ 2.5 PARALLEL ARCHITECTURE ═══
 
 Par-01: ✅ Work-stealing paralel produk = rayon; executor kustom dead-code dihapus (ROUND 183)

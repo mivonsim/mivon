@@ -184,7 +184,9 @@ impl MirJitCompiler {
                 match instr {
                     MirInstr::Const { dest, value, width } => {
                         if *dest < n_regs {
-                            let v = *value & ((1u64 << (*width as u64).min(64)) - 1);
+                            let w = (*width as u64).min(64);
+                            let mask = if w == 64 { u64::MAX } else { (1u64 << w) - 1 };
+                            let v = *value & mask;
                             let val = builder.ins().iconst(types::I64, v as i64);
                             builder.def_var(reg_slots[*dest], val);
                         }
