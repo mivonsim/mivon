@@ -57,9 +57,10 @@ impl SimulationEngine {
     /// incorrect results in the JIT path. Returns true if the expression can be JIT-compiled.
     fn is_expr_jit_safe(expr: &IrExpr) -> bool {
         match expr {
-            // Const dengan bit X/Z tak bisa dipetakan ke u64 tanpa kehilangan
-            // semantik tri-state (to_u64: X/Z -> 0) → tolak agar fallback.
-            IrExpr::Const(lv) => !lv.has_unknown(),
+            // Const dengan bit X/Z atau lebar > 64 tak bisa dipetakan ke u64
+            // tanpa kehilangan informasi (to_u64: X/Z -> 0, lebar dipotong 64)
+            // → tolak agar fallback ke interpreter.
+            IrExpr::Const(lv) => !lv.has_unknown() && lv.width <= 64,
             IrExpr::Signal(_, _) => true,
             IrExpr::FillLit(lv) => matches!(lv, LogicVal::Zero | LogicVal::One),
             IrExpr::BinaryOp(_, lhs, rhs) => {
@@ -763,6 +764,12 @@ impl SimulationEngine {
         }
     }
 
+    /// True bila nilai sinyal tak bisa dimodelkan jalur JIT: tri-state (X/Z)
+    /// atau lebar > 64 bit (register JIT = I64).
+    fn signal_unrepresentable(sig: &LogicVec) -> bool {
+        sig.width > 64 || sig.has_unknown()
+    }
+
     /// Try to evaluate a process using MIR JIT (compiled-code simulation path).
     /// Returns Ok(true) if JIT was used, Ok(false) if fallback to interpreted needed.
     ///
@@ -837,21 +844,32 @@ impl SimulationEngine {
         }
         let nba_targets = collect_nba_signals(body);
 
-        // Guard tri-state: JIT memakai aritmetika u64 (X/Z dipetakan ke 0)
-        // sehingga tidak mereproduksi propagasi X/Z interpreter. Jika ada
-        // sinyal yang DIBACA proses ini bernilai X/Z, fallback ke interpreter
-        // agar hasil konsisten (regresi bug_0366cd02200e_differential:
-        // default=X, mir-jit=Z).
+        // Guard nilai tak termodelkan JIT: aritmetika u64 (X/Z -> 0, lebar
+        // dipotong 64). Fallback ke interpreter bila sinyal yang DIBACA
+        // tri-state / > 64 bit, ATAU target TULIS > 64 bit (write-back
+        // from_u64 zero-extend, sedangkan interpreter bisa sign-extend).
+        // Regresi bug_0366cd02200e_differential.
         let mut read_sigs: HashSet<usize> = HashSet::new();
+        let mut write_sigs: HashSet<usize> = HashSet::new();
         for ins in &mir_process.instrs {
-            if let MirInstr::Load { signal, .. } = ins {
-                read_sigs.insert(*signal);
+            match ins {
+                MirInstr::Load { signal, .. } => {
+                    read_sigs.insert(*signal);
+                }
+                MirInstr::Store { signal, .. } | MirInstr::NonBlocking { signal, .. } => {
+                    write_sigs.insert(*signal);
+                }
+                _ => {}
             }
         }
-        if read_sigs
+        // ID di luar jangkauan juga fallback (codegen diam-diam membuang load).
+        let bad_read = read_sigs
             .iter()
-            .any(|&s| s < n_sigs && self.state.read_signal(s).has_unknown())
-        {
+            .any(|&s| s >= n_sigs || Self::signal_unrepresentable(self.state.read_signal(s)));
+        let bad_write = write_sigs
+            .iter()
+            .any(|&s| s >= n_sigs || self.state.read_signal(s).width > 64);
+        if bad_read || bad_write {
             return Ok(false);
         }
 
@@ -943,5 +961,24 @@ mod tests {
     fn clean_const_stays_jit_safe() {
         let clean = LogicVec::from_u64(0b1010, 4);
         assert!(SimulationEngine::is_expr_jit_safe(&IrExpr::Const(clean)));
+    }
+
+    /// Konstanta > 64 bit tak bisa direpresentasikan di register I64 JIT.
+    #[test]
+    fn wide_const_not_jit_safe() {
+        let wide = LogicVec::from_u64(1, 128);
+        assert!(!SimulationEngine::is_expr_jit_safe(&IrExpr::Const(wide)));
+    }
+
+    /// Predikat guard runtime: X/Z atau lebar > 64 bit -> tak termodelkan JIT.
+    #[test]
+    fn signal_unrepresentable_predicate() {
+        assert!(SimulationEngine::signal_unrepresentable(&LogicVec::new(4)));
+        assert!(!SimulationEngine::signal_unrepresentable(
+            &LogicVec::from_u64(1, 4)
+        ));
+        assert!(SimulationEngine::signal_unrepresentable(
+            &LogicVec::from_u64(1, 128)
+        ));
     }
 }

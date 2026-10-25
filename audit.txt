@@ -542,13 +542,27 @@ JIT-07: ⚠️ Fitur jit simulator tak meneruskan mivon-compiler/jit (masih open
   Fix: jit = [..., "mivon-compiler/jit"] — terpisah, bisa memunculkan bug JIT
   laten (lihat JIT-05), perlu verifikasi penuh.
 
-JIT-08: ⚠️ JIT lossy untuk nilai lebar > 64 bit (masih open)
+JIT-08: ✅ JIT lossy untuk nilai lebar > 64 bit (ROUND 204)
   Root Cause: to_u64() dan codegen memotong ke 64 bit (width.min(64));
   Const/Signal lebar > 64 tetap JIT-safe sehingga hasil senyap salah
   (mis. reg [127:0] y = 128'h...).
   Severity: Medium
-  Fix: tolak Const width > 64 di is_expr_jit_safe + guard runtime
-  read_signal(s).width > 64 di try_evaluate_mir_jit.
+  Fix: is_expr_jit_safe menolak Const width > 64; guard runtime di
+  try_evaluate_mir_jit menolak sinyal BACA tri-state/>64 DAN target
+  TULIS > 64 (write-back from_u64 zero-extend vs interpreter
+  sign-extend) → fallback interpreter. Helper signal_unrepresentable.
+  Test: wide_const_not_jit_safe + signal_unrepresentable_predicate
+  (mivon-simulator).
+
+JIT-09: ⚠️ JIT lossy sign-extend (target <=64) & Concat >64 (masih open)
+  Root Cause: (a) bad_write hanya cek width > 64; RHS signed yang
+  dilebarkan (interpreter sign-extend di eval/expr.rs, JIT IrExpr::Signed
+  pass-through) tetap zero-extend saat target <= 64. (b) is_expr_jit_safe
+  menerima Concat dengan total width > 64; lowering shl I64 mem-mask
+  count & 63 sehingga bit salah bila di-truncate ke target <= 64.
+  Severity: Medium
+  Fix: guard sign-aware widening + total width Concat, atau tolak
+  Signed/widening di is_expr_jit_safe.
 
 ═══ 2.5 PARALLEL ARCHITECTURE ═══
 
