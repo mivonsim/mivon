@@ -525,12 +525,13 @@ JIT-05: ⚠️ Write-back JIT tak bedakan "tak ditulis" vs "ditulis 0" (masih op
   Fix: kumpulkan target Store/NonBlocking dari MIR, terapkan hanya itu,
   bandingkan di level LogicVec (bukan u64).
 
-JIT-06: ⚠️ Guard X/Z belum menutup Const (masih open)
+JIT-06: ✅ Guard X/Z untuk Const (ROUND 203)
   Root Cause: is_expr_jit_safe menerima SEMUA IrExpr::Const; lowering pakai
   lv.to_u64() (X/Z -> 0). Contoh: always_comb y = 4'bxx01 -> interpreter
   4'bxx01, JIT 4'b0001, guard Load tak menyala.
   Severity: Medium
-  Fix: tolak IrExpr::Const yang has_unknown() di is_expr_jit_safe.
+  Fix: is_expr_jit_safe kini menolak IrExpr::Const yang has_unknown().
+  Test: test_jit_falls_back_on_x_const (mivon-tests).
 
 JIT-07: ⚠️ Fitur jit simulator tak meneruskan mivon-compiler/jit (masih open)
   Root Cause: mivon-simulator feature jit hanya mengaktifkan cranelift, TIDAK
@@ -540,6 +541,14 @@ JIT-07: ⚠️ Fitur jit simulator tak meneruskan mivon-compiler/jit (masih open
   Severity: Medium (feature wiring)
   Fix: jit = [..., "mivon-compiler/jit"] — terpisah, bisa memunculkan bug JIT
   laten (lihat JIT-05), perlu verifikasi penuh.
+
+JIT-08: ⚠️ JIT lossy untuk nilai lebar > 64 bit (masih open)
+  Root Cause: to_u64() dan codegen memotong ke 64 bit (width.min(64));
+  Const/Signal lebar > 64 tetap JIT-safe sehingga hasil senyap salah
+  (mis. reg [127:0] y = 128'h...).
+  Severity: Medium
+  Fix: tolak Const width > 64 di is_expr_jit_safe + guard runtime
+  read_signal(s).width > 64 di try_evaluate_mir_jit.
 
 ═══ 2.5 PARALLEL ARCHITECTURE ═══
 

@@ -363,6 +363,47 @@ endmodule
 }
 
 #[test]
+fn test_jit_falls_back_on_x_const() {
+    // Guard tri-state untuk Const: konstanta berisi X/Z tak boleh di-JIT
+    // (to_u64 memetakan X/Z -> 0). Tanpa guard y = 4'bxx01 jadi 4'b0001;
+    // dengan guard fallback interpreter -> y tetap X.
+    let source = r#"
+module test_jit_xconst;
+    reg [3:0] y;
+    always_comb begin
+        y = 4'bxx01;
+    end
+    initial begin
+        #1;
+        $finish;
+    end
+endmodule
+"#;
+    let design = crate::compile_str(source).unwrap();
+    let mut engine = crate::simulator::SimulationEngine::new(design, 10);
+    engine.set_use_mir_jit(true);
+    let result = engine.run();
+    assert!(
+        result.is_ok(),
+        "JIT X-const fallback sim: {:?}",
+        result.err()
+    );
+    let y_idx = engine
+        .design
+        .top
+        .signals
+        .iter()
+        .position(|s| s.name.as_str() == "y")
+        .unwrap();
+    let y = engine.state.read_signal(y_idx);
+    assert!(
+        y.has_unknown(),
+        "y harus X (fallback interpreter), bukan u64={}",
+        y.to_u64()
+    );
+}
+
+#[test]
 fn test_jit_body_nonblocking_assign() {
     // Integration test: JIT body with non-blocking assignment.
     // Simple register: always_ff @(posedge clk) q <= d

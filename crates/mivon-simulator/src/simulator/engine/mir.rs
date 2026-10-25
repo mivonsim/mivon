@@ -57,7 +57,9 @@ impl SimulationEngine {
     /// incorrect results in the JIT path. Returns true if the expression can be JIT-compiled.
     fn is_expr_jit_safe(expr: &IrExpr) -> bool {
         match expr {
-            IrExpr::Const(_) => true,
+            // Const dengan bit X/Z tak bisa dipetakan ke u64 tanpa kehilangan
+            // semantik tri-state (to_u64: X/Z -> 0) → tolak agar fallback.
+            IrExpr::Const(lv) => !lv.has_unknown(),
             IrExpr::Signal(_, _) => true,
             IrExpr::FillLit(lv) => matches!(lv, LogicVal::Zero | LogicVal::One),
             IrExpr::BinaryOp(_, lhs, rhs) => {
@@ -919,5 +921,27 @@ impl SimulationEngine {
             IrExpr::Signed(inner) => Self::compute_expr_width(inner),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Guard JIT deterministik (tak butuh feature jit/cranelift): Const dengan
+    /// bit X/Z TIDAK boleh JIT-safe karena to_u64 memetakan X/Z ke 0 (nilai
+    /// salah). Regresi bug_0366cd02200e_differential (JIT-04/JIT-06).
+    #[test]
+    fn const_with_x_is_not_jit_safe() {
+        // LogicVec::new(w) = semua bit X.
+        let all_x = LogicVec::new(4);
+        assert!(!SimulationEngine::is_expr_jit_safe(&IrExpr::Const(all_x)));
+    }
+
+    /// Konstanta bersih tetap JIT-safe (tak ada regresi untuk desain X-free).
+    #[test]
+    fn clean_const_stays_jit_safe() {
+        let clean = LogicVec::from_u64(0b1010, 4);
+        assert!(SimulationEngine::is_expr_jit_safe(&IrExpr::Const(clean)));
     }
 }
