@@ -11281,8 +11281,8 @@ VERIFIKASI ROUND 199:
      mis. `u1` dari `u1.state`) sbg prefix `u1->always_0`. Diterapkan di
      kedua situs pembuatan FsmInfo (tahap 1 & 2c).
    NIT-1: unit test tdk diskriminatif thd kode lama. FIX: sisipkan modul
-     BUKAN-top (`other_mod`) ke design.modules; kode lama (pindai modules)
-     akan hasilkan len 4, kode baru (top-only) tetap 2.
+     `top` ke design.modules; kode lama (pindai modules) memindai top 2x
+     → len 4, kode baru (top-only) tetap 2 → diskriminatif.
    NIT-3: integrasi hanya 1 instance. FIX: tambah test
      fsm_extraction_two_identical_instances (2 instance sub_fsm sama) →
      assert 2 FSM, state_signal u1.state/u2.state, process_name ber-prefix
