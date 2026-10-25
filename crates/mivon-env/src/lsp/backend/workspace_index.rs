@@ -132,8 +132,10 @@ pub(crate) fn collect_source_files(
 /// Gabungkan dokumen terbuka (editor) dgn dokumen dari disk.
 ///
 /// Dokumen TERBUKA MENANG untuk uri yang sama: isi editor bisa lebih baru
-/// daripada file (belum disimpan). Urutan hasil deterministik: dokumen
-/// terbuka lebih dulu (urutan asli), lalu dokumen disk yang belum ada.
+/// daripada file (belum disimpan). Urutan hasil: dokumen terbuka lebih dulu
+/// (urutan asli), lalu dokumen disk yang belum ada — pemanggil menormalkan
+/// urutan via [`sorted_docs`] (konsumen seperti find-references memerlukan
+/// uri-ascending agar deterministik).
 pub(crate) fn merge_docs(
     open: &[(String, String)],
     disk: &[(String, String)],
@@ -162,6 +164,21 @@ pub(crate) fn merge_docs(
 /// hasilnya sudah diurutkan sendiri (uri, line, col).
 pub(crate) fn sorted_docs(mut docs: Vec<(String, String)>) -> Vec<(String, String)> {
     docs.sort_by(|a, b| a.0.cmp(&b.0));
+    docs
+}
+
+/// Pastikan dokumen aktif ada di himpunan docs TANPA merusak invariant
+/// uri-ascending: bila belum ada, tambahkan lalu urutkan ulang (review
+/// R193 ronde 2 BUG-2). Dipakai handler references.
+pub(crate) fn ensure_doc(
+    mut docs: Vec<(String, String)>,
+    uri: &str,
+    text: &str,
+) -> Vec<(String, String)> {
+    if !docs.iter().any(|(u, _)| u == uri) {
+        docs.push((uri.to_string(), text.to_string()));
+        docs = sorted_docs(docs);
+    }
     docs
 }
 
@@ -429,6 +446,31 @@ mod tests {
 
     /// Review R193 ronde 2 BUG-1: helper produksi wajib MENGURUTKAN — test
     /// ini gagal bila body sorted_docs dihapus (masukan tak terurut).
+    /// Review R193 ronde 3 R-1: invariant "push dokumen aktif tetap
+    /// uri-ascending" ditegakkan di produksi (ensure_doc) dan DIUJI —
+    /// mutasi menghapus sort di ensure_doc membuat test ini gagal.
+    #[test]
+    fn ensure_doc_keeps_uri_order() {
+        let docs = vec![
+            ("file:///a.sv".to_string(), "a".to_string()),
+            ("file:///c.sv".to_string(), "c".to_string()),
+        ];
+        let out = ensure_doc(docs.clone(), "file:///b.sv", "b");
+        let uris: Vec<&str> = out.iter().map(|d| d.0.as_str()).collect();
+        assert_eq!(uris, vec!["file:///a.sv", "file:///b.sv", "file:///c.sv"]);
+        assert_eq!(out[1].1, "b");
+        // Dokumen yang sudah ada tidak diduplikasi & urutan tidak berubah.
+        let same = ensure_doc(out.clone(), "file:///b.sv", "isi-baru");
+        assert_eq!(same, out);
+        // Dokumen aktif yang urinya paling awal tetap di depan.
+        let out2 = ensure_doc(
+            vec![("file:///m.sv".to_string(), "m".to_string())],
+            "file:///a.sv",
+            "a",
+        );
+        assert_eq!(out2[0].0, "file:///a.sv");
+    }
+
     #[test]
     fn sorted_docs_orders_by_uri() {
         let docs = vec![

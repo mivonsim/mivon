@@ -11198,9 +11198,9 @@ Item open berikutnya: LSP-03/05/12/14, Arsitektur-01..04/06, JIT-01/02,
 
 VERIFIKASI ROUND 193:
    - cargo fmt --all --check -> bersih.
-   - cargo nextest run --workspace --features dev: 3663 passed,
-     24 skipped (3660 -> 3663, +3 test).
-   - cargo nextest run -p mivon-env --features lsp: 192 passed.
+   - cargo nextest run --workspace --features dev: 3664 passed,
+     24 skipped (3660 -> 3664, +4 test).
+   - cargo nextest run -p mivon-env --features lsp: 193 passed.
 
 Review agent R193 ronde 2: TIDAK LOLOS (2 BUG) → fix ronde 2:
   BUG-1 (test tidak diskriminatif): test determinisme mengurutkan
@@ -11217,4 +11217,15 @@ Review agent R193 ronde 2: TIDAK LOLOS (2 BUG) → fix ronde 2:
   RISK diterima: kolom dihitung sebagai byte offset (bukan UTF-16 code
     unit) — pre-existing, kini "resmi" lewat assertion (8..11); cap
     2000 memotong senyap tanpa penanda ke klien.
+
+Review agent R193 ronde 3: LOLOS — tidak ada BUG. Tindak lanjut R-1
+  (fix BUG-2 sebelumnya tanpa test): logika "pastikan dokumen aktif ada"
+  diekstrak jadi helper murni ensure_doc(docs, uri, text) di
+  workspace_index (push + sorted_docs bila belum ada), dipakai handler,
+  dan DIUJI (ensure_doc_keeps_uri_order: a,c + b → a,b,c; dokumen yang
+  sudah ada tidak diduplikasi; uri paling awal tetap di depan). Mutasi
+  menghapus sort di ensure_doc kini membuat test gagal.
+  NIT-2 diterapkan: komentar merge_docs menyebut pemanggil menormalkan
+  urutan via sorted_docs. NIT stabilitas sort dicatat (assertion
+  "stabil" insidental — sort_by memang stabil secara dokumentasi).
 \\=======================================================================//

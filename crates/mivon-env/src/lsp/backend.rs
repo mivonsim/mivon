@@ -1116,13 +1116,8 @@ impl LanguageServer for LspBackend {
         let Some((word, _, _)) = Self::word_at_position(line_text, pos.character) else {
             return Ok(None);
         };
-        let mut docs = self.collect_workspace_docs().await;
-        if !docs.iter().any(|(u, _)| u == uri.as_str()) {
-            docs.push((uri.as_str().to_string(), text.clone()));
-            // Review R193 ronde 2 BUG-2: push setelah sort melanggar
-            // invariant "docs terurut by uri" (prioritas cap bergeser).
-            docs = workspace_index::sorted_docs(docs);
-        }
+        let docs =
+            workspace_index::ensure_doc(self.collect_workspace_docs().await, uri.as_str(), &text);
         let hits = Self::find_references_in_docs(&docs, &word, MAX_CROSS_FILE_REFERENCES);
         let refs: Vec<Location> = hits
             .into_iter()
