@@ -982,6 +982,40 @@ impl LspBackend {
         }
         None
     }
+
+    /// LSP-03 tahap 2: cari definisi LINTAS FILE (murni, bisa diuji).
+    ///
+    /// `docs` = dokumen terbuka + indeks disk; `prefer_uri` = dokumen asal
+    /// kursor (diperiksa lebih dulu agar definisi lokal tetap menang seperti
+    /// tahap 1). Sisanya diurutkan by uri supaya hasil deterministik dan
+    /// tidak bergantung urutan masukan. Mengembalikan
+    /// (uri, line, start, end) definisi pertama yang ditemukan.
+    pub(crate) fn find_definition_in_docs(
+        docs: &[(String, String)],
+        word: &str,
+        prefer_uri: &str,
+    ) -> Option<(String, u32, u32, u32)> {
+        let mut order: Vec<usize> = (0..docs.len()).collect();
+        order.sort_by(|&a, &b| docs[a].0.cmp(&docs[b].0));
+        if let Some(p) = order.iter().position(|&i| docs[i].0 == prefer_uri) {
+            let p = order.remove(p);
+            order.insert(0, p);
+        }
+        for i in order {
+            let (uri, text) = &docs[i];
+            for (idx, line) in text.lines().enumerate() {
+                if let Some(col) = Self::definition_col(line, word) {
+                    return Some((
+                        uri.clone(),
+                        idx as u32,
+                        col as u32,
+                        (col + word.len()) as u32,
+                    ));
+                }
+            }
+        }
+        None
+    }
 }
 
 #[tower_lsp::async_trait]
@@ -1165,22 +1199,43 @@ impl LanguageServer for LspBackend {
         let Some(text) = self.document_text(uri) else {
             return Ok(None);
         };
-        match Self::find_definition(&text, pos.line, pos.character) {
-            Some((line, start, end)) => Ok(Some(GotoDefinitionResponse::Scalar(Location {
-                uri: uri.clone(),
-                range: Range {
-                    start: Position {
-                        line,
-                        character: start,
-                    },
-                    end: Position {
-                        line,
-                        character: end,
-                    },
+        // LSP-03 tahap 2: definisi bisa berada di file lain. Jalur cepat:
+        // cari di dokumen aktif dulu (tanpa scan disk); hanya bila tidak
+        // ketemu baru sapu workspace (dokumen terbuka + indeks disk).
+        let found = match Self::find_definition(&text, pos.line, pos.character) {
+            Some((line, start, end)) => Some((uri.to_string(), line, start, end)),
+            None => {
+                let line_text = text.lines().nth(pos.line as usize).unwrap_or("");
+                let Some((word, _, _)) = Self::word_at_position(line_text, pos.character) else {
+                    return Ok(None);
+                };
+                let docs = workspace_index::ensure_doc(
+                    self.collect_workspace_docs().await,
+                    uri.as_str(),
+                    &text,
+                );
+                Self::find_definition_in_docs(&docs, &word, uri.as_str())
+            }
+        };
+        let Some((target, line, start, end)) = found else {
+            return Ok(None);
+        };
+        let Ok(target_uri) = Url::parse(&target) else {
+            return Ok(None);
+        };
+        Ok(Some(GotoDefinitionResponse::Scalar(Location {
+            uri: target_uri,
+            range: Range {
+                start: Position {
+                    line,
+                    character: start,
                 },
-            }))),
-            None => Ok(None),
-        }
+                end: Position {
+                    line,
+                    character: end,
+                },
+            },
+        })))
     }
 
     /// Find-references (LSP-04 tahap 1): semua kemunculan identifier di
@@ -2771,6 +2826,71 @@ endmodule
         let (line, col, _) = LspBackend::find_definition(SAMPLE, out_line, w_col).unwrap();
         assert_eq!(line, line_of("parameter WIDTH"));
         assert!(SAMPLE.lines().nth(line as usize).unwrap()[col as usize..].starts_with("WIDTH"));
+    }
+
+    #[test]
+    fn test_find_definition_in_docs_cross_file() {
+        // LSP-03 tahap 2: definisi lintas file. top.sv memakai `sub` dan
+        // `clk`; deklarasi `sub` hanya ada di sub.sv.
+        let top = [
+            "module top;",
+            "  logic clk;",
+            "  sub u0 (.clk(clk));",
+            "endmodule",
+        ]
+        .join("\n");
+        let sub = ["module sub (", "  input logic clk", ");", "endmodule"].join("\n");
+        let docs = vec![
+            ("file:///top.sv".to_string(), top.clone()),
+            ("file:///sub.sv".to_string(), sub.clone()),
+        ];
+
+        // `sub` tidak didefinisikan di top.sv → ketemu di sub.sv baris 0.
+        let hit = LspBackend::find_definition_in_docs(&docs, "sub", "file:///top.sv")
+            .expect("module sub ada di sub.sv");
+        assert_eq!(hit.0, "file:///sub.sv");
+        assert_eq!(hit.1, 0);
+        assert_eq!(
+            &sub.lines().nth(hit.1 as usize).unwrap()[hit.2 as usize..hit.3 as usize],
+            "sub"
+        );
+
+        // `clk` didefinisikan di KEDUA file → dokumen asal (prefer) menang.
+        let local = LspBackend::find_definition_in_docs(&docs, "clk", "file:///top.sv")
+            .expect("clk ada di top.sv");
+        assert_eq!(local.0, "file:///top.sv");
+        assert_eq!(local.1, 1);
+        assert_eq!(
+            &top.lines().nth(local.1 as usize).unwrap()[local.2 as usize..local.3 as usize],
+            "clk"
+        );
+        let other = LspBackend::find_definition_in_docs(&docs, "clk", "file:///sub.sv")
+            .expect("clk ada di sub.sv");
+        assert_eq!(other.0, "file:///sub.sv");
+        assert_eq!(other.1, 1);
+
+        // Determinisme: urutan masukan tidak mengubah hasil. Prefer yang
+        // tidak ada di himpunan → urutan uri menang (sub.sv < top.sv).
+        let mut rev = docs.clone();
+        rev.reverse();
+        assert_eq!(
+            LspBackend::find_definition_in_docs(&docs, "sub", "file:///top.sv"),
+            LspBackend::find_definition_in_docs(&rev, "sub", "file:///top.sv")
+        );
+        let by_uri = LspBackend::find_definition_in_docs(&docs, "clk", "file:///other.sv")
+            .expect("clk tetap ketemu");
+        assert_eq!(by_uri.0, "file:///sub.sv");
+        assert_eq!(
+            by_uri,
+            LspBackend::find_definition_in_docs(&rev, "clk", "file:///other.sv")
+                .expect("clk tetap ketemu")
+        );
+
+        // Tidak ada definisi / tanpa dokumen → None.
+        assert!(
+            LspBackend::find_definition_in_docs(&docs, "tidak_ada", "file:///top.sv").is_none()
+        );
+        assert!(LspBackend::find_definition_in_docs(&[], "clk", "file:///top.sv").is_none());
     }
 
     #[test]

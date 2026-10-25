@@ -1962,8 +1962,8 @@ LSP-02: ✅ FIXED (ROUND 100/111/115/118) — autocomplete lengkap:
          Tahap 2c (ROUND 118): completion_detail per kind (+snippet) di
          handler + resolve_detail fallback di resolve (dokumentasi via
          LSP-17 sudah ada).
-LSP-03: ⚠️ IN PROGRESS (ROUND 93) — go-to-definition tahap 1:
-         crates/maria-env/src/lsp/backend.rs — goto_definition handler
+LSP-03: ✅ FIXED (ROUND 93/195) — go-to-definition tahap 1+2:
+         crates/mivon-env/src/lsp/backend.rs — goto_definition handler
          (capability definition_provider), cache dokumen terbuka
          (+ fallback baca file dari disk), core murni find_definition():
          word_at_position + deteksi definisi berbasis token per baris
@@ -1971,9 +1971,16 @@ LSP-03: ⚠️ IN PROGRESS (ROUND 93) — go-to-definition tahap 1:
          function/task/property/sequence; parameter/localparam di mana
          pun termasuk #(...); port/signal decl via direction/type
          keyword). Test 5 unit (module, signal/port, parameter dalam
-         #( ), not-found, word_at_position). MASIH OPEN: cross-file
-         index, find-references (LSP-04), rename (LSP-05), hover
-         (LSP-06), workspace symbol (LSP-11).
+         #( ), not-found, word_at_position).
+         Tahap 2 (ROUND 195): definisi LINTAS FILE — core murni
+         find_definition_in_docs(docs, word, prefer_uri): dokumen asal
+         diperiksa lebih dulu (definisi lokal tetap menang), sisanya urut
+         uri → deterministik; memakai definition_col yang sama. Handler:
+         jalur cepat dokumen aktif (tanpa scan disk), hanya bila tidak
+         ketemu baru collect_workspace_docs + ensure_doc. Caveat:
+         resolusi TEKSTUAL — tanpa resolusi import/package scope.
+         Sub-item lain (find-references LSP-04, rename LSP-05, hover
+         LSP-06, workspace symbol LSP-11) sudah CLOSED di item masing-masing.
 LSP-04: ⚠️ IN PROGRESS (ROUND 94/193) — find-references tahap 1+2:
          backend.rs — capability references_provider + handler
          references; core murni find_references(): semua kemunculan
@@ -11143,6 +11150,49 @@ VERIFIKASI ROUND 192:
    - cargo nextest run -p mivon-env --features lsp: 189 passed
      (verifikasi khusus modul lsp yang feature-gated).
    - Review: 3 ronde (TIDAK LOLOS -> TIDAK LOLOS -> LOLOS).
+
+═══ ROUND 195 — LSP-03 tahap 2: go-to-definition lintas file ═══
+
+Ruang lingkup: menutup sub-item "cross-file index" pada LSP-03 —
+tahap 1 (ROUND 93) hanya mencari definisi di dokumen aktif, sehingga
+"go to definition" pada instance modul / sinyal yang dideklarasikan di
+file lain gagal (None) walau workspace symbol (LSP-11) & find-references
+(LSP-04) sudah lintas file.
+
+Perubahan:
+  1. backend.rs: core murni find_definition_in_docs(docs, word,
+     prefer_uri) -> Option<(uri, line, start, end)>. Dokumen asal kursor
+     (prefer_uri) diperiksa lebih dulu agar definisi lokal tetap menang
+     seperti tahap 1; sisanya diurutkan by uri → deterministik, tidak
+     bergantung urutan masukan. Aturan deteksi = definition_col yang
+     sudah dipakai tahap 1 (tanpa duplikasi logika).
+  2. handler goto_definition: jalur cepat find_definition(dokumen aktif)
+     — nol I/O; hanya bila None baru collect_workspace_docs() (dokumen
+     terbuka + indeks disk, spawn_blocking) + ensure_doc(dokumen aktif)
+     lalu find_definition_in_docs. Uri hasil di-parse; parse gagal →
+     Ok(None) (bukan panic).
+  3. Cap/limit diwarisi dari indeks workspace (2000 file / 32 MiB);
+     hasil tunggal sehingga tidak perlu cap tambahan.
+
+Test baru (+1): test_find_definition_in_docs_cross_file — top.sv
+  memakai `sub` & `clk`, sub.sv mendeklarasikan keduanya:
+  * `sub` tidak ada di top.sv → ketemu di sub.sv (uri+baris+kolom+rentang);
+  * `clk` ada di dua file → prefer_uri menang (top.sv, baris 1);
+  * determinisme: docs dibalik → hasil identik; prefer tak ada di
+    himpunan → urutan uri menang (sub.sv);
+  * kata tak ada / docs kosong → None.
+
+Status LSP-03: tahap 1+2 selesai → item CLOSED (caveat: resolusi
+  tekstual, tanpa import/package scope resolution).
+Item open berikutnya: LSP-12/14, Arsitektur-01..04/06, JIT-01/02,
+  ELAB-02/03/08, COMP-01/02/11, SIM-03/19, VERIF-20, FORMAL-03/04/10/13,
+  ENT-24/39, FEAT-10/23, PARSER-07, LANG-01/02.
+
+VERIFIKASI ROUND 195:
+   - cargo fmt --all --check -> bersih.
+   - cargo nextest run --workspace --features dev: 3667 passed,
+     24 skipped (3666 -> 3667, +1 test).
+   - cargo nextest run -p mivon-env --features lsp: 196 passed.
 
 ═══ ROUND 194 — LSP-05 tahap 2b: rename lintas file ═══
 
