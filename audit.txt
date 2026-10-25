@@ -3172,15 +3172,35 @@ PERF-02: ✅ Signal history — FIXED (stale; ROUND 9 + CRIT-019)
          disk spill opsional (Mem-01). Marker audit tidak diupdate
          saat ROUND 9.
 
-PERF-03:[] Preponed snapshot clones ALL signals every cycle
-         core.rs: snapshot Vec<LogicVec> per cycle
-         Impact: O(S * W) copy per cycle (S=signals, W=avg width)
-         Fix: Lazy/differential snapshot, version-based
+PERF-03:[] Preponed snapshot masih full-clone tiap time step
+         core.rs (~1123-1136): preponed_snapshot / signal_snapshot /
+         signal_seq_history dibangun dengan menyalin SELURUH sinyal
+         (Vec<LogicVec>, dua kali .clone()), jadi sinyal lebar
+         ter-materialisasi penuh per time step. Yang SUDAH selesai hanya
+         snapshot lokal evaluasi layer DAG (Par-03 tahap 2, ROUND 181-182:
+         Vec<Arc<LogicVec>> + refresh hanya sinyal dirty — lihat Par-03).
+         Refresh per-delta (core.rs ~1717) juga memakai
+         read_signal(i).clone(), bukan snapshot_signal(i).
+         Catatan memori: salinan hidup per time step = 3 (dua .clone() +
+         snapshot asli di-move ke signal_seq_history), plus 1 clone lagi ke
+         coverage_snapshot saat coverage aktif (core.rs ~1150).
+         Sisa pekerjaan: ubah preponed/signal_snapshot ke Vec<Arc<LogicVec>>
+         (atau versi/copy-on-write) dan pakai snapshot_signal saat refresh.
+         Consumer yang ikut tersentuh: sequence.rs (index langsung),
+         cycle_based.rs, coverage.rs — bukan perubahan lokal.
+         Test saat ini: dag_differential_snapshot_matches_serial (mivon-tests)
+         mengunci kebenaran snapshot per-layer DAG, bukan biaya preponed.
 
-PERF-04:[] Process body clone in DAG parallel evaluation
-         core.rs: body_map clone for each DAG execution
-         Impact: O(P * B) memory/copy per cycle
-         Fix: Arc<[IrStmt]> sharing
+PERF-04: ✅ Body process dibagi via Arc (tanpa clone per layer)
+         core.rs / Par-03 tahap 1: `process_body_cache` (`Arc<Vec<IrStmt>>`)
+         dibangun sekali per run dan dibagikan murah ke evaluasi DAG
+         (`evaluate_bodies_parallel(..., &self.process_body_cache, ...)`).
+         Catatan: klaim "tanpa clone" berlaku untuk jalur PARALEL; fallback
+         serial (Err) masih memanggil process_event yang men-clone body
+         (scheduler/event.rs) — di luar scope PERF-04.
+         Test: dag_differential_snapshot_matches_serial (3 layer, nilai
+         ter-pin) + dag_differential_snapshot_cross_layer_chain + suite
+         dag_serial_fallback_tests.
 
 PERF-05:[] Vec::drain/filter/retain in event loop — O(E) allocation
          core.rs: drain/filter/retain per region per delta

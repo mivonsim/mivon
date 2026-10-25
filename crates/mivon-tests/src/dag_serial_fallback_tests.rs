@@ -1111,3 +1111,48 @@ fn dag_awd_batch_sdf_delay_diff() {
     assert_eq!(g, d, "SDF delay: jalur paralel harus identik serial");
     assert_eq!(g, "1", "SDF delay wajib menunda commit di jalur paralel");
 }
+
+/// PERF-04 (body sharing) + snapshot diferensial per layer DAG: rantai 3
+/// proses combinational (RAW berlapis) dengan stimulus berubah — jalur DAG
+/// harus identik dengan serial DAN bernilai ter-pin (bukan X).
+#[test]
+fn dag_differential_snapshot_matches_serial() {
+    let src = r#"
+module diff_snap;
+    logic [7:0] seed;
+    logic [7:0] a;
+    logic [7:0] b;
+    logic [7:0] c;
+    assign a = seed + 8'd1;
+    assign b = a ^ 8'h5A;
+    assign c = b + a;
+    initial begin
+        seed = 8'h00;
+        #1;
+        seed = 8'h11;
+        #1;
+        seed = 8'hA5;
+        #2 $finish;
+    end
+endmodule
+"#;
+    // Pastikan jalur DAG benar-benar terbentuk (>= 2 layer), bukan fallback
+    // serial penuh — kalau tidak, perbandingan jadi "serial vs serial".
+    {
+        let design = compile_str(src).expect("design harus compile");
+        let dag = mivon_simulator::scheduler::sim_dag::SimulationDag::build(&design);
+        assert!(
+            dag.num_layers() >= 2,
+            "desain harus membentuk >= 2 layer DAG, dapat {}",
+            dag.num_layers()
+        );
+    }
+    // seed=8'hA5 → a=0xA6, b=0xA6^0x5A=0xFC, c=0xA6+0xFC=0x1A2 → 0xA2.
+    for (name, want) in [("a", "10100110"), ("b", "11111100"), ("c", "10100010")] {
+        let serial = run_signal_bits(src, name, false);
+        let dag = run_signal_bits(src, name, true);
+        assert_eq!(dag, serial, "sinyal {name}: DAG != serial");
+        assert_eq!(serial, want, "sinyal {name}: nilai serial salah");
+        assert!(!dag.contains('x'), "sinyal {name} X di jalur DAG: {dag}");
+    }
+}
