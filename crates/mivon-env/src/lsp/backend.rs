@@ -3425,6 +3425,39 @@ endmodule
     }
 
     #[test]
+    fn test_document_symbols_qualified_members() {
+        // LSP-12 tahap 2b: qualifier deklarasi (rand/protected/static/
+        // virtual/...) tidak boleh menyembunyikan field/method class dari
+        // outline — pola standar class UVM.
+        let src = "class pkt;\n  rand bit [7:0] addr;\n  protected int cnt;\n  static int hits;\n  virtual function void write();\n    int tmp;\n  endfunction\nendclass\n";
+        let syms = LspBackend::document_symbols(src);
+        assert_eq!(syms.len(), 1);
+        let names: Vec<&str> = syms[0].children.iter().map(|c| c.name.as_str()).collect();
+        assert!(names.contains(&"addr"), "rand bit → field: {names:?}");
+        assert!(names.contains(&"cnt"), "protected int → field: {names:?}");
+        assert!(names.contains(&"hits"), "static int → field: {names:?}");
+        let f = syms[0]
+            .children
+            .iter()
+            .find(|c| c.name == "write")
+            .expect("virtual function harus ter-outline");
+        assert_eq!(f.kind, DocSymbol::KIND_FUNCTION);
+        assert!(
+            f.children.iter().any(|c| c.name == "tmp"),
+            "lokal di badan virtual function tetap anak function"
+        );
+        // Prototype `extern`/`pure` TIDAK membuka frame (tanpa endfunction) —
+        // simbol berikutnya tidak boleh tertelan.
+        let proto = "class c;\n  extern function void foo();\n  int after;\nendclass\n";
+        let p = &LspBackend::document_symbols(proto)[0];
+        assert!(
+            p.children.iter().any(|c| c.name == "after"),
+            "simbol setelah prototype: {:?}",
+            p.children.iter().map(|c| &c.name).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn test_type_hierarchy_extends() {
         // LSP-14 tahap 2a: rantai extends + supertypes/subtypes.
         let src = "class base;\nendclass\nclass mid extends base;\nendclass\nclass leaf extends mid;\nendclass\nclass lone;\nendclass\n";

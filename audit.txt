@@ -2089,7 +2089,7 @@ LSP-11: ⚠️ IN PROGRESS (ROUND 99/192) — workspace symbol tahap 1+2:
          tidak terindeks, dokumen terbuka menang).
          MASIH OPEN: caching/incremental index (pemindaian per
          permintaan, dibatasi keras).
-LSP-12: ⚠️ IN PROGRESS (ROUND 96/120) — document symbol tahap 1+2a:
+LSP-12: ✅ FIXED (ROUND 96/120/197) — document symbol tahap 1+2a+2b:
          backend.rs — capability document_symbol_provider + handler
          document_symbol → DocumentSymbolResponse::Nested; core murni
          document_symbols(): stack-based scope nesting (module/interface/
@@ -2100,8 +2100,14 @@ LSP-12: ⚠️ IN PROGRESS (ROUND 96/120) — document symbol tahap 1+2a:
          (CONSTANT), port/signal decl (VARIABLE); dokumen rusak tetap
          menghasilkan outline. Konversi DocSymbol → lsp_types::
          DocumentSymbol (range = baris decl, selection_range = nama).
-         MASIH OPEN: workspace symbol search (LSP-11), folding range
-         (LSP-15 ✅ tahap 2a selesai).
+         Tahap 2b (ROUND 197): qualifier deklarasi (virtual/static/local/
+         protected/rand/randc/const/var/automatic) dilewati sebelum
+         keyword efektif — `rand bit [7:0] addr;` dan `virtual function
+         void write();` kini muncul di outline (sebelumnya baris seperti
+         itu tak menghasilkan simbol). `pure`/`extern` sengaja TIDAK
+         dilewati (prototype tanpa endfunction → frame akan menelan
+         simbol berikutnya). Sub-item lain (workspace symbol LSP-11,
+         folding range LSP-15) sudah CLOSED di item masing-masing.
 LSP-13: ✅ Call hierarchy (ROUND 91) — LspBackend::compute_call_hierarchy
           (sync, maria-env/src/lsp/backend.rs): scan text untuk function/task
           declarations + call sites. extract_symbol_name skip type keywords.
@@ -11165,6 +11171,45 @@ VERIFIKASI ROUND 192:
    - cargo nextest run -p mivon-env --features lsp: 189 passed
      (verifikasi khusus modul lsp yang feature-gated).
    - Review: 3 ronde (TIDAK LOLOS -> TIDAK LOLOS -> LOLOS).
+
+═══ ROUND 197 — LSP-12 tahap 2b: outline anggota ber-qualifier ═══
+
+Ruang lingkup: menutup sub-item terakhir LSP-12. Outline dokumen
+(document_symbols) memakai token pertama baris sebagai keyword, sehingga
+deklarasi ber-qualifier tidak menghasilkan simbol sama sekali:
+  rand bit [7:0] addr;        → t0 = "rand"  → tak ter-outline
+  protected int cnt;          → t0 = "protected" → tak ter-outline
+  static int hits;            → t0 = "static" → tak ter-outline
+  virtual function void f();  → t0 = "virtual" → function hilang
+Pola ini standar di class UVM (field rand, method virtual) → outline
+class praktis kosong.
+
+Perubahan (crates/mivon-env/src/lsp/backend/outline.rs):
+  1. QUAL_KW = virtual/static/local/protected/rand/randc/const/var/
+     automatic — dilewati sebelum menentukan keyword efektif; sisa token
+     (rest) dipakai untuk semua lookup berikutnya (nama scope, extends,
+     parameter inline, nama field/port).
+  2. `pure`/`extern` SENGAJA tidak dilewati: prototype tidak punya
+     endfunction sehingga membuka frame akan menelan simbol berikutnya
+     (perilaku lama dipertahankan, tanpa regresi nesting).
+
+Test baru (+1): test_document_symbols_qualified_members — class pkt:
+  rand bit [7:0] addr / protected int cnt / static int hits muncul
+  sebagai child class; virtual function write jadi KIND_FUNCTION dengan
+  lokal tmp sebagai anak; prototype extern tidak menelan `int after`.
+
+Status LSP-12: tahap 1+2a+2b selesai → item CLOSED (sub-item lain sudah
+  closed di LSP-11 & LSP-15).
+Item open berikutnya: LSP-14 (iklan capability butuh upgrade
+  lsp-types/tower-lsp), Arsitektur-01..04/06, JIT-01/02, ELAB-02/03/08,
+  COMP-01/02/11, SIM-03/19, FORMAL-03/04/10/13, ENT-24/39, FEAT-10/23,
+  PARSER-07, LANG-01/02.
+
+VERIFIKASI ROUND 197:
+   - cargo fmt --all --check -> bersih.
+   - cargo nextest run --workspace --features dev: 3673 passed,
+     24 skipped (3672 -> 3673, +1 test).
+   - cargo nextest run -p mivon-env --features lsp: 197 passed.
 
 ═══ ROUND 196 — VERIF-20 tahap 4: plain-name builtin UVM/OVM di subclass ═══
 

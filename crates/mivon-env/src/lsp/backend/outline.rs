@@ -50,9 +50,33 @@ impl LspBackend {
                 continue;
             }
             let toks = Self::line_tokens(line);
-            let Some((t0, c0)) = toks.first().cloned() else {
+            // LSP-12 tahap 2b: lewati qualifier deklarasi lebih dulu supaya
+            // `virtual function ...` dan `rand bit [7:0] addr;` ikut
+            // ter-outline (sebelumnya baris seperti ini tak menghasilkan
+            // simbol sama sekali karena t0 = "virtual"/"rand").
+            // `pure`/`extern` SENGAJA tidak dilewati: deklarasi prototype
+            // tidak punya endfunction, sehingga membuka frame akan menelan
+            // simbol berikutnya (perilaku lama dipertahankan).
+            const QUAL_KW: &[&str] = &[
+                "virtual",
+                "static",
+                "local",
+                "protected",
+                "rand",
+                "randc",
+                "const",
+                "var",
+                "automatic",
+            ];
+            let mut qi = 0usize;
+            while qi < toks.len() && QUAL_KW.contains(&toks[qi].0.as_str()) {
+                qi += 1;
+            }
+            let Some((t0, c0)) = toks.get(qi).cloned() else {
                 continue;
             };
+            // Sisa token setelah keyword efektif (indeks relatif).
+            let rest = &toks[qi + 1..];
 
             // Tutup scope → merge symbol dengan children terkumpul.
             if CLOSE_KW.contains(&t0.as_str()) && stack.len() > 1 {
@@ -70,16 +94,16 @@ impl LspBackend {
 
             // Buka scope: keyword + nama.
             if let Some((_, kind)) = OPEN_KW.iter().find(|(kw, _)| *kw == t0.as_str()) {
-                if let Some((w1, c1)) = toks.get(1).cloned() {
+                if let Some((w1, c1)) = rest.first().cloned() {
                     if Self::is_valid_identifier(&w1) {
                         // LSP-14 tahap 2a: `class A extends B` (+ parameter
                         // `class A #(...) extends B` — cari token extends).
                         let base = (*kind == DocSymbol::KIND_CLASS)
                             .then(|| {
-                                toks.iter()
-                                    .skip(2)
+                                rest.iter()
+                                    .skip(1)
                                     .position(|(w, _)| w == "extends")
-                                    .and_then(|p| toks.get(p + 3))
+                                    .and_then(|p| rest.get(p + 2))
                                     .filter(|(w, _)| Self::is_valid_identifier(w))
                                     .map(|(w, _)| w.clone())
                             })
@@ -99,9 +123,9 @@ impl LspBackend {
                         // Parameter inline pada baris yang sama
                         // (`module m #(parameter WIDTH = 8) (`).
                         let frame = stack.last_mut().unwrap();
-                        for i in 2..toks.len() {
-                            if matches!(toks[i].0.as_str(), "parameter" | "localparam") {
-                                for (w, c) in toks.iter().skip(i + 1).cloned() {
+                        for i in 0..rest.len() {
+                            if matches!(rest[i].0.as_str(), "parameter" | "localparam") {
+                                for (w, c) in rest.iter().skip(i + 1).cloned() {
                                     if Self::is_valid_identifier(&w)
                                         && !matches!(
                                             w.as_str(),
@@ -139,7 +163,7 @@ impl LspBackend {
             // lokal di badan function menjadi children function, bukan
             // sibling module. Ditutup oleh `endfunction`/`endtask`.
             if FUNC_KW.contains(&t0.as_str()) {
-                for (w, c) in toks.iter().skip(1).cloned() {
+                for (w, c) in rest.iter().cloned() {
                     if Self::is_valid_identifier(&w)
                         && !matches!(
                             w.as_str(),
@@ -174,7 +198,7 @@ impl LspBackend {
 
             // parameter/localparam → Constant.
             if CONST_KW.contains(&t0.as_str()) {
-                for (w, c) in toks.iter().skip(1).cloned() {
+                for (w, c) in rest.iter().cloned() {
                     if Self::is_valid_identifier(&w)
                         && !matches!(
                             w.as_str(),
@@ -205,7 +229,7 @@ impl LspBackend {
 
             // Port/signal decl → Variable per nama.
             if VAR_KW.contains(&t0.as_str()) {
-                for (w, c) in toks.iter().skip(1).cloned() {
+                for (w, c) in rest.iter().cloned() {
                     if Self::is_valid_identifier(&w)
                         && !matches!(
                             w.as_str(),
