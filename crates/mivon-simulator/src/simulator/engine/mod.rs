@@ -604,6 +604,11 @@ pub struct SimulationEngine {
     /// Performance monitoring dashboard (SIM-25): metrik simulasi runtime
     /// (delta cycles, events processed, throughput). Dipakai CLI --perf-dashboard.
     pub sim_perf: mivon_compiler::profiling::PerfDashboard,
+
+    /// Par-02 tahap 6 (R191): jumlah kali jalur batch AlwaysWithDelay
+    /// (`always #N` pada delta yang sama) benar-benar dipakai. Dipakai test
+    /// utk membuktikan jalur batch aktif (bukan fallback serial senyap).
+    pub awd_batch_count: u64,
 }
 
 // ============================================================================

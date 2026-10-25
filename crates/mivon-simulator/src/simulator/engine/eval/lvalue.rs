@@ -37,7 +37,7 @@ impl SimulationEngine {
     /// set last_change = waktu kini, dan catat arah edge (PosEdge/NegEdge) dari
     /// transisi LSB old→new (SIM-24: dipakai setup/hold edge-aware + dedupe
     /// width/period agar tidak spam).
-    fn record_signal_change(&mut self, id: usize, old: &LogicVec, new: &LogicVec) {
+    pub(crate) fn record_signal_change(&mut self, id: usize, old: &LogicVec, new: &LogicVec) {
         // Skip same-value write: pulse timer width/period TIDAK boleh reset oleh
         // write nilai yang sama (mis. `clk = 1` saat clk sudah 1) — kalau tidak,
         // satu pulse nyata terpecah jadi segmen pendek → false positive width

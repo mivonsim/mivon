@@ -665,6 +665,13 @@ impl SimulationEngine {
     /// Full-write (start==0, len==width): resolusi multi-driver tetap.
     pub(crate) fn apply_parallel_writes(&mut self, writes: &[ParallelWrite]) {
         for (sig_id, start, patch) in writes {
+            // R191 BUG-1: jalur serial menahan write ke sinyal yang di-force/
+            // $assign (write_lvalue). Jalur paralel wajib sama — tanpa ini
+            // `force c = 1` ditimpa balik oleh body batch (`always #5 c = ~c`).
+            if self.forced_signals.contains(sig_id) {
+                continue;
+            }
+            let old_before = self.state.read_signal(*sig_id).clone();
             let info = self.design.top.signals.get(*sig_id);
             let target_width = info.map(|i| i.width).unwrap_or(0);
             let is_full = *start == 0 && patch.width >= target_width;
@@ -680,6 +687,9 @@ impl SimulationEngine {
                     }
                     self.state.write_signal(*sig_id, cur);
                 }
+                let old = old_before;
+                let new = self.state.read_signal(*sig_id).clone();
+                self.record_signal_change(*sig_id, &old, &new);
                 continue;
             }
             if let Some(info) = info.filter(|i| i.multi_driver) {
@@ -691,10 +701,20 @@ impl SimulationEngine {
                     let resolved =
                         crate::simulator::util::resolve_net_values(info.net_type, &current, patch);
                     self.state.write_signal(*sig_id, resolved);
+                    let old = old_before;
+                    let new = self.state.read_signal(*sig_id).clone();
+                    self.record_signal_change(*sig_id, &old, &new);
                     continue;
                 }
             }
             self.state.write_signal(*sig_id, patch.clone());
+            // R191 BUG-1: catat transisi (arah edge + timestamp) seperti
+            // write_lvalue — dipakai timing check $setup/$hold/$width/$period
+            // dan SDF. Tanpa ini clock yang di-batch tidak pernah memicu
+            // timing check sama sekali (silent, hanya di mode --parallel).
+            let old = old_before;
+            let new = self.state.read_signal(*sig_id).clone();
+            self.record_signal_change(*sig_id, &old, &new);
         }
     }
 
@@ -1170,11 +1190,10 @@ impl SimulationEngine {
                     self.evaluate_clock_domain(domain)?;
                     continue;
                 }
-                let body = match &self.design.top.processes[c.pid] {
-                    Process::Sequential { body, .. } => body.clone(),
-                    _ => continue,
-                };
-                self.evaluate_stmt_block(&body)?;
+                // R191 NIT-1: pakai helper seq-like (bukan hard-code
+                // Sequential) agar tak jadi jebakan bila kelak kandidat
+                // AlwaysWithDelay masuk jalur ini.
+                self.eval_seq_like_serial(c.pid)?;
             }
             return Ok(());
         }
@@ -1189,12 +1208,34 @@ impl SimulationEngine {
     /// Sequential -> statement block; AlwaysWithDelay -> block-with-delay
     /// (`always #N` body boleh memuat delay). Proses lain = no-op.
     fn eval_seq_like_serial(&mut self, pid: usize) -> Result<(), SimError> {
+        // R191 BUG-2: jalur batch melewati process_event, jadi konteks proses
+        // (nama/instance path) harus disetel di sini — kalau tidak `uvm_info`
+        // dari body yang didemosi mencetak @0 / nama proses sebelumnya, dan
+        // Continuation/fork group mewarisi spawner yang salah.
+        if let Some(process) = self.design.top.processes.get(pid) {
+            let name = match process {
+                Process::Sequential { name, .. } | Process::AlwaysWithDelay { name, .. } => {
+                    name.as_str()
+                }
+                _ => "",
+            };
+            if !name.is_empty() {
+                self.current_process_name = Some(name.to_string());
+                self.current_instance_path = Some(self.design.top.name.to_string());
+            }
+        }
         match self.design.top.processes.get(pid) {
             Some(Process::Sequential { body, .. }) => {
                 let body = body.clone();
                 self.evaluate_stmt_block(&body)
             }
             Some(Process::AlwaysWithDelay { body, .. }) => {
+                // R191 BUG-3: process_event me-reset disable_pending SEBELUM
+                // setiap body AWD. Batch harus sama per kandidat — sekali di
+                // awal batch tidak cukup bila body sebelumnya meninggalkan
+                // penanda (mis. `disable <label>`), yang membuat body
+                // berikutnya di-skip senyap.
+                self.disable_pending = None;
                 let body = body.clone();
                 self.evaluate_block_with_delay(&body).map(|_| ())
             }
@@ -1235,8 +1276,13 @@ impl SimulationEngine {
                 c
             })
             .collect();
+        // R191 BUG-2: konteks waktu — jalur batch tidak lewat process_event
+        // sehingga current_time harus disetel eksplisit ($time/$display di
+        // body yang didemosi, dan UVM report time).
+        self.current_time = t as u64;
         self.disable_pending = None;
         self.run_seq_batch(&cands)?;
+        self.awd_batch_count += 1;
         for (i, &pid) in pids.iter().enumerate() {
             let next_t = t + delays[i];
             self.ensure_events(next_t);
@@ -1337,6 +1383,18 @@ impl SimulationEngine {
             let others_read = |s: &usize| {
                 reads_count.get(s).copied().unwrap_or(0) > if own_effective(s) { 1 } else { 0 }
             };
+            // R191 BUG-1: sinyal ber-annotasi SDF (delay_rise/delay_fall) —
+            // serial menunda commit ke t+delay (write_lvalue). apply_parallel_
+            // writes tidak menunda, jadi kandidat yang menulis sinyal SDF
+            // WAJIB demosi (kalau tidak, SDF diabaikan senyap di mode paralel).
+            let sdf_write = c.access.writes.iter().any(|s| {
+                self.design
+                    .top
+                    .signals
+                    .get(*s)
+                    .map(|i| i.delay_rise.is_some() || i.delay_fall.is_some())
+                    .unwrap_or(false)
+            });
             let demote = if c.blocking_only {
                 // Blocking: (i) membaca blocking write serial inline;
                 // (ii) membaca blocking write kandidat batch lain (urutan
@@ -1373,7 +1431,7 @@ impl SimulationEngine {
                         .iter()
                         .any(|s| nba_write_counts.get(s).copied().unwrap_or(0) > 1)
             };
-            if demote {
+            if demote || sdf_write {
                 self.eval_seq_like_serial(c.pid)?;
                 continue;
             }

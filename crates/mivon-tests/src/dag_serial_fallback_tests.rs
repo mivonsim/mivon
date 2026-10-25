@@ -988,3 +988,50 @@ fn dag_awd_batch_waw_diff() {
         assert_eq!(g, expect, "{name}: pemenang WAW AWD salah");
     }
 }
+
+/// Bukti jalur batch AWD BENAR-BENAR dipakai (bukan fallback serial
+/// senyap). Counter engine `awd_batch_count` naik hanya saat
+/// run_awd_batch mengeksekusi batch; test lain bisa lulus walau
+/// batching dimatikan, jadi assertion ini wajib.
+#[test]
+fn dag_awd_batch_path_is_active() {
+    let design = compile_str(AWD_BATCH_SRC).expect("design harus compile");
+    let mut engine = mivon_simulator::simulator::SimulationEngine::new(design, 100);
+    engine.use_dag_parallel = true;
+    engine.run().expect("sim harus jalan");
+    assert!(
+        engine.awd_batch_count > 0,
+        "jalur batch AlwaysWithDelay tidak pernah dipakai (counter=0)"
+    );
+}
+
+/// R191 BUG-1: `force` pada sinyal yang ditulis clock generator batch.
+/// Serial: write_lvalue menahan write ke forced_signals → c1 tetap 1
+/// selama force. Jalur paralel dulu menulis langsung ke state
+/// (apply_parallel_writes) → force ditimpa balik. Nilai akhir: c1
+/// release t=52 lalu toggle t=55..100 (10x) → 1; c2 toggle 20x → 0.
+const AWD_FORCE_SRC: &str = r#"
+module awd_force_top;
+  logic c1, c2;
+  initial begin c1 = 0; c2 = 0; end
+  always #5 c1 = ~c1;
+  always #5 c2 = ~c2;
+  initial begin
+    #12 force c1 = 1;
+    #40 release c1;
+  end
+endmodule
+"#;
+
+#[test]
+fn dag_awd_batch_force_guard_diff() {
+    for (name, expect) in [("c1", "1"), ("c2", "0")] {
+        let d = run_signal_bits(AWD_FORCE_SRC, name, false);
+        let g = run_signal_bits(AWD_FORCE_SRC, name, true);
+        assert_eq!(
+            g, d,
+            "{name}: force pada sinyal batch AWD harus identik serial"
+        );
+        assert_eq!(g, expect, "{name}: force wajib menahan write batch");
+    }
+}

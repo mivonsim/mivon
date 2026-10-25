@@ -10861,6 +10861,43 @@ Test baru (mivon-tests/dag_serial_fallback_tests.rs):
      demosi (q=7 konstan), w+v tetap ter-batch (DBG_SIM=3:
      "2 kandidat, 1 grup") = campuran demosi+batch dalam satu delta
      AWD; w=v=20 (00010100).
+  4. dag_awd_batch_path_is_active — assertion counter engine
+     awd_batch_count > 0: membuktikan jalur batch BENAR-BENAR dipakai
+     (test lain bisa lulus walau batching dimatikan total).
+  5. dag_awd_batch_force_guard_diff — `force c1 = 1` pada clock
+     generator batch: serial menahan write (write_lvalue guard),
+     jalur paralel dulu menulis langsung ke state → force ditimpa.
+     Nilai akhir c1=1, c2=0 di kedua mode.
+
+Review agent R191: TIDAK LOLOS (3 BUG + 3 RISK + 2 NIT). Fix:
+  BUG-1 (High, silent miscompile): apply_parallel_writes menulis
+  langsung ke state → hilang guard forced_signals, record_signal_
+  change (timing check $setup/$hold/$width/$period + SDF edge),
+  SDF delayed commit, dan tracking writer. Warisan tahap 3, tapi
+  tahap 6 membuatnya reachable utk SEMUA clock generator.
+  Fix: (a) guard forced_signals di apply_parallel_writes;
+  (b) record_signal_change dipanggil di ketiga cabang apply
+  (full/patch/multi-driver) — record_signal_change jadi pub(crate);
+  (c) kandidat yang menulis sinyal ber-SDF (delay_rise/fall) DIDEMOSI
+  (apply_parallel_writes tidak menunda commit).
+  BUG-2 (Medium, konteks proses): run_awd_batch tidak menyetel
+  current_time / current_process_name / current_instance_path →
+  uvm_info/`$time` dari body AWD yang didemosi mencetak @0, dan
+  Continuation/fork group mewarisi spawner salah. Fix: current_time
+  disetel di run_awd_batch; nama+instance path disetel per kandidat
+  di eval_seq_like_serial. (Bukti: log DBG_SIM batch dulu selalu
+  mencetak t=0.)
+  BUG-3 (Low-Med): disable_pending di-reset SEKALI per batch;
+  serial me-reset sebelum SETIAP body AWD → body berikutnya bisa
+  di-skip senyap. Fix: reset per kandidat AWD di eval_seq_like_serial.
+  NIT-1: situs hard-code Process::Sequential ke-5 (cabang any_fused)
+  ikut dikonversi ke eval_seq_like_serial.
+  RISK diterima (didokumentasikan, bukan bug): RISK-1 urutan event
+  di slot t+N (aman karena guard demosi memaksa pasangan saling-akses
+  serial), RISK-2 nba_pushes diurut pid bukan urutan event (nilai
+  sama karena WAW → demosi), RISK-3 drain region lain pre-existing.
+  Catatan reviewer soal "log batch selalu t=0" = gejala BUG-2, sudah
+  diperbaiki (current_time disetel).
 
 Status PAR-02: tahap 6 SELESAI → item CLOSED (1+2a+3+4+5+6,
 ROUND 184-191). Backlog non-blokir (perf) dicatat di blok status.
@@ -10868,9 +10905,9 @@ Item open berikutnya: Arsitektur-01..04, JIT-01/02, backlog
 NIT/RISK review R186-R190 (walker VifField lain, sparse snapshot,
 batas iterasi loop, ekstraksi phase2c).
 
-VERIFIKASI ROUND 191:
+VERIFIKASI ROUND 191 (final):
    - cargo fmt --all --check -> bersih (termasuk 1 pelanggaran
      lama di test R190 yang ikut diperbaiki manual).
-   - cargo nextest run --workspace --features dev: 3644 passed,
-     24 skipped (3641 -> 3644, +3 test).
+   - cargo nextest run --workspace --features dev: 3646 passed,
+     24 skipped (3641 -> 3646, +5 test).
 \\=======================================================================//
