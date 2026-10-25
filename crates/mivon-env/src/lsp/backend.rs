@@ -1447,11 +1447,7 @@ impl LanguageServer for LspBackend {
         // hover) tidak stall. Review R192 BUG-4: file yang sudah terbuka
         // dilewati saat scan (path terkanonikalisasi) — mencegah duplikat
         // bila representasi URI klien berbeda dari Url::from_file_path.
-        let skip: Vec<std::path::PathBuf> = open
-            .iter()
-            .filter_map(|(u, _)| Url::parse(u).ok())
-            .filter_map(|u| u.to_file_path().ok())
-            .collect();
+        let skip = workspace_index::collect_skip_paths(&open);
         let disk = match self.workspace_root_path() {
             Some(root) => {
                 tokio::task::spawn_blocking(move || workspace_index::load_disk_docs(&root, &skip))

@@ -11017,7 +11017,7 @@ Perubahan:
      - handler symbol: docs = merge_docs(dokumen terbuka, disk)
        sebelum search_workspace_symbols.
 
-Test baru (+9):
+Test baru (+12):
   - workspace_index::tests::is_source_file_matches_sv_extensions
   - workspace_index::tests::collect_source_files_recurses_sorts_and_skips
     (nested dir, .git/target dilewati, .txt dilewati, hasil terurut)
@@ -11032,6 +11032,9 @@ Test baru (+9):
   - collect_source_files_does_not_follow_symlinked_dirs (unix)
   - workspace_root_prefers_root_uri_then_folders
   - load_disk_docs_skips_open_files_and_caps_total_bytes
+  - load_disk_docs_stops_at_total_byte_budget
+  - collect_skip_paths_filters_non_file_uris
+  - collect_source_files_keeps_symlinked_files (unix)
 
 Review agent R192: TIDAK LOLOS (4 BUG) → fix ronde 1:
   BUG-1 (sedang): DFS stack LIFO membuat urutan kunjungan TERBALIK dari
@@ -11067,8 +11070,35 @@ Review agent R192: TIDAK LOLOS (4 BUG) → fix ronde 1:
     berbeda — .svi hanya di sini); root dari klien bisa '/'.
   Catatan verifikasi: modul lsp di-gate #[cfg(feature="lsp")] dan
     mivon-env TIDAK punya default lsp → verifikasi wajib
-    `cargo nextest run -p mivon-env --features lsp` (185 test) atau
+    `cargo nextest run -p mivon-env --features lsp` (188 test) atau
     `--workspace --features dev` (default root mengaktifkan lsp).
+
+Review agent R192 ronde 2: TIDAK LOLOS (3 BUG sisa) → fix ronde 2:
+  BUG-5 (regresi, sedang): `ft.is_symlink() => continue` membuang
+    SYMLINK KE FILE sumber (dulu ikut karena is_dir()=false). Fix:
+    symlink hanya dilewati bila menuju DIREKTORI; symlink file tetap
+    diindeks dan didedupe lewat canonical path (HashSet seen_files).
+    Test unix baru: rtl/uart.sv -> shared/uart.sv terindeks 1x
+    (bukan 0, bukan 2).
+  BUG-6 (test gap, sedang): test "total byte" lama sebenarnya menguji
+    batas PER FILE (file 32 MiB+1 di-skip cap per-file) sehingga fix
+    batas agregat tidak terkunci. Fix: load_disk_docs_with_limits
+    (batas byte injectable) + test load_disk_docs_stops_at_total_byte_budget
+    (anggaran 2 file + 1 byte → 2 file; anggaran pas == 2 file → 2
+    file; anggaran 0 → kosong).
+  BUG-7 (test gap, sedang): jalur async handler (skip paths) tanpa
+    cakupan. Fix: ekstrak collect_skip_paths (URI file saja; untitled:/
+    vscode-remote: diabaikan) + test; handler memakainya.
+  NIT diterapkan: counter pemindaian dihitung per DIREKTORI
+    (MAX_SCAN_DIRS=5000) supaya repo banyak file non-sumber tidak
+    starvation; `out.truncate` no-op dihapus; total_bytes dihitung
+    dari byte yang BENAR-BENAR dibaca (bukan metadata).
+  RISK tersisa (dicatat, bukan bug): parsing outline ≤32 MiB masih di
+    event loop (spawn_blocking hanya memindahkan I/O); belum ada
+    cache/debounce sehingga tiap permintaan rescan; merge_docs
+    meng-clone teks (~2x memori transient); anggaran byte dibelanjakan
+    urut alfabetis; multi-root hanya folder pertama; root "/" bisa
+    memindai banyak direktori (dibatasi MAX_SCAN_DIRS).
 
 Status LSP-11: tahap 1+2 selesai. MASIH OPEN (dicatat): caching /
   indeks inkremental — pemindaian dilakukan per permintaan dengan
@@ -11080,8 +11110,8 @@ Item open berikutnya: Arsitektur-01..04/06, JIT-01/02, LSP-03/04/05/
 
 VERIFIKASI ROUND 192:
    - cargo fmt --all --check -> bersih.
-   - cargo nextest run --workspace --features dev: 3656 passed,
-     24 skipped (3647 -> 3656, +9 test).
-   - cargo nextest run -p mivon-env --features lsp: 185 passed
+   - cargo nextest run --workspace --features dev: 3659 passed,
+     24 skipped (3647 -> 3659, +12 test).
+   - cargo nextest run -p mivon-env --features lsp: 188 passed
      (verifikasi khusus modul lsp yang feature-gated).
 \\=======================================================================//

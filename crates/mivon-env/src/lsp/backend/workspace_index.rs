@@ -30,8 +30,10 @@ pub(crate) const MAX_INDEX_DEPTH: usize = 16;
 pub(crate) const MAX_INDEX_BYTES: u64 = 1024 * 1024;
 /// Batas TOTAL byte yang dibaca per pemindaian (anti-blocking / anti-OOM).
 pub(crate) const MAX_INDEX_TOTAL_BYTES: u64 = 32 * 1024 * 1024;
-/// Batas jumlah entri direktori yang dipindai (direktori raksasa).
-pub(crate) const MAX_SCAN_ENTRIES: usize = 50_000;
+/// Batas jumlah DIREKTORI yang dipindai (pohon direktori raksasa).
+/// Dihitung per direktori, bukan per entri: repo dengan banyak file
+/// non-sumber tidak boleh "menghabiskan" kuota sebelum traversal selesai.
+pub(crate) const MAX_SCAN_DIRS: usize = 5_000;
 
 /// Apakah path berekstensi sumber yang diindeks (case-insensitive).
 pub(crate) fn is_source_file(path: &Path) -> bool {
@@ -71,11 +73,16 @@ pub(crate) fn collect_source_files(
     }
     let mut queue: VecDeque<(PathBuf, usize)> = VecDeque::new();
     queue.push_back((root.to_path_buf(), 0));
-    let mut scanned = 0usize;
+    let mut dirs_scanned = 0usize;
+    // Dedupe file lewat canonical path: symlink ke FILE sumber tetap
+    // diindeks (review R192 BUG-5: jangan buang symlink file), tapi file
+    // yang sama tidak boleh masuk dua kali.
+    let mut seen_files: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
     while let Some((dir, depth)) = queue.pop_front() {
-        if out.len() >= max_files || scanned >= MAX_SCAN_ENTRIES {
+        if out.len() >= max_files || dirs_scanned >= MAX_SCAN_DIRS {
             break;
         }
+        dirs_scanned += 1;
         let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
         };
@@ -85,14 +92,16 @@ pub(crate) fn collect_source_files(
             .collect();
         children.sort_by(|a, b| a.0.cmp(&b.0));
         for (path, ft) in children {
-            scanned += 1;
-            if out.len() >= max_files || scanned >= MAX_SCAN_ENTRIES {
+            if out.len() >= max_files {
                 break;
             }
+            // Symlink yang menuju DIREKTORI dilewati (cegah loop + duplikat
+            // lewat alias dir). Symlink ke FILE sumber tetap diindeks.
             if ft.is_symlink() {
-                continue;
-            }
-            if ft.is_dir() {
+                if path.is_dir() {
+                    continue;
+                }
+            } else if ft.is_dir() {
                 if depth + 1 > max_depth {
                     continue;
                 }
@@ -104,13 +113,19 @@ pub(crate) fn collect_source_files(
                     continue;
                 }
                 queue.push_back((path, depth + 1));
-            } else if is_source_file(&path) {
-                out.push(path);
+                continue;
+            }
+            if is_source_file(&path) {
+                let canon = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+                if seen_files.insert(canon) {
+                    out.push(path);
+                }
             }
         }
     }
+    // Deterministik: himpunan sudah dibatasi max_files saat traversal (BFS
+    // level-order), sort hanya menormalkan urutan keluaran.
     out.sort();
-    out.truncate(max_files);
     out
 }
 
@@ -162,6 +177,17 @@ pub(crate) fn workspace_root_from_params(params: &lsp_types::InitializeParams) -
 /// Batas: ukuran per file (MAX_INDEX_BYTES) dan TOTAL byte
 /// (MAX_INDEX_TOTAL_BYTES) — berhenti lebih awal saat total terlampaui.
 pub(crate) fn load_disk_docs(root: &Path, skip: &[PathBuf]) -> Vec<(String, String)> {
+    load_disk_docs_with_limits(root, skip, MAX_INDEX_BYTES, MAX_INDEX_TOTAL_BYTES)
+}
+
+/// Seperti [`load_disk_docs`] tapi batas byte bisa di-inject (dipakai test
+/// untuk mengunci batas TOTAL, bukan hanya batas per file).
+pub(crate) fn load_disk_docs_with_limits(
+    root: &Path,
+    skip: &[PathBuf],
+    max_file_bytes: u64,
+    max_total_bytes: u64,
+) -> Vec<(String, String)> {
     use std::collections::HashSet;
     let skip_set: HashSet<PathBuf> = skip
         .iter()
@@ -178,22 +204,31 @@ pub(crate) fn load_disk_docs(root: &Path, skip: &[PathBuf]) -> Vec<(String, Stri
         let Ok(meta) = std::fs::metadata(&path) else {
             continue;
         };
-        if meta.len() > MAX_INDEX_BYTES {
+        if meta.len() > max_file_bytes {
             continue;
         }
-        if total_bytes + meta.len() > MAX_INDEX_TOTAL_BYTES {
+        if total_bytes + meta.len() > max_total_bytes {
             break;
         }
         let Ok(text) = std::fs::read_to_string(&path) else {
             continue;
         };
-        total_bytes += meta.len();
+        total_bytes += text.len() as u64;
         let Ok(url) = lsp_types::Url::from_file_path(&path) else {
             continue;
         };
         out.push((url.as_str().to_string(), text));
     }
     out
+}
+
+/// Path file yang sudah terbuka di editor (untuk dilewati saat scan disk).
+/// URI non-file / tak valid diabaikan.
+pub(crate) fn collect_skip_paths(open: &[(String, String)]) -> Vec<PathBuf> {
+    open.iter()
+        .filter_map(|(u, _)| lsp_types::Url::parse(u).ok())
+        .filter_map(|u| u.to_file_path().ok())
+        .collect()
 }
 
 #[cfg(test)]
@@ -316,6 +351,32 @@ mod tests {
         assert!(files[0].ends_with("rtl/a.sv"));
     }
 
+    /// Review R192 BUG-5: symlink ke FILE sumber harus tetap terindeks
+    /// (mis. file di-vendor/di-share lewat symlink), dan dedupe canonical
+    /// mencegah file yang sama muncul dua kali.
+    #[cfg(unix)]
+    #[test]
+    fn collect_source_files_keeps_symlinked_files() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("shared")).unwrap();
+        std::fs::create_dir_all(root.join("rtl")).unwrap();
+        std::fs::write(root.join("shared/uart.sv"), "module uart; endmodule\n").unwrap();
+        std::os::unix::fs::symlink(root.join("shared/uart.sv"), root.join("rtl/uart.sv")).unwrap();
+
+        let files = collect_source_files(root, 100, 8);
+        assert!(
+            files.iter().any(|p| p.ends_with("rtl/uart.sv")),
+            "symlink ke file sumber harus diindeks: {files:?}"
+        );
+        // shared/uart.sv + rtl/uart.sv = dua PATH, tapi canonical sama → 1.
+        assert_eq!(
+            files.len(),
+            1,
+            "file yang sama tidak boleh dobel: {files:?}"
+        );
+    }
+
     #[test]
     fn merge_docs_open_document_wins() {
         let open = vec![
@@ -383,11 +444,49 @@ mod tests {
         assert_eq!(rest.len(), 1, "{rest:?}");
         assert!(rest[0].1.contains("module b"));
 
-        // Total byte cap: 1 file besar melebihi MAX_INDEX_TOTAL_BYTES.
-        let big = "x".repeat((MAX_INDEX_TOTAL_BYTES + 1) as usize);
+        // File > batas per file dilewati, file lain tetap dibaca.
+        let big = "x".repeat(64);
         std::fs::write(root.join("c.sv"), &big).unwrap();
-        // File besar sendiri > MAX_INDEX_BYTES → dilewati; sisanya tetap.
-        let after_big = load_disk_docs(root, &[]);
+        let after_big = load_disk_docs_with_limits(root, &[], 32, MAX_INDEX_TOTAL_BYTES);
         assert_eq!(after_big.len(), 2, "{after_big:?}");
+    }
+
+    /// Review R192 BUG-6: batas TOTAL byte harus benar-benar menghentikan
+    /// pembacaan (bukan hanya batas per file). Batas di-inject kecil supaya
+    /// bisa diuji tanpa file 32 MiB.
+    #[test]
+    fn load_disk_docs_stops_at_total_byte_budget() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        for i in 0..4 {
+            std::fs::write(root.join(format!("m{i}.sv")), "module m; endmodule\n").unwrap();
+        }
+        let per_file = std::fs::metadata(root.join("m0.sv")).unwrap().len();
+        // Anggaran = 2 file + 1 byte → hanya 2 file yang dibaca.
+        let budget = per_file * 2 + 1;
+        let docs = load_disk_docs_with_limits(root, &[], 1024, budget);
+        assert_eq!(
+            docs.len(),
+            2,
+            "anggaran total byte tidak ditegakkan: {docs:?}"
+        );
+        // Anggaran pas 2 file (==) → tetap 2 file (cek batas `>` bukan `>=`).
+        let docs = load_disk_docs_with_limits(root, &[], 1024, per_file * 2);
+        assert_eq!(docs.len(), 2, "{docs:?}");
+        // Anggaran 0 → tidak ada file.
+        let docs = load_disk_docs_with_limits(root, &[], 1024, 0);
+        assert!(docs.is_empty(), "{docs:?}");
+    }
+
+    #[test]
+    fn collect_skip_paths_filters_non_file_uris() {
+        let open = vec![
+            ("file:///work/a.sv".to_string(), String::new()),
+            ("untitled:Untitled-1".to_string(), String::new()),
+            ("vscode-remote://host/work/b.sv".to_string(), String::new()),
+        ];
+        let skip = collect_skip_paths(&open);
+        assert_eq!(skip, vec![PathBuf::from("/work/a.sv")]);
+        assert!(collect_skip_paths(&[]).is_empty());
     }
 }
