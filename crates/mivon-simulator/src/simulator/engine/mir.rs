@@ -835,6 +835,24 @@ impl SimulationEngine {
         }
         let nba_targets = collect_nba_signals(body);
 
+        // Guard tri-state: JIT memakai aritmetika u64 (X/Z dipetakan ke 0)
+        // sehingga tidak mereproduksi propagasi X/Z interpreter. Jika ada
+        // sinyal yang DIBACA proses ini bernilai X/Z, fallback ke interpreter
+        // agar hasil konsisten (regresi bug_0366cd02200e_differential:
+        // default=X, mir-jit=Z).
+        let mut read_sigs: HashSet<usize> = HashSet::new();
+        for ins in &mir_process.instrs {
+            if let MirInstr::Load { signal, .. } = ins {
+                read_sigs.insert(*signal);
+            }
+        }
+        if read_sigs
+            .iter()
+            .any(|&s| s < n_sigs && self.state.read_signal(s).has_unknown())
+        {
+            return Ok(false);
+        }
+
         // Compile to native code (or cache hit)
         let compiled = match jit.compile_process(&mir_process, n_sigs) {
             Some(c) => c,

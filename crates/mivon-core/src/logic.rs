@@ -305,6 +305,14 @@ impl LogicVec {
         self.bits.iter().all(|b| *b == LogicVal::Z)
     }
 
+    /// Ada bit X atau Z? (nilai tri-state tak diketahui). Dipakai guard jalur
+    /// JIT yang hanya memodelkan nilai 0/1.
+    pub fn has_unknown(&self) -> bool {
+        self.bits
+            .iter()
+            .any(|b| *b == LogicVal::X || *b == LogicVal::Z)
+    }
+
     pub fn casex_eq(&self, other: &LogicVec) -> bool {
         for i in 0..self.width.max(other.width) {
             let val = self.bits.get(i).copied().unwrap_or(LogicVal::Zero);

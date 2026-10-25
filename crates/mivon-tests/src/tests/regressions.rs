@@ -324,6 +324,45 @@ endmodule
 }
 
 #[test]
+fn test_jit_falls_back_on_x_input() {
+    // Guard tri-state: jika proses membaca sinyal X/Z, jalur mir-jit harus
+    // fallback ke interpreter agar propagasi X benar. Tanpa guard, aritmetika
+    // u64 (X->0) memberi y = 0 + 1 = 1 (definitif, salah); dengan guard y = X.
+    // Regresi bug_0366cd02200e_differential.
+    let source = r#"
+module test_jit_x;
+    reg [7:0] a;
+    reg [7:0] y;
+    always_comb begin
+        y = a + 1'b1;
+    end
+    initial begin
+        #1;
+        $finish;
+    end
+endmodule
+"#;
+    let design = crate::compile_str(source).unwrap();
+    let mut engine = crate::simulator::SimulationEngine::new(design, 10);
+    engine.set_use_mir_jit(true);
+    let result = engine.run();
+    assert!(result.is_ok(), "JIT X fallback sim: {:?}", result.err());
+    let y_idx = engine
+        .design
+        .top
+        .signals
+        .iter()
+        .position(|s| s.name.as_str() == "y")
+        .unwrap();
+    let y = engine.state.read_signal(y_idx);
+    assert!(
+        y.has_unknown(),
+        "y harus X (fallback interpreter), bukan nilai definitif u64={}",
+        y.to_u64()
+    );
+}
+
+#[test]
 fn test_jit_body_nonblocking_assign() {
     // Integration test: JIT body with non-blocking assignment.
     // Simple register: always_ff @(posedge clk) q <= d

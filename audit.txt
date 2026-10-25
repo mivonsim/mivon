@@ -496,6 +496,51 @@ JIT-03: ✅ Shift-overflow mask konstanta lebar 64-bit (ROUND 201)
   Fix: cabang eksplisit — width==64 -> mask = u64::MAX, selainnya
   `(1u64 << w) - 1`. Test: reg_bug_0366cd02200e_differential kini PASS.
 
+JIT-04: ✅ Guard tri-state X/Z -> fallback interpreter (ROUND 202)
+  Root Cause: jalur mir-jit memakai aritmetika u64 (LogicVec::to_u64
+  memetakan X/Z ke 0) sehingga TIDAK mereproduksi propagasi X/Z
+  interpreter. Pada design X/Z-dominan hasil akhir berbeda (mis.
+  bug_0366cd02200e_differential: default=X vs mir-jit=Z pada
+  _en_T_2/_w_T_2/_w_T_5/_x_T_15/_x_T_5).
+  Impact: differential default vs mir-jit gagal di
+  cargo nextest run --workspace --all-features (feature jit aktif via
+  mivon-tests default), padahal lolos di -p mivon-fuzz (jit off).
+  Severity: High (correctness jalur JIT)
+  Fix: di try_evaluate_mir_jit, sebelum compile, kumpulkan sinyal yang
+  DIBACA (MirInstr::Load) dan jika ada yang has_unknown() (X/Z) ->
+  return Ok(false) -> interpreter. LogicVec::has_unknown() baru.
+  Test: reg_bug_0366cd02200e_differential PASS di full-workspace +
+  unit test test_jit_falls_back_on_x_input (mivon-tests).
+  Catatan mekanisme Z: from_u64 tidak pernah menghasilkan Z; Z berasal
+  dari net yang tetap tak-terdrive karena write-back di-skip saat
+  perbandingan u64 (0 == 0) sehingga target X/Z tak ditimpa.
+
+JIT-05: ⚠️ Write-back JIT tak bedakan "tak ditulis" vs "ditulis 0" (masih open)
+  Root Cause: mir.rs apply-back membandingkan u64 lalu menulis hanya jika
+  beda; out_vals di-zero-init sedangkan codegen hanya menulis slot untuk
+  Store/NonBlocking. Akibat: (a) target X/Z yang seharusnya jadi 0 di-skip
+  (0 == to_u64(X)); (b) sinyal non-nol yang TIDAK ditulis proses bisa
+  tertimpa 0. Pre-existing, belum tertangkap test.
+  Severity: High (correctness jalur JIT)
+  Fix: kumpulkan target Store/NonBlocking dari MIR, terapkan hanya itu,
+  bandingkan di level LogicVec (bukan u64).
+
+JIT-06: ⚠️ Guard X/Z belum menutup Const (masih open)
+  Root Cause: is_expr_jit_safe menerima SEMUA IrExpr::Const; lowering pakai
+  lv.to_u64() (X/Z -> 0). Contoh: always_comb y = 4'bxx01 -> interpreter
+  4'bxx01, JIT 4'b0001, guard Load tak menyala.
+  Severity: Medium
+  Fix: tolak IrExpr::Const yang has_unknown() di is_expr_jit_safe.
+
+JIT-07: ⚠️ Fitur jit simulator tak meneruskan mivon-compiler/jit (masih open)
+  Root Cause: mivon-simulator feature jit hanya mengaktifkan cranelift, TIDAK
+  mivon-compiler/jit; MirJitCompiler::new() = None kecuali crate lain
+  meng-enable mivon-compiler/jit (mis. workspace --all-features). Jadi jalur
+  mir-jit diam-diam inert di -p mivon-tests / --features dev.
+  Severity: Medium (feature wiring)
+  Fix: jit = [..., "mivon-compiler/jit"] — terpisah, bisa memunculkan bug JIT
+  laten (lihat JIT-05), perlu verifikasi penuh.
+
 ═══ 2.5 PARALLEL ARCHITECTURE ═══
 
 Par-01: ✅ Work-stealing paralel produk = rayon; executor kustom dead-code dihapus (ROUND 183)
