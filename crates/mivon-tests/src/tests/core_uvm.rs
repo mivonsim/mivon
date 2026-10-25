@@ -4482,10 +4482,9 @@ endmodule
 
 #[test]
 fn test_ovm_alias_family_plain_name_builtin() {
-    // Review R196 BUG-1: alias OVM non-object/component (ovm_driver,
-    // ovm_sequence_item, ...) juga harus mendapat method object polos.
-    // Terminal chain = nama library tak terdaftar → fallback prefiks
-    // `ovm_` → layer object (sama dengan fallback super-dispatch).
+    // Review R196 BUG-1/BUG-2: alias OVM juga harus mendapat method polos
+    // dengan layer YANG BENAR — tabel eksplisit nama library → layer
+    // (ovm_driver/ovm_env = komponen; ovm_sequence_item = object).
     let source = r#"
 class d_drv extends ovm_driver;
     function new(string n);
@@ -4568,4 +4567,35 @@ endmodule
     assert_eq!(get("r3"), 1, "ovm_env: get_full_name() harus 'env0'");
     // NIT-8: uvm_sequence_item::new harus menimpa nama pre-seed (insert).
     assert_eq!(get("r4"), 1, "uvm_sequence_item: get_name() harus 'uitm'");
+}
+
+#[test]
+fn test_plain_name_builtin_not_dispatched_without_extends() {
+    // Review R196 NIT-6: kelas user TANPA extends BUKAN kelas library —
+    // plain-name call tidak boleh didispatch ke builtin (dulu nama kelas
+    // berprefiks uvm_/ovm_ bisa sukses senyap).
+    let source = r#"
+class uvm_my_base;
+    function int cek();
+        set_name("zz");
+        return 1;
+    endfunction
+endclass
+
+module tb;
+    uvm_my_base b;
+    int r;
+    initial begin
+        b = uvm_my_base::new();
+        r = b.cek();
+        #1 $finish;
+    end
+endmodule
+"#;
+    let err = simulate_signals(source, 10).expect_err("kelas tanpa extends harus error keras");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("set_name"),
+        "pesan harus menyebut method: {msg}"
+    );
 }

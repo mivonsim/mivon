@@ -570,9 +570,18 @@ impl SimulationEngine {
                     // didispatch ke builtin (review R196 NIT-6).
                     None => return None,
                 },
-                // Terminal chain = kelas library yang tidak di-compile;
-                // sudah dicoba di uvm_layer_of di atas → bukan layer dikenal.
-                None => return None,
+                // Terminal chain = kelas library yang tidak di-compile.
+                // NIT-10: nama library di luar tabel (uvm_sequence_base,
+                // uvm_reg_adapter, uvm_printer, ...) tetap dapat layer
+                // object — sebelumnya fallback longgar membuatnya "jalan";
+                // jangan berubah jadi error keras. Layer object (BUKAN
+                // report_object) supaya BUG-2 tidak kembali.
+                None => {
+                    if current.starts_with("uvm_") || current.starts_with("ovm_") {
+                        return Some(UvmLayer::Object);
+                    }
+                    return None;
+                }
             }
         }
         None
@@ -593,12 +602,27 @@ impl SimulationEngine {
         match base {
             // uvm_object + turunan non-komponen.
             "uvm_object" | "ovm_object" | "uvm_transaction" | "ovm_transaction"
-            | "uvm_sequence_item" | "ovm_sequence_item" | "uvm_sequence" | "ovm_sequence" => {
-                Some(UvmLayer::Object)
-            }
+            | "uvm_sequence_item" | "ovm_sequence_item" | "uvm_sequence" | "ovm_sequence"
+            // NIT-12: kelas sintetis analysis_*/reg_* di elaborator extends
+            // __uvm_object, jadi layer object (bukan component) — agar jalur
+            // plain-name dan `this.` konsisten.
+            | "uvm_analysis_port"
+            | "ovm_analysis_port"
+            | "uvm_analysis_imp"
+            | "ovm_analysis_imp"
+            | "uvm_analysis_export"
+            | "ovm_analysis_export"
+            | "uvm_reg_block"
+            | "ovm_reg_block"
+            | "uvm_reg"
+            | "ovm_reg"
+            | "uvm_reg_map"
+            | "ovm_reg_map"
+            | "uvm_reg_field"
+            | "ovm_reg_field" => Some(UvmLayer::Object),
             "uvm_report_object" | "ovm_report_object" => Some(UvmLayer::ReportObject),
-            // uvm_component + seluruh family komponen (termasuk analisis/
-            // TLM/reg-block yang extends uvm_component).
+            // uvm_component + family komponen murni (analisis/reg sudah di
+            // arm Object karena kelas sintetisnya extends __uvm_object).
             "uvm_component"
             | "ovm_component"
             | "uvm_driver"
@@ -617,12 +641,6 @@ impl SimulationEngine {
             | "ovm_scoreboard"
             | "uvm_subscriber"
             | "ovm_subscriber"
-            | "uvm_analysis_port"
-            | "ovm_analysis_port"
-            | "uvm_analysis_imp"
-            | "ovm_analysis_imp"
-            | "uvm_analysis_export"
-            | "ovm_analysis_export"
             | "uvm_tlm_fifo"
             | "ovm_tlm_fifo"
             | "uvm_seq_item_port"
@@ -632,15 +650,7 @@ impl SimulationEngine {
             | "uvm_in_order_comparator"
             | "ovm_in_order_comparator"
             | "uvm_heartbeat"
-            | "ovm_heartbeat"
-            | "uvm_reg_block"
-            | "ovm_reg_block"
-            | "uvm_reg"
-            | "ovm_reg"
-            | "uvm_reg_map"
-            | "ovm_reg_map"
-            | "uvm_reg_field"
-            | "ovm_reg_field" => Some(UvmLayer::Component),
+            | "ovm_heartbeat" => Some(UvmLayer::Component),
             _ => None,
         }
     }

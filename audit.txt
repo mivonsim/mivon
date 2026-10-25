@@ -11254,6 +11254,28 @@ Review agent R196 ronde 2: TIDAK LOLOS (1 BUG + 4 NIT) → fix:
     objek dibuat → butuh walker bersama / deteksi siklus di elaborator;
     dicatat sebagai backlog terpisah (bukan regresi round ini).
 
+Review agent R196 ronde 3: LOLOS (tanpa BLOCKER/MAJOR; 4 NIT) →
+  NIT diterapkan pada commit tindak lanjut:
+  NIT-10: fallback sempit dipulihkan untuk nama library di luar tabel
+    (uvm_sequence_base, uvm_reg_adapter, uvm_printer, ...) → layer
+    OBJECT (bukan report_object, agar BUG-2 tidak kembali). Kelas user
+    tanpa extends tetap None (NIT-6 aman).
+  NIT-11: seluruh `new` yang memakai entry().or_insert_with untuk
+    uvm_object_data diseragamkan ke insert (sequence, analysis_port,
+    analysis_imp, subscriber, sequence::create, imp internal).
+  NIT-12: analysis_*/reg_* dipindah ke arm OBJECT — sesuai kelas
+    sintetis yang extends __uvm_object, sehingga jalur plain-name dan
+    `this.` konsisten.
+  NIT-13: komentar test alias diperbarui (tabel eksplisit, bukan
+    fallback prefiks).
+  NIT-6 test: test_plain_name_builtin_not_dispatched_without_extends
+    (kelas tanpa extends → RT9003 menyebut nama method).
+  NIT-9 (cyclic extends hang) tetap BACKLOG: perbaikan yang benar =
+    deteksi siklus di elaborator (diagnostik deterministik), bukan
+    guard per-walker.
+  VERIFIKASI tindak lanjut: fmt bersih; --workspace --features dev
+  3672 passed / 24 skipped (+1 test).
+
 VERIFIKASI ROUND 196:
    - cargo fmt --all --check -> bersih.
    - cargo nextest run --workspace --features dev: 3671 passed,

@@ -183,9 +183,9 @@ impl SimulationEngine {
                 } else {
                     String::new()
                 };
-                self.uvm_object_data
-                    .entry(obj_id)
-                    .or_insert_with(|| UvmObjectData { name });
+                // Review R196 NIT-11: insert (parity uvm_object::new) —
+                // objek sudah di-pre-seed nama kosong saat alokasi.
+                self.uvm_object_data.insert(obj_id, UvmObjectData { name });
                 Ok(LogicVec::from_u64(1, 1))
             }
             "start" => {
@@ -274,10 +274,9 @@ impl SimulationEngine {
                     .map(|o| o.class_name)
                     .unwrap_or_default();
                 let child = self.state.alloc_object(Symbol::intern(class_name.as_str()));
-                // Set name on the new object
-                self.uvm_object_data
-                    .entry(child)
-                    .or_insert_with(|| UvmObjectData { name });
+                // Set name on the new object (insert: objek baru sudah
+                // di-pre-seed nama kosong — lihat NIT-11).
+                self.uvm_object_data.insert(child, UvmObjectData { name });
                 // Initialize fields from class def
                 if let Some(cls) = self.design.classes.get(&class_name) {
                     if let Some(obj) = self.state.get_object_mut(child) {
@@ -486,9 +485,9 @@ impl SimulationEngine {
                         name: name.clone(),
                     },
                 );
-                self.uvm_object_data
-                    .entry(obj_id)
-                    .or_insert_with(|| UvmObjectData { name });
+                // Review R196 NIT-11: insert (parity uvm_object::new) —
+                // objek sudah di-pre-seed nama kosong saat alokasi.
+                self.uvm_object_data.insert(obj_id, UvmObjectData { name });
                 Ok(LogicVec::from_u64(1, 1))
             }
             "connect" => {
@@ -536,9 +535,9 @@ impl SimulationEngine {
                         name: name.clone(),
                     },
                 );
-                self.uvm_object_data
-                    .entry(obj_id)
-                    .or_insert_with(|| UvmObjectData { name });
+                // Review R196 NIT-11: insert (parity uvm_object::new) —
+                // objek sudah di-pre-seed nama kosong saat alokasi.
+                self.uvm_object_data.insert(obj_id, UvmObjectData { name });
                 Ok(LogicVec::from_u64(1, 1))
             }
             "write" => {
@@ -590,9 +589,9 @@ impl SimulationEngine {
                 } else {
                     String::new()
                 };
+                // Review R196 NIT-11: insert (parity uvm_object::new).
                 self.uvm_object_data
-                    .entry(obj_id)
-                    .or_insert_with(|| UvmObjectData { name: name.clone() });
+                    .insert(obj_id, UvmObjectData { name: name.clone() });
                 // Analysis-imp internal: alokasi objek `__uvm_analysis_imp`
                 // dengan parent = subscriber, simpan id di field analysis_imp.
                 let imp_name = format!("{}_imp", if name.is_empty() { "sub" } else { &name });
@@ -607,8 +606,7 @@ impl SimulationEngine {
                     },
                 );
                 self.uvm_object_data
-                    .entry(imp_id)
-                    .or_insert_with(|| UvmObjectData { name: imp_name });
+                    .insert(imp_id, UvmObjectData { name: imp_name });
                 if let Some(obj) = self.state.get_object_mut(obj_id) {
                     obj.fields.insert(
                         Symbol::intern("analysis_imp"),
