@@ -11185,6 +11185,32 @@ VERIFIKASI ROUND 194:
      24 skipped (3664 -> 3665, +1 test).
    - cargo nextest run -p mivon-env --features lsp: 194 passed.
 
+Review agent R194: TIDAK LOLOS (2 BLOCKER + 1 MAJOR) → fix:
+  BUG-1 (BLOCKER): cap 2000 memotong rename SENYAP → rename parsial
+    dilaporkan sukses. Fix: compute_rename_edits_multi meminta
+    max_results+1 kemunculan; bila terlampaui → Err "rename terlalu
+    besar: lebih dari N kemunculan — persempit dulu". Batas tepat
+    (== N) tetap Ok (bukan off-by-one).
+  BUG-2 (BLOCKER): kata target tidak divalidasi sebagai identifier —
+    word_at_position menerima digit/`$` di awal, sehingga kursor di
+    atas `42`/`$display` akan me-rename SEMUA literal/system task di
+    seluruh workspace. Fix: is_valid_identifier(word) diwajibkan
+    (core + handler, Err invalid_params).
+  BUG-3 (MAJOR, performa): validasi nama baru & no-op dieksekusi
+    SETELAH collect_workspace_docs (scan disk ≤32 MiB) → input invalid
+    membayar scan penuh. Fix: validasi new_name + word + no-op
+    dilakukan di handler SEBELUM scan.
+  NIT diterapkan: helper collect_refs_in_text diekstrak (dipakai
+    find_references_in_docs & rename) dan compute_rename_edits_multi
+    mengurutkan indeks dokumen by uri secara internal (deterministik
+    tanpa meng-clone teks).
+  RISK diterima & didokumentasikan: rename bersifat TEKSTUAL — tanpa
+    scoping semantik (dua sinyal `clk` di modul berbeda ikut digabung;
+    token di dalam string literal & blok komentar /* */ ikut diganti
+    karena line_tokens hanya mengenal //), kolom byte (bukan UTF-16),
+    changes tanpa documentChanges/versi (TOCTOU utk file disk).
+    LSP-05 ditandai ✅ dgn caveat ini.
+
 ═══ ROUND 193 — LSP-04 tahap 2: find-references lintas file ═══
 
 Ruang lingkup: menutup sub-item "cross-file index" pada LSP-04 —

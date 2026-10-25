@@ -900,13 +900,36 @@ impl LspBackend {
                 new_name
             ));
         }
-        if word.is_empty() {
-            return Err("kursor tidak berada di atas identifier".into());
+        // Review R194 BUG-2: kata yang di-rename juga wajib identifier.
+        // word_at_position menerima digit/`$` di awal (mis. `42`,
+        // `$display`) — tanpa guard ini rename akan mengganti SEMUA literal
+        // 42 / semua `$display` di seluruh workspace.
+        if !Self::is_valid_identifier(word) {
+            return Err("kursor tidak berada di atas identifier yang valid".into());
         }
         if word == new_name {
             return Ok(Vec::new());
         }
-        Ok(Self::find_references_in_docs(docs, word, max_results))
+        // Review R194 BUG-1: rename TIDAK BOLEH terpotong senyap. Minta satu
+        // lebih dari batas; bila terlampaui → Err (user mempersempit dulu).
+        let limit = max_results.saturating_add(1);
+        // Deterministik tanpa meng-clone teks: iterasi dokumen terurut uri.
+        let mut order: Vec<usize> = (0..docs.len()).collect();
+        order.sort_by(|&a, &b| docs[a].0.cmp(&docs[b].0));
+        let mut hits: Vec<(String, u32, u32, u32)> = Vec::new();
+        for i in order {
+            let (uri, text) = &docs[i];
+            if !Self::collect_refs_in_text(uri, text, word, &mut hits, limit) {
+                break;
+            }
+        }
+        if hits.len() > max_results {
+            return Err(format!(
+                "rename terlalu besar: lebih dari {} kemunculan — persempit dulu (workspace/berkas)",
+                max_results
+            ));
+        }
+        Ok(hits)
     }
 
     /// Core go-to-definition (murni, bisa diuji): cari lokasi definisi dari
@@ -1297,12 +1320,29 @@ impl LanguageServer for LspBackend {
         let Some(text) = self.document_text(uri) else {
             return Ok(None);
         };
+        // Review R194 BUG-3: validasi (nama baru + kata lama) SEBELUM scan
+        // disk — input invalid / no-op tidak boleh membayar pemindaian
+        // workspace penuh.
+        if !Self::is_valid_identifier(&params.new_name) {
+            return Err(tower_lsp::jsonrpc::Error::invalid_params(format!(
+                "'{}' bukan identifier SystemVerilog yang valid",
+                params.new_name
+            )));
+        }
         let line_text = text.lines().nth(pos.line as usize).unwrap_or("");
         let Some((word, _, _)) = Self::word_at_position(line_text, pos.character) else {
             return Err(tower_lsp::jsonrpc::Error::invalid_params(
                 "kursor tidak berada di atas identifier",
             ));
         };
+        if !Self::is_valid_identifier(&word) {
+            return Err(tower_lsp::jsonrpc::Error::invalid_params(
+                "kursor tidak berada di atas identifier yang valid",
+            ));
+        }
+        if word == params.new_name {
+            return Ok(Some(WorkspaceEdit::new(Default::default())));
+        }
         let docs =
             workspace_index::ensure_doc(self.collect_workspace_docs().await, uri.as_str(), &text);
         match Self::compute_rename_edits_multi(
@@ -2967,12 +3007,22 @@ endmodule
                 .unwrap()
                 .is_empty()
         );
-        // Cap dihormati.
+        // Review R194 BUG-2: kata target wajib identifier — `42` / `$display`
+        // (diterima word_at_position) HARUS ditolak agar literal/system task
+        // tidak di-rename massal.
+        assert!(LspBackend::compute_rename_edits_multi(&docs, "42", "x", 100).is_err());
+        assert!(LspBackend::compute_rename_edits_multi(&docs, "$display", "x", 100).is_err());
+
+        // Review R194 BUG-1: batas TIDAK boleh memotong senyap → Err.
+        let err = LspBackend::compute_rename_edits_multi(&docs, "clk", "clock", 2)
+            .expect_err("rename terpotong harus Err, bukan sukses parsial");
+        assert!(err.contains("terlalu besar"), "{err}");
+        // Tepat di batas (5 kemunculan, max=5) → tetap Ok (bukan off-by-one).
         assert_eq!(
-            LspBackend::compute_rename_edits_multi(&docs, "clk", "clock", 2)
+            LspBackend::compute_rename_edits_multi(&docs, "clk", "clock", 5)
                 .unwrap()
                 .len(),
-            2
+            5
         );
     }
 

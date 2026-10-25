@@ -51,23 +51,44 @@ impl LspBackend {
             return out;
         }
         for (uri, text) in docs {
-            for (idx, line) in text.lines().enumerate() {
-                // Defensif (line_tokens sudah berhenti di `//`): baris
-                // komentar penuh tidak pernah menghasilkan token.
-                let trimmed = line.trim_start();
-                if trimmed.starts_with("//") {
-                    continue;
-                }
-                for (w, col) in Self::line_tokens(line) {
-                    if w == word {
-                        out.push((uri.clone(), idx as u32, col as u32, (col + w.len()) as u32));
-                        if out.len() >= max_results {
-                            return out;
-                        }
+            if !Self::collect_refs_in_text(uri, text, word, &mut out, max_results) {
+                return out;
+            }
+        }
+        out
+    }
+
+    /// Kumpulkan kemunculan `word` dalam SATU dokumen ke `out` (helper
+    /// bersama find-references & rename). Return false bila `max` tercapai
+    /// (pemanggil berhenti).
+    pub(crate) fn collect_refs_in_text(
+        uri: &str,
+        text: &str,
+        word: &str,
+        out: &mut Vec<(String, u32, u32, u32)>,
+        max: usize,
+    ) -> bool {
+        for (idx, line) in text.lines().enumerate() {
+            // Defensif (line_tokens sudah berhenti di `//`): baris komentar
+            // penuh tidak pernah menghasilkan token.
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("//") {
+                continue;
+            }
+            for (w, col) in Self::line_tokens(line) {
+                if w == word {
+                    out.push((
+                        uri.to_string(),
+                        idx as u32,
+                        col as u32,
+                        (col + w.len()) as u32,
+                    ));
+                    if out.len() >= max {
+                        return false;
                     }
                 }
             }
         }
-        out
+        true
     }
 }
