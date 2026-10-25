@@ -153,6 +153,18 @@ pub(crate) fn merge_docs(
     out
 }
 
+/// Urutkan dokumen berdasarkan URI (menaik).
+///
+/// Wajib dipakai sebelum `find_references_in_docs`: sumber dokumen terbuka
+/// adalah `HashMap` (urutan iterasi acak) sehingga urutan Location — dan
+/// himpunan hasil saat cap tercapai — bisa berbeda antar request
+/// (review R193 BUG-1). Untuk `search_workspace_symbols` ini no-op karena
+/// hasilnya sudah diurutkan sendiri (uri, line, col).
+pub(crate) fn sorted_docs(mut docs: Vec<(String, String)>) -> Vec<(String, String)> {
+    docs.sort_by(|a, b| a.0.cmp(&b.0));
+    docs
+}
+
 /// Root workspace dari parameter `initialize` (root_uri diutamakan,
 /// fallback workspace_folders pertama). URI non-file diabaikan.
 pub(crate) fn workspace_root_from_params(params: &lsp_types::InitializeParams) -> Option<PathBuf> {
@@ -413,6 +425,41 @@ mod tests {
         assert_eq!(merged[1].1, "OPEN-B");
         assert_eq!(merged[2].0, "file:///c.sv");
         assert_eq!(merged[2].1, "DISK-C");
+    }
+
+    /// Review R193 ronde 2 BUG-1: helper produksi wajib MENGURUTKAN — test
+    /// ini gagal bila body sorted_docs dihapus (masukan tak terurut).
+    #[test]
+    fn sorted_docs_orders_by_uri() {
+        let docs = vec![
+            ("file:///c.sv".to_string(), "c".to_string()),
+            ("file:///a.sv".to_string(), "a".to_string()),
+            ("file:///b.sv".to_string(), "b".to_string()),
+            ("file:///a.sv".to_string(), "a-dup".to_string()),
+        ];
+        let out = sorted_docs(docs);
+        let uris: Vec<&str> = out.iter().map(|d| d.0.as_str()).collect();
+        assert_eq!(
+            uris,
+            vec![
+                "file:///a.sv",
+                "file:///a.sv",
+                "file:///b.sv",
+                "file:///c.sv"
+            ]
+        );
+        // Stabil: entri duplikat mempertahankan urutan relatif asli.
+        assert_eq!(out[0].1, "a");
+        assert_eq!(out[1].1, "a-dup");
+        // Idempoten.
+        let again = sorted_docs(out.clone());
+        assert_eq!(again, out);
+        // Kosong / satu elemen aman.
+        assert!(sorted_docs(Vec::new()).is_empty());
+        assert_eq!(
+            sorted_docs(vec![("file:///x.sv".into(), "x".into())]).len(),
+            1
+        );
     }
 
     #[test]

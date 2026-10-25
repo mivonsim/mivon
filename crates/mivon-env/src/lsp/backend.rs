@@ -222,12 +222,11 @@ impl LspBackend {
             }
             None => Vec::new(),
         };
-        let mut docs = workspace_index::merge_docs(&open, &disk);
         // Review R193 BUG-1: `documents` adalah HashMap (urutan iterasi
         // acak) → tanpa sort, urutan Location DAN himpunan hasil saat cap
-        // tercapai berbeda antar request. Sort by uri = deterministik.
-        docs.sort_by(|a, b| a.0.cmp(&b.0));
-        docs
+        // tercapai berbeda antar request. sorted_docs = deterministik
+        // (no-op utk symbol yang sudah mengurutkan hasilnya sendiri).
+        workspace_index::sorted_docs(workspace_index::merge_docs(&open, &disk))
     }
 
     /// LSP-20: Format SystemVerilog source text.
@@ -1120,6 +1119,9 @@ impl LanguageServer for LspBackend {
         let mut docs = self.collect_workspace_docs().await;
         if !docs.iter().any(|(u, _)| u == uri.as_str()) {
             docs.push((uri.as_str().to_string(), text.clone()));
+            // Review R193 ronde 2 BUG-2: push setelah sort melanggar
+            // invariant "docs terurut by uri" (prioritas cap bergeser).
+            docs = workspace_index::sorted_docs(docs);
         }
         let hits = Self::find_references_in_docs(&docs, &word, MAX_CROSS_FILE_REFERENCES);
         let refs: Vec<Location> = hits
@@ -2792,10 +2794,10 @@ endmodule
             "file:///b.sv".to_string(),
             "module b;\n  logic clk;\nendmodule\n".to_string(),
         );
-        let mut docs1 = vec![a.clone(), b.clone()];
-        let mut docs2 = vec![b, a];
-        docs1.sort_by(|x, y| x.0.cmp(&y.0));
-        docs2.sort_by(|x, y| x.0.cmp(&y.0));
+        // Masukan SENGAJA tak terurut; helper produksi (sorted_docs) yang
+        // wajib mengurutkan — bila sort dihapus dari helper, test gagal.
+        let docs1 = workspace_index::sorted_docs(vec![a.clone(), b.clone()]);
+        let docs2 = workspace_index::sorted_docs(vec![b, a]);
 
         let h1 = LspBackend::find_references_in_docs(&docs1, "clk", 100);
         let h2 = LspBackend::find_references_in_docs(&docs2, "clk", 100);
