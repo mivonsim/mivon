@@ -1190,8 +1190,8 @@ COMP-10: ✅ Gate-level optimization lint (ROUND 91) — mlint --gate-opt:
          find_gate_opt_patterns() + find_redundant_assigns() deteksi
          sinyal yang ditulis >1x di scope sama (redundant assignment).
          CLI flag --gate-opt + LintArgs + dispatch.
-COMP-11: ✅ FIXED (ROUND 105/110/117/121/198) — FSM extraction:
-         crates/maria-synth/src/fsm.rs — deteksi & ekstraksi FSM
+COMP-11: ✅ FIXED (ROUND 105/110/117/121/198/199) — FSM extraction:
+         crates/mivon-synth/src/fsm.rs — deteksi & ekstraksi FSM
          dari proses Sequential: state register = selector `case` yang
          juga ditulis NBA di proses yang sama; transisi dari label case
          konstanta → konstanta NBA-write; default branch menambah keluar
@@ -1210,16 +1210,22 @@ COMP-11: ✅ FIXED (ROUND 105/110/117/121/198) — FSM extraction:
          di combinational menulis `next`; refactor extract_from_case
          dipakai kedua jalur; skip bila tahap 1 sudah dapat. Batasan:
          case tingkat atas (tak dibungkus Block/If).
-         Tahap 3 (ROUND 198): HIERARKI INSTANCE — extract_fsms_in_module
-         (module, scope) + wrapper extract_fsms memindai top lalu SEMUA
-         design.modules urut nama (deterministik); nama proses FSM
-         submodule diberi prefiks `<modul>.`; nama/lebar state diambil
-         dari signals modul itu (extract_from_case kini menerima slice
-         signals, bukan IrDesign). Top yang juga terdaftar di modules
-         tidak diekstrak dua kali. Proses ke-3 (output Moore) tidak
-         mengganggu deteksi (diverifikasi test integrasi). Batasan sisa:
-         logika transisi yang dipecah ke DUA comb process berbeda belum
-         digabung (case harus utuh di satu proses).
+         Tahap 3 (ROUND 198→199): HIERARCHI INSTANCE — reviewer ROUND 198
+         menemukan elaborator SUDAH FLATTEN top (elaborator/flatten.rs),
+         sehingga proses submodule ada di design.top.processes dgn nama
+         sinyal hierarkis (u1.state); memindai design.modules MENDUPLIKASI
+         tiap FSM + memakai param DEFAULT modul. Diperbaiki ROUND 199:
+         extract_fsms memindai HANYA design.top (extract_from_case kini
+         menerima slice signals, bukan IrDesign); tidak ada prefix modul
+         (nama sinyal sdh hierarkis). Test integrasi (compile_str RTL
+         hierarki: top instansiasi sub_fsm) membuktikan FSM submodule
+         terdeteksi lewat flatten (bukan 0 / duplikat); test unit
+         test_fsm_submodule_hierarchy simulasikan 2 instance di top
+         (tanpa duplikat, deterministik by nama proses, modules TAK
+         dipindai). Proses ke-3 (output Moore always_comb) tidak
+         mengganggu deteksi. Batasan sisa: logika transisi yang dipecah
+         ke DUA comb process berbeda belum digabung (case harus utuh di
+         satu proses).
 COMP-12: ✅ Case analysis parallel_case/full_case (ROUND 85) — mlint
          new check --case-analysis: deteksi case/unique/priority tanpa default
          (warning potensi latch atau nilai tak terdefinisi). LintArgs +
@@ -11222,6 +11228,50 @@ VERIFIKASI ROUND 198:
    - cargo nextest run --workspace --features dev: 3675 passed,
      24 skipped (3673 -> 3675, +2 test).
    - cargo nextest run -p mivon-synth: 50 passed.
+
+═══ ROUND 199 — COMP-11 tahap 3 (KOREKSI reviewer): jangan pindai design.modules ═══
+
+Konteks: ROUND 198 mengimplementasikan hierarki instance dengan memindai
+SEMUA design.modules (wrapper extract_fsms + extract_fsms_in_module(module,
+scope) + prefix `<modul>.`). Review independen (ROUND 198, BUG-1) menemukan
+ini SALAH: elaborator SUDAH FLATTEN top (`elaborator/flatten.rs`), sehingga
+proses submodule sudah berada di `design.top.processes` dengan nama sinyal
+hierarkis (`u1.state`). Memindai `design.modules` akan (a) MENDUPLIKASI tiap
+FSM, dan (b) memakai parameter DEFAULT modul (bukan override per-instance).
+
+Perubahan (crates/mivon-synth/src/fsm.rs):
+  1. Kembalikan extract_fsms ke bentuk TOP-ONLY: pindai design.top.processes
+     + design.top.signals saja. Hapus extract_fsms_in_module dan wrapper
+     modules; hapus closure `scoped` (nama sinyal sdh hierarkis).
+  2. extract_from_case tetap menerima `signals: &[SignalInfo]` (bukan
+     IrDesign). process_name = pname (clone per FSM, karena 1 proses bisa
+     punya >1 case/FSM).
+  3. Dokumentasi di header fungsi: hierarki instance tertutup lewat flatten.
+
+Test (ditulis ulang, +2 tetap):
+  1. fsm::tests::test_fsm_submodule_hierarchy — simulasikan 2 instance FSM
+     (u1.state_machine/u1.state, u2.state_machine/u2.state) LANGSUNG di
+     design.top; assert 2 FSM tanpa duplikat, urut nama proses, lebar per
+     sinyal benar, dan `design.modules` berisi top TIDAK menambah hasil
+     (bukti modules tak dipindai).
+  2. synth_phase4::fsm_extraction_covers_submodule_instances — integrasi
+     compile_str RTL hierarki (top instansiasi sub_fsm dgn 3 proses:
+     always_ff state + always_comb o2 + assign o). Assert tepat 1 FSM
+     terdeteksi (top tak punya FSM sendiri -> bukti coverage hierarki
+     lewat flatten), state 0->1->2, width 2, transisi >=3.
+
+Verifikasi diskriminatif: bila wrapper modules dikembalikan, test #1 akan
+gagal (len jadi 4 karena duplikat) dan test #2 akan gagal (len 2 karena
+top + modul terhitung 2x atau state "state" non-hierarki tak cocok).
+
+VERIFIKASI ROUND 199:
+   - cargo fmt --all --check -> bersih.
+   - cargo nextest run --workspace --features dev: 3675 passed,
+     24 skipped (regresi nihil; +0 net test, test lama ditulis ulang).
+   - cargo nextest run -p mivon-synth -E test(test_fsm_submodule_hierarchy):
+     PASS.
+   - Review independen: LOLOS (sudah dijalankan di ROUND 198, temuan BUG-1
+     diperbaiki di sini).
 
 ═══ ROUND 197 — LSP-12 tahap 2b: outline anggota ber-qualifier ═══
 

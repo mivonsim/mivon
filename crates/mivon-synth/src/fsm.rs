@@ -436,16 +436,18 @@ fn extract_from_case(
     (states, transitions, outputs)
 }
 
-/// Ekstraksi FSM utama: pindai semua proses Sequential pada top module.
-/// COMP-11 tahap 3: ekstraksi per modul (dipakai top + submodule).
-/// `scope` = nama modul untuk FSM non-top; nama proses diberi prefiks
-/// `modul.proses` agar report tidak ambigu saat ada beberapa instance.
-fn extract_fsms_in_module(module: &IrModule, scope: Option<&str>) -> Vec<FsmInfo> {
+/// Ekstraksi FSM: pindai semua proses Sequential pada top module.
+///
+/// COMP-11 tahap 3: hierarki instance TIDAK dipindai lewat `design.modules`
+/// — elaborator sudah FLATTEN top (`elaborator/flatten.rs`), sehingga proses
+/// submodule ada di `design.top.processes` dengan nama sinyal hierarkis
+/// (`u1.state`). Memindai `modules` juga akan (a) menduplikasi setiap FSM,
+/// dan (b) memakai parameter DEFAULT modul (bukan override per instance).
+/// FSM di submodule instance MUNCUL di sini lewat sinyal ber-nama hierarkis
+/// (mis. `u1.state`), sehingga tidak perlu memindai `design.modules`.
+pub fn extract_fsms(design: &IrDesign) -> Vec<FsmInfo> {
+    let module = &design.top;
     let mut fsms = Vec::new();
-    let scoped = |pname: &str| match scope {
-        Some(s) => format!("{}.{}", s, pname),
-        None => pname.to_string(),
-    };
 
     for process in &module.processes {
         let (pname, body) = match process {
@@ -481,7 +483,7 @@ fn extract_fsms_in_module(module: &IrModule, scope: Option<&str>) -> Vec<FsmInfo
             let (states, transitions, outputs) =
                 extract_from_case(items, default, *sig_id, *sig_id, &module.signals);
             let info = FsmInfo {
-                process_name: scoped(&pname),
+                process_name: pname.clone(),
                 state_signal: sig_info.name.to_string(),
                 state_width: sig_info.width,
                 states,
@@ -573,7 +575,7 @@ fn extract_fsms_in_module(module: &IrModule, scope: Option<&str>) -> Vec<FsmInfo
                         continue;
                     }
                     fsms.push(FsmInfo {
-                        process_name: scoped(&pname),
+                        process_name: pname.clone(),
                         state_signal: sig_info.name.to_string(),
                         state_width: sig_info.width,
                         states,
@@ -586,27 +588,6 @@ fn extract_fsms_in_module(module: &IrModule, scope: Option<&str>) -> Vec<FsmInfo
     }
 
     fsms
-}
-
-/// Ekstraksi FSM untuk SELURUH hierarki (COMP-11 tahap 3): top module
-/// lebih dulu, lalu setiap modul di `design.modules` urut nama (deterministik).
-/// FSM submodule diberi prefiks `<modul>.<proses>` pada `process_name`.
-pub fn extract_fsms(design: &IrDesign) -> Vec<FsmInfo> {
-    let mut out = extract_fsms_in_module(&design.top, None);
-    let mut names: Vec<_> = design.modules.keys().collect();
-    names.sort_by(|a, b| a.as_str().cmp(b.as_str()));
-    for name in names {
-        // Top bisa ikut terdaftar di modules pada sebagian jalur — jangan
-        // diekstrak dua kali.
-        if *name == design.top.name {
-            continue;
-        }
-        let Some(module) = design.modules.get(name) else {
-            continue;
-        };
-        out.extend(extract_fsms_in_module(module, Some(name.as_str())));
-    }
-    out
 }
 
 /// COMP-11 tahap 2a: state terpakai = muncul di ≥1 transisi
@@ -1069,53 +1050,85 @@ mod tests {
 
     #[test]
     fn test_fsm_submodule_hierarchy() {
-        // COMP-11 tahap 3: FSM di submodule (design.modules) ikut diekstrak;
-        // nama proses diberi prefiks `<modul>.` dan lebar/nama state diambil
-        // dari signals modul itu (bukan top).
+        // COMP-11 tahap 3 (perbaikan reviewer): elaborator FLATTEN top, jadi
+        // FSM submodule sudah ada di `design.top` (proses + sinyal ber-nama
+        // hierarkis `u1.state`). extract_fsms memindai HANYA top — tidak
+        // `design.modules` (yang akan menduplikasi + memakai param default).
+        // Simulasikan flatten dengan dua instance FSM di top.
+        let nba = |sig: usize, val: u64| IrStmt::NonBlockingAssign {
+            lhs: IrLValue::Signal(sig, 2),
+            rhs: IrExpr::Const(LogicVec::from_u64(val, 2)),
+            delay: None,
+        };
+        let mk = |state_sig: usize, pname: &str, sname: &str| {
+            let case = IrStmt::Case {
+                case_type: CaseType::Normal,
+                expr: IrExpr::Signal(state_sig, 0),
+                items: vec![
+                    IrCaseItem {
+                        labels: vec![IrExpr::Const(LogicVec::from_u64(0, 2))],
+                        body: vec![nba(state_sig, 1)],
+                    },
+                    IrCaseItem {
+                        labels: vec![IrExpr::Const(LogicVec::from_u64(1, 2))],
+                        body: vec![nba(state_sig, 2)],
+                    },
+                ],
+                default: vec![nba(state_sig, 0)],
+            };
+            (
+                Process::Sequential {
+                    name: Symbol::from(pname),
+                    clock: ClockEdge::PosEdge(0),
+                    reset: None,
+                    body: vec![case],
+                    iff: None,
+                },
+                SignalInfo {
+                    name: Symbol::from(sname),
+                    width: 2,
+                    ..Default::default()
+                },
+            )
+        };
+        // clk di indeks 0 → u1.state=1, u2.state=2 (sesuai urutan signals).
+        let (p1, s1) = mk(1, "u1.state_machine", "u1.state");
+        let (p2, s2) = mk(2, "u2.state_machine", "u2.state");
+
         let mut design = IrDesign::default();
         design.top.name = Symbol::from("top");
-        design.top.signals = vec![SignalInfo {
-            name: Symbol::from("clk"),
-            width: 1,
-            ..Default::default()
-        }];
-        design.top.processes = Vec::new();
-
-        let mut sub = make_design().top;
-        sub.name = Symbol::from("sub_fsm");
-        design.modules.insert(Symbol::from("sub_fsm"), sub);
+        design.top.signals = vec![
+            SignalInfo {
+                name: Symbol::from("clk"),
+                width: 1,
+                ..Default::default()
+            },
+            s1,
+            s2,
+        ];
+        design.top.processes = vec![p1, p2];
 
         let fsms = extract_fsms(&design);
-        assert_eq!(fsms.len(), 1, "FSM submodule harus terdeteksi");
-        let f = &fsms[0];
-        assert_eq!(f.process_name, "sub_fsm.state_machine");
-        assert_eq!(f.state_signal, "state");
-        assert_eq!(f.state_width, 2, "lebar dari signals submodule");
-        assert_eq!(f.states, vec![0, 1, 2]);
+        // Dua instance → dua FSM, TANPA duplikat (karena tak memindai modules).
+        assert_eq!(fsms.len(), 2, "dua FSM submodule (flatten) terdeteksi");
+        // Determinisme: urut nama proses.
+        let names: Vec<String> = fsms.iter().map(|f| f.process_name.clone()).collect();
+        assert_eq!(names, vec!["u1.state_machine", "u2.state_machine"]);
+        // Nama/lebar sinyal diambil per-proses (hierarkis), bukan default.
+        assert_eq!(fsms[0].state_signal, "u1.state");
+        assert_eq!(fsms[0].state_width, 2);
+        assert_eq!(fsms[1].state_signal, "u2.state");
+        assert_eq!(fsms[1].states, vec![0, 1, 2]);
 
-        // Determinisme: dua submodule → urut nama modul (bukan urutan HashMap).
-        let mut z = make_design().top;
-        z.name = Symbol::from("z_mod");
-        let mut a = make_design().top;
-        a.name = Symbol::from("a_mod");
-        design.modules.clear();
-        design.modules.insert(Symbol::from("z_mod"), z);
-        design.modules.insert(Symbol::from("a_mod"), a);
-        let names: Vec<String> = extract_fsms(&design)
-            .into_iter()
-            .map(|f| f.process_name)
-            .collect();
+        // `design.modules` SAMA SEKALI tidak dipindai → tak ada duplikat
+        // meski top ikut terdaftar di modules.
+        design
+            .modules
+            .insert(Symbol::from("top"), design.top.clone());
         assert_eq!(
-            names,
-            vec!["a_mod.state_machine", "z_mod.state_machine"],
-            "urutan harus deterministik (nama modul menaik)"
+            extract_fsms(&design).len(),
+            2,
+            "modules tidak dipindai → tak duplikat"
         );
-
-        // Top yang juga terdaftar di modules tidak diekstrak dua kali.
-        let mut dup = IrDesign::default();
-        let top_fsm = make_design().top;
-        dup.top = top_fsm.clone();
-        dup.modules.insert(top_fsm.name, top_fsm);
-        assert_eq!(extract_fsms(&dup).len(), 1, "top tidak boleh duplikat");
     }
 }

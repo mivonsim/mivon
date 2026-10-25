@@ -231,21 +231,32 @@ module top(input logic clk, output logic [1:0] o, output logic [1:0] o2);
 endmodule
 "#;
     let ir = mivon_api::compile_str(src).expect("compile RTL hierarki");
+    // Modul tetap tercatat di `ir.modules` (berguna untuk tool lain).
     assert!(
         ir.modules
             .contains_key(&mivon_core::Symbol::from("sub_fsm")),
         "elaborator harus menyimpan modul sub_fsm"
     );
+    // COMP-11 tahap 3 (perbaikan reviewer): elaborator FLATTEN top, sehingga
+    // FSM submodule sudah ada di `ir.top` (sinyal ber-nama hierarkis, mis.
+    // `u.state`). extract_fsms memindai HANYA top. Top sendiri TIDAK punya
+    // FSM — jadi 1 FSM yang ditemukan BUKTI menutup hierarki instance.
     let fsms = mivon_synth::fsm::extract_fsms(&ir);
-    let names: Vec<&str> = fsms.iter().map(|f| f.process_name.as_str()).collect();
-    assert!(
-        names.iter().any(|n| n.starts_with("sub_fsm.")),
-        "FSM submodule harus muncul dengan prefiks modul: {names:?}"
+    assert_eq!(
+        fsms.len(),
+        1,
+        "FSM submodule harus terdeteksi lewat flatten (bukan 0 / duplikat): {fsms:?}"
     );
     let f = fsms
         .iter()
-        .find(|f| f.state_signal == "state")
-        .expect("state register submodule");
+        .find(|f| f.state_signal.ends_with("state"))
+        .expect("state register submodule (nama hierarkis)");
     assert_eq!(f.states, vec![0, 1, 2], "{:?}", f.states);
     assert_eq!(f.state_width, 2);
+    // Proses ke-3 (always_comb output Moore) tidak mengganggu deteksi.
+    assert!(
+        f.transitions.len() >= 3,
+        "transisi 0->1,1->2,2->0 ada: {:?}",
+        f.transitions
+    );
 }
