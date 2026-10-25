@@ -445,6 +445,22 @@ fn extract_from_case(
 /// dan (b) memakai parameter DEFAULT modul (bukan override per instance).
 /// FSM di submodule instance MUNCUL di sini lewat sinyal ber-nama hierarkis
 /// (mis. `u1.state`), sehingga tidak perlu memindai `design.modules`.
+///
+/// NIT-2 (ROUND 199): dua instance modul SAMA → nama proses tidak
+/// di-prefiks elaborator, sehingga `process_name` identik. Kita qualifier
+/// `process_name` dengan instance-path dari nama sinyal hierarkis (bagian
+/// sebelum `.` terakhir, mis. `u1` dari `u1.state`) agar FSM tetap unik.
+fn qualify_process_name(pname: &str, state_signal: &str) -> String {
+    let prefix: String = state_signal
+        .rsplit_once('.')
+        .map(|(p, _)| p.to_string())
+        .unwrap_or_default();
+    if prefix.is_empty() {
+        pname.to_string()
+    } else {
+        format!("{}->{}", prefix, pname)
+    }
+}
 pub fn extract_fsms(design: &IrDesign) -> Vec<FsmInfo> {
     let module = &design.top;
     let mut fsms = Vec::new();
@@ -483,7 +499,7 @@ pub fn extract_fsms(design: &IrDesign) -> Vec<FsmInfo> {
             let (states, transitions, outputs) =
                 extract_from_case(items, default, *sig_id, *sig_id, &module.signals);
             let info = FsmInfo {
-                process_name: pname.clone(),
+                process_name: qualify_process_name(&pname, &sig_info.name.to_string()),
                 state_signal: sig_info.name.to_string(),
                 state_width: sig_info.width,
                 states,
@@ -575,7 +591,7 @@ pub fn extract_fsms(design: &IrDesign) -> Vec<FsmInfo> {
                         continue;
                     }
                     fsms.push(FsmInfo {
-                        process_name: pname.clone(),
+                        process_name: qualify_process_name(&pname, &sig_info.name.to_string()),
                         state_signal: sig_info.name.to_string(),
                         state_width: sig_info.width,
                         states,
@@ -1092,8 +1108,10 @@ mod tests {
             )
         };
         // clk di indeks 0 → u1.state=1, u2.state=2 (sesuai urutan signals).
-        let (p1, s1) = mk(1, "u1.state_machine", "u1.state");
-        let (p2, s2) = mk(2, "u2.state_machine", "u2.state");
+        // Nama proses DASAR (spt elaborator: "always_0"); qualifier instance
+        // ditambahkan oleh qualify_process_name dari state_signal hierarkis.
+        let (p1, s1) = mk(1, "state_machine", "u1.state");
+        let (p2, s2) = mk(2, "state_machine", "u2.state");
 
         let mut design = IrDesign::default();
         design.top.name = Symbol::from("top");
@@ -1113,7 +1131,7 @@ mod tests {
         assert_eq!(fsms.len(), 2, "dua FSM submodule (flatten) terdeteksi");
         // Determinisme: urut nama proses.
         let names: Vec<String> = fsms.iter().map(|f| f.process_name.clone()).collect();
-        assert_eq!(names, vec!["u1.state_machine", "u2.state_machine"]);
+        assert_eq!(names, vec!["u1->state_machine", "u2->state_machine"]);
         // Nama/lebar sinyal diambil per-proses (hierarkis), bukan default.
         assert_eq!(fsms[0].state_signal, "u1.state");
         assert_eq!(fsms[0].state_width, 2);

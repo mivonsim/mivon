@@ -260,3 +260,55 @@ endmodule
         f.transitions
     );
 }
+
+/// NIT-3 (ROUND 199): dua instance modul SAMA → dua FSM berbeda dgn
+/// `state_signal` hierarkis (`u1.state`/`u2.state`) dan `process_name`
+/// ter-qualifier (`u1->state_machine`/`u2->state_machine`), tanpa tabrakan.
+#[test]
+fn fsm_extraction_two_identical_instances() {
+    let src = r#"
+module sub_fsm(input logic clk, output logic [1:0] o);
+    logic [1:0] state;
+    always_ff @(posedge clk) begin
+        case (state)
+            2'd0: state <= 2'd1;
+            2'd1: state <= 2'd2;
+            default: state <= 2'd0;
+        endcase
+    end
+    assign o = state;
+endmodule
+
+module top(input logic clk, output logic [1:0] a, output logic [1:0] b);
+    sub_fsm u1(.clk(clk), .o(a));
+    sub_fsm u2(.clk(clk), .o(b));
+endmodule
+"#;
+    let ir = mivon_api::compile_str(src).expect("compile dua instance");
+    let fsms = mivon_synth::fsm::extract_fsms(&ir);
+    assert_eq!(fsms.len(), 2, "dua instance → dua FSM: {fsms:?}");
+    // state_signal hierarkis unik per instance (elaborator: u1.state/u2.state).
+    let states: Vec<&str> = fsms.iter().map(|f| f.state_signal.as_str()).collect();
+    assert!(
+        states.iter().any(|s| s.ends_with("u1.state")),
+        "instance u1: {states:?}"
+    );
+    assert!(
+        states.iter().any(|s| s.ends_with("u2.state")),
+        "instance u2: {states:?}"
+    );
+    // NIT-2: process_name ter-qualifier dengan instance-path dari state_signal
+    // (elaborator memberi nama proses dasar spt "always_0"; qualifier lokal
+    // mis "u1->always_0", mencegah tabrakan nama antar-2 instance sama).
+    let names: Vec<&str> = fsms.iter().map(|f| f.process_name.as_str()).collect();
+    assert!(
+        names.iter().any(|n| n.starts_with("u1->")),
+        "qualifier u1: {names:?}"
+    );
+    assert!(
+        names.iter().any(|n| n.starts_with("u2->")),
+        "qualifier u2: {names:?}"
+    );
+    assert_eq!(fsms[0].states, vec![0, 1, 2]);
+    assert_eq!(fsms[1].states, vec![0, 1, 2]);
+}

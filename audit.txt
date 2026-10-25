@@ -1216,8 +1216,9 @@ COMP-11: ✅ FIXED (ROUND 105/110/117/121/198/199) — FSM extraction:
          sinyal hierarkis (u1.state); memindai design.modules MENDUPLIKASI
          tiap FSM + memakai param DEFAULT modul. Diperbaiki ROUND 199:
          extract_fsms memindai HANYA design.top (extract_from_case kini
-         menerima slice signals, bukan IrDesign); tidak ada prefix modul
-         (nama sinyal sdh hierarkis). Test integrasi (compile_str RTL
+         menerima slice signals, bukan IrDesign); process_name di-qualifier
+         dgn instance-path dari sinyal hierarkis (NIT-2 ROUND 199b: agar 2
+         instance modul SAMA tdk tabrakan nama). Test integrasi (compile_str RTL
          hierarki: top instansiasi sub_fsm) membuktikan FSM submodule
          terdeteksi lewat flatten (bukan 0 / duplikat); test unit
          test_fsm_submodule_hierarchy simulasikan 2 instance di top
@@ -11272,6 +11273,22 @@ VERIFIKASI ROUND 199:
      PASS.
    - Review independen: LOLOS (sudah dijalankan di ROUND 198, temuan BUG-1
      diperbaiki di sini).
+
+   ROUND 199b — tindak lanjut 3 NIT dari review:
+   NIT-2 (MAJOR-bound): dua instance modul SAMA → process_name identik.
+     FIX: tambah qualify_process_name(pname, state_signal) yg memakai
+     instance-path dari nama sinyal hierarkis (bagian sblm `.` terakhir,
+     mis. `u1` dari `u1.state`) sbg prefix `u1->always_0`. Diterapkan di
+     kedua situs pembuatan FsmInfo (tahap 1 & 2c).
+   NIT-1: unit test tdk diskriminatif thd kode lama. FIX: sisipkan modul
+     BUKAN-top (`other_mod`) ke design.modules; kode lama (pindai modules)
+     akan hasilkan len 4, kode baru (top-only) tetap 2.
+   NIT-3: integrasi hanya 1 instance. FIX: tambah test
+     fsm_extraction_two_identical_instances (2 instance sub_fsm sama) →
+     assert 2 FSM, state_signal u1.state/u2.state, process_name ber-prefix
+     u1->/u2-> (unik, tanpa tabrakan).
+   Verifikasi 199b: cargo nextest --workspace --features dev = 3676 passed
+     (24 skipped, +1 test baru); cargo fmt --all --check bersih.
 
 ═══ ROUND 197 — LSP-12 tahap 2b: outline anggota ber-qualifier ═══
 
