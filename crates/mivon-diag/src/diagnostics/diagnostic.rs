@@ -222,6 +222,8 @@ pub enum DiagCode {
     // ── Other Codes ──
     /// Waveform error (W0001)
     WaveformError,
+    /// Bus protocol violation pada waveform (W0002) — dipakai sebagai gate CI
+    ProtocolViolation,
 
     // ── Warnings: WRxxxx ──
     /// Uninitialized register (WR0014)
@@ -328,6 +330,7 @@ impl DiagCode {
             DiagCode::DataFormatError => "E0005",
             // Other
             DiagCode::WaveformError => "W0001",
+            DiagCode::ProtocolViolation => "W0002",
             // Legacy Runtime
             DiagCode::SimulationError => "E9001",
             DiagCode::OutOfBounds => "E9002",
@@ -428,6 +431,7 @@ impl DiagCode {
             DiagCode::DataFormatError => "invalid data format",
             // Other
             DiagCode::WaveformError => "waveform error",
+            DiagCode::ProtocolViolation => "protocol violation",
             // Legacy Runtime
             DiagCode::SimulationError => "simulation error",
             DiagCode::OutOfBounds => "out of bounds",
@@ -576,6 +580,8 @@ impl DiagCode {
                 "A data file (JSON/CSV) has an unexpected or malformed structure.",
             DiagCode::WaveformError =>
                 "A waveform operation failed — the VCD/FST file could not be written or read.",
+            DiagCode::ProtocolViolation =>
+                "A bus protocol rule was violated in the captured waveform.",
             DiagCode::SimulationError =>
                 "A general simulation error occurred — check the message for details.",
             DiagCode::OutOfBounds =>
@@ -736,6 +742,8 @@ impl DiagCode {
                 "Validate the file against the expected schema (fields, types, quoting) before rerunning.",
             DiagCode::WaveformError =>
                 "Check disk space, file path permissions, and waveform configuration.",
+            DiagCode::ProtocolViolation =>
+                "Compare the reported rule and time against the protocol spec, then fix the DUT or the VIP driving the bus.",
             DiagCode::SimulationError =>
                 "Review the error message and check the code at the indicated location.",
             DiagCode::OutOfBounds =>
@@ -823,7 +831,7 @@ impl DiagCode {
             | DiagCode::Unreachable
             | DiagCode::NotImplemented
             | DiagCode::ResourceLimit => "Internal",
-            DiagCode::WaveformError => "Waveform",
+            DiagCode::WaveformError | DiagCode::ProtocolViolation => "Waveform",
             DiagCode::PreprocessorError
             | DiagCode::DebuggerError
             | DiagCode::IoError

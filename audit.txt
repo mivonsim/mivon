@@ -2522,11 +2522,67 @@ ENT-23: ✅ Design migration assistance (ROUND 94)
          always→always_ff/comb, integer→int, defparam, pragma, net types).
          Severity: info/warning/suggestion. Category stats + report.
          5 test: analyze, modern_sv, defparam, summary, report.
-ENT-24: ⚠️ AXI/AHB/APB protocol — PARTIAL (ROUND 91)
+ENT-24: ⚠️ AXI/AHB/APB protocol — PARTIAL (ROUND 91 + ROUND 207)
          Sisi ANALISIS sudah ada (WAV-16 mwave decode APB/AXI4-Lite/
          AHB dari VCD). Yang belum: checker runtime VIP (assertion
          library yang di-drive saat simulasi, bukan post-sim decode).
-         Status: decode available, runtime checker masih open.
+         ROUND 207 — SLICE 1 (checker post-sim berbasis aturan, gate CI):
+         crates/mivon-tools/src/wave/protocol.rs — struct Violation
+         {time, rule, detail} + check_apb + check_axi4lite + check().
+         DiagCode baru `ProtocolViolation` (W0002) di mivon-diag +
+         registry OTHER_CODES + explanation/help/kategori Waveform;
+         exit code 11 (beda dari error I/O waveform W0001/exit 10 dan
+         error generik 1).
+         CLI: `mwave protocol <vcd> [--proto apb|axi4lite]`.
+         Aturan APB (2): APB-PENABLE-NO-SEL (dilaporkan sekali per
+         interval ilegal), APB-ACCESS-ABORTED (PSEL atau PENABLE turun
+         tanpa PREADY=1; PREADY yang naik pada timestamp yang sama tetap
+         dianggap selesai — model zero-delay).
+         Aturan AXI4-Lite (5): AXIL-AWVALID/WVALID/ARVALID-WITHDRAWN
+         (pakai READY sebelumnya, jadi VALID+READY turun bersamaan tidak
+         false positive), AXIL-BVALID/RVALID-NO-REQUEST (counter
+         outstanding, satu laporan per burst).
+         Model waktu = event-time (VCD tidak punya clock): handshake =
+         (VALID&READY baru tinggi bersamaan) ATAU (VALID turun tepat saat
+         READY naik, penyelesaian zero-delay) — arah VALID-naik/READY-turun
+         BUKAN transfer. Tidak dihitung ulang saat keduanya tetap tinggi,
+         jadi perubahan sinyal lain di tengah handshake tidak mengubah
+         counter. VALID yang ditahan setelah handshake lalu ditarik saat
+         READY rendah = withdrawal (sesuai AXI: VALID wajib ditahan).
+         Sampel via merge-sweep kursor per sinyal O(N log N) (bukan
+         sample_at O(N²) + clone String). pready/bready/rready wajib ada
+         → error eksplisit bila hilang (dulu diam-diam dianggap 1).
+         Nama sinyal ambigu (multi-instance) → error, bukan pilih
+         instance pertama diam-diam (checker belum mendukung VCD
+         multi-instance — disebut di pesan).
+         Test (28): 17 test exact vector (waktu, rule) — apb
+         clean+violations/illegal-interval-once/abort-via-psel-fall; axi
+         5-violations/response-before-request/held-handshake-not-double-
+         counted/multiple-outstanding/multiple-read-outstanding/orphan-
+         burst-once/valid-held-after-handshake/ready-fall-no-handshake/
+         orphan-completion-path (B dan R)/mixed-write-read/two-orphan-
+         bursts/burst-after-completion (B dan R);
+         5 test kebersihan (is_empty) — apb zero-delay/pready-tied-high,
+         axi clean/valid-falls-ready-rises/same-timestamp-ordering;
+         4 test error — pready/bready hilang, ambigu, proto tak dikenal;
+         2 test CLI — gate (W0002+exit 11), alias+error pemakaian
+         (W0001+exit 10+explanation khusus). Plus mivon-diag lookup
+         W0001/W0002 + count registry 74.
+         Mutasi diverifikasi (semua menggagalkan test): model handshake
+         (2 test), decrement AW (2), decrement AR→aw_out (1), increment
+         AR→aw_out (3), cabang `!sel` (1), dedupe interval APB (1),
+         dedupe burst BVALID (1), guard completion-path (1), reset dedupe
+         B dan R (2), cabang `r_hs` (1).
+         Error pemakaian (sinyal hilang/ambigu, proto tak dikenal) memakai
+         W0001 + explanation/help khusus (bukan teks "VCD tidak bisa
+         dibaca"). Alias proto: apb | axi4lite | axi4-lite | axi-lite |
+         axilite (alias yang sama ditambahkan ke `mwave decode`).
+         Didokumentasikan di AGENTS.md (tabel mwave) + tools.md §6.
+         SISA: (a) AHB rule set, (b) runtime checker in-sim (assertion
+         library yang di-drive saat simulasi, bukan post-sim), (c) rule
+         tambahan (reset, X/Z saat ACCESS, data stability), (d) VCD
+         multi-instance (butuh opsi scope/instance), (e) ACCESS yang
+         masih terbuka di akhir trace tidak dilaporkan (VCD terpotong).
 ENT-25: ✅ Standard verification IP library (ROUND 94)
          crates/maria-tools/src/vip_lib.rs: VipTemplate + generate_sv.
          3 protocols: APB3, AXI4-Lite, AHB-Lite. Ports/assertions/
@@ -3589,11 +3645,14 @@ FEAT-17: ✅ CI/CD pipeline integration kit — FIXED (stale + ROUND 101)
          counterexample (run_formal untuk CI), `--coverage-threshold`
          exit error bila coverage di bawah ambang, `mcheck --ast-diff`
          exit 1 sebagai regression gate AST.
-FEAT-23: ⚠️ IN PROGRESS (ROUND 101) — protokol bus:
+FEAT-23: ⚠️ IN PROGRESS (ROUND 101 + ROUND 207) — protokol bus:
          sisi ANALISIS sudah ada — mwave decode APB/AXI4-Lite/AHB dari
          VCD (WAV-16, ROUND 84/85) dengan transaksi + wait-state + resp.
+         ROUND 207: checker aturan post-sim `mwave protocol` (APB 2
+         aturan + AXI4-Lite 5 aturan, lihat ENT-24) → violation report +
+         exit 11 (W0002), merge-sweep O(N log N), 28 test.
          MASIH OPEN: checker runtime VIP style (assertion library yang
-         di-drive saat simulasi, bukan post-sim decode).
+         di-drive saat simulasi, bukan post-sim decode) + rule AHB.
 FEAT-24:[] Standard VIP for industry protocols (USB, PCIe, DDR,
          Ethernet) — Critical
 FEAT-25:[x] Waiver management for lint/formal violations — High

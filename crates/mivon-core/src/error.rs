@@ -256,6 +256,8 @@ impl SimError {
     /// 50 Scheduler Failed
     /// 60 Simulation Failed
     /// 70 DPI Link Failed
+    /// 11 Protocol Violation (mwave protocol, W0002)
+    /// 10 juga dipakai error waveform/I-O (W0001) — dibedakan dari 11
     pub fn exit_code(&self) -> i32 {
         let code = self.error_code();
         match code {
@@ -282,6 +284,10 @@ impl SimError {
             c if c.starts_with("RT8") => 70,
             // Preprocessor, IO, Debugger, Waveform
             "E0101" | "E0003" | "E0004" | "E0005" | "W0001" => 10,
+            // Pelanggaran protokol bus (W0002) — kode exit khusus (11) agar
+            // gate CI bisa membedakan pelanggaran protokol dari error I/O
+            // waveform (10) maupun error generik (1).
+            "W0002" => 11,
             _ => 1,
         }
     }

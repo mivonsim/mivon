@@ -61,6 +61,13 @@ pub enum WaveArgs {
         /// Protokol bus: apb (default) | axi4lite | ahb
         proto: String,
     },
+    /// Cek aturan protokol bus dari VCD (ENT-24 / FEAT-23)
+    Protocol {
+        /// VCD input
+        input: String,
+        /// Protokol: apb (default) | axi4lite
+        proto: String,
+    },
     /// Debug manifest (FEAT-15): VCD -> JSON probe-point map.
     Debug {
         /// VCD input
@@ -106,6 +113,7 @@ pub fn run(args: &WaveArgs) -> Result<(), SimError> {
             range,
         } => get(input, signals, *at, *range),
         WaveArgs::Decode { input, proto } => decode(input, proto),
+        WaveArgs::Protocol { input, proto } => super::protocol::check(input, proto),
         WaveArgs::Debug { input, output } => debug(input, output.as_deref()),
         WaveArgs::Align {
             pre,

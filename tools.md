@@ -192,6 +192,9 @@ mwave stats t.vcd           # statistik per sinyal (WAV-17): toggle, transitions
 mwave get t.vcd cnt --at 47 # random access nilai sinyal (WAV-07): sample di waktu T
 mwave get t.vcd "c*"        # timeline penuh (tanpa --at/--range), wildcard * ?
 mwave get t.vcd cnt --range 20:40  # semua perubahan dalam [t1, t2]
+mwave decode t.vcd --proto apb     # dekode transaksi bus (WAV-16): apb|axi4lite|ahb
+mwave protocol t.vcd --proto apb   # cek aturan protokol (ENT-24): pelanggaran +
+                                   # exit 11 (W0002); proto apb|axi4lite
 7. mfmt
 
 Formatter.

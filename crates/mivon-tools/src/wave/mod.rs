@@ -12,6 +12,8 @@
 //!   timeline penuh (WAV-07)
 //! - `decode`  — protokol-aware decode transaksi bus dari VCD: apb /
 //!   axi4lite / ahb (WAV-16)
+//! - `protocol` — checker aturan protokol (APB/AXI4-Lite) dari VCD:
+//!   ENT-24 / FEAT-23
 //! - `export` juga mendukung format `vpd` — VCD → VPD (WAV-02)
 //!
 //! Peta modul:
@@ -35,6 +37,7 @@ pub(crate) mod export;
 pub(crate) mod filter;
 pub(crate) mod get;
 pub(crate) mod merge;
+pub(crate) mod protocol;
 pub(crate) mod search;
 pub(crate) mod stats;
 pub(crate) mod tree;

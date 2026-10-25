@@ -464,6 +464,15 @@ pub enum MwaveCmd {
         #[arg(long = "proto", default_value = "apb")]
         proto: String,
     },
+    /// Cek aturan protokol bus dari VCD (ENT-24 / FEAT-23)
+    Protocol {
+        /// VCD input
+        #[arg(required = true)]
+        input: String,
+        /// Protokol: apb (default) | axi4lite
+        #[arg(long = "proto", default_value = "apb")]
+        proto: String,
+    },
 }
 
 /// Parser argumen `--range t1:t2` untuk `mwave get`.

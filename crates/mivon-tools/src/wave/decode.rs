@@ -272,7 +272,7 @@ pub(crate) fn decode(input: &str, proto: &str) -> Result<(), SimError> {
     let p = proto.to_ascii_lowercase().replace('_', "");
     let txs = match p.as_str() {
         "apb" => apb_decode(&data)?,
-        "axi4lite" | "axi-lite" | "axilite" => axi4lite_decode(&data)?,
+        "axi4lite" | "axi-lite" | "axi4-lite" | "axilite" => axi4lite_decode(&data)?,
         "ahb" | "ahblite" | "ahb-lite" => ahb_decode(&data)?,
         other => {
             return Err(err(format!(

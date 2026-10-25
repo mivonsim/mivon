@@ -168,6 +168,12 @@ pub(crate) fn dispatch_wave(a: &crate::cli::MwaveArgs) -> ! {
             input: input.clone(),
             proto: proto.clone(),
         },
+        crate::cli::MwaveCmd::Protocol { input, proto } => {
+            mivon_api::tools::wave::WaveArgs::Protocol {
+                input: input.clone(),
+                proto: proto.clone(),
+            }
+        }
         crate::cli::MwaveCmd::Debug { input, output } => mivon_api::tools::wave::WaveArgs::Debug {
             input: input.clone(),
             output: output.clone(),

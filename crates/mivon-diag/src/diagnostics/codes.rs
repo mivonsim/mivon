@@ -158,7 +158,10 @@ pub const LEGACY_RUNTIME_ERRORS: &[(DiagCode, &str)] = &[
 ];
 
 /// Other codes
-pub const OTHER_CODES: &[(DiagCode, &str)] = &[(DiagCode::WaveformError, "waveform error")];
+pub const OTHER_CODES: &[(DiagCode, &str)] = &[
+    (DiagCode::WaveformError, "waveform error"),
+    (DiagCode::ProtocolViolation, "protocol violation"),
+];
 
 /// All warning codes (WRxxxx)
 pub const WARNING_CODES: &[(DiagCode, &str)] = &[
@@ -227,8 +230,8 @@ mod tests {
         let codes = all_codes();
         // Parse: 7, Semantic: 4, Elab: 11, Memory: 5, Signal: 5, Scheduler: 5,
         // Event: 3, Module: 2, Interface: 2, Clock: 2, Assertion: 4, DPI: 3,
-        // Internal: 3, Infrastructure: 4, Legacy: 3, Other: 1, Warnings: 9 = 73 total
-        assert_eq!(codes.len(), 73);
+        // Internal: 3, Infrastructure: 4, Legacy: 3, Other: 2, Warnings: 9 = 74 total
+        assert_eq!(codes.len(), 74);
     }
 
     #[test]
@@ -247,6 +250,9 @@ mod tests {
         assert_eq!(lookup_code("RT2001"), Some(DiagCode::InfiniteDelta));
         assert_eq!(lookup_code("RT7001"), Some(DiagCode::AssertionFailed));
         assert_eq!(lookup_code("WR0014"), Some(DiagCode::UninitializedRegister));
+        // W0002 = pelanggaran protokol bus (mwave protocol), beda dari W0001
+        assert_eq!(lookup_code("W0001"), Some(DiagCode::WaveformError));
+        assert_eq!(lookup_code("W0002"), Some(DiagCode::ProtocolViolation));
         assert_eq!(lookup_code("E9999"), None);
         assert_eq!(lookup_code("RT9999"), None);
     }
