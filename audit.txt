@@ -1991,7 +1991,8 @@ LSP-04: ⚠️ IN PROGRESS (ROUND 94/193) — find-references tahap 1+2:
          collect_workspace_docs dipakai bersama handler symbol.
          Test baru: test_find_references_across_documents (2 dokumen,
          5 hit, komentar dilewati, clk_counter tidak match, cap,
-         word kosong, tanpa dokumen).
+         word kosong, tanpa dokumen, kolom absolut 8..11) +
+         test_find_references_docs_order_is_deterministic.
          MASIH OPEN: cross-file rename (LSP-05) + param
          include_declaration belum dihormati (dikembalikan penuh).
 LSP-05: ⚠️ IN PROGRESS (ROUND 95/116) — rename tahap 1+2a:
@@ -11159,10 +11160,34 @@ Perubahan:
        workspace), isinya ditambahkan manual.
      - konstanta MAX_CROSS_FILE_REFERENCES = 2000.
 
-Test baru (+1): test_find_references_across_documents — 2 dokumen
-  (top.sv, sub.sv): 5 hit (3 top + 2 sub), komentar "// clk" dilewati,
-  clk_counter TIDAK match (word-boundary), end = start + len, cap=2
-  dihormati, word kosong / cap 0 / tanpa dokumen → kosong.
+Test baru (+2):
+  1. test_find_references_across_documents — 2 dokumen (top.sv,
+     sub.sv): 5 hit (3 top + 2 sub), komentar "// clk" dilewati,
+     clk_counter TIDAK match (word-boundary), end = start + len, kolom
+     ABSOLUT deklarasi (8..11), cap=2 dihormati, word kosong / cap 0 /
+     tanpa dokumen → kosong.
+  2. test_find_references_docs_order_is_deterministic.
+
+Review agent R193: TIDAK LOLOS (1 BUG + test gap) → fix:
+  BUG-1 (medium, determinisme): `documents` adalah HashMap → urutan
+    iterasi acak; tanpa sort, urutan Location DAN himpunan hasil saat
+    cap 2000 tercapai berbeda antar request (melanggar §13 AGENTS.md
+    output deterministik). Doc-comment core juga salah klaim ("pemanggil
+    menormalkan urutan"). Fix: collect_workspace_docs mengurutkan docs
+    by uri sebelum merge/search; doc-comment references.rs dikoreksi
+    (pemanggil WAJIB mengurutkan). Test baru mengunci: dua urutan
+    masukan → hasil identik, urutan keluaran uri menaik, cap 1 selalu
+    memilih dokumen pertama.
+  Test gap: assertion kolom absolut ditambahkan (mutasi col+1 dulu
+    lolos).
+  NIT-1: guard trim_start("//") diberi komentar bahwa ia defensif
+    (line_tokens sudah berhenti di //).
+  RISK diterima & dicatat: (a) scan disk penuh tanpa cache per
+    request references + JoinError ditelan senyap; (b) rename masih
+    single-file (LSP-05) padahal references sudah lintas file —
+    makin terasa; (c) pencocokan murni by-name tanpa scope (false
+    positive nama umum, token di string/komentar blok); (d) dedupe
+    dokumen aktif berbasis string URI.
 
 Status LSP-04: tahap 1+2 selesai. MASIH OPEN (dicatat): rename
   lintas file (LSP-05) dan param ReferenceContext.include_declaration
@@ -11173,7 +11198,7 @@ Item open berikutnya: LSP-03/05/12/14, Arsitektur-01..04/06, JIT-01/02,
 
 VERIFIKASI ROUND 193:
    - cargo fmt --all --check -> bersih.
-   - cargo nextest run --workspace --features dev: 3661 passed,
-     24 skipped (3660 -> 3661, +1 test).
-   - cargo nextest run -p mivon-env --features lsp: 190 passed.
+   - cargo nextest run --workspace --features dev: 3662 passed,
+     24 skipped (3660 -> 3662, +2 test).
+   - cargo nextest run -p mivon-env --features lsp: 191 passed.
 \\=======================================================================//

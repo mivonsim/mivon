@@ -35,9 +35,10 @@ impl LspBackend {
     /// dokumen (uri, teks) dengan aturan yang sama seperti tahap 1 —
     /// token mandiri (word-boundary) dan komentar baris `//` dilewati.
     ///
-    /// Hasil: (uri, line, start_col, end_col), urut sesuai urutan dokumen
-    /// (pemanggil yang menormalkan urutan), dibatasi `max_results` supaya
-    /// respons tidak meledak pada workspace besar.
+    /// Hasil: (uri, line, start_col, end_col), urut sesuai urutan `docs`.
+    /// PEMANGGIL WAJIB mengurutkan `docs` (mis. by uri) agar urutan hasil —
+    /// dan himpunan hasil saat `max_results` tercapai — deterministik
+    /// (review R193 BUG-1: `documents` berupa HashMap, urutan acak).
     pub(crate) fn find_references_in_docs(
         docs: &[(String, String)],
         word: &str,
@@ -49,6 +50,8 @@ impl LspBackend {
         }
         for (uri, text) in docs {
             for (idx, line) in text.lines().enumerate() {
+                // Defensif (line_tokens sudah berhenti di `//`): baris
+                // komentar penuh tidak pernah menghasilkan token.
                 let trimmed = line.trim_start();
                 if trimmed.starts_with("//") {
                     continue;

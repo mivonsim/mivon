@@ -222,7 +222,12 @@ impl LspBackend {
             }
             None => Vec::new(),
         };
-        workspace_index::merge_docs(&open, &disk)
+        let mut docs = workspace_index::merge_docs(&open, &disk);
+        // Review R193 BUG-1: `documents` adalah HashMap (urutan iterasi
+        // acak) → tanpa sort, urutan Location DAN himpunan hasil saat cap
+        // tercapai berbeda antar request. Sort by uri = deterministik.
+        docs.sort_by(|a, b| a.0.cmp(&b.0));
+        docs
     }
 
     /// LSP-20: Format SystemVerilog source text.
@@ -2756,6 +2761,13 @@ endmodule
         );
         // end = start + len(word)
         assert!(hits.iter().all(|h| h.3 == h.2 + 3));
+        // Kolom ABSOLUT (bukan hanya relatif): baris "  logic clk;" → clk
+        // mulai kolom 8 (0-based).
+        let decl = hits
+            .iter()
+            .find(|h| h.0 == "file:///top.sv" && h.1 == 1)
+            .expect("hit deklarasi clk di top.sv baris 1");
+        assert_eq!((decl.2, decl.3), (8, 11), "kolom absolut salah: {decl:?}");
 
         // Batas hasil (cap) dihormati.
         let capped = LspBackend::find_references_in_docs(&docs, "clk", 2);
@@ -2765,6 +2777,43 @@ endmodule
         assert!(LspBackend::find_references_in_docs(&docs, "clk", 0).is_empty());
         // Tidak ada dokumen → kosong.
         assert!(LspBackend::find_references_in_docs(&[], "clk", 10).is_empty());
+    }
+
+    /// Review R193 BUG-1: urutan hasil dan himpunan hasil saat cap tercapai
+    /// harus deterministik — handler mengurutkan docs by uri sebelum
+    /// memanggil core (sumber urutan acak = HashMap documents).
+    #[test]
+    fn test_find_references_docs_order_is_deterministic() {
+        let a = (
+            "file:///a.sv".to_string(),
+            "module a;\n  logic clk;\n  logic clk2;\nendmodule\n".to_string(),
+        );
+        let b = (
+            "file:///b.sv".to_string(),
+            "module b;\n  logic clk;\nendmodule\n".to_string(),
+        );
+        let mut docs1 = vec![a.clone(), b.clone()];
+        let mut docs2 = vec![b, a];
+        docs1.sort_by(|x, y| x.0.cmp(&y.0));
+        docs2.sort_by(|x, y| x.0.cmp(&y.0));
+
+        let h1 = LspBackend::find_references_in_docs(&docs1, "clk", 100);
+        let h2 = LspBackend::find_references_in_docs(&docs2, "clk", 100);
+        assert_eq!(h1, h2, "urutan dokumen masukan tidak boleh mengubah hasil");
+
+        // Urutan keluaran mengikuti urutan dokumen (uri menaik).
+        let uris: Vec<&str> = h1.iter().map(|h| h.0.as_str()).collect();
+        let mut sorted = uris.clone();
+        sorted.sort();
+        assert_eq!(uris, sorted, "{h1:?}");
+
+        // Cap juga deterministik: cap 1 selalu memilih hit pertama dokumen
+        // pertama (bukan acak).
+        let c1 = LspBackend::find_references_in_docs(&docs1, "clk", 1);
+        let c2 = LspBackend::find_references_in_docs(&docs2, "clk", 1);
+        assert_eq!(c1, c2, "{c1:?} vs {c2:?}");
+        assert_eq!(c1.len(), 1);
+        assert_eq!(c1[0].0, "file:///a.sv");
     }
 
     #[test]
