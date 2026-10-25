@@ -1860,6 +1860,19 @@ pub enum McovClosureCmd {
         #[arg(short = 'o', long = "output")]
         output: Option<String>,
     },
+    /// Bangun closure otomatis dari mcov coverage.json + regression.json
+    /// (tanpa JSON points/tests manual — FEAT-10 tahap lanjut).
+    Auto {
+        /// File coverage.json hasil `mcov --json`
+        #[arg(short = 'c', long = "mcov")]
+        mcov: String,
+        /// File regression.json (wajib; biasanya .mivon/regression.json)
+        #[arg(short = 'r', long = "regression")]
+        regression: String,
+        /// Tulis closure JSON ke file (default ringkasan stdout)
+        #[arg(short = 'o', long = "output")]
+        output: Option<String>,
+    },
 }
 
 /// mbugtrack — bug tracking integration (FEAT-08).

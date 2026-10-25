@@ -218,6 +218,95 @@ impl CoverageClosure {
         )
     }
 
+    /// AUTO-ADAPTER (FEAT-10 tahap lanjut): bangun closure langsung dari
+    /// output `mcov --json` (coverage.json) + database regresi
+    /// (regression.json), tanpa perlu menulis points/tests JSON manual.
+    ///
+    /// - Coverage point dibentuk per KATEGORI yang punya item > 0
+    ///   (line/branch/toggle/fsm/covergroup) dengan id `cov:<kat>`.
+    /// - Tiap test di run TERAKHIR regresi yang status Pass/Flaky dianggap
+    ///   menutupi semua kategori ber-item; Fail/Skip → tidak menutupi.
+    ///
+    /// Catatan: mcov coverage.json bersifat agregat (per-kategori), bukan
+    /// per-baris, sehingga closure berada di granularitas kategori. Extract
+    /// per-baris membutuhkan mcov memancarkan daftar point (tahap lanjut).
+    pub fn from_mcov_and_regression(
+        coverage_json: &Path,
+        regression_json: &Path,
+    ) -> Result<CoverageClosure, String> {
+        let cov_text = std::fs::read_to_string(coverage_json)
+            .map_err(|e| format!("baca {}: {}", coverage_json.display(), e))?;
+        let cov: serde_json::Value = serde_json::from_str(&cov_text)
+            .map_err(|e| format!("JSON coverage tidak valid: {}", e))?;
+        let cov_root = cov
+            .get("coverage")
+            .ok_or_else(|| "field `coverage` tidak ada di coverage.json".to_string())?;
+
+        // (kategori -> (field jumlah, PointType)).
+        let cats: &[(&str, &str, PointType)] = &[
+            ("line", "items", PointType::Line),
+            ("branch", "total", PointType::Branch),
+            ("toggle", "signals", PointType::Toggle),
+            ("fsm", "signals", PointType::FSM),
+            ("covergroup", "points", PointType::Expression),
+        ];
+        let mut points: Vec<CoveragePoint> = Vec::new();
+        let mut covered_ids: Vec<String> = Vec::new();
+        for (cat, count_field, pt) in cats {
+            let count = cov_root
+                .get(*cat)
+                .and_then(|c| c.get(*count_field))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            if count == 0 {
+                continue;
+            }
+            let id = format!("cov:{}", cat);
+            points.push(CoveragePoint {
+                id: id.clone(),
+                point_type: pt.clone(),
+                file: "mcov".into(),
+                line: 0,
+                column: None,
+                description: Some(format!("{} coverage", cat)),
+            });
+            covered_ids.push(id);
+        }
+
+        let reg_text = std::fs::read_to_string(regression_json)
+            .map_err(|e| format!("baca {}: {}", regression_json.display(), e))?;
+        let reg: serde_json::Value = serde_json::from_str(&reg_text)
+            .map_err(|e| format!("JSON regression tidak valid: {}", e))?;
+        let runs = reg
+            .get("runs")
+            .and_then(|r| r.as_array())
+            .ok_or_else(|| "field `runs` tidak ada di regression.json".to_string())?;
+        let latest = runs
+            .last()
+            .ok_or_else(|| "regression.json kosong (tanpa run)".to_string())?;
+        let results = latest
+            .get("results")
+            .and_then(|r| r.as_array())
+            .ok_or_else(|| "run terakhir tanpa `results`".to_string())?;
+
+        let mut tests: Vec<(String, Vec<String>)> = Vec::new();
+        for res in results {
+            let name = res
+                .get("name")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "test result tanpa `name`".to_string())?
+                .to_string();
+            let status = res.get("status").and_then(|v| v.as_str()).unwrap_or("Fail");
+            let covered = match status {
+                "Pass" | "Flaky" => covered_ids.clone(),
+                _ => Vec::new(),
+            };
+            tests.push((name, covered));
+        }
+
+        Ok(CoverageClosure::from_inputs(points, &tests))
+    }
+
     /// Save to JSON.
     pub fn save(&self, path: &Path) -> Result<(), String> {
         let json = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
@@ -383,5 +472,56 @@ mod tests {
         cc.record_contribution("test_a", vec!["p1".into()]);
         let s = cc.summary();
         assert!(s.contains("100.0%"));
+    }
+
+    #[test]
+    fn auto_adapter_builds_closure_from_mcov_and_regression() {
+        // FEAT-10 tahap lanjut: tanpa JSON points/tests manual, closure
+        // terbangun dari coverage.json agregat + regression.json.
+        let dir = tempfile::tempdir().unwrap();
+        let cov_path = dir.path().join("cov.coverage.json");
+        let reg_path = dir.path().join("regression.json");
+        let cov = serde_json::json!({
+            "tool": "mivon mcov",
+            "coverage": {
+                "line": {"items": 100, "hits": 80, "percent": 80.0},
+                "branch": {"total": 20, "covered": 10, "percent": 50.0},
+                "toggle": {"signals": 5, "transitions": 40},
+                "fsm": {"signals": 2, "states": 8},
+                "covergroup": {"points": 3, "covered": 3, "percent": 100.0},
+            }
+        });
+        std::fs::write(&cov_path, serde_json::to_string_pretty(&cov).unwrap()).unwrap();
+        // Run terakhir: t_pass (Pass) & t_flaky (Flaky) menutupi semua
+        // kategori; t_fail (Fail) & t_skip (Skip) tidak.
+        std::fs::write(
+            &reg_path,
+            "{\"runs\":[{\"id\":\"r1\",\"timestamp\":1,\"branch\":\"\",\"commit\":\"\",\"results\":[{\"name\":\"t_fail\",\"status\":\"Fail\",\"duration_ms\":1,\"error_msg\":null},{\"name\":\"t_skip\",\"status\":\"Skip\",\"duration_ms\":1,\"error_msg\":null}]},{\"id\":\"r2\",\"timestamp\":2,\"branch\":\"\",\"commit\":\"\",\"results\":[{\"name\":\"t_pass\",\"status\":\"Pass\",\"duration_ms\":1,\"error_msg\":null},{\"name\":\"t_flaky\",\"status\":\"Flaky\",\"duration_ms\":1,\"error_msg\":null}]}]}",
+        )
+        .unwrap();
+        let closure =
+            CoverageClosure::from_mcov_and_regression(&cov_path, &reg_path).expect("adapter");
+        // 5 kategori ber-item → 5 point.
+        assert_eq!(closure.points.len(), 5);
+        let ids: Vec<&str> = closure.points.iter().map(|p| p.id.as_str()).collect();
+        assert!(ids.contains(&"cov:line"));
+        assert!(ids.contains(&"cov:branch"));
+        // 2 test lulus (Pass+Flaky) di run terakhir → coverage kategori 100%.
+        assert_eq!(closure.overall_coverage(), 100.0);
+        // Kedua test lulus menutupi kategori YANG SAMA (adapter memberi semua
+        // kategori ber-item ke tiap test Pass/Flaky) → tak ada point unik →
+        // tak ada test kritis (definisi critical_tests: penutup UNIK). Ini
+        // benar: kehilangan satu test lulus tak mengurangi coverage.
+        let critical: Vec<&str> = closure
+            .critical_tests()
+            .iter()
+            .map(|t| t.test_name.as_str())
+            .collect();
+        assert!(critical.is_empty());
+        // Run lama (fail/skip) tidak ikut dihitung.
+        assert!(!closure
+            .test_contributions
+            .iter()
+            .any(|tc| tc.test_name == "t_fail"));
     }
 }

@@ -430,6 +430,30 @@ pub(crate) fn dispatch_cov_closure(a: &crate::cli::McovClosureArgs) -> ! {
                     }
                 }
             }
+            crate::cli::McovClosureCmd::Auto {
+                mcov,
+                regression,
+                output,
+            } => {
+                let cc = CoverageClosure::from_mcov_and_regression(
+                    std::path::Path::new(mcov),
+                    std::path::Path::new(regression),
+                )
+                .map_err(|e| SimError::with_diag(DiagCode::DataFormatError, e))?;
+                match output {
+                    Some(path) => cc
+                        .save(std::path::Path::new(path))
+                        .map_err(|e| SimError::with_diag(DiagCode::IoError, e))?,
+                    None => {
+                        println!("{}", cc.summary());
+                        println!(
+                            "uncovered: {} point, critical tests: {}",
+                            cc.find_uncovered().len(),
+                            cc.critical_tests().len()
+                        );
+                    }
+                }
+            }
         }
         Ok(())
     })();

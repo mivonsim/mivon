@@ -3289,13 +3289,13 @@ FEAT-09: ✅ Requirements traceability (ROUND 136) — modul requirements
          (CSV mapping requirement→test + JSON hasil test → report CSV/JSON
          + summary) kini ter-wire CLI: `mivon requirements report|summary`
          (alias mrequirements), loader `load_results` + 3 test. (Medium)
-FEAT-10: ⚠️ PARTIAL (ROUND 139) — crates/mivon-tools/src/cov_closure.rs:
+FEAT-10: ✅ SELESAI (ROUND 139 + ROUND 200) — crates/mivon-tools/src/cov_closure.rs:
          peta test→coverage point, overall coverage (ID dikenal, dedup, ≤100%),
          uncovered, critical tests (unique point, ID asing diabaikan),
          coverage per type, save/load. Pipeline: `mcov-closure build
          -p points.json -t tests.json [-o closure.json]` → analyze/critical/
-         uncovered. 10 test. MASIH OPEN: adapter otomatis mcov/regression →
-         points/tests (saat ini input JSON manual). (Critical)
+         uncovered. 11 test. ✅ Adapter otomatis mcov/regression SELESAI (ROUND 200):
+         `mcov-closure auto -c cov.json -r regression.json` membangun closure dari coverage.json + regression.json tanpa JSON manual; +1 test e2e. (Critical)
 FEAT-11: ✅ Verification management dashboard — ROUND 145
          crates/mivon-tools/src/verif_dashboard.rs: agregasi artefak
          verifikasi → satu HTML mandiri (CSS inline, tanpa aset/JS) atau
