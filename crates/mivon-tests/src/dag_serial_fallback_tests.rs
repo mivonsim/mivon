@@ -800,3 +800,52 @@ fn dag_cf_domain_seq_batch_diff() {
         assert_eq!(gd, expect, "{name}: nilai akhir ter-pinned (konvergen)");
     }
 }
+
+/// Par-02 tahap 4 backlog (R187 RISK-1): demosi dalam konteks DOMAIN.
+/// Domain fused 5 FF: en-FF non-batchable ($display -> kinds None,
+/// blocking write en); q-FF NbaOnly membaca en (serial_blocking_writes
+/// -> demosi); q2-FF BlockingOnly membaca y (blocking write kandidat
+/// batch lain -> demosi BUG-1); y-FF BlockingOnly membaca en -> demosi;
+/// w-FF NbaOnly tetap batchable (batch len 1 -> serial fallback).
+/// Tanpa guard demosi, q/y/q2 di-defer -> snapshot batch pasca-loop ->
+/// q2 membaca y BARU di edge pertama (0 vs 5) -> gd != fus. Konvergen
+/// (tanpa self-read) sehingga ketiga mode identik + pinned.
+const CF_DOMAIN_DEMOTE_SRC: &str = r#"
+module ff_domain_demote_top;
+  logic clk;
+  logic [7:0] d_src, en, q, y;
+  logic [7:0] q2;
+  logic [3:0] w;
+  initial begin clk = 0; d_src = 5; en = 0; q = 0; y = 0; q2 = 0; w = 0; #40; end
+  always #5 clk = ~clk;
+  always_ff @(posedge clk) begin
+    $display("t");
+    en = d_src;
+  end
+  always_ff @(posedge clk) q <= en;
+  always_ff @(posedge clk) q2 = y;
+  always_ff @(posedge clk) y = en[3:0];
+  always_ff @(posedge clk) w <= 4'd3;
+endmodule
+"#;
+
+#[test]
+fn dag_cf_domain_demote_diff() {
+    for (name, expect) in [
+        ("en", "00000101"),
+        ("q", "00000101"),
+        ("y", "00000101"),
+        ("q2", "00000101"),
+        ("w", "0011"),
+    ] {
+        let dflt = run_cf(CF_DOMAIN_DEMOTE_SRC, name, false, false);
+        let fus = run_cf(CF_DOMAIN_DEMOTE_SRC, name, true, false);
+        let gd = run_cf(CF_DOMAIN_DEMOTE_SRC, name, true, true);
+        assert_eq!(fus, dflt, "{name}: fusion saja harus identik default");
+        assert_eq!(
+            gd, fus,
+            "{name}: demosi domain (tahap 4) harus identik serial domain"
+        );
+        assert_eq!(gd, expect, "{name}: nilai akhir ter-pinned (konvergen)");
+    }
+}

@@ -10758,4 +10758,31 @@ VERIFIKASI ROUND 189 (final):
    - cargo fmt --all --check -> bersih.
    - cargo nextest run --workspace --features dev: 3637 passed,
      24 skipped (3636 -> 3637, +1 test).
+
+═══ ROUND 190 — test demosi dalam konteks domain (backlog R187 RISK-1) ═══
+
+Ruang lingkup: menutup RISK-1 review R187 — test demosi jalur
+seq-batch domain (sebelumnya hanya happy-path batch).
+
+Test baru (mivon-tests/dag_serial_fallback_tests.rs):
+  dag_cf_domain_demote_diff — domain fused 5 FF tanpa self-read
+  (konvergen, ketiga mode identik):
+    - en-FF non-batchable ( -> kinds None, blocking write
+      en) → serial inline;
+    - q-FF NbaOnly membaca en → demosi serial_blocking_writes;
+    - y-FF BlockingOnly membaca en → demosi;
+    - q2-FF BlockingOnly membaca y (blocking write kandidat batch
+      lain) → demosi BUG-1;
+    - w-FF NbaOnly tetap batchable (batch len 1 → serial fallback).
+  Tanpa guard demosi, q/y/q2 di-defer → q2 membaca y BARU di edge
+  pertama (0 vs 5) → gd != fus; dengan guard, ketiga mode (default,
+  fusion, fusion+DAG) identik + pinned (en=q=y=q2=5, w=3).
+  Desain catatan: FF dgn self-read (x = x + 1) di mode fusion+DAG
+  memicu detektor combinational-loop DAG (RT diag, exit 1) — desain
+  test menghindari self-read; fixed-point domain tetap ter-cover.
+
+VERIFIKASI ROUND 190 (final):
+   - cargo fmt --all --check -> bersih.
+   - cargo nextest run --workspace --features dev: 3640 passed,
+     24 skipped (3639 -> 3640, +1 test).
 \\=======================================================================//
