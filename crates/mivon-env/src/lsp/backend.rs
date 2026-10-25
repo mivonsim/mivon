@@ -189,41 +189,12 @@ impl LspBackend {
         std::fs::read_to_string(path).ok()
     }
 
-    /// LSP-11 tahap 2: dokumen sumber dari DISK di bawah root workspace.
-    ///
-    /// Tanpa cache (caching masih open di audit) — pemindaian dibatasi keras
-    /// (jumlah file, kedalaman, ukuran per file) supaya `workspace/symbol`
-    /// tidak memblokir server pada repo besar.
-    fn workspace_disk_docs(&self) -> Vec<(String, String)> {
-        let root = match self.workspace_root.lock() {
+    /// Root workspace (dari `initialize`) untuk indeks simbol dari disk.
+    fn workspace_root_path(&self) -> Option<std::path::PathBuf> {
+        match self.workspace_root.lock() {
             Ok(g) => g.clone(),
             Err(_) => None,
-        };
-        let Some(root) = root else {
-            return Vec::new();
-        };
-        let files = workspace_index::collect_source_files(
-            &root,
-            workspace_index::MAX_INDEX_FILES,
-            workspace_index::MAX_INDEX_DEPTH,
-        );
-        let mut out = Vec::with_capacity(files.len());
-        for path in files {
-            let Ok(meta) = std::fs::metadata(&path) else {
-                continue;
-            };
-            if meta.len() > workspace_index::MAX_INDEX_BYTES {
-                continue;
-            }
-            let Ok(text) = std::fs::read_to_string(&path) else {
-                continue;
-            };
-            let Ok(url) = Url::from_file_path(&path) else {
-                continue;
-            };
-            out.push((url.as_str().to_string(), text));
         }
-        out
     }
 
     /// LSP-20: Format SystemVerilog source text.
@@ -903,22 +874,10 @@ impl LspBackend {
 impl LanguageServer for LspBackend {
     /// Initialize the LSP server — advertises capabilities.
     async fn initialize(&self, params: InitializeParams) -> JsonRpcResult<InitializeResult> {
-        // LSP-11 tahap 2: simpan root workspace utk indeks simbol dari disk.
-        // root_uri (deprecated tapi masih dipakai banyak klien) diutamakan,
-        // fallback ke workspace_folders pertama.
-        let root = params
-            .root_uri
-            .as_ref()
-            .and_then(|u| u.to_file_path().ok())
-            .or_else(|| {
-                params
-                    .workspace_folders
-                    .as_ref()
-                    .and_then(|f| f.first())
-                    .and_then(|f| f.uri.to_file_path().ok())
-            });
+        // LSP-11 tahap 2: simpan root workspace utk indeks simbol dari disk
+        // (root_uri diutamakan, fallback workspace_folders pertama).
         if let Ok(mut guard) = self.workspace_root.lock() {
-            *guard = root;
+            *guard = workspace_index::workspace_root_from_params(&params);
         }
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
@@ -1483,7 +1442,24 @@ impl LanguageServer for LspBackend {
                 Err(_) => Vec::new(),
             }
         };
-        let disk = self.workspace_disk_docs();
+        // Review R192 BUG-3: pemindaian disk = I/O sinkron berat → jalankan
+        // di spawn_blocking supaya event loop LSP (didChange/completion/
+        // hover) tidak stall. Review R192 BUG-4: file yang sudah terbuka
+        // dilewati saat scan (path terkanonikalisasi) — mencegah duplikat
+        // bila representasi URI klien berbeda dari Url::from_file_path.
+        let skip: Vec<std::path::PathBuf> = open
+            .iter()
+            .filter_map(|(u, _)| Url::parse(u).ok())
+            .filter_map(|u| u.to_file_path().ok())
+            .collect();
+        let disk = match self.workspace_root_path() {
+            Some(root) => {
+                tokio::task::spawn_blocking(move || workspace_index::load_disk_docs(&root, &skip))
+                    .await
+                    .unwrap_or_default()
+            }
+            None => Vec::new(),
+        };
         let docs = workspace_index::merge_docs(&open, &disk);
         let hits = Self::search_workspace_symbols(&docs, &params.query);
         let mut out = Vec::new();

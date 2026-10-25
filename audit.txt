@@ -11017,7 +11017,7 @@ Perubahan:
      - handler symbol: docs = merge_docs(dokumen terbuka, disk)
        sebelum search_workspace_symbols.
 
-Test baru (+5):
+Test baru (+9):
   - workspace_index::tests::is_source_file_matches_sv_extensions
   - workspace_index::tests::collect_source_files_recurses_sorts_and_skips
     (nested dir, .git/target dilewati, .txt dilewati, hasil terurut)
@@ -11028,6 +11028,47 @@ Test baru (+5):
     lewat collect+merge+search: simbol dari counter.sv & alu.v di
     disk ditemukan, ghost di .git/notes.txt tidak, dokumen terbuka
     menang atas disk)
+  - collect_source_files_truncation_prefers_shallow_alphabetical
+  - collect_source_files_does_not_follow_symlinked_dirs (unix)
+  - workspace_root_prefers_root_uri_then_folders
+  - load_disk_docs_skips_open_files_and_caps_total_bytes
+
+Review agent R192: TIDAK LOLOS (4 BUG) → fix ronde 1:
+  BUG-1 (sedang): DFS stack LIFO membuat urutan kunjungan TERBALIK dari
+    sort(), jadi saat max_files habis yang terpotong adalah himpunan
+    acak-terbalik → direktori alfabetis awal tak pernah terindeks.
+    Fix: traversal BFS (VecDeque level-order) + anak terurut; batas
+    entri dipindai MAX_SCAN_ENTRIES=50k; sort+truncate tetap di akhir.
+    Test baru mengunci: kuota 2 → a_first/a.sv + b.sv, BUKAN z_last/*.
+  BUG-2 (sedang): path.is_dir() men-follow symlink → file yang sama
+    terkumpul berulang (self-loop `rtl/loop -> rtl`, alias dir) dan
+    kuota habis oleh duplikat. Fix: DirEntry::file_type() (tidak
+    follow) + entri symlink dilewati. Test unix dgn self-loop + alias.
+  BUG-3 (tinggi): I/O sinkron di handler async + hanya batas per file
+    (2000 x 1 MiB = 2 GiB dibaca & ditahan) → event loop LSP stall.
+    Fix: (a) seluruh pemindaian+baca dijalankan di
+    tokio::task::spawn_blocking; (b) batas TOTAL byte
+    MAX_INDEX_TOTAL_BYTES=32 MiB (berhenti lebih awal); (c) batas
+    per file tetap 1 MiB; (d) helper pindah ke modul
+    (load_disk_docs) supaya bisa diuji tanpa Client LSP.
+  BUG-4 (sedang): dedupe "dokumen terbuka menang" bergantung kesamaan
+    string URI; representasi klien (symlink/.. /percent-encoding)
+    bisa beda → file muncul 2x dgn isi disk yang basi. Fix: handler
+    mengumpulkan path file terbuka (Url::to_file_path) dan
+    mengirimnya sebagai `skip` ke load_disk_docs (dibandingkan
+    terkanonikalisasi) → file terbuka tidak dibaca/diindeks dari
+    disk sama sekali (hemat I/O juga).
+  RISK/NIT diterapkan: SKIP_DIRS kini case-insensitive; root
+    workspace diambil lewat helper murni workspace_root_from_params
+    (diuji 4 kasus: None, file, non-file→folders, file menang).
+  RISK tersisa (dicatat): multi-root hanya folder pertama; tidak ada
+    handler workspace/didChangeWorkspaceFolders; caching indeks belum
+    ada; scanner kedua di samping FileDiscovery (skip-list/ekstensi
+    berbeda — .svi hanya di sini); root dari klien bisa '/'.
+  Catatan verifikasi: modul lsp di-gate #[cfg(feature="lsp")] dan
+    mivon-env TIDAK punya default lsp → verifikasi wajib
+    `cargo nextest run -p mivon-env --features lsp` (185 test) atau
+    `--workspace --features dev` (default root mengaktifkan lsp).
 
 Status LSP-11: tahap 1+2 selesai. MASIH OPEN (dicatat): caching /
   indeks inkremental — pemindaian dilakukan per permintaan dengan
@@ -11039,6 +11080,8 @@ Item open berikutnya: Arsitektur-01..04/06, JIT-01/02, LSP-03/04/05/
 
 VERIFIKASI ROUND 192:
    - cargo fmt --all --check -> bersih.
-   - cargo nextest run --workspace --features dev: 3652 passed,
-     24 skipped (3647 -> 3652, +5 test).
+   - cargo nextest run --workspace --features dev: 3656 passed,
+     24 skipped (3647 -> 3656, +9 test).
+   - cargo nextest run -p mivon-env --features lsp: 185 passed
+     (verifikasi khusus modul lsp yang feature-gated).
 \\=======================================================================//
