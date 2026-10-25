@@ -290,7 +290,14 @@ fn lvalue_signal_writes(lvalue: &IrLValue, access: &mut SignalAccess) {
         | IrLValue::ObjectField { sig_id, .. } => {
             access.writes.insert(*sig_id);
         }
-        IrLValue::VifField { .. } => {}
+        // Review R189: tulis VifField wajib has_unresolved — target write
+        // tak resolvable ke SignalId (vif: Symbol), jadi proses tidak boleh
+        // sparse-snapshot dan tidak boleh di-batch (guard batchable menolak
+        // has_unresolved). Konsisten dgn HierRef/HierRefIndex di bawah dan
+        // dgn sisi baca (VifBinding → has_unresolved).
+        IrLValue::VifField { .. } => {
+            access.has_unresolved = true;
+        }
         IrLValue::Concat(items) => {
             for item in items {
                 lvalue_signal_writes(item, access);
@@ -1526,5 +1533,32 @@ mod tests {
             assert_eq!(bw, want_blocking, "{name}: set blocking");
             assert_eq!(nw, want_nba, "{name}: set nba");
         }
+    }
+
+    /// Review R189: tulis ke VifField wajib menandai has_unresolved —
+    /// target write tak resolvable ke SignalId (vif adalah Symbol);
+    /// proses dgn tulisan vif-field tidak boleh sparse-snapshot dan
+    /// tidak boleh di-batch (guard batchable menolak has_unresolved).
+    /// Konsisten dgn sisi baca (IrExpr::VifBinding -> has_unresolved)
+    /// dan dgn lvalue HierRef/HierRefIndex.
+    #[test]
+    fn vif_field_write_marks_unresolved() {
+        let mut access = SignalAccess::default();
+        lvalue_signal_writes(
+            &IrLValue::VifField {
+                vif: Symbol::intern("vif"),
+                field: Symbol::intern("en"),
+                width: 0,
+            },
+            &mut access,
+        );
+        assert!(
+            access.has_unresolved,
+            "tulis VifField wajib has_unresolved (full snapshot + serial)"
+        );
+        assert!(
+            access.writes.is_empty(),
+            "VifField tak resolvable -> tidak masuk set writes"
+        );
     }
 }

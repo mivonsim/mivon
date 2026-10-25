@@ -10708,4 +10708,31 @@ Review agent atas 5d73e4b: LOLOS — tidak ada bug blokir.
   NIT (dicatat, tidak dikerjakan): pesan assertion kurang presisi
   utk 4 varian (delayed/Foreach = salah semantik, bukan skip
   murni); SysCall = no-op eksplisit, bukan skip senyap.
+
+═══ ROUND 189 — VifField writes dalam analyze_process_access ═══
+
+Ruang lingkup: gap pre-existing (ditandai review R186-R188) —
+tulis ke IrLValue::VifField diabaikan oleh lvalue_signal_writes
+sehingga set writes under-approximate: proses yang menulis field
+virtual interface tidak terdeteksi WAW/RAW oleh guard batch dan
+bisa masuk sparse snapshot padahal target write tak resolvable.
+
+Perubahan (1 baris + komentar):
+  lvalue_signal_writes arm VifField: {} → has_unresolved = true.
+  Konsisten dgn sisi baca (IrExpr::VifBinding → has_unresolved)
+  dan dgn lvalue HierRef/HierRefIndex. Efek: proses dgn tulisan
+  vif-field (1) tidak boleh di-batch (guard batchable menolak
+  has_unresolved di SeqCand::classify maupun jalur comb),
+  (2) wajib full snapshot (bukan sparse). Perf hanya turun utk
+  proses yang SELAMA INI salah ditangani — correctness fix.
+
+Test baru (unit mivon-simulator/scheduler/sim_dag.rs):
+  vif_field_write_marks_unresolved — tulis VifField wajib
+  has_unresolved = true dan tidak memasukkan apa pun ke set
+  writes. Tanpa perubahan perilaku lain; suite penuh identik.
+
+VERIFIKASI ROUND 189 (final):
+   - cargo fmt --all --check -> bersih.
+   - cargo nextest run --workspace --features dev: 3637 passed,
+     24 skipped (3636 -> 3637, +1 test).
 \\=======================================================================//
