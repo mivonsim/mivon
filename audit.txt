@@ -10925,10 +10925,12 @@ Review agent R191 ronde 2: TIDAK LOLOS — BUG-2/3 + NIT-1 tertutup,
     driver (RISK-1): jalur serial juga tidak merekamnya → paritas
     mode default vs --parallel dijaga.
   - sdf_ps_to_time_units jadi pub(crate).
-  - NIT-2: test WAW kini `q = q+1` vs `q = q+2` (serial 60, batch
-    tanpa demosi 40) — konstanta 7 sebelumnya tidak diskriminatif.
-    Catatan: guard WAW-count spesifik tidak terisolasi karena kedua
-    penulis juga membaca q → guard stale-reader juga mendemosi.
+  - NIT-2: test WAW kini `q = q+1` vs `q = q+2` (serial 60; konstanta
+    7 sebelumnya tidak diskriminatif). Koreksi klaim (review ronde 3
+    NIT-3): pengaman urutan di sini adalah layered_groups (penulis
+    WAW/RW di grup berbeda + snapshot dibangun ulang per grup), BUKAN
+    guard blocking_write_counts — mematikan guard itu tetap 60.
+    Test tetap sah: gagal bila batch dimatikan/di-skip (q=0).
   - NIT-3: counter baru seq_batch_parallel_count (batch benar-benar
     paralel, bukan fallback serial) + assertion di test.
   - NIT-5: current_process_name disetel tanpa syarat (mirror
@@ -10937,6 +10939,24 @@ Review agent R191 ronde 2: TIDAK LOLOS — BUG-2/3 + NIT-1 tertutup,
     serial pun tidak me-reset per proses → bukan regresi).
   - RISK-2 dicatat: commit_delayed_signal_write tidak memeriksa
     forced_signals (pre-existing, terdokumentasi di lvalue.rs).
+
+Review agent R191 ronde 3: LOLOS — tidak ada BUG pemblokir.
+  Tindak lanjut NIT yang diterapkan:
+  - NIT-2: seq_batch_parallel_count dipindah ke cabang Ok(part)
+    (hanya grup yang BENAR-BENAR dievaluasi paralel), bukan di entry
+    fungsi (yang juga menghitung fallback wide-signal/Err).
+  - NIT-1: multi-driver + SDF kini menjadwalkan nilai MENTAH (patch)
+    seperti serial, bukan nilai ter-resolve → resolve tidak dua kali
+    (commit_delayed_signal_write yang me-resolve).
+  - NIT-3: komentar test + audit WAW dikoreksi (layering, bukan
+    demosi WAW-count, yang menjaga urutan).
+  RISK diterima & didokumentasikan:
+  - RISK-1: SDF kini juga menunda write PART-SELECT di jalur paralel,
+    sedangkan serial (IrLValue::Signal saja) tidak. Representasi
+    parallel tidak membedakan Signal vs RangeSelect selebar sinyal.
+    Dampak rendah, arah divergensi = SDF dihormati.
+  - NIT-4: commit_delayed_signal_write memakai Wire|Inout (bukan
+    +Output) vs write_lvalue — pre-existing, di luar lingkup.
 
 Status PAR-02: tahap 6 SELESAI → item CLOSED (1+2a+3+4+5+6,
 ROUND 184-191). Backlog non-blokir (perf) dicatat di blok status.
@@ -10949,4 +10969,6 @@ VERIFIKASI ROUND 191 (final):
      lama di test R190 yang ikut diperbaiki manual).
    - cargo nextest run --workspace --features dev: 3647 passed,
      24 skipped (3641 -> 3647, +6 test).
+   - Review: 3 ronde (TIDAK LOLOS -> TIDAK LOLOS -> LOLOS), semua
+     BUG/NIT yang bisa diterapkan sudah diterapkan.
 \\=======================================================================//

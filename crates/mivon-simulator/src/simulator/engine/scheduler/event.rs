@@ -729,13 +729,22 @@ impl SimulationEngine {
                         let delay_units = self.sdf_ps_to_time_units(delay_ps);
                         if delay_units > 0 {
                             let t = self.state.time + delay_units;
+                            // NIT-1 (review ronde 3): utk multi-driver, serial
+                            // menjadwalkan nilai MENTAH lalu commit_delayed_
+                            // signal_write yang me-resolve. Kirim patch mentah
+                            // agar resolve tidak terjadi dua kali.
+                            let value = if is_net_resolve {
+                                patch.clone()
+                            } else {
+                                new_val
+                            };
                             self.push_event(
                                 t as usize,
                                 RegionEvent {
                                     region: EventRegion::Active,
                                     event: EventKind::SdfDelayedWrite {
                                         sig_id: *sig_id,
-                                        value: new_val,
+                                        value,
                                     },
                                 },
                             );
@@ -1486,7 +1495,6 @@ impl SimulationEngine {
     /// (blocking immediate, snapshot rebuild grup berikutnya melihatnya);
     /// NbaOnly → push_nba_pending terurut pid (commit identik serial).
     fn evaluate_sequential_batch_parallel(&mut self, batch: &[&SeqCand]) -> Result<(), SimError> {
-        self.seq_batch_parallel_count += 1;
         // (E) sinyal ultra-lebar: snapshot penuh berisiko OOM / lazy-X.
         if self.has_wide_signals() {
             let pids: Vec<usize> = batch.iter().map(|c| c.pid).collect();
@@ -1539,6 +1547,10 @@ impl SimulationEngine {
                 &self.design.top.signals,
             ) {
                 Ok(part) => {
+                    // NIT-2 (review ronde 3): hitung HANYA grup yang benar-
+                    // benar dievaluasi paralel (bukan sekadar masuk fungsi /
+                    // fallback serial krn wide-signal atau Err).
+                    self.seq_batch_parallel_count += 1;
                     for (pid, ws) in part {
                         if blocking_only_by_pid.get(&pid).copied().unwrap_or(false) {
                             self.apply_parallel_writes(&ws);

@@ -964,8 +964,12 @@ fn dag_awd_batch_demote_diff() {
 /// grup paralel — campuran demosi + batch dalam satu delta AWD.
 /// DISKRIMINASI (review R191 NIT-2): penulis kedua `q = q + 2` (bukan
 /// konstanta) agar urutan benar-benar teruji — serial q=(q+1)+2=q+3
-/// → 20 iterasi = 60; tanpa demosi keduanya baca snapshot sama →
-/// q+2 per iterasi = 40.
+/// → 20 iterasi = 60. Catatan (review ronde 3 NIT-3): mekanisme yang
+/// menjaga urutan di sini adalah layered_groups (penulis WAW/RW masuk
+/// grup berbeda + snapshot dibangun ulang per grup) — BUKAN guard
+/// blocking_write_counts; mematikan guard itu tetap menghasilkan 60.
+/// Test ini karena itu mengunci perilaku urutan/layering, dan gagal
+/// bila seluruh batch dimatikan/di-skip (q=0).
 /// Catatan: nama sinyal `s` TIDAK dipakai — lexer membacanya sebagai
 /// suffix waktu (`#5 s` = delay 5 sekon) → parse error.
 const AWD_WAW_SRC: &str = r#"
