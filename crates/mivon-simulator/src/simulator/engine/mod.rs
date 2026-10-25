@@ -148,6 +148,12 @@ pub struct SimulationEngine {
     pub events: Vec<Vec<RegionEvent>>,
     /// Waktu absolut yang direpresentasikan oleh `events[0]`.
     pub events_base: usize,
+    /// PERF-05: buffer daur-ulang untuk mengambil event per region per delta.
+    /// Kapasitasnya dipakai ulang sehingga delta loop tidak mengalokasikan
+    /// Vec baru tiap region.
+    pub region_scratch: Vec<RegionEvent>,
+    /// PERF-05: buffer daur-ulang untuk event yang TIDAK diambil (region lain).
+    pub region_keep_scratch: Vec<RegionEvent>,
     pub nba_pending: Vec<(IrLValue, LogicVec)>,
     /// PERF-15: Bucket NBA writes by signal ID for O(1) conflict detection.
     pub nba_signal_map: HashMap<SignalId, usize>,

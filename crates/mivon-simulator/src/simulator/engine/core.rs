@@ -63,6 +63,8 @@ impl SimulationEngine {
             cancel_flag: None,
             events: Vec::new(),
             events_base: 0,
+            region_scratch: Vec::new(),
+            region_keep_scratch: Vec::new(),
             nba_pending: Vec::new(),
             nba_signal_map: HashMap::new(),
             auto_checkpoint: None,
@@ -604,6 +606,42 @@ impl SimulationEngine {
                 return;
             }
             self.events.resize(idx + 1, Vec::new());
+        }
+    }
+
+    /// PERF-05: ambil seluruh event pada `region` untuk time step `t` dengan
+    /// MEMINDAHKAN (bukan clone) dan memakai ulang buffer `region_scratch`.
+    /// Urutan penyisipan dipertahankan; event region lain tetap di slot.
+    fn take_region_events(&mut self, t: usize, region: EventRegion) -> Vec<RegionEvent> {
+        let mut taken = std::mem::take(&mut self.region_scratch);
+        taken.clear();
+        let Some(idx) = t.checked_sub(self.events_base) else {
+            return taken;
+        };
+        if idx >= self.events.len() {
+            return taken;
+        }
+        let mut keep = std::mem::take(&mut self.region_keep_scratch);
+        keep.clear();
+        for re in self.events[idx].drain(..) {
+            if re.region == region {
+                taken.push(re);
+            } else {
+                keep.push(re);
+            }
+        }
+        // Slot mengambil buffer keep; buffer lama (kosong) masuk daur ulang.
+        std::mem::swap(&mut self.events[idx], &mut keep);
+        self.region_keep_scratch = keep;
+        taken
+    }
+
+    /// PERF-05: kembalikan buffer (beserta kapasitasnya) agar delta berikutnya
+    /// tidak mengalokasikan Vec baru.
+    fn recycle_region_events(&mut self, mut buf: Vec<RegionEvent>) {
+        buf.clear();
+        if buf.capacity() > self.region_scratch.capacity() {
+            self.region_scratch = buf;
         }
     }
 
@@ -1184,80 +1222,55 @@ impl SimulationEngine {
                         | EventRegion::PostReactive => {
                             // PLI regions: process any events in this region
                             self.ensure_events(t);
-                            let mut matched = true;
-                            while matched {
-                                matched = false;
-                                let mut to_process = Vec::new();
-                                self.events[t - base].retain(|re| {
-                                    if re.region == region {
-                                        to_process.push(re.event.clone());
-                                        false
-                                    } else {
-                                        true
-                                    }
-                                });
-                                self.sim_perf.counters.events_processed += to_process.len() as u64;
-                                if !to_process.is_empty() {
-                                    activity = true;
-                                    matched = true;
-                                    for event in to_process {
-                                        self.process_event(event, t)?;
-                                    }
+                            loop {
+                                let mut batch = self.take_region_events(t, region);
+                                self.sim_perf.counters.events_processed += batch.len() as u64;
+                                if batch.is_empty() {
+                                    self.recycle_region_events(batch);
+                                    break;
                                 }
+                                activity = true;
+                                for re in batch.drain(..) {
+                                    self.process_event(re.event, t)?;
+                                }
+                                self.recycle_region_events(batch);
                             }
                         }
                         EventRegion::Postponed => {
                             // Postponed region: process once per time step, does NOT re-circulate
                             self.ensure_events(t);
-                            let mut to_process = Vec::new();
-                            self.events[t - base].retain(|re| {
-                                if re.region == EventRegion::Postponed {
-                                    to_process.push(re.event.clone());
-                                    false
-                                } else {
-                                    true
-                                }
-                            });
-                            if !to_process.is_empty() {
-                                for event in to_process {
-                                    self.process_event(event, t)?;
+                            let mut batch = self.take_region_events(t, EventRegion::Postponed);
+                            if !batch.is_empty() {
+                                for re in batch.drain(..) {
+                                    self.process_event(re.event, t)?;
                                 }
                             }
+                            self.recycle_region_events(batch);
                         }
                         EventRegion::Observed => {
                             // Observed region: evaluate concurrent assertions (SVA).
                             // Process any assertion-evaluation events scheduled here.
                             self.ensure_events(t);
-                            let mut matched = true;
-                            while matched {
-                                matched = false;
-                                let mut to_process = Vec::new();
-                                self.events[t - base].retain(|re| {
-                                    if re.region == EventRegion::Observed {
-                                        to_process.push(re.event.clone());
-                                        false
-                                    } else {
-                                        true
-                                    }
-                                });
-                                if !to_process.is_empty() {
-                                    activity = true;
-                                    matched = true;
-                                    for event in to_process {
-                                        self.process_event(event, t)?;
-                                    }
+                            loop {
+                                let mut batch = self.take_region_events(t, EventRegion::Observed);
+                                if batch.is_empty() {
+                                    self.recycle_region_events(batch);
+                                    break;
                                 }
+                                activity = true;
+                                for re in batch.drain(..) {
+                                    self.process_event(re.event, t)?;
+                                }
+                                self.recycle_region_events(batch);
                             }
                         }
                         EventRegion::Active | EventRegion::Inactive => {
                             self.ensure_events(t);
                             loop {
-                                let events: Vec<RegionEvent> = self.events[t - base]
-                                    .drain(..)
-                                    .filter(|re| re.region == region)
-                                    .collect();
+                                let mut events = self.take_region_events(t, region);
                                 self.sim_perf.counters.events_processed += events.len() as u64;
                                 if events.is_empty() {
+                                    self.recycle_region_events(events);
                                     break;
                                 }
                                 activity = true;
@@ -1306,7 +1319,7 @@ impl SimulationEngine {
                                 } else if self.use_dag_parallel && self.sim_dag.is_some() {
                                     let mut eval_pids: Vec<usize> = Vec::new();
                                     let mut other_events: Vec<RegionEvent> = Vec::new();
-                                    for re in events {
+                                    for re in events.drain(..) {
                                         if let EventKind::EvalProcess(pid) = re.event {
                                             if pid < self.design.top.processes.len() && {
                                                 // Safe access with bounds check
@@ -1357,7 +1370,7 @@ impl SimulationEngine {
                                     }
                                 } else {
                                     // Sequential: process all events one by one
-                                    for re in events {
+                                    for re in events.drain(..) {
                                         self.process_event(re.event, t)?;
                                     }
                                 }
@@ -1377,8 +1390,10 @@ impl SimulationEngine {
                                             activity = true;
                                         }
                                     }
+                                    self.recycle_region_events(events);
                                     break;
                                 }
+                                self.recycle_region_events(events);
                             }
                         }
                         EventRegion::Nba => {
@@ -1386,17 +1401,15 @@ impl SimulationEngine {
                             self.commit_nba();
                             self.sim_perf.counters.nba_commits += 1;
                             self.ensure_events(t);
-                            let events: Vec<RegionEvent> = self.events[t - base]
-                                .drain(..)
-                                .filter(|re| re.region == EventRegion::Nba)
-                                .collect();
+                            let mut events = self.take_region_events(t, EventRegion::Nba);
                             self.sim_perf.counters.events_processed += events.len() as u64;
                             if !events.is_empty() {
                                 activity = true;
-                                for re in events {
+                                for re in events.drain(..) {
                                     self.process_event(re.event, t)?;
                                 }
                             }
+                            self.recycle_region_events(events);
                         }
                         EventRegion::Reactive => {
                             // Commit changes and trigger sensitive processes
@@ -1465,17 +1478,15 @@ impl SimulationEngine {
                             }
                             // Process Reactive events (from events[t] and reactive_events buffer)
                             self.ensure_events(t);
-                            let events: Vec<RegionEvent> = self.events[t - base]
-                                .drain(..)
-                                .filter(|re| re.region == EventRegion::Reactive)
-                                .collect();
+                            let mut events = self.take_region_events(t, EventRegion::Reactive);
                             self.sim_perf.counters.events_processed += events.len() as u64;
                             if !events.is_empty() {
                                 activity = true;
-                                for re in events {
+                                for re in events.drain(..) {
                                     self.process_event(re.event, t)?;
                                 }
                             }
+                            self.recycle_region_events(events);
                             let buffered: Vec<EventKind> =
                                 std::mem::take(&mut self.reactive_events);
                             if !buffered.is_empty() {
@@ -2980,5 +2991,81 @@ fn collect_named_labels_ast(stmts: &[mivon_ast::Stmt], out: &mut HashSet<Symbol>
             }
             _ => {}
         }
+    }
+}
+
+/// PERF-05: unit test helper pengambilan event per region (buffer daur ulang).
+#[cfg(test)]
+mod region_scratch_tests {
+    use super::*;
+
+    fn engine() -> SimulationEngine {
+        let design = crate::test_util::compile_str("module top; endmodule").unwrap();
+        SimulationEngine::new(design, 100)
+    }
+
+    fn re(region: EventRegion, pid: usize) -> RegionEvent {
+        RegionEvent {
+            region,
+            event: EventKind::EvalProcess(pid),
+        }
+    }
+
+    fn pids(events: &[RegionEvent]) -> Vec<usize> {
+        events
+            .iter()
+            .map(|r| match r.event {
+                EventKind::EvalProcess(p) => p,
+                _ => usize::MAX,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn take_region_events_moves_only_matching_in_order() {
+        let mut e = engine();
+        e.ensure_events(0);
+        e.events[0] = vec![
+            re(EventRegion::Active, 1),
+            re(EventRegion::Inactive, 2),
+            re(EventRegion::Active, 3),
+            re(EventRegion::Nba, 4),
+        ];
+
+        let taken = e.take_region_events(0, EventRegion::Active);
+        assert_eq!(pids(&taken), vec![1, 3], "hanya Active, urutan insertion");
+        assert_eq!(pids(&e.events[0]), vec![2, 4], "region lain tetap di slot");
+
+        e.recycle_region_events(taken);
+        let again = e.take_region_events(0, EventRegion::Active);
+        assert!(again.is_empty(), "tidak ada sisa Active");
+        e.recycle_region_events(again);
+        assert!(
+            e.region_scratch.capacity() >= 2,
+            "kapasitas buffer dipakai ulang antar delta"
+        );
+    }
+
+    #[test]
+    fn take_region_events_preserves_other_region_for_later_phase() {
+        // Event region lain harus masih ada saat fase berikutnya mengambilnya
+        // (dulu drain+filter membuang event Inactive saat fase Active).
+        let mut e = engine();
+        e.ensure_events(0);
+        e.events[0] = vec![re(EventRegion::Active, 7), re(EventRegion::Inactive, 8)];
+        let active = e.take_region_events(0, EventRegion::Active);
+        assert_eq!(pids(&active), vec![7]);
+        e.recycle_region_events(active);
+        let inactive = e.take_region_events(0, EventRegion::Inactive);
+        assert_eq!(pids(&inactive), vec![8], "event Inactive selamat");
+        e.recycle_region_events(inactive);
+    }
+
+    #[test]
+    fn take_region_events_out_of_range_is_empty() {
+        let mut e = engine();
+        e.ensure_events(0);
+        let taken = e.take_region_events(5, EventRegion::Active);
+        assert!(taken.is_empty(), "slot waktu di luar range → kosong");
     }
 }

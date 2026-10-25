@@ -3258,10 +3258,26 @@ PERF-04: ✅ Body process dibagi via Arc (tanpa clone per layer)
          ter-pin) + dag_differential_snapshot_cross_layer_chain + suite
          dag_serial_fallback_tests.
 
-PERF-05:[] Vec::drain/filter/retain in event loop — O(E) allocation
-         core.rs: drain/filter/retain per region per delta
-         Impact: Each delta cycle allocates temporary Vecs
-         Fix: Linked-list of events per region, O(1) pop
+PERF-05: ✅ Vec::drain/filter/retain in event loop — O(E) allocation
+         (ROUND 208). core.rs: pola retain+clone (PLI regions, Postponed,
+         Observed) dan drain+filter+collect (Active/Inactive, Nba,
+         Reactive) diganti satu helper take_region_events() +
+         recycle_region_events(): event DIPINDAH (bukan clone) ke buffer
+         daur-ulang (region_scratch + region_keep_scratch, swap dengan
+         slot time step) sehingga tidak ada alokasi Vec per region per
+         delta setelah warm-up. Urutan insertion dipertahankan; event
+         region lain tetap di slot.
+         PERUBAHAN PERILAKU (bug fix): 4 situs drain+filter lama
+         (Active/Inactive, Nba, Reactive) MEMBUANG event region lain di
+         slot yang sama — mis. event Inactive (#0) hilang saat fase
+         Active. Sekarang event itu selamat dan diproses di fasenya.
+         Test: region_scratch_tests (3 unit — hanya region yang diminta
+         yang diambil dengan urutan benar, region lain tetap, event
+         Inactive selamat sampai fase berikutnya, kapasitas buffer
+         dipakai ulang antar delta, slot di luar range → kosong).
+         Catatan: struktur queue tetap Vec per time step (bukan linked
+         list) — alternatif itu tidak diperlukan setelah alokasi per
+         delta hilang.
 
 PERF-06:[] Signal state Vec behind &mut self — no concurrent reads
          state.rs: read_signal/write_signal sequential
