@@ -10731,6 +10731,29 @@ Test baru (unit mivon-simulator/scheduler/sim_dag.rs):
   has_unresolved = true dan tidak memasukkan apa pun ke set
   writes. Tanpa perubahan perilaku lain; suite penuh identik.
 
+Review agent atas 6093637: LOLOS — tidak ada bug blokir (strict
+improvement, arah konservatif benar, perf aman). Tindak lanjut
+review diterapkan di commit ini:
+  RISK-1: tulis VifField di write_lvalue_simple (parallel.rs) masih
+    di-drop senyap (arm `_ => {}`) → write HILANG tanpa fallback di
+    jalur DAG layer dan seq/follower batch (has_unresolved tak
+    memaksa serial di dua jalur tsb). Fix: arm VifField → Err
+    (mekanisme fallback serial sudah ada di kedua pemanggil).
+  RISK-2: BACA VirtualIfaceAccess di expr_signal_reads arm kosong
+    padahal doc SignalAccess.has_unresolved menyebut varian ini.
+    Fix: set has_unresolved = true (konsisten VifBinding/HierRef).
+  Test tambahan: vif_field_write_returns_err (parallel.rs — VifField
+    write wajib Err, tanpa write tercatat) dan
+    virtual_iface_access_read_marks_unresolved (sim_dag.rs).
+  NIT-1 dicatat (tidak dikerjakan, kandidat round berikutnya):
+    walker lvalue lain yang mengabaikan VifField (clock_domain.rs,
+    cdc.rs, util/deps.rs, signal_analysis.rs) — under-approximation
+    serupa utk analisis domain/dep.
+
+VERIFIKASI ROUND 189 (final):
+   - cargo fmt --all --check -> bersih.
+   - cargo nextest run --workspace --features dev: 3639 passed,
+     24 skipped (3636 -> 3639, +3 test).
 VERIFIKASI ROUND 189 (final):
    - cargo fmt --all --check -> bersih.
    - cargo nextest run --workspace --features dev: 3637 passed,

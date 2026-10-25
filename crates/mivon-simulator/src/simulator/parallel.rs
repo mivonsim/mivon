@@ -1100,6 +1100,20 @@ fn write_lvalue_simple(
             // HierRef = full-write (start=0, patch penuh).
             writes.push((id, 0, resized));
         }
+        // Review R189 RISK-1: tulis VifField TIDAK boleh di-drop senyap —
+        // target tak resolvable (vif: Symbol, binding runtime). Err di sini
+        // memicu fallback serial yang sudah ada di kedua pemanggil (DAG
+        // layer core.rs + seq/follower batch event.rs).
+        IrLValue::VifField { vif, field, .. } => {
+            return Err(mivon_core::error::SimError::with_diag(
+                mivon_core::diagnostics::DiagCode::InternalError,
+                format!(
+                    "vif write tidak didukung jalur parallel-eval: {}.{} — wajib fallback serial",
+                    vif.as_str(),
+                    field.as_str()
+                ),
+            ));
+        }
         _ => {}
     }
     Ok(())
@@ -1109,4 +1123,33 @@ fn write_lvalue_simple(
 pub fn parallel_snapshot(signals: &[LogicVec]) -> Vec<LogicVec> {
     use rayon::prelude::*;
     signals.par_iter().cloned().collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Review R189 RISK-1: tulis VifField wajib Err (bukan drop senyap) —
+    /// pemanggil (DAG layer core.rs, seq/follower batch event.rs) punya
+    /// fallback serial utk Err evaluator.
+    #[test]
+    fn vif_field_write_returns_err() {
+        let signals = vec![std::sync::Arc::new(LogicVec::from_u64(0, 8))];
+        let identity: Vec<Option<usize>> = vec![Some(0)];
+        let mut overlay = std::collections::HashMap::new();
+        let mut view = SignalView::new(&signals, &identity, &mut overlay);
+        let mut writes = Vec::new();
+        let lv = IrLValue::VifField {
+            vif: mivon_core::intern::Symbol::intern("vif"),
+            field: mivon_core::intern::Symbol::intern("en"),
+            width: 0,
+        };
+        let result =
+            write_lvalue_simple(&lv, LogicVec::from_u64(1, 8), &mut view, &mut writes, &[]);
+        assert!(
+            result.is_err(),
+            "tulis VifField wajib Err agar pemanggil fallback serial"
+        );
+        assert!(writes.is_empty(), "tidak boleh ada write yang tercatat");
+    }
 }

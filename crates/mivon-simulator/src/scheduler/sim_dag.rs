@@ -340,7 +340,10 @@ fn expr_signal_reads(expr: &IrExpr, access: &mut SignalAccess) {
             expr_signal_reads(index, access);
         }
         IrExpr::VirtualIfaceAccess { .. } => {
-            // Virtual interface access reads resolved at runtime
+            // Virtual interface access — resolved at runtime, tak resolvable
+            // ke SignalId → has_unresolved (doc field SignalAccess menyebut
+            // varian ini; review R189 RISK-2 — sebelumnya arm kosong).
+            access.has_unresolved = true;
         }
         IrExpr::Concat(exprs) | IrExpr::StreamingConcat { slices: exprs, .. } => {
             for e in exprs {
@@ -1559,6 +1562,26 @@ mod tests {
         assert!(
             access.writes.is_empty(),
             "VifField tak resolvable -> tidak masuk set writes"
+        );
+    }
+
+    /// Review R189 RISK-2: BACA VirtualIfaceAccess wajib menandai
+    /// has_unresolved (doc field SignalAccess sudah menyebut varian ini;
+    /// arm lama kosong).
+    #[test]
+    fn virtual_iface_access_read_marks_unresolved() {
+        let mut access = SignalAccess::default();
+        expr_signal_reads(
+            &IrExpr::VirtualIfaceAccess {
+                vif_name: Symbol::intern("vif"),
+                field: Symbol::intern("en"),
+                field_width: 0,
+            },
+            &mut access,
+        );
+        assert!(
+            access.has_unresolved,
+            "baca VirtualIfaceAccess wajib has_unresolved (full snapshot + serial)"
         );
     }
 }
