@@ -11205,6 +11205,23 @@ Item open berikutnya: LSP-14 (iklan capability butuh upgrade
   COMP-01/02/11, SIM-03/19, FORMAL-03/04/10/13, ENT-24/39, FEAT-10/23,
   PARSER-07, LANG-01/02.
 
+Review agent R197: TIDAK LOLOS (1 BUG + 3 NIT) → fix:
+  BUG-1 (MAJOR): `virtual interface <tipe> <var>;` (deklarasi variabel
+    virtual-interface) ikut melewati qualifier `virtual` sehingga
+    `interface` cocok OPEN_KW → frame KIND_INTERFACE palsu dibuka tanpa
+    endinterface → SELURUH simbol class sesudahnya tertelan + container
+    palsu bocor ke semantic tokens/workspace symbol. Fix: `virtual` TIDAK
+    dilewati bila token berikutnya `interface` (perilaku lama: baris
+    diabaikan). Test: virtual interface tidak membuka frame, `int after3`
+    tetap muncul.
+  NIT-1: QUAL_KW dipindah ke kepala fungsi (konsisten dengan OPEN_KW
+    dkk).
+  NIT-2: test diperluas — randc/local/const/var/automatic, baris yang
+    seluruhnya qualifier, localparam (non-regresi), `pure virtual
+    function` (prototype tanpa simbol/frame), dan `virtual interface`.
+  NIT-3 (`[W-1:0]` memunculkan W sebagai variabel palsu) PRE-EXISTING —
+    dicatat backlog; bukan akibat perubahan ini.
+
 VERIFIKASI ROUND 197:
    - cargo fmt --all --check -> bersih.
    - cargo nextest run --workspace --features dev: 3673 passed,

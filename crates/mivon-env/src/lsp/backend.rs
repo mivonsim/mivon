@@ -3455,6 +3455,47 @@ endmodule
             "simbol setelah prototype: {:?}",
             p.children.iter().map(|c| &c.name).collect::<Vec<_>>()
         );
+
+        // Review R197 NIT-2: qualifier lain + baris yang seluruhnya qualifier.
+        let more = "class q;\n  randc bit [1:0] r;\n  local int l;\n  const int k = 1;\n  var logic v;\n  automatic int a;\n  virtual\n  localparam int LP = 2;\nendclass\n";
+        let qs = &LspBackend::document_symbols(more)[0];
+        let qn: Vec<&str> = qs.children.iter().map(|c| c.name.as_str()).collect();
+        for n in ["r", "l", "k", "v", "a", "LP"] {
+            assert!(qn.contains(&n), "`{n}` hilang dari outline: {qn:?}");
+        }
+        assert_eq!(qn.len(), 6, "baris `virtual` sendirian: {qn:?}");
+
+        // `pure virtual function` = prototype → tidak menghasilkan simbol dan
+        // tidak membuka frame.
+        let pv = "class c2;\n  pure virtual function void f();\n  int after2;\nendclass\n";
+        let c2 = &LspBackend::document_symbols(pv)[0];
+        assert!(
+            c2.children.iter().any(|c| c.name == "after2"),
+            "{:?}",
+            c2.children
+        );
+        assert!(
+            !c2.children.iter().any(|c| c.name == "f"),
+            "{:?}",
+            c2.children
+        );
+
+        // Review R197 BUG-1: `virtual interface <tipe> <var>;` adalah
+        // deklarasi variabel, bukan pembukaan scope interface (tidak ada
+        // endinterface) — jangan sampai menelan simbol berikutnya.
+        let vif = "class c3;\n  virtual interface bus_if vif;\n  int after3;\nendclass\n";
+        let c3 = &LspBackend::document_symbols(vif)[0];
+        assert!(
+            c3.children.iter().any(|c| c.name == "after3"),
+            "virtual interface tidak boleh membuka frame: {:?}",
+            c3.children.iter().map(|c| &c.name).collect::<Vec<_>>()
+        );
+        assert!(
+            !c3.children
+                .iter()
+                .any(|c| c.kind == DocSymbol::KIND_INTERFACE),
+            "virtual interface bukan container interface"
+        );
     }
 
     #[test]

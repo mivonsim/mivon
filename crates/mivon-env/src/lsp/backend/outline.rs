@@ -34,6 +34,21 @@ impl LspBackend {
             "input", "output", "inout", "wire", "reg", "logic", "bit", "int", "integer", "byte",
             "shortint", "longint", "real", "time", "string",
         ];
+        // LSP-12 tahap 2b: qualifier deklarasi yang dilewati sebelum keyword
+        // efektif. `pure`/`extern` SENGAJA tidak ada di sini: prototype
+        // tidak punya endfunction sehingga membuka frame akan menelan simbol
+        // berikutnya.
+        const QUAL_KW: &[&str] = &[
+            "virtual",
+            "static",
+            "local",
+            "protected",
+            "rand",
+            "randc",
+            "const",
+            "var",
+            "automatic",
+        ];
 
         struct Frame {
             sym: Option<DocSymbol>,
@@ -54,22 +69,17 @@ impl LspBackend {
             // `virtual function ...` dan `rand bit [7:0] addr;` ikut
             // ter-outline (sebelumnya baris seperti ini tak menghasilkan
             // simbol sama sekali karena t0 = "virtual"/"rand").
-            // `pure`/`extern` SENGAJA tidak dilewati: deklarasi prototype
-            // tidak punya endfunction, sehingga membuka frame akan menelan
-            // simbol berikutnya (perilaku lama dipertahankan).
-            const QUAL_KW: &[&str] = &[
-                "virtual",
-                "static",
-                "local",
-                "protected",
-                "rand",
-                "randc",
-                "const",
-                "var",
-                "automatic",
-            ];
             let mut qi = 0usize;
             while qi < toks.len() && QUAL_KW.contains(&toks[qi].0.as_str()) {
+                // `virtual interface <tipe> <var>;` adalah deklarasi
+                // variabel virtual-interface, BUKAN pembukaan scope
+                // interface (tidak ada endinterface) — jangan lewati
+                // `virtual` di sini (review R197 BUG-1).
+                if toks[qi].0 == "virtual"
+                    && toks.get(qi + 1).map(|t| t.0.as_str()) == Some("interface")
+                {
+                    break;
+                }
                 qi += 1;
             }
             let Some((t0, c0)) = toks.get(qi).cloned() else {
