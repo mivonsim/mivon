@@ -498,7 +498,7 @@ Par-01: ✅ Work-stealing paralel produk = rayon; executor kustom dead-code diha
   Test: task_survives_without_scheduler_executor (mivon-compiler).
   Severity: High -> CLOSED.
 
-Par-02: ⚠️ tahap 1+2a+3 selesai (ROUND 184-186) — masih open (tahap lanjutan)
+Par-02: ✅ tahap 1+2a+3+4+5+6 selesai (ROUND 184-191) — CLOSED
   Root Cause: Sequential processes (AlwaysFF, AlwyasWithDelay)
   bypass DAG dan jalan sequential.
   Tahap 1 (ROUND 184): triggered Sequential yang lolos whitelist ketat
@@ -512,8 +512,21 @@ Par-02: ⚠️ tahap 1+2a+3 selesai (ROUND 184-186) — masih open (tahap lanjut
   Tahap 3 (ROUND 186): klasifikasi body via body_write_kinds —
   BlockingOnly/NbaOnly batch (dua jalur apply), Mixed/unsupported
   → serial; guard iff_reads (BUG-1) + WAW + stale readers.
-  Open: AlwaysWithDelay, seq_bodies paralel dalam domain,
-  kebijakan gate statement tak-dukung evaluator paralel.
+  Tahap 4 (ROUND 187): seq_bodies dalam clock domain di-batch
+  (evaluate_clock_domain Step 1, >=2 proses + --cycle-fusion +
+  --parallel), kandidat domain clock_trigger=true.
+  Tahap 5 (ROUND 188): kebijakan gate TERKUNCI lewat test
+  body_write_kinds_gate_policy (26 varian ditolak / 8 diterima).
+  Tahap 6 (ROUND 191): AlwaysWithDelay (`always #N`) di-batch bila
+  SELURUH event Active pada delta itu EvalProcess AlwaysWithDelay
+  (delay > 0, t > 0) — kandidat diklasifikasi/didemosi run_seq_batch
+  yang sama, reschedule t+N sesudah batch dgn urutan event asli.
+  Batas (didokumentasikan): AWD yang bercampur event lain pada delta
+  yang sama tetap serial (urutan insertion bermakna).
+  Backlog non-blokir (perf/kualitas, bukan correctness): batas
+  iterasi loop serial 100k vs paralel 1M, snapshot per grup
+  O(grup x sinyal) → sparse, others_read over-demosi, ekstraksi
+  phase2c, body_write_kinds dihitung 2x.
   Impact: Sebagian besar processes di desain sinkron —
   paralelisme rendah.
   Severity: High
@@ -10791,4 +10804,73 @@ VERIFIKASI ROUND 190 (final):
    - cargo fmt --all --check -> bersih.
    - cargo nextest run --workspace --features dev: 3641 passed,
      24 skipped (3639 -> 3641, +2 test).
+
+═══ ROUND 191 — Par-02 tahap 6: batch AlwaysWithDelay (always #N) ═══
+
+Ruang lingkup: menutup sub-item terakhir Par-02 — proses
+`always #N` (Process::AlwaysWithDelay) masih dieksekusi serial
+satu event per pid walau beberapa proses jatuh pada time step yang
+sama (mis. banyak clock generator `always #5`).
+
+Perubahan:
+  1. core.rs run(): body AlwaysWithDelay ikut di-cache ke
+     process_body_arcs (sebelumnya hanya Comb/CombReactive/Initial/
+     Sequential) — prasyarat SeqCand::classify. Tidak masuk
+     process_body_cache (filter is_process_parallelizable tetap),
+     jadi jalur DAG comb tidak berubah.
+  2. event.rs: helper eval_seq_like_serial(pid) — Sequential →
+     evaluate_stmt_block; AlwaysWithDelay → evaluate_block_with_delay
+     (semantik `always #N` body boleh memuat delay). Empat situs
+     body-lookup di run_seq_batch/evaluate_batch_serially/fallback-Err
+     memakai helper ini (dulu hard-code Process::Sequential → AWD
+     akan di-skip senyap).
+  3. event.rs: run_awd_batch(pids, t) — gate t>0 (body tidak
+     dieksekusi di t=0, hanya menjadwalkan t+N) + delay>0 (delay 0
+     menjadwalkan ulang di time step yang sama → urutan push wajib
+     persis serial); kandidat classify + clock_trigger=true (event
+     itu sendiri pemicu), lalu run_seq_batch (demosi + dua jalur
+     apply yang sama), kemudian reschedule t+N SESUDAH batch dengan
+     urutan event asli (identik serial).
+  4. core.rs Active region: batch dipakai HANYA bila seluruh event
+     Active pada delta itu EvalProcess AlwaysWithDelay (>=2 event).
+     Campuran dengan event lain → serial: urutan insertion antar
+     event bermakna dan snapshot batch akan mengubah visibilitas
+     tulis relatif event lain.
+
+Bug yang ditemukan & diperbaiki saat implementasi:
+  - Kandidat AWD di-skip senyap: SeqCand::classify mengisi
+    clock_trigger=false dan fase 2 run_seq_batch men-continue
+    kandidat dengan trigger=false → body tidak pernah dievaluasi
+    (n tetap 0) padahal event tetap dijadwalkan ulang. Fix:
+    clock_trigger=true (sama seperti jalur domain R187).
+  - Nama sinyal `s` di test WAW: lexer membacanya sebagai suffix
+    waktu (`#5 s` = delay 5 sekon) → parse error E1002. Diganti
+    `q` + catatan di komentar test.
+
+Test baru (mivon-tests/dag_serial_fallback_tests.rs):
+  1. dag_awd_batch_parallel_diff — 4 `always #5` (c1,c2,c3,n)
+     satu delta, tulis disjoint → DBG_SIM=3 terbukti "4 kandidat,
+     1 grup" (batch paralel aktif, tanpa demosi). n=20
+     (00010100) mengunci jumlah evaluasi t=5..100; c1..c3=0
+     mengunci paritas (skip/duplikasi satu event langsung gagal).
+  2. dag_awd_batch_demote_diff — a=b+1 dan b=a+1 saling baca
+     blocking write kandidat lain → KEDUA demosi inline
+     (DBG_SIM=3: 0 log batch). Serial 20 iterasi a=41 (00101001),
+     b=42 (00101010).
+  3. dag_awd_batch_waw_diff — dua AWD menulis q (WAW) → keduanya
+     demosi (q=7 konstan), w+v tetap ter-batch (DBG_SIM=3:
+     "2 kandidat, 1 grup") = campuran demosi+batch dalam satu delta
+     AWD; w=v=20 (00010100).
+
+Status PAR-02: tahap 6 SELESAI → item CLOSED (1+2a+3+4+5+6,
+ROUND 184-191). Backlog non-blokir (perf) dicatat di blok status.
+Item open berikutnya: Arsitektur-01..04, JIT-01/02, backlog
+NIT/RISK review R186-R190 (walker VifField lain, sparse snapshot,
+batas iterasi loop, ekstraksi phase2c).
+
+VERIFIKASI ROUND 191:
+   - cargo fmt --all --check -> bersih (termasuk 1 pelanggaran
+     lama di test R190 yang ikut diperbaiki manual).
+   - cargo nextest run --workspace --features dev: 3644 passed,
+     24 skipped (3641 -> 3644, +3 test).
 \\=======================================================================//
