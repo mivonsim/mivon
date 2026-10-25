@@ -11188,6 +11188,21 @@ Item open berikutnya: LSP-12/14, Arsitektur-01..04/06, JIT-01/02,
   ELAB-02/03/08, COMP-01/02/11, SIM-03/19, VERIF-20, FORMAL-03/04/10/13,
   ENT-24/39, FEAT-10/23, PARSER-07, LANG-01/02.
 
+Review agent R195: LOLOS (tanpa BUG, 4 NIT) → NIT diterapkan:
+  NIT-1: doc-comment handler diperbarui (tahap 1+2: jalur cepat lokal,
+    lalu lintas file).
+  NIT-2: caveat diperjelas — pencarian HEURISTIK per baris (definition_col
+    bisa mendarat di baris pemakaian bila pola mirip deklarasi, mis.
+    `logic [7:0] next = count + 1;` saat mencari `count`; komentar /* */
+    tidak dibuang), dan tie-break dua definisi = uri terkecil.
+  NIT-3: guard is_valid_identifier(word) SEBELUM scan (kata non-identifier
+    seperti `$display`/`42` tidak punya deklarasi) + prefilter
+    `text.contains(word)` per dokumen (sound: definisi selalu memuat kata
+    literal) → hindari tokenisasi baris untuk dokumen yang mustahil cocok.
+  NIT-4: test diperluas (dua definisi dalam satu file → baris pertama;
+    substring bukan token tidak menghasilkan definisi). Wiring handler
+    tetap hanya divalidasi manual (butuh harness LspService).
+
 VERIFIKASI ROUND 195:
    - cargo fmt --all --check -> bersih.
    - cargo nextest run --workspace --features dev: 3667 passed,

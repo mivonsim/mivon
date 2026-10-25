@@ -1003,6 +1003,12 @@ impl LspBackend {
         }
         for i in order {
             let (uri, text) = &docs[i];
+            // Prefilter murah (review R195 NIT-3): definisi selalu memuat
+            // kata secara literal, jadi dokumen tanpa substring itu mustahil
+            // cocok — lewati tanpa tokenisasi per baris.
+            if !text.contains(word) {
+                continue;
+            }
             for (idx, line) in text.lines().enumerate() {
                 if let Some(col) = Self::definition_col(line, word) {
                     return Some((
@@ -1188,8 +1194,8 @@ impl LanguageServer for LspBackend {
         }
     }
 
-    /// Go-to-definition (LSP-03 tahap 1): cari deklarasi identifier di
-    /// posisi kursor dalam dokumen yang sama.
+    /// Go-to-definition (LSP-03 tahap 1+2): jalur cepat di dokumen aktif,
+    /// lalu — bila tidak ketemu — pencarian LINTAS FILE di seluruh workspace.
     async fn goto_definition(
         &self,
         params: GotoDefinitionParams,
@@ -1209,6 +1215,12 @@ impl LanguageServer for LspBackend {
                 let Some((word, _, _)) = Self::word_at_position(line_text, pos.character) else {
                     return Ok(None);
                 };
+                // Review R195 NIT-3: kata non-identifier (`$display`, `42`,
+                // fragmen literal `8'd5`) tidak punya deklarasi — jangan
+                // bayar pemindaian workspace penuh.
+                if !Self::is_valid_identifier(&word) {
+                    return Ok(None);
+                }
                 let docs = workspace_index::ensure_doc(
                     self.collect_workspace_docs().await,
                     uri.as_str(),
@@ -2885,6 +2897,17 @@ endmodule
             LspBackend::find_definition_in_docs(&rev, "clk", "file:///other.sv")
                 .expect("clk tetap ketemu")
         );
+
+        // Dua definisi dalam SATU file → yang pertama (baris terkecil) menang,
+        // dan prefilter substring tidak mengubah hasil.
+        let dup = ["module d;", "  logic clk;", "  logic clk;", "endmodule"].join("\n");
+        let dup_docs = vec![("file:///dup.sv".to_string(), dup)];
+        let first = LspBackend::find_definition_in_docs(&dup_docs, "clk", "file:///dup.sv")
+            .expect("clk ada");
+        assert_eq!(first.1, 1);
+        // Kata yang hanya muncul sebagai substring (bukan token) tidak
+        // menghasilkan definisi — prefilter hanya optimisasi, hasil sama.
+        assert!(LspBackend::find_definition_in_docs(&docs, "cl", "file:///top.sv").is_none());
 
         // Tidak ada definisi / tanpa dokumen → None.
         assert!(
