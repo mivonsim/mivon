@@ -1049,7 +1049,7 @@ impl SimulationEngine {
     /// `design.timescale` = (unit, precision) mis. ("1ns", "1ps") → unit
     /// exponent -9 → 1 unit = 1ns → 1000ps = 1 unit. Tanpa timescale, asumsi
     /// default 1ns (sama dengan `TimeFormat::default`).
-    fn sdf_ps_to_time_units(&self, ps: u64) -> u64 {
+    pub(crate) fn sdf_ps_to_time_units(&self, ps: u64) -> u64 {
         let exp = self
             .design
             .timescale

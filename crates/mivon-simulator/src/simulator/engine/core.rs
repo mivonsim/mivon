@@ -272,6 +272,7 @@ impl SimulationEngine {
             process_body_cache: HashMap::new(),
             process_body_arcs: HashMap::new(),
             awd_batch_count: 0,
+            seq_batch_parallel_count: 0,
             notimpl_warned: Default::default(),
         }
     }

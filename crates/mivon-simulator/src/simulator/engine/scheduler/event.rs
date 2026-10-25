@@ -675,46 +675,83 @@ impl SimulationEngine {
             let info = self.design.top.signals.get(*sig_id);
             let target_width = info.map(|i| i.width).unwrap_or(0);
             let is_full = *start == 0 && patch.width >= target_width;
-            if !is_full {
+            // Nilai final yang akan ditulis — dihitung TANPA menyentuh state,
+            // supaya jalur SDF bisa menundanya sebelum commit.
+            let (new_val, is_net_resolve) = if !is_full {
                 // Patch slice — mirror serial RangeSelect: RMW lokal tanpa
                 // resolution multi-driver (hanya bit ter-patch yang berubah).
-                if *start < target_width {
-                    let mut cur = self.state.read_signal(*sig_id).clone();
-                    let len = patch.width.min(cur.width.saturating_sub(*start));
-                    for i in 0..len {
-                        cur.bits[start + i] =
-                            patch.bits.get(i).copied().unwrap_or(mivon_ir::LogicVal::X);
-                    }
-                    self.state.write_signal(*sig_id, cur);
+                if *start >= target_width {
+                    continue;
                 }
-                let old = old_before;
-                let new = self.state.read_signal(*sig_id).clone();
-                self.record_signal_change(*sig_id, &old, &new);
-                continue;
-            }
-            if let Some(info) = info.filter(|i| i.multi_driver) {
+                let mut cur = old_before.clone();
+                let len = patch.width.min(cur.width.saturating_sub(*start));
+                for i in 0..len {
+                    cur.bits[start + i] =
+                        patch.bits.get(i).copied().unwrap_or(mivon_ir::LogicVal::X);
+                }
+                (cur, false)
+            } else if let Some(info) = info.filter(|i| i.multi_driver) {
                 if matches!(
                     info.kind,
                     SignalKind::Wire | SignalKind::Inout | SignalKind::Output
                 ) {
-                    let current = self.state.read_signal(*sig_id).clone();
-                    let resolved =
-                        crate::simulator::util::resolve_net_values(info.net_type, &current, patch);
-                    self.state.write_signal(*sig_id, resolved);
-                    let old = old_before;
-                    let new = self.state.read_signal(*sig_id).clone();
-                    self.record_signal_change(*sig_id, &old, &new);
-                    continue;
+                    (
+                        crate::simulator::util::resolve_net_values(
+                            info.net_type,
+                            &old_before,
+                            patch,
+                        ),
+                        true,
+                    )
+                } else {
+                    (patch.clone(), false)
+                }
+            } else {
+                (patch.clone(), false)
+            };
+            // R191 BUG-1 (sisa): sinyal ber-annotasi SDF — serial menunda
+            // commit ke t+delay via SdfDelayedWrite (write_lvalue). Jalur
+            // paralel WAJIB sama; tanpa ini SDF diabaikan senyap di SEMUA
+            // call-site apply_parallel_writes (DAG comb, layer, follower
+            // domain, batch seq/AWD).
+            if let Some(sig) = info {
+                if sig.delay_rise.is_some() || sig.delay_fall.is_some() {
+                    if old_before.bits != new_val.bits {
+                        let delay_ps = match (old_before.bits.first(), new_val.bits.first()) {
+                            (Some(mivon_ir::LogicVal::Zero), Some(mivon_ir::LogicVal::One)) => {
+                                sig.delay_rise.unwrap_or(0)
+                            }
+                            (Some(mivon_ir::LogicVal::One), Some(mivon_ir::LogicVal::Zero)) => {
+                                sig.delay_fall.unwrap_or(0)
+                            }
+                            _ => sig.delay_rise.unwrap_or(0).min(sig.delay_fall.unwrap_or(0)),
+                        };
+                        let delay_units = self.sdf_ps_to_time_units(delay_ps);
+                        if delay_units > 0 {
+                            let t = self.state.time + delay_units;
+                            self.push_event(
+                                t as usize,
+                                RegionEvent {
+                                    region: EventRegion::Active,
+                                    event: EventKind::SdfDelayedWrite {
+                                        sig_id: *sig_id,
+                                        value: new_val,
+                                    },
+                                },
+                            );
+                            continue;
+                        }
+                    }
                 }
             }
-            self.state.write_signal(*sig_id, patch.clone());
+            self.state.write_signal(*sig_id, new_val.clone());
             // R191 BUG-1: catat transisi (arah edge + timestamp) seperti
-            // write_lvalue — dipakai timing check $setup/$hold/$width/$period
-            // dan SDF. Tanpa ini clock yang di-batch tidak pernah memicu
-            // timing check sama sekali (silent, hanya di mode --parallel).
-            let old = old_before;
-            let new = self.state.read_signal(*sig_id).clone();
-            self.record_signal_change(*sig_id, &old, &new);
+            // write_lvalue — dipakai timing check $setup/$hold/$width/$period.
+            // Multi-driver resolve DIKECUALIKAN: jalur serial juga tidak
+            // merekamnya (lvalue.rs cabang resolve) — paritas dijaga.
+            if !is_net_resolve {
+                self.record_signal_change(*sig_id, &old_before, &new_val);
+            }
         }
     }
 
@@ -1219,10 +1256,10 @@ impl SimulationEngine {
                 }
                 _ => "",
             };
-            if !name.is_empty() {
-                self.current_process_name = Some(name.to_string());
-                self.current_instance_path = Some(self.design.top.name.to_string());
-            }
+            // NIT-5 (review R191): setel tanpa syarat (mirror process_event)
+            // agar nama proses lama tidak bocor ke Continuation/fork group.
+            self.current_process_name = Some(name.to_string());
+            self.current_instance_path = Some(self.design.top.name.to_string());
         }
         match self.design.top.processes.get(pid) {
             Some(Process::Sequential { body, .. }) => {
@@ -1383,18 +1420,6 @@ impl SimulationEngine {
             let others_read = |s: &usize| {
                 reads_count.get(s).copied().unwrap_or(0) > if own_effective(s) { 1 } else { 0 }
             };
-            // R191 BUG-1: sinyal ber-annotasi SDF (delay_rise/delay_fall) —
-            // serial menunda commit ke t+delay (write_lvalue). apply_parallel_
-            // writes tidak menunda, jadi kandidat yang menulis sinyal SDF
-            // WAJIB demosi (kalau tidak, SDF diabaikan senyap di mode paralel).
-            let sdf_write = c.access.writes.iter().any(|s| {
-                self.design
-                    .top
-                    .signals
-                    .get(*s)
-                    .map(|i| i.delay_rise.is_some() || i.delay_fall.is_some())
-                    .unwrap_or(false)
-            });
             let demote = if c.blocking_only {
                 // Blocking: (i) membaca blocking write serial inline;
                 // (ii) membaca blocking write kandidat batch lain (urutan
@@ -1431,7 +1456,7 @@ impl SimulationEngine {
                         .iter()
                         .any(|s| nba_write_counts.get(s).copied().unwrap_or(0) > 1)
             };
-            if demote || sdf_write {
+            if demote {
                 self.eval_seq_like_serial(c.pid)?;
                 continue;
             }
@@ -1461,6 +1486,7 @@ impl SimulationEngine {
     /// (blocking immediate, snapshot rebuild grup berikutnya melihatnya);
     /// NbaOnly → push_nba_pending terurut pid (commit identik serial).
     fn evaluate_sequential_batch_parallel(&mut self, batch: &[&SeqCand]) -> Result<(), SimError> {
+        self.seq_batch_parallel_count += 1;
         // (E) sinyal ultra-lebar: snapshot penuh berisiko OOM / lazy-X.
         if self.has_wide_signals() {
             let pids: Vec<usize> = batch.iter().map(|c| c.pid).collect();

@@ -609,6 +609,11 @@ pub struct SimulationEngine {
     /// (`always #N` pada delta yang sama) benar-benar dipakai. Dipakai test
     /// utk membuktikan jalur batch aktif (bukan fallback serial senyap).
     pub awd_batch_count: u64,
+
+    /// Jumlah kali evaluasi batch seq/AWD benar-benar dijalankan PARALEL
+    /// (`evaluate_sequential_batch_parallel` — bukan fallback serial).
+    /// `awd_batch_count` saja juga menghitung kasus semua-kandidat-demosi.
+    pub seq_batch_parallel_count: u64,
 }
 
 // ============================================================================

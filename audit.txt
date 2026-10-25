@@ -10867,7 +10867,15 @@ Test baru (mivon-tests/dag_serial_fallback_tests.rs):
   5. dag_awd_batch_force_guard_diff — `force c1 = 1` pada clock
      generator batch: serial menahan write (write_lvalue guard),
      jalur paralel dulu menulis langsung ke state → force ditimpa.
-     Nilai akhir c1=1, c2=0 di kedua mode.
+     Probe di TENGAH window force (t=16, setelah edge t=15):
+     guarded probe=1, tanpa guard probe=0 (diverifikasi empiris dgn
+     mematikan guard → test FAIL).
+  6. dag_awd_batch_sdf_delay_diff — sinyal ber-SDF (delay_rise/fall
+     2000 ps) ditulis clock generator batch; probe t=51: dengan
+     penundaan commit c1=1 (toggle t=45 commit t=47, toggle t=50
+     commit t=52), tanpa penundaan c1=0. Diverifikasi empiris dgn
+     mematikan cabang SDF di apply_parallel_writes → test FAIL
+     (parallel 0 vs serial 1).
 
 Review agent R191: TIDAK LOLOS (3 BUG + 3 RISK + 2 NIT). Fix:
   BUG-1 (High, silent miscompile): apply_parallel_writes menulis
@@ -10899,6 +10907,37 @@ Review agent R191: TIDAK LOLOS (3 BUG + 3 RISK + 2 NIT). Fix:
   Catatan reviewer soal "log batch selalu t=0" = gejala BUG-2, sudah
   diperbaiki (current_time disetel).
 
+Review agent R191 ronde 2: TIDAK LOLOS — BUG-2/3 + NIT-1 tertutup,
+  tapi BUG-1 belum tuntas: demosi SDF hanya dipasang di run_seq_batch,
+  sedangkan apply_parallel_writes juga dipanggil jalur DAG comb,
+  DAG layer, dan follower clock-domain → SDF tetap diabaikan di sana
+  (gap pre-existing, tapi kini disentuh).
+  Fix ronde 2:
+  - SDF ditangani TERPUSAT di apply_parallel_writes (hitung nilai
+    final tanpa menyentuh state → bila sinyal ber-delay dan nilai
+    berubah, jadwalkan SdfDelayedWrite dan SKIP commit seketika,
+    mirror write_lvalue). Demosi sdf_write di run_seq_batch dihapus
+    (redundan) → jalur batch AWD ikut menguji kode SDF sentral ini.
+  - Fungsi di-restruktur: nilai final (patch/RMW, resolve multi-
+    driver, full) dihitung dulu, satu clone lama + satu nilai baru
+    (NIT-4: tidak lagi 2 clone read_signal per write).
+  - record_signal_change DIKECUALIKAN utk cabang resolve multi-
+    driver (RISK-1): jalur serial juga tidak merekamnya → paritas
+    mode default vs --parallel dijaga.
+  - sdf_ps_to_time_units jadi pub(crate).
+  - NIT-2: test WAW kini `q = q+1` vs `q = q+2` (serial 60, batch
+    tanpa demosi 40) — konstanta 7 sebelumnya tidak diskriminatif.
+    Catatan: guard WAW-count spesifik tidak terisolasi karena kedua
+    penulis juga membaca q → guard stale-reader juga mendemosi.
+  - NIT-3: counter baru seq_batch_parallel_count (batch benar-benar
+    paralel, bukan fallback serial) + assertion di test.
+  - NIT-5: current_process_name disetel tanpa syarat (mirror
+    process_event).
+  - NIT-6 dicatat (current_process_id tidak disetel per kandidat;
+    serial pun tidak me-reset per proses → bukan regresi).
+  - RISK-2 dicatat: commit_delayed_signal_write tidak memeriksa
+    forced_signals (pre-existing, terdokumentasi di lvalue.rs).
+
 Status PAR-02: tahap 6 SELESAI → item CLOSED (1+2a+3+4+5+6,
 ROUND 184-191). Backlog non-blokir (perf) dicatat di blok status.
 Item open berikutnya: Arsitektur-01..04, JIT-01/02, backlog
@@ -10908,6 +10947,6 @@ batas iterasi loop, ekstraksi phase2c).
 VERIFIKASI ROUND 191 (final):
    - cargo fmt --all --check -> bersih (termasuk 1 pelanggaran
      lama di test R190 yang ikut diperbaiki manual).
-   - cargo nextest run --workspace --features dev: 3646 passed,
-     24 skipped (3641 -> 3646, +5 test).
+   - cargo nextest run --workspace --features dev: 3647 passed,
+     24 skipped (3641 -> 3647, +6 test).
 \\=======================================================================//

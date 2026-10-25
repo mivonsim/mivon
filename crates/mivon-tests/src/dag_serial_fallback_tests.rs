@@ -960,9 +960,12 @@ fn dag_awd_batch_demote_diff() {
 
 /// WAW antar AWD: dua `always #5` menulis q pada delta yang sama →
 /// blocking_write_counts[q] > 1 → keduanya demosi inline, pemenang =
-/// urutan event terakhir (q = 7 konstan). w + v (disjoint) tetap
-/// ter-batch sebagai grup paralel — campuran demosi + batch dalam satu
-/// delta AWD.
+/// urutan event terakhir. w + v (disjoint) tetap ter-batch sebagai
+/// grup paralel — campuran demosi + batch dalam satu delta AWD.
+/// DISKRIMINASI (review R191 NIT-2): penulis kedua `q = q + 2` (bukan
+/// konstanta) agar urutan benar-benar teruji — serial q=(q+1)+2=q+3
+/// → 20 iterasi = 60; tanpa demosi keduanya baca snapshot sama →
+/// q+2 per iterasi = 40.
 /// Catatan: nama sinyal `s` TIDAK dipakai — lexer membacanya sebagai
 /// suffix waktu (`#5 s` = delay 5 sekon) → parse error.
 const AWD_WAW_SRC: &str = r#"
@@ -970,7 +973,7 @@ module awd_waw_top;
   logic [7:0] q, w, v;
   initial begin q = 0; w = 0; v = 0; end
   always #5 q = q + 8'd1;
-  always #5 q = 8'd7;
+  always #5 q = q + 8'd2;
   always #5 w = w + 8'd1;
   always #5 v = v + 8'd1;
 endmodule
@@ -978,7 +981,7 @@ endmodule
 
 #[test]
 fn dag_awd_batch_waw_diff() {
-    for (name, expect) in [("q", "00000111"), ("w", "00010100"), ("v", "00010100")] {
+    for (name, expect) in [("q", "00111100"), ("w", "00010100"), ("v", "00010100")] {
         let d = run_signal_bits(AWD_WAW_SRC, name, false);
         let g = run_signal_bits(AWD_WAW_SRC, name, true);
         assert_eq!(
@@ -1003,29 +1006,38 @@ fn dag_awd_batch_path_is_active() {
         engine.awd_batch_count > 0,
         "jalur batch AlwaysWithDelay tidak pernah dipakai (counter=0)"
     );
+    assert!(
+        engine.seq_batch_parallel_count > 0,
+        "evaluasi batch tidak benar-benar paralel (fallback serial terus)"
+    );
 }
 
 /// R191 BUG-1: `force` pada sinyal yang ditulis clock generator batch.
 /// Serial: write_lvalue menahan write ke forced_signals → c1 tetap 1
 /// selama force. Jalur paralel dulu menulis langsung ke state
-/// (apply_parallel_writes) → force ditimpa balik. Nilai akhir: c1
-/// release t=52 lalu toggle t=55..100 (10x) → 1; c2 toggle 20x → 0.
+/// (apply_parallel_writes) → force ditimpa balik.
+/// DISKRIMINASI (review R191 NIT-1): probe di TENGAH window force
+/// (t=16, setelah edge t=15). Guarded: c1 masih 1 (write ditahan).
+/// Tanpa guard: edge t=15 menulis 0 → probe 0. Nilai akhir saja TIDAK
+/// cukup (paritas genap + `release` tidak me-restore nilai `logic`).
 const AWD_FORCE_SRC: &str = r#"
 module awd_force_top;
   logic c1, c2;
-  initial begin c1 = 0; c2 = 0; end
+  logic probe;
+  initial begin c1 = 0; c2 = 0; probe = 0; end
   always #5 c1 = ~c1;
   always #5 c2 = ~c2;
   initial begin
     #12 force c1 = 1;
-    #40 release c1;
+    #4 probe = c1;
+    #36 release c1;
   end
 endmodule
 "#;
 
 #[test]
 fn dag_awd_batch_force_guard_diff() {
-    for (name, expect) in [("c1", "1"), ("c2", "0")] {
+    for (name, expect) in [("probe", "1"), ("c2", "0")] {
         let d = run_signal_bits(AWD_FORCE_SRC, name, false);
         let g = run_signal_bits(AWD_FORCE_SRC, name, true);
         assert_eq!(
@@ -1034,4 +1046,64 @@ fn dag_awd_batch_force_guard_diff() {
         );
         assert_eq!(g, expect, "{name}: force wajib menahan write batch");
     }
+}
+
+/// R191 BUG-1 (sisa review): SDF delay pada sinyal yang ditulis jalur
+/// PARALEL. Serial menunda commit ke t+delay (SdfDelayedWrite), dulu
+/// apply_parallel_writes menulis seketika → SDF diabaikan senyap di
+/// mode --parallel. Probe di t=51: tanpa SDF c1 sudah toggle t=50
+/// (10x → 0); dengan SDF commit t=50 baru di t=52 → c1 = hasil toggle
+/// t=45 (9x → 1). Delay 2000 ps = 2 unit pada timescale 1ns/1ps.
+const AWD_SDF_SRC: &str = r#"
+module awd_sdf_top;
+  logic c1, c2;
+  logic probe;
+  initial begin c1 = 0; c2 = 0; probe = 0; end
+  always #5 c1 = ~c1;
+  always #5 c2 = ~c2;
+  initial begin #51 probe = c1; end
+endmodule
+"#;
+
+fn run_sdf_probe(use_dag: bool) -> String {
+    let design = compile_str(AWD_SDF_SRC).expect("design harus compile");
+    let mut engine = mivon_simulator::simulator::SimulationEngine::new(design, 100);
+    engine.use_dag_parallel = use_dag;
+    let idx = engine
+        .design
+        .top
+        .signals
+        .iter()
+        .position(|s| s.name == "c1")
+        .expect("c1 harus ada");
+    engine.design.top.signals[idx].delay_rise = Some(2000);
+    engine.design.top.signals[idx].delay_fall = Some(2000);
+    engine.run().expect("sim harus jalan");
+    let idx = engine
+        .design
+        .top
+        .signals
+        .iter()
+        .position(|s| s.name == "probe")
+        .expect("probe harus ada");
+    engine
+        .state
+        .read_signal(idx)
+        .bits
+        .iter()
+        .rev()
+        .map(|b| match b {
+            mivon_ir::LogicVal::Zero => '0',
+            mivon_ir::LogicVal::One => '1',
+            _ => 'x',
+        })
+        .collect()
+}
+
+#[test]
+fn dag_awd_batch_sdf_delay_diff() {
+    let d = run_sdf_probe(false);
+    let g = run_sdf_probe(true);
+    assert_eq!(g, d, "SDF delay: jalur paralel harus identik serial");
+    assert_eq!(g, "1", "SDF delay wajib menunda commit di jalur paralel");
 }
