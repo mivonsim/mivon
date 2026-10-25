@@ -1190,7 +1190,7 @@ COMP-10: ✅ Gate-level optimization lint (ROUND 91) — mlint --gate-opt:
          find_gate_opt_patterns() + find_redundant_assigns() deteksi
          sinyal yang ditulis >1x di scope sama (redundant assignment).
          CLI flag --gate-opt + LintArgs + dispatch.
-COMP-11: ⚠️ IN PROGRESS (ROUND 105/110/117/121) — FSM extraction:
+COMP-11: ✅ FIXED (ROUND 105/110/117/121/198) — FSM extraction:
          crates/maria-synth/src/fsm.rs — deteksi & ekstraksi FSM
          dari proses Sequential: state register = selector `case` yang
          juga ditulis NBA di proses yang sama; transisi dari label case
@@ -1210,7 +1210,16 @@ COMP-11: ⚠️ IN PROGRESS (ROUND 105/110/117/121) — FSM extraction:
          di combinational menulis `next`; refactor extract_from_case
          dipakai kedua jalur; skip bila tahap 1 sudah dapat. Batasan:
          case tingkat atas (tak dibungkus Block/If).
-         MASIH OPEN: FSM 3+ proses / hierarki instance.
+         Tahap 3 (ROUND 198): HIERARKI INSTANCE — extract_fsms_in_module
+         (module, scope) + wrapper extract_fsms memindai top lalu SEMUA
+         design.modules urut nama (deterministik); nama proses FSM
+         submodule diberi prefiks `<modul>.`; nama/lebar state diambil
+         dari signals modul itu (extract_from_case kini menerima slice
+         signals, bukan IrDesign). Top yang juga terdaftar di modules
+         tidak diekstrak dua kali. Proses ke-3 (output Moore) tidak
+         mengganggu deteksi (diverifikasi test integrasi). Batasan sisa:
+         logika transisi yang dipecah ke DUA comb process berbeda belum
+         digabung (case harus utuh di satu proses).
 COMP-12: ✅ Case analysis parallel_case/full_case (ROUND 85) — mlint
          new check --case-analysis: deteksi case/unique/priority tanpa default
          (warning potensi latch atau nilai tak terdefinisi). LintArgs +
@@ -11171,6 +11180,48 @@ VERIFIKASI ROUND 192:
    - cargo nextest run -p mivon-env --features lsp: 189 passed
      (verifikasi khusus modul lsp yang feature-gated).
    - Review: 3 ronde (TIDAK LOLOS -> TIDAK LOLOS -> LOLOS).
+
+═══ ROUND 198 — COMP-11 tahap 3: FSM lintas hierarki instance ═══
+
+Ruang lingkup: menutup sub-item terakhir COMP-11 ("FSM 3+ proses /
+hierarki instance"). Sebelumnya extract_fsms hanya memindai
+design.top.processes dan memakai design.top.signals, sehingga FSM di
+submodule tidak pernah muncul di `synth --fsm-report`.
+
+Perubahan (crates/mivon-synth/src/fsm.rs):
+  1. Refactor: extract_fsms_in_module(module, scope) berisi dua jalur
+     lama (tahap 1 single-process + tahap 2c dua-proses); nama proses
+     diberi prefiks `<modul>.` bila scope Some.
+  2. extract_from_case kini menerima `signals: &[SignalInfo]` (bukan
+     `&IrDesign`) → nama/lebar sinyal diambil dari modul yang benar.
+  3. Wrapper extract_fsms(design): top (scope None) lalu SEMUA
+     design.modules urut nama (deterministik, bukan urutan HashMap);
+     modul yang namanya sama dengan top dilewati (hindari duplikat).
+
+Test baru (+2):
+  1. fsm::tests::test_fsm_submodule_hierarchy — FSM di design.modules
+     terdeteksi dengan process_name "sub_fsm.state_machine", lebar dari
+     signals submodule, dua submodule urut nama (a_mod < z_mod), dan top
+     yang juga terdaftar di modules tidak diekstrak dua kali.
+  2. synth_phase4::fsm_extraction_covers_submodule_instances —
+     integrasi lewat elaborasi NYATA (mivon_api::compile_str): modul
+     sub_fsm tersimpan di ir.modules, FSM state 0→1→2 terdeteksi dengan
+     prefiks, dan proses ke-3 (always_comb output Moore) tidak
+     mengganggu deteksi.
+
+Status COMP-11: tahap 1/2a/2b/2c/3 selesai → item CLOSED. Batasan sisa
+  (didokumentasikan): logika transisi yang dipecah ke dua comb process
+  berbeda belum digabung (case harus utuh dalam satu proses).
+Item open berikutnya: LSP-04/LSP-11 (verifikasi penutupan), LSP-14
+  (terblokir lsp-types 0.94), JIT-01/02, LANG-01/02, PARSER-07,
+  ELAB-02/03/08, COMP-01/02, SIM-03/19, FORMAL-03/04/10/13, ENT-24/39,
+  FEAT-10/23.
+
+VERIFIKASI ROUND 198:
+   - cargo fmt --all --check -> bersih.
+   - cargo nextest run --workspace --features dev: 3675 passed,
+     24 skipped (3673 -> 3675, +2 test).
+   - cargo nextest run -p mivon-synth: 50 passed.
 
 ═══ ROUND 197 — LSP-12 tahap 2b: outline anggota ber-qualifier ═══
 

@@ -343,7 +343,7 @@ fn extract_from_case(
     default: &[IrStmt],
     state_sig: usize,
     next_sig: usize,
-    design: &IrDesign,
+    signals: &[SignalInfo],
 ) -> (Vec<u64>, Vec<FsmTransition>, Vec<FsmOutput>) {
     let mut states: Vec<u64> = Vec::new();
     let mut transitions: Vec<FsmTransition> = Vec::new();
@@ -414,7 +414,7 @@ fn extract_from_case(
         let mut deps = idx_deps.clone();
         collect_rhs_signals(rhs, &mut deps);
         let mealy = deps.iter().any(|d| *d != state_sig);
-        let name = design.top.signals.get(*id).map(|s| s.name.to_string());
+        let name = signals.get(*id).map(|s| s.name.to_string());
         let Some(name) = name else { continue };
         match outputs.iter_mut().find(|o| o.signal == name) {
             Some(o) => {
@@ -437,10 +437,17 @@ fn extract_from_case(
 }
 
 /// Ekstraksi FSM utama: pindai semua proses Sequential pada top module.
-pub fn extract_fsms(design: &IrDesign) -> Vec<FsmInfo> {
+/// COMP-11 tahap 3: ekstraksi per modul (dipakai top + submodule).
+/// `scope` = nama modul untuk FSM non-top; nama proses diberi prefiks
+/// `modul.proses` agar report tidak ambigu saat ada beberapa instance.
+fn extract_fsms_in_module(module: &IrModule, scope: Option<&str>) -> Vec<FsmInfo> {
     let mut fsms = Vec::new();
+    let scoped = |pname: &str| match scope {
+        Some(s) => format!("{}.{}", s, pname),
+        None => pname.to_string(),
+    };
 
-    for process in &design.top.processes {
+    for process in &module.processes {
         let (pname, body) = match process {
             Process::Sequential { name, body, .. } => (name.to_string(), body),
             _ => continue,
@@ -468,13 +475,13 @@ pub fn extract_fsms(design: &IrDesign) -> Vec<FsmInfo> {
                 continue;
             }
 
-            let Some(sig_info) = design.top.signals.get(*sig_id) else {
+            let Some(sig_info) = module.signals.get(*sig_id) else {
                 continue;
             };
             let (states, transitions, outputs) =
-                extract_from_case(items, default, *sig_id, *sig_id, design);
+                extract_from_case(items, default, *sig_id, *sig_id, &module.signals);
             let info = FsmInfo {
-                process_name: pname.clone(),
+                process_name: scoped(&pname),
                 state_signal: sig_info.name.to_string(),
                 state_width: sig_info.width,
                 states,
@@ -519,7 +526,7 @@ pub fn extract_fsms(design: &IrDesign) -> Vec<FsmInfo> {
             }
         }
         let mut copies: Vec<(usize, usize)> = Vec::new();
-        for process in &design.top.processes {
+        for process in &module.processes {
             let Process::Sequential { body, .. } = process else {
                 continue;
             };
@@ -527,8 +534,7 @@ pub fn extract_fsms(design: &IrDesign) -> Vec<FsmInfo> {
         }
         for (state_sig, next_sig) in &copies {
             if fsms.iter().any(|f| {
-                design
-                    .top
+                module
                     .signals
                     .get(*state_sig)
                     .map(|s| s.name == f.state_signal)
@@ -536,7 +542,7 @@ pub fn extract_fsms(design: &IrDesign) -> Vec<FsmInfo> {
             }) {
                 continue;
             }
-            for process in &design.top.processes {
+            for process in &module.processes {
                 let (pname, body) = match process {
                     Process::Combinational { name, body, .. }
                     | Process::CombReactive { name, body, .. } => (name.to_string(), body),
@@ -558,16 +564,16 @@ pub fn extract_fsms(design: &IrDesign) -> Vec<FsmInfo> {
                     if *sel != *state_sig {
                         continue;
                     }
-                    let Some(sig_info) = design.top.signals.get(*state_sig) else {
+                    let Some(sig_info) = module.signals.get(*state_sig) else {
                         continue;
                     };
                     let (states, transitions, outputs) =
-                        extract_from_case(items, default, *state_sig, *next_sig, design);
+                        extract_from_case(items, default, *state_sig, *next_sig, &module.signals);
                     if transitions.is_empty() {
                         continue;
                     }
                     fsms.push(FsmInfo {
-                        process_name: pname.clone(),
+                        process_name: scoped(&pname),
                         state_signal: sig_info.name.to_string(),
                         state_width: sig_info.width,
                         states,
@@ -580,6 +586,27 @@ pub fn extract_fsms(design: &IrDesign) -> Vec<FsmInfo> {
     }
 
     fsms
+}
+
+/// Ekstraksi FSM untuk SELURUH hierarki (COMP-11 tahap 3): top module
+/// lebih dulu, lalu setiap modul di `design.modules` urut nama (deterministik).
+/// FSM submodule diberi prefiks `<modul>.<proses>` pada `process_name`.
+pub fn extract_fsms(design: &IrDesign) -> Vec<FsmInfo> {
+    let mut out = extract_fsms_in_module(&design.top, None);
+    let mut names: Vec<_> = design.modules.keys().collect();
+    names.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+    for name in names {
+        // Top bisa ikut terdaftar di modules pada sebagian jalur — jangan
+        // diekstrak dua kali.
+        if *name == design.top.name {
+            continue;
+        }
+        let Some(module) = design.modules.get(name) else {
+            continue;
+        };
+        out.extend(extract_fsms_in_module(module, Some(name.as_str())));
+    }
+    out
 }
 
 /// COMP-11 tahap 2a: state terpakai = muncul di ≥1 transisi
@@ -1038,5 +1065,57 @@ mod tests {
         let mut design2 = design.clone();
         design2.top.processes.remove(0);
         assert!(extract_fsms(&design2).is_empty());
+    }
+
+    #[test]
+    fn test_fsm_submodule_hierarchy() {
+        // COMP-11 tahap 3: FSM di submodule (design.modules) ikut diekstrak;
+        // nama proses diberi prefiks `<modul>.` dan lebar/nama state diambil
+        // dari signals modul itu (bukan top).
+        let mut design = IrDesign::default();
+        design.top.name = Symbol::from("top");
+        design.top.signals = vec![SignalInfo {
+            name: Symbol::from("clk"),
+            width: 1,
+            ..Default::default()
+        }];
+        design.top.processes = Vec::new();
+
+        let mut sub = make_design().top;
+        sub.name = Symbol::from("sub_fsm");
+        design.modules.insert(Symbol::from("sub_fsm"), sub);
+
+        let fsms = extract_fsms(&design);
+        assert_eq!(fsms.len(), 1, "FSM submodule harus terdeteksi");
+        let f = &fsms[0];
+        assert_eq!(f.process_name, "sub_fsm.state_machine");
+        assert_eq!(f.state_signal, "state");
+        assert_eq!(f.state_width, 2, "lebar dari signals submodule");
+        assert_eq!(f.states, vec![0, 1, 2]);
+
+        // Determinisme: dua submodule → urut nama modul (bukan urutan HashMap).
+        let mut z = make_design().top;
+        z.name = Symbol::from("z_mod");
+        let mut a = make_design().top;
+        a.name = Symbol::from("a_mod");
+        design.modules.clear();
+        design.modules.insert(Symbol::from("z_mod"), z);
+        design.modules.insert(Symbol::from("a_mod"), a);
+        let names: Vec<String> = extract_fsms(&design)
+            .into_iter()
+            .map(|f| f.process_name)
+            .collect();
+        assert_eq!(
+            names,
+            vec!["a_mod.state_machine", "z_mod.state_machine"],
+            "urutan harus deterministik (nama modul menaik)"
+        );
+
+        // Top yang juga terdaftar di modules tidak diekstrak dua kali.
+        let mut dup = IrDesign::default();
+        let top_fsm = make_design().top;
+        dup.top = top_fsm.clone();
+        dup.modules.insert(top_fsm.name, top_fsm);
+        assert_eq!(extract_fsms(&dup).len(), 1, "top tidak boleh duplikat");
     }
 }

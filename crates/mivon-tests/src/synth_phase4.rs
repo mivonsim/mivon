@@ -206,3 +206,46 @@ fn synth_tool_emit_mapped_netlist_smoke() {
         "tech mvnet file"
     );
 }
+
+/// COMP-11 tahap 3: FSM di SUBMODULE ikut terdeteksi lewat elaborasi nyata
+/// (`design.modules` diisi elaborator), bukan hanya top module.
+#[test]
+fn fsm_extraction_covers_submodule_instances() {
+    let src = r#"
+module sub_fsm(input logic clk, output logic [1:0] o, output logic [1:0] o2);
+    logic [1:0] state;
+    always_ff @(posedge clk) begin
+        case (state)
+            2'd0: state <= 2'd1;
+            2'd1: state <= 2'd2;
+            default: state <= 2'd0;
+        endcase
+    end
+    // Proses ke-3 (output Moore) — tidak boleh mengganggu deteksi FSM.
+    always_comb o2 = state + 2'd1;
+    assign o = state;
+endmodule
+
+module top(input logic clk, output logic [1:0] o, output logic [1:0] o2);
+    sub_fsm u(.clk(clk), .o(o), .o2(o2));
+endmodule
+"#;
+    let ir = mivon_api::compile_str(src).expect("compile RTL hierarki");
+    assert!(
+        ir.modules
+            .contains_key(&mivon_core::Symbol::from("sub_fsm")),
+        "elaborator harus menyimpan modul sub_fsm"
+    );
+    let fsms = mivon_synth::fsm::extract_fsms(&ir);
+    let names: Vec<&str> = fsms.iter().map(|f| f.process_name.as_str()).collect();
+    assert!(
+        names.iter().any(|n| n.starts_with("sub_fsm.")),
+        "FSM submodule harus muncul dengan prefiks modul: {names:?}"
+    );
+    let f = fsms
+        .iter()
+        .find(|f| f.state_signal == "state")
+        .expect("state register submodule");
+    assert_eq!(f.states, vec![0, 1, 2], "{:?}", f.states);
+    assert_eq!(f.state_width, 2);
+}
