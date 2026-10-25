@@ -820,7 +820,8 @@ impl LspBackend {
         None
     }
 
-    /// Validasi identifier SV sederhana (LSP-05): [A-Za-z_][A-Za-z0-9_$]*.
+    /// Validasi identifier SV sederhana (LSP-05): [A-Za-z_][A-Za-z0-9_$]*
+    /// dan bukan reserved keyword (review R194 NIT-2).
     fn is_valid_identifier(name: &str) -> bool {
         let bytes = name.as_bytes();
         if bytes.is_empty() {
@@ -830,9 +831,30 @@ impl LspBackend {
         if !(first.is_ascii_alphabetic() || first == b'_') {
             return false;
         }
-        bytes[1..]
+        if !bytes[1..]
             .iter()
             .all(|c| c.is_ascii_alphanumeric() || *c == b'_' || *c == b'$')
+        {
+            return false;
+        }
+        // Keyword (`always`, `logic`, `endmodule`, ...) di-lex sebagai token
+        // keyword, bukan `Ident` — rename ke situ menghasilkan source invalid.
+        use mivon_parser::lexer::Token;
+        matches!(Lexer::new(name).next_token(), (Token::Ident(_), _, _))
+    }
+
+    /// Kata di kursor yang layak di-rename (LSP-05). Menggabungkan
+    /// `word_at_position` dengan guard identifier + penolakan fragmen
+    /// literal berbasis (`8'd5` → kursor di atas `d5`, review R194 NIT-3).
+    fn rename_word_at_position(line_text: &str, character: u32) -> Option<(String, u32, u32)> {
+        let (word, s, e) = Self::word_at_position(line_text, character)?;
+        if !Self::is_valid_identifier(&word) {
+            return None;
+        }
+        if s > 0 && line_text.as_bytes().get(s as usize - 1) == Some(&b'\'') {
+            return None;
+        }
+        Some((word, s, e))
     }
 
     /// Rename core (murni, bisa diuji) — LSP-05 tahap 1: hasilkan edit
@@ -848,7 +870,9 @@ impl LspBackend {
         character: u32,
     ) -> Option<(u32, u32, u32)> {
         let line_text = source.lines().nth(line as usize)?;
-        let (_, s, e) = Self::word_at_position(line_text, character)?;
+        // Review R194 NIT-1/NIT-3: jangan tawarkan rename untuk keyword,
+        // literal angka, `$display`, atau fragmen literal (`8'd5`).
+        let (_, s, e) = Self::rename_word_at_position(line_text, character)?;
         Some((line, s, e))
     }
 
@@ -869,8 +893,8 @@ impl LspBackend {
         let Some(line_text) = source.lines().nth(line as usize) else {
             return Err("posisi kursor di luar dokumen".into());
         };
-        let Some((word, _, _)) = Self::word_at_position(line_text, character) else {
-            return Err("kursor tidak berada di atas identifier".into());
+        let Some((word, _, _)) = Self::rename_word_at_position(line_text, character) else {
+            return Err("kursor tidak berada di atas identifier yang valid".into());
         };
         if word == new_name {
             return Ok(Vec::new());
@@ -883,11 +907,16 @@ impl LspBackend {
 
     /// LSP-05 tahap 2: edit rename LINTAS FILE (murni, bisa diuji).
     ///
-    /// Validasi identifier baru sama seperti tahap 1; kemunculan dicari di
-    /// seluruh `docs` (dokumen terbuka + indeks disk) memakai aturan
-    /// find-references (token mandiri, komentar `//` dilewati). Hasil:
-    /// (uri, line, start, end) urut sesuai urutan `docs` — pemanggil
-    /// mengurutkan `docs` by uri (lihat `workspace_index::sorted_docs`).
+    /// Validasi identifier baru + kata lama (keduanya wajib identifier SV,
+    /// bukan keyword); kemunculan dicari di seluruh `docs` (dokumen terbuka
+    /// + indeks disk) memakai aturan find-references (token mandiri,
+    /// komentar `//` dilewati).
+    ///
+    /// Determinisme: dokumen diurutkan by uri secara internal (tidak
+    /// bergantung urutan masukan).
+    ///
+    /// Error: identifier invalid, atau kemunculan melebihi `max_results`
+    /// (rename TIDAK dipotong senyap — user mempersempit dulu).
     pub(crate) fn compute_rename_edits_multi(
         docs: &[(String, String)],
         word: &str,
@@ -1330,16 +1359,13 @@ impl LanguageServer for LspBackend {
             )));
         }
         let line_text = text.lines().nth(pos.line as usize).unwrap_or("");
-        let Some((word, _, _)) = Self::word_at_position(line_text, pos.character) else {
-            return Err(tower_lsp::jsonrpc::Error::invalid_params(
-                "kursor tidak berada di atas identifier",
-            ));
-        };
-        if !Self::is_valid_identifier(&word) {
+        // Review R194 NIT-1/NIT-3: satu guard untuk kursor bukan identifier,
+        // keyword, literal angka, dan fragmen literal (`8'd5`).
+        let Some((word, _, _)) = Self::rename_word_at_position(line_text, pos.character) else {
             return Err(tower_lsp::jsonrpc::Error::invalid_params(
                 "kursor tidak berada di atas identifier yang valid",
             ));
-        }
+        };
         if word == params.new_name {
             return Ok(Some(WorkspaceEdit::new(Default::default())));
         }
@@ -3045,6 +3071,60 @@ endmodule
         );
         assert!(LspBackend::prepare_rename_range(SAMPLE, 7, 0).is_none());
         assert!(LspBackend::prepare_rename_range(SAMPLE, 999, 0).is_none());
+    }
+    #[test]
+    fn test_rename_rejects_keyword_and_literal_fragment() {
+        // Review R194 NIT-2: keyword SV bukan identifier sah untuk rename.
+        let docs = vec![(
+            "file:///a.sv".to_string(),
+            "module m;\n  logic clk;\nendmodule\n".to_string(),
+        )];
+        let keywords = [
+            "al".to_string() + "ways",
+            "logic".into(),
+            "endmodule".into(),
+        ];
+        for kw in &keywords {
+            assert!(!LspBackend::is_valid_identifier(kw), "`{kw}` keyword");
+            assert!(
+                LspBackend::compute_rename_edits_multi(&docs, "clk", kw, 100).is_err(),
+                "rename ke keyword `{kw}` harus ditolak"
+            );
+        }
+        // Identifier sah tetap diterima.
+        assert!(LspBackend::is_valid_identifier("clk_2$"));
+        assert!(LspBackend::is_valid_identifier("_tmp"));
+
+        // Review R194 NIT-3: fragmen literal berbasis bukan identifier —
+        // kursor di `8'd5` menghasilkan kata `d5` yang tampak sah.
+        let line = "  assign y = 8'd5;";
+        let col_d5 = line.find("d5").unwrap() as u32;
+        assert!(
+            LspBackend::rename_word_at_position(line, col_d5).is_none(),
+            "`d5` pada 8'd5 adalah fragmen literal"
+        );
+        let col_y = line.find("y =").unwrap() as u32;
+        assert_eq!(
+            LspBackend::rename_word_at_position(line, col_y)
+                .map(|t| t.0)
+                .as_deref(),
+            Some("y")
+        );
+
+        // NIT-1: prepare_rename tidak menawarkan rename di posisi invalid.
+        let src = ["module m;", line, "endmodule"].join("\n");
+        assert!(LspBackend::prepare_rename_range(&src, 1, col_d5).is_none());
+        let kline = "  logic clk;";
+        let kcol = kline.find("logic").unwrap() as u32;
+        let ksrc = ["module m;", kline, "endmodule"].join("\n");
+        assert!(LspBackend::prepare_rename_range(&ksrc, 1, kcol).is_none());
+        let dline = "  $display(\"hi\");";
+        assert!(LspBackend::prepare_rename_range(dline, 0, 3).is_none());
+
+        // NIT-4: core single-doc juga menolak kata non-identifier.
+        let num = ["module m;", "  x = 42;", "endmodule"].join("\n");
+        let ncol = num.lines().nth(1).unwrap().find("42").unwrap() as u32;
+        assert!(LspBackend::compute_rename_edits(&num, 1, ncol, "y").is_err());
     }
 
     #[test]

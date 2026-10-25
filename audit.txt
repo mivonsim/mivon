@@ -11211,6 +11211,26 @@ Review agent R194: TIDAK LOLOS (2 BLOCKER + 1 MAJOR) → fix:
     changes tanpa documentChanges/versi (TOCTOU utk file disk).
     LSP-05 ditandai ✅ dgn caveat ini.
 
+Review agent R194 RONDE 2 (setelah fix be4ee71): LOLOS — ketiga syarat
+  ronde 1 terverifikasi (cap→Err tanpa off-by-one & terpetakan ke
+  invalid_params, is_valid_identifier di core+handler sebelum scan,
+  validasi murni sebelum spawn_blocking). Test dinilai diskriminatif.
+  NIT diterapkan (commit tindak lanjut):
+   NIT-1: prepare_rename tidak lagi menawarkan rename utk keyword /
+     literal / `$display` (rename_word_at_position → None).
+   NIT-2: is_valid_identifier menolak reserved keyword SV — diverifikasi
+     via lexer (Token::Ident vs token keyword), bukan daftar manual.
+   NIT-3: fragmen literal berbasis (`8'd5` → kata `d5`) ditolak karena
+     apostrof tepat sebelum kata.
+   NIT-4: compute_rename_edits (API tahap 1) ikut memvalidasi kata lama.
+   NIT-6: doc-comment compute_rename_edits_multi diperbarui
+     (determinisme internal + kontrak error).
+  NIT-5 (test handler urut validasi-sebelum-scan) DITUNDA — butuh
+  harness LspService; urutan divalidasi manual + helper murni.
+  VERIFIKASI tindak lanjut: fmt bersih; --workspace --features dev
+  3666 passed / 24 skipped (+1 test); -p mivon-env --features lsp
+  195 passed.
+
 ═══ ROUND 193 — LSP-04 tahap 2: find-references lintas file ═══
 
 Ruang lingkup: menutup sub-item "cross-file index" pada LSP-04 —
