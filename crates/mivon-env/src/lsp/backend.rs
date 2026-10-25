@@ -852,6 +852,8 @@ impl LspBackend {
         Some((line, s, e))
     }
 
+    #[allow(dead_code)] // API tahap 1 (single-doc) — dipakai test; produksi
+                        // memakai compute_rename_edits_multi (tahap 2).
     pub(crate) fn compute_rename_edits(
         source: &str,
         line: u32,
@@ -877,6 +879,34 @@ impl LspBackend {
         Ok(Self::find_references(source, line, character)
             .into_iter()
             .collect())
+    }
+
+    /// LSP-05 tahap 2: edit rename LINTAS FILE (murni, bisa diuji).
+    ///
+    /// Validasi identifier baru sama seperti tahap 1; kemunculan dicari di
+    /// seluruh `docs` (dokumen terbuka + indeks disk) memakai aturan
+    /// find-references (token mandiri, komentar `//` dilewati). Hasil:
+    /// (uri, line, start, end) urut sesuai urutan `docs` — pemanggil
+    /// mengurutkan `docs` by uri (lihat `workspace_index::sorted_docs`).
+    pub(crate) fn compute_rename_edits_multi(
+        docs: &[(String, String)],
+        word: &str,
+        new_name: &str,
+        max_results: usize,
+    ) -> Result<Vec<(String, u32, u32, u32)>, String> {
+        if !Self::is_valid_identifier(new_name) {
+            return Err(format!(
+                "'{}' bukan identifier SystemVerilog yang valid",
+                new_name
+            ));
+        }
+        if word.is_empty() {
+            return Err("kursor tidak berada di atas identifier".into());
+        }
+        if word == new_name {
+            return Ok(Vec::new());
+        }
+        Ok(Self::find_references_in_docs(docs, word, max_results))
     }
 
     /// Core go-to-definition (murni, bisa diuji): cari lokasi definisi dari
@@ -1259,35 +1289,52 @@ impl LanguageServer for LspBackend {
         }))
     }
 
-    /// Rename (LSP-05 tahap 1): rename identifier di seluruh dokumen.
+    /// Rename (LSP-05 tahap 1+2): rename identifier di seluruh dokumen DAN
+    /// lintas file (dokumen terbuka + indeks disk).
     async fn rename(&self, params: RenameParams) -> JsonRpcResult<Option<WorkspaceEdit>> {
         let uri = &params.text_document_position.text_document.uri;
         let pos = params.text_document_position.position;
         let Some(text) = self.document_text(uri) else {
             return Ok(None);
         };
-        match Self::compute_rename_edits(&text, pos.line, pos.character, &params.new_name) {
-            Ok(edits) => {
-                let changes: std::collections::HashMap<lsp_types::Url, Vec<lsp_types::TextEdit>> =
-                    std::collections::HashMap::from([(
-                        uri.clone(),
-                        edits
-                            .into_iter()
-                            .map(|(line, start, end)| lsp_types::TextEdit {
-                                range: Range {
-                                    start: Position {
-                                        line,
-                                        character: start,
-                                    },
-                                    end: Position {
-                                        line,
-                                        character: end,
-                                    },
-                                },
-                                new_text: params.new_name.clone(),
-                            })
-                            .collect(),
-                    )]);
+        let line_text = text.lines().nth(pos.line as usize).unwrap_or("");
+        let Some((word, _, _)) = Self::word_at_position(line_text, pos.character) else {
+            return Err(tower_lsp::jsonrpc::Error::invalid_params(
+                "kursor tidak berada di atas identifier",
+            ));
+        };
+        let docs =
+            workspace_index::ensure_doc(self.collect_workspace_docs().await, uri.as_str(), &text);
+        match Self::compute_rename_edits_multi(
+            &docs,
+            &word,
+            &params.new_name,
+            MAX_CROSS_FILE_REFERENCES,
+        ) {
+            Ok(hits) => {
+                let mut changes: std::collections::HashMap<
+                    lsp_types::Url,
+                    Vec<lsp_types::TextEdit>,
+                > = std::collections::HashMap::new();
+                for (u, line, start, end) in hits {
+                    let Ok(file_uri) = Url::parse(&u) else {
+                        continue;
+                    };
+                    let edit = lsp_types::TextEdit {
+                        range: Range {
+                            start: Position {
+                                line,
+                                character: start,
+                            },
+                            end: Position {
+                                line,
+                                character: end,
+                            },
+                        },
+                        new_text: params.new_name.clone(),
+                    };
+                    changes.entry(file_uri).or_default().push(edit);
+                }
                 Ok(Some(WorkspaceEdit::new(changes)))
             }
             Err(msg) => Err(tower_lsp::jsonrpc::Error::invalid_params(msg)),
@@ -2864,6 +2911,69 @@ endmodule
             edits_cnt
         );
         assert!(edits_cnt.iter().all(|(l, _, _)| *l >= cnt_decl));
+    }
+
+    #[test]
+    fn test_rename_edits_across_documents() {
+        // LSP-05 tahap 2: rename lintas file (dokumen terbuka + disk).
+        let docs = vec![
+            (
+                "file:///top.sv".to_string(),
+                "module top;\n  logic clk;\n  sub u0 (.clk(clk));\nendmodule\n".to_string(),
+            ),
+            (
+                "file:///sub.sv".to_string(),
+                "module sub (input logic clk);\n  always_ff @(posedge clk) ;\nendmodule\n"
+                    .to_string(),
+            ),
+        ];
+        let hits = LspBackend::compute_rename_edits_multi(&docs, "clk", "clock", 100).unwrap();
+        // top: decl + 2x di baris instance = 3; sub: port + posedge = 2.
+        assert_eq!(hits.len(), 5, "{hits:?}");
+        assert_eq!(hits.iter().filter(|h| h.0 == "file:///top.sv").count(), 3);
+        assert_eq!(hits.iter().filter(|h| h.0 == "file:///sub.sv").count(), 2);
+
+        // Pengelompokan per-uri (seperti handler): tiap file punya edit
+        // terurut baris menaik dan rentang = panjang nama lama.
+        let mut per_uri: std::collections::HashMap<&str, Vec<(u32, u32, u32)>> =
+            std::collections::HashMap::new();
+        for (u, line, start, end) in &hits {
+            per_uri
+                .entry(u.as_str())
+                .or_default()
+                .push((*line, *start, *end));
+        }
+        assert_eq!(per_uri.len(), 2, "harus ada edit di 2 file: {per_uri:?}");
+        for (_, edits) in per_uri.iter() {
+            let lines: Vec<u32> = edits.iter().map(|e| e.0).collect();
+            let mut sorted = lines.clone();
+            sorted.sort();
+            assert_eq!(lines, sorted, "edit per file harus urut baris");
+            assert!(edits.iter().all(|e| e.2 == e.1 + 3), "rentang = len(clk)");
+        }
+
+        // Validasi & no-op.
+        assert!(LspBackend::compute_rename_edits_multi(&docs, "clk", "1bad", 100).is_err());
+        assert!(LspBackend::compute_rename_edits_multi(&docs, "clk", "", 100).is_err());
+        assert!(LspBackend::compute_rename_edits_multi(&docs, "", "clock", 100).is_err());
+        assert!(
+            LspBackend::compute_rename_edits_multi(&docs, "clk", "clk", 100)
+                .unwrap()
+                .is_empty()
+        );
+        // Nama yang tidak ada di dokumen mana pun → kosong (bukan error).
+        assert!(
+            LspBackend::compute_rename_edits_multi(&docs, "tidak_ada", "x", 100)
+                .unwrap()
+                .is_empty()
+        );
+        // Cap dihormati.
+        assert_eq!(
+            LspBackend::compute_rename_edits_multi(&docs, "clk", "clock", 2)
+                .unwrap()
+                .len(),
+            2
+        );
     }
 
     #[test]

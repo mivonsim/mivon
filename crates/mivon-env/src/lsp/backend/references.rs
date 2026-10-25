@@ -7,6 +7,8 @@ impl LspBackend {
     /// semua kemunculan identifier (sebagai token mandiri) dalam dokumen,
     /// urut baris. `include_declaration` tetap dikembalikan penuh — caller
     /// (handler) yang memfilter bila diminta tanpa deklarasi.
+    #[allow(dead_code)] // API tahap 1 (single-doc) — dipakai test; produksi
+                        // memakai find_references_in_docs (tahap 2).
     pub(crate) fn find_references(source: &str, line: u32, character: u32) -> Vec<(u32, u32, u32)> {
         let Some(line_text) = source.lines().nth(line as usize) else {
             return Vec::new();

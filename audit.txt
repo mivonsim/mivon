@@ -1995,14 +1995,20 @@ LSP-04: ⚠️ IN PROGRESS (ROUND 94/193) — find-references tahap 1+2:
          test_find_references_docs_order_is_deterministic.
          MASIH OPEN: cross-file rename (LSP-05) + param
          include_declaration belum dihormati (dikembalikan penuh).
-LSP-05: ⚠️ IN PROGRESS (ROUND 95/116) — rename tahap 1+2a:
+LSP-05: ✅ FIXED (ROUND 95/116/194) — rename tahap 1+2a+2b:
          backend.rs — capability rename_provider + handler rename;
          core murni compute_rename_edits(): validasi identifier baru
          ([A-Za-z_][A-Za-z0-9_$]*), hasilkan edit semua kemunculan
          (via find_references → word-boundary aman). Tahap 2a
          (ROUND 116): prepare_rename handler (capability RenameOptions
          prepare_provider) + core prepare_rename_range + placeholder.
-         MASIH OPEN: cross-file rename.
+         Tahap 2b (ROUND 194): rename LINTAS FILE — core
+         compute_rename_edits_multi(docs, word, new_name, max) (validasi
+         sama + find_references_in_docs) dan handler rename memakai
+         collect_workspace_docs + ensure_doc → WorkspaceEdit berisi
+         edit per-uri (HashMap<Url, Vec<TextEdit>>), tiap daftar urut
+         baris. API tahap 1 (find_references/compute_rename_edits)
+         dipertahankan utk test + kompatibilitas.
 LSP-06: ✅ FIXED (ROUND 95/113/126) — hover lengkap:
          backend.rs — capability hover_provider + handler hover;
          core murni hover_info(): markdown **kind** `name` + snippet
@@ -11137,6 +11143,47 @@ VERIFIKASI ROUND 192:
    - cargo nextest run -p mivon-env --features lsp: 189 passed
      (verifikasi khusus modul lsp yang feature-gated).
    - Review: 3 ronde (TIDAK LOLOS -> TIDAK LOLOS -> LOLOS).
+
+═══ ROUND 194 — LSP-05 tahap 2b: rename lintas file ═══
+
+Ruang lingkup: menutup sub-item terakhir LSP-05 ("cross-file
+rename") — tahap 1/2a hanya mengganti kemunculan di dokumen aktif,
+padahal find-references (LSP-04 tahap 2) sudah lintas file →
+user melihat referensi di banyak file tapi rename hanya mengubah
+satu (silent incomplete rename).
+
+Perubahan:
+  1. backend.rs: core murni compute_rename_edits_multi(docs, word,
+     new_name, max_results) — validasi identifier baru sama seperti
+     tahap 1 (is_valid_identifier), word kosong → Err, word ==
+     new_name → Ok(kosong), sisanya find_references_in_docs.
+  2. handler rename: kata diambil dari dokumen aktif (word_at_position,
+     Err invalid_params bila bukan identifier), docs =
+     ensure_doc(collect_workspace_docs(), uri, text) — invariant
+     uri-ascending (R193) — lalu dikelompokkan jadi
+     WorkspaceEdit { changes: HashMap<Url, Vec<TextEdit>> } dengan
+     edit per file urut baris.
+  3. API tahap 1 (find_references, compute_rename_edits) dipertahankan
+     utk test + kompatibilitas; diberi #[allow(dead_code)] + komentar
+     karena produksi memakai versi multi (hindari warning build).
+
+Test baru (+1): test_rename_edits_across_documents — 2 dokumen
+  (top.sv/sub.sv), rename clk→clock: 5 hit (3+2), pengelompokan
+  per-uri = 2 file, tiap daftar urut baris, rentang = len("clk"),
+  validasi identifier ("1bad", "", word kosong) → Err, clk→clk →
+  kosong, nama tak ada → kosong (bukan error), cap dihormati.
+
+Status LSP-05: tahap 1+2a+2b selesai → item CLOSED.
+Item open berikutnya: LSP-03 (cross-file go-to-definition), LSP-12/14,
+  Arsitektur-01..04/06, JIT-01/02, ELAB-02/03/08, COMP-01/02/11,
+  SIM-03/19, VERIF-20, FORMAL-03/04/10/13, ENT-24/39, FEAT-10/23,
+  PARSER-07, LANG-01/02.
+
+VERIFIKASI ROUND 194:
+   - cargo fmt --all --check -> bersih.
+   - cargo nextest run --workspace --features dev: 3665 passed,
+     24 skipped (3664 -> 3665, +1 test).
+   - cargo nextest run -p mivon-env --features lsp: 194 passed.
 
 ═══ ROUND 193 — LSP-04 tahap 2: find-references lintas file ═══
 
