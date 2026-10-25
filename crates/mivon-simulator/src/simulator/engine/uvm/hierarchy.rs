@@ -5,6 +5,16 @@ use mivon_core::error::SimError;
 use mivon_core::Symbol;
 use mivon_ir::*;
 
+/// Layer builtin UVM/OVM yang menangani method polos tanpa `this.`
+/// (VERIF-20 tahap 4). Enum (bukan string) supaya salah tulis nama layer
+/// jadi error kompilasi, bukan fallback mati senyap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum UvmLayer {
+    Object,
+    ReportObject,
+    Component,
+}
+
 impl SimulationEngine {
     pub(crate) fn find_phase_class_name(&self) -> Option<String> {
         let phase_methods = [
@@ -542,7 +552,7 @@ impl SimulationEngine {
     /// builtin. None bila ujung chain bukan kelas library yang dikenal —
     /// penting agar class user dengan parent asing tidak salah didispatch
     /// (is_uvm_*_hierarchy memakai fallback "conservative" yang longgar).
-    pub(crate) fn uvm_builtin_base(&self, class_name: &str) -> Option<&'static str> {
+    pub(crate) fn uvm_builtin_base(&self, class_name: &str) -> Option<UvmLayer> {
         let mut current = class_name;
         // Guard rantai siklik (extends A → B → A tidak valid, tapi jangan
         // sampai loop tak berujung).
@@ -556,9 +566,9 @@ impl SimulationEngine {
             match self.design.classes.get(&Symbol::intern(current)) {
                 Some(c) => match &c.extends {
                     Some(parent) => current = parent.as_str(),
-                    None => return None,
+                    None => return Self::uvm_library_fallback(current),
                 },
-                None => return None,
+                None => return Self::uvm_library_fallback(current),
             }
         }
         None
@@ -568,16 +578,33 @@ impl SimulationEngine {
     /// builtin. `uvm_component`/`uvm_report_object` mencakup rantai ke
     /// `uvm_object`, jadi method object (get_name, set_name, print, ...)
     /// tersedia di subclass komponen.
-    fn uvm_layer_of(name: &str) -> Option<&'static str> {
+    fn uvm_layer_of(name: &str) -> Option<UvmLayer> {
         match name {
-            "__uvm_object" | "uvm_object" | "__ovm_object" | "ovm_object" => Some("object"),
+            "__uvm_object" | "uvm_object" | "__ovm_object" | "ovm_object" => Some(UvmLayer::Object),
             "__uvm_report_object" | "uvm_report_object" | "ovm_report_object" => {
-                Some("report_object")
+                Some(UvmLayer::ReportObject)
             }
             "__uvm_component" | "uvm_component" | "__ovm_component" | "ovm_component" => {
-                Some("component")
+                Some(UvmLayer::Component)
             }
             _ => None,
+        }
+    }
+
+    /// Terminal chain = kelas library yang tidak terdaftar di design (mis.
+    /// `ovm_driver`, `uvm_sequence_item`, `uvm_env`). Samakan dengan fallback
+    /// super-dispatch (`uvm/builtin.rs`): prefiks `ovm_` → layer object,
+    /// `uvm_` → layer report_object. Keduanya berujung ke uvm_object, jadi
+    /// method object polos (get_name/set_name/print/...) bekerja; method
+    /// khusus family (mis. `start_item`) tetap ditangani F18/handler
+    /// khusus — bukan jalur ini. Nama non-UVM → None (error keras tetap).
+    fn uvm_library_fallback(name: &str) -> Option<UvmLayer> {
+        if name.starts_with("ovm_") {
+            Some(UvmLayer::Object)
+        } else if name.starts_with("uvm_") {
+            Some(UvmLayer::ReportObject)
+        } else {
+            None
         }
     }
 

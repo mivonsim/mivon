@@ -1743,10 +1743,14 @@ VERIF-20: ✅ FIXED (ROUND 85b/122/140/196) — OVM compatibility tahap 1..4:
          extends chain sampai layer library (object/report_object/
          component) lalu dispatch PRESISI ke execute_uvm_*_method. Tidak
          memakai execute_method karena is_uvm_*_hierarchy punya fallback
-         "conservative" yang longgar (get_name() salah mendarat di layer
-         event). Unknown method tetap error keras dari layer builtin.
-         Test 3 (+3): OVM subclass, komponen subclass, dan guard unknown
-         method → Err (bukan 0 senyap).
+         "conservative" yang longgar (pemilihan layer jadi ambigu).
+         Terminal chain yang tak terdaftar (alias ovm_driver,
+         ovm_sequence_item, uvm_env, ...) → fallback prefiks: `ovm_` →
+         layer object, `uvm_` → layer report_object (parity dengan
+         super-dispatch). Layer = enum UvmLayer (bukan string). Unknown
+         method tetap error keras dari layer builtin.
+         Test 4 (+4): OVM subclass, komponen subclass, alias family
+         (ovm_driver + ovm_sequence_item), dan guard unknown method → Err.
 VERIF-21: [x] Functional coverage integration ke coverage database —
          RE-VERIFIKASI (ROUND 66): CoverageDatabase.merge_from_engine
          (coverage_db.rs:232) sudah membawa covergroup/coverpoint/cross
@@ -11204,11 +11208,34 @@ Item open berikutnya: LSP-12 (sub-item sudah closed di LSP-11/15 — perlu
   COMP-01/02/11, SIM-03/19, FORMAL-03/04/10/13, ENT-24/39, FEAT-10/23,
   PARSER-07, LANG-01/02.
 
+Review agent R196 ronde 1: TIDAK LOLOS (1 BUG + 5 NIT) → fix:
+  BUG-1 (asimetri OVM): uvm_layer_of hanya mengenal ovm_object/
+    ovm_component/ovm_report_object, padahal BUILTIN_UVM_CLASSES
+    mendaftarkan 19 alias ovm_* → `extends ovm_driver` /
+    `extends ovm_sequence_item` tetap RT9003. Fix: uvm_library_fallback
+    untuk terminal chain yang tak terdaftar di design — prefiks `ovm_`
+    → layer object, `uvm_` → layer report_object (sama dengan fallback
+    super-dispatch di uvm/builtin.rs). Probe CLI: ovm_driver &
+    ovm_sequence_item → r=1. Test baru (+1):
+    test_ovm_alias_family_plain_name_builtin.
+  NIT-1: komentar "lewat execute_method" dikoreksi (dispatch langsung).
+  NIT-2: didokumentasikan bahwa nama berakhiran `_phase` di layer object
+    memang Ok(1) (arm lama uvm/object.rs) — bukan jalur baru.
+  NIT-3: klaim "execute_method salah mendarat" dilunakkan (akurat untuk
+    rantai lengkap; dispatch presisi dipilih agar pemilihan layer tidak
+    bergantung heuristik longgar).
+  NIT-5: layer dikembalikan sebagai enum UvmLayer (bukan &str) → salah
+    tulis nama layer jadi error kompilasi, bukan fallback mati senyap.
+  NIT-4 (rantai siklik bisa hang di find_method_quiet SEBELUM
+    uvm_builtin_base) DICATAT sebagai backlog — pre-existing, butuh
+    walker ber-guard bersama di uvm/util.rs.
+
 VERIFIKASI ROUND 196:
    - cargo fmt --all --check -> bersih.
-   - cargo nextest run --workspace --features dev: 3670 passed,
-     24 skipped (3667 -> 3670, +3 test).
-   - Probe manual (CLI): /tmp ovm_plain.sv & uvm_comp_plain.sv → r=1.
+   - cargo nextest run --workspace --features dev: 3671 passed,
+     24 skipped (3667 -> 3671, +4 test).
+   - Probe manual (CLI): ovm_plain.sv, uvm_comp_plain.sv, ovm_driver.sv,
+     ovm_si.sv → r=1.
 
 ═══ ROUND 195 — LSP-03 tahap 2: go-to-definition lintas file ═══
 

@@ -4479,3 +4479,58 @@ endmodule
         "pesan harus menyebut nama method: {msg}"
     );
 }
+
+#[test]
+fn test_ovm_alias_family_plain_name_builtin() {
+    // Review R196 BUG-1: alias OVM non-object/component (ovm_driver,
+    // ovm_sequence_item, ...) juga harus mendapat method object polos.
+    // Terminal chain = nama library tak terdaftar → fallback prefiks
+    // `ovm_` → layer object (sama dengan fallback super-dispatch).
+    let source = r#"
+class d_drv extends ovm_driver;
+    function new(string n);
+        super.new(n);
+    endfunction
+    function int cek_drv();
+        string s;
+        s = get_name();
+        if (s == "drv") return 1;
+        return 0;
+    endfunction
+endclass
+
+class s_item extends ovm_sequence_item;
+    function new(string n);
+        super.new(n);
+    endfunction
+    function int cek_item();
+        string s;
+        s = get_name();
+        if (s == "itm") return 1;
+        return 0;
+    endfunction
+endclass
+
+module tb;
+    d_drv d;
+    s_item i;
+    int r1, r2;
+    initial begin
+        d = d_drv::new("drv");
+        i = s_item::new("itm");
+        r1 = d.cek_drv();
+        r2 = i.cek_item();
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 10).expect("plain-name get_name() alias OVM harus jalan");
+    let get = |n: &str| {
+        sigs.iter()
+            .find(|(k, _)| k == n)
+            .map(|(_, v)| v.to_u64())
+            .unwrap_or(99)
+    };
+    assert_eq!(get("r1"), 1, "ovm_driver: get_name() harus 'drv'");
+    assert_eq!(get("r2"), 1, "ovm_sequence_item: get_name() harus 'itm'");
+}

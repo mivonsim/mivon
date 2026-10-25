@@ -2,6 +2,7 @@ use super::super::SimulationEngine;
 use crate::simulator::engine::engine_utils::{evaluate_string_method, is_mutating_string_method};
 use crate::simulator::types::*;
 use crate::simulator::util::*;
+use crate::simulator::uvm::hierarchy::UvmLayer;
 use crate::simulator::value::*;
 use mivon_ast::*;
 use mivon_core::diagnostics::DiagCode;
@@ -837,12 +838,15 @@ impl SimulationEngine {
                 }
                 // VERIF-20 tahap 4: method builtin UVM/OVM dipanggil TANPA
                 // `this.` di body subclass (pola `get_name()` di class
-                // `extends ovm_object`). Method tidak ada di design class →
-                // sebelumnya jatuh ke RT9003; sekarang dispatch ke layer
-                // builtin lewat execute_method. Ditaruh SETELAH resolusi
-                // module function / package import supaya keduanya tetap
-                // menang. Method tak dikenal tetap ERROR keras dari layer
-                // builtin (bukan 0 senyap).
+                // `extends ovm_object`/`ovm_driver`). Method tidak ada di
+                // design class → sebelumnya jatuh ke RT9003; sekarang
+                // dispatch LANGSUNG ke execute_uvm_*_method sesuai layer
+                // hasil penelusuran extends chain (uvm_builtin_base).
+                // Ditaruh SETELAH resolusi module function / package import
+                // supaya keduanya tetap menang. Method tak dikenal tetap
+                // ERROR keras dari layer builtin (bukan 0 senyap), dengan
+                // pengecualian lama: nama berakhiran `_phase` di layer
+                // object sengaja Ok(1) (lihat uvm/object.rs).
                 if let Some(obj_id) = self.current_this {
                     let cn = self
                         .state
@@ -850,32 +854,34 @@ impl SimulationEngine {
                         .map(|o| o.class_name)
                         .unwrap_or_default();
                     if !cn.is_empty() {
-                        // Dispatch PRESIS by base library (bukan
-                        // execute_method: is_uvm_*_hierarchy longgar →
-                        // get_name() salah mendarat di layer event).
+                        // Dispatch PRESIS by layer library. Bukan
+                        // execute_method: di rantai yang lengkap ia memang
+                        // benar, tetapi is_uvm_*_hierarchy memakai fallback
+                        // "conservative" sehingga pemilihan layer jadi
+                        // ambigu (mis. get_name() mendarat di layer event).
                         match self.uvm_builtin_base(cn.as_str()) {
-                            Some("object") => {
+                            Some(UvmLayer::Object) => {
                                 return self.execute_uvm_object_method(
                                     obj_id,
                                     name.as_str(),
                                     &arg_vals,
                                 );
                             }
-                            Some("report_object") => {
+                            Some(UvmLayer::ReportObject) => {
                                 return self.execute_uvm_report_object_method(
                                     obj_id,
                                     name.as_str(),
                                     &arg_vals,
                                 );
                             }
-                            Some("component") => {
+                            Some(UvmLayer::Component) => {
                                 return self.execute_uvm_component_method(
                                     obj_id,
                                     name.as_str(),
                                     &arg_vals,
                                 );
                             }
-                            _ => {}
+                            None => {}
                         }
                     }
                 }
