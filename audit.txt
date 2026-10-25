@@ -10692,23 +10692,6 @@ VifField writes tak tercakup analyze_process_access
 Item open berikutnya: Par-02 tahap lanjutan, Arsitektur-01..04,
 JIT-01/02.
 
-Review agent atas 5d73e4b: LOLOS — tidak ada bug blokir.
-  18 varian rejected terverifikasi satu per satu terhadap
-  evaluate_stmt_block_parallel (12 skip senyap `_ => {}`, SysCall/
-  SysFinish no-op eksplisit, Foreach + delayed assign ditangani
-  evaluator tapi salah semantik — klasifikasi None KRITIS utk
-  delayed assign: evaluator mengabaikan delay → tulis di t bukan
-  t+delay). 8 varian accepted sesuai semantik walk; test tidak
-  flaky, assertion informatif.
-  Tindak lanjut RISK-1 (diterapkan di commit ini): 8 varian
-  assertion/procedural yang hilang (Assert, Assume, Cover, Expect,
-  WaitOrder, WaitFork, RandCase, RandSequence — semua skip senyap
-  evaluator) ditambahkan ke daftar rejected → test kini mencakup
-  26 varian; drift arm-walk-tanpa-arm-evaluator tetap tertangkap.
-  NIT (dicatat, tidak dikerjakan): pesan assertion kurang presisi
-  utk 4 varian (delayed/Foreach = salah semantik, bukan skip
-  murni); SysCall = no-op eksplisit, bukan skip senyap.
-
 ═══ ROUND 189 — VifField writes dalam analyze_process_access ═══
 
 Ruang lingkup: gap pre-existing (ditandai review R186-R188) —
@@ -10729,11 +10712,11 @@ Perubahan (1 baris + komentar):
 Test baru (unit mivon-simulator/scheduler/sim_dag.rs):
   vif_field_write_marks_unresolved — tulis VifField wajib
   has_unresolved = true dan tidak memasukkan apa pun ke set
-  writes. Tanpa perubahan perilaku lain; suite penuh identik.
+  writes.
 
 Review agent atas 6093637: LOLOS — tidak ada bug blokir (strict
 improvement, arah konservatif benar, perf aman). Tindak lanjut
-review diterapkan di commit ini:
+review diterapkan di commit 18307a4:
   RISK-1: tulis VifField di write_lvalue_simple (parallel.rs) masih
     di-drop senyap (arm `_ => {}`) → write HILANG tanpa fallback di
     jalur DAG layer dan seq/follower batch (has_unresolved tak
@@ -10754,32 +10737,37 @@ VERIFIKASI ROUND 189 (final):
    - cargo fmt --all --check -> bersih.
    - cargo nextest run --workspace --features dev: 3639 passed,
      24 skipped (3636 -> 3639, +3 test).
-VERIFIKASI ROUND 189 (final):
-   - cargo fmt --all --check -> bersih.
-   - cargo nextest run --workspace --features dev: 3637 passed,
-     24 skipped (3636 -> 3637, +1 test).
 
 ═══ ROUND 190 — test demosi dalam konteks domain (backlog R187 RISK-1) ═══
 
 Ruang lingkup: menutup RISK-1 review R187 — test demosi jalur
 seq-batch domain (sebelumnya hanya happy-path batch).
-
 Test baru (mivon-tests/dag_serial_fallback_tests.rs):
-  dag_cf_domain_demote_diff — domain fused 5 FF tanpa self-read
-  (konvergen, ketiga mode identik):
-    - en-FF non-batchable ( -> kinds None, blocking write
-      en) → serial inline;
-    - q-FF NbaOnly membaca en → demosi serial_blocking_writes;
-    - y-FF BlockingOnly membaca en → demosi;
-    - q2-FF BlockingOnly membaca y (blocking write kandidat batch
-      lain) → demosi BUG-1;
-    - w-FF NbaOnly tetap batchable (batch len 1 → serial fallback).
-  Tanpa guard demosi, q/y/q2 di-defer → q2 membaca y BARU di edge
-  pertama (0 vs 5) → gd != fus; dengan guard, ketiga mode (default,
-  fusion, fusion+DAG) identik + pinned (en=q=y=q2=5, w=3).
-  Desain catatan: FF dgn self-read (x = x + 1) di mode fusion+DAG
-  memicu detektor combinational-loop DAG (RT diag, exit 1) — desain
-  test menghindari self-read; fixed-point domain tetap ter-cover.
+  1. dag_cf_domain_demote_diff — SMOKE jalur demosi dalam konteks
+     domain (domain fused 5 FF tanpa self-read, konvergen):
+     en-FF non-batchable ($display -> kinds None, blocking write
+     en) → serial inline; q-FF NbaOnly membaca en → demosi
+     serial_blocking_writes; y-FF BlockingOnly membaca en → demosi;
+     q2-FF BlockingOnly membaca y (blocking write kandidat batch
+     lain) → demosi BUG-1; w-FF NbaOnly tetap batchable (batch len
+     1 → serial fallback). Jalur demosi domain DIEKSEKUSI di mode
+     fusion+DAG (klasifikasi+demosi terverifikasi review).
+  2. dag_cf_domain_waw_diff — PENGUNCI behavioral guard WAW-vs-
+     serial dalam domain (fix review R190 BUG-1): s-FF batchable
+     BlockingOnly menulis s=5 (pid awal); en-FF non-batchable
+     ($display) menulis s=9. Serial per iterasi fixed-point: pid-
+     order → s=9 menang. Tanpa guard, s-FF di-defer →
+     apply_parallel_writes SETELAH inline → s=5 menang akhir tiap
+     iterasi → divergen PERSISTEN (fixed-point tidak mengoreksi
+     urutan dalam iterasi). Ketiga mode identik + pinned (s=9,
+     w=3). Review R190 membuktikan desain feed-forward (versi awal
+     test) TIDAK divergen: layered_groups menempatkan pembaca di
+     grup sebelum penulis → snapshot lama → bit-identik serial.
+  Catatan (dikoreksi review R190): klaim awal 'FF self-read (x =
+  x + 1) memicu detektor combinational-loop' TIDAK reproducible
+  (reviewer uji 1-2 FF self-read → exit 0); diag yang teramati
+  berasal dari desain probe lain (rantai RAW + $display + WAW
+  lintas FF dalam satu delta) — tak dijadikan acuan.
 
 VERIFIKASI ROUND 190 (final):
    - cargo fmt --all --check -> bersih.

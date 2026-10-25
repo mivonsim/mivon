@@ -801,15 +801,16 @@ fn dag_cf_domain_seq_batch_diff() {
     }
 }
 
-/// Par-02 tahap 4 backlog (R187 RISK-1): demosi dalam konteks DOMAIN.
-/// Domain fused 5 FF: en-FF non-batchable ($display -> kinds None,
-/// blocking write en); q-FF NbaOnly membaca en (serial_blocking_writes
-/// -> demosi); q2-FF BlockingOnly membaca y (blocking write kandidat
-/// batch lain -> demosi BUG-1); y-FF BlockingOnly membaca en -> demosi;
-/// w-FF NbaOnly tetap batchable (batch len 1 -> serial fallback).
-/// Tanpa guard demosi, q/y/q2 di-defer -> snapshot batch pasca-loop ->
-/// q2 membaca y BARU di edge pertama (0 vs 5) -> gd != fus. Konvergen
-/// (tanpa self-read) sehingga ketiga mode identik + pinned.
+/// Par-02 tahap 4 backlog (R187 RISK-1): SMOKE jalur demosi dalam
+/// konteks DOMAIN — melatih eksekusi jalur demosi run_seq_batch di
+/// evaluate_clock_domain Step 1 (review R190: desain feed-forward
+/// TIDAK mengunci guard secara behavioral — fixed-point mengoreksi;
+/// pengunci behavioral ada di dag_cf_domain_waw_diff). Domain fused
+/// 5 FF: en-FF non-batchable ($display -> kinds None, blocking write
+/// en); q-FF NbaOnly membaca en (serial_blocking_writes -> demosi);
+/// q2-FF BlockingOnly membaca y (blocking write kandidat batch lain
+/// -> demosi BUG-1); y-FF BlockingOnly membaca en -> demosi; w-FF
+/// NbaOnly tetap batchable (batch len 1 -> serial fallback).
 const CF_DOMAIN_DEMOTE_SRC: &str = r#"
 module ff_domain_demote_top;
   logic clk;
@@ -847,5 +848,45 @@ fn dag_cf_domain_demote_diff() {
             "{name}: demosi domain (tahap 4) harus identik serial domain"
         );
         assert_eq!(gd, expect, "{name}: nilai akhir ter-pinned (konvergen)");
+    }
+}
+
+/// Par-02 tahap 4 backlog (R190 review BUG-1 fix): WAW blocking dalam
+/// konteks DOMAIN — PENGUNCI behavioral guard WAW-vs-serial. s-FF
+/// batchable BlockingOnly menulis s=5 (pid awal); en-FF non-batchable
+/// ($display -> kinds None) menulis s=9 (pid sesudahnya). Serial per
+/// iterasi fixed-point: pid-order -> s=9 menang. Tanpa guard WAW-vs-
+/// serial, s-FF di-defer -> apply_parallel_writes SETELAH inline ->
+/// s=5 menang AKHIR setiap iterasi -> divergen PERSISTEN melewati
+/// fixed-point (fixed-point tidak mengoreksi urutan dalam iterasi).
+const CF_DOMAIN_WAW_SRC: &str = r#"
+module ff_domain_waw_top;
+  logic clk;
+  logic [7:0] s;
+  logic [3:0] w;
+  initial begin clk = 0; s = 0; w = 0; #40; end
+  always #5 clk = ~clk;
+  always_ff @(posedge clk) s = 8'd5;
+  always_ff @(posedge clk) begin
+    $display("t");
+    s = 8'd9;
+  end
+  always_ff @(posedge clk) w <= 4'd3;
+endmodule
+"#;
+
+#[test]
+fn dag_cf_domain_waw_diff() {
+    for (name, expect) in [("s", "00001001"), ("w", "0011")] {
+        let dflt = run_cf(CF_DOMAIN_WAW_SRC, name, false, false);
+        let fus = run_cf(CF_DOMAIN_WAW_SRC, name, true, false);
+        let gd = run_cf(CF_DOMAIN_WAW_SRC, name, true, true);
+        assert_eq!(fus, dflt, "{name}: fusion saja harus identik default");
+        assert_eq!(
+            gd, fus,
+            "{name}: WAW domain (tahap 4) harus identik serial domain — \
+             guard WAW-vs-serial wajib mendemosi penulis awal"
+        );
+        assert_eq!(gd, expect, "{name}: pemenang WAW harus FF serial inline (s=9)");
     }
 }
