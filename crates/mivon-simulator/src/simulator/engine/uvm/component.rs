@@ -151,9 +151,11 @@ impl SimulationEngine {
                 } else {
                     String::new()
                 };
-                self.uvm_object_data
-                    .entry(obj_id)
-                    .or_insert_with(|| UvmObjectData { name });
+                // Review R196 NIT-8: pakai insert (parity uvm_object::new),
+                // bukan or_insert_with — objek sudah di-pre-seed nama kosong
+                // saat alokasi, sehingga or_insert membuat get_name()
+                // mengembalikan "" senyap.
+                self.uvm_object_data.insert(obj_id, UvmObjectData { name });
                 Ok(LogicVec::from_u64(1, 1))
             }
             "get_type_name" => {

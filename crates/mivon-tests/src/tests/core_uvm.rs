@@ -4511,15 +4511,45 @@ class s_item extends ovm_sequence_item;
     endfunction
 endclass
 
+class o_env extends ovm_env;
+    function new(string n);
+        super.new(n);
+    endfunction
+    function int cek_env();
+        string s;
+        s = get_full_name();
+        if (s == "env0") return 1;
+        return 0;
+    endfunction
+endclass
+
+class u_item extends uvm_sequence_item;
+    function new(string n);
+        super.new(n);
+    endfunction
+    function int cek_u();
+        string s;
+        s = get_name();
+        if (s == "uitm") return 1;
+        return 0;
+    endfunction
+endclass
+
 module tb;
     d_drv d;
     s_item i;
-    int r1, r2;
+    o_env e;
+    u_item u;
+    int r1, r2, r3, r4;
     initial begin
         d = d_drv::new("drv");
         i = s_item::new("itm");
+        e = o_env::new("env0");
+        u = u_item::new("uitm");
         r1 = d.cek_drv();
         r2 = i.cek_item();
+        r3 = e.cek_env();
+        r4 = u.cek_u();
         #1 $finish;
     end
 endmodule
@@ -4533,4 +4563,9 @@ endmodule
     };
     assert_eq!(get("r1"), 1, "ovm_driver: get_name() harus 'drv'");
     assert_eq!(get("r2"), 1, "ovm_sequence_item: get_name() harus 'itm'");
+    // Review R196 BUG-2: family KOMPONEN butuh layer component (get_full_name),
+    // bukan layer object — tabel layer eksplisit, bukan heuristik prefiks.
+    assert_eq!(get("r3"), 1, "ovm_env: get_full_name() harus 'env0'");
+    // NIT-8: uvm_sequence_item::new harus menimpa nama pre-seed (insert).
+    assert_eq!(get("r4"), 1, "uvm_sequence_item: get_name() harus 'uitm'");
 }

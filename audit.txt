@@ -1744,13 +1744,15 @@ VERIF-20: ✅ FIXED (ROUND 85b/122/140/196) — OVM compatibility tahap 1..4:
          component) lalu dispatch PRESISI ke execute_uvm_*_method. Tidak
          memakai execute_method karena is_uvm_*_hierarchy punya fallback
          "conservative" yang longgar (pemilihan layer jadi ambigu).
-         Terminal chain yang tak terdaftar (alias ovm_driver,
-         ovm_sequence_item, uvm_env, ...) → fallback prefiks: `ovm_` →
-         layer object, `uvm_` → layer report_object (parity dengan
-         super-dispatch). Layer = enum UvmLayer (bukan string). Unknown
-         method tetap error keras dari layer builtin.
+         Pemetaan layer = TABEL EKSPLISIT nama library → layer (prefiks
+         `__` dinormalisasi), bukan heuristik prefiks: alias ovm_driver/
+         ovm_env/... adalah family KOMPONEN (get_full_name/get_parent),
+         sedangkan ovm_sequence_item family OBJECT. Layer = enum UvmLayer.
+         Kelas user tanpa extends TIDAK didispatch. Unknown method tetap
+         error keras dari layer builtin.
          Test 4 (+4): OVM subclass, komponen subclass, alias family
-         (ovm_driver + ovm_sequence_item), dan guard unknown method → Err.
+         (ovm_driver, ovm_sequence_item, ovm_env+get_full_name,
+         uvm_sequence_item), dan guard unknown method → Err.
 VERIF-21: [x] Functional coverage integration ke coverage database —
          RE-VERIFIKASI (ROUND 66): CoverageDatabase.merge_from_engine
          (coverage_db.rs:232) sudah membawa covergroup/coverpoint/cross
@@ -11229,6 +11231,28 @@ Review agent R196 ronde 1: TIDAK LOLOS (1 BUG + 5 NIT) → fix:
   NIT-4 (rantai siklik bisa hang di find_method_quiet SEBELUM
     uvm_builtin_base) DICATAT sebagai backlog — pre-existing, butuh
     walker ber-guard bersama di uvm/util.rs.
+
+Review agent R196 ronde 2: TIDAK LOLOS (1 BUG + 4 NIT) → fix:
+  BUG-2 (MAJOR): fallback prefiks `ovm_` → layer OBJECT salah untuk
+    family KOMPONEN (ovm_env/ovm_driver/...), sehingga get_full_name/
+    get_parent tetap RT9003 padahal padanan uvm_*-nya jalan. Fix:
+    uvm_layer_of jadi TABEL EKSPLISIT nama library → layer (prefiks
+    `__` dinormalisasi); uvm_library_fallback dihapus — penelusuran
+    chain sudah mengecek tabel di setiap langkah. Family dengan handler
+    khusus (phase/root/printer) sengaja tidak dipetakan. Test alias
+    diperluas: ovm_env + get_full_name, uvm_sequence_item + get_name.
+  NIT-6: kelas user TANPA extends (extends == None) tidak lagi
+    didispatch ke builtin (dulu class bernama `uvm_*` bisa sukses
+    senyap); sekarang RT9003 seperti sebelumnya.
+  NIT-7: doc contoh diperbaiki (uvm_sequence_item/uvm_env di-remap
+    elaborator ke __uvm_*, jadi tidak pernah jadi terminal tak dikenal).
+  NIT-8: execute_uvm_sequence_item_method "new" memakai insert (parity
+    uvm_object::new) — or_insert_with membuat get_name() = "" senyap
+    karena objek sudah di-pre-seed nama kosong.
+  NIT-9: find_method_quiet diberi guard 64 hop. CATATAN: cyclic extends
+    tetap hang di is_uvm_*_hierarchy lain (~20 loop tanpa guard) saat
+    objek dibuat → butuh walker bersama / deteksi siklus di elaborator;
+    dicatat sebagai backlog terpisah (bukan regresi round ini).
 
 VERIFIKASI ROUND 196:
    - cargo fmt --all --check -> bersih.

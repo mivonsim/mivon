@@ -566,45 +566,82 @@ impl SimulationEngine {
             match self.design.classes.get(&Symbol::intern(current)) {
                 Some(c) => match &c.extends {
                     Some(parent) => current = parent.as_str(),
-                    None => return Self::uvm_library_fallback(current),
+                    // Kelas user tanpa extends: BUKAN kelas library — jangan
+                    // didispatch ke builtin (review R196 NIT-6).
+                    None => return None,
                 },
-                None => return Self::uvm_library_fallback(current),
+                // Terminal chain = kelas library yang tidak di-compile;
+                // sudah dicoba di uvm_layer_of di atas → bukan layer dikenal.
+                None => return None,
             }
         }
         None
     }
 
-    /// Peta nama kelas library (UVM/OVM, sintetis `__` maupun polos) → layer
-    /// builtin. `uvm_component`/`uvm_report_object` mencakup rantai ke
-    /// `uvm_object`, jadi method object (get_name, set_name, print, ...)
-    /// tersedia di subclass komponen.
+    /// Peta nama kelas library (UVM/OVM) → layer builtin. Prefiks internal
+    /// `__` dinormalisasi lebih dulu (elaborator me-remap `uvm_x` →
+    /// `__uvm_x`). Tabel EKSPLISIT, bukan heuristik prefiks: `ovm_driver`
+    /// adalah family KOMPONEN (butuh get_full_name/get_parent), sedangkan
+    /// `ovm_sequence_item` family OBJECT — prefiks saja tidak bisa
+    /// membedakan keduanya (review R196 BUG-2).
+    ///
+    /// Family yang punya handler khusus (phase/root/reg/printer/...)
+    /// sengaja TIDAK dipetakan: dispatch ke layer yang salah lebih buruk
+    /// daripada error keras.
     fn uvm_layer_of(name: &str) -> Option<UvmLayer> {
-        match name {
-            "__uvm_object" | "uvm_object" | "__ovm_object" | "ovm_object" => Some(UvmLayer::Object),
-            "__uvm_report_object" | "uvm_report_object" | "ovm_report_object" => {
-                Some(UvmLayer::ReportObject)
+        let base = name.strip_prefix("__").unwrap_or(name);
+        match base {
+            // uvm_object + turunan non-komponen.
+            "uvm_object" | "ovm_object" | "uvm_transaction" | "ovm_transaction"
+            | "uvm_sequence_item" | "ovm_sequence_item" | "uvm_sequence" | "ovm_sequence" => {
+                Some(UvmLayer::Object)
             }
-            "__uvm_component" | "uvm_component" | "__ovm_component" | "ovm_component" => {
-                Some(UvmLayer::Component)
-            }
+            "uvm_report_object" | "ovm_report_object" => Some(UvmLayer::ReportObject),
+            // uvm_component + seluruh family komponen (termasuk analisis/
+            // TLM/reg-block yang extends uvm_component).
+            "uvm_component"
+            | "ovm_component"
+            | "uvm_driver"
+            | "ovm_driver"
+            | "uvm_monitor"
+            | "ovm_monitor"
+            | "uvm_sequencer"
+            | "ovm_sequencer"
+            | "uvm_env"
+            | "ovm_env"
+            | "uvm_agent"
+            | "ovm_agent"
+            | "uvm_test"
+            | "ovm_test"
+            | "uvm_scoreboard"
+            | "ovm_scoreboard"
+            | "uvm_subscriber"
+            | "ovm_subscriber"
+            | "uvm_analysis_port"
+            | "ovm_analysis_port"
+            | "uvm_analysis_imp"
+            | "ovm_analysis_imp"
+            | "uvm_analysis_export"
+            | "ovm_analysis_export"
+            | "uvm_tlm_fifo"
+            | "ovm_tlm_fifo"
+            | "uvm_seq_item_port"
+            | "ovm_seq_item_port"
+            | "uvm_comparator"
+            | "ovm_comparator"
+            | "uvm_in_order_comparator"
+            | "ovm_in_order_comparator"
+            | "uvm_heartbeat"
+            | "ovm_heartbeat"
+            | "uvm_reg_block"
+            | "ovm_reg_block"
+            | "uvm_reg"
+            | "ovm_reg"
+            | "uvm_reg_map"
+            | "ovm_reg_map"
+            | "uvm_reg_field"
+            | "ovm_reg_field" => Some(UvmLayer::Component),
             _ => None,
-        }
-    }
-
-    /// Terminal chain = kelas library yang tidak terdaftar di design (mis.
-    /// `ovm_driver`, `uvm_sequence_item`, `uvm_env`). Samakan dengan fallback
-    /// super-dispatch (`uvm/builtin.rs`): prefiks `ovm_` → layer object,
-    /// `uvm_` → layer report_object. Keduanya berujung ke uvm_object, jadi
-    /// method object polos (get_name/set_name/print/...) bekerja; method
-    /// khusus family (mis. `start_item`) tetap ditangani F18/handler
-    /// khusus — bukan jalur ini. Nama non-UVM → None (error keras tetap).
-    fn uvm_library_fallback(name: &str) -> Option<UvmLayer> {
-        if name.starts_with("ovm_") {
-            Some(UvmLayer::Object)
-        } else if name.starts_with("uvm_") {
-            Some(UvmLayer::ReportObject)
-        } else {
-            None
         }
     }
 

@@ -201,7 +201,14 @@ impl SimulationEngine {
         method: &str,
     ) -> Option<IrClassMethod> {
         let mut current = class_name;
+        // Guard rantai siklik (extends A → B → A): tanpa ini walk hang
+        // sebelum guard mana pun di pemanggil tercapai (review R196 NIT-9).
+        let mut hops = 0usize;
         while let Some(cls) = self.design.classes.get(&Symbol::intern(current)) {
+            if hops >= 64 {
+                break;
+            }
+            hops += 1;
             if let Some(m) = cls.methods.iter().find(|m| m.name == method) {
                 return Some(m.clone());
             }
