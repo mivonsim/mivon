@@ -515,15 +515,103 @@ JIT-04: ✅ Guard tri-state X/Z -> fallback interpreter (ROUND 202)
   dari net yang tetap tak-terdrive karena write-back di-skip saat
   perbandingan u64 (0 == 0) sehingga target X/Z tak ditimpa.
 
-JIT-05: ⚠️ Write-back JIT tak bedakan "tak ditulis" vs "ditulis 0" (masih open)
-  Root Cause: mir.rs apply-back membandingkan u64 lalu menulis hanya jika
-  beda; out_vals di-zero-init sedangkan codegen hanya menulis slot untuk
-  Store/NonBlocking. Akibat: (a) target X/Z yang seharusnya jadi 0 di-skip
-  (0 == to_u64(X)); (b) sinyal non-nol yang TIDAK ditulis proses bisa
-  tertimpa 0. Pre-existing, belum tertangkap test.
+JIT-05: ✅ Write-back JIT hanya menulis target (ROUND 206)
+  Root Cause: mir.rs apply-back mengiterasi SELURUH out_vals dan menulis
+  bila `val != signal_vals[i]`; out_vals di-zero-init sedangkan codegen
+  hanya menulis slot Store/NonBlocking. Akibat: (a) target X/Z yang
+  seharusnya jadi 0 di-skip (0 == to_u64(X)); (b) sinyal non-nol yang
+  TIDAK ditulis proses tertimpa 0. (b) terbukti empiris begitu JIT-07
+  membuat jalur JIT benar-benar aktif: desain `always_comb begin
+  sum=a+b; shr=(a+b)>>1; cat={a,b}; end` menghasilkan (0,0,0) karena
+  a/b ikut di-nol-kan.
   Severity: High (correctness jalur JIT)
-  Fix: kumpulkan target Store/NonBlocking dari MIR, terapkan hanya itu,
-  bandingkan di level LogicVec (bukan u64).
+  Fix: empat bagian —
+  (a) target diturunkan dari instruksi MIR (Store/NonBlocking) yang
+      dikumpulkan ke `write_sigs`, diurutkan (determinisme), lalu
+      apply-back hanya menyentuh slot itu dan membandingkan di level
+      LogicVec.
+  (b) read-after-write blocking: codegen `Store` kini menulis ke out_ptr
+      DAN sigs_ptr (buffer input jadi `&mut`), sehingga `Load` berikutnya
+      di proses yang sama melihat nilai baru (sebelumnya snapshot lama:
+      `tmp = a+1; y = tmp;` memberi y = tmp lama).
+  (c) `out_vals` dimulai dari salinan nilai sinyal (bukan nol) sehingga
+      target yang TIDAK dieksekusi (cabang if tak diambil) tidak tertimpa 0.
+      Untuk target yang masih X/Z, write-back berbasis u64 tak bisa
+      membedakan "tak ditulis" dari "ditulis 0" → guard `bad_write` juga
+      menolak target X/Z (fallback interpreter).
+  (d) campuran blocking + NBA pada sinyal yang sama (satu slot out_vals)
+      → fallback interpreter.
+  Test: test_jit_width_matches_interpreter, test_jit_read_after_write_
+  blocking, test_jit_unexecuted_target_keeps_value,
+  test_jit_mixed_blocking_nba_falls_back (mivon-tests) +
+  test_mir_jit_store_visible_to_later_load (mivon-compiler).
+
+JIT-11: ✅ Operator MIR tak terpetakan / div-0 / shift>=64 (ROUND 206)
+  Root Cause: (a) `ir_binop_to_mir` punya fallback `_ => MirBinOp::Add`
+  sementara is_expr_jit_safe menerima BinaryOp apa pun → `a ** 2` dihitung
+  `a + 2`, `a >>> 1` dihitung `a + 1` (Sshl/Sshr tak ada di MirBinOp).
+  (b) Div/Mod: Cranelift memakai udiv/urem yang TRAP saat pembagi 0
+  (SIGFPE), sedangkan interpreter menghasilkan X. (c) Shift count >= 64
+  di-mask Cranelift ke 63, sedangkan interpreter memberi 0 saat count >=
+  lebar hasil.
+  Severity: High (silent miscompile / crash jalur JIT)
+  Fix: whitelist operator di `is_binop_jit_safe` (Add/Sub/Mul/BitAnd/
+  BitOr/BitXor/Eq/CaseEq/EqWild/Neq/CaseNeq/NeqWild/Lt/Le/Gt/Ge/
+  LogicalAnd/LogicalOr); Shl/Shr hanya bila jumlah shift literal < 64;
+  Div/Mod/Power/BitXnor/Sshl/Sshr ditolak → fallback interpreter.
+  (d) Unary `+` juga ditolak: lowering hanya punya arm BitNot/Minus,
+  sehingga `y = +a` memicu `unreachable!()` (panic) begitu JIT-07
+  membuat jalur ini hidup.
+  Test: test_jit_unsupported_ops_fall_back (mivon-tests, a**2=144 &
+  a>>>1=6, dan menegaskan `compiled_count() == 0`),
+  test_jit_unary_plus_falls_back, test_jit_unexecuted_x_target_stays_x.
+
+JIT-12: ✅ Panic case/loop + Store tanpa mask lebar target (ROUND 206)
+  Root Cause: (a) Case >= 2 item: label `next_pat_label` tak pernah
+  di-emit sehingga dua Branch berurutan mengisi blok yang sama →
+  Cranelift panic "you cannot add an instruction to a block already
+  filled". (b) LoopWhile/LoopDoWhile: back-edge ke entry block yang sudah
+  di-seal eager → panic "assertion failed: !self.is_sealed(block)".
+  (c) Store menulis nilai register apa adanya ke out_ptr DAN sigs_ptr
+  (fix JIT-05b) padahal Store tak punya field width dan lowering tak
+  memotong → read-after-write melihat nilai tak ter-truncate
+  (`a[3:0] = b[7:0]=255; c = a;` → c=255, interpreter 15).
+  Severity: High (abort proses / divergen senyap)
+  Fix: (a) guard is_body_jit_safe menolak Case dengan >= 2 item;
+  (b) menolak semua loop (While/DoWhile/For/Repeat) — elaborator sudah
+  meng-unroll for, jadi dampak kecil; (c) lowering menyisipkan mask ke
+  lebar target SEBELUM Store/NonBlocking. Mask dijalankan pada lebar
+  EVALUASI (>= lebar target) karena pada lebar target mask = full-mask
+  sehingga optimizer MIR membuangnya sebagai identitas (percobaan pertama
+  gagal karena alasan ini — dibuktikan lewat dump MIR).
+  Test: test_jit_case_and_while_fall_back (compiled_count()==0, nilai
+  benar), test_jit_store_masks_to_target_width (a=15, c=15).
+
+JIT-13: ✅ Label/register ganda pada kontrol-flow bersarang + FillLit (ROUND 206)
+  Root Cause: (a) Case 1 item dengan >= 2 label tetap panic (guard lama
+  hanya menghitung jumlah ITEM; lowering meng-emit satu Branch per pola
+  tanpa Label di antaranya → "block already filled"). (b) Nested if
+  (else-if) / if di dalam case: `ir_body_to_mir_inner` memanggil
+  `ir_body_to_mir` yang memulai label DAN register dari 0 → label ganda
+  (branch mendarat di blok salah / panic "!is_sealed") dan register
+  bertabrakan (nilai bersarang menimpa induk; else-if memberi y=10
+  padahal 11). (c) `y = '1` di-lower jadi Const 1-bit → y=8'h01,
+  interpreter 8'hFF (FillLit harus di-fill ke lebar LHS).
+  Severity: High (panic / miscompile senyap pada pola RTL umum)
+  Fix: (a) guard menolak Case dengan >= 2 item ATAU item berlabel > 1;
+  (b) counter label bersama (`alloc_label`) di-thread lintas body
+  bersarang DAN ke `ir_expr_to_mir` (ternary `Cond` dulu memakai
+  `next_label(instrs)` lokal sehingga labelnya bertabrakan dengan If/Case
+  induk → panic "!is_sealed" pada pola `if (d) y = c ? a : b;`);
+  `start_reg` diteruskan ke `ir_body_to_mir_with` sehingga register anak
+  melanjutkan register induk; (c) FillLit ditolak di guard (fallback
+  interpreter); (d) arm lowering loop yang mati dihapus (guard JIT-12
+  sudah menolak) agar label/register tak pernah dialokasikan untuk jalur
+  yang tak bisa dieksekusi.
+  Test: test_jit_case_multilabel_and_nested_if (case multi-label fallback,
+  else-if JIT aktif dan identik dengan interpreter), test_jit_ternary_
+  inside_if (if + ternary, JIT aktif, y=3), test_jit_filllit_falls_back
+  ('1 = 8'hFF).
 
 JIT-06: ✅ Guard X/Z untuk Const (ROUND 203)
   Root Cause: is_expr_jit_safe menerima SEMUA IrExpr::Const; lowering pakai
@@ -533,14 +621,19 @@ JIT-06: ✅ Guard X/Z untuk Const (ROUND 203)
   Fix: is_expr_jit_safe kini menolak IrExpr::Const yang has_unknown().
   Test: test_jit_falls_back_on_x_const (mivon-tests).
 
-JIT-07: ⚠️ Fitur jit simulator tak meneruskan mivon-compiler/jit (masih open)
+JIT-07: ✅ Fitur jit simulator meneruskan mivon-compiler/jit (ROUND 206)
   Root Cause: mivon-simulator feature jit hanya mengaktifkan cranelift, TIDAK
-  mivon-compiler/jit; MirJitCompiler::new() = None kecuali crate lain
-  meng-enable mivon-compiler/jit (mis. workspace --all-features). Jadi jalur
-  mir-jit diam-diam inert di -p mivon-tests / --features dev.
-  Severity: Medium (feature wiring)
-  Fix: jit = [..., "mivon-compiler/jit"] — terpisah, bisa memunculkan bug JIT
-  laten (lihat JIT-05), perlu verifikasi penuh.
+  mivon-compiler/jit; MirJitCompiler::new() = None (stub) kecuali crate lain
+  meng-enable mivon-compiler/jit. Jadi jalur mir-jit diam-diam inert —
+  SEMUA test "JIT" sebelumnya vacuous (hanya menguji interpreter lewat
+  fallback). Terbukti: assertion `compiled_count() > 0` gagal sebelum fix.
+  Severity: Medium (feature wiring) — ternyata menutupi bug correctness
+  JIT-05 dan JIT-10.
+  Fix: `jit = [..., "mivon-compiler/jit"]` di
+  crates/mivon-simulator/Cargo.toml. Verifikasi penuh dijalankan; dua bug
+  laten (JIT-05 write-back, JIT-10 width-0 lowering) ikut diperbaiki.
+  Test: test_jit_width_matches_interpreter kini menegaskan
+  `mir_jit.compiled_count() > 0`.
 
 JIT-08: ✅ JIT lossy untuk nilai lebar > 64 bit (ROUND 204)
   Root Cause: to_u64() dan codegen memotong ke 64 bit (width.min(64));
@@ -554,15 +647,54 @@ JIT-08: ✅ JIT lossy untuk nilai lebar > 64 bit (ROUND 204)
   Test: wide_const_not_jit_safe + signal_unrepresentable_predicate
   (mivon-simulator).
 
-JIT-09: ⚠️ JIT lossy sign-extend (target <=64) & Concat >64 (masih open)
+JIT-09: ✅ JIT lossy sign-extend & Concat >64 (ROUND 205)
   Root Cause: (a) bad_write hanya cek width > 64; RHS signed yang
   dilebarkan (interpreter sign-extend di eval/expr.rs, JIT IrExpr::Signed
-  pass-through) tetap zero-extend saat target <= 64. (b) is_expr_jit_safe
-  menerima Concat dengan total width > 64; lowering shl I64 mem-mask
-  count & 63 sehingga bit salah bila di-truncate ke target <= 64.
+  pass-through) tetap zero-extend saat target <= 64. Jalur utama bukan
+  node IrExpr::Signed melainkan SINYAL signed yang dilebarkan langsung
+  (`logic signed [7:0] s; logic [31:0] y; y = s;` -> IR tetap Signal,
+  is_signed_expr = true via util/value.rs) sehingga menolak Signed saja
+  tidak cukup. (b) is_expr_jit_safe menerima Concat dengan total width
+  > 64; lowering shl I64 mem-mask count & 63 sehingga bit salah bila
+  di-truncate ke target <= 64. (c) Cast width > 64 lolos guard.
   Severity: Medium
-  Fix: guard sign-aware widening + total width Concat, atau tolak
-  Signed/widening di is_expr_jit_safe.
+  Fix: tiga lapis —
+  1. is_expr_jit_safe menolak IrExpr::Signed KECUALI literal non-negatif
+     (MSB 0 → sign-extend == zero-extend; ini penting karena elaborator
+     membungkus semua literal desimal jadi Signed — menolak semuanya
+     membuat JIT praktis tak pernah aktif, terbukti saat JIT-07 di-wire),
+     Concat total width > 64 (sub-width tak diketahui juga ditolak), dan
+     Cast width > 64.
+  2. Guard runtime try_evaluate_mir_jit menolak sinyal yang DIBACA bila
+     SignalInfo.is_signed (zero-extend JIT vs sign-extend interpreter)
+     — menutup varian `y = s` dan `Cast{32, Signal(signed)}`.
+  3. Guard write target > 64 tetap (dari JIT-08).
+  Test: concat_width_guard + signed_expr_not_jit_safe + cast_width_guard
+  (mivon-simulator) dan test_jit_falls_back_on_signed_widening
+  (mivon-tests, differential JIT vs interpreter: 32'hFFFFFFF8; mutasi
+  menghapus guard membuat test gagal — terbukti diskriminatif).
+  Sisa (dicatat, bukan blocker): JIT belum mengimplementasikan
+  sign-extend/signed-division native; sinyal signed kini selalu
+  fallback interpreter (biaya perf, bukan correctness).
+
+JIT-10: ✅ Width ekspresi sinyal 0 → lowering MIR mem-mask hasil jadi 0 (ROUND 206)
+  Root Cause: elaborator menyimpan `IrExpr::Signal(id, 0)` untuk identifier
+  polos (lebar sebenarnya ada di tabel SignalInfo). compute_expr_width
+  memakai field width itu → lebar 0 untuk `a + b` dan `{a, b}`, sehingga
+  MirInstr::Binary/Const mem-mask dengan `(1<<0)-1 = 0` → hasil SELALU 0
+  di jalur --jit-body (mis. `always_comb y = a + b` → y=0). Guard Concat
+  juga buta (total 0 <= 64 → lolos).
+  Severity: High (correctness jalur JIT; senyap)
+  Fix: `expr_width(expr, sig)` baru — lebar sinyal diambil dari tabel
+  SignalInfo (width 0 di tabel = tak diketahui → None → guard konservatif
+  fallback); Concat memakai try_fold (sub-width tak diketahui tidak lagi
+  di-skip diam-diam); shift (Shl/Shr/Sshl/Sshr) memakai lebar operan KIRI
+  sesuai LRM §11.8.1 (interpreter di value.rs juga begitu) — tanpa ini
+  `(a+b)>>1` memakai lebar literal 32 dan divergen dari interpreter.
+  `compute_expr_width` kini thin wrapper `&self` di atas `expr_width`.
+  Test: test_jit_width_matches_interpreter (mivon-tests) — sum/shr/cat
+  identik dengan interpreter (44, 22, 16'hC864) dan JIT benar-benar
+  dipakai; mutasi mengembalikan lebar 0 membuat hasil 0 (test gagal).
 
 ═══ 2.5 PARALLEL ARCHITECTURE ═══
 

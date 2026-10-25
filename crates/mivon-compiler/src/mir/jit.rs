@@ -2,10 +2,11 @@
 //!
 //! Compiles `MirProcess` instruction sequences into native code via Cranelift.
 //! The compiled function signature is:
-//!   `fn(signals: *const u64, out_signals: *mut u64, n_sigs: usize)`
+//!   `fn(signals: *mut u64, out_signals: *mut u64, n_sigs: usize)`
 //!
 //! Where:
-//! - `signals` = current signal values (read-only array)
+//! - `signals` = current signal values (buffer mutable: `Store` menulis
+//!   balik agar `Load` berikutnya melihat nilai blocking terbaru)
 //! - `out_signals` = output buffer for stores/NBA (mutable array)
 //! - `n_sigs` = number of signals
 //!
@@ -206,9 +207,15 @@ impl MirJitCompiler {
                         if *src < n_regs && *signal < n_sigs_for_function {
                             let val = builder.use_var(reg_slots[*src]);
                             let offset = builder.ins().iconst(types::I64, (*signal * 8) as i64);
-                            let ptr = builder.ins().iadd(out_ptr, offset);
                             let flags = MemFlags::new().with_notrap();
-                            builder.ins().store(flags, val, ptr, 0);
+                            // Tulis ke out_ptr (hasil) DAN ke sigs_ptr (input)
+                            // agar Load berikutnya dalam proses yang sama
+                            // melihat nilai blocking terbaru — read-after-write
+                            // semantik interpreter (JIT-05b).
+                            let out_slot = builder.ins().iadd(out_ptr, offset);
+                            builder.ins().store(flags, val, out_slot, 0);
+                            let in_slot = builder.ins().iadd(sigs_ptr, offset);
+                            builder.ins().store(flags, val, in_slot, 0);
                         }
                         i += 1;
                     }
@@ -431,13 +438,13 @@ impl MirJitCompiler {
     /// `code_ptr` must point to a valid compiled function with the correct signature.
     pub unsafe fn call_process(
         code_ptr: *const u8,
-        signal_vals: &[u64],
+        signal_vals: &mut [u64],
         out_vals: &mut [u64],
     ) -> u64 {
-        type MirProcessFn = unsafe extern "C" fn(*const u64, *mut u64, u64) -> u64;
+        type MirProcessFn = unsafe extern "C" fn(*mut u64, *mut u64, u64) -> u64;
         let func: MirProcessFn = std::mem::transmute(code_ptr);
         func(
-            signal_vals.as_ptr(),
+            signal_vals.as_mut_ptr(),
             out_vals.as_mut_ptr(),
             signal_vals.len() as u64,
         )
@@ -566,10 +573,10 @@ mod tests {
         let compiled = compiler.compile_process(&process, 2).unwrap();
         assert_eq!(compiled.n_regs, 1);
 
-        let signals = [0u64; 4];
+        let mut signals = [0u64; 4];
         let mut out = [0u64; 4];
         unsafe {
-            MirJitCompiler::call_process(compiled.code_ptr, &signals, &mut out);
+            MirJitCompiler::call_process(compiled.code_ptr, &mut signals, &mut out);
         }
         // Process only writes to register, not to output
         // We just verify it doesn't crash
@@ -581,10 +588,10 @@ mod tests {
         let process = make_add_process();
         let compiled = compiler.compile_process(&process, 3).unwrap();
 
-        let signals = [10u64, 20u64, 0u64];
+        let mut signals = [10u64, 20u64, 0u64];
         let mut out = [0u64; 3];
         unsafe {
-            MirJitCompiler::call_process(compiled.code_ptr, &signals, &mut out);
+            MirJitCompiler::call_process(compiled.code_ptr, &mut signals, &mut out);
         }
     }
 
@@ -594,10 +601,10 @@ mod tests {
         let process = make_store_process();
         let compiled = compiler.compile_process(&process, 2).unwrap();
 
-        let signals = [5u64, 0u64];
+        let mut signals = [5u64, 0u64];
         let mut out = [0u64; 2];
         unsafe {
-            MirJitCompiler::call_process(compiled.code_ptr, &signals, &mut out);
+            MirJitCompiler::call_process(compiled.code_ptr, &mut signals, &mut out);
         }
         assert_eq!(out[0], 6, "signal[0] + 1 should be 6");
     }
@@ -608,10 +615,10 @@ mod tests {
         let process = make_if_process();
         let compiled = compiler.compile_process(&process, 3).unwrap();
 
-        let signals = [1u64, 0u64, 0u64]; // signal[0] = 1 (true)
+        let mut signals = [1u64, 0u64, 0u64]; // signal[0] = 1 (true)
         let mut out = [0u64; 3];
         unsafe {
-            MirJitCompiler::call_process(compiled.code_ptr, &signals, &mut out);
+            MirJitCompiler::call_process(compiled.code_ptr, &mut signals, &mut out);
         }
         assert_eq!(out[1], 10, "if true: out[1] should be 10");
     }
@@ -622,10 +629,10 @@ mod tests {
         let process = make_if_process();
         let compiled = compiler.compile_process(&process, 3).unwrap();
 
-        let signals = [0u64, 0u64, 0u64]; // signal[0] = 0 (false)
+        let mut signals = [0u64, 0u64, 0u64]; // signal[0] = 0 (false)
         let mut out = [0u64; 3];
         unsafe {
-            MirJitCompiler::call_process(compiled.code_ptr, &signals, &mut out);
+            MirJitCompiler::call_process(compiled.code_ptr, &mut signals, &mut out);
         }
         assert_eq!(out[1], 20, "if false: out[1] should be 20");
     }
@@ -692,13 +699,52 @@ mod tests {
         let mut compiler = MirJitCompiler::new().unwrap();
         let compiled = compiler.compile_process(&process, 3).unwrap();
 
-        let signals = [10u64, 20u64, 0u64];
+        let mut signals = [10u64, 20u64, 0u64];
         let mut out = [0u64; 3];
         unsafe {
-            MirJitCompiler::call_process(compiled.code_ptr, &signals, &mut out);
+            MirJitCompiler::call_process(compiled.code_ptr, &mut signals, &mut out);
         }
         assert_eq!(out[0], 11, "signal[0] + 1 = 11");
         assert_eq!(out[1], 40, "signal[1] * 2 = 40");
+    }
+
+    #[test]
+    fn test_mir_jit_store_visible_to_later_load() {
+        // Read-after-write: out[0] = sig[0] + 1; out[1] = out[0] (Load dari
+        // sig[0] SETELAH Store) harus melihat nilai baru, bukan snapshot awal
+        // (JIT-05b). Tanpa store-balik ke buffer input, out[1] = 10.
+        let process = MirProcess {
+            name: Symbol::intern("test_store_visible"),
+            sensitivity: MirSensitivity::AlwaysComb,
+            instrs: vec![
+                MirInstr::Load { dest: 0, signal: 0 },
+                MirInstr::Const {
+                    dest: 1,
+                    value: 1,
+                    width: 32,
+                },
+                MirInstr::Binary {
+                    op: MirBinOp::Add,
+                    dest: 2,
+                    lhs: 0,
+                    rhs: 1,
+                    width: 32,
+                },
+                MirInstr::Store { signal: 0, src: 2 },
+                MirInstr::Load { dest: 3, signal: 0 },
+                MirInstr::Store { signal: 1, src: 3 },
+            ],
+        };
+        let mut compiler = MirJitCompiler::new().unwrap();
+        let compiled = compiler.compile_process(&process, 2).unwrap();
+
+        let mut signals = [10u64, 0u64];
+        let mut out = [0u64; 2];
+        unsafe {
+            MirJitCompiler::call_process(compiled.code_ptr, &mut signals, &mut out);
+        }
+        assert_eq!(out[0], 11, "sig[0] + 1 = 11");
+        assert_eq!(out[1], 11, "Load setelah Store harus melihat nilai baru");
     }
 
     #[test]
@@ -721,10 +767,10 @@ mod tests {
         let mut compiler = MirJitCompiler::new().unwrap();
         let compiled = compiler.compile_process(&process, 2).unwrap();
 
-        let signals = [0xFu64, 0u64];
+        let mut signals = [0xFu64, 0u64];
         let mut out = [0u64; 2];
         unsafe {
-            MirJitCompiler::call_process(compiled.code_ptr, &signals, &mut out);
+            MirJitCompiler::call_process(compiled.code_ptr, &mut signals, &mut out);
         }
         assert_eq!(out[0], 0xF0, "~0x0F with width=8 should be 0xF0");
     }

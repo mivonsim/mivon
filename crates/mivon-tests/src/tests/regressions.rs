@@ -455,6 +455,468 @@ endmodule
     );
 }
 
+#[test]
+fn test_jit_falls_back_on_signed_widening() {
+    // JIT memakai u64 + mask (zero-extend) saat melebarkan nilai, sedangkan
+    // interpreter sign-extend bila `is_signed_expr` benar. Sinyal signed yang
+    // dilebarkan TANPA node IrExpr::Signed (mis. `y = s`) dulu lolos guard →
+    // silent miscompile 32'h000000F8 vs 32'hFFFFFFF8. JIT-09 (a).
+    let source = r#"
+module test_jit_signed_widen;
+    logic signed [7:0] s;
+    logic [31:0] y;
+    always_comb begin
+        y = s;
+    end
+    initial begin
+        s = 8'shF8;
+        #1;
+        $finish;
+    end
+endmodule
+"#;
+    let run = |use_jit: bool| {
+        let design = crate::compile_str(source).unwrap();
+        let mut engine = crate::simulator::SimulationEngine::new(design, 10);
+        engine.set_use_mir_jit(use_jit);
+        engine.run().unwrap();
+        let y_idx = engine
+            .design
+            .top
+            .signals
+            .iter()
+            .position(|s| s.name.as_str() == "y")
+            .unwrap();
+        engine.state.read_signal(y_idx).clone()
+    };
+    let jit = run(true);
+    let interp = run(false);
+    assert_eq!(
+        jit.to_u64(),
+        interp.to_u64(),
+        "JIT harus identik dengan interpreter untuk widening signed"
+    );
+    assert_eq!(
+        interp.to_u64(),
+        0xFFFF_FFF8,
+        "interpreter wajib sign-extend 8'shF8 ke 32 bit"
+    );
+}
+
+#[test]
+fn test_jit_width_matches_interpreter() {
+    // IR menyimpan width 0 untuk identifier polos; lowering MIR dulu memakai
+    // field itu sehingga mask lebar jadi 0 → hasil selalu 0 (Binary/Concat
+    // sinyal). Kini lebar diambil dari tabel SignalInfo. Uji aritmetika
+    // 8-bit (truncate di tengah ekspresi) + concat 16-bit.
+    let source = r#"
+module test_jit_width;
+    reg [7:0] a, b;
+    reg [7:0] sum;
+    reg [7:0] shr;
+    reg [15:0] cat;
+    always_comb begin
+        sum = a + b;
+        shr = (a + b) >> 1;
+        cat = {a, b};
+    end
+    initial begin
+        a = 8'd200;
+        b = 8'd100;
+        #1;
+        $finish;
+    end
+endmodule
+"#;
+    let run = |use_jit: bool| {
+        let design = crate::compile_str(source).unwrap();
+        let mut engine = crate::simulator::SimulationEngine::new(design, 10);
+        engine.set_use_mir_jit(use_jit);
+        engine.run().unwrap();
+        if use_jit {
+            let n = engine
+                .mir_jit
+                .as_ref()
+                .map(|j| j.compiled_count())
+                .unwrap_or(0);
+            assert!(n > 0, "jalur JIT harus benar-benar dipakai (compiled={n})");
+        }
+        let get = |name: &str| {
+            let idx = engine
+                .design
+                .top
+                .signals
+                .iter()
+                .position(|s| s.name.as_str() == name)
+                .unwrap();
+            engine.state.read_signal(idx).to_u64()
+        };
+        (get("sum"), get("shr"), get("cat"))
+    };
+    let jit = run(true);
+    let interp = run(false);
+    assert_eq!(jit, interp, "JIT harus identik dengan interpreter (width)");
+    // a=200 (0xC8), b=100 (0x64) → {a,b} = 16'hC864.
+    assert_eq!(interp, (44, 22, 0xC864), "acuan interpreter 8-bit");
+}
+
+/// Jalankan desain dua kali (JIT on/off) dan kembalikan nilai sinyal
+/// (nama, nilai u64) untuk dibandingkan — pola differential JIT vs
+/// interpreter. Assert juga bahwa jalur JIT benar-benar dipakai.
+fn run_jit_diff(source: &str, names: &[&str], expect_jit: bool) -> Vec<u64> {
+    let run = |use_jit: bool| {
+        let design = crate::compile_str(source).unwrap();
+        let mut engine = crate::simulator::SimulationEngine::new(design, 20);
+        engine.set_use_mir_jit(use_jit);
+        engine.run().unwrap();
+        if use_jit {
+            let n = engine
+                .mir_jit
+                .as_ref()
+                .map(|j| j.compiled_count())
+                .unwrap_or(0);
+            if expect_jit {
+                assert!(n > 0, "jalur JIT harus dipakai (compiled={n})");
+            } else {
+                assert_eq!(n, 0, "guard harus memaksa fallback interpreter");
+            }
+        }
+        names
+            .iter()
+            .map(|name| {
+                let idx = engine
+                    .design
+                    .top
+                    .signals
+                    .iter()
+                    .position(|s| s.name.as_str() == *name)
+                    .unwrap();
+                engine.state.read_signal(idx).to_u64()
+            })
+            .collect::<Vec<_>>()
+    };
+    let jit = run(true);
+    let interp = run(false);
+    assert_eq!(jit, interp, "JIT harus identik dengan interpreter");
+    interp
+}
+
+#[test]
+fn test_jit_read_after_write_blocking() {
+    // `tmp` ditulis lalu dibaca dalam proses yang sama. Codegen lama hanya
+    // menulis out_ptr, sehingga Load berikutnya membaca snapshot LAMA
+    // (JIT-05b). Eval kedua (a=9) harus memberi tmp=y=10, bukan 6.
+    let source = r#"
+module test_jit_raw;
+    reg [7:0] a;
+    reg [7:0] tmp;
+    reg [7:0] y;
+    always_comb begin
+        tmp = a + 8'd1;
+        y = tmp;
+    end
+    initial begin
+        a = 8'd5;
+        #1 a = 8'd9;
+        #2 $finish;
+    end
+endmodule
+"#;
+    let v = run_jit_diff(source, &["tmp", "y"], true);
+    assert_eq!(v, vec![10, 10], "read-after-write harus melihat nilai baru");
+}
+
+#[test]
+fn test_jit_case_and_while_fall_back() {
+    // Case >= 2 item dan loop dengan back-edge PANIK di codegen Cranelift
+    // ("block already filled" / "!is_sealed") begitu JIT-07 membuat jalur
+    // JIT hidup. Guard harus memaksa fallback interpreter (JIT-12a/b).
+    let case_src = r#"
+module test_jit_case2;
+    reg [1:0] state;
+    reg [1:0] nxt;
+    always_comb begin
+        case (state)
+            2'd0: nxt = 2'd1;
+            2'd1: nxt = 2'd2;
+            default: nxt = 2'd0;
+        endcase
+    end
+    initial begin
+        state = 2'd1;
+        #1 $finish;
+    end
+endmodule
+"#;
+    let v = run_jit_diff(case_src, &["nxt"], false);
+    assert_eq!(v, vec![2], "case 2 item: nxt = 2");
+
+    let while_src = r#"
+module test_jit_while;
+    reg [7:0] i;
+    always_comb begin
+        i = 8'd0;
+        while (i < 8'd3) i = i + 8'd1;
+    end
+    initial begin
+        #1 $finish;
+    end
+endmodule
+"#;
+    let v = run_jit_diff(while_src, &["i"], false);
+    assert_eq!(v, vec![3], "while 3 iterasi: i = 3");
+}
+
+#[test]
+fn test_jit_case_multilabel_and_nested_if() {
+    // (a) case 1 item dengan 2 label: lowering meng-emit Branch berurutan
+    // tanpa Label → panic "block already filled". Guard harus fallback.
+    let multi = r#"
+module test_jit_multilabel;
+    reg [1:0] sel;
+    reg [7:0] y;
+    always_comb begin
+        case (sel)
+            2'd0, 2'd1: y = 8'd5;
+            default: y = 8'd9;
+        endcase
+    end
+    initial begin
+        sel = 2'd1;
+        #1 $finish;
+    end
+endmodule
+"#;
+    let v = run_jit_diff(multi, &["y"], false);
+    assert_eq!(v, vec![5], "case multi-label: y = 5");
+
+    // (b) nested if (else-if): label tiap body harus unik lintas level.
+    let nested = r#"
+module test_jit_nested_if;
+    reg [1:0] s;
+    reg [7:0] y;
+    always_comb begin
+        if (s == 2'd0) y = 8'd10;
+        else if (s == 2'd1) y = 8'd11;
+        else y = 8'd12;
+    end
+    initial begin
+        s = 2'd0;
+        #1;
+        s = 2'd1;
+        #2 $finish;
+    end
+endmodule
+"#;
+    // Catatan: harness (compile_str + SimulationEngine) hanya mengevaluasi
+    // always_comb sekali di sini (s=0), beda dengan pipeline CLI (y=11).
+    // Yang diuji di sini adalah JIT benar-benar dipakai (compiled > 0) dan
+    // hasilnya identik dengan interpreter — dulu nested if PANIK karena
+    // label ganda.
+    let v = run_jit_diff(nested, &["y"], true);
+    assert_eq!(v.len(), 1, "satu sinyal");
+}
+
+#[test]
+fn test_jit_ternary_inside_if() {
+    // Cond (ternary) dulu mengalokasikan label dari instrs lokal sehingga
+    // bertabrakan dengan label If induk → Cranelift panic "!is_sealed".
+    // Kini semua label dari counter bersama (JIT-13b).
+    let source = r#"
+module test_jit_cond_if;
+    reg c;
+    reg d;
+    reg [7:0] a;
+    reg [7:0] b;
+    reg [7:0] y;
+    always_comb begin
+        if (d) y = c ? a : b;
+    end
+    initial begin
+        c = 1'b1;
+        d = 1'b1;
+        a = 8'd3;
+        b = 8'd4;
+        #1 $finish;
+    end
+endmodule
+"#;
+    let v = run_jit_diff(source, &["y"], true);
+    assert_eq!(v, vec![3], "if(d) y = c?a:b dengan c=1,d=1 → 3");
+}
+
+#[test]
+fn test_jit_filllit_falls_back() {
+    // `y = '1` harus fill ke lebar LHS (0xFF), bukan Const 1-bit.
+    // Guard menolak FillLit → fallback interpreter.
+    let source = r#"
+module test_jit_fill;
+    reg [7:0] y;
+    always_comb begin
+        y = '1;
+    end
+    initial begin
+        #1 $finish;
+    end
+endmodule
+"#;
+    let v = run_jit_diff(source, &["y"], false);
+    assert_eq!(v, vec![0xFF], "fill '1 = 8'hFF");
+}
+
+#[test]
+fn test_jit_store_masks_to_target_width() {
+    // Store menulis ke buffer input apa adanya; tanpa mask ke lebar target,
+    // Load berikutnya melihat nilai penuh (255) padahal target 4-bit = 15
+    // (JIT-12c).
+    let source = r#"
+module test_jit_narrow;
+    reg [7:0] b;
+    reg [3:0] a;
+    reg [7:0] c;
+    always_comb begin
+        a = b;
+        c = a;
+    end
+    initial begin
+        b = 8'hFF;
+        #1 $finish;
+    end
+endmodule
+"#;
+    let v = run_jit_diff(source, &["a", "c"], true);
+    assert_eq!(v, vec![15, 15], "truncate ke 4-bit saat read-after-write");
+}
+
+#[test]
+fn test_jit_unexecuted_x_target_stays_x() {
+    // Target q tetap X (tidak pernah ditulis karena en=0 sejak awal).
+    // out_vals berbasis u64 (X -> 0) akan mengubah X -> 0 bila JIT dipakai;
+    // guard bad_write (target X/Z) harus memaksa fallback.
+    let source = r#"
+module test_jit_x_target;
+    reg en;
+    reg [7:0] d;
+    reg [7:0] q;
+    always_comb begin
+        if (en) q = d;
+    end
+    initial begin
+        en = 1'b0;
+        d = 8'd7;
+        #1 $finish;
+    end
+endmodule
+"#;
+    let design = crate::compile_str(source).unwrap();
+    let mut engine = crate::simulator::SimulationEngine::new(design, 20);
+    engine.set_use_mir_jit(true);
+    engine.run().unwrap();
+    let q_idx = engine
+        .design
+        .top
+        .signals
+        .iter()
+        .position(|s| s.name.as_str() == "q")
+        .unwrap();
+    let q = engine.state.read_signal(q_idx).clone();
+    assert!(q.has_unknown(), "q harus tetap X, bukan 0 (u64)");
+    let n = engine
+        .mir_jit
+        .as_ref()
+        .map(|j| j.compiled_count())
+        .unwrap_or(0);
+    assert_eq!(n, 0, "guard target X harus memaksa fallback");
+}
+
+#[test]
+fn test_jit_unary_plus_falls_back() {
+    // Lowering unary hanya BitNot/Minus; `+a` dulu memicu unreachable!()
+    // (panic). Kini guard menolak → fallback interpreter (JIT-11b).
+    let source = r#"
+module test_jit_uplus;
+    reg [7:0] a;
+    reg [7:0] y;
+    always_comb begin
+        y = +a;
+    end
+    initial begin
+        a = 8'd5;
+        #1 $finish;
+    end
+endmodule
+"#;
+    let v = run_jit_diff(source, &["y"], false);
+    assert_eq!(v, vec![5], "+a = a");
+}
+
+#[test]
+fn test_jit_unexecuted_target_keeps_value() {
+    // Cabang if tidak diambil: q TIDAK ditulis. out_vals yang di-zero-init
+    // membuat q tertimpa 0 (JIT-05c); q harus tetap 7.
+    let source = r#"
+module test_jit_latch;
+    reg en;
+    reg [7:0] d;
+    reg [7:0] q;
+    always_comb begin
+        if (en) q = d;
+    end
+    initial begin
+        en = 1'b1;
+        d = 8'd7;
+        #1 en = 1'b0;
+        #2 $finish;
+    end
+endmodule
+"#;
+    let v = run_jit_diff(source, &["q"], true);
+    assert_eq!(v, vec![7], "target yang tidak dieksekusi harus tetap");
+}
+
+#[test]
+fn test_jit_mixed_blocking_nba_falls_back() {
+    // q ditulis blocking DAN non-blocking: urutan di region berbeda, slot
+    // out_vals tunggal tak bisa mewakilinya (JIT-05d) → fallback.
+    let source = r#"
+module test_jit_mixed;
+    reg [7:0] q;
+    always_comb begin
+        q <= 8'd2;
+        q = 8'd1;
+    end
+    initial begin
+        #1 $finish;
+    end
+endmodule
+"#;
+    let v = run_jit_diff(source, &["q"], false);
+    assert_eq!(v, vec![2], "NBA (2) commit setelah blocking (1)");
+}
+
+#[test]
+fn test_jit_unsupported_ops_fall_back() {
+    // Power/BitXnor/Sshl/Sshr tidak punya padanan MirBinOp (dulu fallback
+    // Add → a**2 jadi a+2, a>>>1 jadi a+1) → harus fallback interpreter.
+    let source = r#"
+module test_jit_ops;
+    reg [7:0] a;
+    reg [15:0] p;
+    reg [7:0] r;
+    always_comb begin
+        p = a ** 2;
+        r = a >>> 1;
+    end
+    initial begin
+        a = 8'd12;
+        #1 $finish;
+    end
+endmodule
+"#;
+    let v = run_jit_diff(source, &["p", "r"], false);
+    assert_eq!(v, vec![144, 6], "a**2=144, a>>>1=6");
+}
+
 // ─── SIM-30: $coverage_control semua mode (per-type gating) ───────────────
 
 #[test]

@@ -38,5 +38,13 @@ libloading = { version = "0.8", optional = true }
 
 
 [features]
-jit = ["cranelift", "cranelift-jit", "cranelift-frontend", "cranelift-module"]
+jit = [
+    "cranelift",
+    "cranelift-jit",
+    "cranelift-frontend",
+    "cranelift-module",
+    # JIT-07: tanpa ini MirJitCompiler = stub (new() -> None) sehingga jalur
+    # mir-jit diam-diam inert walau fitur `jit` aktif di crate ini.
+    "mivon-compiler/jit",
+]
 dpi = ["libloading"]
