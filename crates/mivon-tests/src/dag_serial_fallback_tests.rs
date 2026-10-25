@@ -887,6 +887,104 @@ fn dag_cf_domain_waw_diff() {
             "{name}: WAW domain (tahap 4) harus identik serial domain — \
              guard WAW-vs-serial wajib mendemosi penulis awal"
         );
-        assert_eq!(gd, expect, "{name}: pemenang WAW harus FF serial inline (s=9)");
+        assert_eq!(
+            gd, expect,
+            "{name}: pemenang WAW harus FF serial inline (s=9)"
+        );
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Par-02 tahap 6 (ROUND 191): batch AlwaysWithDelay (`always #N`)
+// ═══════════════════════════════════════════════════════════════════
+
+/// Empat `always #5` jatuh pada time step yang sama dan menulis sinyal
+/// disjoint (c1/c2/c3/n) → SELURUH event Active pada delta itu adalah
+/// EvalProcess AlwaysWithDelay → run_awd_batch: 4 kandidat BlockingOnly
+/// dalam satu grup paralel. Nilai wajib identik serial; `n` mengunci
+/// jumlah evaluasi (20 event: t=5..100) sehingga batch yang
+/// mengevaluasi ganda/kehilangan satu event langsung ketahuan.
+const AWD_BATCH_SRC: &str = r#"
+module awd_batch_top;
+  logic c1, c2, c3;
+  logic [7:0] n;
+  initial begin c1 = 0; c2 = 0; c3 = 0; n = 0; end
+  always #5 c1 = ~c1;
+  always #5 c2 = ~c2;
+  always #5 c3 = ~c3;
+  always #5 n = n + 8'd1;
+endmodule
+"#;
+
+#[test]
+fn dag_awd_batch_parallel_diff() {
+    for (name, expect) in [("c1", "0"), ("c2", "0"), ("c3", "0"), ("n", "00010100")] {
+        let d = run_signal_bits(AWD_BATCH_SRC, name, false);
+        let g = run_signal_bits(AWD_BATCH_SRC, name, true);
+        assert_eq!(
+            g, d,
+            "{name}: batch AWD harus identik serial (4 always #5 satu delta)"
+        );
+        assert_eq!(g, expect, "{name}: nilai AWD batch salah");
+    }
+}
+
+/// Demosi AWD saling-baca: a = b + 1 dan b = a + 1 membaca blocking write
+/// kandidat batch lain → kedua kandidat WAJIB demosi inline (urutan
+/// event/pid). Tanpa guard, batch memakai snapshot pra-delta → a = b_lama+1,
+/// b = a_lama+1 (divergen). Serial 20 iterasi: a=41, b=42.
+const AWD_DEMOTE_SRC: &str = r#"
+module awd_demote_top;
+  logic [7:0] a, b;
+  initial begin a = 8'd1; b = 8'd2; end
+  always #5 a = b + 8'd1;
+  always #5 b = a + 8'd1;
+endmodule
+"#;
+
+#[test]
+fn dag_awd_batch_demote_diff() {
+    for (name, expect) in [("a", "00101001"), ("b", "00101010")] {
+        let d = run_signal_bits(AWD_DEMOTE_SRC, name, false);
+        let g = run_signal_bits(AWD_DEMOTE_SRC, name, true);
+        assert_eq!(
+            g, d,
+            "{name}: AWD saling-baca harus identik serial (demosi inline)"
+        );
+        assert_eq!(
+            g, expect,
+            "{name}: pembaca wajib melihat tulis iterasi sama"
+        );
+    }
+}
+
+/// WAW antar AWD: dua `always #5` menulis q pada delta yang sama →
+/// blocking_write_counts[q] > 1 → keduanya demosi inline, pemenang =
+/// urutan event terakhir (q = 7 konstan). w + v (disjoint) tetap
+/// ter-batch sebagai grup paralel — campuran demosi + batch dalam satu
+/// delta AWD.
+/// Catatan: nama sinyal `s` TIDAK dipakai — lexer membacanya sebagai
+/// suffix waktu (`#5 s` = delay 5 sekon) → parse error.
+const AWD_WAW_SRC: &str = r#"
+module awd_waw_top;
+  logic [7:0] q, w, v;
+  initial begin q = 0; w = 0; v = 0; end
+  always #5 q = q + 8'd1;
+  always #5 q = 8'd7;
+  always #5 w = w + 8'd1;
+  always #5 v = v + 8'd1;
+endmodule
+"#;
+
+#[test]
+fn dag_awd_batch_waw_diff() {
+    for (name, expect) in [("q", "00000111"), ("w", "00010100"), ("v", "00010100")] {
+        let d = run_signal_bits(AWD_WAW_SRC, name, false);
+        let g = run_signal_bits(AWD_WAW_SRC, name, true);
+        assert_eq!(
+            g, d,
+            "{name}: WAW antar AWD harus identik serial (demosi kedua penulis)"
+        );
+        assert_eq!(g, expect, "{name}: pemenang WAW AWD salah");
     }
 }

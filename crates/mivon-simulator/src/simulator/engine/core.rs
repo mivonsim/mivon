@@ -978,13 +978,16 @@ impl SimulationEngine {
         // clock-domain (dulu: deep clone Vec body per evaluasi domain).
         // Dibangun SELALU: jalur clock-domain memakainya terlepas dari
         // jalur DAG parallel.
+        // Par-02 tahap 6: AlwaysWithDelay (always #N) ikut di-cache agar
+        // SeqCand::classify bisa mengklasifikasi body-nya utk batch AWD.
         self.process_body_arcs.clear();
         for (pid, process) in self.design.top.processes.iter().enumerate() {
             let body = match process {
                 Process::Combinational { body, .. }
                 | Process::CombReactive { body, .. }
                 | Process::Initial { body, .. }
-                | Process::Sequential { body, .. } => body,
+                | Process::Sequential { body, .. }
+                | Process::AlwaysWithDelay { body, .. } => body,
                 _ => continue,
             };
             let arc = std::sync::Arc::new(body.clone());
@@ -1257,11 +1260,48 @@ impl SimulationEngine {
                                 }
                                 activity = true;
 
+                                // ── Par-02 tahap 6: batch AlwaysWithDelay ──
+                                // Hanya bila SELURUH event Active pada delta ini
+                                // adalah EvalProcess AlwaysWithDelay (mis. banyak
+                                // clock generator `always #5` dgn delay sama).
+                                // Campuran dgn event lain → serial: urutan insertion
+                                // antar event bermakna, batch mengubah visibilitas
+                                // tulis (snapshot) relatif event lain.
+                                let mut awd_batched = false;
+                                if self.use_dag_parallel && events.len() >= 2 {
+                                    let mut pids: Vec<usize> = Vec::with_capacity(events.len());
+                                    let mut all_awd = true;
+                                    for re in &events {
+                                        match re.event {
+                                            EventKind::EvalProcess(pid)
+                                                if matches!(
+                                                    self.design.top.processes.get(pid),
+                                                    Some(Process::AlwaysWithDelay { .. })
+                                                ) =>
+                                            {
+                                                pids.push(pid);
+                                            }
+                                            _ => {
+                                                all_awd = false;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    if all_awd && self.run_awd_batch(&pids, t)? {
+                                        self.sim_perf.counters.processes_evaluated +=
+                                            pids.len() as u64;
+                                        awd_batched = true;
+                                    }
+                                }
+
                                 // ── DAG-Parallel: batch EvalProcess events ──
                                 // Hanya Combinational/CombReactive/Initial yang aman
-                                // di-paralelkan. Sequential, AlwaysWithDelay, dan Final
-                                // butuh event loop semantics (clock edges, delay).
-                                if self.use_dag_parallel && self.sim_dag.is_some() {
+                                // di-paralelkan. Sequential dan Final butuh event
+                                // loop semantics (clock edges).
+                                if awd_batched {
+                                    // Sudah dievaluasi + dijadwalkan ulang oleh
+                                    // run_awd_batch.
+                                } else if self.use_dag_parallel && self.sim_dag.is_some() {
                                     let mut eval_pids: Vec<usize> = Vec::new();
                                     let mut other_events: Vec<RegionEvent> = Vec::new();
                                     for re in events {

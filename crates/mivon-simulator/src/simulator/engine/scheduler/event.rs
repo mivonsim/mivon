@@ -1185,6 +1185,72 @@ impl SimulationEngine {
     /// 3/4 — dipakai event.rs Phase 2c (trigger/iff/fused ditangani
     /// pemanggil) dan core.rs evaluate_clock_domain Step 1 (semua
     /// kandidat domain triggered, iff kosong).
+    /// Evaluasi serial satu proses seq-like dgn semantik aslinya:
+    /// Sequential -> statement block; AlwaysWithDelay -> block-with-delay
+    /// (`always #N` body boleh memuat delay). Proses lain = no-op.
+    fn eval_seq_like_serial(&mut self, pid: usize) -> Result<(), SimError> {
+        match self.design.top.processes.get(pid) {
+            Some(Process::Sequential { body, .. }) => {
+                let body = body.clone();
+                self.evaluate_stmt_block(&body)
+            }
+            Some(Process::AlwaysWithDelay { body, .. }) => {
+                let body = body.clone();
+                self.evaluate_block_with_delay(&body).map(|_| ())
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// Par-02 tahap 6: batch-parallel `always #N` yang jatuh pada time step
+    /// yang sama. Prasyarat dicek pemanggil (core.rs Active region): SELURUH
+    /// event Active pada delta ini adalah EvalProcess AlwaysWithDelay — jadi
+    /// urutan relatif terhadap event lain tidak berubah. Di sini ditambah:
+    /// `t > 0` (body tidak dieksekusi di t=0, hanya menjadwalkan t+N) dan
+    /// `delay > 0` (delay 0 menjadwalkan ulang di time step yang sama →
+    /// urutan push wajib persis serial). Kandidat diklasifikasi/didemosi oleh
+    /// `run_seq_batch`; reschedule t+N dilakukan SETELAH batch dengan urutan
+    /// event asli (identik serial). Return true bila batch dipakai.
+    pub(crate) fn run_awd_batch(&mut self, pids: &[usize], t: usize) -> Result<bool, SimError> {
+        if t == 0 {
+            return Ok(false);
+        }
+        let mut delays: Vec<usize> = Vec::with_capacity(pids.len());
+        for &pid in pids {
+            match self.design.top.processes.get(pid) {
+                Some(Process::AlwaysWithDelay { delay, .. }) if *delay > 0 => {
+                    delays.push(*delay as usize)
+                }
+                _ => return Ok(false),
+            }
+        }
+        // Event `always #N` itu sendiri = pemicu (tak ada edge/iff) —
+        // samakan dgn jalur domain: clock_trigger=true wajib, tanpa ini
+        // fase 2 run_seq_batch men-skip kandidat (trigger=false).
+        let cands: Vec<SeqCand> = pids
+            .iter()
+            .map(|&pid| {
+                let mut c = SeqCand::classify(self, pid);
+                c.clock_trigger = true;
+                c
+            })
+            .collect();
+        self.disable_pending = None;
+        self.run_seq_batch(&cands)?;
+        for (i, &pid) in pids.iter().enumerate() {
+            let next_t = t + delays[i];
+            self.ensure_events(next_t);
+            self.push_event(
+                next_t,
+                RegionEvent {
+                    region: EventRegion::Active,
+                    event: EventKind::EvalProcess(pid),
+                },
+            );
+        }
+        Ok(true)
+    }
+
     pub(crate) fn run_seq_batch(&mut self, cands: &[SeqCand]) -> Result<(), SimError> {
         // Agregat fase 1: serial_writes (non-batchable) dipecah blocking
         // vs NBA — hanya blocking write serial yang berbahaya dibaca batch
@@ -1264,11 +1330,7 @@ impl SimulationEngine {
                 continue;
             }
             if !c.batchable {
-                let body = match &self.design.top.processes[c.pid] {
-                    Process::Sequential { body, .. } => body.clone(),
-                    _ => continue,
-                };
-                self.evaluate_stmt_block(&body)?;
+                self.eval_seq_like_serial(c.pid)?;
                 continue;
             }
             let own_effective = |s: &usize| c.access.reads.contains(s) || c.iff_reads.contains(s);
@@ -1312,11 +1374,7 @@ impl SimulationEngine {
                         .any(|s| nba_write_counts.get(s).copied().unwrap_or(0) > 1)
             };
             if demote {
-                let body = match &self.design.top.processes[c.pid] {
-                    Process::Sequential { body, .. } => body.clone(),
-                    _ => continue,
-                };
-                self.evaluate_stmt_block(&body)?;
+                self.eval_seq_like_serial(c.pid)?;
                 continue;
             }
             seq_batch.push(c);
@@ -1335,11 +1393,7 @@ impl SimulationEngine {
     /// atau evaluator paralel gagal (D).
     fn evaluate_batch_serially(&mut self, batch: &[usize]) -> Result<(), SimError> {
         for &pid in batch {
-            let body = match &self.design.top.processes[pid] {
-                Process::Sequential { body, .. } => body.clone(),
-                _ => continue,
-            };
-            self.evaluate_stmt_block(&body)?;
+            self.eval_seq_like_serial(pid)?;
         }
         Ok(())
     }
@@ -1427,12 +1481,7 @@ impl SimulationEngine {
         // — push grup sukses TIDAK boleh hilang (review R186 BUG-3).
         if let Some(rest) = err_rest {
             for &i in &rest {
-                let pid = batch[i].pid;
-                let body = match &self.design.top.processes[pid] {
-                    Process::Sequential { body, .. } => body.clone(),
-                    _ => continue,
-                };
-                self.evaluate_stmt_block(&body)?;
+                self.eval_seq_like_serial(batch[i].pid)?;
             }
         }
         nba_pushes.sort_by_key(|(pid, _)| *pid);
