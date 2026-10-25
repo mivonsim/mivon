@@ -5,8 +5,8 @@ use super::*;
 impl LspBackend {
     /// Find-references core (murni, bisa diuji) — LSP-04 tahap 1:
     /// semua kemunculan identifier (sebagai token mandiri) dalam dokumen,
-    /// urut baris. `include_declaration` tetap dikembalikan penuh — caller
-    /// (handler) yang memfilter bila diminta tanpa deklarasi.
+    /// urut baris. Deklarasi SELALU ikut di sini; pemfilteran sesuai
+    /// `include_declaration` dilakukan `references_hits` (dipakai handler).
     #[allow(dead_code)] // API tahap 1 (single-doc) — dipakai test; produksi
                         // memakai find_references_in_docs (tahap 2).
     pub(crate) fn find_references(source: &str, line: u32, character: u32) -> Vec<(u32, u32, u32)> {
@@ -53,6 +53,75 @@ impl LspBackend {
         for (uri, text) in docs {
             if !Self::collect_refs_in_text(uri, text, word, &mut out, max_results) {
                 return out;
+            }
+        }
+        out
+    }
+
+    /// LSP-04: kumpulkan PEMAKAIAN `word` (deklarasi dibuang) ke `out`,
+    /// berhenti saat `max` tercapai. Return false bila `max` tercapai.
+    ///
+    /// Deteksi deklarasi memakai `definition_col` — heuristik yang sama
+    /// dengan go-to-definition. Biaya terbatas: `definition_col` dihitung
+    /// SEKALI per baris yang memuat `word`, dan hasil langsung dipotong di
+    /// `max` (tidak ada pengumpulan tanpa batas — review LSP-04 PERF-1).
+    pub(crate) fn collect_uses_in_text(
+        uri: &str,
+        text: &str,
+        word: &str,
+        out: &mut Vec<(String, u32, u32, u32)>,
+        max: usize,
+    ) -> bool {
+        for (idx, line) in text.lines().enumerate() {
+            if line.trim_start().starts_with("//") {
+                continue;
+            }
+            let mut decl: Option<Option<usize>> = None;
+            for (w, col) in Self::line_tokens(line) {
+                if w != word {
+                    continue;
+                }
+                let decl_col = *decl.get_or_insert_with(|| Self::definition_col(line, word));
+                if decl_col == Some(col) {
+                    continue;
+                }
+                out.push((
+                    uri.to_string(),
+                    idx as u32,
+                    col as u32,
+                    (col + w.len()) as u32,
+                ));
+                if out.len() >= max {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
+    /// LSP-04: hasil find-references sesuai `include_declaration`.
+    ///
+    /// Bila deklarasi TIDAK diminta, filter dilakukan SAAT pengumpulan
+    /// (sebelum memotong ke `max`) — kalau tidak, kuota bisa habis oleh
+    /// hit deklarasi dan pemakaian nyata di dokumen berikutnya hilang
+    /// (review LSP-04). Handler cukup meneruskan
+    /// `params.context.include_declaration` ke sini.
+    pub(crate) fn references_hits(
+        docs: &[(String, String)],
+        word: &str,
+        include_declaration: bool,
+        max: usize,
+    ) -> Vec<(String, u32, u32, u32)> {
+        if word.is_empty() || max == 0 {
+            return Vec::new();
+        }
+        if include_declaration {
+            return Self::find_references_in_docs(docs, word, max);
+        }
+        let mut out = Vec::new();
+        for (uri, text) in docs {
+            if !Self::collect_uses_in_text(uri, text, word, &mut out, max) {
+                break;
             }
         }
         out

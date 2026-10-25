@@ -57,6 +57,63 @@ pub(crate) struct WsSymbolHit {
     pub col: u32,
 }
 
+/// Keyword deklarasi yang tidak termasuk arah/tipe (dipakai
+/// `declarator_scan` untuk mengenali awal deklarasi baru setelah ';').
+const DECL_START_KW: &[&str] = &["parameter", "localparam", "typedef", "genvar"];
+
+/// Keyword arah/tipe yang menandai awal deklarasi port/signal.
+const TYPE_DIR_KW: &[&str] = &[
+    // arah port
+    "input",
+    "output",
+    "inout",
+    "ref",
+    // tipe data
+    "wire",
+    "reg",
+    "logic",
+    "bit",
+    "int",
+    "integer",
+    "byte",
+    "shortint",
+    "longint",
+    "real",
+    "realtime",
+    "time",
+    "nettype",
+    "enum",
+    "struct",
+    "union",
+    "string",
+    "event",
+    "chandle",
+    "signed",
+    "unsigned",
+    // net/qualifier lain yang bisa membuka deklarasi kedua pada baris sama
+    // (wire a; tri b;) atau field class (rand bit [7:0] x;).
+    "tri",
+    "tri0",
+    "tri1",
+    "triand",
+    "trior",
+    "trireg",
+    "wand",
+    "wor",
+    "supply0",
+    "supply1",
+    "uwire",
+    "var",
+    "const",
+    "static",
+    "automatic",
+    "rand",
+    "randc",
+    "local",
+    "protected",
+    "virtual",
+];
+
 /// Simbol dokumen versi lite (LSP-12) — dikonversi ke
 /// lsp_types::DocumentSymbol oleh handler.
 #[derive(Debug, Clone)]
@@ -744,13 +801,6 @@ impl LspBackend {
             "property",
             "sequence",
         ];
-        const DECL_KW: &[&str] = &["parameter", "localparam", "typedef", "genvar"];
-        const TYPE_DIR_KW: &[&str] = &[
-            "input", "output", "inout", "wire", "reg", "logic", "bit", "int", "integer", "byte",
-            "shortint", "longint", "real", "realtime", "time", "nettype", "enum", "struct",
-            "union", "string", "event",
-        ];
-
         let toks = Self::line_tokens(line);
         if toks.is_empty() {
             return None;
@@ -758,13 +808,11 @@ impl LspBackend {
 
         // 0. Deklarasi parameter di mana pun dalam baris (termasuk
         //    `module m #(parameter WIDTH = 8) (`): token parameter/localparam
-        //    → cari word SETELAHnya.
+        //    → cari deklarator SETELAHnya.
         for (i, (w, _)) in toks.iter().enumerate() {
             if matches!(w.as_str(), "parameter" | "localparam") {
-                for (w2, c2) in toks.iter().skip(i + 1) {
-                    if w2 == word {
-                        return Some(*c2);
-                    }
+                if let Some(c) = Self::declarator_scan(&toks[i + 1..], word) {
+                    return Some(c);
                 }
             }
         }
@@ -772,49 +820,357 @@ impl LspBackend {
         // 1. Definisi scope: <kw> <word>
         let (t0, _) = &toks[0];
         if SCOPE_KW.contains(&t0.as_str()) {
+            // function/task: nama = identifier TERAKHIR sebelum '(' — tipe
+            // return di depannya adalah pemakaian, bukan deklarasi (review
+            // LSP-04 ronde 8 F-4). Argumen header memakai pemindaian port.
+            if matches!(t0.as_str(), "function" | "task") {
+                let mut name: Option<&(String, usize)> = None;
+                for t in toks.iter().skip(1) {
+                    if t.0 == "(" || t.0 == ";" {
+                        break;
+                    }
+                    let is_ident =
+                        t.0.chars()
+                            .next()
+                            .is_some_and(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '$');
+                    if is_ident
+                        && !TYPE_DIR_KW.contains(&t.0.as_str())
+                        && !DECL_START_KW.contains(&t.0.as_str())
+                    {
+                        name = Some(t);
+                    }
+                }
+                if let Some((w, c)) = name {
+                    if w == word {
+                        return Some(*c);
+                    }
+                }
+                if let Some(inner) = Self::port_list(&toks) {
+                    if let Some(c) = Self::port_segments_scan(inner, word) {
+                        return Some(c);
+                    }
+                }
+                return None;
+            }
             if let Some((w1, c1)) = toks.get(1) {
                 if w1 == word {
                     return Some(*c1);
                 }
             }
-            // function ret_type <name>( / task ...
-            if matches!(t0.as_str(), "function" | "task") {
-                for (w, c) in toks.iter().skip(1) {
-                    if w == word {
-                        // pastikan bukan tipe return: harus sebelum '('
-                        return Some(*c);
+            // Port ANSI di header: `module m (input logic clk, output q)`.
+            // Hanya segmen (dipisah koma) yang memuat keyword arah/tipe yang
+            // dianggap deklarasi; pencarian berhenti di '=' (nilai default).
+            if matches!(
+                t0.as_str(),
+                "module" | "macromodule" | "interface" | "program"
+            ) {
+                if let Some(inner) = Self::port_list(&toks) {
+                    if let Some(c) = Self::port_segments_scan(inner, word) {
+                        return Some(c);
                     }
                 }
             }
             return None;
         }
 
-        // 2. parameter/localparam/typedef/genvar ... word ...
-        if DECL_KW.contains(&t0.as_str()) {
-            for (w, c) in toks.iter().skip(1) {
-                if w == word {
-                    return Some(*c);
+        // 1b. Lanjutan header multi-baris: baris `) (input logic clk);`.
+        if t0 == ")" {
+            if let Some(inner) = Self::port_list(&toks) {
+                if let Some(c) = Self::port_segments_scan(inner, word) {
+                    return Some(c);
                 }
             }
-            return None;
+        }
+
+        // 1c. body kurung kurawal enum/struct/union (dengan atau tanpa
+        //     typedef): anggota di depth 1 dan nama setelah '}' adalah
+        //     deklarasi (regresi vs perilaku linear-scan lama — review
+        //     LSP-04 ronde 5/7).
+        if matches!(t0.as_str(), "typedef" | "enum" | "struct" | "union") {
+            if let Some(c) = Self::braced_typedef_scan(&toks, word) {
+                return Some(c);
+            }
+        }
+
+        // 2. parameter/localparam/typedef/genvar ... word ...
+        if DECL_START_KW.contains(&t0.as_str()) {
+            return Self::declarator_scan(&toks[1..], word);
         }
 
         // 3. Port/signal decl: baris diawali direction/type keyword dan
         //    memuat word sebagai token berdiri sendiri (bukan nama tipe
         //    pertama). Contoh: `input logic [7:0] data_in`, `reg [3:0] cnt`.
         if TYPE_DIR_KW.contains(&t0.as_str()) {
-            // Cari word sebagai token berdiri sendiri setelah keyword.
-            // Pemakaian dalam ekspresi (mis. `count + 1`) tetap bisa match
-            // di sini BILA baris juga diawali type keyword — jarang dan
-            // hasilnya tetap lokasi deklarasi-relevan (MVP tahap 1).
-            for (idx, (w, c)) in toks.iter().enumerate().skip(1) {
-                if w == word && idx > 0 {
-                    // Skip pemakaian hierarki (a.b): token sebelumnya "."
-                    let prev_dot = idx >= 1 && toks[idx - 1].0 == ".";
-                    if !prev_dot {
-                        return Some(*c);
+            return Self::declarator_scan(&toks[1..], word);
+        }
+        None
+    }
+
+    /// Anggota typedef ber-body kurung kurawal (`typedef enum {IDLE, RUN} t;`,
+    /// `typedef struct packed { logic f; } s_t;`): identifier di depth 1
+    /// dalam kurawal adalah deklarasi anggota; nama tipe setelah '}' juga.
+    fn braced_typedef_scan(toks: &[(String, usize)], word: &str) -> Option<usize> {
+        let open = toks.iter().position(|(w, _)| w == "{")?;
+        let mut depth = 0i32;
+        let mut nest = 0i32; // '(' / '[' di dalam kurawal (argumen fungsi)
+                             // Kedalaman tempat nilai ('=') dimulai; None = sedang bukan nilai.
+                             // Nilai bersarang (A = {P, Q}) tidak boleh dianggap anggota
+                             // (review LSP-04 ronde 9).
+        let mut value_depth: Option<i32> = None;
+        let mut closed_at = None;
+        for (i, (w, c)) in toks.iter().enumerate().skip(open) {
+            match w.as_str() {
+                "{" => {
+                    depth += 1;
+                    continue;
+                }
+                "}" => {
+                    depth -= 1;
+                    if depth == 0 {
+                        closed_at = Some(i);
+                        break;
+                    }
+                    continue;
+                }
+                "(" | "[" if depth >= 1 => {
+                    nest += 1;
+                    continue;
+                }
+                ")" | "]" if depth >= 1 => {
+                    nest -= 1;
+                    continue;
+                }
+                // Nilai anggota enum (A = W) adalah pemakaian, bukan nama.
+                "=" if depth >= 1 && nest == 0 => {
+                    value_depth = Some(depth);
+                    continue;
+                }
+                ";" if depth >= 1 && nest == 0 => {
+                    value_depth = None;
+                    continue;
+                }
+                "," if depth >= 1 && nest == 0 && value_depth == Some(depth) => {
+                    value_depth = None;
+                    continue;
+                }
+                _ => {}
+            }
+            if depth >= 1
+                && nest == 0
+                && value_depth.is_none()
+                && w == word
+                && !TYPE_DIR_KW.contains(&w.as_str())
+                && !DECL_START_KW.contains(&w.as_str())
+            {
+                // Identifier diikuti identifier lain = nama TIPE anggota
+                // (typedef struct { my_t f; } — review LSP-04 ronde 7/8).
+                if Self::followed_by_ident(toks, i) {
+                    continue;
+                }
+                return Some(*c);
+            }
+        }
+        // Nama setelah '}' penutup (tipe/variabel), berhenti di '=' atau ';'
+        // pada depth 0 — initializer adalah pemakaian (review ronde 8 F-3).
+        let mut tail_nest = 0i32;
+        for (w, c) in toks.iter().skip(closed_at? + 1) {
+            match w.as_str() {
+                "(" | "[" => {
+                    tail_nest += 1;
+                    continue;
+                }
+                ")" | "]" => {
+                    tail_nest -= 1;
+                    continue;
+                }
+                "=" | ";" if tail_nest == 0 => break,
+                _ => {}
+            }
+            if tail_nest == 0 && w == word {
+                return Some(*c);
+            }
+        }
+        None
+    }
+
+    /// Apakah token setelah `idx` (melewati `[...]` dan `::`) memuat
+    /// identifier lain sebelum '=', ',', ';', ')' — penanda bahwa token
+    /// `idx` adalah nama TIPE, bukan deklarator. Menangani
+    /// `my_t [3:0] f;` dan `pkg::my_t f;` (review LSP-04 ronde 8 F-2).
+    fn followed_by_ident(toks: &[(String, usize)], idx: usize) -> bool {
+        let mut i = idx + 1;
+        while i < toks.len() {
+            match toks[i].0.as_str() {
+                "[" => {
+                    let mut d = 0i32;
+                    while i < toks.len() {
+                        match toks[i].0.as_str() {
+                            "[" => d += 1,
+                            "]" => {
+                                d -= 1;
+                                if d == 0 {
+                                    i += 1;
+                                    break;
+                                }
+                            }
+                            _ => {}
+                        }
+                        i += 1;
+                    }
+                    continue;
+                }
+                ":" => {
+                    i += 1;
+                    continue;
+                }
+                "=" | "," | ";" | ")" | "}" | "(" => return false,
+                w => {
+                    let is_ident = w
+                        .chars()
+                        .next()
+                        .is_some_and(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '$');
+                    return is_ident && !TYPE_DIR_KW.contains(&w) && !DECL_START_KW.contains(&w);
+                }
+            }
+        }
+        false
+    }
+
+    /// Scan token untuk menemukan `word` sebagai NAMA deklarator: hanya
+    /// identifier pada depth bracket 0 dan sebelum '=' (RHS = pemakaian).
+    /// Koma depth 0 memulai deklarator baru; ';' mereset status nilai.
+    fn declarator_scan(toks: &[(String, usize)], word: &str) -> Option<usize> {
+        let mut depth = 0i32;
+        let mut in_value = false;
+        // Setelah ';' depth 0, hanya deklarasi baru yang DIAWALI keyword
+        // arah/tipe yang boleh menghasilkan deklarator — mencegah
+        // `wire a; assign b = a;` menganggap `b` sebagai deklarasi
+        // (review LSP-04: false negative find-references).
+        let mut expect_decl = true;
+        for (idx, (w, c)) in toks.iter().enumerate() {
+            match w.as_str() {
+                "[" | "(" | "{" => {
+                    depth += 1;
+                    continue;
+                }
+                "]" | "}" => {
+                    if depth == 0 {
+                        break;
+                    }
+                    depth -= 1;
+                    continue;
+                }
+                ")" => {
+                    // Keluar dari konstruk (mis. daftar parameter) → berhenti.
+                    if depth == 0 {
+                        break;
+                    }
+                    depth -= 1;
+                    continue;
+                }
+                "=" if depth == 0 => {
+                    in_value = true;
+                    continue;
+                }
+                ";" if depth == 0 => {
+                    in_value = false;
+                    expect_decl = false;
+                    continue;
+                }
+                "," if depth == 0 => {
+                    in_value = false;
+                    continue;
+                }
+                _ => {}
+            }
+            if depth == 0
+                && (TYPE_DIR_KW.contains(&w.as_str()) || DECL_START_KW.contains(&w.as_str()))
+            {
+                expect_decl = true;
+                continue;
+            }
+            if depth == 0 && !in_value && expect_decl && w == word {
+                // Lewati pemakaian hierarki (a.b) dan scope resolution
+                // (pkg::x, local::x — review LSP-04 ronde 9).
+                if idx > 0 && matches!(toks[idx - 1].0.as_str(), "." | ":") {
+                    continue;
+                }
+                // Identifier yang diikuti identifier lain depth 0 adalah nama
+                // TIPE, bukan deklarator (mis. static my_t cfg; — review
+                // LSP-04 ronde 6/8: tanpa guard ini tipe user-defined ikut
+                // dianggap deklarasi dan pemakaiannya hilang dari references).
+                if Self::followed_by_ident(toks, idx) {
+                    continue;
+                }
+                return Some(*c);
+            }
+        }
+        None
+    }
+
+    /// Daftar port pada header module/interface: lewati `#(...)` (hanya
+    /// parameter list SEBELUM '(' pertama) lalu ambil isi `( ... )`
+    /// pasangan berikutnya.
+    fn port_list(toks: &[(String, usize)]) -> Option<&[(String, usize)]> {
+        let first_paren = toks.iter().position(|(w, _)| w == "(")?;
+        let mut from = 0usize;
+        if let Some(hash) = toks.iter().position(|(w, _)| w == "#") {
+            if hash < first_paren && toks.get(hash + 1).map(|(w, _)| w.as_str()) == Some("(") {
+                from = Self::matching_paren(toks, hash + 1)? + 1;
+            }
+        }
+        let open = (from..toks.len()).find(|&k| toks[k].0 == "(")?;
+        let close = Self::matching_paren(toks, open)?;
+        Some(&toks[open + 1..close])
+    }
+
+    /// Scan segmen daftar port (dipisah koma depth 0). Segmen tanpa
+    /// arah/tipe tetap deklarasi bila mewarisi dari segmen sebelumnya
+    /// (`input logic a, b`).
+    fn port_segments_scan(inner: &[(String, usize)], word: &str) -> Option<usize> {
+        let mut seg_start = 0usize;
+        let mut depth = 0i32;
+        let mut carried = false;
+        let mut end = 0usize;
+        while end <= inner.len() {
+            let at_comma = depth == 0 && end < inner.len() && inner[end].0 == ",";
+            if end == inner.len() || at_comma {
+                let seg = &inner[seg_start..end];
+                let has_dir = seg.iter().any(|(w, _)| TYPE_DIR_KW.contains(&w.as_str()));
+                if has_dir {
+                    carried = true;
+                }
+                if has_dir || carried {
+                    if let Some(c) = Self::declarator_scan(seg, word) {
+                        return Some(c);
                     }
                 }
+                seg_start = end + 1;
+            } else {
+                match inner[end].0.as_str() {
+                    "(" | "[" | "{" => depth += 1,
+                    ")" | "]" | "}" => depth -= 1,
+                    _ => {}
+                }
+            }
+            end += 1;
+        }
+        None
+    }
+
+    /// Indeks ')' yang menutup '(' pada `open`.
+    fn matching_paren(toks: &[(String, usize)], open: usize) -> Option<usize> {
+        let mut depth = 0i32;
+        for (i, (w, _)) in toks.iter().enumerate().skip(open) {
+            match w.as_str() {
+                "(" => depth += 1,
+                ")" => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(i);
+                    }
+                }
+                _ => {}
             }
         }
         None
@@ -1267,7 +1623,13 @@ impl LanguageServer for LspBackend {
         };
         let docs =
             workspace_index::ensure_doc(self.collect_workspace_docs().await, uri.as_str(), &text);
-        let hits = Self::find_references_in_docs(&docs, &word, MAX_CROSS_FILE_REFERENCES);
+        // LSP-04: hormati context.include_declaration (default klien = true).
+        let hits = Self::references_hits(
+            &docs,
+            &word,
+            params.context.include_declaration,
+            MAX_CROSS_FILE_REFERENCES,
+        );
         let refs: Vec<Location> = hits
             .into_iter()
             .filter_map(|(u, line, start, end)| {
@@ -2987,6 +3349,453 @@ endmodule
     }
 
     #[test]
+    fn test_references_hits_removes_only_declaration_hits() {
+        // LSP-04: include_declaration=false → hanya hit deklarasi (port ANSI
+        // di header) yang dibuang; pemakaian tetap.
+        let docs = vec![(
+            "file:///m.sv".to_string(),
+            "module m (input logic clk, output logic q);\n  always_ff @(posedge clk) q <= clk;\nendmodule\n"
+                .to_string(),
+        )];
+        let hits = LspBackend::find_references_in_docs(&docs, "clk", 100);
+        assert_eq!(hits.len(), 3, "port header + 2 pemakaian: {hits:?}");
+        let filtered = LspBackend::references_hits(&docs, "clk", false, 100);
+        assert_eq!(filtered.len(), 2, "deklarasi dibuang: {filtered:?}");
+        assert!(
+            filtered.iter().all(|h| h.1 == 1),
+            "hanya baris pemakaian: {filtered:?}"
+        );
+    }
+
+    #[test]
+    fn test_references_hits_keeps_width_usage() {
+        // Pemakaian parameter W di lebar port BUKAN deklarasi — tidak boleh
+        // dibuang saat include_declaration=false.
+        let src = "module m #(\n  parameter W = 8\n) (\n  input logic [W-1:0] d\n);\nendmodule\n";
+        let docs = vec![("file:///w.sv".to_string(), src.to_string())];
+        let hits = LspBackend::find_references_in_docs(&docs, "W", 100);
+        assert_eq!(hits.len(), 2, "deklarasi + pemakaian lebar: {hits:?}");
+        let filtered = LspBackend::references_hits(&docs, "W", false, 100);
+        assert_eq!(
+            filtered.len(),
+            1,
+            "pemakaian W di lebar port dipertahankan: {filtered:?}"
+        );
+        assert_eq!(filtered[0].1, 3, "baris port: {filtered:?}");
+    }
+
+    #[test]
+    fn test_references_hits_keeps_rhs_usage() {
+        // RHS setelah '=' adalah pemakaian, bukan deklarasi.
+        let src = "module m;\n  logic [7:0] a = b;\nendmodule\n";
+        let docs = vec![("file:///r.sv".to_string(), src.to_string())];
+        let hits = LspBackend::find_references_in_docs(&docs, "b", 100);
+        assert_eq!(hits.len(), 1, "{hits:?}");
+        let filtered = LspBackend::references_hits(&docs, "b", false, 100);
+        assert_eq!(filtered.len(), 1, "RHS dipertahankan: {filtered:?}");
+    }
+
+    #[test]
+    fn test_references_hits_inherited_direction_port() {
+        // `input logic a, b` — b mewarisi arah/tipe → deklarasi juga.
+        let src = "module m (input logic a, b);\n  assign b = a;\nendmodule\n";
+        let docs = vec![("file:///i.sv".to_string(), src.to_string())];
+        let hits = LspBackend::find_references_in_docs(&docs, "b", 100);
+        assert_eq!(hits.len(), 2, "port b + pemakaian: {hits:?}");
+        let filtered = LspBackend::references_hits(&docs, "b", false, 100);
+        assert_eq!(filtered.len(), 1, "deklarasi port b dibuang: {filtered:?}");
+        assert_eq!(filtered[0].1, 1, "tinggal pemakaian: {filtered:?}");
+    }
+
+    #[test]
+    fn test_definition_col_ignores_width_and_rhs_tokens() {
+        // Guard false positive: token di dalam lebar, RHS, dan argumen call
+        // BUKAN deklarasi (dipakai filter include_declaration).
+        let w_line = "localparam [W-1:0] MASK = '1;";
+        assert_eq!(LspBackend::definition_col(w_line, "W"), None, "W di lebar");
+        let mask_col = w_line.find("MASK").unwrap();
+        assert_eq!(LspBackend::definition_col(w_line, "MASK"), Some(mask_col));
+
+        let rhs = "wire [7:0] w = {a, b};";
+        assert_eq!(
+            LspBackend::definition_col(rhs, "b"),
+            None,
+            "b di konkatenasi"
+        );
+        let call = "int y = f(a, b);";
+        assert_eq!(
+            LspBackend::definition_col(call, "b"),
+            None,
+            "b argumen call"
+        );
+
+        // Multi-statement: deklarasi kedua pada baris yang sama tetap dikenali.
+        let two = "logic a = 0; logic b;";
+        assert_eq!(
+            LspBackend::definition_col(two, "b"),
+            Some(two.rfind('b').unwrap()),
+            "deklarasi setelah ';'"
+        );
+    }
+
+    #[test]
+    fn test_definition_col_header_continuation_and_int_port() {
+        // Lanjutan header multi-baris: baris diawali ')'.
+        let cont = ") (input logic clk);";
+        let clk = cont.find("clk").unwrap();
+        assert_eq!(LspBackend::definition_col(cont, "clk"), Some(clk));
+
+        // Port tanpa arah dengan tipe `int` tetap deklarasi.
+        let int_port = "module m (int a);";
+        let a = int_port.find("a)").unwrap();
+        assert_eq!(LspBackend::definition_col(int_port, "a"), Some(a));
+
+        // '#' setelah '(' (bukan parameter list) tidak menggeser port list.
+        let mixed = "module m (input logic clk); initial #(5) x = 0;";
+        let c = mixed.find("clk").unwrap();
+        assert_eq!(LspBackend::definition_col(mixed, "clk"), Some(c));
+    }
+
+    #[test]
+    fn test_definition_col_statement_after_semicolon_not_declaration() {
+        // Review LSP-04: statement SETELAH ';' pada baris yang sama bukan
+        // deklarasi — LHS `assign` adalah pemakaian, bukan deklarator.
+        let wire = "wire a; assign b = a;";
+        assert_eq!(
+            LspBackend::definition_col(wire, "b"),
+            None,
+            "LHS assign setelah ';'"
+        );
+        let param = "localparam N = 4; assign y = N;";
+        assert_eq!(
+            LspBackend::definition_col(param, "y"),
+            None,
+            "LHS assign setelah localparam"
+        );
+        // Deklarasi kedua yang diawali keyword tetap dikenali.
+        let two = "logic a; reg b;";
+        assert_eq!(
+            LspBackend::definition_col(two, "b"),
+            Some(two.rfind('b').unwrap()),
+            "deklarasi setelah ';' berkeyword"
+        );
+    }
+
+    #[test]
+    fn test_definition_col_typedef_braced_members() {
+        // Regresi review LSP-04: anggota enum/field struct di dalam kurung
+        // kurawal dan nama tipe setelah '}' tetap deklarasi.
+        let en = "typedef enum logic [1:0] {IDLE, RUN} state_t;";
+        assert_eq!(
+            LspBackend::definition_col(en, "IDLE"),
+            Some(en.find("IDLE").unwrap()),
+            "anggota enum pertama"
+        );
+        assert_eq!(
+            LspBackend::definition_col(en, "RUN"),
+            Some(en.find("RUN").unwrap()),
+            "anggota enum kedua"
+        );
+        assert_eq!(
+            LspBackend::definition_col(en, "state_t"),
+            Some(en.find("state_t").unwrap()),
+            "nama tipe setelah kurung kurawal"
+        );
+
+        // Nilai bersarang (A = {P, Q}) seluruhnya pemakaian (F-2 ronde 9).
+        let nested_val = "typedef enum {A = {P, Q}} e;";
+        assert_eq!(
+            LspBackend::definition_col(nested_val, "P"),
+            None,
+            "nilai nested pertama"
+        );
+        assert_eq!(
+            LspBackend::definition_col(nested_val, "Q"),
+            None,
+            "nilai nested kedua"
+        );
+        assert_eq!(
+            LspBackend::definition_col(nested_val, "A"),
+            Some(nested_val.find('A').unwrap()),
+            "anggota sebelum nilai nested"
+        );
+
+        // Nilai anggota enum adalah pemakaian, bukan nama anggota.
+        let val = "typedef enum {A = W} t;";
+        assert_eq!(
+            LspBackend::definition_col(val, "A"),
+            Some(val.find('A').unwrap()),
+            "anggota enum sebelum '='"
+        );
+        assert_eq!(
+            LspBackend::definition_col(val, "W"),
+            None,
+            "nilai enum bukan deklarasi"
+        );
+
+        // Tanpa typedef: anggota + nama variabel setelah '}' tetap deklarasi.
+        let anon = "enum {IDLE, RUN} state;";
+        assert_eq!(
+            LspBackend::definition_col(anon, "IDLE"),
+            Some(anon.find("IDLE").unwrap()),
+            "anggota enum anonim"
+        );
+        assert_eq!(
+            LspBackend::definition_col(anon, "state"),
+            Some(anon.find("state").unwrap()),
+            "variabel enum anonim"
+        );
+
+        // Tipe user-defined anggota BUKAN deklarasi; field sesudahnya ya.
+        let typed = "typedef struct packed { my_t f; } s_t;";
+        assert_eq!(
+            LspBackend::definition_col(typed, "my_t"),
+            None,
+            "tipe user-defined field"
+        );
+        assert_eq!(
+            LspBackend::definition_col(typed, "f"),
+            Some(typed.find(" f;").unwrap() + 1),
+            "field bertipe user-defined"
+        );
+
+        // Identifier di dalam lebar field struct bukan nama anggota.
+        let width = "typedef struct { logic [W-1:0] f; } s_t;";
+        assert_eq!(
+            LspBackend::definition_col(width, "W"),
+            None,
+            "parameter lebar field struct"
+        );
+        assert_eq!(
+            LspBackend::definition_col(width, "f"),
+            Some(width.find(" f;").unwrap() + 1),
+            "field setelah lebar"
+        );
+
+        // Struct bersarang: anggota depth >= 2 tetap deklarasi (F-1).
+        let nested = "typedef struct { struct { logic x; } inner; } outer;";
+        assert_eq!(
+            LspBackend::definition_col(nested, "x"),
+            Some(nested.find("x;").unwrap()),
+            "field struct bersarang"
+        );
+        assert_eq!(
+            LspBackend::definition_col(nested, "inner"),
+            Some(nested.find("inner").unwrap()),
+            "field struct dalam"
+        );
+        assert_eq!(
+            LspBackend::definition_col(nested, "outer"),
+            Some(nested.find("outer").unwrap()),
+            "nama tipe luar"
+        );
+
+        // Nama tipe dengan dimensi packed / scope (F-2).
+        let packed = "typedef struct packed { my_t [3:0] f; } s_t;";
+        assert_eq!(
+            LspBackend::definition_col(packed, "my_t"),
+            None,
+            "tipe dengan dimensi"
+        );
+        assert_eq!(
+            LspBackend::definition_col(packed, "f"),
+            Some(packed.find(" f;").unwrap() + 1),
+            "field setelah tipe berdimensi"
+        );
+        let scoped = "typedef struct { pkg::my_t f; } s_t;";
+        assert_eq!(
+            LspBackend::definition_col(scoped, "pkg"),
+            None,
+            "paket pada tipe berscope"
+        );
+        let port_d = "input my_t [3:0] d;";
+        assert_eq!(
+            LspBackend::definition_col(port_d, "my_t"),
+            None,
+            "tipe port"
+        );
+        assert_eq!(
+            LspBackend::definition_col(port_d, "d"),
+            Some(port_d.find("d;").unwrap()),
+            "nama port bertipe berdimensi"
+        );
+
+        // Initializer setelah '}' bukan deklarasi (F-3).
+        let init = "enum {A, B} state = get_state();";
+        assert_eq!(
+            LspBackend::definition_col(init, "get_state"),
+            None,
+            "initializer bukan deklarasi"
+        );
+        assert_eq!(
+            LspBackend::definition_col(init, "state"),
+            Some(init.find("state").unwrap()),
+            "variabel enum"
+        );
+        let arr = "enum {A, B} state [N];";
+        assert_eq!(
+            LspBackend::definition_col(arr, "N"),
+            None,
+            "dimensi unpacked bukan deklarasi"
+        );
+
+        // Koma di dalam argumen fungsi bukan pemisah anggota enum.
+        let call = "typedef enum {A = f(x, y), B} t;";
+        assert_eq!(
+            LspBackend::definition_col(call, "y"),
+            None,
+            "argumen fungsi di nilai enum"
+        );
+        assert_eq!(
+            LspBackend::definition_col(call, "B"),
+            Some(call.find("B}").unwrap()),
+            "anggota setelah nilai berargumen"
+        );
+
+        let st = "typedef struct packed { logic [7:0] f; } s_t;";
+        assert_eq!(
+            LspBackend::definition_col(st, "f"),
+            Some(st.find(" f;").unwrap() + 1),
+            "field struct"
+        );
+        assert_eq!(
+            LspBackend::definition_col(st, "s_t"),
+            Some(st.find("s_t").unwrap()),
+            "nama struct setelah kurung kurawal"
+        );
+    }
+
+    #[test]
+    fn test_definition_col_second_statement_net_and_qualifier() {
+        // Deklarasi kedua setelah ';' yang diawali net/qualifier keyword.
+        let tri = "wire a; tri b;";
+        assert_eq!(
+            LspBackend::definition_col(tri, "b"),
+            Some(tri.rfind('b').unwrap()),
+            "tri setelah ';'"
+        );
+        let sup = "wire a; supply0 gnd;";
+        assert_eq!(
+            LspBackend::definition_col(sup, "gnd"),
+            Some(sup.find("gnd").unwrap()),
+            "supply0 setelah ';'"
+        );
+        let field = "rand bit [7:0] x;";
+        assert_eq!(
+            LspBackend::definition_col(field, "x"),
+            Some(field.find("x;").unwrap()),
+            "field class berprefix rand"
+        );
+
+        // Scope resolution (local::x, pkg::x) bukan deklarasi (F-1 ronde 9).
+        let scope = "local::gen_error == (m_error ||";
+        assert_eq!(
+            LspBackend::definition_col(scope, "gen_error"),
+            None,
+            "local:: bukan deklarasi"
+        );
+        assert_eq!(
+            LspBackend::definition_col(scope, "m_error"),
+            None,
+            "argumen dalam kurung"
+        );
+
+        // Nama tipe user-defined BUKAN deklarator; identifier sesudahnya ya.
+        let user = "static my_t cfg;";
+        assert_eq!(
+            LspBackend::definition_col(user, "my_t"),
+            None,
+            "nama tipe user-defined"
+        );
+        assert_eq!(
+            LspBackend::definition_col(user, "cfg"),
+            Some(user.find("cfg").unwrap()),
+            "deklarator setelah nama tipe"
+        );
+        let port = "input my_t d;";
+        assert_eq!(LspBackend::definition_col(port, "my_t"), None, "tipe port");
+        assert_eq!(
+            LspBackend::definition_col(port, "d"),
+            Some(port.find("d;").unwrap()),
+            "nama port bertipe user-defined"
+        );
+    }
+
+    #[test]
+    fn test_references_hits_include_declaration_toggle() {
+        // Wiring LSP-04: parameter include_declaration menentukan apakah
+        // deklarasi ikut (menggantikan cabang if di handler).
+        let src = "module m (input logic clk);\n  always_ff @(posedge clk) q <= clk;\nendmodule\n";
+        let docs = vec![("file:///t.sv".to_string(), src.to_string())];
+        let with_decl = LspBackend::references_hits(&docs, "clk", true, 100);
+        let no_decl = LspBackend::references_hits(&docs, "clk", false, 100);
+        assert_eq!(with_decl.len(), 3, "deklarasi + 2 pemakaian: {with_decl:?}");
+        assert_eq!(no_decl.len(), 2, "tanpa deklarasi: {no_decl:?}");
+        assert!(
+            with_decl.iter().any(|h| h.1 == 0),
+            "deklarasi ikut saat true: {with_decl:?}"
+        );
+        assert!(
+            no_decl.iter().all(|h| h.1 != 0),
+            "deklarasi dibuang saat false: {no_decl:?}"
+        );
+    }
+
+    #[test]
+    fn test_references_hits_filters_declarations_before_cap() {
+        // Review LSP-04: filter deklarasi SEBELUM memotong ke max, agar
+        // kuota tidak dihabiskan hit deklarasi.
+        let src = "module m (input logic a, b);\n  assign a = b;\n  assign b = a;\nendmodule\n";
+        let docs = vec![("file:///c.sv".to_string(), src.to_string())];
+        let hits = LspBackend::references_hits(&docs, "b", false, 2);
+        assert_eq!(hits.len(), 2, "dua pemakaian tersisa: {hits:?}");
+        assert!(
+            hits.iter().all(|h| h.1 >= 1),
+            "cap tidak dihabiskan deklarasi: {hits:?}"
+        );
+    }
+
+    #[test]
+    fn test_find_definition_port_after_parameter_list() {
+        // Header dengan #(...) sebaris: '(' pertama adalah daftar parameter,
+        // port list ada di '(' berikutnya.
+        let src = "module m #(parameter W = 8) (input logic clk);\n  always_ff @(posedge clk) ;\nendmodule\n";
+        let col = src.lines().next().unwrap().find("clk").unwrap() as u32;
+        let d = LspBackend::find_definition(src, 1, 22).expect("definisi port header");
+        assert_eq!((d.0, d.1), (0, col), "port setelah #(...)");
+    }
+
+    #[test]
+    fn test_definition_col_function_return_type_not_declaration() {
+        // F-4: tipe return function bukan deklarasi; nama fungsi + argumen ya.
+        let f = "function my_t f(input my_t x);";
+        assert_eq!(
+            LspBackend::definition_col(f, "my_t"),
+            None,
+            "tipe return bukan deklarasi"
+        );
+        assert_eq!(
+            LspBackend::definition_col(f, "f"),
+            Some(f.find("f(").unwrap()),
+            "nama fungsi"
+        );
+        assert_eq!(
+            LspBackend::definition_col(f, "x"),
+            Some(f.rfind('x').unwrap()),
+            "argumen header fungsi"
+        );
+    }
+
+    #[test]
+    fn test_find_definition_ansi_port_in_header() {
+        // LSP-03: port ANSI di header module kini punya definisi (dipakai
+        // juga oleh filter include_declaration).
+        let src = "module m (input logic clk);\n  always_ff @(posedge clk) ;\nendmodule\n";
+        let d = LspBackend::find_definition(src, 1, 22).expect("definisi port header");
+        assert_eq!((d.0, d.1, d.2), (0, 22, 25), "kolom nama port di header");
+    }
+
+    #[test]
     fn test_find_references_across_documents() {
         // LSP-04 tahap 2: referensi lintas file (dokumen terbuka + disk).
         let docs = vec![
@@ -3021,6 +3830,22 @@ endmodule
             .find(|h| h.0 == "file:///top.sv" && h.1 == 1)
             .expect("hit deklarasi clk di top.sv baris 1");
         assert_eq!((decl.2, decl.3), (8, 11), "kolom absolut salah: {decl:?}");
+
+        // LSP-04: include_declaration=false → hit deklarasi dibuang.
+        let filtered = LspBackend::references_hits(&docs, "clk", false, 100);
+        assert_eq!(filtered.len(), 3, "dua deklarasi dibuang: {filtered:?}");
+        assert!(
+            filtered.iter().any(|h| h.0 == "file:///top.sv" && h.1 == 3),
+            "pemakaian di instance tetap ada: {filtered:?}"
+        );
+        assert!(
+            filtered.iter().any(|h| h.0 == "file:///sub.sv" && h.1 == 1),
+            "posedge clk tetap ada: {filtered:?}"
+        );
+        assert!(
+            !filtered.iter().any(|h| h.0 == "file:///top.sv" && h.1 == 1),
+            "deklarasi top.sv dibuang: {filtered:?}"
+        );
 
         // Batas hasil (cap) dihormati.
         let capped = LspBackend::find_references_in_docs(&docs, "clk", 2);

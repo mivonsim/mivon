@@ -2225,7 +2225,7 @@ LSP-03: ✅ FIXED (ROUND 93/195) — go-to-definition tahap 1+2:
          resolusi TEKSTUAL — tanpa resolusi import/package scope.
          Sub-item lain (find-references LSP-04, rename LSP-05, hover
          LSP-06, workspace symbol LSP-11) sudah CLOSED di item masing-masing.
-LSP-04: ⚠️ IN PROGRESS (ROUND 94/193) — find-references tahap 1+2:
+LSP-04: ✅ FIXED (ROUND 94/193/209) — find-references tahap 1+2+3:
          backend.rs — capability references_provider + handler
          references; core murni find_references(): semua kemunculan
          token mandiri identifier dalam dokumen (skip komentar //),
@@ -2244,8 +2244,75 @@ LSP-04: ⚠️ IN PROGRESS (ROUND 94/193) — find-references tahap 1+2:
          5 hit, komentar dilewati, clk_counter tidak match, cap,
          word kosong, tanpa dokumen, kolom absolut 8..11) +
          test_find_references_docs_order_is_deterministic.
-         MASIH OPEN: cross-file rename (LSP-05) + param
-         include_declaration belum dihormati (dikembalikan penuh).
+         Tahap 3 (ROUND 209): parameter `include_declaration` DIHORMATI —
+         hit yang kolomnya sama dengan definition_col(line, word) (heuristik
+         deklarasi yang sama dengan go-to-definition) tidak dikembalikan
+         saat klien meminta tanpa deklarasi. definition_col diperbaiki agar
+         tidak salah menandai PEMAKAIAN sebagai deklarasi.
+         Rule parameter/localparam/port ANSI/decl body memakai helper
+         declarator_scan(); body kurung kurawal memakai
+         braced_typedef_scan(). declarator_scan(): hanya identifier
+         pada depth bracket 0 (`[`, `(`, `{`) dan sebelum '=' yang
+         dianggap nama deklarator; koma depth 0 memulai deklarator baru,
+         ';' depth 0 menutup status deklarasi (statement berikutnya hanya
+         boleh jadi deklarator bila diawali keyword arah/tipe atau keyword
+         deklarasi parameter/localparam/typedef/genvar —
+         `wire a; assign b = a;` tidak lagi menganggap b deklarasi),
+         ')' depth 0 mengakhiri konstruk. Identifier yang diikuti
+         identifier lain depth 0 dianggap nama TIPE, bukan deklarator
+         (`static my_t cfg;` → my_t pemakaian, cfg deklarasi); token yang
+         didahului '.' atau ':' dilewati (guard defensif untuk hierarki
+         a.b dan scope resolution pkg::x/local::x).
+         Port ANSI di header module/interface/program dikenali lewat
+         port_list() yang melewati `#(...)` dan memakai '(' pasangan
+         berikutnya, termasuk arah/tipe yang diwarisi (`input logic a, b`).
+         Body kurung kurawal (typedef enum/struct/union DAN enum/struct/
+         union tanpa typedef) ditangani braced_typedef_scan(): anggota
+         (depth >= 1 termasuk struct bersarang, bukan nilai setelah '='
+         termasuk nilai bersarang A = {P, Q}, bukan identifier di dalam
+         lebar/argumen, bukan nama tipe yang diikuti nama field) dan nama
+         setelah '}' (berhenti di '=' agar initializer tidak dianggap
+         deklarasi) tetap deklarasi — regresi
+         vs linear-scan lama ditemukan review ronde 5/7/8 dan diperbaiki.
+         function/task: nama = identifier TERAKHIR sebelum '(' (tipe
+         return di depan adalah pemakaian); argumen header memakai
+         port_list/port_segments_scan.
+         TYPE_DIR_KW diperluas: arah/tipe + net/qualifier (tri/tri0/tri1/
+         wand/wor/supply0/supply1/uwire/var/const/static/rand/randc/local/
+         protected/virtual/signed/unsigned/chandle/ref) sehingga
+         `wire a; tri b;` dan field class `rand bit [7:0] x;` dikenali.
+         Wiring: handler meneruskan params.context.include_declaration ke
+         references_hits(docs, word, include_declaration, max) — bila
+         deklarasi tidak diminta, collect_uses_in_text() membuang hit
+         deklarasi SAAT pengumpulan dan berhenti di max (biaya terbatas:
+         definition_col sekali per baris; bukan kumpulkan-semua lalu
+         filter seperti patch ronde 5 yang direview sebagai PERF-1).
+         Test: test_references_hits_removes_only_declaration_hits,
+         test_references_hits_keeps_width_usage,
+         test_references_hits_keeps_rhs_usage,
+         test_references_hits_inherited_direction_port,
+         test_definition_col_ignores_width_and_rhs_tokens,
+         test_definition_col_header_continuation_and_int_port,
+         test_definition_col_statement_after_semicolon_not_declaration,
+         test_definition_col_typedef_braced_members,
+         test_definition_col_second_statement_net_and_qualifier,
+         test_definition_col_function_return_type_not_declaration,
+         test_references_hits_include_declaration_toggle,
+         test_references_hits_filters_declarations_before_cap,
+         test_find_definition_ansi_port_in_header,
+         test_find_definition_port_after_parameter_list, + assertion
+         include_declaration di test_find_references_across_documents.
+         Batasan heuristik (dicatat, bukan regresi): header non-ANSI
+         `module m (clk, rst);`, arah warisan lintas baris, baris lanjutan
+         header yang diawali '(' atau '#(', typedef multi-baris, dua
+         typedef pada satu baris, deklarasi bertipe user-defined TANPA
+         keyword arah/tipe/qualifier (`my_t m_field;`, `logic a; my_t b;`),
+         base type enum user-defined (`typedef enum my_t {A} e;`),
+         extern/pure virtual function, dan port checker/class belum
+         dikenali → deklarasi tetap ikut saat include_declaration =
+         false (arah aman: hit berlebih, bukan hit pemakaian yang hilang
+         di luar batasan di atas).
+         Cross-file rename (LSP-05) sudah selesai di ROUND 194.
 LSP-05: ✅ FIXED (ROUND 95/116/194) — rename tahap 1+2a+2b:
          backend.rs — capability rename_provider + handler rename;
          core murni compute_rename_edits(): validasi identifier baru
