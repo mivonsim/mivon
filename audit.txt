@@ -3295,24 +3295,25 @@ PERF-02: ✅ Signal history — FIXED (stale; ROUND 9 + CRIT-019)
          disk spill opsional (Mem-01). Marker audit tidak diupdate
          saat ROUND 9.
 
-PERF-03:[] Preponed snapshot masih full-clone tiap time step
-         core.rs (~1123-1136): preponed_snapshot / signal_snapshot /
-         signal_seq_history dibangun dengan menyalin SELURUH sinyal
-         (Vec<LogicVec>, dua kali .clone()), jadi sinyal lebar
-         ter-materialisasi penuh per time step. Yang SUDAH selesai hanya
-         snapshot lokal evaluasi layer DAG (Par-03 tahap 2, ROUND 181-182:
-         Vec<Arc<LogicVec>> + refresh hanya sinyal dirty — lihat Par-03).
-         Refresh per-delta (core.rs ~1717) juga memakai
-         read_signal(i).clone(), bukan snapshot_signal(i).
-         Catatan memori: salinan hidup per time step = 3 (dua .clone() +
-         snapshot asli di-move ke signal_seq_history), plus 1 clone lagi ke
-         coverage_snapshot saat coverage aktif (core.rs ~1150).
-         Sisa pekerjaan: ubah preponed/signal_snapshot ke Vec<Arc<LogicVec>>
-         (atau versi/copy-on-write) dan pakai snapshot_signal saat refresh.
-         Consumer yang ikut tersentuh: sequence.rs (index langsung),
-         cycle_based.rs, coverage.rs — bukan perubahan lokal.
-         Test saat ini: dag_differential_snapshot_matches_serial (mivon-tests)
-         mengunci kebenaran snapshot per-layer DAG, bukan biaya preponed.
+PERF-03: ✅ FIXED (ROUND 210) — snapshot per time step dibagi lewat Arc
+         core.rs: preponed_snapshot / signal_snapshot / signal_seq_history /
+         coverage_snapshot bertipe Option<Arc<Vec<LogicVec>>> (seq_history:
+         VecDeque<Arc<Vec<LogicVec>>>). Satu Vec dibangun per time step lalu
+         di-share (Arc::clone) ke preponed, signal, dan history[0] — dulu 2
+         clone penuh + 1 move (3 salinan hidup). coverage_snapshot kini Arc
+         clone murah; sebelumnya clone SELURUH Vec tiap time step saat
+         coverage aktif. Snapshot immutable sehingga tidak ada risiko
+         aliasing.
+         Test: snapshot_arc_tests (2 unit — ptr_eq signal/preponed/history[0]
+         membuktikan satu alokasi; entri history bertetangga tidak aliasing
+         pada clock toggle). Mutasi (clone Vec saat assign preponed)
+         menggagalkan test ptr_eq.
+         Catatan tersisa (bukan blocker, dicatat): refresh per-delta
+         (core.rs ~1717) tetap membangun Vec baru dari read_signal(i).clone()
+         — perlu bila baseline delta memang harus materialisasi; memakai
+         snapshot_signal(i) (lazy X untuk sinyal ultra-lebar) adalah
+         perubahan perilaku terpisah. Snapshot lokal evaluasi layer DAG
+         sudah Vec<Arc<LogicVec>> sejak Par-03 tahap 2 (ROUND 181-182).
 
 PERF-04: ✅ Body process dibagi via Arc (tanpa clone per layer)
          core.rs / Par-03 tahap 1: `process_body_cache` (`Arc<Vec<IrStmt>>`)
@@ -3909,7 +3910,8 @@ P4 — MEDIUM (Performance optimization)
 35. Streaming VCD output (#PERF-14)
 36. JIT cache persistence (#PERF-12)
 37. Background waveform writer (#PERF-13)
-38. Lazy signal snapshot (#PERF-03)
+38. Lazy signal snapshot (#PERF-03) — ✅ Arc sharing selesai ROUND 210;
+    sisa opsional: refresh per-delta pakai snapshot_signal (lazy X)
 39. NBA bucketing (#PERF-15)
 40. Covergroup hash lookup (#PERF-16)
 

@@ -215,21 +215,23 @@ pub struct SimulationEngine {
     /// Simpan nilai sinyal SEBELUM force — dikembalikan saat release
     /// (LRM §10.6.2: wire kembali ke driver setelah release).
     pub pre_force_values: HashMap<SignalId, LogicVec>,
-    pub signal_snapshot: Option<Vec<LogicVec>>,
+    /// PERF-03: dibagi lewat Arc — preponed/signal/seq_history/coverage
+    /// memakai SALINAN yang sama (tanpa clone penuh per time step).
+    pub signal_snapshot: Option<std::sync::Arc<Vec<LogicVec>>>,
     /// Snapshot Preponed (pre-NBA) di awal time step. TIDAK di-refresh per
     /// delta — dipakai oleh evaluate_sequence_attempts untuk posedge detection.
     /// Tanpa ini, signal_snapshot (di-refresh ke post-NBA) menyebabkan posedge
     /// tidak terdeteksi oleh sequence evaluator → attempt timeout palsu.
-    pub preponed_snapshot: Option<Vec<LogicVec>>,
+    pub preponed_snapshot: Option<std::sync::Arc<Vec<LogicVec>>>,
     /// Riwayat snapshot sinyal (pre-NBA) untuk evaluator sequence temporal.
     /// Index 0 = current posedge, index 1 = 1 posedge lalu, dst.
     /// Max kedalaman 8 (cukup untuk ##8). Dipopulate di setiap posedge.
-    pub signal_seq_history: VecDeque<Vec<LogicVec>>,
+    pub signal_seq_history: VecDeque<std::sync::Arc<Vec<LogicVec>>>,
     /// Snapshot coverage di awal time step (SEBELUM loop delta). Tidak di-refresh
     /// per delta — dipakai record_coverage_after_commit untuk diff toggle/FSM
     /// (fix SIM-30: signal_snapshot di-refresh tiap delta untuk edge detection,
     /// membuat diff coverage selalu kosong).
-    pub coverage_snapshot: Option<Vec<LogicVec>>,
+    pub coverage_snapshot: Option<std::sync::Arc<Vec<LogicVec>>>,
     pub pending_waits: Vec<(Vec<SignalId>, Vec<IrStmt>)>,
     /// Blocking event control `@(sig)` yang menunggu perubahan/edge signal.
     /// Diperiksa setiap delta saat signal berubah (setara `pending_waits`).

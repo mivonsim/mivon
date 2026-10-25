@@ -340,7 +340,7 @@ fn refresh_snapshot(engine: &mut SimulationEngine) {
     for i in 0..num_sigs {
         snap.push(engine.state.read_signal(i).clone());
     }
-    engine.signal_snapshot = Some(snap);
+    engine.signal_snapshot = Some(std::sync::Arc::new(snap));
 }
 
 /// Jalankan loop cycle-based. Return:

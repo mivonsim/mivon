@@ -856,7 +856,9 @@ impl SimulationEngine {
         // Clone snapshot and current values to avoid double borrow of self.
         // Pakai coverage_snapshot (capture di awal time step) — signal_snapshot
         // di-refresh tiap delta cycle sehingga diff selalu kosong (fix SIM-30).
-        let old_vals: Vec<LogicVec> = self.coverage_snapshot.clone().unwrap_or_default();
+        // PERF-03: Arc clone murah (dulu clone seluruh Vec tiap delta).
+        let old_vals: std::sync::Arc<Vec<LogicVec>> =
+            self.coverage_snapshot.clone().unwrap_or_default();
         for (sig_id, old_val) in old_vals.iter().enumerate() {
             // Read current signal value (now we can borrow self.state immutably)
             let new_val = self.state.read_signal(sig_id).clone();

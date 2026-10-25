@@ -1168,8 +1168,11 @@ impl SimulationEngine {
             for i in 0..num_sigs {
                 snapshot.push(self.state.snapshot_signal(i));
             }
-            self.preponed_snapshot = Some(snapshot.clone());
-            self.signal_snapshot = Some(snapshot.clone());
+            // PERF-03: satu Vec per time step, dibagi lewat Arc ke
+            // preponed/signal/seq_history (dulu 2 clone penuh + 1 move).
+            let snapshot = std::sync::Arc::new(snapshot);
+            self.preponed_snapshot = Some(std::sync::Arc::clone(&snapshot));
+            self.signal_snapshot = Some(std::sync::Arc::clone(&snapshot));
             // Simpan ke history untuk evaluator sequence temporal (##N)
             self.signal_seq_history.push_front(snapshot);
             const MAX_SEQ_DEPTH: usize = 8;
@@ -1730,7 +1733,7 @@ impl SimulationEngine {
                     for i in 0..num_sigs {
                         snap.push(self.state.read_signal(i).clone());
                     }
-                    self.signal_snapshot = Some(snap);
+                    self.signal_snapshot = Some(std::sync::Arc::new(snap));
                 }
             }
 
@@ -2991,6 +2994,67 @@ fn collect_named_labels_ast(stmts: &[mivon_ast::Stmt], out: &mut HashSet<Symbol>
             }
             _ => {}
         }
+    }
+}
+
+/// PERF-03: snapshot per time step dibagi lewat Arc (tanpa clone penuh).
+#[cfg(test)]
+mod snapshot_arc_tests {
+    use super::*;
+
+    #[test]
+    fn time_step_snapshot_is_shared_not_cloned() {
+        // PERF-03: satu alokasi Vec per time step, dibagi lewat Arc ke
+        // preponed_snapshot, signal_snapshot, dan signal_seq_history.
+        let design = crate::test_util::compile_str(
+            "module top; logic clk; initial begin #1 clk = 1; end endmodule",
+        )
+        .unwrap();
+        let mut e = SimulationEngine::new(design, 100);
+        e.run().unwrap();
+
+        let sig = e.signal_snapshot.as_ref().expect("signal_snapshot");
+        let pre = e.preponed_snapshot.as_ref().expect("preponed_snapshot");
+        assert!(
+            std::sync::Arc::ptr_eq(sig, pre),
+            "preponed & signal harus berbagi alokasi yang sama"
+        );
+        let hist = e.signal_seq_history.front().expect("signal_seq_history");
+        assert!(
+            std::sync::Arc::ptr_eq(sig, hist),
+            "history[0] harus berbagi alokasi yang sama"
+        );
+    }
+
+    #[test]
+    fn snapshot_history_entries_are_distinct() {
+        // Snapshot per time step immutable & tidak aliasing: history[0]
+        // (awal time step terakhir, clk=1) dan history[1] (awal time step
+        // sebelumnya, clk=0) harus berbeda.
+        let design = crate::test_util::compile_str(
+            "module top; logic clk; initial begin #1 clk = 1; end endmodule",
+        )
+        .unwrap();
+        // Finite(2) memproses t <= 2: t=1 snapshot 0 lalu clk=1; t=2
+        // snapshot 1 tanpa write (history[0]=1, history[1]=0).
+        let mut e = SimulationEngine::new(design, 2);
+        e.run().unwrap();
+        let id = e.find_signal("clk").expect("signal clk");
+        // Bila snapshot dimutasi in-place/di-share tanpa Arc (aliasing),
+        // kedua entri akan bernilai sama.
+        assert!(
+            e.signal_seq_history.len() >= 2,
+            "butuh minimal 2 time step: {}",
+            e.signal_seq_history.len()
+        );
+        let h0 = e.signal_seq_history[0][id].to_bool();
+        let h1 = e.signal_seq_history[1][id].to_bool();
+        assert_ne!(h0, h1, "snapshot historis tidak boleh saling aliasing");
+        assert_eq!(
+            e.preponed_snapshot.as_ref().unwrap()[id].to_bool(),
+            h0,
+            "preponed = snapshot terbaru"
+        );
     }
 }
 
