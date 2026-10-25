@@ -41,6 +41,7 @@ mod hover;
 mod outline;
 mod references;
 mod semantic;
+mod workspace_index;
 
 /// Hasil workspace symbol search (LSP-11).
 #[derive(Debug, Clone)]
@@ -159,6 +160,10 @@ pub struct LspBackend {
     semantic_cache: std::sync::Mutex<HashMap<String, (String, Vec<SemanticToken>)>>,
     /// Counter result_id token semantik.
     semantic_seq: std::sync::atomic::AtomicU64,
+    /// LSP-11 tahap 2: root workspace dari `initialize` (root_uri atau
+    /// workspace_folders pertama) — dipakai untuk indeks simbol dari DISK,
+    /// bukan hanya dokumen yang sedang terbuka.
+    workspace_root: std::sync::Mutex<Option<std::path::PathBuf>>,
 }
 
 impl LspBackend {
@@ -168,6 +173,7 @@ impl LspBackend {
             documents: std::sync::Mutex::new(HashMap::new()),
             semantic_cache: std::sync::Mutex::new(HashMap::new()),
             semantic_seq: std::sync::atomic::AtomicU64::new(1),
+            workspace_root: std::sync::Mutex::new(None),
         }
     }
 
@@ -181,6 +187,43 @@ impl LspBackend {
         // Fallback: file belum dibuka editor — baca langsung dari path.
         let path = uri.to_file_path().ok()?;
         std::fs::read_to_string(path).ok()
+    }
+
+    /// LSP-11 tahap 2: dokumen sumber dari DISK di bawah root workspace.
+    ///
+    /// Tanpa cache (caching masih open di audit) — pemindaian dibatasi keras
+    /// (jumlah file, kedalaman, ukuran per file) supaya `workspace/symbol`
+    /// tidak memblokir server pada repo besar.
+    fn workspace_disk_docs(&self) -> Vec<(String, String)> {
+        let root = match self.workspace_root.lock() {
+            Ok(g) => g.clone(),
+            Err(_) => None,
+        };
+        let Some(root) = root else {
+            return Vec::new();
+        };
+        let files = workspace_index::collect_source_files(
+            &root,
+            workspace_index::MAX_INDEX_FILES,
+            workspace_index::MAX_INDEX_DEPTH,
+        );
+        let mut out = Vec::with_capacity(files.len());
+        for path in files {
+            let Ok(meta) = std::fs::metadata(&path) else {
+                continue;
+            };
+            if meta.len() > workspace_index::MAX_INDEX_BYTES {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let Ok(url) = Url::from_file_path(&path) else {
+                continue;
+            };
+            out.push((url.as_str().to_string(), text));
+        }
+        out
     }
 
     /// LSP-20: Format SystemVerilog source text.
@@ -859,7 +902,24 @@ impl LspBackend {
 #[tower_lsp::async_trait]
 impl LanguageServer for LspBackend {
     /// Initialize the LSP server — advertises capabilities.
-    async fn initialize(&self, _params: InitializeParams) -> JsonRpcResult<InitializeResult> {
+    async fn initialize(&self, params: InitializeParams) -> JsonRpcResult<InitializeResult> {
+        // LSP-11 tahap 2: simpan root workspace utk indeks simbol dari disk.
+        // root_uri (deprecated tapi masih dipakai banyak klien) diutamakan,
+        // fallback ke workspace_folders pertama.
+        let root = params
+            .root_uri
+            .as_ref()
+            .and_then(|u| u.to_file_path().ok())
+            .or_else(|| {
+                params
+                    .workspace_folders
+                    .as_ref()
+                    .and_then(|f| f.first())
+                    .and_then(|f| f.uri.to_file_path().ok())
+            });
+        if let Ok(mut guard) = self.workspace_root.lock() {
+            *guard = root;
+        }
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
                 text_document_sync: Some(TextDocumentSyncCapability::Kind(
@@ -1411,17 +1471,20 @@ impl LanguageServer for LspBackend {
         Ok(None)
     }
 
-    /// Workspace symbol search (LSP-11 tahap 1): cari di dokumen terbuka.
+    /// Workspace symbol search (LSP-11 tahap 1+2): dokumen terbuka + indeks
+    /// file sumber di DISK (di bawah root workspace dari `initialize`).
     async fn symbol(
         &self,
         params: WorkspaceSymbolParams,
     ) -> JsonRpcResult<Option<Vec<SymbolInformation>>> {
-        let docs: Vec<(String, String)> = {
+        let open: Vec<(String, String)> = {
             match self.documents.lock() {
                 Ok(map) => map.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
                 Err(_) => Vec::new(),
             }
         };
+        let disk = self.workspace_disk_docs();
+        let docs = workspace_index::merge_docs(&open, &disk);
         let hits = Self::search_workspace_symbols(&docs, &params.query);
         let mut out = Vec::new();
         for h in hits {
@@ -3074,6 +3137,66 @@ endmodule
 
         // Tidak ada match → kosong.
         assert!(LspBackend::search_workspace_symbols(&docs, "zzz").is_empty());
+    }
+
+    #[test]
+    fn test_workspace_symbol_from_disk_index() {
+        // LSP-11 tahap 2: simbol dari file di DISK (belum dibuka editor).
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("rtl")).unwrap();
+        std::fs::write(
+            root.join("rtl/counter.sv"),
+            "module counter;\n  logic [7:0] count;\nendmodule\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("alu.v"),
+            "module alu;\n  wire carry;\nendmodule\n",
+        )
+        .unwrap();
+        // File non-sumber & direktori ter-skip tidak boleh ikut.
+        std::fs::write(root.join("notes.txt"), "module ghost; endmodule\n").unwrap();
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::write(root.join(".git/ghost.sv"), "module ghost; endmodule\n").unwrap();
+
+        let files = workspace_index::collect_source_files(
+            root,
+            workspace_index::MAX_INDEX_FILES,
+            workspace_index::MAX_INDEX_DEPTH,
+        );
+        assert_eq!(files.len(), 2, "{files:?}");
+
+        // Bangun dokumen disk seperti handler (uri file:// + isi file).
+        let disk: Vec<(String, String)> = files
+            .iter()
+            .map(|p| {
+                let uri = Url::from_file_path(p).expect("uri").as_str().to_string();
+                let text = std::fs::read_to_string(p).expect("baca");
+                (uri, text)
+            })
+            .collect();
+        let docs = workspace_index::merge_docs(&[], &disk);
+        assert_eq!(docs.len(), 2);
+
+        let hits = LspBackend::search_workspace_symbols(&docs, "counter");
+        assert!(hits.iter().any(|h| h.name == "counter"), "{hits:?}");
+        // Simbol dari file .v di direktori lain juga ditemukan.
+        let hits = LspBackend::search_workspace_symbols(&docs, "alu");
+        assert!(hits.iter().any(|h| h.name == "alu"), "{hits:?}");
+        // Dokumen terbuka menang atas disk utk uri yang sama.
+        let open = vec![(
+            docs[0].0.clone(),
+            "module dari_editor;\nendmodule\n".to_string(),
+        )];
+        let merged = workspace_index::merge_docs(&open, &docs);
+        let hits = LspBackend::search_workspace_symbols(&merged, "dari_editor");
+        assert_eq!(hits.len(), 1, "{hits:?}");
+        let hits = LspBackend::search_workspace_symbols(&merged, "ghost");
+        assert!(
+            hits.is_empty(),
+            "file .git/txt tidak boleh terindeks: {hits:?}"
+        );
     }
 
     #[test]

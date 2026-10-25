@@ -2026,14 +2026,27 @@ LSP-10: ✅ Code actions / quick-fix (ROUND 90) — code_action handler di LSP b
            + WorkspaceEdit dengan TextEdit. 3 test: test_actions_from_diagnostic_missing_
            semicolon, test_actions_from_diagnostic_missing_endmodule, test_actions_from_
            diagnostic_no_match. Ter-wire di ServerCapabilities.code_action_provider.
-LSP-11: ⚠️ IN PROGRESS (ROUND 99) — workspace symbol search tahap 1:
+LSP-11: ⚠️ IN PROGRESS (ROUND 99/192) — workspace symbol tahap 1+2:
          backend.rs — capability workspace_symbol_provider + handler
          symbol; core murni search_workspace_symbols(docs, query):
-         flatten outline semua dokumen terbuka (cache), filter
-         case-insensitive substring, sorted by (uri,line,col).
-         Query kosong = semua simbol. Test 1 unit (multi-doc,
-         case-insensitive, empty query, no-match). MASIH OPEN: indeks
-         lintas file di disk (bukan hanya dokumen terbuka), caching.
+         flatten outline semua dokumen, filter case-insensitive
+         substring, sorted by (uri,line,col). Query kosong = semua
+         simbol. Test 1 unit (multi-doc, case-insensitive, empty query,
+         no-match).
+         Tahap 2 (ROUND 192): indeks dari DISK — modul baru
+         backend/workspace_index.rs: is_source_file (sv/svh/v/vh/svi,
+         case-insensitive), collect_source_files (DFS iteratif, hasil
+         terurut, skip .git/target/node_modules/.svn/build, batas
+         MAX_INDEX_FILES=2000 / MAX_INDEX_DEPTH=16), merge_docs
+         (dokumen TERBUKA menang atas disk utk uri sama). Backend
+         menyimpan workspace_root dari initialize (root_uri, fallback
+         workspace_folders[0]) + workspace_disk_docs() (batas ukuran
+         file 1 MiB, file tak terbaca dilewati). Handler symbol =
+         merge(dokumen terbuka, disk). Test: 4 unit workspace_index +
+         1 test backend (simbol dari file .sv/.v di disk, .git & .txt
+         tidak terindeks, dokumen terbuka menang).
+         MASIH OPEN: caching/incremental index (pemindaian per
+         permintaan, dibatasi keras).
 LSP-12: ⚠️ IN PROGRESS (ROUND 96/120) — document symbol tahap 1+2a:
          backend.rs — capability document_symbol_provider + handler
          document_symbol → DocumentSymbolResponse::Nested; core murni
@@ -10971,4 +10984,61 @@ VERIFIKASI ROUND 191 (final):
      24 skipped (3641 -> 3647, +6 test).
    - Review: 3 ronde (TIDAK LOLOS -> TIDAK LOLOS -> LOLOS), semua
      BUG/NIT yang bisa diterapkan sudah diterapkan.
+
+═══ ROUND 192 — LSP-11 tahap 2: workspace symbol dari DISK ═══
+
+Ruang lingkup: menutup sub-item "indeks lintas file di disk" pada
+LSP-11 (tahap 1 ROUND 99 hanya mem-flatten dokumen yang sedang
+terbuka di editor → simbol di file yang belum pernah dibuka tidak
+ditemukan).
+
+Perubahan:
+  1. Modul baru crates/mivon-env/src/lsp/backend/workspace_index.rs
+     (murni + IO terbatas, bisa diuji):
+     - is_source_file: ekstensi sv/svh/v/vh/svi (case-insensitive).
+     - collect_source_files(root, max_files, max_depth): DFS iteratif,
+       anak direktori diurutkan → hasil deterministik, skip
+       .git/target/node_modules/.svn/build, batas keras 2000 file /
+       kedalaman 16 (repo besar tidak memblokir server), root
+       non-direktori → kosong (tanpa panic).
+     - merge_docs(open, disk): dokumen TERBUKA menang utk uri yang
+       sama (isi editor bisa lebih baru dari file), urutan hasil
+       deterministik.
+     - Konstanta MAX_INDEX_FILES / MAX_INDEX_DEPTH / MAX_INDEX_BYTES
+       (1 MiB) didokumentasikan sebagai batas anti-blokir.
+  2. backend.rs:
+     - field workspace_root: Mutex<Option<PathBuf>>; diisi handler
+       initialize dari params.root_uri (fallback
+       workspace_folders[0].uri). Sebelumnya params initialize
+       diabaikan (nama parameter underscore).
+     - workspace_disk_docs(): collect_source_files + baca file
+       (lewati yang > 1 MiB / tak terbaca / bukan UTF-8), ubah ke
+       uri file:// via Url::from_file_path.
+     - handler symbol: docs = merge_docs(dokumen terbuka, disk)
+       sebelum search_workspace_symbols.
+
+Test baru (+5):
+  - workspace_index::tests::is_source_file_matches_sv_extensions
+  - workspace_index::tests::collect_source_files_recurses_sorts_and_skips
+    (nested dir, .git/target dilewati, .txt dilewati, hasil terurut)
+  - workspace_index::tests::collect_source_files_respects_limits
+    (max_files, max_depth=0, root hilang)
+  - workspace_index::tests::merge_docs_open_document_wins
+  - backend::tests::test_workspace_symbol_from_disk_index (end-to-end
+    lewat collect+merge+search: simbol dari counter.sv & alu.v di
+    disk ditemukan, ghost di .git/notes.txt tidak, dokumen terbuka
+    menang atas disk)
+
+Status LSP-11: tahap 1+2 selesai. MASIH OPEN (dicatat): caching /
+  indeks inkremental — pemindaian dilakukan per permintaan dengan
+  batas keras.
+Item open berikutnya: Arsitektur-01..04/06, JIT-01/02, LSP-03/04/05/
+  12/14 (cross-file), ELAB-02/03/08, COMP-01/02/11, SIM-03/19,
+  VERIF-20, FORMAL-03/04/10/13, ENT-24/39, FEAT-10/23, PARSER-07,
+  LANG-01/02.
+
+VERIFIKASI ROUND 192:
+   - cargo fmt --all --check -> bersih.
+   - cargo nextest run --workspace --features dev: 3652 passed,
+     24 skipped (3647 -> 3652, +5 test).
 \\=======================================================================//
