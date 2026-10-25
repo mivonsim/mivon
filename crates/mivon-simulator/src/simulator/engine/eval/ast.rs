@@ -835,6 +835,50 @@ impl SimulationEngine {
                         return self.execute_module_function_call(&q, &arg_vals);
                     }
                 }
+                // VERIF-20 tahap 4: method builtin UVM/OVM dipanggil TANPA
+                // `this.` di body subclass (pola `get_name()` di class
+                // `extends ovm_object`). Method tidak ada di design class →
+                // sebelumnya jatuh ke RT9003; sekarang dispatch ke layer
+                // builtin lewat execute_method. Ditaruh SETELAH resolusi
+                // module function / package import supaya keduanya tetap
+                // menang. Method tak dikenal tetap ERROR keras dari layer
+                // builtin (bukan 0 senyap).
+                if let Some(obj_id) = self.current_this {
+                    let cn = self
+                        .state
+                        .get_object(obj_id)
+                        .map(|o| o.class_name)
+                        .unwrap_or_default();
+                    if !cn.is_empty() {
+                        // Dispatch PRESIS by base library (bukan
+                        // execute_method: is_uvm_*_hierarchy longgar →
+                        // get_name() salah mendarat di layer event).
+                        match self.uvm_builtin_base(cn.as_str()) {
+                            Some("object") => {
+                                return self.execute_uvm_object_method(
+                                    obj_id,
+                                    name.as_str(),
+                                    &arg_vals,
+                                );
+                            }
+                            Some("report_object") => {
+                                return self.execute_uvm_report_object_method(
+                                    obj_id,
+                                    name.as_str(),
+                                    &arg_vals,
+                                );
+                            }
+                            Some("component") => {
+                                return self.execute_uvm_component_method(
+                                    obj_id,
+                                    name.as_str(),
+                                    &arg_vals,
+                                );
+                            }
+                            _ => {}
+                        }
+                    }
+                }
                 // F20: gunakan posisi call terakhir yang diketahui (bukan 0,0)
                 // agar error punya file:line:col. Fungsi tak dikenal =
                 // ERROR keras (bukan null default 0): hasil 0 sunyi

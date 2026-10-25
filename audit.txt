@@ -1716,7 +1716,7 @@ VERIF-19: ✅ uvm_tr_stream / uvm_recorded_item (ROUND 69) — stream objek
            stream, get_tr_count() per stream; execute_uvm_tr_stream_method +
            report_tr_records() (ringkasan total/terbuka/per-stream dicetak
            saat end-of-sim bila ada record). Test: test_uvm_tr_database_stream_singleton.
-VERIF-20: ⚠️ IN PROGRESS (ROUND 85b/122) — OVM compatibility tahap 1+2:
+VERIF-20: ✅ FIXED (ROUND 85b/122/140/196) — OVM compatibility tahap 1..4:
          - BUILTIN_UVM_CLASSES: +18 OVM class names (ovm_object, ovm_component,
            ovm_driver, ovm_monitor, ovm_sequencer, ovm_sequence, ovm_sequence_item,
            ovm_env, ovm_agent, ovm_test, ovm_scoreboard, ovm_config_db,
@@ -1734,10 +1734,19 @@ VERIF-20: ⚠️ IN PROGRESS (ROUND 85b/122) — OVM compatibility tahap 1+2:
          uvm_object_data (parity jalur IR) + alias data builtin
          ovm_analysis_port/imp → konvensi uvm_*. Test:
          test_ovm_new_builtin_ast_path (get_name() = "Abc").
-         MASIH OPEN (item terpisah): remap extends ovm_* → __uvm_* penuh —
-         hierarchy dikenali via fallback generik, tetapi pemanggilan method
-         builtin uvm_object tanpa `this.` di body subclass (mis. get_name())
-         masih RT9003; perlu perluasan dispatch plain-name di eval/ast.rs.
+         Tahap 4 (ROUND 196): pemanggilan method builtin uvm_object TANPA
+         `this.` di body subclass (`get_name()` di class `extends
+         ovm_object`) — PRA-FIX RT9003 "unknown function in method
+         context" karena dispatch plain-name hanya mencari method di design
+         class. Fix: fallback di eval/ast.rs (setelah resolusi module
+         function/package) → hierarchy.rs::uvm_builtin_base menelusuri
+         extends chain sampai layer library (object/report_object/
+         component) lalu dispatch PRESISI ke execute_uvm_*_method. Tidak
+         memakai execute_method karena is_uvm_*_hierarchy punya fallback
+         "conservative" yang longgar (get_name() salah mendarat di layer
+         event). Unknown method tetap error keras dari layer builtin.
+         Test 3 (+3): OVM subclass, komponen subclass, dan guard unknown
+         method → Err (bukan 0 senyap).
 VERIF-21: [x] Functional coverage integration ke coverage database —
          RE-VERIFIKASI (ROUND 66): CoverageDatabase.merge_from_engine
          (coverage_db.rs:232) sudah membawa covergroup/coverpoint/cross
@@ -11150,6 +11159,56 @@ VERIFIKASI ROUND 192:
    - cargo nextest run -p mivon-env --features lsp: 189 passed
      (verifikasi khusus modul lsp yang feature-gated).
    - Review: 3 ronde (TIDAK LOLOS -> TIDAK LOLOS -> LOLOS).
+
+═══ ROUND 196 — VERIF-20 tahap 4: plain-name builtin UVM/OVM di subclass ═══
+
+Ruang lingkup: menutup sub-item terakhir VERIF-20 ("remap extends
+ovm_* → __uvm_* penuh") — method builtin uvm_object yang dipanggil
+TANPA `this.` di body subclass (pola `get_name()`) masih RT9003,
+padahal `this.get_name()` / `o.get_name()` sudah jalan.
+
+Repro (sebelum fix):
+  class c_env extends ovm_object; ... s = get_name(); ...
+  → error[RT9003] unknown function 'get_name' in method context
+
+Perubahan:
+  1. eval/ast.rs: cabang dispatch plain-name (method tanpa `this.`)
+     ditambah fallback SETELAH resolusi module function / package import
+     (keduanya tetap menang). Fallback memakai uvm_builtin_base untuk
+     memilih layer builtin yang tepat: object → execute_uvm_object_method,
+     report_object → execute_uvm_report_object_method, component →
+     execute_uvm_component_method.
+  2. hierarchy.rs: helper baru uvm_builtin_base(class_name) — telusuri
+     extends chain (guard 64 langkah) dan petakan nama layer library
+     (__uvm_object/uvm_object/__ovm_object/ovm_object, report_object,
+     component) → layer. Cek nama dilakukan SEBELUM lookup design karena
+     kelas library bisa hadir sebagai kelas sintetis (extends None).
+  3. Sengaja TIDAK memakai execute_method: is_uvm_*_hierarchy memakai
+     fallback "conservative" (class user dengan parent tak terdaftar
+     dianggap hierarki itu) sehingga get_name() salah mendarat di layer
+     event ("unknown uvm_event method: get_name"). Dispatch presisi
+     menghindari ambiguitas itu.
+
+Test baru (+3, core_uvm.rs):
+  1. test_ovm_plain_name_builtin_in_subclass — get_name() implicit this
+     di `extends ovm_object` → r=1.
+  2. test_uvm_plain_name_builtin_in_component_subclass — rantai
+     uvm_component → report_object → object, get_name() → r=1.
+  3. test_plain_name_unknown_builtin_still_errors — method tak dikenal
+     tetap Err (pesan menyebut nama method), bukan 0 senyap.
+
+Status VERIF-20: tahap 1..4 selesai → item CLOSED.
+Item open berikutnya: LSP-12 (sub-item sudah closed di LSP-11/15 — perlu
+  verifikasi penutupan), LSP-14 (iklan capability butuh upgrade
+  lsp-types/tower-lsp), Arsitektur-01..04/06, JIT-01/02, ELAB-02/03/08,
+  COMP-01/02/11, SIM-03/19, FORMAL-03/04/10/13, ENT-24/39, FEAT-10/23,
+  PARSER-07, LANG-01/02.
+
+VERIFIKASI ROUND 196:
+   - cargo fmt --all --check -> bersih.
+   - cargo nextest run --workspace --features dev: 3670 passed,
+     24 skipped (3667 -> 3670, +3 test).
+   - Probe manual (CLI): /tmp ovm_plain.sv & uvm_comp_plain.sv → r=1.
 
 ═══ ROUND 195 — LSP-03 tahap 2: go-to-definition lintas file ═══
 

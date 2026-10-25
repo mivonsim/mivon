@@ -4372,3 +4372,110 @@ endmodule
         result.err()
     );
 }
+
+#[test]
+fn test_ovm_plain_name_builtin_in_subclass() {
+    // VERIF-20 t4: method builtin uvm_object dipanggil TANPA `this.` di body
+    // subclass (`get_name()` di class `extends ovm_object`). PRA-FIX: RT9003
+    // "unknown function 'get_name' in method context" karena dispatch
+    // plain-name hanya mencari method di design class.
+    let source = r#"
+class c_env extends ovm_object;
+    function new(string n);
+        super.new(n);
+    endfunction
+    function int cek();
+        string s;
+        s = get_name();
+        if (s == "env") return 1;
+        return 0;
+    endfunction
+endclass
+
+module tb;
+    c_env e;
+    int r;
+    initial begin
+        e = c_env::new("env");
+        r = e.cek();
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 10).expect("plain-name get_name() (OVM) harus jalan");
+    let r = sigs
+        .iter()
+        .find(|(n, _)| n == "r")
+        .map(|(_, v)| v.to_u64())
+        .unwrap_or(99);
+    assert_eq!(r, 1, "get_name() implicit this harus 'env', got r={r}");
+}
+
+#[test]
+fn test_uvm_plain_name_builtin_in_component_subclass() {
+    // Rantai uvm_component → uvm_report_object → uvm_object: get_name() juga
+    // harus tersedia tanpa `this.` (dispatch presisi lewat uvm_builtin_base,
+    // bukan execute_method yang heuristik hierarchy-nya longgar).
+    let source = r#"
+class my_comp extends uvm_component;
+    function new(string name, uvm_component parent);
+        super.new(name, parent);
+    endfunction
+    function int cek();
+        string s;
+        s = get_name();
+        if (s == "cmp") return 1;
+        return 0;
+    endfunction
+endclass
+
+module tb;
+    my_comp c;
+    int r;
+    initial begin
+        c = my_comp::new("cmp", null);
+        r = c.cek();
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 10).expect("plain-name get_name() (komponen) harus jalan");
+    let r = sigs
+        .iter()
+        .find(|(n, _)| n == "r")
+        .map(|(_, v)| v.to_u64())
+        .unwrap_or(99);
+    assert_eq!(r, 1, "get_name() implicit this harus 'cmp', got r={r}");
+}
+
+#[test]
+fn test_plain_name_unknown_builtin_still_errors() {
+    // Guard: fallback plain-name TIDAK boleh menelan nama method yang tidak
+    // ada di layer builtin (harus error keras, bukan 0 senyap).
+    let source = r#"
+class c_env extends ovm_object;
+    function new(string n);
+        super.new(n);
+    endfunction
+    function int cek();
+        return method_tidak_ada();
+    endfunction
+endclass
+
+module tb;
+    c_env e;
+    int r;
+    initial begin
+        e = c_env::new("env");
+        r = e.cek();
+        #1 $finish;
+    end
+endmodule
+"#;
+    let err = simulate_signals(source, 10).expect_err("method tak dikenal harus error");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("method_tidak_ada"),
+        "pesan harus menyebut nama method: {msg}"
+    );
+}

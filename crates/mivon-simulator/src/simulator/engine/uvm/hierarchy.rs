@@ -537,6 +537,50 @@ impl SimulationEngine {
         }
     }
 
+    /// VERIF-20 tahap 4: telusuri extends chain sampai kelas yang TIDAK
+    /// terdaftar di design (kelas library UVM/OVM) lalu petakan ke layer
+    /// builtin. None bila ujung chain bukan kelas library yang dikenal —
+    /// penting agar class user dengan parent asing tidak salah didispatch
+    /// (is_uvm_*_hierarchy memakai fallback "conservative" yang longgar).
+    pub(crate) fn uvm_builtin_base(&self, class_name: &str) -> Option<&'static str> {
+        let mut current = class_name;
+        // Guard rantai siklik (extends A → B → A tidak valid, tapi jangan
+        // sampai loop tak berujung).
+        for _ in 0..64 {
+            // Cek nama layer LEBIH DULU: kelas library UVM/OVM bisa hadir
+            // sebagai kelas sintetis (extends None) sehingga penelusuran
+            // berhenti di situ.
+            if let Some(layer) = Self::uvm_layer_of(current) {
+                return Some(layer);
+            }
+            match self.design.classes.get(&Symbol::intern(current)) {
+                Some(c) => match &c.extends {
+                    Some(parent) => current = parent.as_str(),
+                    None => return None,
+                },
+                None => return None,
+            }
+        }
+        None
+    }
+
+    /// Peta nama kelas library (UVM/OVM, sintetis `__` maupun polos) → layer
+    /// builtin. `uvm_component`/`uvm_report_object` mencakup rantai ke
+    /// `uvm_object`, jadi method object (get_name, set_name, print, ...)
+    /// tersedia di subclass komponen.
+    fn uvm_layer_of(name: &str) -> Option<&'static str> {
+        match name {
+            "__uvm_object" | "uvm_object" | "__ovm_object" | "ovm_object" => Some("object"),
+            "__uvm_report_object" | "uvm_report_object" | "ovm_report_object" => {
+                Some("report_object")
+            }
+            "__uvm_component" | "uvm_component" | "__ovm_component" | "ovm_component" => {
+                Some("component")
+            }
+            _ => None,
+        }
+    }
+
     pub(crate) fn is_uvm_component_hierarchy(&self, class_name: &str) -> bool {
         let mut current = class_name;
         loop {
