@@ -87,6 +87,17 @@ impl LspBackend {
             };
             // Sisa token setelah keyword efektif (indeks relatif).
             let rest = &toks[qi + 1..];
+            // `interface class C ...` (IEEE 1800 §8.26) adalah scope CLASS,
+            // bukan interface — tanpa ini `endclass` menutup frame induk
+            // terlalu dini (review R197 NIT-4).
+            let (t0, c0, rest) = if t0 == "interface"
+                && rest.first().map(|t| t.0.as_str()) == Some("class")
+                && rest.len() >= 2
+            {
+                (rest[0].0.clone(), c0, &rest[1..])
+            } else {
+                (t0, c0, rest)
+            };
 
             // Tutup scope → merge symbol dengan children terkumpul.
             if CLOSE_KW.contains(&t0.as_str()) && stack.len() > 1 {

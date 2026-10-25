@@ -3496,6 +3496,30 @@ endmodule
                 .any(|c| c.kind == DocSymbol::KIND_INTERFACE),
             "virtual interface bukan container interface"
         );
+
+        // NIT-5: guard yang sama berlaku di dalam module.
+        let vif_m = "module m;\n  virtual interface bus_if vif;\n  int after4;\nendmodule\n";
+        let m4 = &LspBackend::document_symbols(vif_m)[0];
+        assert!(
+            m4.children.iter().any(|c| c.name == "after4"),
+            "{:?}",
+            m4.children
+        );
+
+        // NIT-4: `interface class` adalah scope CLASS (bukan interface) —
+        // endclass menutup frame yang benar.
+        let ic = "interface class ic;\n  pure virtual function void f();\nendclass\nclass after_ic;\nendclass\n";
+        let syms_ic = LspBackend::document_symbols(ic);
+        assert_eq!(
+            syms_ic.len(),
+            2,
+            "{:?}",
+            syms_ic.iter().map(|s| &s.name).collect::<Vec<_>>()
+        );
+        assert_eq!(syms_ic[0].name, "ic");
+        assert_eq!(syms_ic[0].kind, DocSymbol::KIND_CLASS);
+        assert_eq!(syms_ic[1].name, "after_ic");
+        assert_eq!(syms_ic[1].kind, DocSymbol::KIND_CLASS);
     }
 
     #[test]

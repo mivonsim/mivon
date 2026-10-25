@@ -11205,6 +11205,13 @@ Item open berikutnya: LSP-14 (iklan capability butuh upgrade
   COMP-01/02/11, SIM-03/19, FORMAL-03/04/10/13, ENT-24/39, FEAT-10/23,
   PARSER-07, LANG-01/02.
 
+Review agent R197 ronde 2: LOLOS (2 NIT) → NIT diterapkan:
+  NIT-4 (`interface class C` — scope CLASS, bukan interface; dulu
+    endclass menutup frame induk terlalu dini): t0/rest dinormalisasi
+    saat `interface` diikuti `class`. Test: interface class ic + class
+    after_ic dua-duanya KIND_CLASS di level atas.
+  NIT-5: guard `virtual interface` diuji juga di dalam module.
+
 Review agent R197: TIDAK LOLOS (1 BUG + 3 NIT) → fix:
   BUG-1 (MAJOR): `virtual interface <tipe> <var>;` (deklarasi variabel
     virtual-interface) ikut melewati qualifier `virtual` sehingga
