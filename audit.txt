@@ -1974,13 +1974,26 @@ LSP-03: ⚠️ IN PROGRESS (ROUND 93) — go-to-definition tahap 1:
          #( ), not-found, word_at_position). MASIH OPEN: cross-file
          index, find-references (LSP-04), rename (LSP-05), hover
          (LSP-06), workspace symbol (LSP-11).
-LSP-04: ⚠️ IN PROGRESS (ROUND 94) — find-references tahap 1:
+LSP-04: ⚠️ IN PROGRESS (ROUND 94/193) — find-references tahap 1+2:
          backend.rs — capability references_provider + handler
          references; core murni find_references(): semua kemunculan
          token mandiri identifier dalam dokumen (skip komentar //),
          word-boundary dijamin tokenizer. Test 2 unit (clk 5 lokusi
          lintas module, enable 2, word boundary count vs counter;
-         empty/miss). MASIH OPEN: cross-file index, rename (LSP-05).
+         empty/miss).
+         Tahap 2 (ROUND 193): referensi LINTAS FILE — core baru
+         find_references_in_docs(docs, word, max_results) (aturan sama
+         per dokumen: token mandiri + skip komentar, cap
+         MAX_CROSS_FILE_REFERENCES=2000); handler references memakai
+         collect_workspace_docs() (dokumen terbuka + indeks disk,
+         spawn_blocking) dan menambahkan dokumen aktif bila belum ada
+         di himpunan (file di luar root workspace). Refactor: helper
+         collect_workspace_docs dipakai bersama handler symbol.
+         Test baru: test_find_references_across_documents (2 dokumen,
+         5 hit, komentar dilewati, clk_counter tidak match, cap,
+         word kosong, tanpa dokumen).
+         MASIH OPEN: cross-file rename (LSP-05) + param
+         include_declaration belum dihormati (dikembalikan penuh).
 LSP-05: ⚠️ IN PROGRESS (ROUND 95/116) — rename tahap 1+2a:
          backend.rs — capability rename_provider + handler rename;
          core murni compute_rename_edits(): validasi identifier baru
@@ -11123,4 +11136,44 @@ VERIFIKASI ROUND 192:
    - cargo nextest run -p mivon-env --features lsp: 189 passed
      (verifikasi khusus modul lsp yang feature-gated).
    - Review: 3 ronde (TIDAK LOLOS -> TIDAK LOLOS -> LOLOS).
+
+═══ ROUND 193 — LSP-04 tahap 2: find-references lintas file ═══
+
+Ruang lingkup: menutup sub-item "cross-file index" pada LSP-04 —
+tahap 1 (ROUND 94) hanya mencari kemunculan identifier di dokumen
+yang sedang aktif.
+
+Perubahan:
+  1. references.rs: core murni find_references_in_docs(docs, word,
+     max_results) -> Vec<(uri, line, start, end)>. Aturan per dokumen
+     identik tahap 1 (token mandiri via line_tokens, komentar baris
+     "//" dilewati), ditambah cap hasil supaya respons tidak meledak.
+  2. backend.rs:
+     - helper async collect_workspace_docs() = dokumen TERBUKA +
+       indeks DISK (workspace_index, dijalankan di spawn_blocking,
+       file terbuka dilewati saat scan) — dipakai bersama handler
+       symbol (refactor, perilaku sama).
+     - handler references: kata diambil dulu dari dokumen aktif
+       (word_at_position), lalu disapu ke seluruh workspace; bila
+       dokumen aktif tidak ada di himpunan (file di luar root
+       workspace), isinya ditambahkan manual.
+     - konstanta MAX_CROSS_FILE_REFERENCES = 2000.
+
+Test baru (+1): test_find_references_across_documents — 2 dokumen
+  (top.sv, sub.sv): 5 hit (3 top + 2 sub), komentar "// clk" dilewati,
+  clk_counter TIDAK match (word-boundary), end = start + len, cap=2
+  dihormati, word kosong / cap 0 / tanpa dokumen → kosong.
+
+Status LSP-04: tahap 1+2 selesai. MASIH OPEN (dicatat): rename
+  lintas file (LSP-05) dan param ReferenceContext.include_declaration
+  belum dihormati (handler selalu mengembalikan deklarasi juga).
+Item open berikutnya: LSP-03/05/12/14, Arsitektur-01..04/06, JIT-01/02,
+  ELAB-02/03/08, COMP-01/02/11, SIM-03/19, VERIF-20,
+  FORMAL-03/04/10/13, ENT-24/39, FEAT-10/23, PARSER-07, LANG-01/02.
+
+VERIFIKASI ROUND 193:
+   - cargo fmt --all --check -> bersih.
+   - cargo nextest run --workspace --features dev: 3661 passed,
+     24 skipped (3660 -> 3661, +1 test).
+   - cargo nextest run -p mivon-env --features lsp: 190 passed.
 \\=======================================================================//

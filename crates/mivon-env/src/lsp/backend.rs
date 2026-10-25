@@ -43,6 +43,10 @@ mod references;
 mod semantic;
 mod workspace_index;
 
+/// LSP-04 tahap 2: batas jumlah referensi lintas file yang dikembalikan
+/// (respons `textDocument/references` bisa meledak di workspace besar).
+const MAX_CROSS_FILE_REFERENCES: usize = 2000;
+
 /// Hasil workspace symbol search (LSP-11).
 #[derive(Debug, Clone)]
 pub(crate) struct WsSymbolHit {
@@ -195,6 +199,30 @@ impl LspBackend {
             Ok(g) => g.clone(),
             Err(_) => None,
         }
+    }
+
+    /// Dokumen yang bisa dicari: dokumen TERBUKA + indeks file sumber di
+    /// DISK (LSP-11 tahap 2 / LSP-04 tahap 2).
+    ///
+    /// Review R192 BUG-3: pemindaian disk = I/O sinkron berat → jalankan di
+    /// spawn_blocking supaya event loop LSP tidak stall. Review R192 BUG-4:
+    /// file yang sudah terbuka dilewati saat scan (path terkanonikalisasi)
+    /// agar tidak muncul duplikat dgn isi disk yang basi.
+    async fn collect_workspace_docs(&self) -> Vec<(String, String)> {
+        let open: Vec<(String, String)> = match self.documents.lock() {
+            Ok(map) => map.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+            Err(_) => Vec::new(),
+        };
+        let skip = workspace_index::collect_skip_paths(&open);
+        let disk = match self.workspace_root_path() {
+            Some(root) => {
+                tokio::task::spawn_blocking(move || workspace_index::load_disk_docs(&root, &skip))
+                    .await
+                    .unwrap_or_default()
+            }
+            None => Vec::new(),
+        };
+        workspace_index::merge_docs(&open, &disk)
     }
 
     /// LSP-20: Format SystemVerilog source text.
@@ -1077,20 +1105,35 @@ impl LanguageServer for LspBackend {
         let Some(text) = self.document_text(uri) else {
             return Ok(None);
         };
-        let refs: Vec<Location> = Self::find_references(&text, pos.line, pos.character)
+        // LSP-04 tahap 2: referensi LINTAS FILE (dokumen terbuka + indeks
+        // disk). Kata dicari dulu di dokumen aktif (word-boundary sama
+        // seperti tahap 1), lalu disapu ke seluruh workspace.
+        let line_text = text.lines().nth(pos.line as usize).unwrap_or("");
+        let Some((word, _, _)) = Self::word_at_position(line_text, pos.character) else {
+            return Ok(None);
+        };
+        let mut docs = self.collect_workspace_docs().await;
+        if !docs.iter().any(|(u, _)| u == uri.as_str()) {
+            docs.push((uri.as_str().to_string(), text.clone()));
+        }
+        let hits = Self::find_references_in_docs(&docs, &word, MAX_CROSS_FILE_REFERENCES);
+        let refs: Vec<Location> = hits
             .into_iter()
-            .map(|(line, start, end)| Location {
-                uri: uri.clone(),
-                range: Range {
-                    start: Position {
-                        line,
-                        character: start,
+            .filter_map(|(u, line, start, end)| {
+                let uri = Url::parse(&u).ok()?;
+                Some(Location {
+                    uri,
+                    range: Range {
+                        start: Position {
+                            line,
+                            character: start,
+                        },
+                        end: Position {
+                            line,
+                            character: end,
+                        },
                     },
-                    end: Position {
-                        line,
-                        character: end,
-                    },
-                },
+                })
             })
             .collect();
         if refs.is_empty() {
@@ -1436,27 +1479,7 @@ impl LanguageServer for LspBackend {
         &self,
         params: WorkspaceSymbolParams,
     ) -> JsonRpcResult<Option<Vec<SymbolInformation>>> {
-        let open: Vec<(String, String)> = {
-            match self.documents.lock() {
-                Ok(map) => map.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
-                Err(_) => Vec::new(),
-            }
-        };
-        // Review R192 BUG-3: pemindaian disk = I/O sinkron berat → jalankan
-        // di spawn_blocking supaya event loop LSP (didChange/completion/
-        // hover) tidak stall. Review R192 BUG-4: file yang sudah terbuka
-        // dilewati saat scan (path terkanonikalisasi) — mencegah duplikat
-        // bila representasi URI klien berbeda dari Url::from_file_path.
-        let skip = workspace_index::collect_skip_paths(&open);
-        let disk = match self.workspace_root_path() {
-            Some(root) => {
-                tokio::task::spawn_blocking(move || workspace_index::load_disk_docs(&root, &skip))
-                    .await
-                    .unwrap_or_default()
-            }
-            None => Vec::new(),
-        };
-        let docs = workspace_index::merge_docs(&open, &disk);
+        let docs = self.collect_workspace_docs().await;
         let hits = Self::search_workspace_symbols(&docs, &params.query);
         let mut out = Vec::new();
         for h in hits {
@@ -2703,6 +2726,45 @@ endmodule
         assert!(LspBackend::find_references(SAMPLE, 7, 0).is_empty());
         // Baris di luar dokumen → kosong.
         assert!(LspBackend::find_references(SAMPLE, 999, 0).is_empty());
+    }
+
+    #[test]
+    fn test_find_references_across_documents() {
+        // LSP-04 tahap 2: referensi lintas file (dokumen terbuka + disk).
+        let docs = vec![
+            (
+                "file:///top.sv".to_string(),
+                "module top;\n  logic clk;\n  // clk di komentar\n  sub u0 (.clk(clk));\nendmodule\n"
+                    .to_string(),
+            ),
+            (
+                "file:///sub.sv".to_string(),
+                "module sub (input logic clk);\n  always_ff @(posedge clk) ;\n  logic clk_counter;\nendmodule\n"
+                    .to_string(),
+            ),
+        ];
+        let hits = LspBackend::find_references_in_docs(&docs, "clk", 100);
+        // top: decl + 2x di instance line = 3 (komentar dilewati);
+        // sub: port decl + posedge = 2; clk_counter TIDAK match (word-boundary).
+        assert_eq!(hits.len(), 5, "{hits:?}");
+        assert_eq!(hits.iter().filter(|h| h.0 == "file:///top.sv").count(), 3);
+        assert_eq!(hits.iter().filter(|h| h.0 == "file:///sub.sv").count(), 2);
+        // Kolom & baris akurat utk satu hit yang diketahui.
+        assert!(
+            hits.iter().any(|h| h.0 == "file:///sub.sv" && h.1 == 0),
+            "{hits:?}"
+        );
+        // end = start + len(word)
+        assert!(hits.iter().all(|h| h.3 == h.2 + 3));
+
+        // Batas hasil (cap) dihormati.
+        let capped = LspBackend::find_references_in_docs(&docs, "clk", 2);
+        assert_eq!(capped.len(), 2, "{capped:?}");
+        // Word kosong / cap 0 → kosong.
+        assert!(LspBackend::find_references_in_docs(&docs, "", 10).is_empty());
+        assert!(LspBackend::find_references_in_docs(&docs, "clk", 0).is_empty());
+        // Tidak ada dokumen → kosong.
+        assert!(LspBackend::find_references_in_docs(&[], "clk", 10).is_empty());
     }
 
     #[test]
