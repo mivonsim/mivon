@@ -11017,7 +11017,7 @@ Perubahan:
      - handler symbol: docs = merge_docs(dokumen terbuka, disk)
        sebelum search_workspace_symbols.
 
-Test baru (+12):
+Test baru (+13):
   - workspace_index::tests::is_source_file_matches_sv_extensions
   - workspace_index::tests::collect_source_files_recurses_sorts_and_skips
     (nested dir, .git/target dilewati, .txt dilewati, hasil terurut)
@@ -11035,6 +11035,7 @@ Test baru (+12):
   - load_disk_docs_stops_at_total_byte_budget
   - collect_skip_paths_filters_non_file_uris
   - collect_source_files_keeps_symlinked_files (unix)
+  - collect_source_files_skips_non_regular_files (unix)
 
 Review agent R192: TIDAK LOLOS (4 BUG) → fix ronde 1:
   BUG-1 (sedang): DFS stack LIFO membuat urutan kunjungan TERBALIK dari
@@ -11093,6 +11094,13 @@ Review agent R192 ronde 2: TIDAK LOLOS (3 BUG sisa) → fix ronde 2:
     (MAX_SCAN_DIRS=5000) supaya repo banyak file non-sumber tidak
     starvation; `out.truncate` no-op dihapus; total_bytes dihitung
     dari byte yang BENAR-BENAR dibaca (bukan metadata).
+Review agent R192 ronde 3: LOLOS — tidak ada BUG.
+  Tindak lanjut diterapkan: R1/N2 — hanya FILE REGULER yang dikumpulkan
+  (path.is_file()), sehingga FIFO/device bernama .sv tidak bisa
+  menggantung read_to_string di spawn_blocking dan dangling symlink
+  tidak menghabiskan kuota; N1 komentar modul/collect dikoreksi
+  (symlink file DIINDEKS, counter = jumlah direktori). Test unix baru
+  collect_source_files_skips_non_regular_files.
   RISK tersisa (dicatat, bukan bug): parsing outline ≤32 MiB masih di
     event loop (spawn_blocking hanya memindahkan I/O); belum ada
     cache/debounce sehingga tiap permintaan rescan; merge_docs
@@ -11110,8 +11118,9 @@ Item open berikutnya: Arsitektur-01..04/06, JIT-01/02, LSP-03/04/05/
 
 VERIFIKASI ROUND 192:
    - cargo fmt --all --check -> bersih.
-   - cargo nextest run --workspace --features dev: 3659 passed,
-     24 skipped (3647 -> 3659, +12 test).
-   - cargo nextest run -p mivon-env --features lsp: 188 passed
+   - cargo nextest run --workspace --features dev: 3660 passed,
+     24 skipped (3647 -> 3660, +13 test).
+   - cargo nextest run -p mivon-env --features lsp: 189 passed
      (verifikasi khusus modul lsp yang feature-gated).
+   - Review: 3 ronde (TIDAK LOLOS -> TIDAK LOLOS -> LOLOS).
 \\=======================================================================//

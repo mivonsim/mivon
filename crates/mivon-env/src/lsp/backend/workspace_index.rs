@@ -5,7 +5,7 @@
 //! `workspace/symbol` tidak menemukan simbol di file yang belum pernah
 //! dibuka. Modul ini menyediakan pemindaian direktori yang deterministik
 //! (BFS level-order + anak terurut), batas keras (jumlah file, kedalaman,
-//! ukuran per file, total byte, jumlah entri dipindai), dan penggabungan
+//! ukuran per file, total byte, jumlah DIREKTORI dipindai), dan penggabungan
 //! dokumen (dokumen terbuka menang atas versi disk).
 //!
 //! Caching BELUM ada (masih open di audit): pemindaian dilakukan per
@@ -115,7 +115,7 @@ pub(crate) fn collect_source_files(
                 queue.push_back((path, depth + 1));
                 continue;
             }
-            if is_source_file(&path) {
+            if is_source_file(&path) && path.is_file() {
                 let canon = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
                 if seen_files.insert(canon) {
                     out.push(path);
@@ -375,6 +375,26 @@ mod tests {
             1,
             "file yang sama tidak boleh dobel: {files:?}"
         );
+    }
+
+    /// Review ronde 3 R1/N2: hanya FILE REGULER yang dikumpulkan — dangling
+    /// symlink .sv tidak boleh menghabiskan kuota, dan FIFO/device bernama
+    /// .sv bisa menggantung read_to_string (dilewati sebelum dibaca).
+    #[cfg(unix)]
+    #[test]
+    fn collect_source_files_skips_non_regular_files() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        std::fs::write(root.join("ok.sv"), "module ok; endmodule\n").unwrap();
+        std::os::unix::fs::symlink(root.join("tidak-ada.sv"), root.join("dangling.sv")).unwrap();
+
+        let files = collect_source_files(root, 100, 8);
+        assert_eq!(files.len(), 1, "{files:?}");
+        assert!(files[0].ends_with("ok.sv"));
+
+        // Tanpa file reguler sama sekali → kosong (dangling tidak dihitung).
+        std::fs::remove_file(root.join("ok.sv")).unwrap();
+        assert!(collect_source_files(root, 100, 8).is_empty());
     }
 
     #[test]
