@@ -66,6 +66,7 @@ pub mod tcl;
 pub mod testdb;
 pub mod update;
 pub mod vault;
+pub mod vcs;
 pub mod verif_dashboard;
 pub mod vip_lib;
 pub mod waiver;

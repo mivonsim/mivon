@@ -241,6 +241,7 @@ pub(crate) fn dispatch_check(a: &crate::cli::McheckArgs) -> ! {
         timescale: a.timescale,
         ast_diff: a.ast_diff.as_deref(),
         sv_version: a.sv_version,
+        changed: a.changed,
     };
     exit_tool(mivon_api::tools::check::run(&args));
 }

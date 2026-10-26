@@ -414,7 +414,7 @@ jawab). Pindah dari `src/tools/` ke crate `mivon-tools` (migrasi monorepo crate
 | `mwave` | `wave.rs` | Utility VCD: `merge` (offset kumulatif), `export` (csv/txt), `filter` (subset sinyal), `compare` (diff 2 VCD per signal), `search` (cari sinyal by wildcard `*`/`?`), `tree` (index hierarki scope), `stats` (toggle/transitions/activity% + stuck detection), `get` (random access nilai sinyal: `--at T` / `--range t1:t2` / timeline penuh, WAV-07), `decode` (protokol bus apb/axi4lite/ahb → daftar transaksi, WAV-16), `protocol` (cek aturan APB/AXI4-Lite → pelanggaran + exit 11, ENT-24) |
 | `mfmt` | `fmt.rs` | Formatter SV/Verilog berbasis lexer (stdout/--inplace/--check) |
 | `mprof` | `prof.rs` | Profiler pipeline: timing per fase + bottleneck + hint |
-| `mcheck` | `check.rs` | Health check: missing `include, circular include, unresolved deps, cycle module, timescale + `--ast-diff b.sv` (AST differential, PARSER-13) |
+| `mcheck` | `check.rs` | Health check: missing `include, circular include, unresolved deps, cycle module, timescale + `--ast-diff b.sv` (AST differential, PARSER-13) + `--changed` (file berubah dari git/svn, ENT-39) |
 | `mbench` | `bench.rs` | Benchmark: compile speed, throughput, peak RSS (VmHWM), cache hit |
 | `mgen` | `gen.rs` | **Generator SV dari Mivon HDL (`.mv`/`.mvh`)** — `.mv` → lex → parse → type-check (E2001–E2013) → codegen → `.sv` + `.svh`. `--package/--check/--stdout/--no-check/--svh-only/--sv-only/-o`. Konteks type-check gabungan per direktori; scan rekursif lewat `negative/`, dotdir, prefiks `_`. Alias CLI `mivon gen` |
 | `synth` | `synth.rs` | Synthesis (SYNTHESIS.md): SYN check (SYN-1..9), lowering RTL→SIR (`mivon-sir`, `--dump-sir`), inferensi FF, netlist `.mvnet`, report utilisasi. Nama lama `msynth` = alias |

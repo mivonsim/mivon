@@ -2745,10 +2745,67 @@ ENT-38: ✅ Design repository (ROUND 95)
          DesignCommit + DesignTag. commit/log/get_commit (prefix match),
          tag, diff (A/M/D), summary. Content-hash based.
          4 test: commit+log, tag, diff, summary.
-ENT-39: ⚠️ Revision control integration — PARTIAL (ROUND 91)
-         Git integration sudah aktif via CI/CD pipeline (.github/workflows/).
-         Untuk SVN/Perforce: file .maria bisa di-commit sebagai file list.
-         Status: git-native, non-git memakai filelist manual.
+ENT-39: ✅ FIXED (ROUND 212) — revision control integration
+         crates/mivon-tools/src/vcs.rs: detect() menelusuri root + parent
+         (maks 64 level) untuk .git/.svn/.p4config (env P4CONFIG saja TIDAK
+         dianggap bukti). changed_files():
+         - git: rev-parse --show-toplevel + status --porcelain -z
+           --untracked-files=all; path di-rebase ke root (root boleh
+           subdirektori), rename ambil path baru, status 'D' dilewati,
+           path non-ASCII/newline aman (-z);
+         - svn: status -- . dengan current_dir(root); kolom status 7 char,
+           '?'/X/D/! dan baris property-only (awalan spasi) dilewati;
+         - perforce: DIDETEKSI tetapi belum didukung (Err dengan instruksi
+           manual — lebih baik daripada mencetak depot path yang tak bisa
+           dibuka).
+         File yang sudah tidak ada difilter (root.join(path).exists()).
+         is_source_path(): sv/svh/v/vh/svi/mv/mvh (.f/.mivon TIDAK ikut
+         agar output tidak memuat file list/proyek itu sendiri).
+         CLI: mcheck [<root>] --changed → komentar '# VCS: ...' + satu path
+         per baris (langsung bisa dipakai sebagai file list .f). Target
+         opsional saat --changed (required_unless_present; default '.'),
+         sesuai help text — sebelumnya target wajib sehingga default '.'
+         tidak pernah tercapai.
+         Root diabsolutkan tanpa me-resolve symlink (absolutize(): join cwd
+         + rapikan komponen '..') sebelum walk-up detect() — tanpa ini root
+         relatif '.' punya parent '' (= cwd) sehingga repo di atas cwd tidak
+         terdeteksi (mis. 'cd repo/rtl && mcheck --changed' lapor tanpa VCS).
+         Bila root adalah symlink ke SUBdirektori repo (mis. ~/rtl ->
+         /proj/rtl), walk-up dari nama link tidak melihat marker: detect()
+         mengulang walk-up dari canonicalize(start) (khusus deteksi;
+         display_path tetap absolutize agar nama link dipertahankan).
+         Path dicetak relatif ke CWD (bukan relatif root): file list .f
+         me-resolve relatif ke direktori file .f, jadi 'mcheck rtl
+         --changed > changed.f' dari root repo harus menghasilkan
+         'rtl/top.sv'. File di luar CWD dicetak absolut. Diverifikasi
+         end-to-end (redirect lalu 'mcheck changed.f --missing' → sehat).
+         Path ber-newline dilewati + peringatan ke stderr (satu path per
+         baris tidak bisa merepresentasikannya); komentar -z diperjelas
+         (aman saat parsing, bukan saat output).
+         --changed tidak bisa digabung --ast-diff/--sv-version; root tak
+         ada → error (bukan diam-diam kosong).
+         Header ASCII ('# VCS: git - N file berubah', juga jalur tanpa
+         VCS) agar file list hasil redirect tetap valid.
+         Normalisasi separator '\\' → '/' hanya di Windows: di Unix
+         backslash adalah karakter sah pada nama file, mengubahnya membuat
+         file berubah hilang diam-diam.
+         display_path memakai absolutize(), BUKAN canonicalize: nama symlink
+         yang dilaporkan VCS harus tetap tercetak (canonicalize menggantinya
+         dengan path target, bisa duplikat/keluar repo).
+         Test 18: detect marker + walk-up (git/svn/p4), detect root relatif
+         '.'/'..' = bentuk absolutnya, parser git -z
+         (rename berspasi, deleted dilewati, dedupe), parser svn (kolom
+         status, D/!/?/X + baris property-only dilewati — dikunci test
+         sendiri), filter ekstensi, repo git nyata (modified + untracked
+         dalam direktori baru + subdirektori, prefix rtl/ vs rtl2.sv tidak
+         salah potong), p4 → Err jelas (ASCII, tanpa celah spasi ganda),
+         root hilang → error, tanpa VCS → kosong, render relatif-CWD +
+         newline dilewati + filter non-sumber + header ASCII, symlink tetap
+         bernama link (bukan target), root symlink ke subdir repo terdeteksi
+         (detect + changed_files).
+         Mutasi terbukti menggagalkan test: hapus skip ' ' svn, pakai path
+         relatif-root, hapus skip newline, hapus absolutize di detect,
+         canonicalize di display_path, matikan fallback symlink.
 ENT-40: ✅ Plugin/extension marketplace (ROUND 93)
          crates/maria-tools/src/plugin_market.rs: PluginManifest TOML,
          PluginRegistry: install/uninstall/scan/list/set_enabled/

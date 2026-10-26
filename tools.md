@@ -275,6 +275,15 @@ Config
 PARSER-13 (AST differential): `mcheck a.sv --ast-diff b.sv` — bandingkan
 AST elaborasi dua file (module/signal/proses/class/covergroup), exit 0
 identik / 1 berbeda (regression gate).
+
+ENT-39 (revision control): `mcheck --changed [root]` — deteksi VCS di target
+pertama (default `.`, boleh subdirektori repo): git (`.git`) dan svn
+(`.svn`). Cetak file sumber yang berubah (satu path per baris, relatif
+ke direktori kerja saat ini, komentar `#` → bisa dipakai langsung sebagai
+file list `.f`). File terhapus dilewati; path ber-newline dilewati dengan
+peringatan. Perforce (`.p4config`) terdeteksi tetapi
+belum didukung (error dengan instruksi manual).
+
 11. mbench
 
 Benchmark Tool.

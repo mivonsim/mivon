@@ -593,8 +593,9 @@ pub struct MprofArgs {
 /// mcheck — Project Health Checker.
 #[derive(clap::Args, Clone)]
 pub struct McheckArgs {
-    /// Target input: file .sv, direktori, atau file list .f
-    #[arg(required = true)]
+    /// Target input: file .sv, direktori, atau file list .f (opsional untuk
+    /// --changed: default '.')
+    #[arg(required_unless_present = "changed")]
     pub targets: Vec<String>,
 
     /// Aktifkan semua check
@@ -630,6 +631,12 @@ pub struct McheckArgs {
     /// vs supported by Mivon. Reports feature usage and support status.
     #[arg(long = "sv-version")]
     pub sv_version: bool,
+
+    /// ENT-39: cetak file sumber yang berubah menurut VCS (git/svn) di
+    /// target pertama (default '.'), siap dipakai sebagai file list.
+    /// Path dicetak relatif terhadap direktori kerja saat ini.
+    #[arg(long)]
+    pub changed: bool,
 }
 
 /// mbench — Benchmark Tool.

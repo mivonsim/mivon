@@ -24,6 +24,27 @@ pub struct CheckArgs<'a> {
     pub ast_diff: Option<&'a str>,
     /// ENT-22: Check SV version compatibility.
     pub sv_version: bool,
+    /// ENT-39: cetak file sumber yang berubah menurut VCS (git/svn) di
+    /// target pertama (default '.'), siap dipakai sebagai file list.
+    pub changed: bool,
+}
+
+/// ENT-39: cetak file sumber yang berubah menurut VCS (satu path per
+/// baris, komentar '#' → bisa langsung dipakai sebagai file list .f).
+fn run_changed(root: &str) -> Result<(), SimError> {
+    let path = std::path::Path::new(root);
+    let (kind, files) = crate::vcs::changed_files(path)?;
+    // Tanpa canonicalize: samakan bentuk dengan absolutize() di vcs.rs agar
+    // strip_prefix tidak gagal hanya karena symlink pada path cwd.
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let (text, skipped) = crate::vcs::render_changed(kind, &files, path, &cwd);
+    print!("{text}");
+    if skipped > 0 {
+        eprintln!(
+            "peringatan: {skipped} path mengandung newline - dilewati (file list satu path per baris)"
+        );
+    }
+    Ok(())
 }
 
 /// Jalankan mcheck.
@@ -31,6 +52,16 @@ pub fn run(args: &CheckArgs) -> Result<(), SimError> {
     let all = args.all;
     let check = |flag: bool| flag || all;
 
+    // ENT-39: daftar file berubah dari VCS (mode khusus).
+    if args.changed {
+        if args.ast_diff.is_some() || args.sv_version {
+            return Err(SimError::runtime(
+                "--changed tidak bisa digabung dengan --ast-diff/--sv-version",
+            ));
+        }
+        let root = args.targets.first().map(|s| s.as_str()).unwrap_or(".");
+        return run_changed(root);
+    }
     // PARSER-13: AST differential — mode khusus, tidak jalan bareng check lain.
     if let Some(other) = args.ast_diff {
         return run_ast_diff(args.targets, other);
