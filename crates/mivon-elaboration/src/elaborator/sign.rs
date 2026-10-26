@@ -6,7 +6,6 @@
 
 use std::collections::HashSet;
 
-use mivon_ast::types::is_signed_type;
 use mivon_ast::*;
 use mivon_core::intern::Symbol;
 use mivon_ir::*;
@@ -40,13 +39,10 @@ pub(crate) fn elab_expr_is_signed(e: &Expr) -> bool {
 /// shortint/longint`/signed-typed → signed; tanpa tipe → signedness default
 /// ekspresi (desimal signed; `localparam A = -2` → int implicit signed).
 pub(crate) fn param_decl_is_signed(p: &ParamDecl) -> bool {
-    if let Some(dt) = &p.dtype {
-        return is_signed_type(dt);
-    }
-    match &p.default {
-        Some(expr) => elab_expr_is_signed(expr),
-        None => true, // implicit integer
-    }
+    // ELAB-13: satu sumber kebenaran di util::param_util (dipakai juga saat
+    // normalisasi nilai di resolve_param_values). Range tanpa dtype =
+    // UNSIGNED (LRM §6.8/§6.20.2).
+    crate::util::param_util::param_decl_signed(p)
 }
 
 /// Emit konstanta param dengan signedness: signed → `Signed(Const)` agar

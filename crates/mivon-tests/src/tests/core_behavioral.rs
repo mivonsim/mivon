@@ -875,6 +875,371 @@ endmodule
 }
 
 #[test]
+fn test_sized_parameter_keeps_its_width() {
+    // ELAB-13: parameter 8'd1 harus tetap 8 bit. Sebelum perbaikan, nilai
+    // parameter selalu di-emit sebagai Const 64 bit sehingga ~(a + P)
+    // melebar ke 64 bit dan perbandingan dengan 8'hF0 menjadi false.
+    let source = r#"
+module tb;
+    parameter P = 8'd1;
+    logic [7:0] a;
+    logic hit;
+    initial begin
+        a = 8'h0E;
+        #1;
+        hit = (~(a + P) == 8'hF0);
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 5).unwrap();
+    let hit = sigs
+        .iter()
+        .find(|(n, _)| n == "hit")
+        .map(|(_, v)| v.to_u64())
+        .unwrap();
+    assert_eq!(hit, 1, "~(a + P) harus 8 bit: ~(8'h0E + 8'd1) == 8'hF0");
+}
+
+#[test]
+fn test_ranged_parameter_keeps_its_width() {
+    // ELAB-13 varian deklarasi range: parameter [7:0] Q = 1 juga 8 bit.
+    let source = r#"
+module tb;
+    parameter [7:0] Q = 1;
+    logic [7:0] a;
+    logic hit;
+    initial begin
+        a = 8'h0E;
+        #1;
+        hit = (~(a + Q) == 8'hF0);
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 5).unwrap();
+    let hit = sigs
+        .iter()
+        .find(|(n, _)| n == "hit")
+        .map(|(_, v)| v.to_u64())
+        .unwrap();
+    assert_eq!(hit, 1, "~(a + Q) harus 8 bit untuk parameter [7:0]");
+}
+
+#[test]
+fn test_parameter_override_is_not_truncated_by_default_width() {
+    // ELAB-13: lebar dari literal default (8'd1) hanya inferensi — override
+    // #(.P(16'hABCD)) tidak boleh dipotong ke 8 bit (iverilog: P=abcd).
+    let source = r#"
+module child #(parameter P = 8'd1) (output [15:0] y, output [15:0] z);
+    assign y = P;
+    assign z = ~P;
+endmodule
+module tb;
+    wire [15:0] y, z;
+    child #(.P(16'hABCD)) u(.y(y), .z(z));
+    initial #2 $finish;
+endmodule
+"#;
+    let sigs = simulate_signals(source, 5).unwrap();
+    let get = |n: &str| {
+        sigs.iter()
+            .find(|(x, _)| x == n)
+            .map(|(_, v)| v.to_u64())
+            .unwrap()
+    };
+    assert_eq!(get("y"), 0xABCD, "nilai override tidak boleh terpotong");
+    assert_eq!(get("z"), 0x5432, "~P harus pada lebar override (16 bit)");
+}
+
+#[test]
+fn test_unit_parameter_width_does_not_shadow_module_parameter() {
+    // ELAB-13: parameter $unit (8'd1) tidak boleh mewarnai lebar module param
+    // bernama sama yang dideklarasikan tanpa lebar (iverilog: hit=0).
+    let source = r#"
+parameter P = 8'd1;
+module tb;
+    parameter P = 1;
+    logic [7:0] a;
+    logic hit;
+    initial begin
+        a = 8'h0E;
+        #1;
+        hit = (~(a + P) == 8'hF0);
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 5).unwrap();
+    let hit = sigs
+        .iter()
+        .find(|(n, _)| n == "hit")
+        .map(|(_, v)| v.to_u64())
+        .unwrap();
+    assert_eq!(
+        hit, 0,
+        "module param tanpa lebar tidak mewarisi lebar $unit"
+    );
+}
+
+#[test]
+fn test_ranged_parameter_is_unsigned() {
+    // ELAB-13: deklarasi range tanpa dtype bersifat UNSIGNED (LRM 6.8/6.20.2)
+    // walau default-nya desimal unsized. Sebelum guard, TIMEOUT sign-extend
+    // menjadi 0xFFFFC350 saat lebar range mulai dihormati.
+    let source = r#"
+module tb;
+    parameter [15:0] TIMEOUT = 50000;
+    localparam [7:0] THRESH = 200;
+    logic [31:0] t, th;
+    initial begin
+        t = TIMEOUT;
+        th = THRESH;
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 5).unwrap();
+    let get = |n: &str| {
+        sigs.iter()
+            .find(|(x, _)| x == n)
+            .map(|(_, v)| v.to_u64())
+            .unwrap()
+    };
+    assert_eq!(
+        get("t"),
+        50000,
+        "parameter [15:0] = 50000 harus zero-extend"
+    );
+    assert_eq!(get("th"), 200, "localparam [7:0] = 200 harus zero-extend");
+}
+
+#[test]
+fn test_signed_literal_parameter_override_is_not_sign_extended() {
+    // ELAB-13: param untyped dengan default signed (8'sd1) yang di-override
+    // nilai unsigned lebar (16'hABCD) tidak boleh sign-extend ke 0xFFFFABCD.
+    let source = r#"
+module child #(parameter P = 8'sd1) (output [31:0] y);
+    assign y = P;
+endmodule
+module tb;
+    wire [31:0] y;
+    child #(.P(16'hABCD)) u(.y(y));
+    initial #2 $finish;
+endmodule
+"#;
+    let sigs = simulate_signals(source, 5).unwrap();
+    let y = sigs
+        .iter()
+        .find(|(n, _)| n == "y")
+        .map(|(_, v)| v.to_u64())
+        .unwrap();
+    assert_eq!(y, 0xABCD, "override unsigned tidak boleh sign-extend");
+}
+
+#[test]
+fn test_ranged_parameter_negative_default_is_unsigned() {
+    // ELAB-13: `parameter [7:0] D = -1` = 8'hFF = 255 (LRM), bukan -1.
+    // Jalur const-fold memakai nilai mentah, jadi nilainya dinormalisasi ke
+    // lebar deklarasi; tanpa itu perbandingan unsigned jadi salah.
+    let source = r#"
+module tb;
+    parameter [7:0] D = -1;
+    logic [31:0] d;
+    logic g1, g2;
+    initial begin
+        d = D;
+        g1 = (D < 1000);
+        g2 = (D > 300);
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 5).unwrap();
+    let get = |n: &str| {
+        sigs.iter()
+            .find(|(x, _)| x == n)
+            .map(|(_, v)| v.to_u64())
+            .unwrap()
+    };
+    assert_eq!(get("d"), 255, "parameter [7:0] = -1 harus 8'hFF");
+    assert_eq!(get("g1"), 1, "255 < 1000");
+    assert_eq!(get("g2"), 0, "255 tidak > 300");
+}
+
+#[test]
+fn test_ranged_parameter_override_is_truncated() {
+    // ELAB-13: range eksplisit MENGIKAT lebar (LRM) — override 16'h1234 pada
+    // parameter [7:0] menjadi 8'h34, termasuk di jalur const-fold.
+    let source = r#"
+module child #(parameter [7:0] Q = 0) (output [31:0] a, output [31:0] b);
+    assign a = Q;
+    assign b = Q + 0;
+endmodule
+module tb;
+    wire [31:0] a, b;
+    child #(.Q(16'h1234)) u(.a(a), .b(b));
+    initial #2 $finish;
+endmodule
+"#;
+    let sigs = simulate_signals(source, 5).unwrap();
+    let get = |n: &str| {
+        sigs.iter()
+            .find(|(x, _)| x == n)
+            .map(|(_, v)| v.to_u64())
+            .unwrap()
+    };
+    assert_eq!(get("a"), 0x34, "override harus dipotong ke lebar range");
+    assert_eq!(
+        get("b"),
+        0x34,
+        "jalur const-fold juga memakai nilai terpotong"
+    );
+}
+
+#[test]
+fn test_ranged_parameter_negative_default_in_localparam() {
+    // ELAB-13: nilai ternormalisasi harus terlihat juga oleh const-fold
+    // localparam turunan (bukan hanya assignment-level).
+    let source = r#"
+module tb;
+    parameter [7:0] D = -1;
+    localparam X = D + 0;
+    localparam Y = (D < 1000) ? 1 : 0;
+    logic [31:0] x, y;
+    initial begin
+        x = X;
+        y = Y;
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 5).unwrap();
+    let get = |n: &str| {
+        sigs.iter()
+            .find(|(x, _)| x == n)
+            .map(|(_, v)| v.to_u64())
+            .unwrap()
+    };
+    assert_eq!(get("x"), 255, "localparam X = D + 0 harus 255");
+    assert_eq!(get("y"), 1, "localparam Y = (D < 1000) harus 1");
+}
+
+#[test]
+fn test_ranged_parameter_negative_default_in_generate_if() {
+    // ELAB-13: generate-if memakai peta param dari prepass; nilai mentah -1
+    // membuat cabang else yang dipilih (hardware salah).
+    let source = r#"
+module tb;
+    parameter [7:0] D = -1;
+    logic sel;
+    generate
+        if (D < 1000) begin : g_lt
+            assign sel = 1'b1;
+        end else begin : g_ge
+            assign sel = 1'b0;
+        end
+    endgenerate
+    initial #1 $finish;
+endmodule
+"#;
+    let sigs = simulate_signals(source, 5).unwrap();
+    let sel = sigs
+        .iter()
+        .find(|(n, _)| n == "sel")
+        .map(|(_, v)| v.to_u64())
+        .unwrap();
+    assert_eq!(sel, 1, "D = 255 sehingga D < 1000 harus memilih cabang if");
+}
+
+#[test]
+fn test_ranged_parameter_override_in_localparam() {
+    // ELAB-13: override yang lebih lebar harus dipotong range eksplisit juga
+    // di jalur const-fold localparam anak.
+    let source = r#"
+module child #(parameter [7:0] Q = 0) (output [31:0] c);
+    localparam X = Q + 0;
+    assign c = X;
+endmodule
+module tb;
+    wire [31:0] c;
+    child #(.Q(16'h1234)) u(.c(c));
+    initial #2 $finish;
+endmodule
+"#;
+    let sigs = simulate_signals(source, 5).unwrap();
+    let c = sigs
+        .iter()
+        .find(|(n, _)| n == "c")
+        .map(|(_, v)| v.to_u64())
+        .unwrap();
+    assert_eq!(c, 0x34, "localparam X = Q + 0 harus memakai Q 8 bit (0x34)");
+}
+
+#[test]
+fn test_signed_ranged_parameter_bit_pattern_is_negative() {
+    // ELAB-13: `parameter signed [7:0] S = 8'hFF` bernilai -1 (sign-extend),
+    // bukan +255 — berlaku di const-fold (S + 0) dan generate-if.
+    let source = r#"
+module tb;
+    parameter signed [7:0] S = 8'hFF;
+    logic neg;
+    logic [31:0] sum;
+    logic gen_sel;
+    generate
+        if (S < 0) begin : g_neg
+            assign gen_sel = 1'b1;
+        end else begin : g_pos
+            assign gen_sel = 1'b0;
+        end
+    endgenerate
+    initial begin
+        neg = (S < 0);
+        sum = S + 0;
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 5).unwrap();
+    let get = |n: &str| {
+        sigs.iter()
+            .find(|(x, _)| x == n)
+            .map(|(_, v)| v.to_u64())
+            .unwrap()
+    };
+    assert_eq!(get("neg"), 1, "S = -1 sehingga S < 0 harus benar");
+    assert_eq!(get("sum"), 0xFFFF_FFFF, "S + 0 harus sign-extend");
+    assert_eq!(get("gen_sel"), 1, "generate-if harus memilih cabang S < 0");
+}
+
+#[test]
+fn test_typedef_parameter_does_not_narrow_to_literal() {
+    // ELAB-13: tipe eksplisit yang lebarnya belum didukung (typedef) TIDAK
+    // boleh jatuh ke lebar literal default (8 bit) — itu memotong nilai.
+    let source = r#"
+typedef logic [15:0] word_t;
+module tb;
+    parameter word_t W = 8'hFF;
+    logic hit8;
+    initial begin
+        // Kalau W menyempit ke 8 bit, ~W = 8'h00 sehingga perbandingan ini
+        // benar; dengan fallback 64 bit nilainya 0xFFFF..FF00 -> salah.
+        hit8 = (~W == 8'h00);
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 5).unwrap();
+    let get = |n: &str| {
+        sigs.iter()
+            .find(|(x, _)| x == n)
+            .map(|(_, v)| v.to_u64())
+            .unwrap()
+    };
+    assert_eq!(get("hit8"), 0, "W tidak boleh menyempit ke lebar literal");
+}
+
+#[test]
 fn test_parameter_type_header_decl() {
     // Type param dari header parameter list (module m #(parameter type T))
     // juga harus resolve: `T x;` di body jadi deklarasi, bukan instance.

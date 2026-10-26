@@ -13,7 +13,7 @@ use mivon_core::diagnostics::diagnostic::DiagCode;
 use mivon_core::error::SimError;
 use mivon_core::intern::Symbol;
 
-use super::super::util::param_util::{resolve_param_values_with_ctx, PkgFullCtx};
+use super::super::util::param_util::{param_width_of, resolve_param_values_with_ctx, PkgFullCtx};
 use super::types::{eval_enum_member_value, package_overlay};
 use super::Elaborator;
 
@@ -49,6 +49,65 @@ impl Elaborator {
         )
     }
 
+    /// ELAB-13: lebar bit deklarasi param. Urutan prioritas: range eksplisit
+    /// (`parameter [7:0] P`), tipe eksplisit (`int`/`byte`/...), lalu lebar
+    /// literal default (`8'd1`). `None` = tidak diketahui (pemanggil memakai
+    /// 64 bit seperti sebelumnya).
+    ///
+    /// Range/tipe eksplisit MENGIKAT lebar (override yang lebih lebar memang
+    /// dipotong, sesuai LRM). Sebaliknya lebar dari literal default hanya
+    /// inferensi: override (`#(.P(16'hABCD))`) tidak membawa lebarnya di
+    /// `params` (hanya i64), jadi lebar dinaikkan ke lebar nilai efektif agar
+    /// nilai override tidak terpotong diam-diam.
+    pub(crate) fn param_decl_width(
+        &self,
+        p: &ParamDecl,
+        params: &HashMap<Symbol, i64>,
+    ) -> Option<usize> {
+        param_width_of(p, params)
+    }
+
+    /// ELAB-13: normalisasi nilai param UNSIGNED ke lebar deklarasinya.
+    /// `param_vals` menyimpan i64 mentah; tanpa normalisasi, jalur const-fold
+    /// melihat `parameter [7:0] D = -1` sebagai -1 (2^64-1) padahal LRM 8'hFF,
+    /// dan override yang lebih lebar tidak terpotong oleh range eksplisit
+    /// (`#(.Q(16'h1234))` pada `parameter [7:0] Q` harus 0x34). Param signed
+    /// dilewati (nilainya memang negatif).
+    pub(crate) fn normalize_param_vals(&self, params: &mut HashMap<Symbol, i64>) {
+        for (name, w) in &self.param_widths {
+            if *w == 0 || *w >= 64 || self.param_is_signed.contains(name) {
+                continue;
+            }
+            if let Some(v) = params.get_mut(name) {
+                let mask = (1u64 << w) - 1;
+                *v = (*v as u64 & mask) as i64;
+            }
+        }
+    }
+    /// ELAB-13: peta nama -> lebar param untuk module saat ini (+ $unit).
+    pub(crate) fn module_param_widths(
+        &self,
+        module: &Module,
+        params: &HashMap<Symbol, i64>,
+    ) -> HashMap<Symbol, usize> {
+        let mut out = HashMap::new();
+        for p in &module.params {
+            if let Some(w) = self.param_decl_width(p, params) {
+                out.insert(p.name, w);
+            }
+        }
+        for p in &self.design.unit_params {
+            // Nama yang dideklarasikan ulang di module (shadow) TIDAK boleh
+            // mewarisi lebar $unit: deklarasinya sendiri yang menentukan.
+            if module.params.iter().any(|mp| mp.name == p.name) {
+                continue;
+            }
+            if let Some(w) = self.param_decl_width(p, params) {
+                out.insert(p.name, w);
+            }
+        }
+        out
+    }
     /// Bangun global package param context SEKALI: qualified `pkg::name` untuk semua
     /// parameter package + enum member (plain & qualified) dari semua package,
     /// plus konstanta package ter-evaluasi. Hasil disimpan di `self.pkg_param_ctx`

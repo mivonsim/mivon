@@ -17,6 +17,118 @@ use mivon_ast::types::PackageItem;
 use mivon_ast::*;
 use mivon_core::intern::Symbol;
 
+use super::const_eval_params;
+
+/// ELAB-13: lebar bit deklarasi param. Urutan prioritas: range eksplisit
+/// (parameter [7:0] P), tipe eksplisit (int/byte/...), lalu lebar literal
+/// default (8'd1). None = tidak diketahui (pemakai memakai 64 bit).
+pub(crate) fn param_width_of(p: &ParamDecl, params: &HashMap<Symbol, i64>) -> Option<usize> {
+    if let Some((msb, lsb)) = &p.range {
+        let (m, l) = match (
+            const_eval_params(msb, params),
+            const_eval_params(lsb, params),
+        ) {
+            (Ok(m), Ok(l)) => (m, l),
+            _ => return None,
+        };
+        let w = (m.max(l).saturating_sub(m.min(l)) as usize).saturating_add(1);
+        return (w <= 64).then_some(w);
+    }
+    if let Some(dt) = &p.dtype {
+        if let Some(w) = dtype_width(dt) {
+            return (w <= 64).then_some(w);
+        }
+        // Tipe eksplisit yang lebarnya tidak diketahui (typedef/enum/signed
+        // tanpa range) -> jangan menebak dari literal default (bisa menyempit).
+        return None;
+    }
+    let declared = match p.default.as_ref() {
+        Some(Expr::Value(Value::Binary { width: Some(w), .. }))
+        | Some(Expr::Value(Value::Hex { width: Some(w), .. }))
+        | Some(Expr::Value(Value::Octal { width: Some(w), .. })) => *w,
+        _ => return None,
+    };
+    // Lebar dari literal default hanya inferensi: param untyped yang signed
+    // menurut default tidak diikat (signedness tidak ikut override), dan
+    // override yang lebih lebar menaikkan lebar agar nilainya tidak terpotong.
+    if param_decl_signed(p) {
+        return None;
+    }
+    let w = match params.get(&p.name) {
+        Some(&v) => declared.max(value_width(v)),
+        None => declared,
+    };
+    (w <= 64).then_some(w)
+}
+
+/// ELAB-13: signedness deklarasi param. Range tanpa dtype = unsigned
+/// (LRM 6.8/6.20.2); tipe eksplisit menang; sisanya ikut default expression.
+pub(crate) fn param_decl_signed(p: &ParamDecl) -> bool {
+    if let Some(dt) = &p.dtype {
+        return mivon_ast::types::is_signed_type(dt);
+    }
+    if p.range.is_some() {
+        return false;
+    }
+    match &p.default {
+        Some(expr) => crate::elaborator::sign::elab_expr_is_signed(expr),
+        None => true, // implicit integer
+    }
+}
+
+/// ELAB-13: lebar minimal untuk merepresentasikan nilai (negatif = 64 bit).
+fn value_width(v: i64) -> usize {
+    let u = v as u64;
+    if u == 0 {
+        1
+    } else {
+        64 - u.leading_zeros() as usize
+    }
+}
+
+/// ELAB-13: normalisasi nilai param UNSIGNED ke lebar deklarasinya. Dipakai
+/// saat mengisi peta nilai agar SEMUA jalur (const-fold localparam, generate
+/// if/for, IR) melihat nilai yang sama: parameter [7:0] D = -1 -> 255.
+pub(crate) fn normalize_param_value(p: &ParamDecl, v: i64, params: &HashMap<Symbol, i64>) -> i64 {
+    let mut w = match param_width_of(p, params) {
+        Some(w) => w,
+        None => return v,
+    };
+    // Saat nilai baru BELUM ada di peta (insert berikutnya), lebar dari
+    // literal default tidak melihat nilai override -> naikkan ke lebar nilai
+    // agar override tidak terpotong. Range/tipe eksplisit tetap mengikat.
+    if p.range.is_none() && p.dtype.is_none() {
+        w = w.max(value_width(v)).min(64);
+    }
+    if w == 0 || w >= 64 {
+        return v;
+    }
+    let mask = (1u64 << w) - 1;
+    let raw = v as u64 & mask;
+    if param_decl_signed(p) {
+        // Param signed berlebar eksplisit: truncate lalu sign-extend, supaya
+        // `parameter signed [7:0] S = 8'hFF` bernilai -1 (bukan +255) di
+        // const-fold dan generate-if.
+        let sign_bit = 1u64 << (w - 1);
+        if raw & sign_bit != 0 {
+            return (raw | !mask) as i64;
+        }
+    }
+    raw as i64
+}
+
+/// ELAB-13: lebar bit tipe data eksplisit (None = tipe tidak menentukan lebar).
+fn dtype_width(dt: &DataType) -> Option<usize> {
+    match dt {
+        DataType::Bit | DataType::Logic => Some(1),
+        DataType::Byte => Some(8),
+        DataType::Shortint => Some(16),
+        DataType::Int | DataType::Integer => Some(32),
+        DataType::Longint | DataType::Time => Some(64),
+        DataType::Signed(_) => None,
+        _ => None,
+    }
+}
 /// Kumpulkan parameter dari body module (termasuk yang ada di dalam generate block).
 pub fn collect_body_params(module: &Module) -> Vec<ParamDecl> {
     let mut params = Vec::new();
@@ -294,6 +406,7 @@ pub fn resolve_param_values_with_ctx(
             match &param.default {
                 Some(e) => {
                     if let Some(v) = eval_param_default(e, &vals, pkg, module) {
+                        let v = normalize_param_value(&param, v, &vals);
                         insert_val!(param.name, v);
                     } else if !param_default_is_collection(e) {
                         // Fallback global: param gagal dievaluasi (default
@@ -304,11 +417,13 @@ pub fn resolve_param_values_with_ctx(
                         // width resolution tidak gagal "not found in parameter
                         // context". Array/struct literal dikecualikan (jalur
                         // array di bawah / evaluator struct yang menangani).
-                        insert_val!(param.name, 1);
+                        let v = normalize_param_value(&param, 1, &vals);
+                        insert_val!(param.name, v);
                     }
                 }
                 None => {
-                    insert_val!(param.name, 0);
+                    let v = normalize_param_value(&param, 0, &vals);
+                    insert_val!(param.name, v);
                 }
             }
         }
@@ -329,6 +444,7 @@ pub fn resolve_param_values_with_ctx(
                 None => 0,
             }
         };
+        let val = normalize_param_value(param, val, &vals);
         insert_val!(param.name, val);
     }
 
@@ -350,13 +466,16 @@ pub fn resolve_param_values_with_ctx(
         }
         if let Some(e) = &param.default {
             if let Some(v) = eval_param_default(e, &vals, pkg, module) {
+                let v = normalize_param_value(param, v, &vals);
                 insert_val!(param.name, v);
             } else if !param_default_is_collection(e) {
                 // Fallback global sama seperti body params di atas.
-                insert_val!(param.name, 1);
+                let v = normalize_param_value(param, 1, &vals);
+                insert_val!(param.name, v);
             }
         } else {
-            insert_val!(param.name, 0);
+            let v = normalize_param_value(param, 0, &vals);
+            insert_val!(param.name, v);
         }
     }
 

@@ -1380,7 +1380,7 @@ ELAB-12: ✅ Elab-time assertion evaluation (ROUND 47) — assert immediate
            (const_eval_with_params); false → warning RT7001 assertion
            failed di elab-time (lebih awal daripada simulasi).
 
-ELAB-13:[] Parameter berlebar eksplisit kehilangan lebarnya (64 bit) (High)
+ELAB-13: ⚠️ PARTIAL (ROUND 222) — Parameter berlebar eksplisit kehilangan lebarnya
          Ditemukan saat review COMP-16 (ROUND 221). Reproduksi:
            module t; parameter P = 8'd1; logic [7:0] a; logic y;
              initial begin a = 8'h0E; #1;
@@ -1390,9 +1390,136 @@ ELAB-13:[] Parameter berlebar eksplisit kehilangan lebarnya (64 bit) (High)
          Artinya nilai parameter dengan lebar eksplisit (8'd1) disimpan
          sebagai konstanta 64 bit sehingga seluruh ekspresi melebar ke 64
          bit; `(a + P) == 8'h0F` masih benar karena perbandingan menyamakan
-         lebar, tetapi `~`/assign sempit salah. Ini juga alasan SEC menolak
-         IrExpr::Cast (context width) dan mencatat prasyarat 'literal sudah
-         dilebarkan elaborator'. BELUM diperbaiki.
+         lebar, tetapi `~`/assign sempit salah.
+         AKAR MASALAH: `Elaborator::param_vals` hanya `HashMap<Symbol, i64>`
+         (nilai tanpa lebar), dan elaborator/expr.rs meng-emit
+         `LogicVec::from_u64(val as u64, 64)` untuk SETIAP ident param.
+         PERBAIKAN (ROUND 222): field baru `param_widths: HashMap<Symbol,
+         usize>` diisi `module_param_widths()` (elaborator/params.rs) dari
+         deklarasi param: range eksplisit (`[7:0]`) > tipe eksplisit
+         (bit/logic 1, byte 8, shortint 16, int/integer 32, longint/time 64)
+         > lebar literal default (`8'd1` → 8); di-refresh di 5 titik tempat
+         `param_vals` di-set (termasuk setelah ekspansi generate).
+         elaborator/expr.rs memakai lebar itu, fallback 64 bit = perilaku
+         lama untuk param yang tidak eksplisit. Verifikasi manual:
+         `~(a + P)` kini `f0` (sebelumnya `fffffffffffffff0`), sama dengan
+         iverilog.
+         Test (13): tests::core_behavioral::test_sized_parameter_keeps_its_
+         width, test_ranged_parameter_keeps_its_width, test_parameter_
+         override_is_not_truncated_by_default_width (override
+         #(.P(16'hABCD)) -> P=abcd, ~P=5432, sama dengan iverilog),
+         test_unit_parameter_width_does_not_shadow_module_parameter,
+         test_ranged_parameter_is_unsigned (parameter [15:0] T = 50000 ->
+         0x0000C350, bukan 0xFFFFC350), test_signed_literal_parameter_
+         override_is_not_sign_extended (default 8'sd1 + override 16'hABCD ->
+         0x0000ABCD), test_ranged_parameter_negative_default_is_unsigned
+         (parameter [7:0] D = -1 -> 255; D<1000 true, D>300 false),
+         test_ranged_parameter_override_is_truncated (range [7:0] + override
+         16'h1234 -> 0x34, jalur assign maupun const-fold),
+         test_ranged_parameter_negative_default_in_localparam (`localparam
+         X = D + 0` -> 255, `(D < 1000)` -> 1), test_ranged_parameter_
+         negative_default_in_generate_if (cabang if dipilih), test_ranged_
+         parameter_override_in_localparam (localparam anak -> 0x34),
+         test_signed_ranged_parameter_bit_pattern_is_negative
+         (`parameter signed [7:0] S = 8'hFF` -> S<0 benar, S+0 = 0xFFFFFFFF,
+         generate-if memilih cabang negatif), test_typedef_parameter_does_
+         not_narrow_to_literal (param bertipe typedef tidak menyempit ke lebar
+         literal default).
+         Mutasi diverifikasi: lebar dipaksa 64 -> 2 test gagal; clamp nilai
+         override dilepas -> test override gagal; guard shadow dilepas ->
+         test shadow gagal; guard range-unsigned dilepas -> test
+         ranged_parameter_is_unsigned gagal; guard signed-inference dilepas
+         -> test signed_literal_override gagal; normalize_param_value() di
+         sumber (util/param_util.rs) dilepas -> 4 test gagal: negative_
+         default_in_localparam, negative_default_in_generate_if, override_in_
+         localparam, signed_ranged_parameter_bit_pattern_is_negative;
+         blok sign-extend dilepas -> test
+         signed_ranged_parameter_bit_pattern_is_negative gagal; fallback
+         literal diaktifkan untuk dtype tak dikenal -> test typedef_parameter_
+         does_not_narrow_to_literal gagal.
+         TEMUAN REVIEW RONDE 1 yang sudah diperbaiki: (a) BLOCKER nilai
+         override terpotong ke lebar literal default (kini lebar dinaikkan ke
+         lebar nilai efektif; range/tipe eksplisit TETAP mengikat sesuai
+         LRM); (b) shadow $unit (guard nama); (c) range yang gagal
+         dievaluasi tidak lagi menebak lebar dari literal default.
+         TEMUAN REVIEW RONDE 2 yang sudah diperbaiki: (d) BLOCKER regresi
+         signedness — `param_decl_is_signed` menganggap deklarasi ber-range
+         tanpa dtype sebagai signed (default desimal), sehingga
+         `parameter [15:0] T = 50000` sign-extend jadi 0xFFFFC350 begitu lebar
+         range dihormati; kini range tanpa dtype = UNSIGNED (LRM §6.8/6.20.2);
+         (e) HIGH regresi override — param untyped bersigned-default
+         (`8'sd1`) di-override nilai unsigned lebar sign-extend; kini param
+         yang signedness-nya hanya inferensi TIDAK diikat lebarnya (fallback
+         64 bit, perilaku lama).
+         TEMUAN REVIEW RONDE 3/4 yang sudah diperbaiki: (f) HIGH regresi
+         normalisasi — `parameter [7:0] D = -1` menjadi unsigned 8 bit di jalur
+         IR tetapi jalur const-fold tetap memakai nilai mentah -1 (2^64-1),
+         sehingga `D < 1000` salah dan generate-if memilih cabang salah.
+         Normalisasi kini dilakukan DI SUMBER: `normalize_param_value()`
+         dipakai di ketiga loop pengisian peta pada
+         `util::param_util::resolve_param_values_with_ctx` (body param, pass-1
+         param, pass-2 localparam) — bukan pada key array/struct ter-flatten
+         (lihat residual), jadi peta yang dipakai prepass generate
+         dan const-fold localparam sudah ternormalisasi. `normalize_param_vals()`
+         di elaborator tetap ada sebagai jaring pengaman (idempoten).
+         Satu sumber kebenaran lebar/signedness: `param_width_of()` +
+         `param_decl_signed()` di util/param_util.rs, didelegasikan oleh
+         elaborator/params.rs dan elaborator/sign.rs.
+         Hasil: D = 255, `localparam X = D + 0` = 255, `(D < 1000)` = 1,
+         generate-if memilih cabang if, override `#(.Q(16'h1234))` pada
+         `parameter [7:0] Q` = 0x34 termasuk di `localparam X = Q + 0`.
+         TEMUAN REVIEW RONDE 5 yang sudah diperbaiki: (g) HIGH param signed
+         ber-default bit-pattern — `parameter signed [7:0] S = 8'hFF` tetap
+         +255 di const-fold (seharusnya -1), sehingga `S < 0` dan generate-if
+         salah. Kini nilai signed berlebar eksplisit di-truncate lalu
+         SIGN-EXTEND ke i64 (`S` = -1; `S + 0` = 0xFFFFFFFF bila konteks
+         assignment 32 bit). (h) MEDIUM
+         regresi penyempitan — param bertipe typedef/enum yang lebarnya belum
+         diketahui jatuh ke lebar literal default (8 bit) sehingga nilainya
+         terpotong; kini tipe eksplisit tanpa lebar yang diketahui -> fallback
+         64 bit, tidak menebak dari literal.
+         Catatan cakupan test: `normalize_param_vals()` di elaborator (jaring
+         pengaman untuk param `$unit`) TIDAK tercakup test — melepasnya tidak
+         menggagalkan satu pun dari 26 test param di tests/core_*, karena
+         normalisasi sudah
+         terjadi di sumber (util/param_util.rs).
+         MASIH OPEN (alasan PARTIAL): (1) param package (`pkg::P`) dan key
+         array/struct ter-flatten (`name[i]`) belum masuk peta (fallback 64
+         bit, tidak dinormalisasi); (2) localparam yang lahir di dalam
+         generate block tidak ada di module.params; (3) default non-literal
+         (`parameter P = 8'd1 + 8'd1`) -> lebar tidak terinferensi (fallback
+         64); (4) param tanpa lebar eksplisit (`parameter P = 1`) tetap 64
+         bit (LRM: 32 bit); (5) dtype_width belum mencakup enum/typedef;
+         (6) param HEADER membuang kata kunci tipe dan signedness
+         (`#(parameter int P)` -> dtype None, pre-existing) sehingga lebar 32
+         hanya didapat bila default-nya literal berlebar UNSIGNED (`32'd7`),
+         tidak untuk literal signed (`32'sd7` -> 64 bit);
+         (7) di jalur RUNTIME, `$bits(param)` memakai compute_expr_width
+         (min-bits nilai) sehingga `$bits(parameter [7:0] Q)` = 1 padahal 8
+         (pre-existing, kini bertentangan dengan `~Q` 8 bit); `localparam B =
+         $bits(Q)` sudah benar (fold_param_bits) dan `$size(param)` runtime
+         menghasilkan E3001;
+         (8) peta PREPASS generate (util/generate.rs) menerima localparam di
+         dalam blok if/for TANPA normalisasi, sehingga generate-if di blok yang
+         sama melihat nilai mentah (localparam anak langsung generate sudah
+         benar; nilai akhir di param_vals juga sudah ternormalisasi karena item
+         hasil ekspansi diproses ulang); (9) lebar param > 64 bit (`[64:0]`) tidak
+         didukung
+         (fallback 64 bit, LRM 65 bit);          (10) param `$unit` belum masuk peta
+         saat localparam module di-const-fold (`localparam X = UP + 0` -> 1);
+         (11) `parameter signed <tipe>` TANPA range (dtype `Signed(_)`) tidak
+         di-sign-extend: `parameter signed int SI = 32'hFFFFFFFF` -> +4294967295
+         (SI < 0 salah); hanya bentuk ber-range yang diperbaiki;
+         (12) signedness param/localparam yang lahir di dalam generate block
+         tidak masuk `param_is_signed` (module_param_signed_set memindai
+         module.params, ModuleItem::Param top-level, dan $unit, tetapi TIDAK
+         item di dalam ModuleItem::Generate), jadi generate-if di dalamnya
+         salah cabang.
+         Catatan: perbedaan `assign y = ~P` (konteks target, mis. fffe) vs
+         `$display("~P")` (self-determined, fe) BUKAN bug — itu LRM §11.6;
+         jalur const-fold dan prosedural sudah sepakat.
+         Suite: cargo nextest run --workspace --all-features -> 3880 passed,
+         24 skipped (ROUND 222).
 
 4.4 COMPILER GAPS
 

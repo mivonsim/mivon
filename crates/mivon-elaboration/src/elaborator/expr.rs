@@ -415,8 +415,12 @@ impl Elaborator {
                 }
                 // Check if this ident is a parameter (from param_vals or effective_params)
                 if let Some(&val) = self.param_vals.get(name) {
+                    // ELAB-13: pakai lebar deklarasi param (range/tipe/literal);
+                    // tanpa itu param 8'd1 menjadi Const 64 bit dan ~(a + P)
+                    // melebar ke 64 bit. Fallback 64 bit = perilaku lama.
+                    let width = self.param_widths.get(name).copied().unwrap_or(64);
                     return Ok(super::sign::const_or_signed(
-                        LogicVec::from_u64(val as u64, 64),
+                        LogicVec::from_u64(val as u64, width),
                         self.param_is_signed.contains(name),
                     ));
                 }

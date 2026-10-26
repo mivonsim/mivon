@@ -195,6 +195,12 @@ pub struct Elaborator {
     pub design: Design,
     pub modules: HashMap<Symbol, IrModule>,
     pub param_vals: HashMap<Symbol, i64>,
+    /// Lebar bit parameter (ELAB-13): param_vals hanya menyimpan nilai,
+    /// sehingga tanpa peta ini param 8'd1 di-emit sebagai Const 64 bit dan
+    /// ekspresi seperti ~(a + P) melebar ke 64 bit. Diisi dari deklarasi
+    /// param (range eksplisit > tipe eksplisit > lebar literal default);
+    /// nama yang tidak ada di peta tetap 64 bit (perilaku lama).
+    pub param_widths: HashMap<Symbol, usize>,
     /// Lebar type param module yang SEDANG dielaborasi (nama → lebar bit
     /// efektif). Lihat inisialisasi di constructor untuk dokumentasi.
     pub cur_type_param_widths: HashMap<Symbol, usize>,
@@ -733,6 +739,7 @@ impl Elaborator {
             design,
             modules: HashMap::new(),
             param_vals: HashMap::new(),
+            param_widths: HashMap::new(),
             param_is_signed: std::collections::HashSet::new(),
             let_decls: HashMap::new(),
             checker_decls: HashMap::new(),
@@ -2288,12 +2295,18 @@ impl Elaborator {
         // Blok re-flatten di sini MENGULANG format!("{}[{}]") + Symbol::intern
         // untuk ribuan elemen konstanta per-module (bottleneck: 43% memcmp +
         // 28% Symbol::as_str di OpenTitan — interning berulang). Dihapus.
-        self.param_vals = effective_params.clone();
+        self.param_widths = self.module_param_widths(module, &effective_params);
         // Signedness param module saat ini (IEEE §6.11): dipakai resolve
         // `Expr::Ident(parameter)` agar `localparam int X = -2` di-emit
         // sebagai IrExpr::Signed (bukan Const unsigned 64) — `X < 0` benar.
         // Juga dipakai kondisi generate-if (util/generate.rs).
         self.param_is_signed = self.module_param_signed_set(module);
+        // ELAB-13: normalisasi nilai param UNSIGNED ke lebar deklarasinya
+        // (setelah param_widths + signedness tersedia). Jalur const-fold
+        // memakai nilai mentah, jadi `parameter [7:0] D = -1` harus menjadi
+        // 255 (LRM 8'hFF), bukan -1/2^64-1.
+        self.normalize_param_vals(&mut effective_params);
+        self.param_vals = effective_params.clone();
         // Context package GLOBAL (qualified `pkg::name` + enum member) sudah
         // dijamin ada di effective_params: param_vals selalu berasal dari
         // resolve_param_values → collect_package_param_ctx yang meng-clone
@@ -3102,6 +3115,7 @@ impl Elaborator {
             }
         }
         self.param_vals = effective_params.clone();
+        self.param_widths = self.module_param_widths(module, &effective_params);
 
         let expanded_items: Vec<ModuleItem> = {
             let mut items = Vec::new();
@@ -3209,6 +3223,7 @@ impl Elaborator {
 
         // Update param_vals after generate expansion which may add body-level params
         self.param_vals = effective_params.clone();
+        self.param_widths = self.module_param_widths(module, &effective_params);
 
         // ── Second pass: evaluate localparams from expanded generate blocks ───
         // Localparams declared INSIDE generate-for/if blocks are added to
@@ -3388,6 +3403,7 @@ impl Elaborator {
             }
         }
         self.param_vals = effective_params.clone();
+        self.param_widths = self.module_param_widths(module, &effective_params);
 
         // LANG-40: kumpulkan `let` declaration module ini (items + hasil
         // ekspansi generate) — di-resolve elaborate_expr sebagai alias
@@ -3498,6 +3514,7 @@ impl Elaborator {
             );
         }
         self.param_vals = effective_params.clone();
+        self.param_widths = self.module_param_widths(module, &effective_params);
 
         if std::env::var("DBG_DECL2").is_ok() {
             eprintln!(
