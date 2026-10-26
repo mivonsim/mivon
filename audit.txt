@@ -1380,6 +1380,20 @@ ELAB-12: ✅ Elab-time assertion evaluation (ROUND 47) — assert immediate
            (const_eval_with_params); false → warning RT7001 assertion
            failed di elab-time (lebih awal daripada simulasi).
 
+ELAB-13:[] Parameter berlebar eksplisit kehilangan lebarnya (64 bit) (High)
+         Ditemukan saat review COMP-16 (ROUND 221). Reproduksi:
+           module t; parameter P = 8'd1; logic [7:0] a; logic y;
+             initial begin a = 8'h0E; #1;
+               $display("%0h %0h", ~(a + P), (a + P) == 8'h0F); end
+           endmodule
+         mivon: notsum=fffffffffffffff0 (64 bit), iverilog: f0 (8 bit).
+         Artinya nilai parameter dengan lebar eksplisit (8'd1) disimpan
+         sebagai konstanta 64 bit sehingga seluruh ekspresi melebar ke 64
+         bit; `(a + P) == 8'h0F` masih benar karena perbandingan menyamakan
+         lebar, tetapi `~`/assign sempit salah. Ini juga alasan SEC menolak
+         IrExpr::Cast (context width) dan mencatat prasyarat 'literal sudah
+         dilebarkan elaborator'. BELUM diperbaiki.
+
 4.4 COMPILER GAPS
 
 COMP-01: ⚠️ IN PROGRESS (ROUND 97) — multi-pass optimization pipeline:
@@ -1501,9 +1515,10 @@ COMP-15: ✅ Memory inference lint (ROUND 85b) — mlint --memory:
          find_memory_inference() check DeclVar: range.is_some() +
          array_range.is_some() → info "reg array — kandidat inferred RAM/ROM".
          CLI flag --memory + LintArgs + dispatch.
-COMP-16: ⚠️ PARTIAL (ROUND 220) — Tidak ada sequential equivalence checking
+COMP-16: ⚠️ PARTIAL (ROUND 220/221) — Tidak ada sequential equivalence checking
          Tahap 1 (kombinasional) SELESAI: crates/mivon-formal/src/sec.rs
-         - SecExpr (Input/Const/Not/And/Or/Xor/Add/Sub/Mul/Eq/Mux),
+         - SecExpr (Input/Const(nilai,lebar)/Not/And/Or/Xor/Add/Neg/Sub/Mul/
+           Eq/Mux),
            SecDesign (inputs nama+lebar; outputs nama+LEBAR DEKLARASI+ekspresi),
            SecOutcome (Equivalent / NotEquivalent{output, counterexample} /
            Unsupported).
@@ -1516,7 +1531,22 @@ COMP-16: ⚠️ PARTIAL (ROUND 220) — Tidak ada sequential equivalence checkin
            Unsat = Equivalent; Sat = NotEquivalent + counterexample (semua
            input) dan output pertama yang benar-benar berbeda di model itu.
            Solver diberi timeout 10 dtk; Unknown -> Unsupported(inconclusive).
-         - 14 test: distributive_forms_are_equivalent (AND/OR),
+         - Lowering IrExpr -> SecExpr tahap 1: expr_from_ir(expr, sig_names).
+           Const ditolak bila memuat X/Z atau > 64 bit, dan LEBARNYA ikut
+           dibawa (Const(v, w) dari lv.width); SignalId di luar tabel ditolak;
+           BitNot->Not, Minus->Neg (lebar operand), Add/Sub/Mul, BitAnd/BitOr/
+           BitXor, Eq/Neq/CaseEq/CaseNeq, LogicalAnd/LogicalOr (dibandingkan ke
+           nol dulu, seperti &&/||), Cond->Mux. Signed, FillLit, dan operator
+           lain -> Err (tidak diam-diam salah). Dua guard correctness:
+           (i) lebar konstanta wajib ikut — dengan Const 64 bit, Add 8+8
+           melebar ke 64 bit sehingga ~(a + 8'd1) == 8'hF0 selalu 0 (false
+           Equivalent; ditemukan review putaran 2, sekarang ada test regresi
+           literal_width_is_preserved_through_lowering; lihat ELAB-13 untuk
+           bug elaborator yang membuat ekspresi nyata masih bisa melebar);
+           (ii) validate_sig_names
+           menolak tabel nama kosong/ganda supaya dua SignalId berbeda tidak
+           diam-diam jadi satu variabel Z3.
+         - 23 test: distributive_forms_are_equivalent (AND/OR),
            addition_is_commutative_for_8_bits, mux_matches_boolean_expansion,
            detects_non_equivalence_and_reports_counterexample (a&b vs a|b),
            mismatch_in_only_one_output_is_detected (regresi miter konjungsi),
@@ -1525,24 +1555,59 @@ COMP-16: ⚠️ PARTIAL (ROUND 220) — Tidak ada sequential equivalence checkin
            is_unsupported, unknown_input_is_unsupported,
            duplicate_input_is_unsupported, add_is_not_and (Add bukan And),
            eq_is_not_constant_true (Eq bukan konstanta 1),
-           output_width_mismatch_is_unsupported (lebar deklarasi beda).
+           output_width_mismatch_is_unsupported (lebar deklarasi beda),
+           lowering_maps_supported_ir (BitAnd/Neq), lowering_rejects_
+           unsupported_ir (Div, SignalId asing, Signed, konstanta 65 bit),
+           logical_and_is_not_bitwise_and (a=2,b=1),
+           logical_or_is_not_bitwise_or (a=2,b=0), logical_lowering_matches_
+           zero_compare (formula && = AND(Not(Eq(a,0)),Not(Eq(b,0))) dan ||
+           = OR(...), plus && != OR / || != AND), literal_width_is_preserved_
+           through_lowering (~8'h0F tetap 8 bit; ~(a + 8'h01) == 8'hF0 setara
+           dengan a == 8'h0E dan TIDAK selalu 0), fill_lit_is_rejected
+           (FillLit butuh lebar konteks), duplicate_signal_name_is_rejected
+           (nama ganda dan nama kosong),
+           lowering_minus_preserves_operand_width (Minus -> Neg lebar operand:
+           pada output 16 bit model natural-width memberi 0x00FF sedangkan Sub
+           64 bit 0xFFFF -> NotEquivalent; LRM context-width akan 0xFFFF, jadi
+           test ini mengunci MODEL tahap 1 — bukan klaim LRM — dan harus diubah
+           saat context width diimplementasikan; pada output 8 bit keduanya
+           0xFF -> Equivalent). lowering_maps_supported_ir juga mem-pin
+           struktur Add/Sub/Mul/BitOr/BitXor/Cond (Mux tidak tertukar).
          - Mutasi: (a) polaritas miter dibalik (assert eq) -> 8 test gagal;
            (b) miter dikembalikan ke konjungsi per-output -> test multi-output
            gagal (bug soundness yang ditemukan review); (c) polaritas Mux
-           dibalik -> 1 test gagal.
+           dibalik -> 1 test gagal; (d) LogicalOr dilowering jadi bitwise Or
+           -> logical_or_is_not_bitwise_or gagal; (e) Neg dievaluasi pada 64
+           bit (bukan lebar operand) -> lowering_minus_preserves_operand_width
+           gagal pada asersi semantik (0x00FF vs 0xFFFF), bukan cuma struktural;
+           (f) formula LogicalAnd ditukar jadi Or -> logical_lowering_matches_
+           zero_compare gagal; (g) validate_sig_names dilepas -> duplicate_
+           signal_name_is_rejected gagal; (h) Add dilowering jadi Sub ->
+           lowering_maps_supported_ir gagal; (i) eval Const mengabaikan lebar
+           (selalu 64 bit) -> literal_width_is_preserved_through_lowering
+           gagal; (j) lower Const memakai lebar 64 -> literal_width_... dan
+           lowering_maps_supported_ir gagal. Catatan: angka (a)(b)(c) diukur
+           pada suite 14-test; (d)-(j) diukur pada suite 23-test.
          - Temuan review yang sudah diperbaiki: miter konjungsi (dua output
            yang beda pada kondisi BERBEDA salah dianggap ekuivalen), panic
            outputs kosong, counterexample fabrikasi 0 saat model eval gagal,
-           dan konstanta 64-bit yang memaksa Unsupported pada output sempit.
-         MASIH OPEN (alasan PARTIAL): (1) belum ada lowering dari IrExpr/
-         netlist hasil sintesis ke SecDesign (API masih level ekspresi);
+           dan konstanta yang dipaksa 64 bit sehingga ekspresi sempit salah
+           (sekarang Const membawa lebar literal IR).
+         MASIH OPEN (alasan PARTIAL): (1) belum ada ekstraksi modul -> SecDesign
+         (assignments/proses jadi output + daftar input) walau lowering IrExpr
+         sudah ada;
          (2) belum ada SEC sekuensial (state/register, unrolling per siklus,
          mapping state awal); (3) belum ada CLI/subcommand; (4) lebar >64 dan
          tri-state X/Z belum didukung; (5) lebar ekspresi = natural (maksimum
-         operand, konstanta 64 bit), BELUM context width SV — Add 8+8 yang
-         dideklarasikan 16 bit tidak membawa carry; Not = komplemen pada lebar
-         operand. Suite: cargo nextest run --workspace --all-features ->
-         3858 passed, 24 skipped.
+         operand; konstanta memakai lebar literal IR), BELUM context width SV
+         — mis. Sub 8 bit
+         yang dideklarasikan 16 bit kehilangan borrow (hasil dipotong ke 8 bit
+         dulu baru zero-extend), Not = komplemen pada lebar operand; (6)
+         signedness belum dimodelkan: IrExpr::Signed ditolak, tetapi sinyal
+         yang dideklarasikan signed tanpa wrapper Signed tetap diperlakukan
+         unsigned (tidak terdeteksi) — dicatat sebagai keterbatasan, bukan
+         diklaim didukung. Suite: cargo nextest run --workspace --all-features
+         -> 3867 passed, 24 skipped (ROUND 221).
 COMP-17: ✅ Design partitioning for parallel compilation (ROUND 93)
          crates/maria-tools/src/compile_partition.rs: CompilePartitioner.
          Tarjan SCC → condensation DAG → layer-based assignment →
@@ -2235,7 +2300,16 @@ FORMAL-10: ⚠️ IN PROGRESS (ROUND 92) — assume-guarantee tahap 1:
            dilaporkan bila reachable di bawah asumsi. Test e2e
            test_assume_constrains_counterexample. MASIH OPEN: compositional
            assume-guarantee antar module, proof obligations per component.
-FORMAL-11:[] No equivalence checking combinational (Critical)
+FORMAL-11: ⚠️ PARTIAL (ROUND 220/221) — Equivalence checking kombinasional tahap 1
+         ada; front-end modul + SEC sekuensial belum
+         Engine SEC kombinasional ada: crates/mivon-formal/src/sec.rs
+         (check_equivalence dengan miter disjungsi Z3 + counterexample) dan
+         lowering IrExpr -> SecExpr (expr_from_ir). 23 test di modul itu
+         mencakup ekuivalen/tidak-ekuivalen, lebar, operator, dan error path
+         (rincian + mutasi di COMP-16 ROUND 220/221).
+         MASIH OPEN: ekstraksi modul/assignment nyata menjadi SecDesign
+         (front-end) dan integrasi CLI; tanpa itu pengguna belum bisa
+         membandingkan dua file .sv. Lihat juga COMP-16 (item sama, tahap 1).
 FORMAL-12:[] No equivalence checking sequential (Critical)
 FORMAL-13: ⚠️ IN PROGRESS (ROUND 102/112) — connectivity checking tahap 1+2a:
          crates/maria-formal/src/connectivity.rs — analisis statis jalur
