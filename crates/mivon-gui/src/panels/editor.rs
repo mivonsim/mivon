@@ -702,12 +702,12 @@ pub fn show(ui: &mut egui::Ui, state: &mut super::super::state::GuiState) {
                             // tidak ada di AST (hasil digabung di app.rs).
                             if lsp_ready {
                                 if let Some(cb) = caret_byte {
-                                    // cb = offset byte; LSP memakai indeks
-                                    // karakter per baris. Konversi dulu
-                                    // (jalur hover juga begitu) — tanpa ini
-                                    // file ber-UTF-8 mengirim kolom salah.
-                                    let ci = f.content[..cb.min(f.content.len())].chars().count();
-                                    let (l0, c0) = line_col_at_char(&f.content, ci);
+                                    // cb = offset byte; LSP-29:
+                                    // Position.character = code unit UTF-16
+                                    // per baris, jadi konversi dulu — tanpa
+                                    // ini file ber-UTF-8/emoji mengirim kolom
+                                    // salah.
+                                    let (l0, c0) = line_col_at_byte(&f.content, cb);
                                     let id = lsp_next;
                                     lsp_next = lsp_next.wrapping_add(1).max(1000);
                                     lsp_pending.push((id, LspPendingKind::CompletionRequest));
@@ -1439,8 +1439,8 @@ fn hovered_identifier(
     )
 }
 
-/// (baris, kolom) 0-based LSP dari posisi pointer — metrik monospace + offset
-/// scroll, lalu `byte_idx_at_line_col` + `line_col_at_char` yang sudah ada.
+/// (baris, kolom UTF-16) 0-based LSP dari posisi pointer — metrik monospace +
+/// offset scroll, lalu `byte_idx_at_line_col` + `line_col_at_byte`.
 fn hover_line_col(
     resp: &egui::Response,
     content: &str,
@@ -1460,8 +1460,8 @@ fn hover_line_col(
     let row = (y / line_h.max(1.0)) as usize;
     let col = (x / char_w.max(1.0)) as usize;
     let byte = byte_idx_at_line_col(content, row, col);
-    let char_idx = content[..byte.min(content.len())].chars().count();
-    let (r0, c0) = line_col_at_char(content, char_idx);
+    // LSP-29: kolom untuk permintaan LSP = code unit UTF-16.
+    let (r0, c0) = line_col_at_byte(content, byte);
     Some((r0 as u32, c0 as u32))
 }
 
@@ -2021,6 +2021,36 @@ fn char_to_byte(content: &str, char_idx: usize) -> usize {
         .unwrap_or(content.len())
 }
 
+/// (baris, kolom UTF-16) 0-based dari offset BYTE — dipakai permintaan LSP.
+/// LSP-29: `Position.character` adalah code unit UTF-16 (emoji = 2 unit),
+/// jadi indeks karakter tidak cukup; offset byte juga tidak boleh dipakai
+/// langsung. Offset non-boundary di-clamp mundur (tidak panic), dan EOF tepat
+/// setelah newline penutup = awal baris berikutnya (kolom 0), bukan kolom
+/// sepanjang baris terakhir.
+fn line_col_at_byte(content: &str, byte_idx: usize) -> (usize, usize) {
+    let byte = byte_idx.min(content.len());
+    let mut line_start = 0usize;
+    let mut i = 0usize;
+    for raw in content.split_inclusive('\n') {
+        let end = line_start + raw.len();
+        if byte < end {
+            let mut upto = byte;
+            while upto > line_start && !content.is_char_boundary(upto) {
+                upto -= 1;
+            }
+            return (i, content[line_start..upto].encode_utf16().count());
+        }
+        if byte == end && raw.ends_with('\n') {
+            return (i + 1, 0);
+        }
+        line_start = end;
+        i += 1;
+    }
+    // byte == len tanpa newline penutup → akhir baris terakhir.
+    let start = content.rfind('\n').map(|p| p + 1).unwrap_or(0);
+    (i.saturating_sub(1), content[start..].encode_utf16().count())
+}
+
 /// (baris, kolom) 0-based dari indeks karakter.
 fn line_col_at_char(content: &str, char_idx: usize) -> (usize, usize) {
     let mut seen = 0usize;
@@ -2053,7 +2083,7 @@ fn word_region(content: &str, byte_idx: usize) -> (usize, usize) {
 
 #[cfg(test)]
 mod tests {
-    use super::byte_idx_at_line_col;
+    use super::{byte_idx_at_line_col, line_col_at_byte};
 
     #[test]
     fn byte_index_uses_character_column_on_multibyte_line() {
@@ -2064,5 +2094,24 @@ mod tests {
         assert_eq!(byte_idx_at_line_col(content, 0, 99), "é clk".len());
         // Baris berikutnya dihitung dari offset byte baris pertama.
         assert_eq!(byte_idx_at_line_col(content, 1, 1), content.len());
+    }
+
+    #[test]
+    fn line_col_at_byte_uses_utf16_units() {
+        // LSP-29: "😀ab" — emoji 4 byte, 2 unit UTF-16. Offset byte 4
+        // (awal 'a') = kolom UTF-16 2, bukan kolom karakter 1.
+        assert_eq!(line_col_at_byte("😀ab", 4), (0, 2));
+        assert_eq!(line_col_at_byte("😀ab", 5), (0, 3));
+        // Baris kedua dihitung dari awal baris, bukan dari awal dokumen.
+        assert_eq!(line_col_at_byte("x\n😀y", 6), (1, 2));
+        // Offset melewati akhir dokumen di-clamp ke baris terakhir.
+        assert_eq!(line_col_at_byte("abc", 99), (0, 3));
+        // EOF tepat setelah newline penutup = awal baris berikutnya, bukan
+        // kolom sepanjang baris terakhir (dulu (0,4)/(0,5)).
+        assert_eq!(line_col_at_byte("abc\n", 4), (1, 0));
+        assert_eq!(line_col_at_byte("abc\r\n", 5), (1, 0));
+        // Offset di tengah karakter multi-byte di-clamp mundur (tidak panic).
+        assert_eq!(line_col_at_byte("😀ab", 2), (0, 0));
+        assert_eq!(line_col_at_byte("", 0), (0, 0));
     }
 }

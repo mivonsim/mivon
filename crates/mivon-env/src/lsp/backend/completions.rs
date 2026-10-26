@@ -2,16 +2,21 @@
 //! `resolve` untuk dokumentasi tambahan.
 use super::*;
 
-/// Offset byte untuk indeks karakter ke-char_idx (di-clamp ke akhir baris).
+/// Offset byte untuk kolom UTF-16 ke-utf16_idx (di-clamp ke akhir baris).
 ///
-/// Klien mengirim kolom sebagai indeks karakter; memakainya langsung sebagai
-/// indeks byte membuat potongan &str panic di tengah karakter multi-byte
-/// (mis. komentar ber-UTF-8 sebelum caret) dan prefix terhitung salah.
-pub(super) fn char_index_to_byte(line: &str, char_idx: usize) -> usize {
-    line.char_indices()
-        .nth(char_idx)
-        .map(|(b, _)| b)
-        .unwrap_or(line.len())
+/// LSP-29: spec LSP memakai UTF-16 code unit untuk Position.character (server
+/// tidak mengiklankan positionEncoding). Karakter non-BMP (emoji) = 2 unit,
+/// jadi menghitung karakter membuat kolom bergeser. Posisi di tengah surrogate
+/// pair (tidak valid) di-clamp ke awal karakter berikutnya.
+pub(super) fn utf16_index_to_byte(line: &str, utf16_idx: usize) -> usize {
+    let mut units = 0usize;
+    for (b, ch) in line.char_indices() {
+        if units >= utf16_idx {
+            return b;
+        }
+        units += ch.len_utf16();
+    }
+    line.len()
 }
 
 impl LspBackend {
@@ -176,7 +181,7 @@ impl LspBackend {
         let line_text = source.lines().nth(line as usize).unwrap_or("");
         // Prefix = karakter identifier yang sudah diketik sebelum kursor.
         let bytes = line_text.as_bytes();
-        let ch = char_index_to_byte(line_text, character as usize);
+        let ch = utf16_index_to_byte(line_text, character as usize);
         let mut start = ch;
         while start > 0
             && (bytes[start - 1].is_ascii_alphanumeric()
@@ -250,15 +255,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn char_index_to_byte_handles_multibyte_and_clamps() {
-        assert_eq!(char_index_to_byte("abc", 2), 2);
-        assert_eq!(char_index_to_byte("é", 1), 2, "é = 2 byte");
+    fn utf16_index_to_byte_handles_multibyte_and_clamps() {
+        assert_eq!(utf16_index_to_byte("abc", 2), 2);
+        assert_eq!(utf16_index_to_byte("é", 1), 2, "é = 2 byte, 1 unit UTF-16");
         assert_eq!(
-            char_index_to_byte("é", 9),
+            utf16_index_to_byte("é", 9),
             2,
             "kolom melewati baris di-clamp"
         );
-        assert_eq!(char_index_to_byte("", 3), 0);
+        assert_eq!(utf16_index_to_byte("", 3), 0);
+    }
+
+    #[test]
+    fn utf16_index_to_byte_counts_surrogate_pairs() {
+        // LSP-29: emoji non-BMP = 2 code unit UTF-16 (4 byte UTF-8).
+        // Kolom karakter 1 (setelah emoji) == kolom UTF-16 2.
+        assert_eq!(utf16_index_to_byte("😀ab", 2), 4, "setelah emoji");
+        assert_eq!(utf16_index_to_byte("😀ab", 3), 5, "setelah a");
+        // Kolom di tengah surrogate pair (tidak valid) → awal karakter berikutnya.
+        assert_eq!(utf16_index_to_byte("😀ab", 1), 4, "tengah surrogate pair");
     }
 
     #[test]

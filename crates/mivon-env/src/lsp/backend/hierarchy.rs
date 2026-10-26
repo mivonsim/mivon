@@ -95,10 +95,10 @@ impl LspBackend {
             let Some((line, col)) = Self::find_class_symbol(symbols, n) else {
                 continue;
             };
-            // name_col adalah offset byte → kolom karakter.
+            // name_col adalah offset byte → kolom UTF-16 (LSP-29).
             let line_text = lines.get(line as usize).copied().unwrap_or("");
-            let col = Self::byte_col_to_char(line_text, col);
-            let len = n.chars().count() as u32;
+            let col = Self::byte_col_to_utf16(line_text, col);
+            let len = n.encode_utf16().count() as u32;
             out.push(TypeHierarchyItem {
                 name: n.clone(),
                 kind: SymbolKind::CLASS,

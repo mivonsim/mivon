@@ -47,11 +47,11 @@ impl LspBackend {
                 };
                 // LSP-28: name_col adalah offset byte dan untuk kind container
                 // s.col menunjuk keyword — pakai name_col yang dikonversi ke
-                // indeks karakter, dan panjang nama dalam karakter.
+                // kolom UTF-16, dan panjang nama dalam unit UTF-16 (LSP-29).
                 raw.push((
                     s.line,
-                    LspBackend::byte_col_to_char(line, s.name_col),
-                    s.name.chars().count() as u32,
+                    LspBackend::byte_col_to_utf16(line, s.name_col),
+                    s.name.encode_utf16().count() as u32,
                     idx,
                     mods,
                 ));
@@ -104,7 +104,7 @@ impl LspBackend {
                     // LSP-28: col dari line_tokens adalah offset byte.
                     raw.push((
                         idx as u32,
-                        Self::byte_col_to_char(line, col as u32),
+                        Self::byte_col_to_utf16(line, col as u32),
                         w.len() as u32,
                         7,
                         0,

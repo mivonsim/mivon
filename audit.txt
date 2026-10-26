@@ -1284,6 +1284,27 @@ PARSER-14: ✅ AST differential — maria-api compare_asts (design_a vs
            design_b → Vec<String> diff) + test_compare_asts (regresi AST).
 PARSER-15:[] Tidak ada concrete syntax tree (CST) untuk LSP (High)
 
+PARSER-16:[] Baris diagnostic bergeser saat file memuat direktif preprocessor
+        (Medium; ditemukan saat review LSP-29 ROUND 218)
+        Preprocessor membuang baris direktif (`define/`ifdef/`endif/`include
+        dan cabang yang di-skip) TANPA mempertahankan jumlah newline, sehingga
+        penomoran baris teks hasil preprocess != nomor baris file sumber.
+        Parser memberi `display_line` dari penomoran itu (resolve_source_file
+        hanya memetakan `line directive), jadi diagnostic menunjuk baris yang
+        salah. Bukti (LSP parse_diagnostics):
+        sumber 3 baris `define W 8 / module m; / logic x = "é" + ; →
+        error dilaporkan di baris 1 (0-based LSP = `module m;`), padahal
+        seharusnya baris 2.
+        Efek: squiggle LSP + snippet CLI + fix-it di file berdirektif bisa
+        menunjuk baris salah (kolom ikut salah karena dihitung pada baris yang
+        salah). Bukan regresi LSP-29 (line sudah salah sebelumnya); LSP-29
+        hanya mengonversi kolom dan memakai nilai mentah bila kolom melewati
+        panjang baris agar tidak memperburuk.
+        Perbaikan yang diusulkan: preprocessor mempertahankan newline untuk
+        setiap baris sumber yang dikonsumsi (atau menghasilkan peta
+        (baris_pre, baris_src) yang dipakai parser), plus test diagnostik pada
+        file ber-`define.
+
 4.3 ELABORATOR GAPS
 
 ELAB-01:[] Elaborator tidak parallel (5571 lines sequential) (Critical)
@@ -2754,14 +2775,95 @@ LSP-28: ✅ FIXED (ROUND 217) Kolom byte/kolom keyword di fitur LSP lain
         memakai hover/goto/completion, sedangkan didChange-nya full-sync tanpa
         range — jadi jalur di atas tidak tersentuh dari GUI.
 
-LSP-29:[] Encoding kolom LSP memakai chars, bukan UTF-16 code unit
-        byte_col_to_char/char_index_to_byte menghitung karakter Unicode,
-        sedangkan spec LSP default memakai UTF-16 code unit (server tidak
-        mengiklankan positionEncoding). Karakter non-BMP (emoji, sebagian CJK
-        Ext-B) bernilai 2 unit → kolom bergeser 1 untuk teks sesudahnya.
-        Perbaikan: helper encoding-aware dipakai semua konversi kolom (server
-        dan GUI), plus test dengan emoji sebelum identifier.
-        Belum reachable dari GUI (GUI mengirim kolom karakter sendiri).
+LSP-29: ✅ FIXED (ROUND 218) — Kolom LSP memakai UTF-16 code unit
+        Masalah: byte_col_to_char/char_index_to_byte menghitung karakter
+        Unicode, sedangkan spec LSP default memakai UTF-16 code unit (server
+        tidak mengiklankan positionEncoding). Karakter non-BMP (emoji, sebagian
+        CJK Ext-B) bernilai 2 unit → kolom bergeser 1 untuk teks sesudahnya.
+        Perbaikan (server): helper diganti nama + encoding-aware —
+        byte_col_to_utf16 (encode_utf16().count()), utf16_index_to_byte
+        (akumulasi ch.len_utf16(), kolom di tengah surrogate pair di-clamp ke
+        awal karakter berikutnya), char_range_bounds/char_range_slice.
+        Situs kolom yang dikonversi: to_lsp (line_end + name_end),
+        word_at_position, word_occurrence_ranges, ws_symbol_range,
+        symbol_name_range, prepare_rename_range, find_definition(+_in_docs),
+        find_references, collect_uses_in_text, collect_refs_in_text,
+        semantic_raw_tokens (simbol + keyword), hierarchy_items (tipe + call),
+        code lens, inlay hints, linked editing, signature_context,
+        position_to_offset, compute_selection_range + find_enclosing_scope
+        (parent selection range), workspace symbol, formatting end-of-line,
+        dan parse_diagnostics (lihat di bawah). Panjang nama memakai
+        name.encode_utf16().count() (bukan chars) agar emoji di nama tetap
+        konsisten.
+        TEMUAN REVIEW (blocking, ikut diperbaiki): parse_diagnostics masih
+        memakai kolom BYTE mentah sebagai Position.character. Preprocessor
+        menyalin `bytes[i] as char` (preprocessor.rs) sehingga kolom lexer =
+        offset byte 1-based; akibatnya squiggle & quick-fix bergeser untuk
+        SEMUA teks non-ASCII (é pun). Perbaikan: konversi byte→UTF-16 memakai
+        baris SUMBER asli (src_lines), fallback nilai apa adanya bila baris di
+        luar dokumen / kolom melewati panjang baris (ekspansi makro).
+        Perbaikan lain dari review: compute_selection_range fallback (kursor
+        bukan identifier) memakai lebar karakter UTF-16 (emoji 2) agar tidak
+        membelah surrogate pair.
+        Perbaikan (GUI): helper baru line_col_at_byte(content, byte_idx) →
+        (baris, kolom UTF-16); dipakai permintaan LSP (completion + hover/goto
+        lewat hover_line_col). line_col_at_char/byte_idx_at_line_col TETAP
+        berbasis karakter karena dipakai metrik render monospace & pemetaan
+        klik→byte — bukan jalur protokol.
+        Test baru (11): utf16_index_to_byte_counts_surrogate_pairs (😀 = 2 unit,
+        kolom tengah surrogate di-clamp), definition_range_uses_utf16_columns_
+        with_non_bmp_line, references_range_uses_utf16_columns_with_non_bmp_
+        line (include_declaration true/false), rename_edits_use_utf16_columns_
+        with_non_bmp_line, prepare_rename_range_uses_utf16_columns_with_non_
+        bmp_line, word_at_position_uses_utf16_column_with_non_bmp_line,
+        position_to_offset_uses_utf16_column_with_non_bmp_line,
+        selection_range_uses_utf16_columns_on_non_bmp_line (fallback 0..2),
+        diagnostics_use_utf16_columns_on_multibyte_line (é → 18, 😀 → 19;
+        byte 19/21, chars 18/18; plus varian CRLF), caret_width_uses_utf16_
+        units (lebar caret diagnostic), line_col_at_byte_uses_utf16_units
+        (GUI, termasuk EOF setelah newline penutup & offset non-boundary).
+        Test lama diperluas/dinamai ulang: byte_col_to_utf16_counts_utf16_
+        units, char_range_slice_uses_utf16_columns, word_occurrence_ranges_use_
+        utf16_columns (10..13 vs 9..12), signature_context_uses_utf16_columns
+        (guard kolom byte, lihat catatan).
+        Bukti diskriminasi (mutasi dijalankan lalu dipulihkan):
+        (1) byte_col_to_utf16 encode_utf16→chars → 6 test gagal
+            (helper, definition, references, rename, prepare_rename,
+            diagnostics);
+        (2) utf16_index_to_byte len_utf16→1 → 3 test gagal (surrogate helper,
+            char_range_slice, position_to_offset);
+        (3) word_occurrence_ranges kolom akhir → chars → 1 test gagal;
+        (4) GUI line_col_at_byte encode_utf16→chars → 1 test gagal;
+        (5) parse_diagnostics tanpa konversi (byte mentah) → test diagnostics
+            gagal pada baris é (18 vs 19);
+        (6) parse_diagnostics konversi chars → gagal pada baris emoji
+            (18 vs 19) — dua baris uji sengaja dipakai agar byte dan chars
+            sama-sama tertangkap;
+        (7) compute_selection_range fallback width = 1 → 1 test gagal;
+        (8) GUI line_col_at_byte EOF newline → kolom baris terakhir → 1 gagal;
+        (9) GUI line_col_at_byte tanpa clamp boundary → test panic;
+        (10) caret_width_utf16 selalu 1 → test caret_width gagal.
+        Catatan kejujuran: word_at_position_uses_utf16_column_with_non_bmp_line
+        TIDAK membedakan mutasi (2) — pemindaian mundur memulihkan awal kata
+        (kolom 2 jatuh di 'l', scan balik ke 'c'); test itu mengunci kontrak
+        helper, bukan discriminator. signature_context_uses_utf16_columns juga
+        TIDAK membedakan char vs UTF-16 (active_param monotonik terhadap
+        pergeseran +1); kasus emoji di sana menjaga kolom BYTE tidak dipakai
+        langsung (byte 14 = koma → active 0). Identifier SV sendiri ASCII, jadi
+        non-BMP hanya muncul di teks SEBELUM identifier (komentar/string) —
+        itu yang dipakai test. hover_line_col tidak punya test langsung (butuh
+        egui Response + metrik font); helper line_col_at_byte yang diujinya.
+        Catatan penamaan: test LSP-26/27/28 yang namanya memuat
+        character_columns / "kolom karakter" DIPERTAHANKAN agar entri audit
+        historis tetap cocok; semantiknya kini UTF-16 dan nilainya identik
+        untuk karakter BMP (é = 1 unit) — pembeda non-BMP ada di test LSP-29.
+        Batasan yang diwarisi (dicatat sebagai PARSER-16): nomor baris hasil
+        preprocess bergeser bila file memuat direktif yang dibuang tanpa
+        newline, jadi baris diagnostic sudah salah SEBELUM konversi kolom.
+        Konversi memakai nilai mentah bila kolom melewati panjang baris agar
+        tidak memperburuk (clamp akan menggeser lebih jauh).
+        Suite: 3842 passed, 24 skipped (cargo nextest run --workspace
+        --all-features); cargo fmt --all bersih.
 
 4.10 ENTERPRISE GAPS
 

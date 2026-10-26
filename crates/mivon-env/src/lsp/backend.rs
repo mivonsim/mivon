@@ -57,7 +57,7 @@ pub(crate) struct WsSymbolHit {
     /// Kolom keyword (untuk pengurutan stabil) — JANGAN dipakai sebagai kolom
     /// nama pada kind container (LSP-28).
     pub col: u32,
-    /// Kolom nama (offset byte; konversi ke karakter saat membangun Range).
+    /// Kolom nama (offset byte; konversi ke kolom UTF-16 saat membangun Range).
     pub name_col: u32,
 }
 
@@ -179,14 +179,14 @@ impl DocSymbol {
     /// Range = satu baris deklarasi; selection_range = nama saja.
     ///
     /// LSP-28: selection_range memakai name_col (kolom byte) yang dikonversi
-    /// ke indeks karakter — untuk kind container, col menunjuk KEYWORD sehingga
+    /// ke kolom UTF-16 — untuk kind container, col menunjuk KEYWORD sehingga
     /// selection_range lama memilih "mod" pada "module top;". name_end dihitung
-    /// dari jumlah KARAKTER nama, bukan byte.
+    /// dari jumlah unit UTF-16 nama, bukan byte.
     fn to_lsp(&self, lines: &[&str]) -> DocumentSymbol {
         let line = lines.get(self.line as usize).copied().unwrap_or("");
-        let line_end = line.chars().count() as u32;
-        let name_start = LspBackend::byte_col_to_char(line, self.name_col);
-        let name_end = (name_start + self.name.chars().count() as u32)
+        let line_end = line.encode_utf16().count() as u32;
+        let name_start = LspBackend::byte_col_to_utf16(line, self.name_col);
+        let name_end = (name_start + self.name.encode_utf16().count() as u32)
             .min(line_end)
             .max(name_start);
         DocumentSymbol {
@@ -705,6 +705,12 @@ impl LspBackend {
         let _design = parser.parse_design();
 
         // 4. Convert parser diagnostics to LSP diagnostics
+        // LSP-29: lexer berjalan di atas teks hasil preprocess yang memetakan
+        // 1 byte UTF-8 → 1 char (`Preprocessor` menyalin `bytes[i] as char`),
+        // sehingga kolom lexer/span = offset BYTE 1-based. Position.character
+        // butuh kolom UTF-16 → konversi memakai baris SUMBER asli (bukan teks
+        // hasil preprocess, yang bisa bergeser karena ekspansi makro).
+        let src_lines: Vec<&str> = source.lines().collect();
         for diag in &parser.errors {
             let severity = if diag.is_error() {
                 DiagnosticSeverity::ERROR
@@ -715,7 +721,7 @@ impl LspBackend {
             // Posisi dari source_snippet (line:col 1-based) → fallback DiagSpan
             // (file_id + line:col, terisi lintas modul) → (0,0) bila benar-benar
             // tanpa lokasi. Dulu span diabaikan → squiggle salah di 0:0.
-            let (line, col) = if let Some(snippet) = &diag.source_snippet {
+            let (line, byte_col) = if let Some(snippet) = &diag.source_snippet {
                 (
                     snippet.line.saturating_sub(1) as u32,
                     snippet.col.saturating_sub(1) as u32,
@@ -725,16 +731,27 @@ impl LspBackend {
             } else {
                 (0, 0)
             };
+            // Byte → UTF-16 pada baris sumber. Baris di luar dokumen / kolom
+            // melewati panjang baris (mis. hasil ekspansi makro) memakai nilai
+            // apa adanya — jangan di-clamp, clamp justru menggeser lebih jauh.
+            let src_line = src_lines
+                .get(line as usize)
+                .filter(|l| (byte_col as usize) <= l.len());
+            let character = src_line
+                .map(|l| Self::byte_col_to_utf16(l, byte_col))
+                .unwrap_or(byte_col);
+            // Lebar caret = unit UTF-16 karakter di kolom itu (emoji = 2) agar
+            // range tidak membelah surrogate pair.
+            let width = src_line
+                .map(|l| caret_width_utf16(l, byte_col))
+                .unwrap_or(1);
 
             diagnostics.push(Diagnostic {
                 range: Range {
-                    start: Position {
-                        line,
-                        character: col,
-                    },
+                    start: Position { line, character },
                     end: Position {
                         line,
-                        character: col + 1,
+                        character: character + width,
                     },
                 },
                 severity: Some(severity),
@@ -751,10 +768,10 @@ impl LspBackend {
     /// Identifier SV: [A-Za-z0-9_$]. Mengembalikan (word, start_col, end_col).
     fn word_at_position(line_text: &str, character: u32) -> Option<(String, u32, u32)> {
         let bytes = line_text.as_bytes();
-        // Kolom dari klien = indeks karakter (UTF-16 untuk BMP), bukan offset
-        // byte. Konversi dulu: memakainya langsung menggeser/memotong
-        // identifier pada baris ber-UTF-8 (komentar é sebelum kode).
-        let ch = completions::char_index_to_byte(line_text, character as usize);
+        // Kolom dari klien = code unit UTF-16, bukan offset byte (LSP-29).
+        // Konversi dulu: memakainya langsung menggeser/memotong identifier
+        // pada baris ber-UTF-8/emoji sebelum kode.
+        let ch = completions::utf16_index_to_byte(line_text, character as usize);
         let is_ident = |c: u8| c.is_ascii_alphanumeric() || c == b'_' || c == b'$';
 
         if ch > bytes.len() {
@@ -776,37 +793,38 @@ impl LspBackend {
         Some((line_text[start..end].to_string(), start as u32, end as u32))
     }
 
-    /// Konversi offset byte dalam SATU baris ke indeks karakter (kolom LSP).
+    /// Konversi offset byte dalam SATU baris ke kolom LSP (UTF-16 code unit).
     ///
-    /// LSP-26: `Position.character` adalah indeks karakter, bukan offset
-    /// byte. Tokenizer internal (`line_tokens`/`definition_col`) bekerja
-    /// dengan offset byte, jadi setiap Range yang dibangun dari token WAJIB
-    /// lewat helper ini — kalau tidak, range bergeser ke kanan pada baris
-    /// yang memuat UTF-8 sebelum identifier (mis. komentar `é`).
-    fn byte_col_to_char(line: &str, byte_col: u32) -> u32 {
+    /// LSP-26/LSP-29: `Position.character` adalah code unit UTF-16, bukan
+    /// offset byte dan bukan indeks karakter. Tokenizer internal
+    /// (`line_tokens`/`definition_col`) bekerja dengan offset byte, jadi
+    /// setiap Range yang dibangun dari token WAJIB lewat helper ini — kalau
+    /// tidak, range bergeser pada baris yang memuat UTF-8/emoji sebelum
+    /// identifier.
+    fn byte_col_to_utf16(line: &str, byte_col: u32) -> u32 {
         let mut b = (byte_col as usize).min(line.len());
         while b > 0 && !line.is_char_boundary(b) {
             b -= 1;
         }
-        line[..b].chars().count() as u32
+        line[..b].encode_utf16().count() as u32
     }
 
-    /// Potong `line` memakai kolom KARAKTER (bentuk Range LSP) — LSP-26.
+    /// Potong `line` memakai kolom UTF-16 (bentuk Range LSP) — LSP-26/29.
     /// Slicing `&str` butuh offset byte, jadi konversi dulu; memakai kolom
-    /// karakter langsung sebagai offset bisa jatuh di tengah karakter
-    /// multi-byte dan panic (`byte index is not a char boundary`).
+    /// langsung sebagai offset bisa jatuh di tengah karakter multi-byte dan
+    /// panic (`byte index is not a char boundary`).
     fn char_range_slice(line: &str, start: u32, end: u32) -> String {
         let (a, b) = Self::char_range_bounds(line, start, end);
         line[a..b].to_string()
     }
 
     /// LSP-28: (nama fungsi, indeks parameter aktif) untuk kursor pada
-    /// `line_text`. Murni + kolom KARAKTER: kursor dikonversi ke offset byte
+    /// `line_text`. Murni + kolom UTF-16: kursor dikonversi ke offset byte
     /// sebelum memindai tanda kurung (memakai kolom sebagai byte membuat nama
     /// fungsi tidak ditemukan pada baris ber-UTF-8).
     fn signature_context(line_text: &str, character: u32) -> Option<(String, u32)> {
         let bytes = line_text.as_bytes();
-        let cursor = completions::char_index_to_byte(line_text, character as usize);
+        let cursor = completions::utf16_index_to_byte(line_text, character as usize);
         let mut paren_depth = 0i32;
         let mut active_param = 0u32;
         for i in (0..cursor).rev() {
@@ -841,7 +859,7 @@ impl LspBackend {
     }
 
     /// LSP-28: Range SEMUA kemunculan kata (word boundary) dalam kolom
-    /// KARAKTER. Pencarian memakai offset byte (str::find) lalu dikonversi.
+    /// UTF-16. Pencarian memakai offset byte (str::find) lalu dikonversi.
     fn word_occurrence_ranges(text: &str, word: &str) -> Vec<Range> {
         let is_ident = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
         let mut ranges = Vec::new();
@@ -853,8 +871,8 @@ impl LspBackend {
                 let after_ok = abs_pos + word.len() >= line.len()
                     || !is_ident(line.as_bytes()[abs_pos + word.len()]);
                 if before_ok && after_ok {
-                    let start = line[..abs_pos].chars().count() as u32;
-                    let end = line[..abs_pos + word.len()].chars().count() as u32;
+                    let start = line[..abs_pos].encode_utf16().count() as u32;
+                    let end = line[..abs_pos + word.len()].encode_utf16().count() as u32;
                     ranges.push(Range::new(
                         Position::new(line_idx as u32, start),
                         Position::new(line_idx as u32, end),
@@ -870,31 +888,31 @@ impl LspBackend {
     }
 
     /// LSP-28: Range nama hasil pencarian workspace symbol dalam kolom
-    /// KARAKTER (name_col byte; col untuk container menunjuk keyword).
+    /// UTF-16 (name_col byte; col untuk container menunjuk keyword).
     fn ws_symbol_range(lines: &[&str], hit: &WsSymbolHit) -> Range {
         let line = lines.get(hit.line as usize).copied().unwrap_or("");
-        let start = Self::byte_col_to_char(line, hit.name_col);
+        let start = Self::byte_col_to_utf16(line, hit.name_col);
         Range::new(
             Position::new(hit.line, start),
-            Position::new(hit.line, start + hit.name.chars().count() as u32),
+            Position::new(hit.line, start + hit.name.encode_utf16().count() as u32),
         )
     }
 
-    /// Range nama simbol dalam kolom KARAKTER — LSP-28.
+    /// Range nama simbol dalam kolom UTF-16 — LSP-28/LSP-29.
     /// name_col adalah offset byte; untuk kind container `col` menunjuk
     /// keyword, jadi JANGAN memakai col untuk selection/range nama.
     fn symbol_name_range(line: &str, sym: &DocSymbol) -> Range {
-        let start = Self::byte_col_to_char(line, sym.name_col);
+        let start = Self::byte_col_to_utf16(line, sym.name_col);
         Range::new(
             Position::new(sym.line, start),
-            Position::new(sym.line, start + sym.name.chars().count() as u32),
+            Position::new(sym.line, start + sym.name.encode_utf16().count() as u32),
         )
     }
 
-    /// Batas offset byte (start, end) untuk sepasang kolom KARAKTER — LSP-26.
+    /// Batas offset byte (start, end) untuk sepasang kolom UTF-16 — LSP-26.
     fn char_range_bounds(line: &str, start: u32, end: u32) -> (usize, usize) {
-        let a = completions::char_index_to_byte(line, start as usize);
-        let b = completions::char_index_to_byte(line, end as usize).max(a);
+        let a = completions::utf16_index_to_byte(line, start as usize);
+        let b = completions::utf16_index_to_byte(line, end as usize).max(a);
         (a, b)
     }
 
@@ -1367,7 +1385,7 @@ impl LspBackend {
     /// Err dengan pesan jelas bila kursor bukan identifier atau nama
     /// baru tidak valid.
     /// LSP-05 tahap 2a: validasi awal rename — kembalikan
-    /// (line, start_col, end_col) kata di kursor dalam kolom KARAKTER
+    /// (line, start_col, end_col) kata di kursor dalam kolom UTF-16
     /// (bentuk Range LSP, lihat LSP-26), atau None bila kursor tidak di
     /// atas identifier.
     pub(crate) fn prepare_rename_range(
@@ -1379,12 +1397,12 @@ impl LspBackend {
         // Review R194 NIT-1/NIT-3: jangan tawarkan rename untuk keyword,
         // literal angka, `$display`, atau fragmen literal (`8'd5`).
         let (_, s, e) = Self::rename_word_at_position(line_text, character)?;
-        // LSP-26: s/e masih offset byte dari tokenizer → konversi ke indeks
-        // karakter agar Range prepareRename tidak bergeser pada baris UTF-8.
+        // LSP-26/29: s/e masih offset byte dari tokenizer → konversi ke kolom
+        // UTF-16 agar Range prepareRename tidak bergeser pada baris UTF-8.
         Some((
             line,
-            Self::byte_col_to_char(line_text, s),
-            Self::byte_col_to_char(line_text, e),
+            Self::byte_col_to_utf16(line_text, s),
+            Self::byte_col_to_utf16(line_text, e),
         ))
     }
 
@@ -1475,7 +1493,7 @@ impl LspBackend {
 
     /// Core go-to-definition (murni, bisa diuji): cari lokasi definisi dari
     /// identifier di posisi kursor. Mengembalikan (line, col_start, col_end)
-    /// posisi definisi pertama dalam dokumen — kolom KARAKTER (siap dipakai
+    /// posisi definisi pertama dalam dokumen — kolom UTF-16 (siap dipakai
     /// sebagai `Position.character`, lihat LSP-26).
     pub(crate) fn find_definition(
         source: &str,
@@ -1491,11 +1509,11 @@ impl LspBackend {
             // jadi tetap periksa semua baris.
             if let Some(col) = Self::definition_col(text, &word) {
                 // LSP-26: kolom token = offset byte → konversi ke indeks
-                // karakter sebelum masuk Range.
+                // UTF-16 sebelum masuk Range.
                 return Some((
                     idx as u32,
-                    Self::byte_col_to_char(text, col as u32),
-                    Self::byte_col_to_char(text, (col + word.len()) as u32),
+                    Self::byte_col_to_utf16(text, col as u32),
+                    Self::byte_col_to_utf16(text, (col + word.len()) as u32),
                 ));
             }
         }
@@ -1533,8 +1551,8 @@ impl LspBackend {
                     return Some((
                         uri.clone(),
                         idx as u32,
-                        Self::byte_col_to_char(line, col as u32),
-                        Self::byte_col_to_char(line, (col + word.len()) as u32),
+                        Self::byte_col_to_utf16(line, col as u32),
+                        Self::byte_col_to_utf16(line, (col + word.len()) as u32),
                     ));
                 }
             }
@@ -1839,10 +1857,10 @@ impl LanguageServer for LspBackend {
         let Some((line, col)) = Self::find_class_symbol(&syms, &word) else {
             return Ok(None);
         };
-        // LSP-28: kolom nama = byte → karakter.
+        // LSP-28/29: kolom nama = byte → UTF-16.
         let name_line = text.lines().nth(line as usize).unwrap_or("");
-        let col = Self::byte_col_to_char(name_line, col);
-        let len = word.chars().count() as u32;
+        let col = Self::byte_col_to_utf16(name_line, col);
+        let len = word.encode_utf16().count() as u32;
         Ok(Some(vec![TypeHierarchyItem {
             name: word,
             kind: SymbolKind::CLASS,
@@ -1921,7 +1939,7 @@ impl LanguageServer for LspBackend {
         let placeholder = text
             .lines()
             .nth(line as usize)
-            // LSP-26: s/e adalah kolom KARAKTER (bentuk Range), jadi
+            // LSP-26: s/e adalah kolom UTF-16 (bentuk Range), jadi
             // pemotongan placeholder memakai helper char→byte.
             .map(|l| Self::char_range_slice(l, s, e))
             .unwrap_or_default();
@@ -2330,7 +2348,7 @@ impl LanguageServer for LspBackend {
         let last_line_len = text
             .lines()
             .last()
-            .map(|l| l.chars().count() as u32)
+            .map(|l| l.encode_utf16().count() as u32)
             .unwrap_or(0);
         Ok(Some(vec![lsp_types::TextEdit {
             range: Range {
@@ -2440,9 +2458,9 @@ impl LanguageServer for LspBackend {
         let Some(line_text) = text.lines().nth(pos.line as usize) else {
             return Ok(None);
         };
-        // Extract word at cursor (pos.character adalah indeks KARAKTER).
+        // Extract word at cursor (pos.character = kolom UTF-16, LSP-29).
         let bytes = line_text.as_bytes();
-        let ch = completions::char_index_to_byte(line_text, pos.character as usize);
+        let ch = completions::utf16_index_to_byte(line_text, pos.character as usize);
         let is_ident = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
         if ch >= bytes.len() || !is_ident(bytes[ch]) {
             return Ok(None);
@@ -2516,10 +2534,21 @@ fn apply_text_change(text: &mut String, range: Range, new_text: &str) {
 
 /// Convert a Position (line, character) to a byte offset in the text.
 ///
-/// LSP-27: pos.character adalah indeks KARAKTER, sedangkan slicing String
+/// LSP-27/29: pos.character adalah kolom UTF-16, sedangkan slicing String
 /// butuh offset byte. Fungsi ini juga menangani LF maupun CRLF: str::lines()
 /// membuang '\r', sehingga akumulasi len+1 menggeser offset pada dokumen
 /// CRLF — edit mendarat di tengah karakter dan replace_range panic.
+/// Lebar (unit UTF-16) karakter pada kolom byte `byte_col` — untuk range
+/// caret diagnostic. Emoji = 2 agar range tidak membelah surrogate pair.
+/// Kolom di luar baris / bukan batas karakter = 1 (kolom lexer selalu di
+/// batas karakter, jadi kasus itu hanya jaring pengaman).
+fn caret_width_utf16(line: &str, byte_col: u32) -> u32 {
+    line.get(byte_col as usize..)
+        .and_then(|rest| rest.chars().next())
+        .map(|c| c.len_utf16() as u32)
+        .unwrap_or(1)
+}
+
 fn position_to_offset(text: &str, pos: Position) -> usize {
     let mut line_start = 0usize;
     for (i, raw) in text.split_inclusive('\n').enumerate() {
@@ -2530,7 +2559,7 @@ fn position_to_offset(text: &str, pos: Position) -> usize {
                 Some(rest) => rest.strip_suffix('\r').unwrap_or(rest),
                 None => raw,
             };
-            let byte = completions::char_index_to_byte(content, pos.character as usize);
+            let byte = completions::utf16_index_to_byte(content, pos.character as usize);
             return line_start + byte;
         }
         line_start += raw.len();
@@ -2547,7 +2576,7 @@ fn compute_selection_range(text: &str, line: u32, character: u32) -> SelectionRa
     // Innermost: the word at cursor.
     let word_range = if let Some(line_text) = lines.get(line_idx) {
         let bytes = line_text.as_bytes();
-        let ch = completions::char_index_to_byte(line_text, character as usize);
+        let ch = completions::utf16_index_to_byte(line_text, character as usize);
         let is_ident = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
         let mut start = ch.min(bytes.len());
         while start > 0 && is_ident(bytes[start - 1]) {
@@ -2558,14 +2587,22 @@ fn compute_selection_range(text: &str, line: u32, character: u32) -> SelectionRa
             end += 1;
         }
         if start < end {
-            // start/end = offset byte hasil walk; LSP memakai kolom karakter.
-            let start_col = line_text[..start].chars().count() as u32;
-            let end_col = line_text[..end].chars().count() as u32;
+            // start/end = offset byte hasil walk; LSP memakai kolom UTF-16.
+            let start_col = line_text[..start].encode_utf16().count() as u32;
+            let end_col = line_text[..end].encode_utf16().count() as u32;
             Range::new(Position::new(line, start_col), Position::new(line, end_col))
         } else {
+            // Tidak ada identifier: pilih karakter di kursor. Lebar = unit
+            // UTF-16 karakter itu (emoji = 2) agar tidak membelah surrogate
+            // pair; kursor di akhir baris memakai lebar 1.
+            let width = line_text
+                .get(ch..)
+                .and_then(|rest| rest.chars().next())
+                .map(|c| c.len_utf16() as u32)
+                .unwrap_or(1);
             Range::new(
                 Position::new(line, character),
-                Position::new(line, character + 1),
+                Position::new(line, character + width),
             )
         }
     } else {
@@ -2575,14 +2612,14 @@ fn compute_selection_range(text: &str, line: u32, character: u32) -> SelectionRa
         )
     };
 
-    // Middle: the entire line (kolom = jumlah KARAKTER, bukan byte).
+    // Middle: the entire line (kolom = jumlah unit UTF-16, bukan byte).
     let line_range = Range::new(
         Position::new(line, 0),
         Position::new(
             line,
             lines
                 .get(line_idx)
-                .map(|l| l.chars().count() as u32)
+                .map(|l| l.encode_utf16().count() as u32)
                 .unwrap_or(0),
         ),
     );
@@ -2658,8 +2695,8 @@ fn find_enclosing_scope(lines: &[&str], target_line: usize) -> Option<Range> {
                         if end_depth == 0 {
                             return Some(Range::new(
                                 Position::new(i as u32, 0),
-                                // Kolom akhir = jumlah karakter (bukan byte).
-                                Position::new(j as u32, line.chars().count() as u32),
+                                // Kolom akhir = jumlah unit UTF-16 (bukan byte).
+                                Position::new(j as u32, line.encode_utf16().count() as u32),
                             ));
                         }
                     }
@@ -2688,10 +2725,10 @@ fn compute_document_colors(text: &str) -> Vec<ColorInformation> {
         }
         // Find #RRGGBB patterns.
         // LSP-27: i dari match_indices adalah offset BYTE, sedangkan kolom LSP
-        // adalah indeks KARAKTER. Ambil 6 KARAKTER (bukan 6 byte) supaya
+        // adalah kolom UTF-16. Ambil 6 karakter (bukan 6 byte) supaya
         // pemotongan tidak panic di tengah karakter multi-byte (#abcdee-acute).
         for (i, _) in line.match_indices('#') {
-            let start_char = line[..i].chars().count() as u32;
+            let start_char = line[..i].encode_utf16().count() as u32;
             let hex: String = line[i + 1..].chars().take(6).collect();
             if hex.len() != 6 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
                 continue;
@@ -2757,8 +2794,8 @@ impl LspBackend {
             let type_dirs = ["input", "output", "inout"];
             if type_dirs.iter().any(|d| trimmed.starts_with(d)) {
                 if let Some((name, type_str)) = Self::parse_port_type_hint(trimmed) {
-                    let col =
-                        Self::find_word_col(line, &name).unwrap_or(0) + name.chars().count() as u32;
+                    let col = Self::find_word_col(line, &name).unwrap_or(0)
+                        + name.encode_utf16().count() as u32;
                     hints.push(Self::make_type_hint(line_idx as u32, col, &type_str));
                 }
             }
@@ -2769,8 +2806,8 @@ impl LspBackend {
             ];
             if int_types.iter().any(|t| trimmed.starts_with(t)) {
                 if let Some((name, type_str)) = Self::parse_signal_type_hint(trimmed) {
-                    let col =
-                        Self::find_word_col(line, &name).unwrap_or(0) + name.chars().count() as u32;
+                    let col = Self::find_word_col(line, &name).unwrap_or(0)
+                        + name.encode_utf16().count() as u32;
                     hints.push(Self::make_type_hint(line_idx as u32, col, &type_str));
                 }
             }
@@ -2779,8 +2816,8 @@ impl LspBackend {
             //    → hint after function name: `: int`
             if trimmed.starts_with("function") {
                 if let Some((name, ret_type)) = Self::parse_function_return_hint(trimmed) {
-                    let col =
-                        Self::find_word_col(line, &name).unwrap_or(0) + name.chars().count() as u32;
+                    let col = Self::find_word_col(line, &name).unwrap_or(0)
+                        + name.encode_utf16().count() as u32;
                     hints.push(Self::make_type_hint(line_idx as u32, col, &ret_type));
                 }
             }
@@ -2788,8 +2825,8 @@ impl LspBackend {
             // 4. Parameter declarations inside `#(parameter ...)`
             if trimmed.starts_with("parameter") || trimmed.starts_with("localparam") {
                 if let Some((name, type_str)) = Self::parse_param_type_hint(trimmed) {
-                    let col =
-                        Self::find_word_col(line, &name).unwrap_or(0) + name.chars().count() as u32;
+                    let col = Self::find_word_col(line, &name).unwrap_or(0)
+                        + name.encode_utf16().count() as u32;
                     hints.push(Self::make_type_hint(line_idx as u32, col, &type_str));
                 }
             }
@@ -2810,9 +2847,10 @@ impl LspBackend {
         }
     }
 
-    /// Find column (indeks KARAKTER) of a word in a line — LSP-28.
+    /// Find column (UTF-16, LSP-29) of a word in a line — LSP-28.
     fn find_word_col(line: &str, word: &str) -> Option<u32> {
-        line.find(word).map(|b| line[..b].chars().count() as u32)
+        line.find(word)
+            .map(|b| line[..b].encode_utf16().count() as u32)
     }
 
     /// Parse `input/output/inout [type] [range] name` → (name, type_str).
@@ -3111,8 +3149,10 @@ impl LspBackend {
         // Simple pattern matching for function/task calls
         for (line_idx, line) in text.lines().enumerate() {
             let trimmed = line.trim();
-            // LSP-28: kolom karakter (range dimulai setelah indentasi).
-            let indent = line[..line.len() - line.trim_start().len()].chars().count() as u32;
+            // LSP-28: kolom UTF-16 (range dimulai setelah indentasi).
+            let indent = line[..line.len() - line.trim_start().len()]
+                .encode_utf16()
+                .count() as u32;
             // Detect function/task declarations
             if trimmed.starts_with("function") || trimmed.starts_with("task") {
                 if let Some(name) = Self::extract_symbol_name(trimmed) {
@@ -3124,11 +3164,17 @@ impl LspBackend {
                         uri: Url::parse("file:///untitled").unwrap(),
                         range: Range::new(
                             Position::new(line_idx as u32, indent),
-                            Position::new(line_idx as u32, indent + trimmed.chars().count() as u32),
+                            Position::new(
+                                line_idx as u32,
+                                indent + trimmed.encode_utf16().count() as u32,
+                            ),
                         ),
                         selection_range: Range::new(
                             Position::new(line_idx as u32, indent),
-                            Position::new(line_idx as u32, indent + trimmed.chars().count() as u32),
+                            Position::new(
+                                line_idx as u32,
+                                indent + trimmed.encode_utf16().count() as u32,
+                            ),
                         ),
                         data: None,
                     };
@@ -3149,11 +3195,17 @@ impl LspBackend {
                         uri: Url::parse("file:///untitled").unwrap(),
                         range: Range::new(
                             Position::new(line_idx as u32, indent),
-                            Position::new(line_idx as u32, indent + trimmed.chars().count() as u32),
+                            Position::new(
+                                line_idx as u32,
+                                indent + trimmed.encode_utf16().count() as u32,
+                            ),
                         ),
                         selection_range: Range::new(
                             Position::new(line_idx as u32, indent),
-                            Position::new(line_idx as u32, indent + trimmed.chars().count() as u32),
+                            Position::new(
+                                line_idx as u32,
+                                indent + trimmed.encode_utf16().count() as u32,
+                            ),
                         ),
                         data: None,
                     };
@@ -4042,7 +4094,7 @@ endmodule
         let mut lines_mut: Vec<String> = SAMPLE.lines().map(|s| s.to_string()).collect();
         for (l, s, e) in edits.iter().rev() {
             let text = lines_mut[*l as usize].clone();
-            // Kolom edit adalah indeks KARAKTER (LSP-26), sedangkan slicing
+            // Kolom edit adalah kolom UTF-16 (LSP-26/29), sedangkan slicing
             // &str butuh offset byte.
             let (a, b) = LspBackend::char_range_bounds(&text, *s, *e);
             lines_mut[*l as usize] = format!("{}{}{}", &text[..a], "en", &text[b..]);
@@ -4226,24 +4278,32 @@ endmodule
     }
 
     #[test]
-    fn byte_col_to_char_counts_characters_not_bytes() {
-        assert_eq!(LspBackend::byte_col_to_char("abc", 2), 2);
-        assert_eq!(LspBackend::byte_col_to_char("éab", 2), 1);
+    fn byte_col_to_utf16_counts_utf16_units() {
+        assert_eq!(LspBackend::byte_col_to_utf16("abc", 2), 2);
+        assert_eq!(LspBackend::byte_col_to_utf16("éab", 2), 1);
+        // LSP-29: emoji non-BMP = 4 byte UTF-8 tapi 2 unit UTF-16.
+        assert_eq!(LspBackend::byte_col_to_utf16("😀ab", 4), 2);
+        assert_eq!(LspBackend::byte_col_to_utf16("😀ab", 5), 3);
         // Offset di tengah karakter multi-byte → mundur ke batas sebelumnya.
-        assert_eq!(LspBackend::byte_col_to_char("éab", 1), 0);
+        assert_eq!(LspBackend::byte_col_to_utf16("éab", 1), 0);
+        assert_eq!(LspBackend::byte_col_to_utf16("😀ab", 2), 0);
         // Di-clamp ke akhir baris.
-        assert_eq!(LspBackend::byte_col_to_char("éab", 99), 3);
-        assert_eq!(LspBackend::byte_col_to_char("", 5), 0);
+        assert_eq!(LspBackend::byte_col_to_utf16("éab", 99), 3);
+        assert_eq!(LspBackend::byte_col_to_utf16("", 5), 0);
     }
 
     #[test]
-    fn char_range_slice_uses_character_columns() {
+    fn char_range_slice_uses_utf16_columns() {
         // Kolom 3..6 pada "éééabc" = "abc"; memakai offset byte 3..6 jatuh di
         // tengah karakter dan panic.
         assert_eq!(LspBackend::char_range_slice("éééabc", 3, 6), "abc");
         assert_eq!(LspBackend::char_range_slice("clk", 0, 3), "clk");
         assert_eq!(LspBackend::char_range_slice("clk", 2, 99), "k");
         assert_eq!(LspBackend::char_range_slice("abc", 2, 2), "");
+        // LSP-29: kolom UTF-16 — "😀abc" kolom 2..5 = "abc" (kolom karakter
+        // 1..4, kolom byte 4..7).
+        assert_eq!(LspBackend::char_range_slice("😀abc", 2, 5), "abc");
+        assert_eq!(LspBackend::char_range_slice("😀abc", 0, 2), "😀");
         // start > end tidak boleh panic (di-clamp ke rentang kosong).
         assert_eq!(LspBackend::char_range_slice("clk", 2, 0), "");
     }
@@ -4255,6 +4315,14 @@ endmodule
     fn char_col(line: &str, needle: &str) -> u32 {
         let byte = line.find(needle).expect("needle ada di baris");
         line[..byte].chars().count() as u32
+    }
+
+    /// Kolom UTF-16 (unit code) dari `needle` di `line` — LSP-29.
+    /// Berbeda dari `char_col` hanya bila baris memuat karakter non-BMP
+    /// (emoji): 1 karakter = 2 unit UTF-16.
+    fn utf16_col(line: &str, needle: &str) -> u32 {
+        let byte = line.find(needle).expect("needle ada di baris");
+        line[..byte].encode_utf16().count() as u32
     }
 
     #[test]
@@ -4383,6 +4451,101 @@ endmodule
             LspBackend::prepare_rename_range(&src, 1, c),
             Some((1, c, c + 3))
         );
+    }
+
+    // ---- LSP-29: kolom LSP = UTF-16 code unit (non-BMP = 2 unit) ----
+
+    #[test]
+    fn definition_range_uses_utf16_columns_with_non_bmp_line() {
+        // `B` adalah anggota enum setelah komentar ber-emoji di baris sama.
+        // Emoji: 1 karakter, 4 byte, 2 unit UTF-16 → tiga kolom berbeda.
+        let src = "typedef enum {A /* 😀 */, B} t;\nmodule m;\nendmodule\n";
+        let line = src.lines().next().unwrap();
+        let b = utf16_col(line, "B}");
+        assert_ne!(b, char_col(line, "B}"), "prasyarat: char ≠ utf16");
+        assert_ne!(b, line.find('B').unwrap() as u32, "prasyarat: byte ≠ utf16");
+        assert_eq!(LspBackend::find_definition(src, 0, b), Some((0, b, b + 1)));
+    }
+
+    #[test]
+    fn references_range_uses_utf16_columns_with_non_bmp_line() {
+        // Pemakaian `clk` setelah string ber-emoji di baris yang sama.
+        let use_line = "initial $display(\"😀\"); clk = 1;";
+        let docs = vec![(
+            "file:///a.sv".to_string(),
+            format!("module m;\n{}\nlogic clk;\nendmodule\n", use_line),
+        )];
+        let c = utf16_col(use_line, "clk");
+        assert_ne!(c, char_col(use_line, "clk"), "prasyarat: char ≠ utf16");
+        assert_ne!(
+            c,
+            use_line.find("clk").unwrap() as u32,
+            "prasyarat: byte ≠ utf16"
+        );
+        let hits = LspBackend::references_hits(&docs, "clk", true, 100);
+        assert_eq!(
+            hits,
+            vec![
+                ("file:///a.sv".to_string(), 1, c, c + 3),
+                ("file:///a.sv".to_string(), 2, 6, 9),
+            ],
+            "references harus memakai kolom UTF-16"
+        );
+        let uses = LspBackend::references_hits(&docs, "clk", false, 100);
+        assert_eq!(
+            uses,
+            vec![("file:///a.sv".to_string(), 1, c, c + 3)],
+            "collect_uses_in_text juga wajib UTF-16"
+        );
+    }
+
+    #[test]
+    fn rename_edits_use_utf16_columns_with_non_bmp_line() {
+        let use_line = "initial $display(\"😀\"); clk = 1;";
+        let docs = vec![(
+            "file:///a.sv".to_string(),
+            format!("module m;\n{}\nlogic clk;\nendmodule\n", use_line),
+        )];
+        let c = utf16_col(use_line, "clk");
+        assert_ne!(c, char_col(use_line, "clk"), "prasyarat: char ≠ utf16");
+        let edits = LspBackend::compute_rename_edits_multi(&docs, "clk", "clock", 100).unwrap();
+        assert_eq!(
+            edits,
+            vec![
+                ("file:///a.sv".to_string(), 1, c, c + 3),
+                ("file:///a.sv".to_string(), 2, 6, 9),
+            ],
+            "edit rename harus memakai kolom UTF-16"
+        );
+    }
+
+    #[test]
+    fn prepare_rename_range_uses_utf16_columns_with_non_bmp_line() {
+        // Kata setelah komentar blok ber-emoji.
+        let line = "  /* 😀 */ wire clk;";
+        let src = format!("module m;\n{}\nendmodule\n", line);
+        let c = utf16_col(line, "clk");
+        assert_ne!(c, char_col(line, "clk"), "prasyarat: char ≠ utf16");
+        assert_eq!(
+            LspBackend::prepare_rename_range(&src, 1, c),
+            Some((1, c, c + 3))
+        );
+    }
+
+    #[test]
+    fn word_at_position_uses_utf16_column_with_non_bmp_line() {
+        // "😀clk": kolom UTF-16 2 (= awal "clk") = byte 4. Tanpa konversi,
+        // kolom 2 jatuh di tengah emoji → tidak ada kata.
+        let (word, start, end) = LspBackend::word_at_position("😀clk", 2).expect("kata harus ada");
+        assert_eq!(word, "clk");
+        assert_eq!((start, end), (4, 7), "start/end tetap offset byte");
+    }
+
+    #[test]
+    fn position_to_offset_uses_utf16_column_with_non_bmp_line() {
+        // LSP-29: kolom 3 pada "😀ab" = byte 5 (emoji 4 byte, 2 unit).
+        assert_eq!(position_to_offset("😀ab", Position::new(0, 3)), 5);
+        assert_eq!(position_to_offset("😀ab", Position::new(0, 2)), 4);
     }
 
     #[test]
@@ -4883,6 +5046,23 @@ endmodule
         assert!(
             sr.parent.as_ref().and_then(|p| p.parent.as_ref()).is_some(),
             "scope harus jadi parent terluar"
+        );
+    }
+
+    #[test]
+    fn selection_range_uses_utf16_columns_on_non_bmp_line() {
+        // LSP-29: "😀 abc" — emoji 2 unit UTF-16. Kursor di emoji (tanpa
+        // identifier) → fallback selebar karakter (2), bukan 1.
+        let sr = compute_selection_range("😀 abc\n", 0, 0);
+        assert_eq!(
+            (sr.range.start.character, sr.range.end.character),
+            (0, 2),
+            "fallback harus melebar selebar emoji"
+        );
+        let line_range = sr.parent.as_ref().expect("range baris");
+        assert_eq!(
+            line_range.range.end.character, 6,
+            "akhir baris = 2 + 1 + 3 unit UTF-16"
         );
     }
 
@@ -5408,7 +5588,7 @@ world";
     }
 
     #[test]
-    fn word_occurrence_ranges_use_character_columns() {
+    fn word_occurrence_ranges_use_utf16_columns() {
         let text = "x = \"é\"; clk = 1;\nclk2 clk\n";
         let ranges = LspBackend::word_occurrence_ranges(text, "clk");
         assert_eq!(ranges.len(), 2, "{:?}", ranges);
@@ -5417,10 +5597,20 @@ world";
             (9, 12)
         );
         assert_eq!((ranges[1].start.character, ranges[1].end.character), (5, 8));
+
+        // LSP-29: emoji (2 unit UTF-16) menggeser kolom dari 9 ke 10.
+        let emo = "x = \"😀\"; clk = 1;\n";
+        let er = LspBackend::word_occurrence_ranges(emo, "clk");
+        assert_eq!(er.len(), 1, "{:?}", er);
+        assert_eq!(
+            (er[0].start.character, er[0].end.character),
+            (10, 13),
+            "kolom wajib UTF-16"
+        );
     }
 
     #[test]
-    fn signature_context_uses_character_columns() {
+    fn signature_context_uses_utf16_columns() {
         let line = "x = \"é\"; foo(a, b)";
         let open = line.find("(a").unwrap();
         let c = line[..open].chars().count() as u32 + 1;
@@ -5432,6 +5622,17 @@ world";
         let c2 = line[..comma].chars().count() as u32 + 2;
         assert_eq!(
             LspBackend::signature_context(line, c2),
+            Some(("foo".to_string(), 1))
+        );
+
+        // LSP-29: emoji di argumen pertama. Catatan kejujuran: active_param
+        // TIDAK berubah antara kolom karakter dan UTF-16 (pemindaian mundur
+        // monotonik), jadi kasus ini bukan discriminator char vs UTF-16 — ia
+        // menjaga kolom BYTE tidak dipakai langsung (byte 14 = koma → 0).
+        let emo = "x = foo(\"😀\", b)";
+        let b = utf16_col(emo, "b)");
+        assert_eq!(
+            LspBackend::signature_context(emo, b),
             Some(("foo".to_string(), 1))
         );
     }
@@ -5825,5 +6026,50 @@ endmodule
         };
         let actions = LspBackend::actions_from_diagnostic("", &diag, &uri);
         assert!(actions.is_none(), "no actions for unrelated diagnostic");
+    }
+
+    #[test]
+    fn diagnostics_use_utf16_columns_on_multibyte_line() {
+        // LSP-29: kolom lexer = offset BYTE (preprocessor memetakan 1 byte →
+        // 1 char). Baris 1: ';' ada di kolom UTF-16 18 (byte 19 karena é 2
+        // byte). Baris emoji: ';' kolom UTF-16 19 (byte 22, karakter 18).
+        for (line_src, want) in [
+            ("  logic x = \"é\" + ;", 18u32),
+            ("  logic x = \"😀\" + ;", 19u32),
+        ] {
+            let src = format!("module m;\n{}\nendmodule\n", line_src);
+            let diags = LspBackend::parse_diagnostics(&src);
+            let d = diags
+                .iter()
+                .find(|d| d.message.contains("expected expression"))
+                .unwrap_or_else(|| panic!("diagnostic tidak ada untuk {line_src:?}: {diags:?}"));
+            assert_eq!(d.range.start.line, 1, "baris diagnostic untuk {line_src:?}");
+            assert_eq!(
+                d.range.start.character, want,
+                "kolom wajib UTF-16 untuk {line_src:?}"
+            );
+            assert_eq!(d.range.end.character, want + 1);
+        }
+
+        // CRLF: posisi sama (source.lines() membuang \r; kolom token tidak
+        // terpengaruh).
+        let crlf = "module m;\r\n  logic x = \"é\" + ;\r\nendmodule\r\n";
+        let d = LspBackend::parse_diagnostics(crlf)
+            .into_iter()
+            .find(|d| d.message.contains("expected expression"))
+            .expect("diagnostic CRLF");
+        assert_eq!((d.range.start.line, d.range.start.character), (1, 18));
+    }
+
+    #[test]
+    fn caret_width_uses_utf16_units() {
+        // Lebar caret untuk range diagnostic: emoji 2 unit, ASCII 1.
+        assert_eq!(caret_width_utf16("😀abc", 0), 2);
+        assert_eq!(caret_width_utf16("abc", 1), 1);
+        // Kolom di luar baris / bukan batas karakter → 1 (tidak panic).
+        assert_eq!(caret_width_utf16("abc", 99), 1);
+        assert_eq!(caret_width_utf16("", 0), 1);
+        // Byte di tengah emoji (tidak mungkin dari kolom lexer) → 1.
+        assert_eq!(caret_width_utf16("😀abc", 2), 1);
     }
 }

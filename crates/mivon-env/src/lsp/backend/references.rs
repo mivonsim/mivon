@@ -26,12 +26,12 @@ impl LspBackend {
             }
             for (w, col) in Self::line_tokens(text) {
                 if w == word {
-                    // LSP-26: kolom token = offset byte → indeks karakter
+                    // LSP-26/29: kolom token = offset byte → kolom UTF-16
                     // sebelum masuk Range LSP.
                     out.push((
                         idx as u32,
-                        Self::byte_col_to_char(text, col as u32),
-                        Self::byte_col_to_char(text, (col + w.len()) as u32),
+                        Self::byte_col_to_utf16(text, col as u32),
+                        Self::byte_col_to_utf16(text, (col + w.len()) as u32),
                     ));
                 }
             }
@@ -43,7 +43,7 @@ impl LspBackend {
     /// dokumen (uri, teks) dengan aturan yang sama seperti tahap 1 —
     /// token mandiri (word-boundary) dan komentar baris `//` dilewati.
     ///
-    /// Hasil: (uri, line, start_col, end_col) dengan kolom KARAKTER (siap
+    /// Hasil: (uri, line, start_col, end_col) dengan kolom UTF-16 (siap
     /// menjadi `Position.character`, lihat LSP-26), urut sesuai urutan `docs`.
     /// PEMANGGIL WAJIB mengurutkan `docs` (mis. by uri) agar urutan hasil —
     /// dan himpunan hasil saat `max_results` tercapai — deterministik
@@ -95,8 +95,8 @@ impl LspBackend {
                 out.push((
                     uri.to_string(),
                     idx as u32,
-                    Self::byte_col_to_char(line, col as u32),
-                    Self::byte_col_to_char(line, (col + w.len()) as u32),
+                    Self::byte_col_to_utf16(line, col as u32),
+                    Self::byte_col_to_utf16(line, (col + w.len()) as u32),
                 ));
                 if out.len() >= max {
                     return false;
@@ -156,8 +156,8 @@ impl LspBackend {
                     out.push((
                         uri.to_string(),
                         idx as u32,
-                        Self::byte_col_to_char(line, col as u32),
-                        Self::byte_col_to_char(line, (col + w.len()) as u32),
+                        Self::byte_col_to_utf16(line, col as u32),
+                        Self::byte_col_to_utf16(line, (col + w.len()) as u32),
                     ));
                     if out.len() >= max {
                         return false;
