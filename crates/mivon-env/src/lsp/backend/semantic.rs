@@ -23,10 +23,13 @@ impl LspBackend {
     pub(crate) fn semantic_raw_tokens(source: &str) -> Vec<(u32, u32, u32, u32, u32)> {
         // Kumpulkan definisi dari outline → (line, col, len, legend_idx, mods).
         let syms = Self::document_symbols(source);
+        // LSP-28: kumpulkan baris SEKALI (collect dipanggil per simbol).
+        let lines: Vec<&str> = source.lines().collect();
         let mut raw: Vec<(u32, u32, u32, u32, u32)> = Vec::new();
 
-        fn collect(syms: &[DocSymbol], raw: &mut Vec<(u32, u32, u32, u32, u32)>) {
+        fn collect(lines: &[&str], syms: &[DocSymbol], raw: &mut Vec<(u32, u32, u32, u32, u32)>) {
             for s in syms {
+                let line = lines.get(s.line as usize).copied().unwrap_or("");
                 let idx = match s.kind {
                     DocSymbol::KIND_MODULE => 0,
                     DocSymbol::KIND_INTERFACE => 1,
@@ -42,11 +45,20 @@ impl LspBackend {
                 } else {
                     LspBackend::MOD_DECLARATION
                 };
-                raw.push((s.line, s.col, s.name.len() as u32, idx, mods));
-                collect(&s.children, raw);
+                // LSP-28: name_col adalah offset byte dan untuk kind container
+                // s.col menunjuk keyword — pakai name_col yang dikonversi ke
+                // indeks karakter, dan panjang nama dalam karakter.
+                raw.push((
+                    s.line,
+                    LspBackend::byte_col_to_char(line, s.name_col),
+                    s.name.chars().count() as u32,
+                    idx,
+                    mods,
+                ));
+                collect(lines, &s.children, raw);
             }
         }
-        collect(&syms, &mut raw);
+        collect(&lines, &syms, &mut raw);
 
         // Tambah keyword SV sebagai token type=7 (keyword).
         const KW: &[&str] = &[
@@ -89,7 +101,14 @@ impl LspBackend {
             }
             for (w, col) in Self::line_tokens(line) {
                 if KW.contains(&w.as_str()) {
-                    raw.push((idx as u32, col as u32, w.len() as u32, 7, 0));
+                    // LSP-28: col dari line_tokens adalah offset byte.
+                    raw.push((
+                        idx as u32,
+                        Self::byte_col_to_char(line, col as u32),
+                        w.len() as u32,
+                        7,
+                        0,
+                    ));
                 }
             }
         }

@@ -2650,10 +2650,53 @@ LSP-27: ✅ FIXED (ROUND 216) Kolom karakter di position_to_offset & document co
         #abcdeé.
         Sisa kolom byte/kolom keyword di fitur LSP lain → LSP-28.
 
-LSP-28:[] Kolom byte + kolom keyword tersisa di fitur LSP lain
-        Sisa dari LSP-26/LSP-27. Dua kelas masalah: (A) kolom byte sehingga
-        bergeser pada baris ber-UTF-8, dan (B) kolom keyword dipakai sebagai
-        kolom nama (salah walau ASCII murni).
+LSP-28: ✅ FIXED (ROUND 217) Kolom byte/kolom keyword di fitur LSP lain
+        (ditemukan saat LSP-26/LSP-27) Dua kelas masalah: (A) offset byte
+        dipakai sebagai Position.character sehingga highlight/outline/lens
+        meleset pada baris ber-UTF-8; (B) kolom keyword dipakai sebagai kolom
+        nama sehingga selection_range container memilih "mod" pada
+        "module top;".
+        Perbaikan: helper symbol_name_range (name_col byte→char + panjang nama
+        chars) dipakai code lens; DocSymbol::to_lsp kini menerima teks dokumen
+        (signature berubah dari closure uri_line_len) dan memakai name_col;
+        semantic_raw_tokens mengonversi name_col & keyword col ke karakter;
+        WsSymbolHit menambah field name_col (col tetap untuk sort) dan
+        ws_symbol_range mengonversi byte→char; find_word_col mengembalikan
+        kolom karakter; word_occurrence_ranges & signature_context diekstrak
+        jadi fungsi murni (kursor char→byte, output byte→char); call hierarchy
+        memakai jumlah karakter (range dimulai setelah indentasi); type
+        hierarchy (hierarchy_items + prepare_type_hierarchy) memakai name_col
+        byte→char.
+        Perf: to_lsp sebelumnya memanggil closure lines().nth() per simbol
+        (O(baris × simbol)); kini handler mengumpulkan &[&str] sekali.
+        semantic_raw_tokens butuh teks baris untuk konversi kolom, jadi daftar
+        baris dikumpulkan sekali (bukan nth per simbol). code_lens dan
+        workspace symbol juga mengumpulkan baris sekali (ws_symbol_range
+        sebelumnya docs.iter().find + lines().nth PER HIT).
+        Test baru 10: semantic_tokens_use_character_columns,
+        semantic_tokens_use_name_column_for_container,
+        document_symbol_selection_range_uses_name_column,
+        code_lens_range_uses_name_column,
+        code_lens_function_range_uses_name_column,
+        hierarchy_items_use_character_columns,
+        workspace_symbol_range_uses_name_column,
+        find_word_col_uses_character_columns,
+        word_occurrence_ranges_use_character_columns,
+        signature_context_uses_character_columns.
+        Mutasi terbukti (dijalankan sekaligus, tiap mutasi milik satu situs):
+        semantic name_col→col, semantic keyword col→byte, to_lsp name_col→col,
+        symbol_name_range col, ws_symbol_range col, find_word_col byte,
+        word_occurrence_ranges byte, signature_context karakter-sebagai-byte,
+        hierarchy_items tanpa konversi → SEMUA menggagalkan test terkait.
+        Catatan kejujuran: untuk kind function col == name_col, jadi test
+        code_lens_function tidak bisa membedakan col vs name_col — yang ia
+        tangkap adalah byte vs karakter (baris function memuat komentar é
+        sebelum nama: 23 vs 24). Test module menangkap col vs name_col
+        (7..10 vs 0..3).
+        Catatan: compute_call_hierarchy masih scaffolding dead-code (tanpa
+        handler) sehingga perubahannya diverifikasi lewat review kode, bukan
+        test.
+        Rincian situs yang diperbaiki (arsip analisis):
 
         (A) Kolom byte (line_tokens / str::find / name.len()):
         - semantic_raw_tokens: dua sumber kolom byte — raw.push((s.line, s.col,
@@ -2704,16 +2747,21 @@ LSP-28:[] Kolom byte + kolom keyword tersisa di fitur LSP lain
         CATATAN: `/* é */ module top;` TIDAK menghasilkan DocSymbol
         (line_tokens melihat t0 = "/") — jangan dipakai sebagai test.
 
-        (E) Konversi memakai chars, bukan UTF-16 code unit (spec LSP) →
-        karakter non-BMP (emoji) masih menggeser 1 unit; helper bersama perlu
-        mode encoding.
-        Perbaikan: byte_col_to_char untuk (A); name_col (byte→char) untuk (B)
-        dan WsSymbolHit perlu field name_col; char_index_to_byte untuk arah
-        MASUKAN (signature_help, pencarian kata linked_editing_range); to_lsp
-        perlu closure penyedia teks baris.
-        Belum reachable dari GUI: GUI mengirim kolom karakter (line_col_at_char)
-        dan hanya memakai hover/goto/completion, sedangkan didChange-nya
-        full-sync tanpa range — jadi jalur di atas tidak tersentuh dari GUI.
+        (E) SISA (bukan bagian perbaikan ini): konversi memakai chars, bukan
+        UTF-16 code unit (spec LSP) → karakter non-BMP (emoji) masih menggeser
+        1 unit → item baru LSP-29.
+        Catatan GUI: GUI mengirim kolom karakter (line_col_at_char) dan hanya
+        memakai hover/goto/completion, sedangkan didChange-nya full-sync tanpa
+        range — jadi jalur di atas tidak tersentuh dari GUI.
+
+LSP-29:[] Encoding kolom LSP memakai chars, bukan UTF-16 code unit
+        byte_col_to_char/char_index_to_byte menghitung karakter Unicode,
+        sedangkan spec LSP default memakai UTF-16 code unit (server tidak
+        mengiklankan positionEncoding). Karakter non-BMP (emoji, sebagian CJK
+        Ext-B) bernilai 2 unit → kolom bergeser 1 untuk teks sesudahnya.
+        Perbaikan: helper encoding-aware dipakai semua konversi kolom (server
+        dan GUI), plus test dengan emoji sebelum identifier.
+        Belum reachable dari GUI (GUI mengirim kolom karakter sendiri).
 
 4.10 ENTERPRISE GAPS
 

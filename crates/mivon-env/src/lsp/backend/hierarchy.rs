@@ -84,15 +84,21 @@ impl LspBackend {
     /// yang ada deklarasinya (lewati base tak terdefinisi).
     pub(crate) fn hierarchy_items(
         uri: &Url,
+        source: &str,
         symbols: &[DocSymbol],
         names: &[String],
     ) -> Vec<TypeHierarchyItem> {
         let mut out = Vec::new();
+        // LSP-28: baris dikumpulkan sekali (bukan nth per nama).
+        let lines: Vec<&str> = source.lines().collect();
         for n in names {
             let Some((line, col)) = Self::find_class_symbol(symbols, n) else {
                 continue;
             };
-            let len = n.len() as u32;
+            // name_col adalah offset byte → kolom karakter.
+            let line_text = lines.get(line as usize).copied().unwrap_or("");
+            let col = Self::byte_col_to_char(line_text, col);
+            let len = n.chars().count() as u32;
             out.push(TypeHierarchyItem {
                 name: n.clone(),
                 kind: SymbolKind::CLASS,

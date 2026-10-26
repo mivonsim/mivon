@@ -54,7 +54,11 @@ pub(crate) struct WsSymbolHit {
     pub name: String,
     pub kind: u8,
     pub line: u32,
+    /// Kolom keyword (untuk pengurutan stabil) — JANGAN dipakai sebagai kolom
+    /// nama pada kind container (LSP-28).
     pub col: u32,
+    /// Kolom nama (offset byte; konversi ke karakter saat membangun Range).
+    pub name_col: u32,
 }
 
 /// Keyword deklarasi yang tidak termasuk arah/tipe (dipakai
@@ -126,8 +130,11 @@ pub(crate) struct DocSymbol {
     /// LSP-14 tahap 2a: parent class (`class A extends B`) — None bila
     /// tanpa extends / bukan class.
     pub base: Option<String>,
-    /// LSP-14 tahap 2a: kolom NAMA (selection_range akurat). `col` tetap
-    /// kolom keyword (dipakai fitur lama: semantic token, to_lsp).
+    /// LSP-14 tahap 2a: kolom NAMA (selection_range akurat). `col` adalah
+    /// kolom keyword untuk kind container dan SAMA dengan name_col untuk
+    /// function/task/parameter/variable. Sejak LSP-28 `col` tidak dipakai
+    /// untuk Range apa pun (semantic token, to_lsp, code lens, workspace
+    /// symbol memakai name_col); sisanya hanya pengurutan WsSymbolHit.
     pub name_col: u32,
 }
 
@@ -170,10 +177,18 @@ impl DocSymbol {
 
     /// Konversi rekursif ke lsp_types::DocumentSymbol.
     /// Range = satu baris deklarasi; selection_range = nama saja.
-    fn to_lsp(&self, uri_line_len: impl Fn(u32) -> u32 + Copy) -> DocumentSymbol {
-        let line_end = uri_line_len(self.line);
-        let name_start = self.col;
-        let name_end = (self.col + self.name.len() as u32).min(line_end);
+    ///
+    /// LSP-28: selection_range memakai name_col (kolom byte) yang dikonversi
+    /// ke indeks karakter — untuk kind container, col menunjuk KEYWORD sehingga
+    /// selection_range lama memilih "mod" pada "module top;". name_end dihitung
+    /// dari jumlah KARAKTER nama, bukan byte.
+    fn to_lsp(&self, lines: &[&str]) -> DocumentSymbol {
+        let line = lines.get(self.line as usize).copied().unwrap_or("");
+        let line_end = line.chars().count() as u32;
+        let name_start = LspBackend::byte_col_to_char(line, self.name_col);
+        let name_end = (name_start + self.name.chars().count() as u32)
+            .min(line_end)
+            .max(name_start);
         DocumentSymbol {
             name: self.name.clone(),
             detail: None,
@@ -201,12 +216,7 @@ impl DocSymbol {
                     character: name_end,
                 },
             },
-            children: Some(
-                self.children
-                    .iter()
-                    .map(|c| c.to_lsp(uri_line_len))
-                    .collect(),
-            ),
+            children: Some(self.children.iter().map(|c| c.to_lsp(lines)).collect()),
         }
     }
 }
@@ -788,6 +798,97 @@ impl LspBackend {
     fn char_range_slice(line: &str, start: u32, end: u32) -> String {
         let (a, b) = Self::char_range_bounds(line, start, end);
         line[a..b].to_string()
+    }
+
+    /// LSP-28: (nama fungsi, indeks parameter aktif) untuk kursor pada
+    /// `line_text`. Murni + kolom KARAKTER: kursor dikonversi ke offset byte
+    /// sebelum memindai tanda kurung (memakai kolom sebagai byte membuat nama
+    /// fungsi tidak ditemukan pada baris ber-UTF-8).
+    fn signature_context(line_text: &str, character: u32) -> Option<(String, u32)> {
+        let bytes = line_text.as_bytes();
+        let cursor = completions::char_index_to_byte(line_text, character as usize);
+        let mut paren_depth = 0i32;
+        let mut active_param = 0u32;
+        for i in (0..cursor).rev() {
+            match bytes[i] {
+                b')' => paren_depth += 1,
+                b'(' => {
+                    paren_depth -= 1;
+                    if paren_depth < 0 {
+                        // Kurung buka ditemukan — ambil identifier sebelumnya.
+                        let name_end = i;
+                        let mut name_start = i;
+                        while name_start > 0
+                            && (bytes[name_start - 1].is_ascii_alphanumeric()
+                                || bytes[name_start - 1] == b'_')
+                        {
+                            name_start -= 1;
+                        }
+                        if name_start < name_end {
+                            let name = std::str::from_utf8(&bytes[name_start..name_end])
+                                .unwrap_or("")
+                                .to_string();
+                            return Some((name, active_param));
+                        }
+                        break;
+                    }
+                }
+                b',' if paren_depth == 0 => active_param += 1,
+                _ => {}
+            }
+        }
+        None
+    }
+
+    /// LSP-28: Range SEMUA kemunculan kata (word boundary) dalam kolom
+    /// KARAKTER. Pencarian memakai offset byte (str::find) lalu dikonversi.
+    fn word_occurrence_ranges(text: &str, word: &str) -> Vec<Range> {
+        let is_ident = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
+        let mut ranges = Vec::new();
+        for (line_idx, line) in text.lines().enumerate() {
+            let mut offset = 0;
+            while let Some(pos) = line[offset..].find(word) {
+                let abs_pos = offset + pos;
+                let before_ok = abs_pos == 0 || !is_ident(line.as_bytes()[abs_pos - 1]);
+                let after_ok = abs_pos + word.len() >= line.len()
+                    || !is_ident(line.as_bytes()[abs_pos + word.len()]);
+                if before_ok && after_ok {
+                    let start = line[..abs_pos].chars().count() as u32;
+                    let end = line[..abs_pos + word.len()].chars().count() as u32;
+                    ranges.push(Range::new(
+                        Position::new(line_idx as u32, start),
+                        Position::new(line_idx as u32, end),
+                    ));
+                }
+                offset = abs_pos + 1;
+                if offset >= line.len() {
+                    break;
+                }
+            }
+        }
+        ranges
+    }
+
+    /// LSP-28: Range nama hasil pencarian workspace symbol dalam kolom
+    /// KARAKTER (name_col byte; col untuk container menunjuk keyword).
+    fn ws_symbol_range(lines: &[&str], hit: &WsSymbolHit) -> Range {
+        let line = lines.get(hit.line as usize).copied().unwrap_or("");
+        let start = Self::byte_col_to_char(line, hit.name_col);
+        Range::new(
+            Position::new(hit.line, start),
+            Position::new(hit.line, start + hit.name.chars().count() as u32),
+        )
+    }
+
+    /// Range nama simbol dalam kolom KARAKTER — LSP-28.
+    /// name_col adalah offset byte; untuk kind container `col` menunjuk
+    /// keyword, jadi JANGAN memakai col untuk selection/range nama.
+    fn symbol_name_range(line: &str, sym: &DocSymbol) -> Range {
+        let start = Self::byte_col_to_char(line, sym.name_col);
+        Range::new(
+            Position::new(sym.line, start),
+            Position::new(sym.line, start + sym.name.chars().count() as u32),
+        )
     }
 
     /// Batas offset byte (start, end) untuk sepasang kolom KARAKTER — LSP-26.
@@ -1738,7 +1839,10 @@ impl LanguageServer for LspBackend {
         let Some((line, col)) = Self::find_class_symbol(&syms, &word) else {
             return Ok(None);
         };
-        let len = word.len() as u32;
+        // LSP-28: kolom nama = byte → karakter.
+        let name_line = text.lines().nth(line as usize).unwrap_or("");
+        let col = Self::byte_col_to_char(name_line, col);
+        let len = word.chars().count() as u32;
         Ok(Some(vec![TypeHierarchyItem {
             name: word,
             kind: SymbolKind::CLASS,
@@ -1776,7 +1880,7 @@ impl LanguageServer for LspBackend {
         };
         let syms = Self::document_symbols(&text);
         let names = Self::type_supertypes(&syms, &params.item.name);
-        let items = Self::hierarchy_items(&params.item.uri, &syms, &names);
+        let items = Self::hierarchy_items(&params.item.uri, &text, &syms, &names);
         if items.is_empty() {
             return Ok(None);
         }
@@ -1793,7 +1897,7 @@ impl LanguageServer for LspBackend {
         };
         let syms = Self::document_symbols(&text);
         let names = Self::type_subtypes(&syms, &params.item.name);
-        let items = Self::hierarchy_items(&params.item.uri, &syms, &names);
+        let items = Self::hierarchy_items(&params.item.uri, &text, &syms, &names);
         if items.is_empty() {
             return Ok(None);
         }
@@ -1924,15 +2028,11 @@ impl LanguageServer for LspBackend {
         let Some(text) = self.document_text(uri) else {
             return Ok(None);
         };
-        let line_len = |l: u32| -> u32 {
-            text.lines()
-                .nth(l as usize)
-                .map(|s| s.chars().count() as u32)
-                .unwrap_or(0)
-        };
+        // LSP-28: kumpulkan baris SEKALI (to_lsp dipanggil per simbol).
+        let lines: Vec<&str> = text.lines().collect();
         let symbols: Vec<DocumentSymbol> = Self::document_symbols(&text)
             .into_iter()
-            .map(|s| s.to_lsp(line_len))
+            .map(|s| s.to_lsp(&lines))
             .collect();
         Ok(Some(lsp_types::DocumentSymbolResponse::Nested(symbols)))
     }
@@ -2019,62 +2119,30 @@ impl LanguageServer for LspBackend {
         let Some(line_text) = text.lines().nth(pos.line as usize) else {
             return Ok(None);
         };
-        // Find the function name before the cursor (search backward for ident followed by '(').
-        let bytes = line_text.as_bytes();
-        let cursor = (pos.character as usize).min(bytes.len());
-        // Count parentheses to find active parameter.
-        let mut paren_depth = 0i32;
-        let mut active_param = 0u32;
-        for i in (0..cursor).rev() {
-            match bytes[i] {
-                b')' => paren_depth += 1,
-                b'(' => {
-                    paren_depth -= 1;
-                    if paren_depth < 0 {
-                        // Found the opening paren — extract function name.
-                        let name_end = i;
-                        let mut name_start = i;
-                        while name_start > 0
-                            && (bytes[name_start - 1].is_ascii_alphanumeric()
-                                || bytes[name_start - 1] == b'_')
-                        {
-                            name_start -= 1;
-                        }
-                        if name_start < name_end {
-                            let func_name =
-                                std::str::from_utf8(&bytes[name_start..name_end]).unwrap_or("");
-                            // Build a simple signature from the function declaration.
-                            let sig = Self::find_function_signature(&text, func_name);
-                            if let Some((label, params_list)) = sig {
-                                let parameters: Vec<lsp_types::ParameterInformation> = params_list
-                                    .iter()
-                                    .map(|p| lsp_types::ParameterInformation {
-                                        label: lsp_types::ParameterLabel::Simple(p.clone()),
-                                        documentation: None,
-                                    })
-                                    .collect();
-                                return Ok(Some(lsp_types::SignatureHelp {
-                                    signatures: vec![lsp_types::SignatureInformation {
-                                        label,
-                                        documentation: None,
-                                        parameters: Some(parameters),
-                                        active_parameter: None,
-                                    }],
-                                    active_signature: Some(0),
-                                    active_parameter: Some(active_param),
-                                }));
-                            }
-                        }
-                        break;
-                    }
-                }
-                b',' if paren_depth == 0 => {
-                    active_param += 1;
-                }
-                _ => {}
-            }
-        }
-        Ok(None)
+        let Some((func_name, active_param)) = Self::signature_context(line_text, pos.character)
+        else {
+            return Ok(None);
+        };
+        let Some((label, params_list)) = Self::find_function_signature(&text, &func_name) else {
+            return Ok(None);
+        };
+        let parameters: Vec<lsp_types::ParameterInformation> = params_list
+            .iter()
+            .map(|p| lsp_types::ParameterInformation {
+                label: lsp_types::ParameterLabel::Simple(p.clone()),
+                documentation: None,
+            })
+            .collect();
+        Ok(Some(lsp_types::SignatureHelp {
+            signatures: vec![lsp_types::SignatureInformation {
+                label,
+                documentation: None,
+                parameters: Some(parameters),
+                active_parameter: None,
+            }],
+            active_signature: Some(0),
+            active_parameter: Some(active_param),
+        }))
     }
 
     /// Workspace symbol search (LSP-11 tahap 1+2): dokumen terbuka + indeks
@@ -2085,12 +2153,21 @@ impl LanguageServer for LspBackend {
     ) -> JsonRpcResult<Option<Vec<SymbolInformation>>> {
         let docs = self.collect_workspace_docs().await;
         let hits = Self::search_workspace_symbols(&docs, &params.query);
+        // LSP-28: baris per dokumen dikumpulkan SEKALI (bukan per hit).
+        let lines_by_uri: std::collections::HashMap<&str, Vec<&str>> = docs
+            .iter()
+            .map(|(u, t)| (u.as_str(), t.lines().collect()))
+            .collect();
         let mut out = Vec::new();
         for h in hits {
             let Ok(uri) = Url::parse(&h.uri) else {
                 continue;
             };
-            let name_len = h.name.len() as u32;
+            let lines = lines_by_uri
+                .get(h.uri.as_str())
+                .map(|v| v.as_slice())
+                .unwrap_or(&[]);
+            let range = Self::ws_symbol_range(lines, &h);
             out.push(SymbolInformation {
                 name: h.name,
                 kind: DocSymbol {
@@ -2106,19 +2183,7 @@ impl LanguageServer for LspBackend {
                 tags: None,
                 #[allow(deprecated)]
                 deprecated: None,
-                location: Location {
-                    uri,
-                    range: Range {
-                        start: Position {
-                            line: h.line,
-                            character: h.col,
-                        },
-                        end: Position {
-                            line: h.line,
-                            character: h.col + name_len,
-                        },
-                    },
-                },
+                location: Location { uri, range },
                 container_name: None,
             });
         }
@@ -2375,9 +2440,9 @@ impl LanguageServer for LspBackend {
         let Some(line_text) = text.lines().nth(pos.line as usize) else {
             return Ok(None);
         };
-        // Extract word at cursor.
+        // Extract word at cursor (pos.character adalah indeks KARAKTER).
         let bytes = line_text.as_bytes();
-        let ch = pos.character as usize;
+        let ch = completions::char_index_to_byte(line_text, pos.character as usize);
         let is_ident = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
         if ch >= bytes.len() || !is_ident(bytes[ch]) {
             return Ok(None);
@@ -2397,28 +2462,7 @@ impl LanguageServer for LspBackend {
         if word.len() < 2 {
             return Ok(None);
         }
-        // Find all occurrences of the word in the document.
-        let mut ranges = Vec::new();
-        for (line_idx, line) in text.lines().enumerate() {
-            let mut offset = 0;
-            while let Some(pos) = line[offset..].find(word) {
-                let abs_pos = offset + pos;
-                // Word boundary check.
-                let before_ok = abs_pos == 0 || !is_ident(line.as_bytes()[abs_pos - 1]);
-                let after_ok = abs_pos + word.len() >= line.len()
-                    || !is_ident(line.as_bytes()[abs_pos + word.len()]);
-                if before_ok && after_ok {
-                    ranges.push(Range::new(
-                        Position::new(line_idx as u32, abs_pos as u32),
-                        Position::new(line_idx as u32, (abs_pos + word.len()) as u32),
-                    ));
-                }
-                offset = abs_pos + 1;
-                if offset >= line.len() {
-                    break;
-                }
-            }
-        }
+        let ranges = Self::word_occurrence_ranges(&text, word);
         if ranges.len() < 2 {
             return Ok(None);
         }
@@ -2713,7 +2757,8 @@ impl LspBackend {
             let type_dirs = ["input", "output", "inout"];
             if type_dirs.iter().any(|d| trimmed.starts_with(d)) {
                 if let Some((name, type_str)) = Self::parse_port_type_hint(trimmed) {
-                    let col = Self::find_word_col(line, &name).unwrap_or(0) + name.len() as u32;
+                    let col =
+                        Self::find_word_col(line, &name).unwrap_or(0) + name.chars().count() as u32;
                     hints.push(Self::make_type_hint(line_idx as u32, col, &type_str));
                 }
             }
@@ -2724,7 +2769,8 @@ impl LspBackend {
             ];
             if int_types.iter().any(|t| trimmed.starts_with(t)) {
                 if let Some((name, type_str)) = Self::parse_signal_type_hint(trimmed) {
-                    let col = Self::find_word_col(line, &name).unwrap_or(0) + name.len() as u32;
+                    let col =
+                        Self::find_word_col(line, &name).unwrap_or(0) + name.chars().count() as u32;
                     hints.push(Self::make_type_hint(line_idx as u32, col, &type_str));
                 }
             }
@@ -2733,7 +2779,8 @@ impl LspBackend {
             //    → hint after function name: `: int`
             if trimmed.starts_with("function") {
                 if let Some((name, ret_type)) = Self::parse_function_return_hint(trimmed) {
-                    let col = Self::find_word_col(line, &name).unwrap_or(0) + name.len() as u32;
+                    let col =
+                        Self::find_word_col(line, &name).unwrap_or(0) + name.chars().count() as u32;
                     hints.push(Self::make_type_hint(line_idx as u32, col, &ret_type));
                 }
             }
@@ -2741,7 +2788,8 @@ impl LspBackend {
             // 4. Parameter declarations inside `#(parameter ...)`
             if trimmed.starts_with("parameter") || trimmed.starts_with("localparam") {
                 if let Some((name, type_str)) = Self::parse_param_type_hint(trimmed) {
-                    let col = Self::find_word_col(line, &name).unwrap_or(0) + name.len() as u32;
+                    let col =
+                        Self::find_word_col(line, &name).unwrap_or(0) + name.chars().count() as u32;
                     hints.push(Self::make_type_hint(line_idx as u32, col, &type_str));
                 }
             }
@@ -2762,9 +2810,9 @@ impl LspBackend {
         }
     }
 
-    /// Find column of a word in a line.
+    /// Find column (indeks KARAKTER) of a word in a line — LSP-28.
     fn find_word_col(line: &str, word: &str) -> Option<u32> {
-        line.find(word).map(|c| c as u32)
+        line.find(word).map(|b| line[..b].chars().count() as u32)
     }
 
     /// Parse `input/output/inout [type] [range] name` → (name, type_str).
@@ -2877,8 +2925,15 @@ impl LspBackend {
         let syms = Self::document_symbols(text);
 
         #[allow(clippy::only_used_in_recursion)]
-        fn walk(items: &[DocSymbol], text: &str, _uri: &Url, lenses: &mut Vec<CodeLens>) {
+        fn walk(
+            items: &[DocSymbol],
+            text: &str,
+            lines: &[&str],
+            _uri: &Url,
+            lenses: &mut Vec<CodeLens>,
+        ) {
             for sym in items {
+                let line = lines.get(sym.line as usize).copied().unwrap_or("");
                 match sym.kind {
                     // Module → "Run tests" lens
                     DocSymbol::KIND_MODULE => {
@@ -2894,10 +2949,7 @@ impl LspBackend {
                             "Run tests".to_string()
                         };
                         lenses.push(CodeLens {
-                            range: Range {
-                                start: Position::new(sym.line, sym.col),
-                                end: Position::new(sym.line, sym.col + sym.name.len() as u32),
-                            },
+                            range: LspBackend::symbol_name_range(line, sym),
                             command: Some(LspCommand {
                                 title,
                                 command: format!("mivon.testModule.{}", sym.name),
@@ -2912,10 +2964,7 @@ impl LspBackend {
                         let ref_count = count_word_occurrences(text, &sym.name).saturating_sub(1); // -1 for decl
                         if ref_count > 0 {
                             lenses.push(CodeLens {
-                                range: Range {
-                                    start: Position::new(sym.line, sym.col),
-                                    end: Position::new(sym.line, sym.col + sym.name.len() as u32),
-                                },
+                                range: LspBackend::symbol_name_range(line, sym),
                                 command: Some(LspCommand {
                                     title: format!(
                                         "{} reference{}",
@@ -2931,10 +2980,7 @@ impl LspBackend {
                         // LSP-21: "Run test" lens for test functions (name starts with "test_")
                         if sym.name.starts_with("test_") {
                             lenses.push(CodeLens {
-                                range: Range {
-                                    start: Position::new(sym.line, sym.col),
-                                    end: Position::new(sym.line, sym.col + sym.name.len() as u32),
-                                },
+                                range: LspBackend::symbol_name_range(line, sym),
                                 command: Some(LspCommand {
                                     title: "▶ Run test".to_string(),
                                     command: format!("mivon.runTest.{}", sym.name),
@@ -2947,11 +2993,12 @@ impl LspBackend {
                     _ => {}
                 }
                 // Recurse into children.
-                walk(&sym.children, text, _uri, lenses);
+                walk(&sym.children, text, lines, _uri, lenses);
             }
         }
 
-        walk(&syms, text, uri, &mut lenses);
+        let lines: Vec<&str> = text.lines().collect();
+        walk(&syms, text, &lines, uri, &mut lenses);
         lenses
     }
 }
@@ -3064,6 +3111,8 @@ impl LspBackend {
         // Simple pattern matching for function/task calls
         for (line_idx, line) in text.lines().enumerate() {
             let trimmed = line.trim();
+            // LSP-28: kolom karakter (range dimulai setelah indentasi).
+            let indent = line[..line.len() - line.trim_start().len()].chars().count() as u32;
             // Detect function/task declarations
             if trimmed.starts_with("function") || trimmed.starts_with("task") {
                 if let Some(name) = Self::extract_symbol_name(trimmed) {
@@ -3074,12 +3123,12 @@ impl LspBackend {
                         detail: Some(trimmed.chars().take(50).collect()),
                         uri: Url::parse("file:///untitled").unwrap(),
                         range: Range::new(
-                            Position::new(line_idx as u32, 0),
-                            Position::new(line_idx as u32, trimmed.len() as u32),
+                            Position::new(line_idx as u32, indent),
+                            Position::new(line_idx as u32, indent + trimmed.chars().count() as u32),
                         ),
                         selection_range: Range::new(
-                            Position::new(line_idx as u32, 0),
-                            Position::new(line_idx as u32, trimmed.len() as u32),
+                            Position::new(line_idx as u32, indent),
+                            Position::new(line_idx as u32, indent + trimmed.chars().count() as u32),
                         ),
                         data: None,
                     };
@@ -3099,12 +3148,12 @@ impl LspBackend {
                         detail: Some("caller".to_string()),
                         uri: Url::parse("file:///untitled").unwrap(),
                         range: Range::new(
-                            Position::new(line_idx as u32, 0),
-                            Position::new(line_idx as u32, trimmed.len() as u32),
+                            Position::new(line_idx as u32, indent),
+                            Position::new(line_idx as u32, indent + trimmed.chars().count() as u32),
                         ),
                         selection_range: Range::new(
-                            Position::new(line_idx as u32, 0),
-                            Position::new(line_idx as u32, trimmed.len() as u32),
+                            Position::new(line_idx as u32, indent),
+                            Position::new(line_idx as u32, indent + trimmed.chars().count() as u32),
                         ),
                         data: None,
                     };
@@ -4438,13 +4487,7 @@ endmodule
         assert!(syms2[0].children.iter().any(|c| c.name == "x"));
 
         // Konversi ke lsp_types: kind + selection range benar.
-        let lsp = syms2[0].to_lsp(|l| {
-            broken
-                .lines()
-                .nth(l as usize)
-                .map(|s| s.chars().count() as u32)
-                .unwrap_or(0)
-        });
+        let lsp = syms2[0].to_lsp(&broken.lines().collect::<Vec<_>>());
         assert_eq!(lsp.kind, SymbolKind::MODULE);
     }
 
@@ -4622,7 +4665,7 @@ endmodule
         assert!(LspBackend::type_subtypes(&ssys, "s").is_empty());
         // selection_range menutupi NAMA (bukan keyword `class`).
         let uri = lsp_types::Url::parse("file:///t.sv").unwrap();
-        let items = LspBackend::hierarchy_items(&uri, &syms, &["mid".to_string()]);
+        let items = LspBackend::hierarchy_items(&uri, src, &syms, &["mid".to_string()]);
         assert_eq!(items.len(), 1);
         let r = &items[0].selection_range;
         assert_eq!(
@@ -4634,7 +4677,7 @@ endmodule
         let mid = syms.iter().find(|s| s.name == "mid").unwrap();
         assert_eq!((mid.col, mid.name_col), (0, 6));
         // Unknown difilter di items.
-        assert!(LspBackend::hierarchy_items(&uri, &syms, &["Ghost".to_string()]).is_empty());
+        assert!(LspBackend::hierarchy_items(&uri, src, &syms, &["Ghost".to_string()]).is_empty());
     }
 
     #[test]
@@ -5133,12 +5176,13 @@ endmodule
                 offset = abs_pos + 1;
             }
         }
-        // 'counter' appears in 'counter' (line 0) and 'counter_aux' (not standalone).
-        assert!(
-            !ranges.is_empty(),
-            "at least 1 standalone occurrence: {:?}",
-            ranges
-        );
+        // LSP-28: bandingkan dengan implementasi PRODUKSI (bukan hanya salinan
+        // algoritma) — regresi kolom di word_occurrence_ranges ikut tertangkap.
+        let prod = LspBackend::word_occurrence_ranges(src, "counter");
+        assert_eq!(prod.len(), 1, "hanya counter mandiri: {:?}", prod);
+        assert_eq!(prod[0].start, Position::new(0, 7));
+        assert_eq!(prod[0].end, Position::new(0, 14));
+        assert_eq!(ranges.len(), prod.len(), "salinan test vs produksi");
     }
 
     #[test]
@@ -5225,6 +5269,171 @@ world";
             "C",
         );
         assert_eq!(text, "a\r\nb\r\né\r\nC");
+    }
+
+    #[test]
+    fn semantic_tokens_use_character_columns() {
+        // "if" setelah string ber-UTF-8: kolom karakter 17 (byte 18).
+        let src = "module m;\ninitial x = \"é\"; if (a) b = 1;\nendmodule\n";
+        let raw = LspBackend::semantic_raw_tokens(src);
+        assert!(
+            raw.iter()
+                .any(|(l, c, len, t, _)| *l == 1 && *c == 17 && *len == 2 && *t == 7),
+            "token keyword harus kolom karakter: {:?}",
+            raw
+        );
+    }
+
+    #[test]
+    fn semantic_tokens_use_name_column_for_container() {
+        // Token modul harus mulai di nama (7), bukan keyword (0).
+        let raw = LspBackend::semantic_raw_tokens("module top;\nendmodule\n");
+        assert!(
+            raw.iter()
+                .any(|(l, c, len, t, _)| *l == 0 && *c == 7 && *len == 3 && *t == 0),
+            "token modul harus mulai di nama: {:?}",
+            raw
+        );
+    }
+
+    #[test]
+    fn document_symbol_selection_range_uses_name_column() {
+        // Container: selection_range = nama (7..10), bukan keyword (0..3).
+        let src = "module top;\nendmodule\n";
+        let lsp = LspBackend::document_symbols(src)[0].to_lsp(&src.lines().collect::<Vec<_>>());
+        assert_eq!(lsp.selection_range.start.character, 7);
+        assert_eq!(lsp.selection_range.end.character, 10);
+
+        // Deklarator setelah karakter UTF-8: kolom karakter 14 (byte 15).
+        let src2 = "module m;\nlogic /* é */ x;\nendmodule\n";
+        let syms = LspBackend::document_symbols(src2);
+        let child = syms[0].children.iter().find(|c| c.name == "x").unwrap();
+        let lsp2 = child.to_lsp(&src2.lines().collect::<Vec<_>>());
+        assert_eq!(lsp2.selection_range.start.character, 14);
+        assert_eq!(lsp2.selection_range.end.character, 15);
+    }
+
+    #[test]
+    fn code_lens_range_uses_name_column() {
+        use lsp_types::Url;
+        let uri = Url::parse("file:///test.sv").unwrap();
+        let lenses = LspBackend::compute_code_lens("module top;\nendmodule\n", &uri);
+        assert_eq!(lenses.len(), 1);
+        assert_eq!(lenses[0].range.start.character, 7);
+        assert_eq!(lenses[0].range.end.character, 10);
+    }
+
+    #[test]
+    fn code_lens_function_range_uses_name_column() {
+        use lsp_types::Url;
+        let uri = Url::parse("file:///t.sv").unwrap();
+        // "test_a" mulai kolom karakter 23 (byte 24) pada baris function.
+        // Komentar UTF-8 sebelum nama membuat kolom byte ≠ karakter; satu
+        // pemanggilan agar lens "N references" ikut muncul (ref_count > 0).
+        let src = "module m;\n  function int /* é */ test_a();\n  endfunction\n  initial x = test_a();\nendmodule\n";
+        let lenses = LspBackend::compute_code_lens(src, &uri);
+        let run = lenses
+            .iter()
+            .find(|l| {
+                l.command
+                    .as_ref()
+                    .is_some_and(|c| c.title.contains("Run test"))
+            })
+            .expect("lens Run test");
+        assert_eq!(run.range.start.character, 23);
+        assert_eq!(run.range.end.character, 29);
+        let refs = lenses
+            .iter()
+            .find(|l| {
+                l.command
+                    .as_ref()
+                    .is_some_and(|c| c.title.contains("reference"))
+            })
+            .expect("lens reference");
+        assert_eq!(refs.range.start.character, 23);
+        assert_eq!(refs.range.end.character, 29);
+    }
+
+    #[test]
+    fn hierarchy_items_use_character_columns() {
+        use lsp_types::Url;
+        let uri = Url::parse("file:///t.sv").unwrap();
+        // name_col byte 15 (é 2 byte) → kolom karakter 14.
+        let sym = DocSymbol {
+            name: "A".to_string(),
+            kind: DocSymbol::KIND_CLASS,
+            line: 0,
+            col: 0,
+            children: Vec::new(),
+            base: None,
+            name_col: 15,
+        };
+        let src = "/* é */ class A;";
+        let items = LspBackend::hierarchy_items(&uri, src, &[sym], &["A".to_string()]);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].selection_range.start.character, 14);
+        assert_eq!(items[0].selection_range.end.character, 15);
+    }
+
+    #[test]
+    fn workspace_symbol_range_uses_name_column() {
+        let docs = vec![(
+            "file:///a.sv".to_string(),
+            "module top;\nendmodule\n".to_string(),
+        )];
+        let hits = LspBackend::search_workspace_symbols(&docs, "top");
+        let hit = hits.iter().find(|h| h.name == "top").unwrap();
+        let lines: Vec<&str> = docs[0].1.lines().collect();
+        let r = LspBackend::ws_symbol_range(&lines, hit);
+        assert_eq!((r.start.character, r.end.character), (7, 10));
+
+        // Multibyte sebelum nama: kolom karakter 14 (byte 15).
+        let docs2 = vec![(
+            "file:///b.sv".to_string(),
+            "module m;\nlogic /* é */ x;\nendmodule\n".to_string(),
+        )];
+        let hits2 = LspBackend::search_workspace_symbols(&docs2, "x");
+        let hit2 = hits2.iter().find(|h| h.name == "x").unwrap();
+        let lines2: Vec<&str> = docs2[0].1.lines().collect();
+        let r2 = LspBackend::ws_symbol_range(&lines2, hit2);
+        assert_eq!((r2.start.character, r2.end.character), (14, 15));
+    }
+
+    #[test]
+    fn find_word_col_uses_character_columns() {
+        let line = "x = \"é\"; clk = 1;";
+        assert_eq!(LspBackend::find_word_col(line, "clk"), Some(9));
+        assert_eq!(LspBackend::find_word_col("clk", "clk"), Some(0));
+        assert_eq!(LspBackend::find_word_col("abc", "z"), None);
+    }
+
+    #[test]
+    fn word_occurrence_ranges_use_character_columns() {
+        let text = "x = \"é\"; clk = 1;\nclk2 clk\n";
+        let ranges = LspBackend::word_occurrence_ranges(text, "clk");
+        assert_eq!(ranges.len(), 2, "{:?}", ranges);
+        assert_eq!(
+            (ranges[0].start.character, ranges[0].end.character),
+            (9, 12)
+        );
+        assert_eq!((ranges[1].start.character, ranges[1].end.character), (5, 8));
+    }
+
+    #[test]
+    fn signature_context_uses_character_columns() {
+        let line = "x = \"é\"; foo(a, b)";
+        let open = line.find("(a").unwrap();
+        let c = line[..open].chars().count() as u32 + 1;
+        assert_eq!(
+            LspBackend::signature_context(line, c),
+            Some(("foo".to_string(), 0))
+        );
+        let comma = line.find(", b").unwrap();
+        let c2 = line[..comma].chars().count() as u32 + 2;
+        assert_eq!(
+            LspBackend::signature_context(line, c2),
+            Some(("foo".to_string(), 1))
+        );
     }
 
     #[test]

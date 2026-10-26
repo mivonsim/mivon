@@ -318,6 +318,7 @@ impl LspBackend {
                         kind: s.kind,
                         line: s.line,
                         col: s.col,
+                        name_col: s.name_col,
                     });
                 }
                 walk(&s.children, uri, q, out);
