@@ -2566,23 +2566,133 @@ LSP-25: ⚠️ PARTIAL (ROUND 214) — GUI punya language intelligence via LSP
         test panic + test prefix exact-list gagal; word_at_position byte →
         test multibyte gagal; byte_idx_at_line_col byte → test GUI gagal;
         line_range byte → test selection range gagal.
-        Batasan tersisa (item baru LSP-26): Range untuk definition/references/
-        rename masih memakai offset byte sebagai Position.character.
+        Batasan saat itu (LSP-26, sudah FIXED di ROUND 215): Range untuk
+        definition/references/rename memakai offset byte sebagai
+        Position.character. Sisa kolom byte di jalur LSP lain → LSP-27.
         Catatan verifikasi: suite penuh 3674 lulus (mivon-fuzz dikecualikan
         saat linking karena disk root 100% penuh; perubahan tidak menyentuh
         crate fuzz). Rekap test baru: GUI 8 (lsp_client 7 + editor 1) dan
         server 6 (completions 3 + backend 3).
-        Sisa: rename symbol masih lokal (belum textDocument/rename +
-        workspace edit), belum ada references/signature help.
+        (Catatan: rename/references/signature help SUDAH ada — rename memakai
+        textDocument/rename + WorkspaceEdit lintas file, references mendukung
+        include_declaration, signature_help terdaftar di capabilities. Kalimat
+        lama yang menyatakan ketiganya belum ada sudah usang.)
 
-LSP-26:[] Range definition/references/rename memakai kolom byte
-        word_at_position/definition_col mengembalikan offset byte dan dipakai
-        langsung sebagai Position.character di goto_definition, references,
-        prepare_rename, dan edit rename. Klien LSP standar (VS Code/Neovim)
-        melihat range bergeser ke kanan pada baris ber-UTF-8. Tidak reachable
-        dari GUI (GUI hanya memakai /range/start/line). Perbaikan: konversi
-        byte → indeks karakter saat membangun Range (perlu teks baris di call
-        site) — sisa dari LSP-25 ROUND 214.
+LSP-26: ✅ FIXED (ROUND 215) Range definition/references/rename kolom karakter
+        (ditemukan saat LSP-25 ROUND 214) word_at_position/definition_col
+        mengembalikan offset byte dan dipakai langsung sebagai
+        Position.character di goto_definition, references, prepare_rename, dan
+        edit rename → klien LSP standar (VS Code/Neovim) melihat range bergeser
+        ke kanan pada baris ber-UTF-8. Tidak reachable dari GUI (GUI hanya
+        memakai /range/start/line).
+        Perbaikan: helper LspBackend::byte_col_to_char (clamp ke batas char lalu
+        hitung indeks karakter) dipakai di SEMUA situs yang membangun Range dari
+        token: find_definition, find_definition_in_docs, find_references,
+        collect_uses_in_text, collect_refs_in_text, prepare_rename_range.
+        Placeholder prepareRename dipotong lewat char_range_slice /
+        char_range_bounds (char→byte) — tanpa itu potongan &str panic di tengah
+        karakter (dibuktikan mutasi).
+        Test baru 8: byte_col_to_char_counts_characters_not_bytes,
+        char_range_slice_uses_character_columns,
+        definition_range_uses_character_columns_on_multibyte_line,
+        cross_file_definition_uses_character_columns_on_multibyte_line,
+        find_references_uses_character_columns_on_multibyte_line,
+        references_range_uses_character_columns_on_multibyte_line (termasuk
+        jalur include_declaration=false),
+        rename_edits_use_character_columns_on_multibyte_line,
+        prepare_rename_range_uses_character_columns_on_multibyte_line.
+        Simulasi apply-edit di test_rename_edits ikut memakai char_range_bounds
+        (sebelumnya mengiris &str dengan kolom karakter — model test keliru).
+        Mutasi terbukti: find_definition byte → 1 test gagal (26/27 vs 25/26);
+        find_definition_in_docs byte → 1 test gagal;
+        find_references byte → 1 test gagal;
+        collect_refs_in_text byte → references + rename gagal (24 vs 23);
+        collect_uses_in_text byte → assert jalur pemakaian gagal;
+        prepare_rename_range byte → 1 test gagal;
+        char_range_bounds byte → panic "not a char boundary" di test slice.
+        Catatan: kolom dihitung dalam chars, bukan UTF-16 code unit (spec LSP) —
+        karakter non-BMP (emoji) masih bisa menggeser 1 unit; konsisten dengan
+        helper LSP-25 dan dicatat sebagai sisa di LSP-27.
+        Sisa (item baru LSP-27): kolom byte di jalur LSP lain.
+
+LSP-27:[] Kolom byte + kolom keyword tersisa di jalur LSP lain
+        Sisa dari LSP-26. Dua kelas masalah terpisah: (A) kolom byte sehingga
+        bergeser pada baris ber-UTF-8, dan (B) kolom keyword dipakai sebagai
+        kolom nama (salah walau ASCII murni).
+
+        (A) Kolom byte (line_tokens / str::find / name.len()):
+        - semantic_raw_tokens: dua sumber kolom byte — raw.push((s.line, s.col,
+          s.name.len())) dari DocSymbol, dan token keyword dari line_tokens
+          (mis. `x = "é"; if (a) b = 1;` → `if` byte 10 / char 9);
+          encode_semantic_tokens mengubah keduanya menjadi delta_start/length;
+        - document_symbol → DocSymbol::to_lsp: selection_range DocumentSymbol
+          (kolom byte; range penuh sudah karakter) — handler selalu Nested,
+          bukan SymbolInformation;
+        - workspace symbol (symbol): h.col + h.name.len() (byte) — h.col berasal
+          dari DocSymbol.col, jadi kind container ikut memakai kolom keyword
+          (lihat catatan to_lsp di bawah);
+        - compute_call_hierarchy: Range::new(line, 0, trimmed.len()) — len byte
+          (scaffolding dead-code; call_hierarchy_provider tetap diiklankan
+          walau handler belum di-wire);
+        - code_lens: Range::new(sym.line, sym.col, sym.col + name.len()) di tiga
+          tempat (module/function/test lens);
+        - inlay_hints: kolom dari find_word_col (str::find) + name.len();
+          (compute_inlay_hints ber-attribute allow(dead_code), belum ada handler
+          inlay_hint — capability tetap diiklankan; hanya test yang memanggil);
+        - compute_document_colors: Range DocumentColor;
+        - linked_editing_range: pos.character dipakai sebagai indeks byte untuk
+          mencari kata di kursor, dan range hasilnya dibangun dari offset byte
+          str::find;
+        - signature_help (arah MASUKAN): pos.character (kolom karakter) dipakai
+          sebagai indeks byte ke line_text.as_bytes() saat memindai '(' dan nama
+          fungsi → meleset pada baris ber-UTF-8 (tidak panic: ada clamp);
+
+        (B) Kolom KEYWORD dipakai sebagai kolom nama (salah tanpa UTF-8 pun):
+        untuk kind container (module/interface/package/class/checker)
+        DocSymbol.col = kolom keyword, sedangkan name_col = kolom nama. Terkena:
+        to_lsp selection_range (`module top;` → [0,3) = "mod"), code_lens module
+        lens (range sama), semantic_raw_tokens (token simbol container (0,3)
+        "mod" — overlap token keyword (0,6)), dan workspace symbol (WsSymbolHit
+        hanya menyimpan col, tanpa name_col). Untuk function/task/parameter/
+        variable col == name_col sehingga tidak terkena (B).
+
+        (C) Di to_lsp, kolom byte TIDAK bisa diperbaiki hanya dengan
+        byte_col_to_char(name_col): name_end juga di-clamp ke line_len yang
+        dihitung CHARS. Rumus benar: name_start = byte_col_to_char(name_col),
+        name_end = name_start + name.chars().count(). Kasus byte≠char yang
+        reachable: deklarator setelah karakter UTF-8 di baris yang sama — mis.
+        `logic /* é */ x;` → x byte 15 / char 14, atau
+        `parameter string S = "é", T = 1;` → T byte 27 / char 26. (name_col
+        container selalu berprefix ASCII → byte == char, jadi container hanya
+        terkena (B).) to_lsp juga hanya
+        menerima closure uri_line_len (bukan teks baris), jadi helper byte→char
+        butuh perubahan signature menjadi penyedia teks baris.
+        CATATAN: `/* é */ module top;` TIDAK menghasilkan DocSymbol
+        (line_tokens melihat t0 = "/") — jangan dipakai sebagai test.
+
+        (D) Risiko PANIC (bukan sekadar range bergeser):
+        - position_to_offset (didChange inkremental → apply_text_change →
+          String::replace_range) memakai pos.character sebagai offset byte;
+          clamp min(line.len()) mencegah out-of-bounds tetapi TIDAK mencegah
+          offset di tengah karakter → replace_range panic, server LSP mati.
+        - compute_document_colors memotong &line[i+1..i+7] DAN
+          hex[0..2]/[2..4]/[4..6] dengan indeks byte; guard i+7 <= line.len()
+          hanya menjamin in-range, BUKAN batas karakter. `#abcdeé` → i+7 jatuh
+          di tengah é; `#aébcd` (7 byte) → hex = "aébcd" lalu hex[0..2] panic
+          "byte index 2 is not a char boundary".
+        Dua-duanya prioritas tertinggi di item ini.
+
+        (E) Konversi memakai chars, bukan UTF-16 code unit (spec LSP) →
+        karakter non-BMP (emoji) masih menggeser 1 unit; helper bersama perlu
+        mode encoding.
+        Perbaikan: byte_col_to_char untuk (A); name_col (byte→char) untuk (B)
+        dan WsSymbolHit perlu field name_col; char_index_to_byte untuk arah
+        MASUKAN (position_to_offset, signature_help, pencarian kata
+        linked_editing_range); batas aman char di compute_document_colors;
+        to_lsp perlu closure penyedia teks baris.
+        Belum reachable dari GUI: GUI mengirim kolom karakter (line_col_at_char)
+        dan hanya memakai hover/goto/completion, sedangkan didChange-nya
+        full-sync tanpa range — jadi jalur di atas tidak tersentuh dari GUI.
 
 4.10 ENTERPRISE GAPS
 

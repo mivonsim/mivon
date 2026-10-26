@@ -26,7 +26,13 @@ impl LspBackend {
             }
             for (w, col) in Self::line_tokens(text) {
                 if w == word {
-                    out.push((idx as u32, col as u32, (col + w.len()) as u32));
+                    // LSP-26: kolom token = offset byte → indeks karakter
+                    // sebelum masuk Range LSP.
+                    out.push((
+                        idx as u32,
+                        Self::byte_col_to_char(text, col as u32),
+                        Self::byte_col_to_char(text, (col + w.len()) as u32),
+                    ));
                 }
             }
         }
@@ -37,7 +43,8 @@ impl LspBackend {
     /// dokumen (uri, teks) dengan aturan yang sama seperti tahap 1 —
     /// token mandiri (word-boundary) dan komentar baris `//` dilewati.
     ///
-    /// Hasil: (uri, line, start_col, end_col), urut sesuai urutan `docs`.
+    /// Hasil: (uri, line, start_col, end_col) dengan kolom KARAKTER (siap
+    /// menjadi `Position.character`, lihat LSP-26), urut sesuai urutan `docs`.
     /// PEMANGGIL WAJIB mengurutkan `docs` (mis. by uri) agar urutan hasil —
     /// dan himpunan hasil saat `max_results` tercapai — deterministik
     /// (review R193 BUG-1: `documents` berupa HashMap, urutan acak).
@@ -88,8 +95,8 @@ impl LspBackend {
                 out.push((
                     uri.to_string(),
                     idx as u32,
-                    col as u32,
-                    (col + w.len()) as u32,
+                    Self::byte_col_to_char(line, col as u32),
+                    Self::byte_col_to_char(line, (col + w.len()) as u32),
                 ));
                 if out.len() >= max {
                     return false;
@@ -149,8 +156,8 @@ impl LspBackend {
                     out.push((
                         uri.to_string(),
                         idx as u32,
-                        col as u32,
-                        (col + w.len()) as u32,
+                        Self::byte_col_to_char(line, col as u32),
+                        Self::byte_col_to_char(line, (col + w.len()) as u32),
                     ));
                     if out.len() >= max {
                         return false;

@@ -766,6 +766,37 @@ impl LspBackend {
         Some((line_text[start..end].to_string(), start as u32, end as u32))
     }
 
+    /// Konversi offset byte dalam SATU baris ke indeks karakter (kolom LSP).
+    ///
+    /// LSP-26: `Position.character` adalah indeks karakter, bukan offset
+    /// byte. Tokenizer internal (`line_tokens`/`definition_col`) bekerja
+    /// dengan offset byte, jadi setiap Range yang dibangun dari token WAJIB
+    /// lewat helper ini — kalau tidak, range bergeser ke kanan pada baris
+    /// yang memuat UTF-8 sebelum identifier (mis. komentar `é`).
+    fn byte_col_to_char(line: &str, byte_col: u32) -> u32 {
+        let mut b = (byte_col as usize).min(line.len());
+        while b > 0 && !line.is_char_boundary(b) {
+            b -= 1;
+        }
+        line[..b].chars().count() as u32
+    }
+
+    /// Potong `line` memakai kolom KARAKTER (bentuk Range LSP) — LSP-26.
+    /// Slicing `&str` butuh offset byte, jadi konversi dulu; memakai kolom
+    /// karakter langsung sebagai offset bisa jatuh di tengah karakter
+    /// multi-byte dan panic (`byte index is not a char boundary`).
+    fn char_range_slice(line: &str, start: u32, end: u32) -> String {
+        let (a, b) = Self::char_range_bounds(line, start, end);
+        line[a..b].to_string()
+    }
+
+    /// Batas offset byte (start, end) untuk sepasang kolom KARAKTER — LSP-26.
+    fn char_range_bounds(line: &str, start: u32, end: u32) -> (usize, usize) {
+        let a = completions::char_index_to_byte(line, start as usize);
+        let b = completions::char_index_to_byte(line, end as usize).max(a);
+        (a, b)
+    }
+
     /// Tokenize satu baris menjadi (word, col) — ident [A-Za-z0-9_$] atau
     /// simbol tunggal. Untuk deteksi pola deklarasi.
     fn line_tokens(line: &str) -> Vec<(String, usize)> {
@@ -1235,8 +1266,9 @@ impl LspBackend {
     /// Err dengan pesan jelas bila kursor bukan identifier atau nama
     /// baru tidak valid.
     /// LSP-05 tahap 2a: validasi awal rename — kembalikan
-    /// (line, start_col, end_col) kata di kursor, atau None bila
-    /// kursor tidak di atas identifier.
+    /// (line, start_col, end_col) kata di kursor dalam kolom KARAKTER
+    /// (bentuk Range LSP, lihat LSP-26), atau None bila kursor tidak di
+    /// atas identifier.
     pub(crate) fn prepare_rename_range(
         source: &str,
         line: u32,
@@ -1246,7 +1278,13 @@ impl LspBackend {
         // Review R194 NIT-1/NIT-3: jangan tawarkan rename untuk keyword,
         // literal angka, `$display`, atau fragmen literal (`8'd5`).
         let (_, s, e) = Self::rename_word_at_position(line_text, character)?;
-        Some((line, s, e))
+        // LSP-26: s/e masih offset byte dari tokenizer → konversi ke indeks
+        // karakter agar Range prepareRename tidak bergeser pada baris UTF-8.
+        Some((
+            line,
+            Self::byte_col_to_char(line_text, s),
+            Self::byte_col_to_char(line_text, e),
+        ))
     }
 
     #[allow(dead_code)] // API tahap 1 (single-doc) — dipakai test; produksi
@@ -1336,7 +1374,8 @@ impl LspBackend {
 
     /// Core go-to-definition (murni, bisa diuji): cari lokasi definisi dari
     /// identifier di posisi kursor. Mengembalikan (line, col_start, col_end)
-    /// posisi definisi pertama dalam dokumen.
+    /// posisi definisi pertama dalam dokumen — kolom KARAKTER (siap dipakai
+    /// sebagai `Position.character`, lihat LSP-26).
     pub(crate) fn find_definition(
         source: &str,
         line: u32,
@@ -1350,7 +1389,13 @@ impl LspBackend {
             // definisi boleh saja di baris yang sama (deklarasi inline),
             // jadi tetap periksa semua baris.
             if let Some(col) = Self::definition_col(text, &word) {
-                return Some((idx as u32, col as u32, (col + word.len()) as u32));
+                // LSP-26: kolom token = offset byte → konversi ke indeks
+                // karakter sebelum masuk Range.
+                return Some((
+                    idx as u32,
+                    Self::byte_col_to_char(text, col as u32),
+                    Self::byte_col_to_char(text, (col + word.len()) as u32),
+                ));
             }
         }
         None
@@ -1387,8 +1432,8 @@ impl LspBackend {
                     return Some((
                         uri.clone(),
                         idx as u32,
-                        col as u32,
-                        (col + word.len()) as u32,
+                        Self::byte_col_to_char(line, col as u32),
+                        Self::byte_col_to_char(line, (col + word.len()) as u32),
                     ));
                 }
             }
@@ -1772,11 +1817,9 @@ impl LanguageServer for LspBackend {
         let placeholder = text
             .lines()
             .nth(line as usize)
-            .map(|l| {
-                let a = (s as usize).min(l.len());
-                let b = (e as usize).min(l.len());
-                l[a..b].to_string()
-            })
+            // LSP-26: s/e adalah kolom KARAKTER (bentuk Range), jadi
+            // pemotongan placeholder memakai helper char→byte.
+            .map(|l| Self::char_range_slice(l, s, e))
             .unwrap_or_default();
         Ok(Some(PrepareRenameResponse::RangeWithPlaceholder {
             range: Range {
@@ -3942,8 +3985,10 @@ endmodule
         let mut lines_mut: Vec<String> = SAMPLE.lines().map(|s| s.to_string()).collect();
         for (l, s, e) in edits.iter().rev() {
             let text = lines_mut[*l as usize].clone();
-            lines_mut[*l as usize] =
-                format!("{}{}{}", &text[..*s as usize], "en", &text[*e as usize..]);
+            // Kolom edit adalah indeks KARAKTER (LSP-26), sedangkan slicing
+            // &str butuh offset byte.
+            let (a, b) = LspBackend::char_range_bounds(&text, *s, *e);
+            lines_mut[*l as usize] = format!("{}{}{}", &text[..a], "en", &text[b..]);
         }
         assert!(lines_mut[decl_line as usize].contains("reg en;"));
         assert!(lines_mut[use_line as usize].contains("if (en)"));
@@ -4121,6 +4166,166 @@ endmodule
         let num = ["module m;", "  x = 42;", "endmodule"].join("\n");
         let ncol = num.lines().nth(1).unwrap().find("42").unwrap() as u32;
         assert!(LspBackend::compute_rename_edits(&num, 1, ncol, "y").is_err());
+    }
+
+    #[test]
+    fn byte_col_to_char_counts_characters_not_bytes() {
+        assert_eq!(LspBackend::byte_col_to_char("abc", 2), 2);
+        assert_eq!(LspBackend::byte_col_to_char("éab", 2), 1);
+        // Offset di tengah karakter multi-byte → mundur ke batas sebelumnya.
+        assert_eq!(LspBackend::byte_col_to_char("éab", 1), 0);
+        // Di-clamp ke akhir baris.
+        assert_eq!(LspBackend::byte_col_to_char("éab", 99), 3);
+        assert_eq!(LspBackend::byte_col_to_char("", 5), 0);
+    }
+
+    #[test]
+    fn char_range_slice_uses_character_columns() {
+        // Kolom 3..6 pada "éééabc" = "abc"; memakai offset byte 3..6 jatuh di
+        // tengah karakter dan panic.
+        assert_eq!(LspBackend::char_range_slice("éééabc", 3, 6), "abc");
+        assert_eq!(LspBackend::char_range_slice("clk", 0, 3), "clk");
+        assert_eq!(LspBackend::char_range_slice("clk", 2, 99), "k");
+        assert_eq!(LspBackend::char_range_slice("abc", 2, 2), "");
+        // start > end tidak boleh panic (di-clamp ke rentang kosong).
+        assert_eq!(LspBackend::char_range_slice("clk", 2, 0), "");
+    }
+
+    /// Kolom KARAKTER dari `needle` di `line` (bukan offset byte).
+    /// Baris uji LSP-26 memuat `é` (2 byte) SEBELUM identifier sehingga
+    /// kolom byte dan kolom karakter berbeda — itulah yang membedakan
+    /// implementasi benar dari yang salah.
+    fn char_col(line: &str, needle: &str) -> u32 {
+        let byte = line.find(needle).expect("needle ada di baris");
+        line[..byte].chars().count() as u32
+    }
+
+    #[test]
+    fn definition_range_uses_character_columns_on_multibyte_line() {
+        // `B` adalah anggota enum setelah komentar ber-UTF-8 di baris sama.
+        let src = "typedef enum {A /* é */, B} t;\nmodule m;\nendmodule\n";
+        let line = src.lines().next().unwrap();
+        let b = char_col(line, "B}");
+        assert_ne!(b, line.find('B').unwrap() as u32, "prasyarat: byte ≠ char");
+        assert_eq!(LspBackend::find_definition(src, 0, b), Some((0, b, b + 1)));
+    }
+
+    #[test]
+    fn find_references_uses_character_columns_on_multibyte_line() {
+        // Jalur core single-doc (dipakai compute_rename_edits).
+        let line = "initial $display(\"é\"); clk = 1;";
+        let src = format!("module m;\n{}\nendmodule\n", line);
+        let c = char_col(line, "clk");
+        assert_ne!(
+            c,
+            line.find("clk").unwrap() as u32,
+            "prasyarat: byte ≠ char"
+        );
+        let hits = LspBackend::find_references(&src, 1, c);
+        assert_eq!(
+            hits,
+            vec![(1, c, c + 3)],
+            "find_references harus memakai kolom karakter"
+        );
+    }
+
+    #[test]
+    fn cross_file_definition_uses_character_columns_on_multibyte_line() {
+        // Jalur fallback goto_definition lintas file.
+        let def_line = "typedef enum {A /* é */, B} t;";
+        let docs = vec![
+            (
+                "file:///a.sv".to_string(),
+                "module m;\nendmodule\n".to_string(),
+            ),
+            ("file:///b.sv".to_string(), format!("{}\n", def_line)),
+        ];
+        let b = char_col(def_line, "B}");
+        assert_ne!(
+            b,
+            def_line.find('B').unwrap() as u32,
+            "prasyarat: byte ≠ char"
+        );
+        assert_eq!(
+            LspBackend::find_definition_in_docs(&docs, "B", "file:///a.sv"),
+            Some(("file:///b.sv".to_string(), 0, b, b + 1))
+        );
+    }
+
+    #[test]
+    fn references_range_uses_character_columns_on_multibyte_line() {
+        // Pemakaian `clk` setelah string ber-UTF-8 di baris yang sama.
+        let use_line = "initial $display(\"é\"); clk = 1;";
+        let docs = vec![(
+            "file:///a.sv".to_string(),
+            format!("module m;\n{}\nlogic clk;\nendmodule\n", use_line),
+        )];
+        let c = char_col(use_line, "clk");
+        assert_ne!(
+            c,
+            use_line.find("clk").unwrap() as u32,
+            "prasyarat: byte ≠ char"
+        );
+        // Himpunan LENGKAP (bukan `any`) supaya konversi parsial — sebagian
+        // hit byte, sebagian karakter — juga gagal.
+        let hits = LspBackend::references_hits(&docs, "clk", true, 100);
+        assert_eq!(
+            hits,
+            vec![
+                ("file:///a.sv".to_string(), 1, c, c + 3),
+                ("file:///a.sv".to_string(), 2, 6, 9),
+            ],
+            "references harus memakai kolom karakter"
+        );
+        // Jalur include_declaration=false memakai collector terpisah
+        // (collect_uses_in_text) — kolomnya juga wajib karakter.
+        let uses = LspBackend::references_hits(&docs, "clk", false, 100);
+        assert_eq!(
+            uses,
+            vec![("file:///a.sv".to_string(), 1, c, c + 3)],
+            "pemakaian tanpa deklarasi harus memakai kolom karakter"
+        );
+    }
+
+    #[test]
+    fn rename_edits_use_character_columns_on_multibyte_line() {
+        let use_line = "initial $display(\"é\"); clk = 1;";
+        let docs = vec![(
+            "file:///a.sv".to_string(),
+            format!("module m;\n{}\nlogic clk;\nendmodule\n", use_line),
+        )];
+        let c = char_col(use_line, "clk");
+        assert_ne!(
+            c,
+            use_line.find("clk").unwrap() as u32,
+            "prasyarat: byte ≠ char"
+        );
+        let edits = LspBackend::compute_rename_edits_multi(&docs, "clk", "clock", 100).unwrap();
+        assert_eq!(
+            edits,
+            vec![
+                ("file:///a.sv".to_string(), 1, c, c + 3),
+                ("file:///a.sv".to_string(), 2, 6, 9),
+            ],
+            "edit rename harus memakai kolom karakter"
+        );
+    }
+
+    #[test]
+    fn prepare_rename_range_uses_character_columns_on_multibyte_line() {
+        // Kata setelah komentar blok ber-UTF-8.
+        let line = "  /* é */ wire clk;";
+        let src = format!("module m;\n{}\nendmodule\n", line);
+        let c = char_col(line, "clk");
+        assert_ne!(
+            c,
+            line.find("clk").unwrap() as u32,
+            "prasyarat: byte ≠ char"
+        );
+        assert_eq!(
+            LspBackend::prepare_rename_range(&src, 1, c),
+            Some((1, c, c + 3))
+        );
     }
 
     #[test]
