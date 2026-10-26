@@ -6062,6 +6062,19 @@ endmodule
     }
 
     #[test]
+    fn diagnostics_line_matches_source_with_directives() {
+        // PARSER-16: baris direktif kini menyumbang baris kosong, jadi error
+        // di baris sumber ke-3 dilaporkan di baris 2 (0-based), bukan 1.
+        let src = "\u{60}define W 8\nmodule m;\n  logic x = \"é\" + ;\nendmodule\n";
+        let d = LspBackend::parse_diagnostics(src)
+            .into_iter()
+            .find(|d| d.message.contains("expected expression"))
+            .expect("diagnostic harus ada");
+        assert_eq!(d.range.start.line, 2, "baris harus sama dengan sumber");
+        assert_eq!(d.range.start.character, 18, "kolom UTF-16 pada baris itu");
+    }
+
+    #[test]
     fn caret_width_uses_utf16_units() {
         // Lebar caret untuk range diagnostic: emoji 2 unit, ASCII 1.
         assert_eq!(caret_width_utf16("😀abc", 0), 2);

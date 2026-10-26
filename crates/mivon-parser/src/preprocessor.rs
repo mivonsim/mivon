@@ -261,6 +261,10 @@ impl Preprocessor {
                             output.push_str(&format!("`line {} \"{}\"\n", i + 2, p));
                         }
                     }
+                } else {
+                    // PARSER-16: baris di region tak-emit tetap menyumbang satu
+                    // baris output supaya nomor baris tidak bergeser.
+                    output.push('\n');
                 }
                 i += 1;
                 continue;
@@ -289,11 +293,13 @@ impl Preprocessor {
                 continue;
             }
 
+            let out_len_before = output.len();
             match cmd {
                 "include" => {
                     if emitting {
                         if rest.trim().starts_with('`') {
                             // Not actually an include — misparsed due to nested backtick
+                            output.push('\n');
                             i += 1;
                             continue;
                         }
@@ -306,6 +312,7 @@ impl Preprocessor {
                                         format!("{}", e),
                                     ));
                                 }
+                                output.push('\n');
                                 i += 1;
                                 continue;
                             }
@@ -603,6 +610,13 @@ impl Preprocessor {
                 _ => {
                     // Unknown backtick directive — skip silently
                 }
+            }
+
+            // PARSER-16: baris direktif yang tidak menghasilkan output tetap
+            // menyumbang satu baris kosong supaya nomor baris output sama
+            // dengan nomor baris sumber (diagnostic tidak bergeser).
+            if output.len() == out_len_before {
+                output.push('\n');
             }
 
             i += 1;
@@ -1715,6 +1729,36 @@ fn trailing_backslash_is_continuation(line: &str) -> bool {
 mod tests {
     use super::Preprocessor;
 
+    /// PARSER-16: baris direktif yang dikonsumsi tetap menyumbang satu baris
+    /// output, sehingga nomor baris kode == nomor baris sumber.
+    #[test]
+    fn directive_lines_preserve_source_line_numbers() {
+        let src = "\u{60}define W 8\nmodule m;\n  logic x;\nendmodule\n";
+        let mut pp = Preprocessor::new();
+        let out = pp.preprocess(src, None).unwrap();
+        assert_eq!(
+            out.lines().count(),
+            src.lines().count(),
+            "jumlah baris output harus sama dengan sumber: {out:?}"
+        );
+        assert_eq!(out.lines().nth(1), Some("module m;"));
+        assert_eq!(out.lines().nth(2), Some("  logic x;"));
+
+        // Region ifdef mati: baris di dalamnya tetap menyumbang baris kosong.
+        let src2 = "\u{60}ifdef NEVER\nlogic dead;\n\u{60}endif\nmodule n;\nendmodule\n";
+        let out2 = pp.preprocess(src2, None).unwrap();
+        assert_eq!(
+            out2.lines().count(),
+            src2.lines().count(),
+            "region mati juga menjaga jumlah baris: {out2:?}"
+        );
+        assert_eq!(out2.lines().nth(3), Some("module n;"));
+        assert!(
+            !out2.contains("dead"),
+            "cabang mati tidak boleh di-emit: {out2:?}"
+        );
+    }
+
     /// F84 (LRM §19.8): `` `timescale `` berlaku ke module SESUDAH directive
     /// dan berubah tiap directive baru — bukan properti global. Tanpa ini
     /// `#5` di module `1us` ikut diskalakan dengan satuan `1ns`.
@@ -1730,15 +1774,16 @@ mod tests {
             "dua directive → dua segmen: {:?}",
             pp.timescale_segments
         );
-        // Directive tidak ikut output, jadi `module fast` = baris output 1 dan
-        // `module slow` = baris output 2.
+        // PARSER-16: baris direktif tetap menyumbang satu baris kosong, jadi
+        // nomor baris output == nomor baris sumber: `module fast` = baris 2,
+        // `module slow` = baris 4.
         assert_eq!(
-            pp.timescale_at_line(1).map(|(u, _)| u.as_str()),
+            pp.timescale_at_line(2).map(|(u, _)| u.as_str()),
             Some("1ns"),
             "module fast ikut 1ns"
         );
         assert_eq!(
-            pp.timescale_at_line(2).map(|(u, _)| u.as_str()),
+            pp.timescale_at_line(4).map(|(u, _)| u.as_str()),
             Some("1us"),
             "module slow ikut 1us"
         );

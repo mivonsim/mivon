@@ -1284,8 +1284,8 @@ PARSER-14: ✅ AST differential — maria-api compare_asts (design_a vs
            design_b → Vec<String> diff) + test_compare_asts (regresi AST).
 PARSER-15:[] Tidak ada concrete syntax tree (CST) untuk LSP (High)
 
-PARSER-16:[] Baris diagnostic bergeser saat file memuat direktif preprocessor
-        (Medium; ditemukan saat review LSP-29 ROUND 218)
+PARSER-16: ✅ FIXED (ROUND 219) — Baris diagnostic bergeser saat file memuat
+        direktif preprocessor (Medium; ditemukan saat review LSP-29 ROUND 218)
         Preprocessor membuang baris direktif (`define/`ifdef/`endif/`include
         dan cabang yang di-skip) TANPA mempertahankan jumlah newline, sehingga
         penomoran baris teks hasil preprocess != nomor baris file sumber.
@@ -1300,10 +1300,31 @@ PARSER-16:[] Baris diagnostic bergeser saat file memuat direktif preprocessor
         salah). Bukan regresi LSP-29 (line sudah salah sebelumnya); LSP-29
         hanya mengonversi kolom dan memakai nilai mentah bila kolom melewati
         panjang baris agar tidak memperburuk.
-        Perbaikan yang diusulkan: preprocessor mempertahankan newline untuk
-        setiap baris sumber yang dikonsumsi (atau menghasilkan peta
-        (baris_pre, baris_src) yang dipakai parser), plus test diagnostik pada
-        file ber-`define.
+        Perbaikan (ROUND 219): preprocessor mempertahankan satu newline untuk
+        SETIAP baris sumber yang dikonsumsi tanpa output - baris direktif
+        (define/undef/ifdef/ifndef/elsif/else/endif/timescale/coverage_*
+        default_nettype/celldefine/unknown) dan baris di region tak-emit.
+        Implementasi: bandingkan panjang output sebelum/sesudah match direktif
+        (push newline bila tak ada output) + padding eksplisit pada jalur
+        continue (baris non-direktif tak-emit, include misparse/gagal parse).
+        Efek: nomor baris output == nomor baris sumber (tanpa include dan
+        tanpa makro/kontinuasi multi-baris; include dikoreksi lewat line
+        restore); diagnostic LSP/CLI menunjuk baris benar.
+        Test: preprocessor::directive_lines_preserve_source_line_numbers
+        (jumlah baris + posisi module pada file ber-define dan ifdef mati;
+        isi cabang mati tidak di-emit) dan
+        lsp::backend::tests::diagnostics_line_matches_source_with_directives
+        (error di baris sumber 3 -> line 2 0-based, char 18).
+        timescale_segments_are_per_directive diperbarui: module fast/slow kini
+        di baris output 2 dan 4 (== baris sumber), segmen tercatat mulai baris
+        1 dan 3 (baris direktif itu sendiri).
+        Mutasi: menonaktifkan padding pasca-match -> kedua test gagal (baris
+        kembali bergeser 1).
+        Batasan tersisa: baris dengan line-continuation backslash (beberapa
+        baris fisik digabung jadi satu baris logis) dan ekspansi makro
+        multi-baris masih memakai mekanisme lama (line re-sync / drift sisa)
+        - belum dicakup test. Suite penuh hijau: cargo nextest run --workspace
+        --all-features -> 3844 passed, 24 skipped.
 
 4.3 ELABORATOR GAPS
 
@@ -2857,11 +2878,11 @@ LSP-29: ✅ FIXED (ROUND 218) — Kolom LSP memakai UTF-16 code unit
         character_columns / "kolom karakter" DIPERTAHANKAN agar entri audit
         historis tetap cocok; semantiknya kini UTF-16 dan nilainya identik
         untuk karakter BMP (é = 1 unit) — pembeda non-BMP ada di test LSP-29.
-        Batasan yang diwarisi (dicatat sebagai PARSER-16): nomor baris hasil
+        Batasan terkait (PARSER-16, FIXED ROUND 219): dulu nomor baris hasil
         preprocess bergeser bila file memuat direktif yang dibuang tanpa
-        newline, jadi baris diagnostic sudah salah SEBELUM konversi kolom.
-        Konversi memakai nilai mentah bila kolom melewati panjang baris agar
-        tidak memperburuk (clamp akan menggeser lebih jauh).
+        newline, sehingga baris diagnostic sudah salah SEBELUM konversi kolom.
+        Kini preprocessor mempertahankan baris; guard nilai mentah (kolom >
+        panjang baris) tetap ada untuk ekspansi makro yang memperpanjang baris.
         Suite: 3842 passed, 24 skipped (cargo nextest run --workspace
         --all-features); cargo fmt --all bersih.
 
