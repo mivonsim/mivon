@@ -811,6 +811,15 @@ pub struct GuiState {
     /// Nama identifier hover frame sebelumnya (deteksi perubahan utk kirim
     /// request hover LSP, bukan tiap frame).
     pub lsp_last_hover: Option<String>,
+    /// Konteks per permintaan completion: id → (file, prefix). Dipetakan per
+    /// id (bukan satu slot) supaya reply yang datang tidak berurutan tetap
+    /// memakai konteks request-nya sendiri — jawaban basi tidak menimpa
+    /// jawaban terbaru.
+    pub lsp_completion_req: std::collections::HashMap<u64, (PathBuf, String)>,
+    /// Server pernah berhenti sendiri (EOF/crash). Auto-start berikutnya
+    /// diblokir supaya tidak spawn tiap frame; "Restart LSP" yang membuka
+    /// blokir ini.
+    pub lsp_auto_restart_blocked: bool,
     /// Name identifier hover terakhir — one-time note bila binary LSP tak ada.
     pub lsp_bin_noted: bool,
 }
@@ -820,6 +829,9 @@ pub struct GuiState {
 pub enum LspPendingKind {
     HoverRequest,
     GotoRequest,
+    /// LSP-25: permintaan completion — jawaban digabung ke popup editor
+    /// (lihat lsp_completion_req untuk file + prefix yang diminta).
+    CompletionRequest,
 }
 
 impl GuiState {
@@ -925,6 +937,8 @@ impl GuiState {
             lsp_opened: std::collections::HashSet::new(),
             lsp_last_change: std::collections::HashMap::new(),
             lsp_last_hover: None,
+            lsp_completion_req: std::collections::HashMap::new(),
+            lsp_auto_restart_blocked: false,
             lsp_bin_noted: false,
         }
     }
@@ -1033,6 +1047,13 @@ impl GuiState {
     pub fn close_file(&mut self, idx: usize) {
         if idx >= self.open_files.len() {
             return;
+        }
+        // Tutup dokumen di server: tanpa didClose server memegang teks lama
+        // (tab ditutup tanpa simpan lalu dibuka lagi → hover/completion
+        // memakai isi basi karena didChange tidak dikirim ulang).
+        let path = self.open_files[idx].path.clone();
+        if self.lsp_ready && self.lsp_opened.remove(&path) {
+            let _ = self.lsp_send(crate::lsp_client::LspCmd::DidClose { path });
         }
         self.open_files.remove(idx);
         match self.active_file {

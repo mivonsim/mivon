@@ -2503,8 +2503,86 @@ LSP-24: ✅ Selection range (ROUND 90) — smart selection (word → line → sc
            via backward scan + matching end keyword). Nested SelectionRange chain.
            find_enclosing_scope: backward scan depth tracking + forward scan for matching end.
            1 test: test_selection_range (3-level nesting verified).
-LSP-25:[] Tauri GUI uses Monaco — hanya text editor, no
-        language intelligence (High)
+LSP-25: ⚠️ PARTIAL (ROUND 214) — GUI punya language intelligence via LSP
+        Klaim audit ("Tauri GUI + Monaco, hanya text editor") sudah usang:
+        GUI sekarang egui (crates/mivon-gui), tidak ada Tauri/Monaco, dan
+        intelligence datang dari client LSP (mivon --lsp):
+        - diagnostics (publishDiagnostics → Problems/minimap/status bar),
+        - hover (textDocument/hover → popup),
+        - go-to-definition (textDocument/definition, fallback heuristik lokal),
+        - completion (BARU ROUND 214): LspCmd::Completion →
+          textDocument/completion (triggerKind 1) → completion_items()
+          (menerima array CompletionItem atau CompletionList{items}, dedup,
+          cap 200). Konteks disimpan PER ID (lsp_completion_req: id →
+          (file, prefix)) sehingga reply tidak berurutan tidak saling
+          menimpa/menghapus; hasil digabung hanya bila popup masih terbuka
+          untuk file+prefix yang sama.
+          merge_completion() memfilter item server dengan prefix KLIEN
+          (posisi server bisa tertinggal karena didChange di-debounce, atau
+          caret di tengah kata), menaruh kandidat lokal di depan, membuang
+          duplikat, memotong ke 50; pilihan lama dicari ulang per label.
+          Posisi caret dikonversi byte → indeks karakter sebelum
+          line_col_at_char (file UTF-8; jalur hover juga begitu).
+          Saat server mati: lsp_pending + lsp_completion_req dibersihkan;
+        in_loop kini mengirim GuiEvent::LspStopped saat EOF/error (sebelumnya
+        server crash/exit tidak pernah dilaporkan → status bar tetap "siap"
+        dan request menggantung menumpuk).
+        Server (crates/mivon-env/src/lsp/backend/completions.rs): kolom
+        character dari klien = indeks karakter, dikonversi ke offset byte
+        lewat char_index_to_byte sebelum memotong str. Sebelumnya kolom
+        dipakai langsung sebagai indeks byte → panic "not a char boundary"
+        pada baris ber-UTF-8 (komentar é) dan prefix terpotong.
+        Test: GUI 7 (lsp_client: bentuk array & list, dedup + label kosong/
+        hilang, cap 200 dikunci eksplisit, params via Url::from_file_path,
+        merge: filter prefix + lokal di depan + buang prefix basi + cap
+        menjaga lokal) + server 3 (char_index_to_byte clamp/multibyte,
+        tidak panic saat kolom jatuh di tengah karakter, prefix setelah baris
+        ber-multibyte).
+        Server hover/definition + selection range: word_at_position dan
+        compute_selection_range juga mengonversi kolom karakter → byte
+        (identifier terpotong / range salah pada baris ber-UTF-8), dan kolom
+        hasil walk dikonversi balik ke indeks karakter untuk Range.
+        Anti spawn-storm: LspStopped men-set lsp_auto_restart_blocked sehingga
+        maybe_start_lsp tidak spawn tiap frame saat server selalu gagal;
+        "Restart LSP" membersihkan flag + lsp_pending + lsp_completion_req +
+        lsp_last_change/last_hover (rx lama di-drop sebelum in_loop sempat
+        mengirim LspStopped).
+        GUI editor: byte_idx_at_line_col mengonversi kolom karakter → byte
+        (hover/Ctrl+Click tidak menemukan identifier pada baris ber-UTF-8);
+        selection range line/scope memakai jumlah karakter untuk kolom akhir;
+        lsp_auto_restart_blocked di-reset saat proyek baru dibuka.
+        Ikut diperbaiki (temuan review, pre-existing di lingkup LSP):
+        - chain SelectionRange kini sesuai spec (top-level = kata, parent =
+          baris, parent terluar = scope) — sebelumnya terbalik sehingga
+          Expand Selection langsung memilih seluruh module;
+        - find_enclosing_scope aman untuk posisi EOF setelah newline
+          terakhir (dulu lines[i] panic);
+        - ganti proyek mematikan server LSP lama (root workspace lama tidak
+          boleh dipakai untuk definition lintas file proyek baru);
+        - close_file mengirim didClose + memangkas lsp_opened (server tidak
+          lagi memegang teks basi saat tab ditutup tanpa simpan).
+        Mutasi terbukti: hapus dedup → gagal; ubah cap → gagal; hapus filter
+        prefix di merge → 2 test gagal; pakai kolom sebagai indeks byte →
+        test panic + test prefix exact-list gagal; word_at_position byte →
+        test multibyte gagal; byte_idx_at_line_col byte → test GUI gagal;
+        line_range byte → test selection range gagal.
+        Batasan tersisa (item baru LSP-26): Range untuk definition/references/
+        rename masih memakai offset byte sebagai Position.character.
+        Catatan verifikasi: suite penuh 3674 lulus (mivon-fuzz dikecualikan
+        saat linking karena disk root 100% penuh; perubahan tidak menyentuh
+        crate fuzz). Rekap test baru: GUI 8 (lsp_client 7 + editor 1) dan
+        server 6 (completions 3 + backend 3).
+        Sisa: rename symbol masih lokal (belum textDocument/rename +
+        workspace edit), belum ada references/signature help.
+
+LSP-26:[] Range definition/references/rename memakai kolom byte
+        word_at_position/definition_col mengembalikan offset byte dan dipakai
+        langsung sebagai Position.character di goto_definition, references,
+        prepare_rename, dan edit rename. Klien LSP standar (VS Code/Neovim)
+        melihat range bergeser ke kanan pada baris ber-UTF-8. Tidak reachable
+        dari GUI (GUI hanya memakai /range/start/line). Perbaikan: konversi
+        byte → indeks karakter saat membangun Range (perlu teks baris di call
+        site) — sisa dari LSP-25 ROUND 214.
 
 4.10 ENTERPRISE GAPS
 

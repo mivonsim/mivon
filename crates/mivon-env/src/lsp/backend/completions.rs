@@ -2,6 +2,18 @@
 //! `resolve` untuk dokumentasi tambahan.
 use super::*;
 
+/// Offset byte untuk indeks karakter ke-char_idx (di-clamp ke akhir baris).
+///
+/// Klien mengirim kolom sebagai indeks karakter; memakainya langsung sebagai
+/// indeks byte membuat potongan &str panic di tengah karakter multi-byte
+/// (mis. komentar ber-UTF-8 sebelum caret) dan prefix terhitung salah.
+pub(super) fn char_index_to_byte(line: &str, char_idx: usize) -> usize {
+    line.char_indices()
+        .nth(char_idx)
+        .map(|(b, _)| b)
+        .unwrap_or(line.len())
+}
+
 impl LspBackend {
     /// LSP-02 tahap 2a: snippet blok untuk keyword struktural.
     /// Return body snippet LSP (`$1` = tab stop pertama) atau None.
@@ -164,7 +176,7 @@ impl LspBackend {
         let line_text = source.lines().nth(line as usize).unwrap_or("");
         // Prefix = karakter identifier yang sudah diketik sebelum kursor.
         let bytes = line_text.as_bytes();
-        let ch = (character as usize).min(bytes.len());
+        let ch = char_index_to_byte(line_text, character as usize);
         let mut start = ch;
         while start > 0
             && (bytes[start - 1].is_ascii_alphanumeric()
@@ -230,5 +242,49 @@ impl LspBackend {
         };
         out.sort_by(|a, b| rank(&a.0, a.1).cmp(&rank(&b.0, b.1)).then(a.0.cmp(&b.0)));
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn char_index_to_byte_handles_multibyte_and_clamps() {
+        assert_eq!(char_index_to_byte("abc", 2), 2);
+        assert_eq!(char_index_to_byte("é", 1), 2, "é = 2 byte");
+        assert_eq!(
+            char_index_to_byte("é", 9),
+            2,
+            "kolom melewati baris di-clamp"
+        );
+        assert_eq!(char_index_to_byte("", 3), 0);
+    }
+
+    #[test]
+    fn completions_do_not_panic_when_column_lands_mid_character() {
+        // Baris 0 = "é" (1 karakter, 2 byte). Kolom karakter 1 = byte 2;
+        // memakai kolom sebagai indeks byte membuat potongan &str mulai di
+        // tengah karakter → panic. Dengan konversi benar prefix kosong.
+        let src = "é\nmodule m;\n  logic clk;\nendmodule\n";
+        let items = LspBackend::compute_completions(src, 0, 1);
+        assert!(items.is_empty(), "tidak ada prefix identifier: {items:?}");
+    }
+
+    #[test]
+    fn completions_prefix_after_multibyte_line() {
+        // Baris 0 = "// é clk" (8 karakter, 9 byte). Kolom karakter 8 harus
+        // menghasilkan prefix "clk" — memakai kolom sebagai indeks byte
+        // membuat potongan str panic / prefix terpotong.
+        let src = "// é clk
+module m;
+  logic clk;
+endmodule
+";
+        let items = LspBackend::compute_completions(src, 0, 8);
+        // Prefix harus tepat "clk" — prefix "cl" (kolom dipakai sebagai byte)
+        // juga akan memuat keyword class/clocking, jadi daftar dikunci persis.
+        let names: Vec<&str> = items.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, vec!["clk"], "prefix clk: {names:?}");
     }
 }

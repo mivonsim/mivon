@@ -54,6 +54,14 @@ pub enum LspCmd {
         line: u32,
         character: u32,
     },
+    /// LSP-25: completion dari server (simbol lintas file), bukan hanya
+    /// kandidat lokal AST + keyword.
+    Completion {
+        id: u64,
+        path: PathBuf,
+        line: u32,
+        character: u32,
+    },
     /// Matikan server (shutdown + exit + kill).
     Stop,
 }
@@ -77,6 +85,16 @@ fn pos(line: u32, character: u32) -> Value {
 fn writer_send(w: &mut ChildStdin, msg: &str) {
     let _ = write!(w, "{}\r\n", msg);
     let _ = w.flush();
+}
+
+/// Parameter permintaan completion: posisi caret + triggerKind 1 (invoked)
+/// supaya server boleh mengembalikan daftar penuh; UI yang memfilter prefix.
+fn completion_params(path: &PathBuf, line: u32, character: u32) -> Value {
+    serde_json::json!({
+        "textDocument": { "uri": uri(path) },
+        "position": pos(line, character),
+        "context": { "triggerKind": 1 },
+    })
 }
 
 fn request(w: &mut ChildStdin, id: u64, method: &str, params: Value) {
@@ -273,6 +291,21 @@ fn out_loop(rx: Receiver<LspCmd>, tx_gui: Sender<GuiEvent>) {
                     );
                 }
             }
+            LspCmd::Completion {
+                id,
+                path,
+                line,
+                character,
+            } => {
+                if let Some(w) = writer.as_mut() {
+                    request(
+                        w,
+                        id,
+                        "textDocument/completion",
+                        completion_params(&path, line, character),
+                    );
+                }
+            }
             LspCmd::Stop => {
                 if let Some(w) = writer.as_mut() {
                     request(w, 999, "shutdown", serde_json::json!({}));
@@ -307,6 +340,10 @@ fn in_loop(mut pipe: ChildStdout, tx_gui: Sender<GuiEvent>) {
             Err(_) => break,
         }
     }
+    // EOF/error = server mati (crash/exit). Tanpa notifikasi ini UI tetap
+    // mengira LSP siap, request menggantung menumpuk, dan cleanup di app.rs
+    // tidak pernah jalan.
+    let _ = tx_gui.send(GuiEvent::LspStopped("server berhenti (EOF)".to_string()));
 }
 
 /// Ambil satu body JSON-RPC dari buffer frame; `None` bila belum lengkap.
@@ -434,6 +471,69 @@ fn marked_to_text(m: &lsp_types::MarkedString) -> String {
     }
 }
 
+/// Batas kandidat completion dari server (UI memfilter prefix lalu
+/// memotong lagi ke 50 untuk popup).
+const MAX_COMPLETION_ITEMS: usize = 200;
+
+/// Extrak label dari reply permintaan completion. Server boleh menjawab
+/// array CompletionItem langsung atau CompletionList berisi items; label
+/// kosong/duplikat dibuang, urutan server dipertahankan.
+pub fn completion_items(value: &Value) -> Vec<String> {
+    let arr = value
+        .as_array()
+        .or_else(|| value.get("items").and_then(Value::as_array));
+    let Some(arr) = arr else {
+        return Vec::new();
+    };
+    let mut out: Vec<String> = Vec::new();
+    for item in arr {
+        let Some(label) = item.get("label").and_then(Value::as_str) else {
+            continue;
+        };
+        let label = label.trim();
+        if label.is_empty() || out.iter().any(|s| s == label) {
+            continue;
+        }
+        out.push(label.to_string());
+        if out.len() >= MAX_COMPLETION_ITEMS {
+            break;
+        }
+    }
+    out
+}
+
+/// Gabungkan kandidat lokal (sudah terfilter prefix) dengan kandidat server.
+///
+/// Kandidat server difilter prefix di sisi klien: posisi yang dikirim ke
+/// server bisa tertinggal dari teks popup (didChange di-debounce) atau caret
+/// berada di tengah kata, jadi daftar server tidak boleh dipercaya mentah.
+/// Kandidat lokal dipertahankan di depan; duplikat dibuang; hasil dipotong
+/// ke cap.
+pub fn merge_completion(
+    local: &[String],
+    server: &[String],
+    prefix: &str,
+    cap: usize,
+) -> Vec<String> {
+    let matches = |s: &str| {
+        s.get(..prefix.len())
+            .map(|h| h.eq_ignore_ascii_case(prefix))
+            .unwrap_or(false)
+    };
+    let mut out: Vec<String> = local.to_vec();
+    for item in server {
+        if !matches(item) || out.iter().any(|s| s == item) {
+            continue;
+        }
+        out.push(item.clone());
+        if out.len() >= cap {
+            break;
+        }
+    }
+    out.truncate(cap);
+    out
+}
+
 /// Extrak target definisi dari reply `textDocument/definition` — lokasi
 /// pertama (0-based → line 1-based). None bila kosong.
 pub fn definition_target(value: &Value) -> Option<(PathBuf, usize)> {
@@ -507,6 +607,93 @@ mod tests {
             }
             _ => panic!("bukan LspDiagnostics"),
         }
+    }
+
+    #[test]
+    fn completion_items_accepts_array_and_list() {
+        let arr: Value = serde_json::from_str(r#"[{"label":"alpha"},{"label":"beta"}]"#).unwrap();
+        assert_eq!(
+            completion_items(&arr),
+            vec!["alpha".to_string(), "beta".to_string()]
+        );
+        let list: Value =
+            serde_json::from_str(r#"{"isIncomplete":false,"items":[{"label":"gamma"}]}"#).unwrap();
+        assert_eq!(completion_items(&list), vec!["gamma".to_string()]);
+    }
+
+    #[test]
+    fn completion_items_dedupes_and_skips_invalid() {
+        let v: Value = serde_json::from_str(
+            r#"[{"label":"a"},{"label":"a"},{"label":"  "},{"detail":"x"},{"label":" b "}]"#,
+        )
+        .unwrap();
+        assert_eq!(completion_items(&v), vec!["a".to_string(), "b".to_string()]);
+        assert!(completion_items(&Value::Null).is_empty());
+        assert!(completion_items(&serde_json::json!({ "items": "x" })).is_empty());
+    }
+
+    #[test]
+    fn completion_items_caps_at_limit() {
+        // Batas 200 adalah kontrak UI (popup memotong lagi ke 50) — dikunci
+        // eksplisit supaya mengubah konstanta menggagalkan test.
+        assert_eq!(MAX_COMPLETION_ITEMS, 200);
+        let arr: Vec<Value> = (0..240)
+            .map(|i| serde_json::json!({ "label": format!("s{i}") }))
+            .collect();
+        let items = completion_items(&Value::Array(arr));
+        assert_eq!(items.len(), 200);
+        assert_eq!(items[0], "s0");
+        assert_eq!(items[199], "s199");
+    }
+
+    #[test]
+    fn merge_completion_filters_prefix_and_keeps_local_first() {
+        let local = vec!["clock".to_string()];
+        let server = vec![
+            "clock".to_string(),
+            "clocking".to_string(),
+            "case".to_string(),
+        ];
+        let out = merge_completion(&local, &server, "clo", 50);
+        assert_eq!(out, vec!["clock".to_string(), "clocking".to_string()]);
+    }
+
+    #[test]
+    fn merge_completion_drops_stale_prefix_items() {
+        // Server bisa masih memakai teks lama (didChange di-debounce) —
+        // item yang tidak cocok prefix popup wajib dibuang.
+        let local = vec!["clk".to_string()];
+        let server = vec!["case".to_string(), "class".to_string()];
+        let out = merge_completion(&local, &server, "clk", 50);
+        assert_eq!(out, vec!["clk".to_string()]);
+    }
+
+    #[test]
+    fn merge_completion_cap_keeps_local_candidates() {
+        let local = vec!["a1".to_string(), "a2".to_string()];
+        let server = vec!["a3".to_string()];
+        let out = merge_completion(&local, &server, "a", 2);
+        assert_eq!(out, vec!["a1".to_string(), "a2".to_string()]);
+    }
+
+    #[test]
+    fn completion_params_carries_uri_position_and_trigger() {
+        let path = PathBuf::from("/tmp/a.sv");
+        let expect = lsp_types::Url::from_file_path(&path).unwrap().to_string();
+        let p = completion_params(&path, 3, 7);
+        assert_eq!(
+            p.pointer("/textDocument/uri").and_then(Value::as_str),
+            Some(expect.as_str())
+        );
+        assert_eq!(p.pointer("/position/line").and_then(Value::as_u64), Some(3));
+        assert_eq!(
+            p.pointer("/position/character").and_then(Value::as_u64),
+            Some(7)
+        );
+        assert_eq!(
+            p.pointer("/context/triggerKind").and_then(Value::as_u64),
+            Some(1)
+        );
     }
 
     /// E2E: client nyata ↔ server nyata (`mivon --lsp`). DIDOpen file SV

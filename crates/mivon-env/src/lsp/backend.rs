@@ -741,7 +741,10 @@ impl LspBackend {
     /// Identifier SV: [A-Za-z0-9_$]. Mengembalikan (word, start_col, end_col).
     fn word_at_position(line_text: &str, character: u32) -> Option<(String, u32, u32)> {
         let bytes = line_text.as_bytes();
-        let ch = character as usize;
+        // Kolom dari klien = indeks karakter (UTF-16 untuk BMP), bukan offset
+        // byte. Konversi dulu: memakainya langsung menggeser/memotong
+        // identifier pada baris ber-UTF-8 (komentar é sebelum kode).
+        let ch = completions::char_index_to_byte(line_text, character as usize);
         let is_ident = |c: u8| c.is_ascii_alphanumeric() || c == b'_' || c == b'$';
 
         if ch > bytes.len() {
@@ -2450,7 +2453,7 @@ fn compute_selection_range(text: &str, line: u32, character: u32) -> SelectionRa
     // Innermost: the word at cursor.
     let word_range = if let Some(line_text) = lines.get(line_idx) {
         let bytes = line_text.as_bytes();
-        let ch = character as usize;
+        let ch = completions::char_index_to_byte(line_text, character as usize);
         let is_ident = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
         let mut start = ch.min(bytes.len());
         while start > 0 && is_ident(bytes[start - 1]) {
@@ -2461,10 +2464,10 @@ fn compute_selection_range(text: &str, line: u32, character: u32) -> SelectionRa
             end += 1;
         }
         if start < end {
-            Range::new(
-                Position::new(line, start as u32),
-                Position::new(line, end as u32),
-            )
+            // start/end = offset byte hasil walk; LSP memakai kolom karakter.
+            let start_col = line_text[..start].chars().count() as u32;
+            let end_col = line_text[..end].chars().count() as u32;
+            Range::new(Position::new(line, start_col), Position::new(line, end_col))
         } else {
             Range::new(
                 Position::new(line, character),
@@ -2478,12 +2481,15 @@ fn compute_selection_range(text: &str, line: u32, character: u32) -> SelectionRa
         )
     };
 
-    // Middle: the entire line.
+    // Middle: the entire line (kolom = jumlah KARAKTER, bukan byte).
     let line_range = Range::new(
         Position::new(line, 0),
         Position::new(
             line,
-            lines.get(line_idx).map(|l| l.len() as u32).unwrap_or(0),
+            lines
+                .get(line_idx)
+                .map(|l| l.chars().count() as u32)
+                .unwrap_or(0),
         ),
     );
 
@@ -2493,13 +2499,15 @@ fn compute_selection_range(text: &str, line: u32, character: u32) -> SelectionRa
         Position::new(lines.len() as u32, 0),
     ));
 
-    // Build nested chain: word → line → scope.
+    // Spec LSP: range teratas = yang TERKECIL; parent = range yang memuatnya.
+    // Urutan: word → line → scope (sebelumnya terbalik sehingga Expand
+    // Selection langsung memilih seluruh module).
     SelectionRange {
-        range: scope_range,
+        range: word_range,
         parent: Some(Box::new(SelectionRange {
             range: line_range,
             parent: Some(Box::new(SelectionRange {
-                range: word_range,
+                range: scope_range,
                 parent: None,
             })),
         })),
@@ -2508,6 +2516,11 @@ fn compute_selection_range(text: &str, line: u32, character: u32) -> SelectionRa
 
 /// Find the enclosing scope range for a given line.
 fn find_enclosing_scope(lines: &[&str], target_line: usize) -> Option<Range> {
+    // EOF setelah newline terakhir: posisi sah tapi tidak ada baris →
+    // tanpa guard ini lines[i] panic (request selectionRange di ujung file).
+    if target_line >= lines.len() {
+        return None;
+    }
     const OPEN_KW: &[&str] = &[
         "module",
         "macromodule",
@@ -2551,7 +2564,8 @@ fn find_enclosing_scope(lines: &[&str], target_line: usize) -> Option<Range> {
                         if end_depth == 0 {
                             return Some(Range::new(
                                 Position::new(i as u32, 0),
-                                Position::new(j as u32, line.len() as u32),
+                                // Kolom akhir = jumlah karakter (bukan byte).
+                                Position::new(j as u32, line.chars().count() as u32),
                             ));
                         }
                     }
@@ -4600,6 +4614,39 @@ endmodule
     }
 
     #[test]
+    fn selection_range_line_end_uses_character_column() {
+        // "// café" = 7 karakter (8 byte). Akhir range baris harus 7.
+        let sr = compute_selection_range("// café\n", 0, 4);
+        // Spec LSP: top-level = range terkecil (kata), parent = lebih besar.
+        assert_eq!(sr.range.start.character, 3, "top-level harus kata (caf)");
+        let line_range = sr.parent.as_ref().expect("range baris");
+        assert_eq!(
+            line_range.range.end.character, 7,
+            "akhir baris = jumlah karakter, bukan byte"
+        );
+        assert!(
+            sr.parent.as_ref().and_then(|p| p.parent.as_ref()).is_some(),
+            "scope harus jadi parent terluar"
+        );
+    }
+
+    #[test]
+    fn selection_range_at_eof_after_trailing_newline_does_not_panic() {
+        // "module m;\nendmodule\n" → lines() = 2 baris; posisi (2,0) sah
+        // (Expand Selection di ujung file).
+        let sr = compute_selection_range("module m;\nendmodule\n", 2, 0);
+        assert!(sr.parent.is_some());
+    }
+
+    #[test]
+    fn word_at_position_uses_character_column_on_multibyte_line() {
+        // "éclk": kolom karakter 1 (= awal "clk") = byte 2. Tanpa konversi,
+        // kolom 1 jatuh di tengah é → tidak ada kata.
+        let (word, _, _) = LspBackend::word_at_position("éclk", 1).expect("kata harus ada");
+        assert_eq!(word, "clk");
+    }
+
+    #[test]
     fn test_completions() {
         // Prefix "cou" → counter + counter_aux (simbol), bukan keyword.
         let use_line = line_of("counter_aux aux");
@@ -4817,17 +4864,26 @@ endmodule
     fn test_selection_range() {
         let src = "module m;\n  logic a;\nendmodule\n";
         let range = compute_selection_range(src, 1, 5);
-        // Should have nested ranges: word → line → scope.
-        assert!(range.parent.is_some(), "should have parent: {:?}", range);
-        let parent = range.parent.as_ref().unwrap();
-        assert!(
-            parent.parent.is_some(),
-            "should have grandparent: {:?}",
-            parent
+        // Spec LSP: top-level = range TERKECIL (kata), lalu baris, lalu scope.
+        let word = &range.range;
+        assert_eq!(
+            (word.start.line, word.start.character),
+            (1, 2),
+            "top-level harus kata logic: {word:?}"
         );
-        // Word range should be non-empty.
-        let word = &parent.parent.as_ref().unwrap().range;
-        assert!(word.start.line == 1, "word line: {:?}", word);
+        let line = range.parent.as_ref().expect("range baris");
+        assert_eq!(
+            (line.range.start.line, line.range.start.character),
+            (1, 0),
+            "parent kedua = seluruh baris"
+        );
+        let scope = line.parent.as_ref().expect("range scope");
+        assert_eq!(
+            (scope.range.start.line, scope.range.start.character),
+            (0, 0),
+            "parent terluar = scope module"
+        );
+        assert!(scope.parent.is_none(), "scope harus parent terakhir");
     }
 
     #[test]

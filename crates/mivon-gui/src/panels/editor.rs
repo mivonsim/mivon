@@ -326,6 +326,9 @@ pub fn show(ui: &mut egui::Ui, state: &mut super::super::state::GuiState) {
     let mut lsp_cmds: Vec<crate::lsp_client::LspCmd> = Vec::new();
     let mut lsp_pending: Vec<(u64, LspPendingKind)> = Vec::new();
     let mut lsp_next = state.lsp_next_id;
+    // Konteks permintaan completion: id → (file, prefix) — di-flush bersama
+    // perintah. Per id supaya reply tidak berurutan tetap cocok.
+    let mut completion_reqs: Vec<(u64, (PathBuf, String))> = Vec::new();
     // Snapshot hover sebelumnya — diperbarui di dalam closure (bukan
     // `state.lsp_last_hover` langsung, hindari borrow).
     let mut lsp_last_hover0 = state.lsp_last_hover.clone();
@@ -694,6 +697,30 @@ pub fn show(ui: &mut egui::Ui, state: &mut super::super::state::GuiState) {
                                 .collect();
                             f.completion_items = filtered;
                             f.completion_selected = 0;
+                            // LSP-25: popup sudah tampil dengan kandidat
+                            // lokal; server menambah simbol lintas file yang
+                            // tidak ada di AST (hasil digabung di app.rs).
+                            if lsp_ready {
+                                if let Some(cb) = caret_byte {
+                                    // cb = offset byte; LSP memakai indeks
+                                    // karakter per baris. Konversi dulu
+                                    // (jalur hover juga begitu) — tanpa ini
+                                    // file ber-UTF-8 mengirim kolom salah.
+                                    let ci = f.content[..cb.min(f.content.len())].chars().count();
+                                    let (l0, c0) = line_col_at_char(&f.content, ci);
+                                    let id = lsp_next;
+                                    lsp_next = lsp_next.wrapping_add(1).max(1000);
+                                    lsp_pending.push((id, LspPendingKind::CompletionRequest));
+                                    lsp_cmds.push(crate::lsp_client::LspCmd::Completion {
+                                        id,
+                                        path: f.path.clone(),
+                                        line: l0 as u32,
+                                        character: c0 as u32,
+                                    });
+                                    completion_reqs
+                                        .push((id, (f.path.clone(), prefix.to_string())));
+                                }
+                            }
                         }
                     }
                 }
@@ -803,6 +830,9 @@ pub fn show(ui: &mut egui::Ui, state: &mut super::super::state::GuiState) {
     // sini) + sinkron status hover. ──
     state.lsp_last_hover = lsp_last_hover0;
     if !lsp_pending.is_empty() || !lsp_cmds.is_empty() {
+        for (id, req) in completion_reqs {
+            state.lsp_completion_req.insert(id, req);
+        }
         state.lsp_next_id = lsp_next.max(1000);
         for (id, kind) in lsp_pending {
             state.lsp_pending.insert(id, kind);
@@ -1538,11 +1568,20 @@ fn first_word_line(content: &str, name: &str) -> Option<usize> {
 }
 
 /// Byte index karakter pada (row 0-based, col) di konten multi-baris.
+/// col = indeks karakter (hasil x / char_w), dikonversi ke offset byte.
 fn byte_idx_at_line_col(content: &str, row: usize, col: usize) -> usize {
     let mut idx = 0usize;
     for (i, line) in content.split('\n').enumerate() {
         if i == row {
-            return (idx + col.min(line.len())).min(content.len());
+            // col = indeks KARAKTER (dari x / char_w), bukan offset byte.
+            // Memakainya langsung menggeser posisi pada baris ber-UTF-8
+            // sehingga hover/Ctrl+Click tidak menemukan identifier.
+            let off = line
+                .char_indices()
+                .nth(col)
+                .map(|(b, _)| b)
+                .unwrap_or(line.len());
+            return (idx + off).min(content.len());
         }
         idx += line.len() + 1; // + newline
     }
@@ -2010,4 +2049,20 @@ fn word_region(content: &str, byte_idx: usize) -> (usize, usize) {
         end += 1;
     }
     (start, end)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::byte_idx_at_line_col;
+
+    #[test]
+    fn byte_index_uses_character_column_on_multibyte_line() {
+        let content = "é clk\nx";
+        // "é clk": kolom karakter 2 = 'c' (byte 3, karena é 2 byte).
+        assert_eq!(byte_idx_at_line_col(content, 0, 2), 3);
+        // Kolom melewati akhir baris → akhir baris.
+        assert_eq!(byte_idx_at_line_col(content, 0, 99), "é clk".len());
+        // Baris berikutnya dihitung dari offset byte baris pertama.
+        assert_eq!(byte_idx_at_line_col(content, 1, 1), content.len());
+    }
 }

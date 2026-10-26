@@ -202,6 +202,11 @@ impl MivonApp {
                 // Izinkan start ulang (mis. binary berubah).
                 self.state.lsp = None;
                 self.state.lsp_opened.clear();
+                // Request yang belum dijawab tidak akan pernah dijawab lagi
+                // (server mati) — buang agar tidak menumpuk lintas restart.
+                self.state.lsp_pending.clear();
+                self.state.lsp_completion_req.clear();
+                self.state.lsp_auto_restart_blocked = true;
                 self.state.log(format!("⛔ LSP server: {}", reason));
             }
             GuiEvent::LspDiagnostics(file, diags) => {
@@ -257,6 +262,51 @@ impl MivonApp {
                             }
                         }
                     }
+                    Some(LspPendingKind::CompletionRequest) => {
+                        // LSP-25: gabungkan kandidat server ke popup yang
+                        // sedang terbuka untuk file + prefix yang sama
+                        // (jawaban basi diabaikan). Kandidat lokal tetap
+                        // dipertahankan sebagai ekor daftar.
+                        // Konteks diambil per id: reply boleh datang tidak
+                        // berurutan, dan konteks request lain tidak boleh
+                        // ikut terpakai/hilang.
+                        let req = self.state.lsp_completion_req.remove(&id);
+                        if let (Some(v), Some((path, prefix))) = (value, req) {
+                            let items = crate::lsp_client::completion_items(&v);
+                            if !items.is_empty() {
+                                if let Some(idx) = self.state.active_file {
+                                    let f = &mut self.state.open_files[idx];
+                                    if f.completing
+                                        && f.path == path
+                                        && f.completion_prefix == prefix
+                                    {
+                                        // Item server difilter prefix klien
+                                        // (posisi server bisa tertinggal dari
+                                        // teks popup); lokal tetap di depan
+                                        // dan pilihan lama dicari per label.
+                                        let selected =
+                                            f.completion_items.get(f.completion_selected).cloned();
+                                        f.completion_items = crate::lsp_client::merge_completion(
+                                            &f.completion_items,
+                                            &items,
+                                            &prefix,
+                                            50,
+                                        );
+                                        if let Some(label) = selected {
+                                            if let Some(pos) =
+                                                f.completion_items.iter().position(|s| *s == label)
+                                            {
+                                                f.completion_selected = pos;
+                                            }
+                                        }
+                                        f.completion_selected = f
+                                            .completion_selected
+                                            .min(f.completion_items.len().saturating_sub(1));
+                                    }
+                                }
+                            }
+                        }
+                    }
                     None => {}
                 }
             }
@@ -268,6 +318,12 @@ impl MivonApp {
     /// Binary: env `MIVON_LSP_BIN` atau `mivon` di direktori executable GUI.
     fn maybe_start_lsp(&mut self) {
         if self.state.lsp.is_some() {
+            return;
+        }
+        // Server yang mati sendiri tidak di-restart otomatis: tanpa guard ini
+        // spawn+log terjadi tiap frame (spawn storm) saat server selalu gagal
+        // start (binary lama tanpa --lsp, initialize panic, dsb).
+        if self.state.lsp_auto_restart_blocked {
             return;
         }
         if self.state.project_root.is_none() {
@@ -417,6 +473,21 @@ pub fn open_project_dir(state: &mut GuiState, dir: &std::path::Path) {
     let files = scan_tree(dir);
     state.project_name = name;
     state.project_root = Some(dir.to_path_buf());
+    // Ganti proyek: server LSP lama masih memakai workspace_root proyek lama
+    // (definition lintas file akan memindai proyek yang salah). Matikan;
+    // auto-start frame berikutnya memakai root baru.
+    if state.lsp.is_some() {
+        let _ = state.lsp_send(crate::lsp_client::LspCmd::Stop);
+        state.lsp = None;
+        state.lsp_ready = false;
+        state.lsp_opened.clear();
+        state.lsp_pending.clear();
+        state.lsp_completion_req.clear();
+        state.lsp_last_hover = None;
+    }
+    // Proyek baru → izinkan LSP start lagi walau server proyek sebelumnya
+    // pernah mati sendiri (flag anti spawn-storm).
+    state.lsp_auto_restart_blocked = false;
     state.files = files;
     state.compile_info = None;
     state.signals.clear();
@@ -775,6 +846,13 @@ pub fn trigger_restart_lsp(state: &mut GuiState) {
     state.lsp_ready = false;
     state.lsp_opened.clear();
     state.lsp_bin_noted = false;
+    // Bersihkan sisa request lama: rx lama di-drop sebelum in_loop sempat
+    // mengirim LspStopped, jadi cleanup di handler tidak akan jalan.
+    state.lsp_pending.clear();
+    state.lsp_completion_req.clear();
+    state.lsp_last_change.clear();
+    state.lsp_last_hover = None;
+    state.lsp_auto_restart_blocked = false;
     state.log("⟳ LSP dimulai ulang (auto-start frame berikutnya)");
 }
 
