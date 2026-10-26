@@ -2615,8 +2615,43 @@ LSP-26: ✅ FIXED (ROUND 215) Range definition/references/rename kolom karakter
         helper LSP-25 dan dicatat sebagai sisa di LSP-27.
         Sisa (item baru LSP-27): kolom byte di jalur LSP lain.
 
-LSP-27:[] Kolom byte + kolom keyword tersisa di jalur LSP lain
-        Sisa dari LSP-26. Dua kelas masalah terpisah: (A) kolom byte sehingga
+LSP-27: ✅ FIXED (ROUND 216) Kolom karakter di position_to_offset & document colors
+        Dua situs LSP memakai kolom KARAKTER sebagai offset byte pada jalur yang
+        menyentuh &str secara langsung → PANIC (server LSP mati), bukan sekadar
+        range bergeser:
+        - position_to_offset (didChange inkremental → apply_text_change →
+          String::replace_range) memakai pos.character sebagai offset byte;
+          clamp min(line.len()) mencegah out-of-bounds tetapi tidak mencegah
+          offset di tengah karakter. BUG KEDUA di fungsi yang sama: akumulasi
+          offset memakai str::lines() + len+1, padahal lines() membuang '\r'
+          pada CRLF → setiap baris setelah baris pertama bergeser k byte
+          (dokumen CRLF dari klien Windows: edit senyap salah tempat, dan bisa
+          panic bila jatuh di tengah karakter multi-byte).
+        - compute_document_colors memotong &line[i+1..i+7] dan
+          hex[0..2]/[2..4]/[4..6] dengan indeks byte dari match_indices('#');
+          guard i+7 <= line.len() hanya menjamin in-range, BUKAN batas karakter
+          (#abcdeé → i+7 di tengah é; #aébcd → hex[0..2] panic).
+        Perbaikan: position_to_offset menerima teks utuh (&str, bukan &[&str])
+        dan memindai split_inclusive('\n') sehingga pemisah CRLF terhitung 2
+        byte; kolom karakter → byte memakai completions::char_index_to_byte;
+        baris di luar jangkauan di-clamp ke akhir teks.
+        compute_document_colors mengambil 6 KARAKTER (chars().take(6)),
+        menolak non-hexdigit, dan memakai kolom karakter untuk Range.
+        Test baru 6: position_to_offset_uses_character_columns,
+        position_to_offset_handles_crlf, apply_text_change_crlf_does_not_panic,
+        apply_text_change_multibyte_range_uses_character_columns,
+        apply_text_change_reversed_range_is_ignored,
+        document_colors_use_character_columns_and_ignore_multibyte.
+        Mutasi terbukti: position_to_offset byte → 3 test gagal (dua assertion
+        kolom + satu panic di replace_range); rumus lines()+len+1 (bug CRLF) →
+        test CRLF gagal
+        (2 vs 3) + apply_text_change panic; document colors: revert penuh →
+        assertion kolom gagal (12 vs 11), revert slicing saja → panic di
+        #abcdeé.
+        Sisa kolom byte/kolom keyword di fitur LSP lain → LSP-28.
+
+LSP-28:[] Kolom byte + kolom keyword tersisa di fitur LSP lain
+        Sisa dari LSP-26/LSP-27. Dua kelas masalah: (A) kolom byte sehingga
         bergeser pada baris ber-UTF-8, dan (B) kolom keyword dipakai sebagai
         kolom nama (salah walau ASCII murni).
 
@@ -2639,7 +2674,6 @@ LSP-27:[] Kolom byte + kolom keyword tersisa di jalur LSP lain
         - inlay_hints: kolom dari find_word_col (str::find) + name.len();
           (compute_inlay_hints ber-attribute allow(dead_code), belum ada handler
           inlay_hint — capability tetap diiklankan; hanya test yang memanggil);
-        - compute_document_colors: Range DocumentColor;
         - linked_editing_range: pos.character dipakai sebagai indeks byte untuk
           mencari kata di kursor, dan range hasilnya dibangun dari offset byte
           str::find;
@@ -2664,32 +2698,19 @@ LSP-27:[] Kolom byte + kolom keyword tersisa di jalur LSP lain
         `logic /* é */ x;` → x byte 15 / char 14, atau
         `parameter string S = "é", T = 1;` → T byte 27 / char 26. (name_col
         container selalu berprefix ASCII → byte == char, jadi container hanya
-        terkena (B).) to_lsp juga hanya
-        menerima closure uri_line_len (bukan teks baris), jadi helper byte→char
-        butuh perubahan signature menjadi penyedia teks baris.
+        terkena (B).) to_lsp juga hanya menerima closure uri_line_len (bukan
+        teks baris), jadi helper byte→char butuh perubahan signature menjadi
+        penyedia teks baris.
         CATATAN: `/* é */ module top;` TIDAK menghasilkan DocSymbol
         (line_tokens melihat t0 = "/") — jangan dipakai sebagai test.
-
-        (D) Risiko PANIC (bukan sekadar range bergeser):
-        - position_to_offset (didChange inkremental → apply_text_change →
-          String::replace_range) memakai pos.character sebagai offset byte;
-          clamp min(line.len()) mencegah out-of-bounds tetapi TIDAK mencegah
-          offset di tengah karakter → replace_range panic, server LSP mati.
-        - compute_document_colors memotong &line[i+1..i+7] DAN
-          hex[0..2]/[2..4]/[4..6] dengan indeks byte; guard i+7 <= line.len()
-          hanya menjamin in-range, BUKAN batas karakter. `#abcdeé` → i+7 jatuh
-          di tengah é; `#aébcd` (7 byte) → hex = "aébcd" lalu hex[0..2] panic
-          "byte index 2 is not a char boundary".
-        Dua-duanya prioritas tertinggi di item ini.
 
         (E) Konversi memakai chars, bukan UTF-16 code unit (spec LSP) →
         karakter non-BMP (emoji) masih menggeser 1 unit; helper bersama perlu
         mode encoding.
         Perbaikan: byte_col_to_char untuk (A); name_col (byte→char) untuk (B)
         dan WsSymbolHit perlu field name_col; char_index_to_byte untuk arah
-        MASUKAN (position_to_offset, signature_help, pencarian kata
-        linked_editing_range); batas aman char di compute_document_colors;
-        to_lsp perlu closure penyedia teks baris.
+        MASUKAN (signature_help, pencarian kata linked_editing_range); to_lsp
+        perlu closure penyedia teks baris.
         Belum reachable dari GUI: GUI mengirim kolom karakter (line_col_at_char)
         dan hanya memakai hover/goto/completion, sedangkan didChange-nya
         full-sync tanpa range — jadi jalur di atas tidak tersentuh dari GUI.

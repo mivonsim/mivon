@@ -2460,11 +2460,9 @@ impl LanguageServer for LspBackend {
 
 /// Apply an incremental text change to a document string (LSP-18).
 fn apply_text_change(text: &mut String, range: Range, new_text: &str) {
-    let lines: Vec<&str> = text.lines().collect();
-
     // Convert (line, character) to byte offset.
-    let start_offset = position_to_offset(&lines, range.start);
-    let end_offset = position_to_offset(&lines, range.end);
+    let start_offset = position_to_offset(text, range.start);
+    let end_offset = position_to_offset(text, range.end);
 
     // Replace the byte range.
     if start_offset <= end_offset && end_offset <= text.len() {
@@ -2473,19 +2471,28 @@ fn apply_text_change(text: &mut String, range: Range, new_text: &str) {
 }
 
 /// Convert a Position (line, character) to a byte offset in the text.
-fn position_to_offset(lines: &[&str], pos: Position) -> usize {
-    let mut offset = 0;
-    for (i, line) in lines.iter().enumerate() {
+///
+/// LSP-27: pos.character adalah indeks KARAKTER, sedangkan slicing String
+/// butuh offset byte. Fungsi ini juga menangani LF maupun CRLF: str::lines()
+/// membuang '\r', sehingga akumulasi len+1 menggeser offset pada dokumen
+/// CRLF — edit mendarat di tengah karakter dan replace_range panic.
+fn position_to_offset(text: &str, pos: Position) -> usize {
+    let mut line_start = 0usize;
+    for (i, raw) in text.split_inclusive('\n').enumerate() {
         if i == pos.line as usize {
-            // Character is byte offset within this line.
-            let char_offset = pos.character as usize;
-            let safe_offset = char_offset.min(line.len());
-            return offset + safe_offset;
+            // '\r' hanya bagian pemisah bila chunk memang diakhiri '\n'
+            // (lone CR di akhir file tetap dihitung sebagai karakter).
+            let content = match raw.strip_suffix('\n') {
+                Some(rest) => rest.strip_suffix('\r').unwrap_or(rest),
+                None => raw,
+            };
+            let byte = completions::char_index_to_byte(content, pos.character as usize);
+            return line_start + byte;
         }
-        // +1 for the newline character (not present in .lines() output).
-        offset += line.len() + 1;
+        line_start += raw.len();
     }
-    offset
+    // Baris di luar jangkauan -> clamp ke akhir teks (edit dianggap di EOF).
+    text.len()
 }
 
 /// LSP-24: Compute selection range — nested ranges from word → line → scope.
@@ -2636,30 +2643,31 @@ fn compute_document_colors(text: &str) -> Vec<ColorInformation> {
             continue;
         }
         // Find #RRGGBB patterns.
+        // LSP-27: i dari match_indices adalah offset BYTE, sedangkan kolom LSP
+        // adalah indeks KARAKTER. Ambil 6 KARAKTER (bukan 6 byte) supaya
+        // pemotongan tidak panic di tengah karakter multi-byte (#abcdee-acute).
         for (i, _) in line.match_indices('#') {
-            if i + 7 <= line.len() {
-                let hex = &line[i + 1..i + 7];
-                if let (Ok(r), Ok(g), Ok(b)) = (
-                    u8::from_str_radix(&hex[0..2], 16),
-                    u8::from_str_radix(&hex[2..4], 16),
-                    u8::from_str_radix(&hex[4..6], 16),
-                ) {
-                    // Verify all chars are hex digits.
-                    if hex.chars().all(|c| c.is_ascii_hexdigit()) {
-                        colors.push(ColorInformation {
-                            range: Range::new(
-                                Position::new(line_idx as u32, i as u32),
-                                Position::new(line_idx as u32, (i + 7) as u32),
-                            ),
-                            color: lsp_types::Color {
-                                red: r as f32 / 255.0,
-                                green: g as f32 / 255.0,
-                                blue: b as f32 / 255.0,
-                                alpha: 1.0,
-                            },
-                        });
-                    }
-                }
+            let start_char = line[..i].chars().count() as u32;
+            let hex: String = line[i + 1..].chars().take(6).collect();
+            if hex.len() != 6 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+                continue;
+            }
+            let parse = |s: &str| u8::from_str_radix(s, 16).ok();
+            if let (Some(r), Some(g), Some(b)) =
+                (parse(&hex[0..2]), parse(&hex[2..4]), parse(&hex[4..6]))
+            {
+                colors.push(ColorInformation {
+                    range: Range::new(
+                        Position::new(line_idx as u32, start_char),
+                        Position::new(line_idx as u32, start_char + 7),
+                    ),
+                    color: lsp_types::Color {
+                        red: r as f32 / 255.0,
+                        green: g as f32 / 255.0,
+                        blue: b as f32 / 255.0,
+                        alpha: 1.0,
+                    },
+                });
             }
         }
     }
@@ -5172,11 +5180,99 @@ endmodule
 
     #[test]
     fn test_position_to_offset() {
-        let lines = vec!["hello", "world"];
-        assert_eq!(position_to_offset(&lines, Position::new(0, 0)), 0);
-        assert_eq!(position_to_offset(&lines, Position::new(0, 5)), 5);
-        assert_eq!(position_to_offset(&lines, Position::new(1, 0)), 6);
-        assert_eq!(position_to_offset(&lines, Position::new(1, 3)), 9);
+        let text = "hello
+world";
+        assert_eq!(position_to_offset(text, Position::new(0, 0)), 0);
+        assert_eq!(position_to_offset(text, Position::new(0, 5)), 5);
+        assert_eq!(position_to_offset(text, Position::new(1, 0)), 6);
+        assert_eq!(position_to_offset(text, Position::new(1, 3)), 9);
+    }
+
+    #[test]
+    fn position_to_offset_uses_character_columns() {
+        // "aé b": a=byte 0, é=byte 1..3, spasi=byte 3, b=byte 4.
+        let text = "aé b";
+        assert_eq!(position_to_offset(text, Position::new(0, 1)), 1);
+        assert_eq!(position_to_offset(text, Position::new(0, 2)), 3);
+        assert_eq!(position_to_offset(text, Position::new(0, 3)), 4);
+        // Lewat akhir baris -> clamp ke panjang byte.
+        assert_eq!(position_to_offset(text, Position::new(0, 99)), 5);
+    }
+
+    #[test]
+    fn position_to_offset_handles_crlf() {
+        // Basis baris: "a\r\n" + "b\r\n" = 6 byte (str::lines() akan
+        // membuang '\r' sehingga rumus len+1 menghasilkan 4).
+        let text = "a\r\nb\r\né\r\nc";
+        assert_eq!(position_to_offset(text, Position::new(0, 1)), 1);
+        assert_eq!(position_to_offset(text, Position::new(1, 0)), 3);
+        assert_eq!(position_to_offset(text, Position::new(2, 0)), 6);
+        assert_eq!(position_to_offset(text, Position::new(3, 0)), 10);
+        // Kolom setelah karakter multi-byte pada baris CRLF.
+        assert_eq!(position_to_offset(text, Position::new(2, 1)), 8);
+        // Baris di luar jangkauan -> akhir teks.
+        assert_eq!(position_to_offset(text, Position::new(99, 0)), text.len());
+    }
+
+    #[test]
+    fn apply_text_change_crlf_does_not_panic() {
+        // Baris 3 kolom 0: rumus len+1 memberi offset 7, tepat di tengah é
+        // (byte 6..8) -> replace_range panic.
+        let mut text = "a\r\nb\r\né\r\nc".to_string();
+        apply_text_change(
+            &mut text,
+            Range::new(Position::new(3, 0), Position::new(3, 1)),
+            "C",
+        );
+        assert_eq!(text, "a\r\nb\r\né\r\nC");
+    }
+
+    #[test]
+    fn apply_text_change_reversed_range_is_ignored() {
+        // start > end: guard menolak edit (dokumen tidak berubah, tanpa panic).
+        let mut text = "abc".to_string();
+        apply_text_change(
+            &mut text,
+            Range::new(Position::new(0, 2), Position::new(0, 1)),
+            "X",
+        );
+        assert_eq!(text, "abc");
+    }
+
+    #[test]
+    fn apply_text_change_multibyte_range_uses_character_columns() {
+        // Mengganti karakter é (kolom 1..2). Memakai kolom sebagai offset byte
+        // jatuh di tengah é -> replace_range panic.
+        let mut text = "aé b\n".to_string();
+        apply_text_change(
+            &mut text,
+            Range::new(Position::new(0, 1), Position::new(0, 2)),
+            "e",
+        );
+        assert_eq!(text, "ae b\n");
+
+        // Baris kedua: offset dasar memakai panjang BYTE baris pertama.
+        let mut text2 = "é\nab".to_string();
+        apply_text_change(
+            &mut text2,
+            Range::new(Position::new(1, 1), Position::new(1, 2)),
+            "X",
+        );
+        assert_eq!(text2, "é\naX");
+    }
+
+    #[test]
+    fn document_colors_use_character_columns_and_ignore_multibyte() {
+        // '#' berada setelah string ber-UTF-8: kolom karakter 11, byte 12.
+        let src = "module m;\n  x = \"é\"; #FF0000;\nendmodule\n";
+        let colors = compute_document_colors(src);
+        assert_eq!(colors.len(), 1, "satu warna: {:?}", colors);
+        assert_eq!(colors[0].range.start, Position::new(1, 11));
+        assert_eq!(colors[0].range.end, Position::new(1, 18));
+
+        // é di tengah kandidat heksadesimal: dulu panic (byte index 7 di tengah
+        // é), sekarang diabaikan karena bukan hexdigit.
+        assert!(compute_document_colors("x = #abcdeé;\n").is_empty());
     }
 
     #[test]
