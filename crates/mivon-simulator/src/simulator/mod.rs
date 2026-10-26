@@ -31,6 +31,7 @@ pub mod coverage_db;
 #[cfg(feature = "dpi")]
 pub mod dpi;
 pub mod engine;
+pub mod group_snapshot;
 pub mod guard;
 pub mod jit;
 #[cfg(feature = "jit")]

@@ -3432,10 +3432,44 @@ PERF-05: ✅ Vec::drain/filter/retain in event loop — O(E) allocation
          list) — alternatif itu tidak diperlukan setelah alokasi per
          delta hilang.
 
-PERF-06:[] Signal state Vec behind &mut self — no concurrent reads
-         state.rs: read_signal/write_signal sequential
-         Impact: All process evaluation serialized on state access
-         Fix: Row-based signal storage, versioned reads
+PERF-06: ✅ FIXED (ROUND 213) — snapshot antar-kelompok paralel inkremental
+         crates/mivon-simulator/src/simulator/group_snapshot.rs (BARU):
+         GroupSnapshot { entries: Vec<Arc<LogicVec>> } — build() sekali per
+         pemanggilan; refresh(&ids) hanya untuk sinyal yang ditulis kelompok
+         sebelumnya (id di-dedup, out-of-range diabaikan). Snapshot tetap
+         immutable Arc → dibaca paralel tanpa &mut (SignalView); &mut self
+         hanya dipakai untuk write.
+         Dipakai di 2 situs (engine/scheduler/event.rs):
+         - jalur comb parallel (layered_groups): dulu membangun ulang
+           SELURUH snapshot (O(sinyal) Arc baru) per kelompok per delta —
+           bagian serial yang mendominasi; kini O(sinyal) sekali +
+           O(tulis) per kelompok;
+         - evaluate_sequential_batch_parallel: sama; refresh hanya blocking
+           write (NBA baru di-commit setelah semua grup).
+         Test: 3 unit group_snapshot (build sekali per sinyal; refresh hanya
+         id kotor + dedup + out-of-range; refresh kosong tidak mengganti Arc
+         lama — ptr_eq) + 1 integrasi mivon-tests
+         test_layered_comb_chain_sees_previous_group_writes: always @(a)
+         dengan sensitivitas eksplisit tidak terpicu ulang saat b berubah →
+         hanya snapshot antar kelompok yang bisa memberi b baru; serial=1,
+         parallel wajib 1.
+         Alias: id refresh di-redirect lewat state.alias_redirect ke canonical
+         (mirror write_signal, pola sama dgn Par-03 di core.rs) — menulis
+         MEMBER alias hanya mengubah storage canonical, tanpa redirect grup
+         berikutnya membaca canonical basi (regresi yang ditemukan review).
+         Test tambahan test_layered_chain_refresh_follows_alias_redirect
+         (alias c=b; serial=1 vs parallel).
+         Mutasi terbukti: refresh dijadikan no-op → test integrasi gagal
+         (par=0 vs serial=1); hapus redirect alias → test alias gagal.
+         Catatan: rantai comb murni (semua sensitif penuh) TIDAK
+         diskriminatif — event loop men-trigger ulang dan konvergen, jadi
+         test memakai sensitivitas eksplisit.
+         Sisa (bukan blocker): storage tetap Vec<LogicVec> di belakang
+         &mut self — "row-based storage" tidak diperlukan selama snapshot
+         Arc memberi baca paralel; write tetap serial (inheren).
+         Catatan pre-existing (bukan regresi ronde ini): SignalView/snapshot
+         TIDAK me-redirect alias saat MEMBACA member (rebuild penuh dulu juga
+         begitu) — kandidat item terpisah "alias-aware snapshot read".
 
 PERF-07: ✅ LogicVec SIMD-ized with u64 bitmasks
          src/simulator/value.rs:

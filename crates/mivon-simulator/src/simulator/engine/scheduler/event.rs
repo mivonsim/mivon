@@ -1,4 +1,5 @@
 use super::super::SimulationEngine;
+use crate::simulator::group_snapshot::GroupSnapshot;
 use crate::simulator::parallel;
 use crate::simulator::types::*;
 use mivon_core::diagnostics::DiagCode;
@@ -992,22 +993,19 @@ impl SimulationEngine {
             let groups: Vec<Vec<usize>> = Self::layered_groups(&comb_indices, &self.comb_access);
             let dbg_t = self.current_time;
             let dbg_delta = self.current_delta;
+            // PERF-06: snapshot dibangun SEKALI per pemanggilan, bukan per
+            // kelompok; antar kelompok hanya sinyal yang ditulis kelompok
+            // sebelumnya yang di-refresh. Baca PENDING (next) bila changed —
+            // konsisten dgn evaluate_eval_processes_parallel. Sinyal besar
+            // yang belum ditulis di-snapshot LAZY (tanpa materialisasi).
+            let mut group_snapshot =
+                GroupSnapshot::build(signal_count, |i| self.state.snapshot_signal(i));
             for group in &groups {
                 let group: Vec<usize> = group.clone();
                 if group.is_empty() {
                     continue;
                 }
-                // Snapshot per-kelompok dari state TERKINI (pending applied
-                // setelah kelompok sebelumnya).
-                let snapshot: Vec<Arc<LogicVec>> = (0..signal_count)
-                    .map(|i| {
-                        // Baca PENDING (next) bila changed — konsisten dgn
-                        // evaluate_eval_processes_parallel. Sinyal besar yang
-                        // belum ditulis di-snapshot LAZY (tanpa materialisasi).
-                        let v = self.state.snapshot_signal(i);
-                        Arc::new(v)
-                    })
-                    .collect();
+                let snapshot = group_snapshot.as_slice();
 
                 let eval_group = if needs_full {
                     let identity: Vec<Option<usize>> = (0..signal_count).map(Some).collect();
@@ -1123,6 +1121,19 @@ impl SimulationEngine {
                 for result in eval_group {
                     let writes = result?;
                     self.apply_parallel_writes(&writes);
+                    // Refresh hanya sinyal yang ditulis grup ini agar grup
+                    // berikutnya melihat nilai terbaru (rantai comb = urutan
+                    // serial). Redirect ke canonical (mirror write_signal):
+                    // storage yang berubah untuk member alias hanyalah
+                    // canonical — tanpa ini grup berikutnya membaca canonical
+                    // basi (regresi vs rebuild penuh).
+                    let ids: Vec<usize> = writes
+                        .iter()
+                        .map(|(id, _, _)| {
+                            self.state.alias_redirect.get(*id).copied().unwrap_or(*id)
+                        })
+                        .collect();
+                    group_snapshot.refresh(&ids, |i| self.state.snapshot_signal(i));
                 }
             }
         } else {
@@ -1533,17 +1544,17 @@ impl SimulationEngine {
         let mut nba_pushes: Vec<(usize, Vec<crate::scheduler::sim_dag::ParallelWrite>)> =
             Vec::new();
         let mut err_rest: Option<Vec<usize>> = None;
+        // PERF-06: snapshot sekali per batch; antar grup hanya sinyal yang
+        // di-blocking-write grup sebelumnya yang di-refresh (rantai comb
+        // antar grup = urutan serial).
+        let mut group_snapshot =
+            GroupSnapshot::build(self.state.signals.len(), |i| self.state.snapshot_signal(i));
         for (gi, group) in groups.iter().enumerate() {
             let pids: Vec<&usize> = group.iter().map(|&i| &batch[i].pid).collect();
-            // Snapshot penuh per grup — blocking writes grup sebelumnya
-            // wajib terlihat (rantai comb antar grup = urutan serial).
-            let snapshot: Vec<std::sync::Arc<LogicVec>> = (0..self.state.signals.len())
-                .map(|i| std::sync::Arc::new(self.state.snapshot_signal(i)))
-                .collect();
             match crate::scheduler::sim_dag::evaluate_bodies_parallel_tagged(
                 &pids,
                 &body_map,
-                &snapshot,
+                group_snapshot.as_slice(),
                 &self.design.top.signals,
             ) {
                 Ok(part) => {
@@ -1551,13 +1562,19 @@ impl SimulationEngine {
                     // benar dievaluasi paralel (bukan sekadar masuk fungsi /
                     // fallback serial krn wide-signal atau Err).
                     self.seq_batch_parallel_count += 1;
+                    let mut blocking_ids: Vec<usize> = Vec::new();
                     for (pid, ws) in part {
                         if blocking_only_by_pid.get(&pid).copied().unwrap_or(false) {
+                            // Redirect ke canonical (mirror write_signal).
+                            blocking_ids.extend(ws.iter().map(|(id, _, _)| {
+                                self.state.alias_redirect.get(*id).copied().unwrap_or(*id)
+                            }));
                             self.apply_parallel_writes(&ws);
                         } else {
                             nba_pushes.push((pid, ws));
                         }
                     }
+                    group_snapshot.refresh(&blocking_ids, |i| self.state.snapshot_signal(i));
                 }
                 Err(_) => {
                     let mut rest: Vec<usize> = Vec::new();

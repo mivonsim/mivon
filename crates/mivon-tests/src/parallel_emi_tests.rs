@@ -392,3 +392,79 @@ endmodule
         "parallel: 2-state coercion harus identik serial, serial={s} par={p}"
     );
 }
+
+/// PERF-06: dua kelompok comb dalam satu delta. `always @(a)` sengaja
+/// memakai sensitivity EKSPLISIT (hanya `a`), jadi proses itu TIDAK
+/// terpicu ulang saat `b` berubah — satu-satunya cara ia melihat `b` baru
+/// adalah snapshot antar kelompok yang di-refresh. Tanpa refresh ia membaca
+/// b lama (0) sehingga d = 0, sedangkan jalur serial = 1.
+#[test]
+fn test_layered_comb_chain_sees_previous_group_writes() {
+    let src = r#"
+module layer_chain(input logic a, output logic d);
+  logic b, c;
+  assign b = a & 1'b1;
+  always @(a) c = b & a;
+  assign d = c & a;
+endmodule
+module top;
+  logic a;
+  logic d;
+  layer_chain u(.a(a), .d(d));
+  initial begin a = 0; #5 a = 1; end
+endmodule
+"#;
+    let serial = mivon_simulator::simulator::parallel::ParallelConfig {
+        parallel_processes: false,
+        ..Default::default()
+    };
+    let par = mivon_simulator::simulator::parallel::ParallelConfig {
+        min_processes_parallel: 1,
+        ..Default::default()
+    };
+    let s = run_pcfg_signal(src, "d", serial);
+    let p = run_pcfg_signal(src, "d", par);
+    assert_eq!(
+        s, "1",
+        "serial: rantai 4 tahap harus menghasilkan d=1, got {s}"
+    );
+    assert_eq!(
+        p, s,
+        "parallel: grup berikutnya wajib melihat tulis grup sebelumnya, serial={s} par={p}"
+    );
+}
+
+/// PERF-06 (review): proses menulis MEMBER alias — storage berubah hanya di
+/// canonical, jadi refresh snapshot antar kelompok wajib melewati
+/// alias_redirect (mirror write_signal). Tanpa redirect, grup berikutnya
+/// membaca canonical basi (b lama = 0) sehingga d = 0, serial = 1.
+#[test]
+fn test_layered_chain_refresh_follows_alias_redirect() {
+    let src = r#"
+module top;
+  logic a;
+  logic b, c, x, y, d;
+  alias c = b;
+  assign c = a;
+  assign x = a;
+  assign y = a;
+  always @(a) d = b & x;
+  initial begin a = 0; #5 a = 1; end
+endmodule
+"#;
+    let serial = mivon_simulator::simulator::parallel::ParallelConfig {
+        parallel_processes: false,
+        ..Default::default()
+    };
+    let par = mivon_simulator::simulator::parallel::ParallelConfig {
+        min_processes_parallel: 1,
+        ..Default::default()
+    };
+    let s = run_pcfg_signal(src, "d", serial);
+    let p = run_pcfg_signal(src, "d", par);
+    assert_eq!(s, "1", "serial: alias c=b, b harus 1 setelah a=1, got {s}");
+    assert_eq!(
+        p, s,
+        "parallel: refresh wajib mengikuti alias_redirect ke canonical, serial={s} par={p}"
+    );
+}
