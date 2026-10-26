@@ -1501,7 +1501,48 @@ COMP-15: ✅ Memory inference lint (ROUND 85b) — mlint --memory:
          find_memory_inference() check DeclVar: range.is_some() +
          array_range.is_some() → info "reg array — kandidat inferred RAM/ROM".
          CLI flag --memory + LintArgs + dispatch.
-COMP-16:[] Tidak ada sequential equivalence checking (Critical)
+COMP-16: ⚠️ PARTIAL (ROUND 220) — Tidak ada sequential equivalence checking
+         Tahap 1 (kombinasional) SELESAI: crates/mivon-formal/src/sec.rs
+         - SecExpr (Input/Const/Not/And/Or/Xor/Add/Sub/Mul/Eq/Mux),
+           SecDesign (inputs nama+lebar; outputs nama+LEBAR DEKLARASI+ekspresi),
+           SecOutcome (Equivalent / NotEquivalent{output, counterexample} /
+           Unsupported).
+         - check_equivalence: validasi himpunan+lebar input dan himpunan output
+           (duplikat/beda/simbol tak dikenal/lebar 1..=64), variabel Z3 DIBAGI
+           antar desain (nama input sama = variabel sama), ekspresi output
+           disesuaikan ke lebar deklarasi (fit_width: zero-extend/truncate;
+           lebar natural, bukan context width SV), lalu miter = DISJUNGSI
+           dari (out_a != out_b) untuk SEMUA output, di-assert sekali.
+           Unsat = Equivalent; Sat = NotEquivalent + counterexample (semua
+           input) dan output pertama yang benar-benar berbeda di model itu.
+           Solver diberi timeout 10 dtk; Unknown -> Unsupported(inconclusive).
+         - 14 test: distributive_forms_are_equivalent (AND/OR),
+           addition_is_commutative_for_8_bits, mux_matches_boolean_expansion,
+           detects_non_equivalence_and_reports_counterexample (a&b vs a|b),
+           mismatch_in_only_one_output_is_detected (regresi miter konjungsi),
+           empty_output_designs_are_equivalent, comparison_with_constant_is_
+           equivalent, input_width_mismatch_is_unsupported, output_set_mismatch_
+           is_unsupported, unknown_input_is_unsupported,
+           duplicate_input_is_unsupported, add_is_not_and (Add bukan And),
+           eq_is_not_constant_true (Eq bukan konstanta 1),
+           output_width_mismatch_is_unsupported (lebar deklarasi beda).
+         - Mutasi: (a) polaritas miter dibalik (assert eq) -> 8 test gagal;
+           (b) miter dikembalikan ke konjungsi per-output -> test multi-output
+           gagal (bug soundness yang ditemukan review); (c) polaritas Mux
+           dibalik -> 1 test gagal.
+         - Temuan review yang sudah diperbaiki: miter konjungsi (dua output
+           yang beda pada kondisi BERBEDA salah dianggap ekuivalen), panic
+           outputs kosong, counterexample fabrikasi 0 saat model eval gagal,
+           dan konstanta 64-bit yang memaksa Unsupported pada output sempit.
+         MASIH OPEN (alasan PARTIAL): (1) belum ada lowering dari IrExpr/
+         netlist hasil sintesis ke SecDesign (API masih level ekspresi);
+         (2) belum ada SEC sekuensial (state/register, unrolling per siklus,
+         mapping state awal); (3) belum ada CLI/subcommand; (4) lebar >64 dan
+         tri-state X/Z belum didukung; (5) lebar ekspresi = natural (maksimum
+         operand, konstanta 64 bit), BELUM context width SV — Add 8+8 yang
+         dideklarasikan 16 bit tidak membawa carry; Not = komplemen pada lebar
+         operand. Suite: cargo nextest run --workspace --all-features ->
+         3858 passed, 24 skipped.
 COMP-17: ✅ Design partitioning for parallel compilation (ROUND 93)
          crates/maria-tools/src/compile_partition.rs: CompilePartitioner.
          Tarjan SCC → condensation DAG → layer-based assignment →

@@ -4,6 +4,7 @@
 //! - Bounded Model Checking (BMC): unroll transition relation up to bound k
 //! - Induction-based proof: base case + inductive step for simple properties
 //! - SAT/SMT bridge: SystemVerilog expressions → Z3 bit-vector formulas
+//! - Equivalence checking (COMP-16 tahap 1, kombinasional): `sec.rs`
 //!
 //! Uses z3 0.20 thread-local context — constructors take no `&Context` argument.
 //! Usage: `cargo run -- --formal --formal-bound 10 test.sv`
@@ -12,6 +13,7 @@ pub mod abstract_interp;
 pub mod bmc;
 pub mod connectivity;
 pub mod sat;
+pub mod sec;
 pub mod xprop;
 
 #[cfg(test)]
