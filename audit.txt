@@ -1642,7 +1642,7 @@ COMP-15: ✅ Memory inference lint (ROUND 85b) — mlint --memory:
          find_memory_inference() check DeclVar: range.is_some() +
          array_range.is_some() → info "reg array — kandidat inferred RAM/ROM".
          CLI flag --memory + LintArgs + dispatch.
-COMP-16: ⚠️ PARTIAL (ROUND 220/221) — Tidak ada sequential equivalence checking
+COMP-16: ⚠️ PARTIAL (ROUND 220/221/222) — Tidak ada sequential equivalence checking
          Tahap 1 (kombinasional) SELESAI: crates/mivon-formal/src/sec.rs
          - SecExpr (Input/Const(nilai,lebar)/Not/And/Or/Xor/Add/Neg/Sub/Mul/
            Eq/Mux),
@@ -1673,7 +1673,78 @@ COMP-16: ⚠️ PARTIAL (ROUND 220/221) — Tidak ada sequential equivalence che
            (ii) validate_sig_names
            menolak tabel nama kosong/ganda supaya dua SignalId berbeda tidak
            diam-diam jadi satu variabel Z3.
-         - 23 test: distributive_forms_are_equivalent (AND/OR),
+         - Ekstraksi IR -> SecDesign TAHAP 2 (ROUND 222): design_from_module
+           (&IrModule) membangun output + daftar input langsung dari IR, jadi
+           SEC tidak lagi butuh SecDesign rakitan tangan. Aturan yang
+           ditegakkan: hanya proses Combinational/CombReactive yang boleh
+           menulis output, hanya BlockingAssign dengan lhs IrLValue::Signal
+           (assign ber-delay atau ber-destructure ditolak); sinyal internal
+           disubstitusi transitif DAN di-resize ke lebar deklarasinya
+           (SecExpr::Resize: nol-ekstensi bila lebih sempit, potong bit
+           tinggi bila lebih lebar) — tanpa ini `logic [7:0] t = a & b` dengan
+           operand 16 bit dibandingkan 16 bit dan menghasilkan silent false
+           Equivalent; proses sekuensial/initial/final/always-delay yang
+           menulis output ditolak dengan pesan eksplisit ("SEC hanya untuk
+           logika kombinasional"), KECUALI Process::Initial yang seluruh
+           isinya BlockingAssign konstanta (initializer port/deklarasi
+           `output logic y = 1'b0`) yang dilewati karena hanya nilai t=0;
+           driver ganda (sinyal ditulis >1 kali) ditolak; driver pada input
+           ditolak; output tanpa driver dan sinyal internal tanpa driver
+           ditolak (bukan variabel bebas Z3); loop kombinasional dideteksi
+           via stack resolusi dan dilaporkan dengan nama sinyal; sinyal
+           `signed` ditolak (sign-extension belum dimodelkan, zero-extend akan
+           salah); sinyal `inout` ditolak (tri-state); instance sub-modul
+           ditolak (hierarkis, FORMAL-13); proses Combinational yang membaca
+           sinyal di luar sensitivity list-nya ditolak (latch — mencakup latch
+           lintas proses dan referensi maju `y = t; t = a&b;`), sedangkan
+           sensitivity lengkap / CombReactive (always_comb) DIIZINKAN karena
+           proses bereaksi ulang sampai fixed point; pernyataan lain di dalam
+           proses kombinasional
+           (If/Case/Loop/Delay/NonBlocking) ditolak, bukan disederhanakan.
+           writes_any (deteksi proses ber-state) rekursif ke If/Case/Loop
+           (init+step)/Delay/Wait/EventControl/Fork/Assert/Assume/Expect/
+           Cover/RandCase/RandSequence/WaitOrder, Force/Release/Deassign, dan
+           semua varian lvalue (array/part-select/Concat/ObjectField); lvalue
+           hierarkis (HierRef/VifField) dianggap BISA menulis target
+           (konservatif) supaya desain ber-state tidak lolos.
+         - Lowering bentuk IR NYATA (ROUND 222, hasil review putaran 2):
+           IrExpr::Cast{width,expr} -> SecExpr::Resize HANYA bila operand
+           sinyal/konstanta (ekstensi/pemotongan murni); Cast pada ekspresi
+           aritmetika DITOLAK ("context width SV belum dimodelkan") karena
+           `logic [15:0] s = a + b` (a,b 8 bit) butuh carry ke bit 8 yang
+           tidak dimodelkan natural-width — lebih baik Err daripada Equivalent
+           palsu. Signedness DIMODELKAN (ROUND 222, review putaran 4):
+           IrExpr::Signed(inner) -> SecExpr::Signed(inner); helper is_signed
+           menurunkan tanda secara struktural (Signed=true; Not/Neg ikut
+           operand; And/Or/Xor/Add/Sub/Mul dan Mux signed hanya bila KEDUA
+           operand signed; Eq/Const/Input/Resize unsigned). Pelebaran lebar
+           memakai sign-extension bila perlu: Resize (Cast/assignment),
+           widen (LRM §11.6.1: sign-extend hanya bila KEDUA operand signed,
+           selain itu zero-extend — `a_unsigned + byte(-1)` = a+255, BUKAN
+           a-1), dan fit_width (RHS signed -> output lebih lebar di-sign-
+           extend). Tanpa model ini `y = -4'sd1` (output 8 bit) menjadi 0x0F
+           alih-alih 0xFF dan `4'sd7 + 4'sd1` menjadi 0x08 alih-alih 0xF8 =
+           Equivalent palsu (ditemukan review putaran 3/4). Sinyal yang
+           DIDECLARASIKAN signed tetap DITOLAK (pembacaan tanpa pembungkus
+           Signed tidak membawa tanda). Pelebaran lebar hanya diterapkan bila
+           ekuivalen dengan menghitung pada lebar konteks (SV §11.8.3):
+           helper widen_safe = false bila ekspresi memuat Add/Sub/Mul (carry/
+           borrow melintasi bit yang dilebarkan), untuk signed MAUPUN unsigned.
+           Jadi `y8 = 4'sd7 + 4'sd1` (SV 0x08) dan `y16 = a8 + b8` (SV carry
+           ke bit 8) DITOLAK dengan pesan context width, bukan dihitung pada
+           lebar natural lalu diekstensi (0xF8 / carry hilang) — keduanya
+           Equivalent palsu (review putaran 5/6). Bitwise DAN Mux boleh melebar
+           (komutatif dengan ekstensi), Not hanya bila operand signed DAN
+           ekstensi di situs itu memang sign (`~$signed(a8) & c16` di-zero-
+           extend -> 0x00F0 vs SV 0xFFF0, jadi DITOLAK; review putaran 8), Neg
+           DITOLAK (negasi nilai minimum signed overflow: -4'sd8 -> 8 pada
+           lebar 8). widen() juga menolak melebarkan operand aritmetika ke
+           lebar operand lain (mis. cabang Mux `a8+b8` vs 16'h0) — dulu carry
+           hilang diam-diam (review putaran 7). Assignment ke
+           sinyal unsigned menghapus tanda RHS: `logic [7:0] t = $signed(a);
+           y16 = t` zero-extend (0x0080), bukan 0xFF80 — resolve membungkus
+           Resize walau lebar sama supaya penanda Signed tidak bocor.
+         - 60 test: distributive_forms_are_equivalent (AND/OR),
            addition_is_commutative_for_8_bits, mux_matches_boolean_expansion,
            detects_non_equivalence_and_reports_counterexample (a&b vs a|b),
            mismatch_in_only_one_output_is_detected (regresi miter konjungsi),
@@ -1700,6 +1771,82 @@ COMP-16: ⚠️ PARTIAL (ROUND 220/221) — Tidak ada sequential equivalence che
            saat context width diimplementasikan; pada output 8 bit keduanya
            0xFF -> Equivalent). lowering_maps_supported_ir juga mem-pin
            struktur Add/Sub/Mul/BitOr/BitXor/Cond (Mux tidak tertukar).
+           Ekstraksi IR (ROUND 222): design_from_module_extracts_continuous_
+           logic (dua proses comb -> output terisi, daftar input benar),
+           design_from_module_substitutes_internal_signals (sinyal internal
+           hilang dari ekspresi; hasil SEC sama dengan bentuk tersubstitusi),
+           design_from_module_rejects_combinational_loop (a=b, b=a -> Err
+           berisi "loop kombinasional"), design_from_module_rejects_
+           unsupported_statements (If di proses comb -> Err), design_from_
+           module_rejects_sequential_output (proses Always menulis output ->
+           Err "kombinasional").
+           Guard ekstraksi tambahan (ROUND 222): design_from_module_rejects_
+           duplicate_driver (y ditulis 2x -> Err "lebih dari sekali"),
+           design_from_module_rejects_driver_on_input (proses menulis sinyal
+           input -> Err; tanpa guard ini input disubstitusi dan hilang dari
+           miter = Equivalent palsu), design_from_module_rejects_undriven_
+           output (output tanpa proses -> Err, bukan variabel bebas Z3),
+           design_from_module_rejects_sub_instances (instance sub-modul ->
+           Err; konektivitas hierarkis belum ditelusuri, FORMAL-13).
+           Guard hasil review (ROUND 222): design_from_module_resizes_
+           narrowing_internal_signal (t 8 bit = a&b 16 bit; y = (t == 8'hFF)
+           -> Equivalent dengan Eq(Resize(a&b,8), 8'hFF) dan NotEquivalent
+           terhadap Eq 16 bit tanpa resize), design_from_module_resizes_
+           widening_internal_signal (t 8 bit = a 4 bit; y = ~t -> Resize
+           menangani arah melebar; model ~a 4 bit NotEquivalent),
+           design_from_module_rejects_signed_signal, design_from_module_allows_
+           forward_reference_in_always_comb (CombReactive -> Equivalent
+           dengan bentuk datar), design_from_module_skips_constant_
+           initializer (Process::Initial konstanta dilewati, initial
+           non-konstanta tetap Err), design_from_module_rejects_undriven_
+           internal_signal, design_from_module_rejects_inout.
+           Perbaikan review putaran 2 (ROUND 222): design_from_module_lowers_
+           cast_from_elaborator (Add(Cast{32,a8}, Signed(Const(1,32))) ->
+           Resize(Add(Resize(a,32),Const(1,32)),8) — bentuk IR nyata `y = a +
+           1`), design_from_module_rejects_widening_arithmetic_cast
+           (Cast{16, Add(a8,b8)} -> Err "context width"; SV akan carry ke bit
+           8), design_from_module_rejects_signed_non_const (Signed(Signal) ->
+           Err), design_from_module_skips_signed_const_initializer
+           (`output y = 0` -> Signed(Const(0,32)) tetap dilewati),
+           design_from_module_rejects_incomplete_sensitivity (sensitivity
+           {a,b} tapi membaca t -> Err "sensitivity"), design_from_module_
+           allows_forward_reference_with_complete_sensitivity (sensitivity
+           {a,b,t} -> Equivalent dengan bentuk datar), design_from_module_
+           rejects_latch_across_processes (proses lain menulis t, proses ini
+           membaca t dengan sensitivity {a} -> Err). Guard referensi maju
+           lama (per-urutan dalam satu body) DIGANTI aturan sensitivity
+           lengkap: cakupannya lebih luas (latch lintas proses) dan tidak
+           menolak `always @(*)` yang legal.
+           Review putaran 3/4 (ROUND 222) — model signedness: design_from_
+           module_sign_extends_signed_signal_expression ($signed(a8) -> output
+           16 bit sign-extend; NotEquivalent vs zero-extend), design_from_
+           module_sign_extends_signed_assignment (RHS Signed(Const(0xFF,8)) ke
+           output 16 -> 0xFFFF, bukan 0x00FF), design_from_module_mixed_
+           signed_operand_stays_unsigned (a_unsigned + byte(-1) = a+255 sesuai
+           §11.6.1; a-1 harus NotEquivalent), design_from_module_sign_extends_
+           negative_neg_result (-4'sd1 -> 0xFF, bukan 0x0F), design_from_
+           module_widen_sign_extends_both_signed (Add 4-bit
+           0xF + 8-bit 0x01 -> 0x00, bukan 0x10), dan design_from_module_
+           accepts_nonnegative_signed_const (Add(a, Signed(Const(0x7F,8)))).
+           Review putaran 5 (ROUND 222) — batas sign-extension: design_from_
+           module_rejects_signed_arithmetic_needing_context_width (4'sd7+
+           4'sd1 -> Err, karena SV menghitung pada konteks 8 bit = 0x08),
+           design_from_module_unsigned_signal_strips_signedness (t unsigned =
+           $signed(a); y16 = t -> 0x0080), signed_resize_of_arithmetic_is_
+           unsupported (desain rakitan: Resize pelebar atas Add signed ->
+           Unsupported, bukan sign-extend diam-diam). Review putaran 6:
+           design_from_module_rejects_unsigned_widening_arithmetic (y16 =
+           a8 + b8 -> Err context width) dan design_from_module_allows_
+           unsigned_bitwise_widening (y16 = a8 & b8 -> tetap Ok, bitwise
+           komutatif dengan zero-extension). Review putaran 7: design_from_
+           module_rejects_neg_widening (-4'sd1 -> Err, bukan 0xFF/0x0F),
+           design_from_module_rejects_unsigned_not_widening (~a8 -> Err),
+           design_from_module_allows_signed_not_widening (~$signed(a8) -> Ok,
+           komutatif dengan sign-extension), design_from_module_rejects_
+           arithmetic_operand_widened_by_mux (Mux(s, a8+b8, 16'h0) ->
+           Unsupported saat evaluasi widen). Review putaran 8: design_from_
+           module_rejects_signed_not_mixed_widening (~$signed(a8) & c16 ->
+           Unsupported; widen_safe kini menerima jenis ekstensi).
          - Mutasi: (a) polaritas miter dibalik (assert eq) -> 8 test gagal;
            (b) miter dikembalikan ke konjungsi per-output -> test multi-output
            gagal (bug soundness yang ditemukan review); (c) polaritas Mux
@@ -1715,26 +1862,93 @@ COMP-16: ⚠️ PARTIAL (ROUND 220/221) — Tidak ada sequential equivalence che
            gagal; (j) lower Const memakai lebar 64 -> literal_width_... dan
            lowering_maps_supported_ir gagal. Catatan: angka (a)(b)(c) diukur
            pada suite 14-test; (d)-(j) diukur pada suite 23-test.
+           Mutasi ekstraksi tahap 2 (diukur pada suite 30-test): (k) guard
+           driver-pada-input dilepas -> design_from_module_rejects_driver_on_
+           input gagal; (l) cek driver ganda dilepas -> rejects_duplicate_
+           driver gagal; (m) cek loop dilepas -> rejects_combinational_loop
+           gagal (proses ABORT stack overflow, bukan asersi — guard-nya
+           memang satu-satunya penghenti rekursi); (n) writes_any dilepas ->
+           rejects_sequential_output gagal; (o) substitusi sinyal internal
+           dilepas -> substitutes_internal_signals DAN rejects_combinational_
+           loop gagal. Pada suite 32-test: (p) cek instance sub-modul dilepas
+           -> rejects_sub_instances gagal; (q) cek output tanpa driver
+           dilepas -> rejects_undriven_output gagal. Pada suite 40-test:
+           (r) Resize dilepas di resolve -> resizes_narrowing DAN resizes_
+           widening gagal; (s) guard signed dilepas -> rejects_signed_signal
+           gagal; (t) guard referensi maju dilepas -> rejects_forward_
+           reference gagal; (u) is_constant_init dipaksa false -> skips_
+           constant_initializer gagal; (v) substitute kembali hanya resolve
+           bila eq ada -> rejects_undriven_internal_signal gagal; (w) guard
+           inout dilepas -> rejects_inout gagal. Pada suite 46-test (review
+           putaran 2): (x) Cast tidak dipetakan (langsung Err) -> lowers_cast_
+           from_elaborator gagal; (y) Signed(Const) ditolak -> test yang sama
+           gagal; (z) is_const_rhs tidak membuka Signed -> skips_signed_const_
+           initializer gagal; (aa) cek sensitivity dilepas -> rejects_
+           incomplete_sensitivity DAN rejects_latch_across_processes gagal;
+           (ab) guard Cast-pelebar-aritmetika dilepas -> rejects_widening_
+           arithmetic_cast gagal. Pada suite 48-test (review putaran 3):
+           (ac) cek MSB konstanta Signed dilepas -> rejects_negative_narrow_
+           signed_const gagal (test ini sudah diganti model signedness, lihat
+           bawah). Pada suite 52-test (review putaran 4): (ad) is_signed
+           (Signed) dipaksa false -> 5 test sign-extension gagal; (ae) Resize
+           selalu zero_ext -> 4 test gagal; (af) widen tidak pernah sign_ext
+           -> widen_sign_extends_both_signed gagal; (ag) fit_width selalu
+           zero_ext -> sign_extends_signed_signal_expression gagal. Pada suite
+           54-test (review putaran 5): (ah) sign_ext_safe selalu true ->
+           rejects_signed_arithmetic_needing_context_width DAN signed_resize_
+           of_arithmetic_is_unsupported gagal; (ai) Resize tidak dibungkus saat
+           lebar sama -> unsigned_signal_strips_signedness gagal; (aj) guard
+           Resize dilepas -> signed_resize_of_arithmetic_is_unsupported gagal.
+           Pada suite 56-test (review putaran 6): (ak) widen_safe dipaksa true
+           -> rejects_signed_arithmetic_needing_context_width, rejects_
+           unsigned_widening_arithmetic, DAN signed_resize_of_arithmetic_is_
+           unsupported gagal. Pada suite 59-test (review putaran 7): (al) guard
+           widen dilepas -> rejects_arithmetic_operand_widened_by_mux gagal;
+           (am) Not dianggap selalu aman -> rejects_unsigned_not_widening DAN
+           resizes_widening_internal_signal gagal; (an) arm Add/Sub/Mul/Neg
+           dipaksa aman -> 6 test (termasuk rejects_neg_widening) gagal. Pada
+           suite 60-test (review putaran 8): (ao) widen_safe(Not) mengabaikan
+           jenis ekstensi -> rejects_signed_not_mixed_widening gagal.
          - Temuan review yang sudah diperbaiki: miter konjungsi (dua output
            yang beda pada kondisi BERBEDA salah dianggap ekuivalen), panic
            outputs kosong, counterexample fabrikasi 0 saat model eval gagal,
            dan konstanta yang dipaksa 64 bit sehingga ekspresi sempit salah
            (sekarang Const membawa lebar literal IR).
-         MASIH OPEN (alasan PARTIAL): (1) belum ada ekstraksi modul -> SecDesign
-         (assignments/proses jadi output + daftar input) walau lowering IrExpr
-         sudah ada;
+         MASIH OPEN (alasan PARTIAL): (1) ekstraksi modul -> SecDesign SUDAH ADA
+         untuk subset kombinasional datar (design_from_module, ROUND 222),
+         tetapi belum menangani If/Case/Loop atau seleksi bit di dalam proses,
+         instance sub-modul (hierarkis, FORMAL-13), modul dengan beberapa
+         proses yang menulis sinyal sama, sinyal yang DIDECLARASIKAN signed
+         (DITOLAK; ekspresi Signed dimodelkan, deklarasi signed belum),
+         inout/tri-state (DITOLAK), dan Cast pelebar pada ekspresi
+         aritmetika DITOLAK (context width SV belum dimodelkan: `logic [15:0]
+         s = a + b` 8-bit butuh carry ke bit 8). Test ekstraksi masih merakit
+         IrModule tangan; bentuk IR nyata (Cast/Signed(Const)/port_init) sudah
+         diverifikasi lewat probe elaborator saat review tetapi belum jadi
+         test end-to-end di repo. Substitusi belum memoized (rantai yang
+         membaca sinyal sama dua kali per level bisa eksponensial pada RTL
+         besar), dan sec.rs kini ~1950 LOC dengan dua tanggung jawab
+         (ekstraksi vs miter/eval) — kandidat pecah ke sec/extract.rs;
+         output/sinyal internal tanpa driver, driver pada input, dan driver
+         ganda DITOLAK (bukan ditebak);
          (2) belum ada SEC sekuensial (state/register, unrolling per siklus,
          mapping state awal); (3) belum ada CLI/subcommand; (4) lebar >64 dan
          tri-state X/Z belum didukung; (5) lebar ekspresi = natural (maksimum
-         operand; konstanta memakai lebar literal IR), BELUM context width SV
-         — mis. Sub 8 bit
-         yang dideklarasikan 16 bit kehilangan borrow (hasil dipotong ke 8 bit
-         dulu baru zero-extend), Not = komplemen pada lebar operand; (6)
-         signedness belum dimodelkan: IrExpr::Signed ditolak, tetapi sinyal
-         yang dideklarasikan signed tanpa wrapper Signed tetap diperlakukan
-         unsigned (tidak terdeteksi) — dicatat sebagai keterbatasan, bukan
-         diklaim didukung. Suite: cargo nextest run --workspace --all-features
-         -> 3867 passed, 24 skipped (ROUND 221).
+         operand; konstanta memakai lebar literal IR), BELUM context width SV.
+         Pelebaran hasil Add/Sub/Mul DITOLAK (carry/borrow akan hilang) dan
+         Cast pelebar aritmetika juga DITOLAK, jadi tidak ada Equivalent palsu
+         dari sini; yang belum didukung adalah MENGHITUNG pada lebar konteks
+         (mis. `logic [15:0] s = a + b` 8-bit), bukan hasil yang salah diam-diam.
+         Konsekuensinya sebagian desain legal DITOLAK (over-reject, bukan salah
+         nilai): pelebaran `~a` unsigned dan semua pelebaran `-a`. Bitwise &
+         Mux yang melebar tetap didukung; (6)
+         signedness ekspresi DIDUKUNG (SecExpr::Signed + is_signed + widen/
+         Resize/fit_width sign-extend, ROUND 222 review 4), tetapi sinyal
+         yang dideklarasikan signed tetap DITOLAK — pembacaan sinyal signed
+         tanpa pembungkus Signed tidak membawa tanda, jadi desain seperti itu
+         belum bisa dibandingkan. Suite: cargo nextest run --workspace
+         --all-features
+         -> 3917 passed, 24 skipped (ROUND 222).
 COMP-17: ✅ Design partitioning for parallel compilation (ROUND 93)
          crates/maria-tools/src/compile_partition.rs: CompilePartitioner.
          Tarjan SCC → condensation DAG → layer-based assignment →
@@ -2427,16 +2641,30 @@ FORMAL-10: ⚠️ IN PROGRESS (ROUND 92) — assume-guarantee tahap 1:
            dilaporkan bila reachable di bawah asumsi. Test e2e
            test_assume_constrains_counterexample. MASIH OPEN: compositional
            assume-guarantee antar module, proof obligations per component.
-FORMAL-11: ⚠️ PARTIAL (ROUND 220/221) — Equivalence checking kombinasional tahap 1
-         ada; front-end modul + SEC sekuensial belum
+FORMAL-11: ⚠️ PARTIAL (ROUND 220/221/222) — Equivalence checking kombinasional
+         tahap 2 ada; SEC sekuensial + CLI belum
          Engine SEC kombinasional ada: crates/mivon-formal/src/sec.rs
-         (check_equivalence dengan miter disjungsi Z3 + counterexample) dan
-         lowering IrExpr -> SecExpr (expr_from_ir). 23 test di modul itu
-         mencakup ekuivalen/tidak-ekuivalen, lebar, operator, dan error path
-         (rincian + mutasi di COMP-16 ROUND 220/221).
-         MASIH OPEN: ekstraksi modul/assignment nyata menjadi SecDesign
-         (front-end) dan integrasi CLI; tanpa itu pengguna belum bisa
-         membandingkan dua file .sv. Lihat juga COMP-16 (item sama, tahap 1).
+         (check_equivalence dengan miter disjungsi Z3 + counterexample),
+         lowering IrExpr -> SecExpr (expr_from_ir), dan ekstraksi
+         IrModule -> SecDesign (design_from_module, ROUND 222) untuk proses
+         Combinational/CombReactive berisi BlockingAssign ke sinyal utuh:
+         sinyal internal disubstitusi transitif + di-resize ke lebar
+         deklarasinya, sedangkan driver ganda, driver pada input, output atau
+         sinyal internal tanpa driver, loop kombinasional, sinyal signed,
+         inout, instance sub-modul, referensi maju pada sensitivity eksplisit,
+         dan proses sekuensial yang menulis output DITOLAK dengan pesan
+         eksplisit (initializer konstanta dilewati), Cast/Signed(Const) dari
+         elaborator dipetakan/diterima, dan signedness ekspresi dimodelkan
+         (SecExpr::Signed + is_signed; widen/Resize/fit_width sign-extend
+         sesuai §11.6.1; pelebaran hasil Add/Sub/Mul DITOLAK karena butuh
+         context width, signed maupun unsigned; Neg dan Not yang tidak
+         komutatif dengan ekstensi juga DITOLAK). 60 test di modul itu
+         mencakup ekuivalen/tidak-ekuivalen, lebar, operator, error path, dan
+         guard ekstraksi (rincian + mutasi (a)-(ao) di COMP-16 ROUND
+         220/221/222).
+         MASIH OPEN: If/Case/Loop/bit-select di dalam proses, integrasi CLI
+         (belum ada subcommand yang membandingkan dua file .sv), dan SEC
+         sekuensial (FORMAL-12). Lihat juga COMP-16 (item sama, tahap 2).
 FORMAL-12:[] No equivalence checking sequential (Critical)
 FORMAL-13: ⚠️ IN PROGRESS (ROUND 102/112) — connectivity checking tahap 1+2a:
          crates/maria-formal/src/connectivity.rs — analisis statis jalur
