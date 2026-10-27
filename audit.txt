@@ -1642,7 +1642,7 @@ COMP-15: ✅ Memory inference lint (ROUND 85b) — mlint --memory:
          find_memory_inference() check DeclVar: range.is_some() +
          array_range.is_some() → info "reg array — kandidat inferred RAM/ROM".
          CLI flag --memory + LintArgs + dispatch.
-COMP-16: ⚠️ PARTIAL (ROUND 220/221/222) — Tidak ada sequential equivalence checking
+COMP-16: ⚠️ PARTIAL (ROUND 220/221/222/223) — Tidak ada sequential equivalence checking
          Tahap 1 (kombinasional) SELESAI: crates/mivon-formal/src/sec.rs
          - SecExpr (Input/Const(nilai,lebar)/Not/And/Or/Xor/Add/Neg/Sub/Mul/
            Eq/Mux),
@@ -1909,6 +1909,36 @@ COMP-16: ⚠️ PARTIAL (ROUND 220/221/222) — Tidak ada sequential equivalence
            dipaksa aman -> 6 test (termasuk rejects_neg_widening) gagal. Pada
            suite 60-test (review putaran 8): (ao) widen_safe(Not) mengabaikan
            jenis ekstensi -> rejects_signed_not_mixed_widening gagal.
+           Mutasi tahap 3 / CLI. Tiap angka di bawah adalah keluaran nyata
+           cargo test pada saat mutasi dipasang (jumlah test yang cocok filter
+           ikut berubah antar tahap karena test terus ditambah):
+           (ap) compile_and_elaborate kembali ke None (top_module diabaikan) ->
+           compile_design_uses_explicit_top_for_multi_root_file gagal dengan
+           MultipleCandidateTops E3006 (bukan mutasi hipotetis: ini bug yang
+           diperbaiki tahap ini); (aq) Cli::define_pairs kembali ke
+           filter_map('=') -> define_pairs_keeps_valueless_defines gagal
+           (0 passed, 1 failed); (ar) gate kompilasi dimatikan
+           (find(|d| false && d.is_error())) ->
+           parse_error_in_second_design_is_rejected gagal (6 passed, 1 failed
+           dari 7 test formal_sec saat itu); (as) guard output-kosong
+           dimatikan (false && da.outputs.is_empty()) ->
+           module_without_outputs_is_rejected gagal (8 passed, 1 failed dari
+           9 test yang cocok filter formal_sec saat itu); (at) project_id
+           legacy kembali ke filter_map('=') ->
+           bare_define_reaches_both_designs_in_both_pipelines gagal (exit 0
+           vs 60: run tanpa define me-restore hasil run ber-define);
+           (au) guard recovery run_fast dimatikan (false && recovered && ...)
+           -> recovery_mode_is_rejected_in_both_pipelines gagal (exit 0 vs
+           10). (av) probe include di compile_design_with_config dimatikan ->
+           unit test unresolved_include_in_second_design_is_rejected gagal
+           (e2e TETAP lulus karena check_includes di real_main sudah memeriksa
+           file desain kedua lebih dulu — dicatat apa adanya); (aw) check_includes
+           desain utama di run_legacy dimatikan -> e2e
+           missing_include_is_rejected_on_both_sides gagal pada sisi utama
+           (exit 0 vs 10); (ax) paksa
+           full-rebuild (cli.recompile=true saat SEC) dimatikan ->
+           cached_partial_design_does_not_mask_new_header gagal (exit 0 vs 60:
+           cache desain parsial di-restore).
          - Temuan review yang sudah diperbaiki: miter konjungsi (dua output
            yang beda pada kondisi BERBEDA salah dianggap ekuivalen), panic
            outputs kosong, counterexample fabrikasi 0 saat model eval gagal,
@@ -1932,7 +1962,142 @@ COMP-16: ⚠️ PARTIAL (ROUND 220/221/222) — Tidak ada sequential equivalence
          output/sinyal internal tanpa driver, driver pada input, dan driver
          ganda DITOLAK (bukan ditebak);
          (2) belum ada SEC sekuensial (state/register, unrolling per siklus,
-         mapping state awal); (3) belum ada CLI/subcommand; (4) lebar >64 dan
+         mapping state awal); (3) CLI SUDAH ADA (ROUND 223, tahap 3):
+         `mivon <a.sv> --formal-sec <b.sv>` (src/formal_sec.rs) — modul =
+         `--top` atau top desain utama; exit 0 bila Equivalent, exit 60
+         (RT7001) bila NotEquivalent (counterexample dicetak). Lingkungan CLI
+         desain kedua DIPROPAGASI penuh (--define, --incdir, --libdir,
+         --libfile, --top, pilihan lexer). Kode diagnostik DIPISAH supaya CI
+         bisa membedakan sebab gagal: E3005 (exit 40) modul target tidak ada
+         (elaborasi desain kedua gagal lebih dulu — helper missing_module/E3001
+         di run_sec hanya terjangkau lewat API, diuji unit tapi tidak dari CLI),
+         E1008 (exit 10, kode BARU "design outside formal SEC subset") modul
+         di luar subset SEC / flag tidak bisa dijalankan / desain kedua
+         ber-parse-error, RT7001 (exit 60) HANYA untuk ketidakekuivalenan yang
+         benar-benar terbukti. E1008 ditambahkan karena E1007 berarti
+         "assertion di-skip" — explanation/help-nya menyesatkan total untuk
+         kegagalan SEC (temuan review tahap 3).
+         Flag ini TIDAK BISA diabaikan diam-diam. Dua lapis:
+         (a) satu validasi di awal real_main (validate_formal_sec) menolak
+         --formal-sec bersama subcommand, --gui, --lsp, --compile-only,
+         --lazy, --ast, dan --formal/--formal-connect (dua mode formal
+         sekaligus saling mengabaikan; --ast tidak pernah tercetak karena
+         blok SEC return lebih dulu);
+         (b) guard di SEMUA early-return pipeline yang mengembalikan Ok tanpa
+         membandingkan: mode recovery top (di KEDUA pipeline, sebelum
+         early-return, TIDAK bisa di-bypass --force-sim), file
+         header/macro-only (run_legacy), dan desain tanpa module yang hanya
+         berisi package/interface/class (run_legacy + run_fast). Sebelumnya
+         keempat jalur itu exit 0 tanpa verdict (dibuktikan e2e; ditemukan
+         review putaran 1/2). Modul tanpa output juga DITOLAK (E1008) —
+         miter kosong selalu Unsat sehingga "EQUIVALENT (0 output)" adalah
+         hijau palsu.
+         Desain kedua ber-parse/elaboration-error DITOLAK (E1008, menyertakan
+         file:line bila ada) karena CompileSession mengumpulkan parse error
+         tanpa Err — tanpa gate ini desain parsial bisa dilaporkan Equivalent.
+         Modul target (--top ATAU top desain utama) diteruskan sebagai top
+         elaborasi desain kedua: SessionConfig::top_module hanya disimpan,
+         tidak dipakai `compile_and_elaborate`, jadi nama modul diberikan
+         sebagai argumen — tanpa itu file kedua ber-root ganda gagal E3006
+         walau modulnya ada (test
+         compile_design_uses_explicit_top_for_multi_root_file gagal sebelum
+         perbaikan; e2e: a.sv vs two.sv -> exit 0).
+         Define kini memakai SATU helper (Cli::define_pairs) di legacy
+         (loop preprocessor, project_id, flags_hash), fast, dan desain kedua.
+         Sebelumnya dua salinan inline filter_map('=') di legacy membuat
+         `-DFOO` tanpa '=' TIDAK ikut sidik cache MICD: run ber-define lalu run
+         tanpa define me-restore hasil lama dan memberi EQUIVALENT palsu
+         (ditemukan review putaran 3). run_fast juga dulu membuang define
+         tanpa '='. Akibatnya verdict tidak lagi berubah hanya karena -f/file
+         besar memicu auto-fast (e2e: ifdef di desain utama MAUPUN desain
+         kedua -> 0 dengan -DFOO, 60 tanpanya, sama di legacy dan --fast;
+         dibuktikan dengan mutasi (at)).
+         CATATAN CAKUPAN: src/main.rs (seed WorkspaceContext) masih memakai
+         split inline sendiri (sudah benar untuk define bare) dan tool
+         (crates/mivon-tools) masih filter_map('=') — `mivon msim f.sv -DFOO`
+         belum meneruskan define bare; itu bug tool pra-ada, di luar jalur
+         SEC (dicatat sebagai sisa pekerjaan, bukan diklaim selesai).
+         Include yang TIDAK ter-resolve kini DITOLAK (E1008) di KEDUA desain.
+         Pipeline hanya memberi warning preprocessor untuk include hilang
+         (tidak masuk parse_errors), sehingga desain dengan header hilang bisa
+         lolos sebagai EQUIVALENT — ditemukan review putaran 4/5. Deteksi
+         TERSTRUKTUR lewat Preprocessor::missing_includes (bukan cocok-cocokan
+         teks pesan; dicatat SELALU, tidak bergantung quiet — ada test parser
+         khusus). Probe memakai preprocessor PIPELINE YANG SEBENARNYA, bukan
+         konfigurasi tiruan: run_legacy memakai base_pp (sudah termasuk
+         collect_sv_dirs + define CLI), run_fast memakai
+         session.create_preprocessor(), dan desain kedua memakai
+         create_preprocessor() dari sesinya sendiri. Ini wajib — percobaan
+         sebelumnya menambahkan jalur cari gaya legacy hanya ke probe,
+         hasilnya FAIL-OPEN (probe lolos, kompilasi gagal resolve → EQUIVALENT
+         palsu tanpa warning; review putaran 7). Semua input diperiksa
+         (sources + libfiles, kedua desain).
+         --formal-sec juga memaksa full-rebuild (recompile): sidik cache MICD
+         hanya mencatat include yang BERHASIL resolve, jadi desain parsial yang
+         sudah ter-cache dari run NON-SEC tidak terinvalidasi saat header
+         muncul kemudian (review putaran 6: EQUIVALENT palsu tetap 0 sampai
+         --recompile). Konsekuensi: SEC selalu kompilasi ulang (lebih lambat,
+         tapi gate verifikasi tidak boleh bergantung pada cache).
+         e2e: include hilang di desain utama maupun kedua -> 10; header dibuat
+         -> 60; cache desain parsial dari run non-SEC -> tetap 60. Verifikasi
+         manual: include hanya di subdir tanpa --incdir -> 10, dengan --incdir
+         -> 60; header di direktori desain utama tidak "menyeberang" ke desain
+         kedua -> 10.
+         11 unit test di binary — 8 di src/formal_sec.rs (equivalent_designs_pass,
+         different_designs_fail_with_output_name [RT7001 + nama output],
+         missing_module_is_reported [E3001 — jalur API; CLI memberi E3005],
+         unsupported_module_is_rejected [E1008],
+         compile_design_uses_explicit_top_for_multi_root_file,
+         parse_error_in_second_design_is_rejected,
+         unresolved_include_in_second_design_is_rejected,
+         module_without_outputs_is_rejected) + 3 di src/main.rs
+         (validate_formal_sec_rejects_incompatible_modes untuk 8 kombinasi,
+         validate_formal_sec_allows_plain_run,
+         define_pairs_keeps_valueless_defines) + 1 test parser
+         (missing_includes_are_recorded_even_when_quiet).
+         8 test E2E baru di tests/sec_cli.rs (binary sungguhan, sandbox + MICD
+         dir terisolasi per test dengan marker .mivon, di-gate
+         #![cfg(feature = "formal")]): equivalent_designs_exit_zero,
+         not_equivalent_designs_exit_60 (RT7001),
+         packages_only_design_is_rejected_in_both_pipelines,
+         header_only_design_is_rejected_identically,
+         recovery_mode_is_rejected_in_both_pipelines (termasuk --force-sim),
+         missing_include_is_rejected_on_both_sides (utama + kedua),
+         cached_partial_design_does_not_mask_new_header (cache dari run
+         non-SEC), bare_define_reaches_both_designs_in_both_pipelines (ifdef
+         di desain utama DAN kedua, legacy + --fast). Ini yang mengunci
+         WIRING — unit test di src tidak bisa menangkap flag yang diabaikan
+         pipeline.
+         Verifikasi e2e manual: a&b vs b&a -> 0; a&b vs a|b -> 60 (cex
+         a=0x80); recovery --fast -> 10; subcommand/GUI/LSP/compile-only/
+         lazy/--formal -> 10; header-only -> 10 (legacy DAN fast);
+         package-only (legacy+fast) -> 10; desain kedua ber-parse-error ->
+         10; modul tanpa output -> 10; file kedua ber-root ganda -> 0;
+         --top tidak ada -> E3005/40; ifdef di desain utama/kedua -> 0/60
+         sesuai define.
+         Caveat CLI yang MASIH ADA (jujur, bukan klaim selesai): (i) desain
+         kedua hanya SATU file .sv (bukan .mv / multi-file);          (ii) probe include memakai
+         preprocessor pipeline apa adanya, jadi hasilnya bisa BEDA antara
+         legacy dan --fast: legacy men-scan subdirektori leluhur (collect_sv_dirs,
+         berhenti di .git/.mivon) sedangkan fast hanya incdir + parent source.
+         Untuk proyek tanpa marker root, jalur legacy bisa menemukan header
+         milik proyek lain — itu perilaku pipeline, bukan probe, dan SEC
+         mewarisinya; (iii) SEC memaksa full-rebuild
+         (--recompile) sehingga selalu lebih lambat daripada run biasa; (iv)
+         pesan Unsupported dari sec.rs menyertakan Debug IR mentah sehingga
+         bisa panjang; (v) NOT EQUIVALENT memakai RT7001 (AssertionFailed)
+         yang explanation/help-nya berbicara tentang SVA — pesan utama SEC
+         jelas, tapi blok Explanation menyesatkan; (vi) panic pra-ada
+         run_fast "elaborator pada jalur elaborasi penuh" (expect) bisa
+         terpicu --fast --force-sim + parse error, terlepas dari SEC; (vii)
+         desain yang hanya berisi typedef/program (tanpa module/package/
+         interface/class) memberi kode beda antar pipeline (legacy E3001/30,
+         fast E1008/10) — keduanya non-zero, tapi belum identik; (viii)
+         --force-sim melewati gate elaborasi legacy; ekstraksi SEC masih
+         menolak kasus rusak yang dicoba review (sinyal undefined, driver
+         ganda, modul hilang) sehingga belum ada bukti false-green, tapi
+         jalur itu belum diuji khusus;
+         (4) lebar >64 dan
          tri-state X/Z belum didukung; (5) lebar ekspresi = natural (maksimum
          operand; konstanta memakai lebar literal IR), BELUM context width SV.
          Pelebaran hasil Add/Sub/Mul DITOLAK (carry/borrow akan hilang) dan
@@ -1948,7 +2113,7 @@ COMP-16: ⚠️ PARTIAL (ROUND 220/221/222) — Tidak ada sequential equivalence
          tanpa pembungkus Signed tidak membawa tanda, jadi desain seperti itu
          belum bisa dibandingkan. Suite: cargo nextest run --workspace
          --all-features
-         -> 3917 passed, 24 skipped (ROUND 222).
+         -> 3937 passed, 24 skipped (ROUND 223).
 COMP-17: ✅ Design partitioning for parallel compilation (ROUND 93)
          crates/maria-tools/src/compile_partition.rs: CompilePartitioner.
          Tarjan SCC → condensation DAG → layer-based assignment →
@@ -2641,8 +2806,8 @@ FORMAL-10: ⚠️ IN PROGRESS (ROUND 92) — assume-guarantee tahap 1:
            dilaporkan bila reachable di bawah asumsi. Test e2e
            test_assume_constrains_counterexample. MASIH OPEN: compositional
            assume-guarantee antar module, proof obligations per component.
-FORMAL-11: ⚠️ PARTIAL (ROUND 220/221/222) — Equivalence checking kombinasional
-         tahap 2 ada; SEC sekuensial + CLI belum
+FORMAL-11: ⚠️ PARTIAL (ROUND 220/221/222/223) — Equivalence checking
+         kombinasional tahap 3 (ekstraksi + CLI) ada; SEC sekuensial belum
          Engine SEC kombinasional ada: crates/mivon-formal/src/sec.rs
          (check_equivalence dengan miter disjungsi Z3 + counterexample),
          lowering IrExpr -> SecExpr (expr_from_ir), dan ekstraksi
@@ -2661,10 +2826,28 @@ FORMAL-11: ⚠️ PARTIAL (ROUND 220/221/222) — Equivalence checking kombinasi
          komutatif dengan ekstensi juga DITOLAK). 60 test di modul itu
          mencakup ekuivalen/tidak-ekuivalen, lebar, operator, error path, dan
          guard ekstraksi (rincian + mutasi (a)-(ao) di COMP-16 ROUND
-         220/221/222).
-         MASIH OPEN: If/Case/Loop/bit-select di dalam proses, integrasi CLI
-         (belum ada subcommand yang membandingkan dua file .sv), dan SEC
-         sekuensial (FORMAL-12). Lihat juga COMP-16 (item sama, tahap 2).
+         220/221/222, mutasi CLI (ap)-(aw) di ROUND 223).
+         CLI (ROUND 223, tahap 3): `mivon <a.sv> --formal-sec <b.sv>` di
+         src/formal_sec.rs — mencetak input/output, verdict, counterexample;
+         exit 60 (RT7001) saat NotEquivalent (gate CI), E3005 (exit 40) saat
+         modul target tidak ada (elaborasi desain kedua gagal lebih dulu), E1008 (exit 10, kode BARU) saat desain di
+         luar subset SEC / desain kedua ber-parse-error / flag tidak bisa
+         dijalankan (subcommand, --gui, --lsp, --compile-only, --lazy), dan
+         mode recovery top, file header-only, desain package-only, dan modul
+         tanpa output DITOLAK (tidak bisa di-bypass --force-sim). Lingkungan
+         CLI desain kedua dipropagasi penuh (Cli::define_pairs termasuk -DFOO
+         tanpa '=', incdir, libdir, libfile, top = modul target, lexer).
+         11 unit test di binary (equivalent, beda output, modul hilang via
+         API, unsupported, top eksplisit multi-root, parse error desain kedua,
+         include tak ter-resolve, modul tanpa output, validate_formal_sec x2,
+         define_pairs) + 1 test parser (missing_includes tercatat walau
+         quiet) + 8 test E2E di tests/sec_cli.rs yang menjalankan binary
+         sungguhan (verdict 0/60, package-only, header-only, recovery termasuk
+         --force-sim, include hilang di kedua sisi, cache desain parsial,
+         define tanpa '=' di desain utama dan kedua untuk legacy+fast).
+         Rincian + mutasi (ap)-(ax) di COMP-16 ROUND 223.
+         MASIH OPEN: If/Case/Loop/bit-select di dalam proses dan SEC
+         sekuensial (FORMAL-12). Lihat juga COMP-16 (item sama, tahap 2/3).
 FORMAL-12:[] No equivalence checking sequential (Critical)
 FORMAL-13: ⚠️ IN PROGRESS (ROUND 102/112) — connectivity checking tahap 1+2a:
          crates/maria-formal/src/connectivity.rs — analisis statis jalur

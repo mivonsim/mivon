@@ -1220,7 +1220,12 @@ impl CompileSession {
         Ok(())
     }
 
-    fn create_preprocessor(&self) -> Preprocessor {
+    /// Preprocessor dengan konfigurasi sesi ini (incdirs, parent source,
+    /// defines, jalur UVM). Publik supaya konsumen bisa memeriksa hal yang
+    /// HANYA dilaporkan sebagai warning preprocessor dan tidak masuk
+    /// `parse_errors` — mis. SEC menolak desain dengan `include yang tidak
+    /// ter-resolve (kalau tidak, header hilang = verdict palsu).
+    pub fn create_preprocessor(&self) -> Preprocessor {
         let mut pp = Preprocessor::new();
         for dir in &self.config.incdirs {
             if let Some(s) = dir.to_str() {

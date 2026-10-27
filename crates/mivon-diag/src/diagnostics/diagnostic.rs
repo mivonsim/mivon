@@ -74,6 +74,13 @@ pub enum DiagCode {
     /// tetap dibuang agar modul tidak terpotong, tapi user diberi tahu.
     UnsupportedAssertion,
 
+    /// Desain/modus di luar subset formal SEC (E1008). Beda dari E1007
+    /// (assertion di-skip): di sini TIDAK ADA verdict sama sekali, jadi exit
+    /// code 10 dipakai agar CI membedakannya dari "terbukti tidak ekuivalen"
+    /// (RT7001/60). Tanpa kode sendiri, pesan E1007 ("assertion was skipped")
+    /// menyesatkan untuk kegagalan ekstraksi/flag.
+    UnsupportedForSec,
+
     // ── Semantic errors: E2xxx ──
     UndefinedSignal,
     TypeMismatch,
@@ -258,6 +265,7 @@ impl DiagCode {
             DiagCode::InvalidSyntax => "E1005",
             DiagCode::ExpansionLimit => "E1006",
             DiagCode::UnsupportedAssertion => "E1007",
+            DiagCode::UnsupportedForSec => "E1008",
             // Semantic
             DiagCode::UndefinedSignal => "E2001",
             DiagCode::TypeMismatch => "E2002",
@@ -359,6 +367,7 @@ impl DiagCode {
             DiagCode::InvalidSyntax => "invalid syntax",
             DiagCode::ExpansionLimit => "implementation limit exceeded",
             DiagCode::UnsupportedAssertion => "unsupported assertion construct",
+            DiagCode::UnsupportedForSec => "design outside formal SEC subset",
             // Semantic
             DiagCode::UndefinedSignal => "undefined signal",
             DiagCode::TypeMismatch => "type mismatch",
@@ -466,6 +475,8 @@ impl DiagCode {
                 "The design exceeds an implementation limit (for example SVA sequence/property alias expansion); the construct was left unexpanded to avoid excessive memory use.",
             DiagCode::UnsupportedAssertion =>
                 "An assertion uses a SystemVerilog construct that this parser cannot lower to the simulation IR; the assertion was skipped so the rest of the module still parses.",
+            DiagCode::UnsupportedForSec =>
+                "Formal equivalence checking (SEC) supports only a flat combinational subset of SystemVerilog. The requested design or flag combination falls outside it, so NO equivalence verdict was produced — the designs were not compared.",
             DiagCode::UndefinedSignal =>
                 "A signal name was referenced but has not been declared in the current scope.",
             DiagCode::TypeMismatch =>
@@ -622,6 +633,8 @@ impl DiagCode {
                 "Reduce the nesting or size of the sequence/property alias expansion.",
             DiagCode::UnsupportedAssertion =>
                 "Rewrite the assertion using a supported subset (plain boolean expression, ##N chain, or |-> / |=> implication), or remove it if it is not needed for simulation.",
+            DiagCode::UnsupportedForSec =>
+                "Restrict the compared module to continuous assigns / always_comb over plain signals, or drop --formal-sec for this design. Do not treat exit code 10 as a proof of equivalence.",
             DiagCode::ExpectedToken =>
                 "Check the code near the indicated position for missing keywords or operators.",
             DiagCode::ExpectedSemi =>
@@ -783,6 +796,7 @@ impl DiagCode {
             | DiagCode::InvalidSyntax
             | DiagCode::ExpansionLimit
             | DiagCode::UnsupportedAssertion => "Parse",
+            DiagCode::UnsupportedForSec => "Formal",
             DiagCode::UndefinedSignal
             | DiagCode::TypeMismatch
             | DiagCode::WidthMismatch

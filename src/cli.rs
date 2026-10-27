@@ -1124,6 +1124,12 @@ pub struct Cli {
     #[arg(long = "formal-connect")]
     pub formal_connect: Vec<String>,
 
+    /// SEC (COMP-16 tahap 3): bandingkan desain utama dengan file ini.
+    /// Modul yang dibandingkan = `--top` atau top desain utama; exit != 0 bila
+    /// tidak ekuivalen atau di luar subset SEC.
+    #[arg(long = "formal-sec", value_name = "FILE")]
+    pub formal_sec: Option<String>,
+
     /// DPI shared library to load (can be specified multiple times)
     #[arg(long = "dpi-lib", num_args = 1)]
     pub dpi_libs: Vec<String>,
@@ -2007,4 +2013,22 @@ pub struct MtclArgs {
     /// Argumen tambahan untuk skrip (tersedia sebagai $argv/$argc)
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     pub args: Vec<String>,
+}
+
+impl Cli {
+    /// Pasangan define untuk SessionConfig: `-DFOO=BAR` -> ("FOO","BAR"),
+    /// `-DFOO` -> ("FOO",""). SATU implementasi untuk semua pipeline — dulu
+    /// run_fast membuang define tanpa '=' sementara run_legacy meneruskannya,
+    /// sehingga `ifdef` memilih cabang berbeda antara jalur fast dan legacy
+    /// (di SEC: NOT EQUIVALENT palsu, dan verdict berubah hanya karena file
+    /// besar/filelist memicu auto-fast).
+    pub fn define_pairs(&self) -> Vec<(String, String)> {
+        self.defines
+            .iter()
+            .map(|d| match d.split_once('=') {
+                Some((k, v)) => (k.to_string(), v.to_string()),
+                None => (d.clone(), String::new()),
+            })
+            .collect()
+    }
 }

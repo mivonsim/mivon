@@ -33,6 +33,14 @@ pub const PARSE_ERRORS: &[(DiagCode, &str)] = &[
     ),
 ];
 
+/// Formal verification error codes (E1xxx — flag/desain di luar subset formal).
+/// E1008 sengaja TIDAK masuk PARSE_ERRORS: kategorinya "Formal", bukan "Parse",
+/// supaya codes_by_category konsisten dengan category().
+pub const FORMAL_ERRORS: &[(DiagCode, &str)] = &[(
+    DiagCode::UnsupportedForSec,
+    "design outside formal SEC subset",
+)];
+
 /// All semantic error codes (E2xxx)
 pub const SEMANTIC_ERRORS: &[(DiagCode, &str)] = &[
     (DiagCode::UndefinedSignal, "undefined signal"),
@@ -183,6 +191,7 @@ pub const WARNING_CODES: &[(DiagCode, &str)] = &[
 pub fn all_codes() -> Vec<(DiagCode, &'static str)> {
     PARSE_ERRORS
         .iter()
+        .chain(FORMAL_ERRORS.iter())
         .chain(SEMANTIC_ERRORS.iter())
         .chain(ELAB_ERRORS.iter())
         .chain(RUNTIME_MEMORY_ERRORS.iter())
@@ -228,10 +237,10 @@ mod tests {
     #[test]
     fn test_all_codes_count() {
         let codes = all_codes();
-        // Parse: 7, Semantic: 4, Elab: 11, Memory: 5, Signal: 5, Scheduler: 5,
+        // Parse: 7, Formal: 1, Semantic: 4, Elab: 11, Memory: 5, Signal: 5, Scheduler: 5,
         // Event: 3, Module: 2, Interface: 2, Clock: 2, Assertion: 4, DPI: 3,
-        // Internal: 3, Infrastructure: 4, Legacy: 3, Other: 2, Warnings: 9 = 74 total
-        assert_eq!(codes.len(), 74);
+        // Internal: 3, Infrastructure: 4, Legacy: 3, Other: 2, Warnings: 9 = 75 total
+        assert_eq!(codes.len(), 75);
     }
 
     #[test]
@@ -239,6 +248,9 @@ mod tests {
         assert_eq!(lookup_code("E1001"), Some(DiagCode::UnexpectedToken));
         assert_eq!(lookup_code("E1006"), Some(DiagCode::ExpansionLimit));
         assert_eq!(lookup_code("E1007"), Some(DiagCode::UnsupportedAssertion));
+        // E1008 = di luar subset formal SEC (TIDAK ADA verdict, bukan assertion
+        // di-skip) — exit code 10, terpisah dari RT7001 (terbukti tidak ekuivalen).
+        assert_eq!(lookup_code("E1008"), Some(DiagCode::UnsupportedForSec));
         assert_eq!(lookup_code("E3001"), Some(DiagCode::ModuleNotFound));
         assert_eq!(lookup_code("E0005"), Some(DiagCode::DataFormatError));
         // E3005 = top resolution (dahulu prefix aneh "EL3001" di luar skema

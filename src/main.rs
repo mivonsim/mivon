@@ -6,6 +6,8 @@ mod cli;
 mod dispatch;
 #[cfg(feature = "formal")]
 mod formal_run;
+#[cfg(feature = "formal")]
+mod formal_sec;
 mod pipeline_config;
 mod report_glue;
 mod run_fast;
@@ -30,6 +32,8 @@ use std::process;
 use mivon_api::read_project_file;
 use mivon_api::simulator::SimulationEngine;
 use mivon_compiler::frontend::CompileSession;
+use mivon_core::diagnostics::DiagCode;
+use mivon_core::error::SimError;
 
 /// Default simulasi maksimum (ns) saat tidak ada `-T` / `simulation.max_time`.
 ///
@@ -483,6 +487,23 @@ fn real_main() {
     };
     apply_config_to_cli(&mut cli, &cfg);
 
+    // ── Validasi flag gate CI SEBELUM dispatch apa pun ──
+    // --formal-sec hanya bermakna di pipeline compile/simulasi penuh. Dulu
+    // flag ini diabaikan diam-diam di subcommand/GUI/LSP (exit 0 tanpa
+    // membandingkan = gate CI lolos palsu) dan perilakunya beda antara jalur
+    // legacy vs fast untuk --compile-only/--lazy. Satu validasi di sini.
+    if let Err(e) = validate_formal_sec(&cli) {
+        fail(e);
+    }
+    // SEC selalu full-rebuild: sidik cache MICD hanya mencatat include yang
+    // BERHASIL di-resolve, jadi desain parsial (header hilang) yang sudah
+    // ter-cache tidak terinvalidasi saat header muncul kemudian — verdict
+    // EQUIVALENT palsu sampai --recompile. Gate verifikasi lebih penting
+    // daripada kecepatan, jadi restore cache dilewati saat SEC aktif.
+    if cli.formal_sec.is_some() {
+        cli.recompile = true;
+    }
+
     // Initialize warning filter from CLI flags
     init_warn_filter(&cli);
 
@@ -636,12 +657,53 @@ fn real_main() {
     mivon_api::env::shutdown(&mut env);
 
     if let Err(e) = result {
-        // Use TerminalEmitter for pretty diagnostic output
-        let mut emitter = mivon_core::diagnostics::TerminalEmitter::new();
-        let diag = e.to_diagnostic();
-        let _ = emitter.emit(&diag);
-        process::exit(e.exit_code());
+        fail(e);
     }
+}
+
+/// Cetak satu SimError sebagai diagnostic lalu keluar dengan exit code-nya
+/// (E1xxx=10, E3xxx=30, RT7xxx=60, ...). Dipakai jalur validasi awal dan akhir
+/// real_main supaya format dan exit code-nya identik.
+fn fail(e: SimError) -> ! {
+    // Use TerminalEmitter for pretty diagnostic output
+    let mut emitter = mivon_core::diagnostics::TerminalEmitter::new();
+    let diag = e.to_diagnostic();
+    let _ = emitter.emit(&diag);
+    process::exit(e.exit_code());
+}
+
+/// --formal-sec adalah gate CI: exit 0 berarti "terbukti ekuivalen". Bila flag
+/// tidak bisa dijalankan, tolak dengan E1008 (exit 10) — jangan pernah
+/// mengabaikannya.
+fn validate_formal_sec(cli: &Cli) -> Result<(), SimError> {
+    if cli.formal_sec.is_none() {
+        return Ok(());
+    }
+    let conflict = if cli.cmd.is_some() {
+        "subcommand mivon"
+    } else if cli.formal || !cli.formal_connect.is_empty() {
+        // Dua mode formal sekaligus: blok SEC return lebih dulu sehingga
+        // --formal/--formal-connect akan diabaikan diam-diam.
+        "--formal/--formal-connect"
+    } else if cli.gui {
+        "--gui"
+    } else if cli.lsp {
+        "--lsp"
+    } else if cli.compile_only {
+        "--compile-only"
+    } else if cli.lazy {
+        "--lazy"
+    } else if cli.print_ast {
+        // Blok SEC return sebelum cetak AST di jalur legacy → --ast akan
+        // diabaikan diam-diam. Tolak, jangan diam.
+        "--ast"
+    } else {
+        return Ok(());
+    };
+    Err(SimError::with_diag(
+        DiagCode::UnsupportedForSec,
+        format!("--formal-sec tidak bisa dipakai bersama {conflict}"),
+    ))
 }
 
 /// Flag mesin yang harus berlaku di SEMUA jalur eksekusi (legacy `run` dan
@@ -672,6 +734,83 @@ fn apply_engine_flags(engine: &mut SimulationEngine, cli: &Cli) {
 mod tests {
     use super::truncate_ellipsis;
     use crate::anim_glue::anim_enabled;
+
+    /// Satu implementasi define untuk SEMUA pipeline: `-DFOO` (tanpa '=')
+    /// tidak boleh dibuang. Dulu run_fast membuangnya sementara run_legacy
+    /// meneruskan → `ifdef` memilih cabang berbeda dan verdict SEC berubah
+    /// hanya karena file besar/filelist memicu auto-fast.
+    #[test]
+    fn define_pairs_keeps_valueless_defines() {
+        use clap::Parser;
+        let cli =
+            crate::cli::Cli::try_parse_from(["mivon", "a.sv", "-DFOO", "-DBAR=1", "-DEMPTY="])
+                .expect("define harus parse");
+        assert_eq!(
+            cli.define_pairs(),
+            vec![
+                ("FOO".to_string(), String::new()),
+                ("BAR".to_string(), "1".to_string()),
+                ("EMPTY".to_string(), String::new()),
+            ]
+        );
+    }
+
+    /// --formal-sec adalah gate CI: bila tidak bisa dijalankan, harus ditolak
+    /// (E1008/exit 10), bukan diabaikan diam-diam (exit 0 = "terbukti sama").
+    #[test]
+    fn validate_formal_sec_rejects_incompatible_modes() {
+        use clap::Parser;
+        let cases: [(&[&str], &str); 8] = [
+            (
+                &["mivon", "a.sv", "--compile-only", "--formal-sec", "b.sv"],
+                "--compile-only",
+            ),
+            (
+                &["mivon", "a.sv", "--lazy", "--formal-sec", "b.sv"],
+                "--lazy",
+            ),
+            (&["mivon", "a.sv", "--lsp", "--formal-sec", "b.sv"], "--lsp"),
+            (&["mivon", "a.sv", "--gui", "--formal-sec", "b.sv"], "--gui"),
+            (
+                &["mivon", "a.sv", "--formal-sec", "b.sv", "--formal"],
+                "--formal",
+            ),
+            (
+                &[
+                    "mivon",
+                    "a.sv",
+                    "--formal-sec",
+                    "b.sv",
+                    "--formal-connect",
+                    "x,y",
+                ],
+                "--formal",
+            ),
+            (&["mivon", "a.sv", "--formal-sec", "b.sv", "--ast"], "--ast"),
+            (
+                &["mivon", "--formal-sec", "b.sv", "check", "a.sv"],
+                "subcommand",
+            ),
+        ];
+        for (argv, needle) in cases {
+            let cli = crate::cli::Cli::try_parse_from(argv)
+                .unwrap_or_else(|e| panic!("{argv:?} harus parse: {e}"));
+            let err =
+                super::validate_formal_sec(&cli).expect_err(&format!("{argv:?} harus ditolak"));
+            let msg = format!("{err}");
+            assert!(msg.contains(needle), "{argv:?}: {msg}");
+            assert_eq!(err.error_code(), "E1008", "{argv:?}: {msg}");
+        }
+    }
+
+    /// Tanpa flag bermasalah, SEC diizinkan (validasi tidak over-reject).
+    #[test]
+    fn validate_formal_sec_allows_plain_run() {
+        use clap::Parser;
+        let cli = crate::cli::Cli::try_parse_from(["mivon", "a.sv", "--formal-sec", "b.sv"])
+            .expect("harus parse");
+        assert!(super::validate_formal_sec(&cli).is_ok());
+    }
 
     /// Refactor stage: adaptor `dispatch_*` tool tambahan dipindah ke
     /// `dispatch/extra.rs` — pastikan varian CLI yang dilayani masih

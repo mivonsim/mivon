@@ -58,12 +58,7 @@ pub(crate) fn run_fast(
     let config = SessionConfig {
         sources,
         incdirs: cli.incdirs.iter().map(PathBuf::from).collect(),
-        defines: cli
-            .defines
-            .iter()
-            .filter_map(|d| d.split_once('='))
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect(),
+        defines: cli.define_pairs(),
         top_module: cli.top.clone(),
         auto_incdirs: cli.files.is_empty(),
         libdirs: cli.libdirs.iter().map(PathBuf::from).collect(),
@@ -270,6 +265,12 @@ pub(crate) fn run_fast(
             || !design.interfaces.is_empty()
             || !design.classes.is_empty()
         {
+            if cli.formal_sec.is_some() {
+                return Err(SimError::with_diag(
+                    DiagCode::UnsupportedForSec,
+                    "--formal-sec: tidak ada module pada desain utama (hanya package/interface/class)",
+                ));
+            }
             if cli.print_ast {
                 println!("{:#?}", design);
             }
@@ -278,6 +279,15 @@ pub(crate) fn run_fast(
             }
             micd_save_and_print(&mut session, cli.quiet, anim_active(&anim));
             return Ok(());
+        }
+        // SEC: desain tanpa module (mis. header/macro-only) tidak bisa
+        // dibandingkan — samakan kode dengan jalur legacy (E1008/10), bukan
+        // E3001/30, supaya perilakunya identik antar pipeline.
+        if cli.formal_sec.is_some() {
+            return Err(SimError::with_diag(
+                DiagCode::UnsupportedForSec,
+                "--formal-sec: tidak ada module pada desain utama (file header/macro-only)",
+            ));
         }
         return Err(SimError::with_diag(
             DiagCode::ModuleNotFound,
@@ -712,6 +722,15 @@ pub(crate) fn run_fast(
         return Err(SimError::Diagnostic(diag));
     }
 
+    // SEC membandingkan top: top tebakan (mode recovery) tidak boleh dipakai,
+    // termasuk dengan --force-sim — gate CI harus menolak, bukan hijau.
+    if recovered && cli.formal_sec.is_some() {
+        return Err(SimError::with_diag(
+            DiagCode::UnsupportedForSec,
+            "--formal-sec membutuhkan top yang unik (mode recovery tidak didukung)",
+        ));
+    }
+
     // ── Recovery/analisis mode (tanpa `--top`): jangan simulasikan modul tebakan ──
     if recovered && !cli.force_sim {
         if !cli.quiet {
@@ -812,6 +831,34 @@ pub(crate) fn run_fast(
             ir_design.top.signals.len(),
             ir_design.top.processes.len()
         );
+    }
+
+    // ── SEC (COMP-16 tahap 3): bandingkan dengan file kedua, gate CI ──
+    #[cfg(feature = "formal")]
+    if let Some(ref sec_file) = cli.formal_sec {
+        // Elaborasi desain kedua memakai MODUL TARGET (--top atau top desain
+        // utama), bukan hanya --top: file kedua berisi >1 root tetap bisa
+        // dibandingkan selama modul targetnya ada.
+        // Include desain utama yang tidak ter-resolve = desain parsial; tanpa
+        // pemeriksaan ini SEC bisa melaporkan EQUIVALENT untuk modul yang
+        // sebenarnya belum lengkap. Preprocessor yang dipakai = milik sesi
+        // kompilasi ini (jalur cari identik dengan kompilasi).
+        let pp = session.create_preprocessor();
+        let mut primary_inputs: Vec<std::path::PathBuf> = session.config.sources.clone();
+        primary_inputs.extend(session.config.libfiles.iter().cloned());
+        crate::formal_sec::check_includes(&pp, &primary_inputs)?;
+
+        let name = crate::formal_sec::module_name(&ir_design, cli.top.as_deref());
+        let other =
+            crate::formal_sec::compile_design(std::path::Path::new(sec_file), &cli, Some(&name))?;
+        return crate::formal_sec::run_sec(&ir_design, &other, cli.top.as_deref(), cli.quiet);
+    }
+    #[cfg(not(feature = "formal"))]
+    if cli.formal_sec.is_some() {
+        return Err(SimError::with_diag(
+            DiagCode::UnsupportedForSec,
+            "Equivalence checking not available: compile with --features formal",
+        ));
     }
 
     // ── Formal Verification (runs before simulation, skips sim) ──

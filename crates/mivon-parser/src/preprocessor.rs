@@ -153,6 +153,14 @@ impl Preprocessor {
         Ok(processed)
     }
 
+    /// Path `include yang GAGAL di-resolve selama preprocess. Dipakai
+    /// konsumen yang butuh verdict kuat (SEC): include hilang hanya warning
+    /// dan tidak masuk parse_errors, jadi tanpa akses ini desain parsial bisa
+    /// dianggap lengkap. Terisi saat preprocess, bukan setelahnya.
+    pub fn missing_includes(&self) -> &HashSet<String> {
+        &self.warned_includes
+    }
+
     pub fn preprocess(
         &mut self,
         source: &str,
@@ -415,7 +423,11 @@ impl Preprocessor {
                                 }
                             }
                             Err(e) => {
-                                if !self.quiet && self.warned_includes.insert(inc_path.clone()) {
+                                // Catat SELALU (bukan hanya saat tidak quiet):
+                                // konsumen seperti SEC memakai daftar ini
+                                // sebagai gate kebenaran, dan quiet hanya soal
+                                // apakah warning dicetak.
+                                if self.warned_includes.insert(inc_path.clone()) && !self.quiet {
                                     self.warnings.push(Diagnostic::warning(
                                         DiagCode::InvalidSyntax,
                                         format!("{}", e),
@@ -1728,6 +1740,28 @@ fn trailing_backslash_is_continuation(line: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::Preprocessor;
+
+    /// Include yang gagal di-resolve harus TETAP tercatat walau quiet=true:
+    /// konsumen (SEC) memakai daftar ini sebagai gate kebenaran, bukan sekadar
+    /// mencetak warning.
+    #[test]
+    fn missing_includes_are_recorded_even_when_quiet() {
+        let src = "\u{60}include \"tidak_ada_header.svh\"\nmodule m;\nendmodule\n";
+        let mut pp = Preprocessor::new();
+        pp.quiet = true;
+        let _ = pp.preprocess(src, None).unwrap();
+        assert!(
+            pp.missing_includes()
+                .iter()
+                .any(|p| p.contains("tidak_ada_header")),
+            "include gagal harus tercatat: {:?}",
+            pp.missing_includes()
+        );
+        assert!(
+            pp.warnings.is_empty(),
+            "quiet=true tidak boleh mengisi warnings"
+        );
+    }
 
     /// PARSER-16: baris direktif yang dikonsumsi tetap menyumbang satu baris
     /// output, sehingga nomor baris kode == nomor baris sumber.

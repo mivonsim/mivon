@@ -161,12 +161,8 @@ pub(crate) fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), S
     for path in &cli.incdirs {
         base_pp.add_search_path(path);
     }
-    for def in &cli.defines {
-        if let Some((name, value)) = def.split_once('=') {
-            base_pp.define(name, value);
-        } else {
-            base_pp.define(def, "");
-        }
+    for (name, value) in cli.define_pairs() {
+        base_pp.define(&name, &value);
     }
     // ── Fast pipeline via CompileSession (skip legacy pipeline entirely) ──
     // Auto-use fast pipeline when filelist is specified (legacy can't handle large file sets)
@@ -323,11 +319,7 @@ pub(crate) fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), S
         &proot,
         &pid_paths,
         &cli.incdirs.iter().map(PathBuf::from).collect::<Vec<_>>(),
-        &cli.defines
-            .iter()
-            .filter_map(|d| d.split_once('='))
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect::<Vec<_>>(),
+        &cli.define_pairs(),
     );
     let mut micd = mivon_compiler::micd::MicdDatabase::open_project_with_context(
         &micd_root, &pid, &proot, &src_paths,
@@ -616,6 +608,13 @@ pub(crate) fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), S
         // File header/macro-only (`` `define ``/komentar, tanpa module) —
         // desain kosong VALID (SV legal). Bukan error: lanjut jalur normal,
         // elaborator melaporkan "no modules found" sebagai NOTE.
+        // KECUALI untuk SEC: gate CI tidak boleh hijau tanpa membandingkan.
+        if cli.formal_sec.is_some() {
+            return Err(SimError::with_diag(
+                DiagCode::UnsupportedForSec,
+                "--formal-sec: tidak ada module pada desain utama (file header/macro-only)",
+            ));
+        }
         eprintln!("[mivon] no module declarations in design (header/macro-only file)");
         return Ok(());
     }
@@ -824,11 +823,7 @@ pub(crate) fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), S
     // flags_hash diset dari defines agar sidik stabil lintas run sama.
     {
         let flag_h = mivon_compiler::micd::flags_hash(
-            &cli.defines
-                .iter()
-                .filter_map(|d| d.split_once('='))
-                .map(|(k, v)| (k.to_string(), v.to_string()))
-                .collect::<Vec<_>>(),
+            &cli.define_pairs(),
             &cli.incdirs.iter().map(PathBuf::from).collect::<Vec<_>>(),
         );
         micd.flags_hash = flag_h;
@@ -1046,6 +1041,12 @@ pub(crate) fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), S
             || !design.interfaces.is_empty()
             || !design.classes.is_empty()
         {
+            if cli.formal_sec.is_some() {
+                return Err(SimError::with_diag(
+                    DiagCode::UnsupportedForSec,
+                    "--formal-sec: tidak ada module pada desain utama (hanya package/interface/class)",
+                ));
+            }
             if !cli.quiet {
                 eprintln!("note: no modules found in design (packages/interfaces present, skipping simulation)");
             }
@@ -1374,6 +1375,14 @@ pub(crate) fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), S
     // ── Recovery/analisis mode (tanpa `--top`): jangan simulasikan modul tebakan ──
     // Top tidak unik → analisis selesai (diagnostik sudah dilaporkan di atas),
     // tapi simulasi & VCD dinonaktifkan agar waveform tidak menyesatkan.
+    // SEC membandingkan top: top tebakan (mode recovery) tidak boleh dipakai,
+    // termasuk dengan --force-sim — gate CI harus menolak, bukan hijau.
+    if recovered && cli.formal_sec.is_some() {
+        return Err(SimError::with_diag(
+            DiagCode::UnsupportedForSec,
+            "--formal-sec membutuhkan top yang unik (mode recovery tidak didukung)",
+        ));
+    }
     if recovered && !cli.force_sim {
         if !cli.quiet {
             println!("\nTop-level design tidak dapat ditentukan secara unik — mode analisis.");
@@ -1444,6 +1453,40 @@ pub(crate) fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), S
             ir_design.top.signals.len(),
             ir_design.top.processes.len()
         );
+    }
+
+    // ── SEC (COMP-16 tahap 3): bandingkan dengan file kedua, gate CI ──
+    #[cfg(feature = "formal")]
+    if let Some(ref sec_file) = cli.formal_sec {
+        // Elaborasi desain kedua memakai MODUL TARGET (--top atau top desain
+        // utama), bukan hanya --top: file kedua berisi >1 root tetap bisa
+        // dibandingkan selama modul targetnya ada.
+        // Include desain utama yang tidak ter-resolve = desain parsial; tanpa
+        // pemeriksaan ini SEC bisa melaporkan EQUIVALENT untuk modul yang
+        // sebenarnya belum lengkap. Preprocessor yang dipakai = base_pp jalur
+        // legacy ini (sudah termasuk collect_sv_dirs + define CLI), jadi jalur
+        // cari identik dengan kompilasi.
+        let mut primary_inputs: Vec<std::path::PathBuf> =
+            sources.iter().map(std::path::PathBuf::from).collect();
+        for lib in &cli.libfiles {
+            let p = std::path::PathBuf::from(lib);
+            if !primary_inputs.contains(&p) {
+                primary_inputs.push(p);
+            }
+        }
+        crate::formal_sec::check_includes(&base_pp, &primary_inputs)?;
+
+        let name = crate::formal_sec::module_name(&ir_design, cli.top.as_deref());
+        let other =
+            crate::formal_sec::compile_design(std::path::Path::new(sec_file), &cli, Some(&name))?;
+        return crate::formal_sec::run_sec(&ir_design, &other, cli.top.as_deref(), cli.quiet);
+    }
+    #[cfg(not(feature = "formal"))]
+    if cli.formal_sec.is_some() {
+        return Err(SimError::with_diag(
+            DiagCode::UnsupportedForSec,
+            "Equivalence checking not available: compile with --features formal",
+        ));
     }
 
     // ── Formal Verification (runs before simulation, skips sim) ──
