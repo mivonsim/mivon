@@ -1380,7 +1380,7 @@ ELAB-12: ✅ Elab-time assertion evaluation (ROUND 47) — assert immediate
            (const_eval_with_params); false → warning RT7001 assertion
            failed di elab-time (lebih awal daripada simulasi).
 
-ELAB-13: ⚠️ PARTIAL (ROUND 222) — Parameter berlebar eksplisit kehilangan lebarnya
+ELAB-13: ⚠️ PARTIAL (ROUND 222/224) — Parameter berlebar eksplisit kehilangan lebarnya
          Ditemukan saat review COMP-16 (ROUND 221). Reproduksi:
            module t; parameter P = 8'd1; logic [7:0] a; logic y;
              initial begin a = 8'h0E; #1;
@@ -1488,14 +1488,48 @@ ELAB-13: ⚠️ PARTIAL (ROUND 222) — Parameter berlebar eksplisit kehilangan 
          bit, tidak dinormalisasi); (2) localparam yang lahir di dalam
          generate block tidak ada di module.params; (3) default non-literal
          (`parameter P = 8'd1 + 8'd1`) -> lebar tidak terinferensi (fallback
-         64); (4) param tanpa lebar eksplisit (`parameter P = 1`) tetap 64
-         bit (LRM: 32 bit); (5) dtype_width belum mencakup enum/typedef;
+         64);
+         (4) ✅ FIXED (ROUND 224) param tanpa lebar eksplisit dengan default
+         LITERAL INTEGER kini mengikuti tipe nilainya (LRM 6.20.2 + 5.7.1);
+         Real/string belum ikut (`parameter R = 1.5` masih dicetak 1.000000,
+         `parameter S = "abc"` masih 64 bit): desimal
+         tak berlebar = int MINIMAL 32 bit signed dan MELEBAR bila nilai tidak
+         muat sampai 64 bit (10^12 -> 41 bit, 4000000000 -> 33 bit); nilai
+         2^63..2^64-1 -> lebar dipaku 64 (iverilog 65) tetapi nilainya benar,
+         nilai >= 2^64 -> 0 (lihat (9)); literal basis tak
+         berlebar = minimal 32 bit (melebar mengikuti lebar nilai, mis.
+         `'hFF00000000` -> 40 bit), dan literal berlebar signed (`8'sd5`) kini
+         juga mengikat
+         lebar (dulu signedness inferensi membuat lebar diabaikan → 64 bit).
+         Implementasi: `default_literal_width()` + `signed_bits()`
+         (util/param_util.rs) menghitung lebar self-determined literal
+         default (unary +/- dan kurung dilewati); cabang `param_decl_signed`
+         hanya mengikat lebar bila nilai efektif == nilai default (override
+         membawa tipe sendiri yang lebarnya belum ikut di peta i64 → tetap
+         fallback 64 bit, lihat (13)).
+         Bukti iverilog 12: `parameter P = 1` → ~P = fffffffe (dulu
+         fffffffffffffffe); `parameter D = 8'sd5` → ~D = fa (dulu
+         fffffffffffffffa); `parameter A = -1` → A = ffffffff, ~A = 0 (dulu
+         64 bit); `parameter C = 1000000000000` → C = 10^12 (dulu terpotong
+         ke 3567587328 oleh lebar 32 yang dipaksakan — regresi yang
+         ditemukan reviewer ronde 1 dan sudah diperbaiki).
+         Test: test_untyped_decimal_parameter_is_32_bit,
+         test_sized_signed_parameter_keeps_its_width,
+         test_large_unsized_decimal_parameter_is_not_truncated.
+         Mutasi: `return None` di cabang untyped (fallback 64 bit) → KETIGA
+         test gagal (0/3; test desimal besar gagal di assertion width41
+         karena ~C jadi 64 bit); `Some(32)` konstan untuk Value::Decimal →
+         test desimal besar gagal (0/1).
+         (5) dtype_width belum mencakup enum/typedef;
          (6) param HEADER membuang kata kunci tipe dan signedness
-         (`#(parameter int P)` -> dtype None, pre-existing) sehingga lebar 32
-         hanya didapat bila default-nya literal berlebar UNSIGNED (`32'd7`),
-         tidak untuk literal signed (`32'sd7` -> 64 bit);
-         (7) di jalur RUNTIME, `$bits(param)` memakai compute_expr_width
-         (min-bits nilai) sehingga `$bits(parameter [7:0] Q)` = 1 padahal 8
+         (`#(parameter int P)` -> dtype None, pre-existing). Setelah (4),
+         lebar mengikuti literal default — literal 32 bit apa pun
+         (signed/unsigned/tak berlebar) kini 32 bit — jadi sisa gap:
+         `#(parameter int P = 64'd7)` -> 64 bit (iverilog 32) dan
+         signedness `parameter int` hilang;
+         (7) `$bits(param)` di-fold saat ELABORASI (elaborator/expr.rs:1554)
+         memakai compute_expr_width (min-bits nilai) sehingga
+         `$bits(parameter [7:0] Q)` = 1 padahal 8
          (pre-existing, kini bertentangan dengan `~Q` 8 bit); `localparam B =
          $bits(Q)` sudah benar (fold_param_bits) dan `$size(param)` runtime
          menghasilkan E3001;
@@ -1503,10 +1537,13 @@ ELAB-13: ⚠️ PARTIAL (ROUND 222) — Parameter berlebar eksplisit kehilangan 
          dalam blok if/for TANPA normalisasi, sehingga generate-if di blok yang
          sama melihat nilai mentah (localparam anak langsung generate sudah
          benar; nilai akhir di param_vals juga sudah ternormalisasi karena item
-         hasil ekspansi diproses ulang); (9) lebar param > 64 bit (`[64:0]`) tidak
-         didukung
-         (fallback 64 bit, LRM 65 bit);          (10) param `$unit` belum masuk peta
-         saat localparam module di-const-fold (`localparam X = UP + 0` -> 1);
+         hasil ekspansi diproses ulang);
+         (9) lebar param > 64 bit (`[64:0]`) tidak didukung (fallback 64
+         bit, LRM 65 bit); literal hex tak berlebar > 64 bit
+         (`'h1FFFFFFFFFFFFFFFF`) runtuh ke 32 bit bernilai 0 (iverilog:
+         66 bit, nilai 0x1FFFFFFFFFFFFFFFF);
+         (10) param `$unit` belum masuk peta saat localparam module
+         di-const-fold (`localparam X = UP + 0` -> 1);
          (11) `parameter signed <tipe>` TANPA range (dtype `Signed(_)`) tidak
          di-sign-extend: `parameter signed int SI = 32'hFFFFFFFF` -> +4294967295
          (SI < 0 salah); hanya bentuk ber-range yang diperbaiki;
@@ -1514,12 +1551,73 @@ ELAB-13: ⚠️ PARTIAL (ROUND 222) — Parameter berlebar eksplisit kehilangan 
          tidak masuk `param_is_signed` (module_param_signed_set memindai
          module.params, ModuleItem::Param top-level, dan $unit, tetapi TIDAK
          item di dalam ModuleItem::Generate), jadi generate-if di dalamnya
-         salah cabang.
+         salah cabang;
+         (13) lebar/signedness OVERRIDE belum dipropagasi: `#(.P(16'hABCD))`
+         pada `parameter P = 1` masih 64 bit (iverilog: 16 bit, ~P = 5432).
+         Root cause presisi: override MASIH membawa `Expr` lengkap
+         (`ModuleInstance.param_assigns: HashMap<Symbol, Expr>`,
+         mivon-ast types.rs), tetapi lebarnya hilang saat elaborator
+         const-eval ke `param_map: HashMap<Symbol, i64>`
+         (elaborator/mod.rs loop override instance) — jadi lebar override
+         bisa diinferensi di titik itu, bukan harus peta baru di IR.
+         Override yang nilainya SAMA dengan default (`#(.P(16'd1))`) ikut
+         lebar default (32 bit; iverilog 16 bit) karena guard `dv == v`
+         tidak bisa membedakan asal nilai;
+         (14) perbandingan param vs literal di const-fold mengabaikan
+         lebar/signedness: `parameter A = -1; (A == 32'hFFFFFFFF)` = 0
+         (iverilog 1) padahal `w = A; (w == 32'hFFFFFFFF)` = 1 → dicatat
+         sebagai ELAB-14;
+         (15) `$bits(param)` (di-fold saat elaborasi, cabang runtime
+         memakai SignalInfo.width) memakai compute_expr_width (min-bits
+         nilai) sehingga `$bits(parameter P = 1)` = 1 (iverilog 32) walau
+         `~P` sudah 32 bit; untuk nilai negatif juga salah
+         (`parameter N = -4000000000` -> 32, iverilog 33);
+         (16) default param berupa literal UNBASED (`parameter F = '1` /
+         `'x` / `'z`) masih bernilai 0 dan 64 bit (iverilog: 1 bit, nilai 1
+         / x / z). Penyebab: `const_eval.rs` `Expr::FillLit(_) => Ok(0)`
+         (pre-existing, di luar cakupan (4));
+         (17) literal basis tak berlebar sebagai DEFAULT param (<= 64 bit):
+         mivon memakai max(32, lebar nilai); iverilog memakai
+         max(32, min(lebar nilai + 1, lebar_basis x jumlah digit)).
+         Terukur (hex):
+         'h1FFFFFFFF 33 -> 34, 'h1FFFFFFFFF 37 -> 38, 'h1FFFFFFFFFF
+         41 -> 42, 'hFFFFFFFFF 36 -> 36, 'hFF00000000 40 -> 40,
+         'hFFFFFFFFFFF 44 -> 44, 'h0FFFFFFFFF 36 -> 37, 'h00FFFFFFFFFF
+         40 -> 41. Oktal modulo 3: 'o77777777777 33 -> 33,
+         'o177777777777 34 -> 35. Biner: cap 1 x jumlah digit
+         ('b0 + 39 bit '1 -> 39 vs 40). Nilai selalu benar; yang berbeda
+         hanya lebar.
          Catatan: perbedaan `assign y = ~P` (konteks target, mis. fffe) vs
          `$display("~P")` (self-determined, fe) BUKAN bug — itu LRM §11.6;
          jalur const-fold dan prosedural sudah sepakat.
-         Suite: cargo nextest run --workspace --all-features -> 3880 passed,
-         24 skipped (ROUND 222).
+         Suite: cargo nextest run --workspace --all-features -> 3940 passed,
+         24 skipped (ROUND 224).
+
+ELAB-14:[] Perbandingan param vs literal di const-fold mengabaikan lebar/signedness
+         Ditemukan saat ELAB-13 ROUND 224. Reproduksi:
+           module t; parameter A = -1; logic h;
+             initial begin h = (A == 32'hFFFFFFFF); $display("%0d", h); end
+           endmodule
+         mivon: 0, iverilog 12: 1. Jalur RUNTIME benar (`w = A`;
+         `h = (w == 32'hFFFFFFFF)` -> 1), jadi bug ada di jalur const-fold:
+         kedua operand dibandingkan sebagai i64 tanpa normalisasi ke
+         lebar/bit-pattern, sehingga -1 != 4294967295.
+         Impact: generate-if / localparam kondisional bisa memilih cabang
+         salah untuk pola `P == <literal basis>`.
+         Severity: High (silent wrong branch).
+         Fix yang diinginkan: bandingkan sebagai bit-pattern dengan lebar
+         operand (normalisasi operand ke lebar hasil sebelum Eq/Neq/Lt/Le/
+         Gt/Ge), bukan sebagai i64 mentah.
+
+ELAB-15:[] Nilai parameter i64::MIN memicu panic di const_eval (crash input legal)
+         Ditemukan saat review ELAB-13 ROUND 224. Reproduksi:
+           module t; parameter P = -9223372036854775808; endmodule
+         mivon: panic "attempt to negate with overflow" di
+         crates/mivon-ast/src/const_eval.rs:327 (jalur eval_param_default);
+         iverilog 12 menerima nilai (64 bit, 0x8000000000000000).
+         Severity: High (panic pada input legal, bukan silent wrong).
+         Fix: evaluasi unary minus dengan wrapping_neg atau modelkan literal
+         desimal negatif di luar i64 sebagai bit-pattern (bukan i64).
 
 4.4 COMPILER GAPS
 

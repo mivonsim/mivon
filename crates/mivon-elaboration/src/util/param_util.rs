@@ -42,23 +42,62 @@ pub(crate) fn param_width_of(p: &ParamDecl, params: &HashMap<Symbol, i64>) -> Op
         // tanpa range) -> jangan menebak dari literal default (bisa menyempit).
         return None;
     }
-    let declared = match p.default.as_ref() {
-        Some(Expr::Value(Value::Binary { width: Some(w), .. }))
-        | Some(Expr::Value(Value::Hex { width: Some(w), .. }))
-        | Some(Expr::Value(Value::Octal { width: Some(w), .. })) => *w,
-        _ => return None,
+    let declared = match p.default.as_ref().and_then(default_literal_width) {
+        Some(w) => w,
+        None => return None,
     };
-    // Lebar dari literal default hanya inferensi: param untyped yang signed
-    // menurut default tidak diikat (signedness tidak ikut override), dan
-    // override yang lebih lebar menaikkan lebar agar nilainya tidak terpotong.
+    // Lebar dari literal default hanya inferensi: override (`#(.P(16'hABCD))`)
+    // membawa tipe sendiri, dan lebarnya TIDAK ikut di peta i64. Untuk param
+    // untyped yang signedness-nya hanya inferensi, lebar deklarasi hanya boleh
+    // mengikat bila nilai efektif memang berasal dari default itu (tanpa
+    // override); kalau tidak, nilai override bisa ter-sign-extend salah.
     if param_decl_signed(p) {
-        return None;
+        let default_val = p
+            .default
+            .as_ref()
+            .and_then(|e| const_eval_with_params(e, &HashMap::new()).ok());
+        match (default_val, params.get(&p.name).copied()) {
+            (Some(dv), Some(v)) if dv == v => {}
+            _ => return None,
+        }
+        return (declared <= 64).then_some(declared);
     }
     let w = match params.get(&p.name) {
         Some(&v) => declared.max(value_width(v)),
         None => declared,
     };
     (w <= 64).then_some(w)
+}
+
+/// ELAB-13: lebar self-determined literal default param. Literal tak berlebar
+/// (desimal maupun basis) = 32 bit — LRM 6.20.2: parameter tanpa range/tipe
+/// mengambil tipe nilainya, desimal tak berlebar = `int` (32 bit signed),
+/// literal basis tak berlebar = 32 bit unsigned. Unary +/- dan tanda kurung
+/// tidak mengubah lebar.
+fn default_literal_width(e: &Expr) -> Option<usize> {
+    match e {
+        Expr::Value(Value::Binary { width, .. })
+        | Expr::Value(Value::Hex { width, .. })
+        | Expr::Value(Value::Octal { width, .. }) => Some(width.unwrap_or(32)),
+        Expr::Value(Value::Decimal(v)) => {
+            // LRM 5.7.1: literal desimal tak berlebar minimal 32 bit dan
+            // MELEBAR bila nilainya tidak muat (iverilog: 4000000000 -> 33
+            // bit, 10^12 -> 41 bit). Konstanta 32 memotong nilai >= 2^31.
+            Some(signed_bits(*v).max(32))
+        }
+        Expr::UnaryOp {
+            op: UnaryOp::Minus | UnaryOp::Plus,
+            expr,
+        } => default_literal_width(expr),
+        Expr::Paren(inner) => default_literal_width(inner),
+        _ => None,
+    }
+}
+
+/// ELAB-13: jumlah bit minimum agar `v` muat sebagai bilangan bertanda.
+fn signed_bits(v: i64) -> usize {
+    let magnitude = if v >= 0 { v as u64 } else { !(v as u64) };
+    (64 - magnitude.leading_zeros() as usize + 1).min(64)
 }
 
 /// ELAB-13: signedness deklarasi param. Range tanpa dtype = unsigned

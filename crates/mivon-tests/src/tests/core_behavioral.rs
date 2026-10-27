@@ -901,6 +901,98 @@ endmodule
     assert_eq!(hit, 1, "~(a + P) harus 8 bit: ~(8'h0E + 8'd1) == 8'hF0");
 }
 
+/// ELAB-13: parameter tanpa range/tipe mengambil tipe nilainya (LRM 6.20.2).
+/// Desimal tak berlebar = `int` 32 bit signed, jadi `~P` harus 32 bit.
+/// Sebelum perbaikan, P di-emit Const 64 bit sehingga `~P` =
+/// 0xFFFFFFFFFFFFFFFE dan perbandingan dengan 32'hFFFFFFFE menjadi false
+/// (iverilog: fffffffe / true).
+#[test]
+fn test_untyped_decimal_parameter_is_32_bit() {
+    let source = r#"
+module tb;
+    parameter P = 1;
+    logic hit;
+    initial begin
+        hit = ((~P) == 32'hFFFFFFFE);
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 5).unwrap();
+    let hit = sigs
+        .iter()
+        .find(|(n, _)| n == "hit")
+        .map(|(_, v)| v.to_u64())
+        .unwrap();
+    assert_eq!(hit, 1, "~P harus 32 bit (0xFFFFFFFE), bukan 64 bit");
+}
+
+/// ELAB-13: literal default berlebar + signed (`8'sd5`) juga mengikat lebar
+/// param. Sebelum perbaikan, signedness inferensi membuat lebar diabaikan
+/// (fallback 64 bit) sehingga `~D` = 0xFFFFFFFFFFFFFFFA, bukan 0xFA
+/// (iverilog: fa).
+#[test]
+fn test_sized_signed_parameter_keeps_its_width() {
+    let source = r#"
+module tb;
+    parameter D = 8'sd5;
+    logic hit;
+    initial begin
+        hit = ((~D) == 8'hFA);
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 5).unwrap();
+    let hit = sigs
+        .iter()
+        .find(|(n, _)| n == "hit")
+        .map(|(_, v)| v.to_u64())
+        .unwrap();
+    assert_eq!(hit, 1, "~D harus 8 bit (0xFA) untuk parameter 8'sd5");
+}
+
+/// ELAB-13: literal desimal tak berlebar MELEBAR bila nilainya tidak muat
+/// dalam 32 bit (LRM 5.7.1; iverilog: 10^12 -> 41 bit). Lebar yang dipaksa 32
+/// memotong nilai menjadi 3567587328 (regresi yang ditemukan saat review).
+#[test]
+fn test_large_unsized_decimal_parameter_is_not_truncated() {
+    let source = r#"
+module tb;
+    parameter C = 1000000000000;
+    logic [63:0] w;
+    logic hit;
+    logic width41;
+    initial begin
+        w = C;
+        hit = (w == 64'd1000000000000);
+        width41 = ((~C) == 41'h1172B5AEFFF);
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 5).unwrap();
+    let (w, hit) = (
+        sigs.iter().find(|(n, _)| n == "w").map(|(_, v)| v.to_u64()),
+        sigs.iter()
+            .find(|(n, _)| n == "hit")
+            .map(|(_, v)| v.to_u64()),
+    );
+    assert_eq!(hit, Some(1), "parameter 10^12 tidak boleh terpotong");
+    assert_eq!(w, Some(1000000000000), "nilai w harus 10^12");
+    // Lebar 41 bit dikunci eksplisit: fallback 64 bit juga memberi w = 10^12,
+    // jadi assertion nilai saja TIDAK mendeteksi regresi lebar.
+    let width41 = sigs
+        .iter()
+        .find(|(n, _)| n == "width41")
+        .map(|(_, v)| v.to_u64());
+    assert_eq!(
+        width41,
+        Some(1),
+        "~C harus 41 bit (0x1172B5AEFFF), bukan 64 bit"
+    );
+}
+
 #[test]
 fn test_ranged_parameter_keeps_its_width() {
     // ELAB-13 varian deklarasi range: parameter [7:0] Q = 1 juga 8 bit.
