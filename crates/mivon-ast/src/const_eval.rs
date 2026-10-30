@@ -454,6 +454,12 @@ thread_local! {
     /// ini -1 (i64) dibandingkan dengan 4294967295 dan salah jadi 0.
     static PARAM_WIDTH_STACK: std::cell::RefCell<Vec<HashMap<Symbol, (usize, bool)>>> =
         const { std::cell::RefCell::new(Vec::new()) };
+    /// ELAB-13 butir (7)/(15): lebar `$bits(param)` — TERPISAH dari
+    /// PARAM_WIDTH_STACK karena aturannya beda: tanpa cap 64 dan dtype
+    /// memakai lebar tipe (`DataType::width`: signed int → 32, typedef → 64),
+    /// sedangkan peta perbandingan sengaja konservatif.
+    static PARAM_BITS_STACK: std::cell::RefCell<Vec<HashMap<Symbol, usize>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// Scope lebar param: pop otomatis saat drop, sehingga module bersarang
@@ -465,12 +471,16 @@ impl Drop for ParamWidthScope {
         PARAM_WIDTH_STACK.with(|s| {
             s.borrow_mut().pop();
         });
+        PARAM_BITS_STACK.with(|s| {
+            s.borrow_mut().pop();
+        });
     }
 }
 
 /// Push scope kosong untuk module yang sedang dielaborasi.
 pub fn push_param_width_scope() -> ParamWidthScope {
     PARAM_WIDTH_STACK.with(|s| s.borrow_mut().push(HashMap::new()));
+    PARAM_BITS_STACK.with(|s| s.borrow_mut().push(HashMap::new()));
     ParamWidthScope
 }
 
@@ -482,6 +492,37 @@ pub fn set_param_widths(map: HashMap<Symbol, (usize, bool)>) {
             *top = map;
         }
     });
+}
+
+/// Isi scope teratas dengan peta lebar `$bits(param)` (tanpa cap, dtype via
+/// `DataType::width`) — dipanggil elaborator bersama `set_param_widths`.
+pub fn set_param_bits_widths(map: HashMap<Symbol, usize>) {
+    PARAM_BITS_STACK.with(|s| {
+        if let Some(top) = s.borrow_mut().last_mut() {
+            *top = map;
+        }
+    });
+}
+
+/// Lebar `$bits(param)` dari scope teratas (None di luar elaborasi module).
+/// Nama hasil rename generate (`g[0].FP`) dicari lewat nama lokalnya: lebar
+/// deklarasi sama untuk semua iterasi, dan rename membuat nama bertitik yang
+/// tidak ada di peta (menyebabkan RT9003 di cond generate-if dalam for).
+fn param_bits_ctx(name: Symbol) -> Option<u64> {
+    PARAM_BITS_STACK.with(|s| {
+        let stack = s.borrow();
+        let top = stack.last()?;
+        if let Some(w) = top.get(&name) {
+            return Some(*w as u64);
+        }
+        let txt = name.as_str();
+        if txt.contains('[') {
+            if let Some((_, local)) = txt.rsplit_once('.') {
+                return top.get(&Symbol::intern(local)).map(|w| *w as u64);
+            }
+        }
+        None
+    })
 }
 
 /// Lebar param dari scope teratas (None di luar elaborasi module).
@@ -1475,6 +1516,16 @@ fn const_eval_deep(expr: &Expr, param_vals: &HashMap<Symbol, i64>) -> Result<i64
             // $bits = LEBAR argumen (bukan nilainya!) — sebelumnya mengembalikan
             // const_eval(arg) sehingga `$bits('b101)` ter-fold 5 (salah; harus 32).
             if let Some(arg) = args.first() {
+                // ELAB-13 butir (7)/(15): `$bits(param)` memakai lebar
+                // DEKLARASI param dari scope const-fold (bukan min-bits nilai),
+                // mis. `parameter [7:0] Q = 1` -> 8, `parameter P = 1` -> 32.
+                if name == "$bits" {
+                    if let Expr::Ident { name: ident, .. } = arg {
+                        if let Some(w) = param_bits_ctx(*ident) {
+                            return Ok(w as i64);
+                        }
+                    }
+                }
                 sized_width(arg)
                     .map(|w| w as i64)
                     .ok_or_else(|| "$bits argument width not computable".to_string())

@@ -1527,12 +1527,82 @@ ELAB-13: ⚠️ PARTIAL (ROUND 222/224) — Parameter berlebar eksplisit kehilan
          (signed/unsigned/tak berlebar) kini 32 bit — jadi sisa gap:
          `#(parameter int P = 64'd7)` -> 64 bit (iverilog 32) dan
          signedness `parameter int` hilang;
-         (7) `$bits(param)` di-fold saat ELABORASI (elaborator/expr.rs:1554)
-         memakai compute_expr_width (min-bits nilai) sehingga
-         `$bits(parameter [7:0] Q)` = 1 padahal 8
-         (pre-existing, kini bertentangan dengan `~Q` 8 bit); `localparam B =
-         $bits(Q)` sudah benar (fold_param_bits) dan `$size(param)` runtime
-         menghasilkan E3001;
+         (7) ✅ FIXED (ROUND 227) `$bits(param)` dulu memakai min-bits NILAI
+         (compute_expr_width) sehingga `$bits(parameter [7:0] Q)` = 1 padahal
+         8. Perbaikan memakai peta lebar KHUSUS `$bits` (aturan berbeda dari
+         peta perbandingan `param_widths`): `param_bits_widths`
+         (elaborator) + thread-local `PARAM_BITS_STACK` (const-fold), diisi
+         `param_decl_bits_width` = range tanpa cap 64 → `DataType::width`
+         (`signed int` 32, typedef 64) → lebar literal default (`8'd1` 8,
+         `1` 32); default NON-literal (`4+4`) → fallback 64 seragam
+         (residual butir (3), masih open). Tiga jalur kini SEPAKAT
+         (diuji lintas-scope) untuk param deklarasi tanpa shadowing nama:
+         - IR/`initial` (elaborator/expr.rs, sebelum fallback
+           compute_expr_width): Q=8, P=32, SI=32, W=128, BT=64 (lihat
+           caveat typedef), `$unit` UP=8, localparam generate GP=8, FP=8,
+           param override `#(.P(2))` = 32, default non-literal E=64
+           (fallback butir (3)).
+         - initializer localparam (`fold_param_bits`): BP=32, BSI=32,
+           BW=128, BBT=64, BU=8, BG=8, BSUB=32. `$size` TIDAK berubah
+           (inferensi default hanya untuk `$bits`; semantik range/dtype lama
+           dipertahankan).
+         - generate-if (`const_eval` via `param_bits_ctx`): `$bits(P) == 8`
+           false, `$bits(SI) == 8` false, `$bits(UP) == 8` true,
+           `$bits(P)==8` (override) false, `$bits(E)==8` false (E fallback
+           64), cond di dalam generate-for `$bits(FP)==7` false (dulu
+           warning RT9003 "non-constant condition ... taking true branch"
+           → cabang salah).
+         Peta lebar `$bits` disemai sebelum fold default param
+         (`resolve_param_values` + prepass) dan `module_param_bits_widths`
+         memindai `module.params` + `collect_body_params` (rekursif ke
+         generate `Items`/`if`/`for`/`case`) + `$unit`, sehingga
+         unit/generate (if & for)/override tidak lagi divergen (kecuali
+         caveat shadowing (iv)). Cond
+         generate-if DI DALAM generate-for memakai nama ter-rename
+         (`g[0].FP`); lookup lebar `$bits` mencoba nama persis lalu nama
+         lokal setelah titik terakhir (lebar deklarasi iterasi-invarian),
+         jadi tidak lagi RT9003.
+         Lebar param tanpa range/dtype = lebar literal DEFAULT (tidak
+         dilebarkan nilai override): tipe param hasil override ditentukan
+         tipe ekspresi override (LRM 6.20.2) yang lebarnya belum
+         dipropagasi ke peta i64 — itu butir (13) yang masih OPEN. Contoh
+         caveat: `parameter P = 8'd1` + `#(.P(300))` → mivon `$bits`=8,
+         iverilog 32; `#(.P(16'hABCD))` → mivon 8, iverilog 16. Yang sudah
+         benar: `parameter P = 1` + `#(.P(2))` → 32 (deklarasi & iverilog
+         sepakat), dan range/dtype eksplisit tetap mengikat (`[7:0]` +
+         override 16 bit → 8).
+         Bukti iverilog 12: Q=8 P=32 S=8; BP=32; `$bits(P)==8` false.
+         Test: test_bits_of_parameter_uses_declared_width,
+         test_bits_of_parameter_in_localparam_and_generate_if,
+         test_bits_of_typed_parameters_keeps_previous_widths,
+         test_bits_of_parameter_across_scopes_and_override (assert di ketiga
+         jalur). Mutasi: (a) arm expr.rs + const_eval dikembalikan ke peta
+         lama → psi=1, pw=1, pbt=2, BP=1, gen=0x33 + RT9003 (test 2/3
+         gagal); (b) probe reviewer pra-fix: BU=1, IR GP=1, override IR=2 +
+         RT9003 (test 4 gagal); (c) generate-for pra-fix: IR 32 vs fold 1
+         (test 4 assertion `gf[0].pfor`/`bfor` gagal); (d) default non-literal
+         pra-fix: IR 4 vs fold 1 (assertion pe/be gagal); (e) cond
+         generate-if dalam for pra-fix: RT9003 → cabang true (assertion
+         `gf[0].gfor` gagal).
+         Sisa caveat: (i) `$size(param)` di body runtime masih E3001
+         (mensyaratkan sinyal, pre-existing) dan di initializer localparam
+         ter-fold ke NILAI param (mis. `$size(Q2)` dengan Q2=5 → 5, bukan 1)
+         — pre-existing, di luar cakupan (7); (ii) dim unpacked array param
+         dibuang parser (ParamDecl tak punya array_range) sehingga
+         `$bits(A)` = lebar elemen — pre-existing; (iii) lebar param
+         bertipe typedef/enum memakai `DataType::width` (UserDefined 64,
+         enum 32) — iverilog memakai lebar typedef sebenarnya (byte_t → 8);
+         ini perilaku LAMA yang dipertahankan (resolusi typedef belum
+         tersedia di util fold), dicatat sebagai caveat bukan aturan LRM;
+         (iv) SHADOWING nama: bila module param dan localparam di generate
+         memakai nama sama, peta IR mengutamakan module param (module.params
+         lebih dulu) sementara generate-if bisa melihat localparam →
+         divergensi pada kasus langka ini (belum ditangani); (v) lookup
+         nama ter-rename generate memakai segmen setelah titik terakhir bila
+         nama memuat `[` — bisa salah-match bila segmen itu kebetulan sama
+         dengan nama param module DAN nama penuh tidak ter-resolve sebagai
+         sinyal (probe: `$bits(sinyal)` tetap benar karena signal lookup
+         didahulukan).
          (8) peta PREPASS generate (util/generate.rs) menerima localparam di
          dalam blok if/for TANPA normalisasi, sehingga generate-if di blok yang
          sama melihat nilai mentah (localparam anak langsung generate sudah
@@ -1567,11 +1637,14 @@ ELAB-13: ⚠️ PARTIAL (ROUND 222/224) — Parameter berlebar eksplisit kehilan
          lebar/signedness: `parameter A = -1; (A == 32'hFFFFFFFF)` = 0
          (iverilog 1) padahal `w = A; (w == 32'hFFFFFFFF)` = 1 → dicatat
          sebagai ELAB-14;
-         (15) `$bits(param)` (di-fold saat elaborasi, cabang runtime
-         memakai SignalInfo.width) memakai compute_expr_width (min-bits
-         nilai) sehingga `$bits(parameter P = 1)` = 1 (iverilog 32) walau
-         `~P` sudah 32 bit; untuk nilai negatif juga salah
-         (`parameter N = -4000000000` -> 32, iverilog 33);
+         (15) ✅ FIXED (ROUND 227) — akar sama dengan (7): `$bits(param)`
+         memakai lebar DEKLARASI param (`param_bits_widths` /
+         `param_decl_bits_width` / `param_bits_ctx`), bukan min-bits nilai,
+         di jalur IR, initializer localparam, dan generate-if.
+         `$bits(parameter P = 1)` = 32 (iverilog 32),
+         `$bits(parameter [7:0] Q)` = 8, `$bits(signed int SI)` = 32,
+         `$bits([127:0] W)` = 128. Jalur runtime (`$bits` atas sinyal) tetap
+         memakai SignalInfo.width. Test + mutasi sama dengan (7).
          (16) default param berupa literal UNBASED (`parameter F = '1` /
          `'x` / `'z`) masih bernilai 0 dan 64 bit (iverilog: 1 bit, nilai 1
          / x / z). Penyebab: `const_eval.rs` `Expr::FillLit(_) => Ok(0)`

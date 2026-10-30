@@ -201,6 +201,11 @@ pub struct Elaborator {
     /// param (range eksplisit > tipe eksplisit > lebar literal default);
     /// nama yang tidak ada di peta tetap 64 bit (perilaku lama).
     pub param_widths: HashMap<Symbol, usize>,
+    /// ELAB-13 butir (7)/(15): lebar `$bits(param)` per module — aturan
+    /// berbeda dari `param_widths` (tanpa cap 64, dtype via
+    /// `DataType::width` sehingga `signed int` → 32, typedef → 64, range
+    /// lebar → 128). Diisi dari deklarasi param saat elaborasi module.
+    pub param_bits_widths: HashMap<Symbol, usize>,
     /// Lebar type param module yang SEDANG dielaborasi (nama → lebar bit
     /// efektif). Lihat inisialisasi di constructor untuk dokumentasi.
     pub cur_type_param_widths: HashMap<Symbol, usize>,
@@ -740,6 +745,7 @@ impl Elaborator {
             modules: HashMap::new(),
             param_vals: HashMap::new(),
             param_widths: HashMap::new(),
+            param_bits_widths: HashMap::new(),
             param_is_signed: std::collections::HashSet::new(),
             let_decls: HashMap::new(),
             checker_decls: HashMap::new(),
@@ -2316,6 +2322,7 @@ impl Elaborator {
         // untuk ribuan elemen konstanta per-module (bottleneck: 43% memcmp +
         // 28% Symbol::as_str di OpenTitan — interning berulang). Dihapus.
         self.param_widths = self.module_param_widths(module, &effective_params);
+        self.param_bits_widths = self.module_param_bits_widths(module, &effective_params);
         // Signedness param module saat ini (IEEE §6.11): dipakai resolve
         // `Expr::Ident(parameter)` agar `localparam int X = -2` di-emit
         // sebagai IrExpr::Signed (bukan Const unsigned 64) — `X < 0` benar.
@@ -3136,6 +3143,7 @@ impl Elaborator {
         }
         self.param_vals = effective_params.clone();
         self.param_widths = self.module_param_widths(module, &effective_params);
+        self.param_bits_widths = self.module_param_bits_widths(module, &effective_params);
 
         let expanded_items: Vec<ModuleItem> = {
             let mut items = Vec::new();
@@ -3244,6 +3252,7 @@ impl Elaborator {
         // Update param_vals after generate expansion which may add body-level params
         self.param_vals = effective_params.clone();
         self.param_widths = self.module_param_widths(module, &effective_params);
+        self.param_bits_widths = self.module_param_bits_widths(module, &effective_params);
 
         // ── Second pass: evaluate localparams from expanded generate blocks ───
         // Localparams declared INSIDE generate-for/if blocks are added to
@@ -3424,6 +3433,7 @@ impl Elaborator {
         }
         self.param_vals = effective_params.clone();
         self.param_widths = self.module_param_widths(module, &effective_params);
+        self.param_bits_widths = self.module_param_bits_widths(module, &effective_params);
 
         // LANG-40: kumpulkan `let` declaration module ini (items + hasil
         // ekspansi generate) — di-resolve elaborate_expr sebagai alias
@@ -3535,6 +3545,7 @@ impl Elaborator {
         }
         self.param_vals = effective_params.clone();
         self.param_widths = self.module_param_widths(module, &effective_params);
+        self.param_bits_widths = self.module_param_bits_widths(module, &effective_params);
 
         if std::env::var("DBG_DECL2").is_ok() {
             eprintln!(

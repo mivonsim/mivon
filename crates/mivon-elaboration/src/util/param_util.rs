@@ -214,18 +214,39 @@ fn dtype_width(dt: &DataType) -> Option<usize> {
         _ => None,
     }
 }
-/// Kumpulkan parameter dari body module (termasuk yang ada di dalam generate block).
+/// Kumpulkan parameter dari body module (termasuk yang ada di dalam generate
+/// block — `Items`, `if`, `for`, dan `case`, rekursif).
 pub fn collect_body_params(module: &Module) -> Vec<ParamDecl> {
     let mut params = Vec::new();
-    for item in &module.items {
+    collect_params_in_items(&module.items, &mut params);
+    params
+}
+
+fn collect_params_in_items(items: &[ModuleItem], params: &mut Vec<ParamDecl>) {
+    for item in items {
         match item {
             ModuleItem::Param(p) => params.push(p.clone()),
             ModuleItem::Generate(gen) => {
                 for gi in &gen.items {
-                    if let GenerateItem::Items(items) = gi {
-                        for i in items {
-                            if let ModuleItem::Param(p) = i {
-                                params.push(p.clone());
+                    match gi {
+                        GenerateItem::Items(items) => collect_params_in_items(items, params),
+                        GenerateItem::If {
+                            true_items,
+                            false_items,
+                            ..
+                        } => {
+                            collect_params_in_items(true_items, params);
+                            collect_params_in_items(false_items, params);
+                        }
+                        GenerateItem::For { body_items, .. } => {
+                            collect_params_in_items(body_items, params);
+                        }
+                        GenerateItem::Case { items, default, .. } => {
+                            for ci in items {
+                                collect_params_in_items(&ci.body, params);
+                            }
+                            if let Some(d) = default {
+                                collect_params_in_items(d, params);
                             }
                         }
                     }
@@ -234,7 +255,6 @@ pub fn collect_body_params(module: &Module) -> Vec<ParamDecl> {
             _ => {}
         }
     }
-    params
 }
 
 /// Apakah default param berupa koleksi (array literal Concat multi-elemen /
@@ -329,41 +349,80 @@ fn eval_param_default(
     }
 }
 
-/// Lebar tipe parameter module (untuk `$bits(ParamIdent)`/`$size(ParamIdent)`).
-/// Prioritas: range eksplisit (`bit [63:0]` → 64) → lebar dtype (`int` → 32,
-/// `logic`/`bit` → 1). `None` bila parameter tidak ditemukan.
-fn param_decl_width(module: &Module, name: &Symbol, _vals: &HashMap<Symbol, i64>) -> Option<usize> {
-    let width_of = |p: &ParamDecl| -> Option<usize> {
-        // ParamDecl.range = (lo, hi) ekspresi — lebar = |hi - lo| + 1.
-        if let Some((lo, hi)) = &p.range {
-            if let (Ok(msb), Ok(lsb)) = (
-                const_eval_with_params(hi, _vals),
-                const_eval_with_params(lo, _vals),
-            ) {
-                let w = msb.abs_diff(lsb) as usize + 1;
-                if w > 0 {
-                    return Some(w);
-                }
-            }
-        }
-        if let Some(dt) = &p.dtype {
-            let w = mivon_ast::types::DataType::width(dt);
+/// Lebar satu deklarasi param (ELAB-13 butir (7)/(15)).
+///
+/// Prioritas: range eksplisit (`[127:0]` → 128, TANPA cap) → lebar dtype
+/// (`DataType::width`: `signed int` → 32, typedef → 64) → bila
+/// `infer_default` dan tidak ada range/dtype, lebar tipe nilai literal
+/// default (`8'd1` → 8, `1` → 32).
+fn param_decl_width_one(
+    p: &ParamDecl,
+    vals: &HashMap<Symbol, i64>,
+    infer_default: bool,
+) -> Option<usize> {
+    // ParamDecl.range = (lo, hi) ekspresi — lebar = |hi - lo| + 1.
+    if let Some((lo, hi)) = &p.range {
+        if let (Ok(msb), Ok(lsb)) = (
+            const_eval_with_params(hi, vals),
+            const_eval_with_params(lo, vals),
+        ) {
+            let w = msb.abs_diff(lsb) as usize + 1;
             if w > 0 {
                 return Some(w);
             }
         }
-        None
-    };
+    }
+    if let Some(dt) = &p.dtype {
+        let w = mivon_ast::types::DataType::width(dt);
+        if w > 0 {
+            return Some(w);
+        }
+        // Tipe eksplisit tanpa lebar diketahui: jangan menebak dari literal.
+        return None;
+    }
+    if !infer_default {
+        return None;
+    }
+    // Tanpa range/dtype: lebar tipe nilai default. Literal integer → lebar
+    // literal. Default non-literal (`parameter A = 4+4`) belum terinferensi
+    // (ELAB-13 butir (3), masih OPEN) → fallback 64 SERAGAM di ketiga jalur
+    // (IR/localparam/generate-if), bukan min-bits nilai yang berbeda-beda.
+    // Override TIDAK melebarkan lebar deklarasi di sini: tipe param hasil
+    // override ditentukan tipe ekspresi override (LRM 6.20.2) yang lebarnya
+    // belum dipropagasi ke peta i64 (butir (13), masih OPEN).
+    Some(
+        p.default
+            .as_ref()
+            .and_then(default_literal_width)
+            .unwrap_or(64),
+    )
+}
+
+/// Lebar `$bits` satu deklarasi param — dipakai elaborator untuk peta
+/// `param_bits_widths` (jalur IR) dan const-fold (generate-if/localparam).
+pub(crate) fn param_decl_bits_width(p: &ParamDecl, vals: &HashMap<Symbol, i64>) -> Option<usize> {
+    param_decl_width_one(p, vals, true)
+}
+
+/// Lebar tipe parameter module (untuk `$bits(ParamIdent)`/`$size(ParamIdent)`).
+/// `infer_default` (hanya untuk `$bits`): lihat `param_decl_width_one`.
+/// `$size` sengaja TIDAK memakai inferensi default (perilaku lama).
+fn param_decl_width(
+    module: &Module,
+    name: &Symbol,
+    vals: &HashMap<Symbol, i64>,
+    infer_default: bool,
+) -> Option<usize> {
     module
         .params
         .iter()
         .find(|p| p.name == *name)
-        .and_then(width_of)
+        .and_then(|p| param_decl_width_one(p, vals, infer_default))
         .or_else(|| {
             collect_body_params(module)
                 .iter()
                 .find(|p| p.name == *name)
-                .and_then(width_of)
+                .and_then(|p| param_decl_width_one(p, vals, infer_default))
         })
 }
 
@@ -379,7 +438,10 @@ fn fold_param_bits(e: &Expr, module: &Module, vals: &HashMap<Symbol, i64>) -> Ex
             col,
         } if (name.as_str() == "$bits" || name.as_str() == "$size") && args.len() == 1 => {
             if let Expr::Ident { name: ident, .. } = &args[0] {
-                if let Some(w) = param_decl_width(module, ident, vals) {
+                // Hanya `$bits` yang menginferensi lebar dari literal default
+                // (ELAB-13 (7)/(15)); `$size` mempertahankan perilaku lama.
+                let infer_default = name.as_str() == "$bits";
+                if let Some(w) = param_decl_width(module, ident, vals, infer_default) {
                     return Expr::Value(mivon_ast::expr::Value::Decimal(w.max(1) as i64));
                 }
             }

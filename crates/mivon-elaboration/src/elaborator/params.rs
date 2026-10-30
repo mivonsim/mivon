@@ -14,7 +14,8 @@ use mivon_core::error::SimError;
 use mivon_core::intern::Symbol;
 
 use super::super::util::param_util::{
-    param_decl_signed, param_width_of, resolve_param_values_with_ctx, PkgFullCtx,
+    collect_body_params, param_decl_bits_width, param_decl_signed, param_width_of,
+    resolve_param_values_with_ctx, PkgFullCtx,
 };
 use super::types::{eval_enum_member_value, package_overlay};
 use super::Elaborator;
@@ -38,6 +39,13 @@ impl Elaborator {
             structs: &self.pkg_struct_ref_index,
             array_structs: &self.pkg_array_structs,
         };
+        // ELAB-13 (7)/(15): seed lebar `$bits(param)` SEBELUM fold default
+        // param — `$unit` param & localparam di generate block tidak terlihat
+        // oleh `fold_param_bits` (yang hanya memindai module), jadi const_eval
+        // harus sudah punya petanya saat `$bits(...)` di-fold.
+        mivon_ast::const_eval::set_param_bits_widths(
+            self.module_param_bits_widths(module, instance_overrides),
+        );
         resolve_param_values_with_ctx(module, instance_overrides, &ctx, Some(&pkg_full)).map_err(
             |e| {
                 self.elab_diag_at(
@@ -128,6 +136,45 @@ impl Elaborator {
         // ELAB-14: bagikan lebar ke const-fold (thread-local scope) supaya
         // perbandingan atas nama param memakai lebar deklarasinya.
         mivon_ast::const_eval::set_param_widths(out.clone());
+        // ELAB-13 (7)/(15): lebar `$bits(param)` punya aturan sendiri (tanpa
+        // cap 64, dtype via DataType::width) — bagikan terpisah agar
+        // generate-if/localparam const-fold konsisten dengan jalur IR.
+        mivon_ast::const_eval::set_param_bits_widths(self.module_param_bits_widths(module, params));
+        out
+    }
+
+    /// ELAB-13 butir (7)/(15): peta nama -> lebar `$bits` param module saat
+    /// ini (+ $unit). Lihat `param_decl_bits_width`.
+    pub(crate) fn module_param_bits_widths(
+        &self,
+        module: &Module,
+        params: &HashMap<Symbol, i64>,
+    ) -> HashMap<Symbol, usize> {
+        let mut out = HashMap::new();
+        for p in &module.params {
+            if let Some(w) = param_decl_bits_width(p, params) {
+                out.insert(p.name, w);
+            }
+        }
+        // Param di body (termasuk localparam di dalam generate block) belum
+        // tentu ada di `module.params` saat ekspresi IR dielaborasi — fold
+        // memakai `collect_body_params`, jadi peta IR harus sama.
+        for p in &collect_body_params(module) {
+            if out.contains_key(&p.name) {
+                continue;
+            }
+            if let Some(w) = param_decl_bits_width(p, params) {
+                out.insert(p.name, w);
+            }
+        }
+        for p in &self.design.unit_params {
+            if module.params.iter().any(|mp| mp.name == p.name) {
+                continue;
+            }
+            if let Some(w) = param_decl_bits_width(p, params) {
+                out.insert(p.name, w);
+            }
+        }
         out
     }
     /// Bangun global package param context SEKALI: qualified `pkg::name` untuk semua

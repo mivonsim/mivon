@@ -1551,6 +1551,35 @@ impl Elaborator {
                             }
                         })
                         .or_else(|| {
+                            // ELAB-13 butir (7)/(15): `$bits(param)` memakai
+                            // lebar DEKLARASI parameter (param_bits_widths:
+                            // range tanpa cap, dtype via DataType::width,
+                            // literal default), bukan min-bits nilai
+                            // (compute_expr_width) — `parameter [7:0] Q = 1`
+                            // -> 8, `parameter P = 1` -> 32, `signed int` ->
+                            // 32, `[127:0]` -> 128.
+                            match arg {
+                                Expr::Ident { name, .. } => {
+                                    self.param_bits_widths.get(name).copied().or_else(|| {
+                                        // Nama hasil rename generate
+                                        // (`g[0].FP`) — lebar deklarasi sama
+                                        // untuk semua iterasi.
+                                        let txt = name.as_str();
+                                        if txt.contains('[') {
+                                            txt.rsplit_once('.').and_then(|(_, local)| {
+                                                self.param_bits_widths
+                                                    .get(&Symbol::intern(local))
+                                                    .copied()
+                                            })
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                }
+                                _ => None,
+                            }
+                        })
+                        .or_else(|| {
                             compute_expr_width(
                                 arg,
                                 signal_map,

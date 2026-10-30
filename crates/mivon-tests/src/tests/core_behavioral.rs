@@ -901,6 +901,295 @@ endmodule
     assert_eq!(hit, 1, "~(a + P) harus 8 bit: ~(8'h0E + 8'd1) == 8'hF0");
 }
 
+/// ELAB-13 butir (7)/(15): `$bits(param)` memakai lebar DEKLARASI parameter,
+/// bukan min-bits nilainya. Sebelum perbaikan `$bits(Q)` = 1 (nilai 1 hanya
+/// butuh 1 bit) padahal Q 8 bit, dan `$bits(P)` = 1 padahal P int 32 bit.
+/// Referensi iverilog 12: Q=8 P=32 S=8.
+#[test]
+fn test_bits_of_parameter_uses_declared_width() {
+    let source = r#"
+module tb;
+    parameter [7:0] Q = 1;
+    parameter P = 1;
+    parameter signed [7:0] S = -1;
+    logic [7:0] bq;
+    logic [7:0] bp;
+    logic [7:0] bs;
+    initial begin
+        bq = $bits(Q);
+        bp = $bits(P);
+        bs = $bits(S);
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 5).unwrap();
+    let get = |n: &str| {
+        sigs.iter()
+            .find(|(s, _)| s == n)
+            .map(|(_, v)| v.to_u64())
+            .unwrap_or(0)
+    };
+    assert_eq!(
+        get("bq"),
+        8,
+        "$bits(parameter [7:0] Q) harus 8 (iverilog 8)"
+    );
+    assert_eq!(
+        get("bp"),
+        32,
+        "$bits(parameter P = 1) harus 32 (iverilog 32)"
+    );
+    assert_eq!(get("bs"), 8, "$bits(parameter signed [7:0] S) harus 8");
+}
+
+/// ELAB-13 butir (7)/(15) jalur const-fold: `$bits(param)` di initializer
+/// localparam (fold_param_bits) dan di kondisi generate-if (const_eval)
+/// juga harus memakai lebar deklarasi. Sebelum perbaikan BP=1 dan
+/// generate-if `$bits(P) == 8` gagal dievaluasi (warning RT9003) lalu
+/// mengambil cabang true. Referensi iverilog 12: BP=32, cabang else.
+#[test]
+fn test_bits_of_parameter_in_localparam_and_generate_if() {
+    let source = r#"
+module tb;
+    parameter [7:0] Q = 1;
+    parameter P = 1;
+    localparam [7:0] BQ = $bits(Q);
+    localparam [7:0] BP = $bits(P);
+    logic [7:0] bq_lp;
+    logic [7:0] bp_lp;
+    logic [7:0] gen_bits;
+    generate
+        if ($bits(P) == 8) begin : g8
+            initial gen_bits = 8'h11;
+        end else begin : gn
+            initial gen_bits = 8'h22;
+        end
+    endgenerate
+    initial begin
+        bq_lp = BQ;
+        bp_lp = BP;
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 5).unwrap();
+    let get = |n: &str| {
+        sigs.iter()
+            .find(|(s, _)| s == n)
+            .map(|(_, v)| v.to_u64())
+            .unwrap_or(0)
+    };
+    assert_eq!(get("bq_lp"), 8, "localparam BQ = $bits(Q) harus 8");
+    assert_eq!(get("bp_lp"), 32, "localparam BP = $bits(P) harus 32");
+    assert_eq!(
+        get("gen_bits"),
+        0x22,
+        "$bits(P)=32 -> generate-if harus memilih cabang else (iverilog 22)"
+    );
+}
+
+/// ELAB-13 butir (7)/(15) regresi-semantik: inferensi lebar literal default
+/// HANYA untuk param tanpa range/dtype, dan hanya untuk `$bits`. Param
+/// bertipe tetap memakai `DataType::width` seperti sebelumnya — `signed int`
+/// = 32, range lebar = 128 (tanpa cap 64), typedef = 64 (perilaku lama).
+/// Diuji di KETIGA jalur: initializer localparam (fold), blok `initial`
+/// (IR), dan generate-if (const_eval) — ketiganya harus sepakat.
+#[test]
+fn test_bits_of_typed_parameters_keeps_previous_widths() {
+    let source = r#"
+module tb;
+    parameter signed int SI = -1;
+    parameter [127:0] W = 1;
+    typedef logic [7:0] byte_t;
+    parameter byte_t BT = 8'd3;
+    localparam [15:0] BSI = $bits(SI);
+    localparam [15:0] BW = $bits(W);
+    localparam [15:0] BBT = $bits(BT);
+    logic [15:0] bsi;
+    logic [15:0] bw;
+    logic [15:0] bbt;
+    logic [15:0] psi;
+    logic [15:0] pw;
+    logic [15:0] pbt;
+    logic [7:0] gen_si;
+    generate
+        if ($bits(SI) == 8) begin : g8
+            initial gen_si = 8'h33;
+        end else begin : gother
+            initial gen_si = 8'h44;
+        end
+    endgenerate
+    initial begin
+        bsi = BSI;
+        bw = BW;
+        bbt = BBT;
+        psi = $bits(SI);
+        pw = $bits(W);
+        pbt = $bits(BT);
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 5).unwrap();
+    let get = |n: &str| {
+        sigs.iter()
+            .find(|(s, _)| s == n)
+            .map(|(_, v)| v.to_u64())
+            .unwrap_or(0)
+    };
+    assert_eq!(get("bsi"), 32, "$bits(parameter signed int SI) harus 32");
+    assert_eq!(get("bw"), 128, "$bits(parameter [127:0] W) harus 128");
+    assert_eq!(
+        get("bbt"),
+        64,
+        "$bits(parameter byte_t BT) = 64 (perilaku lama)"
+    );
+    assert_eq!(get("psi"), 32, "jalur IR: $bits(signed int SI) harus 32");
+    assert_eq!(get("pw"), 128, "jalur IR: $bits([127:0] W) harus 128");
+    assert_eq!(get("pbt"), 64, "jalur IR: $bits(typedef BT) = 64");
+    assert_eq!(
+        get("gen_si"),
+        0x44,
+        "generate-if $bits(SI)==8 harus false (32 bit) -> cabang else"
+    );
+}
+
+/// ELAB-13 butir (7)/(15) lintas-scope: `$bits(param)` harus sepakat di
+/// jalur IR, initializer localparam, dan generate-if untuk (a) param `$unit`,
+/// (b) localparam di dalam generate block (if DAN for), (c) param untyped
+/// ber-override (`#(.P(2))` pada `parameter P = 1` tetap 32 bit).
+/// Catatan: lebar tipe yang berasal dari ekspresi override (mis.
+/// `#(.P(16'hABCD))` pada `parameter P = 8'd1` → iverilog 16) belum
+/// dipropagasi — ELAB-13 butir (13) masih open.
+#[test]
+fn test_bits_of_parameter_across_scopes_and_override() {
+    let source = r#"
+parameter [7:0] UP = 1;
+
+module sub #(parameter P = 1) ();
+    localparam [15:0] BSUB = $bits(P);
+    logic [15:0] psub;
+    logic [15:0] bsub;
+    logic [7:0] gsub;
+    generate
+        if ($bits(P) == 8) begin : g8
+            initial gsub = 8'h11;
+        end else begin : gn
+            initial gsub = 8'h22;
+        end
+    endgenerate
+    initial begin
+        psub = $bits(P);
+        bsub = BSUB;
+    end
+endmodule
+
+module tb;
+    parameter E = 4 + 4;
+    localparam [15:0] BU = $bits(UP);
+    localparam [15:0] BE = $bits(E);
+    logic [15:0] pu;
+    logic [15:0] bu;
+    logic [15:0] pe;
+    logic [15:0] be;
+    logic [7:0] gu;
+    logic [7:0] ge;
+    generate
+        if ($bits(UP) == 8) begin : gu8
+            initial gu = 8'h33;
+        end else begin : gun
+            initial gu = 8'h44;
+        end
+    endgenerate
+    generate
+        if ($bits(E) == 8) begin : ge8
+            initial ge = 8'h11;
+        end else begin : gen
+            initial ge = 8'h22;
+        end
+    endgenerate
+    generate
+        if (1) begin : blk
+            localparam [7:0] GP = 8'd3;
+            localparam [15:0] BG = $bits(GP);
+            logic [15:0] pg;
+            logic [15:0] bg;
+            initial begin
+                pg = $bits(GP);
+                bg = BG;
+            end
+        end
+    endgenerate
+    genvar i;
+    generate
+        for (i = 0; i < 1; i = i + 1) begin : gf
+            localparam [7:0] FP = 8'd3;
+            localparam [15:0] FB = $bits(FP);
+            logic [15:0] pfor;
+            logic [15:0] bfor;
+            logic [7:0] gfor;
+            if ($bits(FP) == 7) begin : inner7
+                initial gfor = 8'h77;
+            end else begin : innern
+                initial gfor = 8'h88;
+            end
+            initial begin
+                pfor = $bits(FP);
+                bfor = FB;
+            end
+        end
+    endgenerate
+    sub #(.P(2)) u1();
+    initial begin
+        pu = $bits(UP);
+        bu = BU;
+        pe = $bits(E);
+        be = BE;
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 5).unwrap();
+    let get = |n: &str| {
+        sigs.iter()
+            .find(|(s, _)| s == n)
+            .map(|(_, v)| v.to_u64())
+            .unwrap_or(0)
+    };
+    // (a) $unit parameter
+    assert_eq!(get("pu"), 8, "IR: $bits($unit UP) harus 8");
+    assert_eq!(get("bu"), 8, "localparam BU = $bits(UP) harus 8");
+    assert_eq!(get("gu"), 0x33, "generate-if $bits(UP)==8 harus true");
+    // (b) localparam di dalam generate block (if dan for)
+    assert_eq!(get("pg"), 8, "IR: $bits(GP) harus 8");
+    assert_eq!(get("bg"), 8, "localparam BG = $bits(GP) harus 8");
+    assert_eq!(get("gf[0].pfor"), 8, "IR: $bits(generate-for FP) harus 8");
+    assert_eq!(get("gf[0].bfor"), 8, "localparam FB = $bits(FP) harus 8");
+    assert_eq!(
+        get("gf[0].gfor"),
+        0x88,
+        "generate-if dalam for: $bits(FP)==7 harus false (8 bit)"
+    );
+    // Default non-literal (`4+4`) belum terinferensi (ELAB-13 butir (3)) —
+    // fallback 64 SERAGAM di IR/localparam/generate-if.
+    assert_eq!(get("pe"), 64, "IR: $bits(default non-literal) fallback 64");
+    assert_eq!(get("be"), 64, "localparam BE = $bits(E) fallback 64");
+    assert_eq!(
+        get("ge"),
+        0x22,
+        "generate-if $bits(E)==8 harus false (fallback 64)"
+    );
+    // (c) override pada param untyped: tetap lebar deklarasi (32), bukan 2
+    assert_eq!(get("u1.psub"), 32, "IR: $bits(P) override tetap 32");
+    assert_eq!(get("u1.bsub"), 32, "localparam BSUB = $bits(P) harus 32");
+    assert_eq!(
+        get("u1.gsub"),
+        0x22,
+        "generate-if $bits(P)==8 harus false untuk P 32 bit"
+    );
+}
+
 /// ELAB-15: parameter dengan nilai i64::MIN tidak boleh panic di const_eval.
 /// Sebelum perbaikan, unary minus pada 9223372036854775808 (i64::MAX+1)
 /// di-fold sebagai `-inner` dan panic "attempt to negate with overflow".

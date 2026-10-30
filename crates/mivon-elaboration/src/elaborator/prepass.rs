@@ -469,6 +469,12 @@ impl Elaborator {
                     &HashMap::new(),
                 ),
             );
+            // ELAB-13 (7)/(15): lebar `$bits(param)` (tanpa cap, dtype via
+            // DataType::width) — disemai sebelum fold default param supaya
+            // `$unit` param & localparam generate ikut ter-resolve.
+            mivon_ast::const_eval::set_param_bits_widths(
+                self.module_param_bits_widths(&self.design.modules[i], &HashMap::new()),
+            );
             let param_vals = resolve_param_values_with_ctx(
                 &self.design.modules[i],
                 &HashMap::new(),
