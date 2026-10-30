@@ -2616,6 +2616,94 @@ COMP-20: ✅ Incremental compilation (ROUND 98)
          crates/maria-tools/src/incremental_compile.rs: IncrementalTracker.
          File change detection, dependency propagation, change set compute.
          4 test: detect_changes, affected_modules, change_set, summary.
+COMP-21: ✅ FIXED (ROUND 229) — `mivon --ast file.sv` tidak pernah mencetak AST
+         (dan diam-diam menjalankan simulasi penuh).
+         Gejala: `mivon --ast test/counter.sv` mencetak compile → elaborate →
+         simulate → coverage, TANPA satu baris AST; flag seolah diabaikan.
+         AKAR MASALAH (presisi): `--ast` sengaja mematikan jalur cepat
+         (`run_legacy.rs` gate `&& !cli.print_ast`), tetapi jalur LEGACY
+         sendiri tidak punya cabang `print_ast` sama sekali — cabang cetak
+         hanya ada di `run_fast.rs` (baris 161/274/297) yang justru tak
+         pernah dipanggil saat `--ast` aktif. Jadi flag itu hanya berfungsi
+         sebagai "jangan pakai fast path" lalu lanjut elaborasi+simulasi.
+         PERBAIKAN:
+         1. `src/run_legacy.rs` — cabang `print_ast` baru, diletakkan SETELAH
+            parse + scan libdir/libfile + save MICD, dan SEBELUM cek
+            "design.modules.is_empty()"/elaborasi:
+            `if cli.print_ast { anim_finish(...); drop(anim.take());
+             println!("{:#?}", design); return Ok(()); }`
+            - Setelah save MICD (bukan sebelum) supaya `--ast --recompile`
+              tidak menghapus cache di disk lalu keluar tanpa menulis ulang
+              (review round 1 MINOR 4).
+            - `anim_finish` + `drop(anim.take())` sebelum mencetak: thread
+              render animasi menulis `\r`+clear-line ke stdout tiap ≥80 ms
+              dan `Drop` membersihkan baris terakhir, sehingga dump multi-baris
+              bisa tertimpa/kehilangan `}` penutup di TTY (review MINOR 1).
+            - `--ast` + flag simulasi (`--debug`, `--deep-debug`, `--step`,
+              `--break-cycle`, `--break-change`, `--break-eq`, `--watch`,
+              `--tree`, `--print-state`, `--print-signal`, `--timeline`,
+              `--mem`, `--output`, `--coverage-ucis`) memberi
+              `[warn] --ast tidak menjalankan simulasi; diabaikan: ...`
+              alih-alih diam (review round 1 NIT 8). Peringatan dicetak
+              SETELAH `anim_finish`+drop — bila dicetak sebelum, baris
+              status animasi yang digambar ulang menghapusnya di TTY
+              (review round 2).
+         2. `crates/mivon-diag/src/intern/string_intern.rs` — `Symbol`
+            memakai `#[derive(Debug)]` sehingga dump AST berisi
+            `Symbol(54)` (index intern), bukan nama. Ganti dengan impl Debug
+            manual → `Symbol("counter")`; lookup langsung ke tabel (bukan
+            `as_str`) supaya index tak valid lewat `unsafe from_index` tidak
+            membuat Debug panic (fallback `Symbol(#id)`).
+         3. `crates/mivon-fuzz/src/feedback.rs` — komentar stale
+            ("Debug Symbol = index intern") diperbarui; `as_str()` tetap
+            dipakai untuk key coverage (stabil lintas proses).
+         Verifikasi manual: `mivon --ast test/counter.sv` → `Design { modules:
+         [ Module { name: Symbol("counter") ...` lalu keluar; `[env] sims=0`.
+         Di TTY (pty via `script`): AST utuh sampai `}` penutup, animasi
+         berhenti sebelum dump. `--ast --recompile` menyisakan cache MICD
+         (26 file objek), bukan kosong.
+         Test (diskriminatif):
+         - `tests/ast_cli.rs::ast_flag_prints_design_and_skips_simulation`
+           (E2E binary): exit 0, stdout memuat `Design {`,
+           `Symbol("ast_probe")`, `ports:`, dan TIDAK memuat marker runtime
+           `SIM_MARKER_42` / `Simulation completed`.
+         - `tests/ast_cli.rs::without_ast_flag_simulation_runs` — kontrol:
+           tanpa `--ast` marker `SIM_MARKER_42` MUNCUL dan tak ada `Design {`
+           (membuktikan marker benar-benar diskriminatif, bukan mati).
+         - `tests/ast_cli.rs::ast_flag_warns_about_ignored_simulation_flags`
+           — `--ast --debug --print-state` memunculkan peringatan yang
+           menyebut kedua flag, dan AST tetap dicetak.
+         - `mivon-diag::intern::string_intern::tests::
+           test_symbol_debug_shows_string` — `format!("{:?}", Symbol)` =
+           `Symbol("debug_test_sig")`.
+         Mutasi: cabang `print_ast` di `run_legacy.rs` dinonaktifkan
+         (`if false && cli.print_ast`) → test E2E GAGAL (output berisi
+         coverage + `Simulation completed`), lalu dikembalikan → PASS.
+         Suite: cargo nextest run --workspace --all-features --no-fail-fast
+         -> 3965 passed, 24 skipped (ROUND 229). Catatan: angka ini memakai
+         `--all-features` (superset fitur); baseline AGENTS.md 3414 memakai
+         `--features dev` sehingga tidak sebanding langsung.
+         Dampak lintas-crate dari perubahan Debug `Symbol` (review MINOR 3):
+         key coverage fuzz (`crates/mivon-fuzz/src/oracle.rs` memakai
+         `format!("{:?}", tok)`) berubah format sekali dari
+         `Ident(Symbol(100))` → `Ident(Symbol("x"))`, sehingga
+         `.mivon-fuzz-state/coverage-keys.txt` lama (±34k key) dianggap baru.
+         Tidak ada golden/snapshot test yang bergantung pada format lama
+         (diverifikasi lewat grep `Symbol(` di seluruh repo); efeknya hanya
+         churn ledger fuzz sekali, bukan kegagalan.
+         Catatan sisa (di luar cakupan, jujur):
+         - `run_fast.rs:297` mencetak AST TANPA `return` (lanjut elaborate +
+           simulasi). Cabang itu kini tak terjangkau karena gate fast-path
+           menolak `--ast`; dibiarkan agar perilaku berubah bila gate diubah,
+           tetapi TIDAK identik dengan legacy (legacy = print lalu berhenti).
+         - Merge libdir/libfile hanya menyalin `modules` (packages/interfaces/
+           classes dari library tidak ikut), jadi dump `--ast` lengkap untuk
+           modul tapi bukan untuk item library lain.
+         - File header-only (`tokens.is_empty()`) keluar sebelum cabang
+           `--ast`, jadi tidak ada dump (design memang kosong).
+         - `tests/ast_cli.rs` tidak memasang timeout pada `Command::output()`
+           (tidak ada crate timeout di dev-deps); risiko hang CI dianggap
+           dapat diterima karena tiap run ~0,3 dtk.
          di edit dalam LSP (High)
 
 4.5 SIMULATOR GAPS

@@ -1035,6 +1035,80 @@ pub(crate) fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), S
         }
     }
 
+    // ── `--ast`: cetak AST hasil parse lalu berhenti ──
+    // Jalur legacy sebelumnya TIDAK punya cabang ini (hanya `run_fast` yang
+    // mencetak AST, dan jalur itu dimatikan saat `--ast` aktif), sehingga
+    // `--ast` diam-diam melanjutkan ke elaborasi + simulasi penuh tanpa
+    // pernah menampilkan AST. Cetak `{:#?}` design (sudah termasuk modul dari
+    // libdir/libfile) dan kembali SEBELUM elaborasi. Diletakkan setelah save
+    // MICD agar `--ast --recompile` tidak meninggalkan cache kosong.
+    if cli.print_ast {
+        // Flag yang hanya bermakna saat simulasi — jangan diabaikan diam-diam.
+        let mut ignored: Vec<&str> = Vec::new();
+        if cli.debug {
+            ignored.push("--debug");
+        }
+        if cli.deep_debug {
+            ignored.push("--deep-debug");
+        }
+        if cli.step {
+            ignored.push("--step");
+        }
+        if !cli.break_cycle.is_empty() {
+            ignored.push("--break-cycle");
+        }
+        if !cli.break_change.is_empty() {
+            ignored.push("--break-change");
+        }
+        if !cli.break_eq.is_empty() {
+            ignored.push("--break-eq");
+        }
+        if !cli.watch.is_empty() {
+            ignored.push("--watch");
+        }
+        if cli.print_tree {
+            ignored.push("--tree");
+        }
+        if cli.print_state {
+            ignored.push("--print-state");
+        }
+        if !cli.print_signal.is_empty() {
+            ignored.push("--print-signal");
+        }
+        if !cli.timeline.is_empty() {
+            ignored.push("--timeline");
+        }
+        if !cli.mem.is_empty() {
+            ignored.push("--mem");
+        }
+        if cli.output.is_some() {
+            ignored.push("--output");
+        }
+        if cli.coverage_ucis.is_some() {
+            ignored.push("--coverage-ucis");
+        }
+        // Hentikan animasi pipeline SEBELUM mencetak apa pun yang multi-baris:
+        // thread render menulis `\r` + clear-line ke stdout, dan baris status
+        // yang digambar ulang akan menghapus peringatan/dump yang baru dicetak.
+        let warnings = parser
+            .errors
+            .iter()
+            .filter(|d| d.level == DiagLevel::Warning)
+            .count();
+        anim_finish(&mut anim, true, 0, warnings);
+        // Lepas animator sekarang (Drop membersihkan baris status) sebelum
+        // dump dicetak — bukan sekadar menunggu akhir fungsi.
+        drop(anim.take());
+        if !ignored.is_empty() {
+            eprintln!(
+                "[warn] --ast tidak menjalankan simulasi; diabaikan: {}",
+                ignored.join(", ")
+            );
+        }
+        println!("{:#?}", design);
+        return Ok(());
+    }
+
     if design.modules.is_empty() {
         // If there are packages, interfaces, or other items but no modules, it's not fatal
         if !design.packages.is_empty()

@@ -27,8 +27,22 @@ thread_local! {
 /// let sym = Symbol::intern("hello");
 /// assert_eq!(sym.as_str(), "hello");
 /// ```
-#[derive(Copy, Clone, Eq, PartialEq, Debug, Default)]
+#[derive(Copy, Clone, Eq, PartialEq, Default)]
 pub struct Symbol(u32);
+
+// Debug manual: index intern (u32) tidak berarti bagi pembaca. Cetak string
+// aslinya agar dump AST (`mivon --ast`) menampilkan nama sinyal/modul, bukan
+// `Symbol(54)`. Format `Symbol("counter")` mempertahankan penanda tipe.
+// Lookup langsung ke tabel (bukan `as_str`) agar index tak valid — mungkin
+// lewat `unsafe from_index` — tidak membuat Debug panic; fallback `Symbol(#id)`.
+impl fmt::Debug for Symbol {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(s) = table().strings.read().get(self.0 as usize) {
+            return write!(f, "Symbol({:?})", s.as_ref());
+        }
+        write!(f, "Symbol(#{})", self.0)
+    }
+}
 
 impl Symbol {
     /// The empty symbol.
@@ -552,6 +566,15 @@ mod tests {
     fn test_symbol_display() {
         let s = Symbol::intern("display_test");
         assert_eq!(format!("{}", s), "display_test");
+    }
+
+    /// `Debug` wajib menampilkan string, bukan index intern — dump AST
+    /// (`mivon --ast`) mencetak `Design {:#?}`, jadi index mentah membuat
+    /// seluruh output tak terbaca (`Symbol(54)`).
+    #[test]
+    fn test_symbol_debug_shows_string() {
+        let s = Symbol::intern("debug_test_sig");
+        assert_eq!(format!("{:?}", s), "Symbol(\"debug_test_sig\")");
     }
 
     #[test]

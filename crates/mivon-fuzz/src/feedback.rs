@@ -199,7 +199,7 @@ pub fn ir_cov_keys(ir: &mivon_ir::IrDesign) -> Vec<String> {
     classes.sort_by(|a, b| a.as_str().cmp(b.as_str()));
     for cls in classes {
         buf.push_str("Class");
-        buf.push_str(cls.as_str()); // Display — Debug Symbol = index intern proses-lokal
+        buf.push_str(cls.as_str()); // Display — tanpa kutip escape, stabil lintas proses
     }
     buf.push_str(&debug_str_module(&ir.top));
     let mut mods: Vec<_> = ir.modules.iter().collect();
