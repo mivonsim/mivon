@@ -1132,6 +1132,100 @@ endmodule
     assert_eq!(get("upv"), 0xFFFF_FFFF, "$unit signed UP = -1 (32 bit)");
 }
 
+/// ELAB-13 butir (18): modifier `unsigned` pada tipe eksplisit
+/// (`parameter int unsigned`, `byte unsigned`, `localparam int unsigned`)
+/// dulu DIBUANG parser — `apply_sign_mod(Some(Int), false)` mengembalikan
+/// `Int` apa adanya, sehingga nilai `-1` tetap bertanda (`-1`, `PU > 0` = 0).
+/// Perbaikan: signedness dicatat di `ParamDecl.implicit_sign` (dibaca
+/// `param_decl_signed`) sementara dtype tetap memberi LEBAR (int 32, byte 8).
+/// Referensi iverilog 12: PU=4294967295, BU=255, PS=-1, LU=1, PKB=255,
+/// SI=65535, `$bits(LI)`=64, generate-if g1..g10 semuanya cabang true.
+#[test]
+fn test_unsigned_modifier_on_typed_parameter() {
+    let source = r#"
+package pk;
+    parameter int unsigned PKU = -1;
+    parameter byte unsigned PKB = -1;
+    parameter int signed PKS = -1;
+endpackage
+
+module child #(parameter int unsigned HP = -1) (output logic [7:0] o);
+    initial o = (HP > 0) ? 8'hC1 : 8'hD1;
+endmodule
+
+module tb;
+    import pk::*;
+    parameter int unsigned PU = -1;
+    parameter byte unsigned BU = -1;
+    parameter shortint unsigned SI = -1;
+    parameter longint unsigned LI = -1;
+    parameter int signed PS = -1;
+    parameter logic unsigned LU = -1;
+    localparam int unsigned LPU = -1;
+    logic [7:0] g1, g2, g3, g4, g5, g6, g7, g8, g9, g10, c1;
+    logic [31:0] puv, ps, siv;
+    logic [7:0] buv, luv, lpuv, pkbv, lbits;
+    child u1(.o(c1));
+    generate
+        if (PU > 0) begin : a1 initial g1 = 8'h11; end else begin : b1 initial g1 = 8'h12; end
+        if (BU > 0) begin : a2 initial g2 = 8'h21; end else begin : b2 initial g2 = 8'h22; end
+        if (PS < 0) begin : a3 initial g3 = 8'h31; end else begin : b3 initial g3 = 8'h32; end
+        if (PKU > 0) begin : a4 initial g4 = 8'h41; end else begin : b4 initial g4 = 8'h42; end
+        if (PKB > 0) begin : a5 initial g5 = 8'h51; end else begin : b5 initial g5 = 8'h52; end
+        if (LPU > 0) begin : a6 initial g6 = 8'h61; end else begin : b6 initial g6 = 8'h62; end
+        if (PKS < 0) begin : a7 initial g7 = 8'h71; end else begin : b7 initial g7 = 8'h72; end
+        if (1) begin : gb
+            localparam int unsigned GLU = -1;
+            if (GLU > 0) begin : a8 initial g8 = 8'h81; end else begin : b8 initial g8 = 8'h82; end
+        end
+        if (LI > 0) begin : a9 initial g9 = 8'h91; end else begin : b9 initial g9 = 8'h92; end
+        if (SI > 0) begin : a10 initial g10 = 8'hA1; end else begin : b10 initial g10 = 8'hA2; end
+    endgenerate
+    initial begin
+        puv = PU;
+        buv = BU;
+        ps = PS;
+        luv = LU;
+        lpuv = LPU;
+        pkbv = PKB;
+        siv = SI;
+        lbits = $bits(LI);
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 5).unwrap();
+    let get = |n: &str| {
+        sigs.iter()
+            .find(|(s, _)| s == n)
+            .map(|(_, v)| v.to_u64())
+            .unwrap_or(0)
+    };
+    assert_eq!(get("g1"), 0x11, "parameter int unsigned PU > 0");
+    assert_eq!(get("g2"), 0x21, "parameter byte unsigned BU > 0");
+    assert_eq!(
+        get("g3"),
+        0x31,
+        "parameter int signed PS < 0 (tetap signed)"
+    );
+    assert_eq!(get("g4"), 0x41, "parameter package int unsigned PKU > 0");
+    assert_eq!(get("g5"), 0x51, "parameter package byte unsigned PKB > 0");
+    assert_eq!(get("g6"), 0x61, "localparam int unsigned LPU > 0");
+    assert_eq!(get("g7"), 0x71, "parameter package int signed PKS < 0");
+    assert_eq!(get("g8"), 0x81, "localparam int unsigned di generate block");
+    assert_eq!(get("g9"), 0x91, "parameter longint unsigned LI > 0");
+    assert_eq!(get("g10"), 0xA1, "parameter shortint unsigned SI > 0");
+    assert_eq!(get("c1"), 0xC1, "parameter header int unsigned HP > 0");
+    assert_eq!(get("puv"), 0xFFFF_FFFF, "nilai bit PU (int unsigned, -1)");
+    assert_eq!(get("buv"), 0xFF, "nilai bit BU (byte unsigned, -1)");
+    assert_eq!(get("ps"), 0xFFFF_FFFF, "nilai bit PS (int signed, -1)");
+    assert_eq!(get("luv"), 1, "logic unsigned = 1 bit (bit-0 dari -1)");
+    assert_eq!(get("lpuv"), 0xFF, "nilai bit LPU (int unsigned, -1)");
+    assert_eq!(get("pkbv"), 0xFF, "nilai bit PKB (byte unsigned, -1)");
+    assert_eq!(get("siv"), 0xFFFF, "nilai bit SI (shortint unsigned, -1)");
+    assert_eq!(get("lbits"), 64, "$bits(longint unsigned) = 64");
+}
+
 /// ELAB-13 butir (7)/(15): `$bits(param)` memakai lebar DEKLARASI parameter,
 /// bukan min-bits nilainya. Sebelum perbaikan `$bits(Q)` = 1 (nilai 1 hanya
 /// butuh 1 bit) padahal Q 8 bit, dan `$bits(P)` = 1 padahal P int 32 bit.

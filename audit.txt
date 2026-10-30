@@ -1380,7 +1380,7 @@ ELAB-12: ✅ Elab-time assertion evaluation (ROUND 47) — assert immediate
            (const_eval_with_params); false → warning RT7001 assertion
            failed di elab-time (lebih awal daripada simulasi).
 
-ELAB-13: ⚠️ PARTIAL (ROUND 222/228) — Parameter berlebar eksplisit kehilangan lebarnya
+ELAB-13: ⚠️ PARTIAL (ROUND 222/228/230) — Parameter berlebar eksplisit kehilangan lebarnya
          Ditemukan saat review COMP-16 (ROUND 221). Reproduksi:
            module t; parameter P = 8'd1; logic [7:0] a; logic y;
              initial begin a = 8'h0E; #1;
@@ -1778,13 +1778,62 @@ ELAB-13: ⚠️ PARTIAL (ROUND 222/228) — Parameter berlebar eksplisit kehilan
          'o177777777777 34 -> 35. Biner: cap 1 x jumlah digit
          ('b0 + 39 bit '1 -> 39 vs 40). Nilai selalu benar; yang berbeda
          hanya lebar.
-         (18) `parameter int unsigned PU` / `parameter byte unsigned B`:
-         modifier `unsigned` pada tipe eksplisit DIBUANG `apply_sign_mod`
-         (parser lib.rs; `(Some(dt), false)` mengembalikan dtype apa
-         adanya) → `parameter int unsigned PU = -1` bernilai -1 dan
-         `(PU > 0)` = 0 (iverilog: 4294967295 / 1). Jalur body & package
-         sama. BELUM diperbaiki — butir terpisah dari (11) (modifier
-         TRAILING pada tipe eksplisit);
+         (18) ✅ FIXED (ROUND 230) `parameter int unsigned PU` /
+         `parameter byte unsigned B`: modifier `unsigned` pada tipe
+         eksplisit DULU DIBUANG `apply_sign_mod` (parser lib.rs;
+         `(Some(dt), false)` mengembalikan dtype apa adanya) →
+         `parameter int unsigned PU = -1` bernilai -1 dan `(PU > 0)` = 0
+         (iverilog: 4294967295 / 1). Jalur body & package sama.
+         AKAR: `DataType` (mivon-ast) tidak punya varian unsigned, jadi
+         signedness hanya bisa dibawa `ParamDecl.implicit_sign`
+         (`Option<bool>`, ditambahkan ROUND 228) — tetapi `apply_sign_mod`
+         hanya mengisinya saat dtype KOSONG.
+         PERBAIKAN (2 situs parser + bump cache, `apply_sign_mod` dihapus
+         karena tak terpakai lagi):
+         - `lib.rs` param body: cabang `unsigned` + dtype eksplisit →
+           `implicit_sign = Some(false)` dan dtype TETAP (memberi LEBAR:
+           int 32, byte 8); `signed` tetap → `Signed(dt)`.
+         - `package.rs` param package: `Token::Unsigned` sekarang SELALU
+           mengisi `implicit_sign = Some(false)` (dulu hanya bila dtype
+           kosong) → PKU/PKB benar.
+         - `decl.rs` param header: HANYA penyederhanaan (tanpa
+           `apply_sign_mod`); untuk input terjangkau perilakunya identik
+           dengan sebelum ronde ini (`resolved_dtype` ∈ {None,
+           UserDefined} dan `is_signed_type(UserDefined)` sudah false) —
+           jadi bukan situs perbaikan, tidak diklaim begitu.
+         - `micd/mod.rs`: `COMPILER_VERSION` `-p3` → `-p4`. Wajib: semantik
+           parse berubah, sedangkan `AST_FORMAT_VERSION` tetap 10 (bentuk
+           AST tidak berubah) — tanpa bump, AST lama (`implicit_sign=None`)
+           tetap dilayani dari cache dan user masih melihat `PU=-1`
+           sampai `--recompile` (review round 1 MAJOR).
+         Verifikasi iverilog 12 (probe /tmp/umod2.sv): PU=4294967295,
+         BU=255, PS=-1, LU=1, PKU/PKB=4294967295/255, LPU>0, PKS<0,
+         SI=65535, `$bits(LI)`=64, generate-if g1..g10 semua cabang true,
+         c1=0xC1 — mivon identik.
+         Test: `test_unsigned_modifier_on_typed_parameter`
+         (core_behavioral.rs) — body (`int`/`byte`/`shortint`/`longint`/
+         `logic`), package (`int`/`byte`/`signed`), header `int unsigned`,
+         localparam body DAN di dalam generate block, 10 generate-if,
+         nilai bit, `$bits(longint unsigned)`.
+         Mutasi: (a) `implicit_sign = Some(false)` di cabang body
+         `lib.rs` dihapus → g1 = 0x12 (18) bukan 0x11, test GAGAL;
+         (b) `package.rs` dikembalikan ke `if dtype.is_none()` → g4 = 0x42
+         (66), test GAGAL. Keduanya dikembalikan → PASS.
+         Suite: cargo nextest run --workspace --all-features --no-fail-fast
+         -> 3966 passed, 24 skipped (ROUND 230).
+         SISA (dilacak di butir (6), bukan (18)): tipe KEYWORD di header
+         (`module child #(parameter byte unsigned HB = -1)`) masih dibuang
+         → lebar diambil dari nilai (HB 4294967295, iverilog 255).
+         `unsigned` LEAD di depan tipe (`unsigned int P`) bukan sintaks SV
+         valid (iverilog 12: syntax error); mivon menerimanya (lead modifier
+         diperlakukan sama seperti trailing → 4294967295) tetapi bentuk ini
+         tidak diuji/dijamin karena input ilegal — bukan bug.
+         Catatan temuan sampingan (belum diperbaiki, di luar cakupan):
+         continuous `assign` di dalam instance anak belum "settle" saat
+         `initial $display` parent di t=0 → mivon mencetak `x` (atau `z`
+         tergantung desain), iverilog mencetak nilainya (repro:
+         /tmp/outprobe2.sv, param signed pun kena). Perlu telaah urutan
+         region/delta t=0 di scheduler;
          (19) `localparam` di $unit dibuang parser (second pass hanya
          menyimpan `!is_local`): `localparam int L = 7;` di luar module →
          E2001 "signal 'L' not found" (iverilog: L = 7). BELUM;

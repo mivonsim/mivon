@@ -152,9 +152,14 @@ impl Parser {
                             }
                             if self.peek() == &Token::Unsigned {
                                 self.advance();
-                                if dtype.is_none() {
-                                    implicit_sign = Some(false);
-                                }
+                                // ELAB-13 (18): modifier `unsigned` pada tipe
+                                // eksplisit (`int unsigned`) dulu dibuang →
+                                // nilai default negatif dianggap bertanda.
+                                // `DataType` tak punya varian unsigned, jadi
+                                // signedness disimpan di `implicit_sign`
+                                // (dibaca `param_decl_signed`); dtype tetap
+                                // memberi lebar.
+                                implicit_sign = Some(false);
                             }
 
                             // Handle user-defined type (ident followed by ident or [)

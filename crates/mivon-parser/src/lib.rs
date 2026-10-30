@@ -23,23 +23,6 @@ use mivon_core::diagnostics::diagnostic::{
 use mivon_core::error::SimError;
 use mivon_core::intern::Symbol;
 
-/// Terapkan modifier signed/unsigned ke dtype param (IEEE 1800 §6.20 + §6.11).
-/// `signed` → `Signed(dtype)` (atau `Signed(Int)` bila tanpa tipe); `unsigned`
-/// membuang wrapper `Signed`. Dipakai parser param body (`lib.rs`) & header
-/// (`decl.rs`) agar `parameter signed int W` / `localparam signed int X`
-/// tidak salah-parse (dulu `signed` dikonsumsi sbg "tipe" lalu `int` dianggap
-/// NAMA → E1002 / param jadi signal; probe p12k/p18).
-pub(crate) fn apply_sign_mod(dt: Option<DataType>, signed: bool) -> DataType {
-    match (dt, signed) {
-        (Some(DataType::Signed(inner)), false) => *inner,
-        (Some(DataType::Signed(inner)), true) => DataType::Signed(inner),
-        (Some(dt), true) => DataType::Signed(Box::new(dt)),
-        (Some(dt), false) => dt,
-        (None, true) => DataType::Signed(Box::new(DataType::Int)),
-        (None, false) => DataType::Int,
-    }
-}
-
 pub struct Parser {
     tokens: Vec<(Token, usize, usize)>,
     pos: std::cell::Cell<usize>,
@@ -2988,10 +2971,23 @@ impl Parser {
                     trail_sign = Some(false);
                 }
                 if let Some(sig) = lead_sign.or(trail_sign) {
-                    if dtype.is_none() {
-                        implicit_sign = Some(sig);
-                    } else {
-                        dtype = Some(apply_sign_mod(dtype, sig));
+                    match dtype.take() {
+                        None => implicit_sign = Some(sig),
+                        Some(dt) => {
+                            if sig {
+                                dtype = Some(DataType::Signed(Box::new(dt)));
+                            } else {
+                                // ELAB-13 (18): `int unsigned` / `byte unsigned`
+                                // — `DataType` tak punya varian unsigned, jadi
+                                // signedness dicatat di `implicit_sign` (dibaca
+                                // `param_decl_signed`) sementara dtype tetap
+                                // memberi LEBAR (int 32, byte 8). Sebelumnya
+                                // `apply_sign_mod` membuang modifier ini →
+                                // `parameter int unsigned PU = -1` bernilai -1.
+                                dtype = Some(dt);
+                                implicit_sign = Some(false);
+                            }
+                        }
                     }
                 }
                 let mut range = None;

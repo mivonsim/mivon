@@ -114,7 +114,7 @@ pub use verify::{now_ns, CheckResult, VerifyCheckKind, VerifyResult};
 /// Lupa bump → cache IR lama dilayani ke user berdesain baru (demo LANG-47
 /// harus `--recompile` manual). Angka = revisi semantik pipeline, bukan
 /// release number.
-pub const COMPILER_VERSION: &str = concat!("Mivon ", env!("CARGO_PKG_VERSION"), "-p3");
+pub const COMPILER_VERSION: &str = concat!("Mivon ", env!("CARGO_PKG_VERSION"), "-p4");
 
 /// Fingerprint identitas binary yang sedang berjalan: xxh64 atas ukuran +
 /// mtime (nanodetik) file executable. Binary yang sama → fingerprint sama
@@ -1476,7 +1476,7 @@ mod tests {
     // binary tidak memakai cache dari newer pipeline).
     #[test]
     fn test_pipeline_revision_bump_menolak_versi_lama() {
-        // Ekstrak angka revisi saat ini: "...-p3" → 3.
+        // Ekstrak angka revisi saat ini: "...-p4" → 4.
         let base = COMPILER_VERSION
             .strip_prefix("Mivon ")
             .expect("format 'Mivon x.y.z-pN'");

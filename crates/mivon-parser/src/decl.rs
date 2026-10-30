@@ -2352,19 +2352,18 @@ impl Parser {
             // Use type_ident as UserDefined dtype if set. Tipe keyword
             // eksplisit di jalur header ini masih dibuang (ELAB-13 butir (6)).
             let resolved_dtype = type_ident.as_ref().map(|t| DataType::UserDefined(*t));
-            // Terapkan modifier signed/unsigned (lead/trail) — `parameter
-            // signed int W` → Signed(Int) agar elaborator memperlakukannya
-            // signed (probe p18).
-            let resolved_dtype = match lead_sign.or(trail_sign) {
-                Some(sig) => {
-                    if resolved_dtype.is_none() {
-                        implicit_sign = Some(sig);
-                        None
-                    } else {
-                        Some(crate::apply_sign_mod(resolved_dtype, sig))
-                    }
+            // Terapkan modifier signed/unsigned (lead/trail). Tipe keyword di
+            // header masih dibuang (butir (6)), jadi `signed` hanya bisa
+            // menjadi `implicit_sign` atau membungkus dtype user-defined.
+            // `unsigned` tidak butuh pembungkus: signedness dtype
+            // user-defined sudah false (`is_signed_type`).
+            let resolved_dtype = match (resolved_dtype, lead_sign.or(trail_sign)) {
+                (None, Some(sig)) => {
+                    implicit_sign = Some(sig);
+                    None
                 }
-                None => resolved_dtype,
+                (Some(dt), Some(true)) => Some(DataType::Signed(Box::new(dt))),
+                (dt, _) => dt,
             };
 
             params.push(ParamDecl {
