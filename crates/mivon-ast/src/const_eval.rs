@@ -166,7 +166,115 @@ fn is_signed_expr(e: &Expr) -> bool {
     }
 }
 
-/// Bandingkan dua nilai const dengan aturan signedness SV.
+/// Lebar operand PERBANDINGAN. Berbeda dari `sized_width`: literal desimal
+/// tak berlebar di sini adalah `int` minimal 32 bit yang melebar sesuai
+/// magnitude (LRM 5.7.1). Di `sized_width` lebar itu TIDAK boleh dipakai
+/// karena operator context-determined (`~`, shift, `**`, concat) mengambil
+/// lebar dari konteks target (mis. `localparam [63:0] X = ~0`).
+pub(crate) fn cmp_operand_width(e: &Expr) -> Option<u64> {
+    match e {
+        Expr::Paren(inner) => cmp_operand_width(inner),
+        // ELAB-14: lebar param dari scope elaborasi. Tanpa ini nama param
+        // jatuh ke fallback 64 bit di `const_cmp`, sehingga nilai negatif
+        // (-1) tidak sama dengan bit-pattern literal 32 bit (0xFFFFFFFF).
+        // HANYA di sini, BUKAN di `sized_width`: operator context-determined
+        // (`~P`, `P<<n`, `P**n`) harus mengambil lebar dari konteks target.
+        Expr::Ident { name, .. } => param_width_ctx(*name),
+        // `-1` / `+1` = literal desimal 32 bit (unary +/- tidak mengubah
+        // lebar operand-nya).
+        Expr::UnaryOp {
+            op: UnaryOp::Minus | UnaryOp::Plus,
+            expr,
+        } => cmp_operand_width(expr),
+        Expr::Value(Value::Decimal(v)) => {
+            // Literal desimal tak berlebar bertipe SIGNED: butuh satu bit
+            // tanda di atas magnitude (LRM 5.7.1). Tanpa +1, 2^31 dianggap
+            // 32 bit sehingga sign-extend menghasilkan 0xFFFFFFFF80000000
+            // (iverilog: 33 bit, nilai 2147483648) — regresi ronde 4, B1.
+            let mag = if *v >= 0 { *v as u64 } else { !(*v as u64) };
+            let bits = 64 - mag.leading_zeros() as u64;
+            Some((bits + 1).clamp(32, 64))
+        }
+        other => sized_width(other),
+    }
+}
+
+/// ELAB-14: literal desimal TAK BERLEBAR (menembus kurung & unary +/-).
+/// Berbeda dari literal berlebar, lebarnya context-determined: LRM 5.7.1 —
+/// "unsized constant shall be extended to the size of the expression".
+/// Karena itu `parameter [63:0] B = -1; B == -1` = 1 di iverilog (literal -1
+/// melebar ke 64 bit dengan SIGN extension), sedangkan `B == 32'shFFFFFFFF`
+/// = 0 (literal berlebar hanya zero-extend bila pasangannya unsigned).
+fn is_unsized_decimal(e: &Expr) -> bool {
+    match e {
+        Expr::Paren(inner) => is_unsized_decimal(inner),
+        Expr::UnaryOp {
+            op: UnaryOp::Minus | UnaryOp::Plus,
+            expr,
+        } => is_unsized_decimal(expr),
+        Expr::Value(Value::Decimal(_)) => true,
+        _ => false,
+    }
+}
+
+/// Extend `v` (lebar `own`) ke 64 bit: sign-extend bila `signed`, zero-extend
+/// bila tidak. Dipakai perbandingan karena tiap operand membawa signedness
+/// sendiri (LRM §11.8.2; iverilog: operand signed 4 bit 4'shF == 8'hFF -> 1,
+/// param signed 32 bit vs literal unsigned 64 bit -> zero-extend).
+fn ext64(v: i64, own: u64, signed: bool) -> u64 {
+    let own = own.clamp(1, 64);
+    let mut u = v as u64;
+    if own < 64 {
+        let mask = (1u64 << own) - 1;
+        u &= mask;
+        if signed && (u & (1u64 << (own - 1))) != 0 {
+            u |= !mask;
+        }
+    }
+    u
+}
+
+/// ELAB-14: apakah ekspresi memuat nama identifier (menembus kurung & unary
+/// +/-). Dipakai memilih jalur perbandingan berbasis lebar/signedness
+/// deklarasi (param, enum, konstanta package); perbandingan literal murni
+/// tetap memakai aturan lama.
+fn has_ident_ref(e: &Expr) -> bool {
+    match e {
+        // Hanya identifier yang lebarnya DIKETAHUI dari scope (param module).
+        // Nama lain (enum member, konstanta package) tidak punya lebar di
+        // sini; memaksakan jalur ini membuatnya jatuh ke 64 bit unsigned dan
+        // mengubah hasil dibanding perilaku lama (regresi ronde 4, B2:
+        // `typedef enum logic [3:0] {FB = 4'shF} e_t; FB == 4'shF`).
+        Expr::Ident { name, .. } => param_width_ctx(*name).is_some(),
+        Expr::Paren(inner) => has_ident_ref(inner),
+        Expr::UnaryOp {
+            op: UnaryOp::Minus | UnaryOp::Plus,
+            expr,
+        } => has_ident_ref(expr),
+        _ => false,
+    }
+}
+
+/// ELAB-14: signedness operand perbandingan. Nama param memakai signedness
+/// DEKLARASINYA (scope elaborasi) — `is_signed_expr` tidak bisa tahu itu dan
+/// menganggap semua `Ident` unsigned, sehingga `parameter signed [7:0] S8 =
+/// -1; S8 == -1` salah jadi 0.
+fn cmp_operand_signed(e: &Expr) -> bool {
+    match e {
+        Expr::Paren(inner) => cmp_operand_signed(inner),
+        Expr::UnaryOp {
+            op: UnaryOp::Minus | UnaryOp::Plus,
+            expr,
+        } => cmp_operand_signed(expr),
+        Expr::Ident { name, .. } => param_signed_ctx(*name).unwrap_or(false),
+        _ => is_signed_expr(e),
+    }
+}
+
+/// Bandingkan dua nilai const dengan aturan SV: lebarkan KEDUA operand ke
+/// lebar terbesar (per signedness masing-masing), baru bandingkan. Masking
+/// per-operand (perilaku lama) salah untuk `parameter [63:0] B = -1;
+/// B == -1` — literal -1 harus sign-extend ke 64 bit agar sama.
 fn const_cmp(
     lhs: &Expr,
     rhs: &Expr,
@@ -174,15 +282,43 @@ fn const_cmp(
     r: i64,
     op: impl Fn(std::cmp::Ordering) -> bool,
 ) -> i64 {
-    let ord = if is_signed_expr(lhs) && is_signed_expr(rhs) {
+    // Jalur identifier (ELAB-14): lebar/signedness param diketahui dari scope
+    // elaborasi, jadi lebarkan kedua operand ke lebar terbesar. Aturan yang
+    // dipakai (diverifikasi terhadap iverilog 12, 20 kasus):
+    //   1. signedness BERSAMA = signed hanya bila KEDUA operand signed
+    //      (LRM 11.8.2). Bila salah satu unsigned, KEDUA di-zero-extend —
+    //      ini yang membuat `parameter [7:0] D = -1; D == 4'shF` = 0
+    //      (255 vs 15), bukan 1.
+    //   2. literal desimal TAK BERLEBAR dikecualikan dari (1): lebarnya
+    //      context-determined dan nilainya signed, jadi di-sign-extend ke
+    //      lebar konteks (`parameter [63:0] B = -1; B == -1` = 1, sedangkan
+    //      `B == 32'shFFFFFFFF` = 0).
+    //   3. perbandingan signed TIDAK boleh di-mask ke lebar w: bit tanda
+    //      harus tetap di bit 63 supaya `parameter int I = -3; I < 0` = 1.
+    let ord = if uses_decl_path(lhs, rhs) {
+        let lw = cmp_operand_width(lhs).unwrap_or(64).min(64);
+        let rw = cmp_operand_width(rhs).unwrap_or(64).min(64);
+        let w = lw.max(rw).max(1);
+        let ls = cmp_operand_signed(lhs);
+        let rs = cmp_operand_signed(rhs);
+        let both_signed = ls && rs;
+        let le_signed = ls && (both_signed || is_unsized_decimal(lhs));
+        let re_signed = rs && (both_signed || is_unsized_decimal(rhs));
+        let mut le = ext64(l, lw, le_signed);
+        let mut re = ext64(r, rw, re_signed);
+        if both_signed {
+            (le as i64).cmp(&(re as i64))
+        } else {
+            if w < 64 {
+                let mask = (1u64 << w) - 1;
+                le &= mask;
+                re &= mask;
+            }
+            le.cmp(&re)
+        }
+    } else if is_signed_expr(lhs) && is_signed_expr(rhs) {
         l.cmp(&r)
     } else {
-        // Unsigned: mask ke lebar self-determined literal agar
-        // sign-extended i64 tidak merusak perbandingan
-        // (16'shdddb <= 16'hffff harus 1, bukan 0 — ditemukan
-        // mixed_sign_fuzz seed=87). LRM §11.8.2: operan
-        // di-extend sesuai signedness masing-masing SEBELUM
-        // dibandingkan.
         let lw = sized_width(lhs).unwrap_or(64).min(64);
         let rw = sized_width(rhs).unwrap_or(64).min(64);
         let lm = if lw >= 64 { u64::MAX } else { (1u64 << lw) - 1 };
@@ -193,6 +329,30 @@ fn const_cmp(
         1
     } else {
         0
+    }
+}
+
+/// ELAB-14: apakah perbandingan harus memakai jalur lebar/signedness
+/// deklarasi. Dua pemicu:
+///   - identifier yang lebarnya diketahui dari scope (param module), dan
+///   - literal desimal TAK BERLEBAR, yang lebarnya context-determined
+///     (LRM 5.7.1): `-1 == 32'hFFFFFFFF` = 1 di iverilog sedangkan jalur
+///     literal lama (mask per operand) memberi 0.
+fn uses_decl_path(lhs: &Expr, rhs: &Expr) -> bool {
+    has_ident_ref(lhs) || has_ident_ref(rhs) || is_unsized_decimal(lhs) || is_unsized_decimal(rhs)
+}
+
+/// ELAB-14: kesetaraan untuk `Eq`/`Neq`. Di luar jalur deklarasi, perilaku
+/// HEAD dipertahankan: kesetaraan nilai mentah i64. Aturan "mask per operand"
+/// milik operator RELASIONAL tidak boleh dipakai di sini — literal signed
+/// sempit di-sign-extend saat const-eval, sehingga
+/// `typedef enum logic [3:0] {FB = 4'shF} e_t; FB == 4'shF` jadi 0 padahal
+/// HEAD/iverilog 1 (regresi ronde 4, B2).
+pub(crate) fn cmp_eq_bits(lhs: &Expr, rhs: &Expr, l: i64, r: i64) -> bool {
+    if uses_decl_path(lhs, rhs) {
+        const_cmp(lhs, rhs, l, r, |o| o == std::cmp::Ordering::Equal) == 1
+    } else {
+        l == r
     }
 }
 pub fn sized_width(e: &Expr) -> Option<u64> {
@@ -287,6 +447,64 @@ thread_local! {
 /// langsung tanpa guard sinyal; batas ini menjamin tak ada jalur yang overflow.
 const MAX_CONST_EVAL_DEPTH: u32 = 128;
 
+thread_local! {
+    /// ELAB-14: stack (lebar, signed) param per module (di-push elaborator).
+    /// Dipakai perbandingan const-fold supaya `P == 32'hFFFFFFFF` memakai
+    /// lebar/signedness deklarasi P, bukan fallback 64 bit unsigned — tanpa
+    /// ini -1 (i64) dibandingkan dengan 4294967295 dan salah jadi 0.
+    static PARAM_WIDTH_STACK: std::cell::RefCell<Vec<HashMap<Symbol, (usize, bool)>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Scope lebar param: pop otomatis saat drop, sehingga module bersarang
+/// (flatten instance) tidak mewarisi lebar param module anak/induk.
+pub struct ParamWidthScope;
+
+impl Drop for ParamWidthScope {
+    fn drop(&mut self) {
+        PARAM_WIDTH_STACK.with(|s| {
+            s.borrow_mut().pop();
+        });
+    }
+}
+
+/// Push scope kosong untuk module yang sedang dielaborasi.
+pub fn push_param_width_scope() -> ParamWidthScope {
+    PARAM_WIDTH_STACK.with(|s| s.borrow_mut().push(HashMap::new()));
+    ParamWidthScope
+}
+
+/// Isi scope teratas dengan peta (lebar, signed) param module saat ini
+/// (dipanggil `module_param_widths` setiap kali peta dihitung ulang).
+pub fn set_param_widths(map: HashMap<Symbol, (usize, bool)>) {
+    PARAM_WIDTH_STACK.with(|s| {
+        if let Some(top) = s.borrow_mut().last_mut() {
+            *top = map;
+        }
+    });
+}
+
+/// Lebar param dari scope teratas (None di luar elaborasi module).
+fn param_width_ctx(name: Symbol) -> Option<u64> {
+    PARAM_WIDTH_STACK.with(|s| {
+        s.borrow()
+            .last()
+            .and_then(|m| m.get(&name))
+            .map(|(w, _)| *w as u64)
+    })
+}
+
+/// Signedness param dari scope teratas (None di luar elaborasi / nama bukan
+/// param — pemanggil lalu memakai aturan ekspresi biasa).
+fn param_signed_ctx(name: Symbol) -> Option<bool> {
+    PARAM_WIDTH_STACK.with(|s| {
+        s.borrow()
+            .last()
+            .and_then(|m| m.get(&name))
+            .map(|(_, sg)| *sg)
+    })
+}
+
 pub fn const_eval_with_params(
     expr: &Expr,
     param_vals: &HashMap<Symbol, i64>,
@@ -324,7 +542,7 @@ fn const_eval_ops(expr: &Expr, param_vals: &HashMap<Symbol, i64>) -> Result<i64,
         Expr::UnaryOp {
             op: UnaryOp::Minus,
             expr: inner,
-        } => Ok(-const_eval_with_params(inner, param_vals)?),
+        } => Ok(const_eval_with_params(inner, param_vals)?.wrapping_neg()),
         Expr::UnaryOp {
             op: UnaryOp::Plus,
             expr: inner,
@@ -484,7 +702,10 @@ fn const_eval_ops(expr: &Expr, param_vals: &HashMap<Symbol, i64>) -> Result<i64,
         } => {
             let l = const_eval_with_params(lhs, param_vals)?;
             let r = const_eval_with_params(rhs, param_vals)?;
-            Ok(if l == r { 1 } else { 0 })
+            // ELAB-14: bandingkan sebagai BIT-PATTERN selebar operand, bukan
+            // i64 mentah. Tanpa ini `parameter A = -1; A == 32'hFFFFFFFF`
+            // di-fold 0 (iverilog 1) karena -1 != 4294967295.
+            Ok(if cmp_eq_bits(lhs, rhs, l, r) { 1 } else { 0 })
         }
         Expr::BinaryOp {
             op: BinaryOp::Neq,
@@ -493,7 +714,8 @@ fn const_eval_ops(expr: &Expr, param_vals: &HashMap<Symbol, i64>) -> Result<i64,
         } => {
             let l = const_eval_with_params(lhs, param_vals)?;
             let r = const_eval_with_params(rhs, param_vals)?;
-            Ok(if l != r { 1 } else { 0 })
+            // ELAB-14: sama seperti Eq — bandingkan bit-pattern selebar operand.
+            Ok(if cmp_eq_bits(lhs, rhs, l, r) { 0 } else { 1 })
         }
         Expr::BinaryOp {
             op: BinaryOp::Lt,

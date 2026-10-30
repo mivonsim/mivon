@@ -459,6 +459,16 @@ impl Elaborator {
                 array_structs: &self.pkg_array_structs,
             };
             let resolve_params_t0 = std::time::Instant::now();
+            // ELAB-14: scope lebar param untuk const-fold di fase prepass
+            // (generate-if / localparam header). Lebar statis disemai DULU
+            // karena nilai param belum di-resolve.
+            let _param_width_scope = mivon_ast::const_eval::push_param_width_scope();
+            mivon_ast::const_eval::set_param_widths(
+                super::super::util::param_util::static_param_widths(
+                    &self.design.modules[i],
+                    &HashMap::new(),
+                ),
+            );
             let param_vals = resolve_param_values_with_ctx(
                 &self.design.modules[i],
                 &HashMap::new(),
@@ -466,6 +476,9 @@ impl Elaborator {
                 Some(&pkg_full),
             )
             .map_err(|e| self.elab_diag_at(DiagCode::SimulationError, e, 0, 0))?;
+            mivon_ast::const_eval::set_param_widths(
+                self.module_param_meta(&self.design.modules[i], &param_vals),
+            );
             let resolve_params_us = resolve_params_t0.elapsed().as_micros();
             let module_name = self.design.modules[i].name;
             self.current_module = Some(module_name);

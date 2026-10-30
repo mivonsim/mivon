@@ -13,7 +13,9 @@ use mivon_core::diagnostics::diagnostic::DiagCode;
 use mivon_core::error::SimError;
 use mivon_core::intern::Symbol;
 
-use super::super::util::param_util::{param_width_of, resolve_param_values_with_ctx, PkgFullCtx};
+use super::super::util::param_util::{
+    param_decl_signed, param_width_of, resolve_param_values_with_ctx, PkgFullCtx,
+};
 use super::types::{eval_enum_member_value, package_overlay};
 use super::Elaborator;
 
@@ -85,15 +87,32 @@ impl Elaborator {
         }
     }
     /// ELAB-13: peta nama -> lebar param untuk module saat ini (+ $unit).
+    /// Hanya lebarnya (dipakai normalisasi nilai & ekspresi); jalur
+    /// perbandingan const-fold memakai `module_param_meta` yang juga membawa
+    /// signedness.
     pub(crate) fn module_param_widths(
         &self,
         module: &Module,
         params: &HashMap<Symbol, i64>,
     ) -> HashMap<Symbol, usize> {
+        self.module_param_meta(module, params)
+            .into_iter()
+            .map(|(name, (w, _))| (name, w))
+            .collect()
+    }
+
+    /// ELAB-13/14: peta nama -> (lebar, signed) param module saat ini (+
+    /// $unit). Signedness dibutuhkan perbandingan const-fold, mis.
+    /// `parameter signed [7:0] S8 = -1; S8 == -1` harus 1.
+    pub(crate) fn module_param_meta(
+        &self,
+        module: &Module,
+        params: &HashMap<Symbol, i64>,
+    ) -> HashMap<Symbol, (usize, bool)> {
         let mut out = HashMap::new();
         for p in &module.params {
             if let Some(w) = self.param_decl_width(p, params) {
-                out.insert(p.name, w);
+                out.insert(p.name, (w, param_decl_signed(p)));
             }
         }
         for p in &self.design.unit_params {
@@ -103,9 +122,12 @@ impl Elaborator {
                 continue;
             }
             if let Some(w) = self.param_decl_width(p, params) {
-                out.insert(p.name, w);
+                out.insert(p.name, (w, param_decl_signed(p)));
             }
         }
+        // ELAB-14: bagikan lebar ke const-fold (thread-local scope) supaya
+        // perbandingan atas nama param memakai lebar deklarasinya.
+        mivon_ast::const_eval::set_param_widths(out.clone());
         out
     }
     /// Bangun global package param context SEKALI: qualified `pkg::name` untuk semua

@@ -419,7 +419,24 @@ impl Elaborator {
                                 },
                             },
                         };
+                        // ELAB-14: scope lebar param untuk jalur instance
+                        // ber-override — resolve_param_values + ekspansi
+                        // generate di sini berjalan SEBELUM
+                        // elaborate_module_with_params_and_type (yang punya
+                        // scope sendiri), sehingga tanpa ini const-fold
+                        // memakai fallback 64 bit dan cabang generate/localparam
+                        // salah untuk child ber-parameter.
+                        let _param_width_scope = mivon_ast::const_eval::push_param_width_scope();
+                        mivon_ast::const_eval::set_param_widths(
+                            super::super::util::param_util::static_param_widths(
+                                &ast_module,
+                                &inst.param_map,
+                            ),
+                        );
                         let param_vals = self.resolve_param_values(&ast_module, &inst.param_map)?;
+                        mivon_ast::const_eval::set_param_widths(
+                            self.module_param_meta(&ast_module, &param_vals),
+                        );
                         // Expand generate dengan nilai param INSTANCE ini.
                         let mut ast_module = ast_module;
                         if !ast_module.params.is_empty()

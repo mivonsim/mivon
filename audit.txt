@@ -1593,31 +1593,209 @@ ELAB-13: ⚠️ PARTIAL (ROUND 222/224) — Parameter berlebar eksplisit kehilan
          Suite: cargo nextest run --workspace --all-features -> 3940 passed,
          24 skipped (ROUND 224).
 
-ELAB-14:[] Perbandingan param vs literal di const-fold mengabaikan lebar/signedness
+ELAB-14: ✅ FIXED (ROUND 225, revisi 5) Perbandingan param vs literal di
+         const-fold mengabaikan lebar/signedness — lihat detail di bawah
          Ditemukan saat ELAB-13 ROUND 224. Reproduksi:
            module t; parameter A = -1; logic h;
              initial begin h = (A == 32'hFFFFFFFF); $display("%0d", h); end
            endmodule
          mivon: 0, iverilog 12: 1. Jalur RUNTIME benar (`w = A`;
          `h = (w == 32'hFFFFFFFF)` -> 1), jadi bug ada di jalur const-fold:
-         kedua operand dibandingkan sebagai i64 tanpa normalisasi ke
-         lebar/bit-pattern, sehingga -1 != 4294967295.
-         Impact: generate-if / localparam kondisional bisa memilih cabang
-         salah untuk pola `P == <literal basis>`.
-         Severity: High (silent wrong branch).
-         Fix yang diinginkan: bandingkan sebagai bit-pattern dengan lebar
-         operand (normalisasi operand ke lebar hasil sebelum Eq/Neq/Lt/Le/
-         Gt/Ge), bukan sebagai i64 mentah.
+         operand dibandingkan sebagai i64 tanpa normalisasi ke lebar,
+         sehingga -1 != 4294967295. Impact: generate-if / localparam
+         kondisional memilih cabang salah untuk pola `P == <literal basis>`
+         (terbukti: gen mivon FALSE vs iverilog TRUE).
+         AKAR MASALAH: `sized_width` (mivon-ast const_eval) tidak punya arm
+         untuk `Expr::Ident` (lebar param) maupun `Value::Decimal`, sehingga
+         `const_cmp` memakai mask 64 bit untuk kedua operand; `Eq`/`Neq`
+         bahkan tidak memakai `const_cmp` sama sekali (i64 mentah).
+         PERBAIKAN (ROUND 225, revisi 5 setelah review ronde 1, 2, 3, 4 & 5):
+         1. Scope (lebar, signed) param thread-local di `mivon-ast::const_eval`
+            (PARAM_WIDTH_STACK + ParamWidthScope + push/set); dibaca oleh
+            `cmp_operand_width`/`cmp_operand_signed` — BUKAN oleh
+            `sized_width`. Elaborator mem-push scope per module
+            (`elaborate_module`, `elaborate_module_with_params_and_type`,
+            prepass, DAN flatten jalur instance ber-override) lalu menyemai
+            lebar statis (`static_param_widths`) SEBELUM nilai di-resolve dan
+            meta berbasis nilai (`module_param_meta`; `module_param_widths`
+            tetap mengembalikan lebar saja untuk normalisasi nilai) setelah
+            resolve.
+         2. Lebar literal desimal untuk PERBANDINGAN dihitung
+            `cmp_operand_width` = magnitude + 1 BIT TANDA, minimal 32 bit
+            (LRM 5.7.1) — TIDAK dimasukkan ke `sized_width` karena operator
+            context-determined (`~`, shift, `**`, concat) mengambil lebar dari
+            konteks target (regresi ronde 1: `localparam [63:0] X = ~0` jadi
+            0xFFFFFFFF, `1 << 40` jadi 0). Bit tanda wajib: revisi 3 sempat
+            memakai magnitude saja sehingga 2147483648 dianggap 32 bit lalu
+            di-sign-extend jadi 0xFFFFFFFF80000000 — `parameter [63:0]
+            BASE = 2147483648; BASE == 2147483648` jadi 0 (iverilog 1) dan
+            `-3000000000` terpotong (regresi ronde 4, B1). Konsisten dengan
+            ELAB-13 (`4000000000 -> 33 bit`).
+         3. `const_cmp` jalur identifier/literal-tak-berlebar melebarkan
+            KEDUA operand ke lebar terbesar (bukan mask per-operand; regresi
+            ronde 1: `parameter [63:0] B = -1; B == -1` jadi 0). Aturan
+            final (revisi 3, diverifikasi 486/486 terhadap iverilog):
+            a. signedness BERSAMA = signed hanya bila KEDUA operand signed
+               (LRM 11.8.2). Bila salah satu unsigned, KEDUA di-zero-extend
+               — revisi 2 sign-extend per operand sehingga
+               `parameter [7:0] D = -1; D == 4'shF` jadi 1 (255 vs 15;
+               iverilog 0) — regresi ronde 3, B1.
+            b. literal desimal TAK BERLEBAR dikecualikan dari (a): lebarnya
+               context-determined (LRM 5.7.1) dan nilainya signed, jadi
+               di-sign-extend ke lebar konteks (`B == -1` = 1 sedangkan
+               `B == 32'shFFFFFFFF` = 0).
+            c. perbandingan signed TIDAK di-mask ke lebar w: bit tanda harus
+               tetap di bit 63, kalau tidak `parameter int I = -3; I < 0`
+               jadi 0 (revisi 2; iverilog 1) — temuan ronde 3, B2.
+            d. jalur ini hanya dipicu bila lebarnya MEMANG diketahui:
+               `has_ident_ref` bernilai true hanya untuk `Ident` yang ada di
+               scope lebar (`param_width_ctx`), atau bila salah satu operand
+               literal desimal tak berlebar. Identifier lain (enum member,
+               konstanta package) memakai aturan lama (revisi 3 memaksa semua
+               `Ident` → enum member jatuh ke 64 bit unsigned dan
+               `typedef enum logic [3:0] {FB = 4'shF} e_t; FB == 4'shF` jadi
+               0 padahal HEAD/iverilog 1) — regresi ronde 4, B2.
+            e. `Eq`/`Neq` di luar jalur (d) memakai kesetaraan nilai mentah
+               i64 seperti HEAD; aturan "mask per operand" milik operator
+               RELASIONAL tidak boleh dipakai (literal signed sempit sudah
+               di-sign-extend saat const-eval). `Eq`/`Neq` di `const_eval`
+               dan `cmp_eq_bits` di `const_eval_ext` sama-sama lewat
+               `cmp_eq_bits` (satu sumber kebenaran).
+         4. Signedness param ikut di peta scope (`param_decl_signed`), dipakai
+            `cmp_operand_signed`; `is_signed_expr` menganggap semua `Ident`
+            unsigned sehingga `parameter signed [7:0] S8 = -1; S8 == -1`
+            jadi 0 (regresi ronde 2, B3). Peta `module_param_meta` memindai
+            param header, param body/generate (`collect_body_params`, revisi 5
+            — sebelumnya hanya fase prepass yang memindai body sehingga lebar
+            localparam body hilang setelah nilai di-resolve), dan `$unit`.
+         5. `cmp_operand_width` mengenal `-1`/`+1` (unary minus/plus tidak
+            mengubah lebar operand) dan `has_ident_ref` menembus `Paren` /
+            unary +/-; tanpa ini `parameter A = -1; A == -1` jadi 0
+            (regresi ronde 2, B2). Nama `has_param_ref` diganti
+            `has_ident_ref` (ronde 3 catatan 2), dan sejak revisi 4 fungsi
+            itu hanya true bila `param_width_ctx(name).is_some()` — jadi
+            namanya sesuai perilaku (lihat (3d)).
+         6. Arm `Expr::Ident` DIHAPUS dari `sized_width` (regresi ronde 2,
+            B1): lebar param di sana memotong operator context-determined.
+            Terukur reviewer pada patch revisi 1 (P = 8'h00): `localparam
+            [63:0] X = ~P` -> `00000000000000ff` padahal iverilog/HEAD
+            `ffffffffffffffff`; `Q << 8` -> 0; `P ** 2` -> 144. Dengan
+            P = 8'h90 nilainya `ffffffffffffff6f` / `0x100` / `0x5100`
+            (lihat fixture `/tmp/elab14_reg.sv`). Kini HANYA
+            `cmp_operand_width` yang membaca lebar param; `sized_width`
+            kembali ke HEAD.
+         Bukti iverilog 12 — dua fixture terpisah (dulu digabung di catatan,
+         koreksi ronde 4): `/tmp/elab14_cmp.sv` -> E1=1 E2=1 E3=0 E4=1 E5=1
+         E6=1 E7=1 E8=1 E9=0, X=ffffffffffffff6f, Y=0000000000000100,
+         W=0000000000005100, ALL=ffffffffffffffff, M=1099511627776,
+         PP=1099511627776, gen_out=1; `/tmp/elab14_inst.sv` -> o1=1 o2=1.
+         Semuanya identik dengan mivon.
+         Fixture regresi ronde 2 (revisi 2, `/tmp/elab14_reg.sv`), iverilog:
+         X=ffffffffffffff6f Y=0000000000000100 W=0000000000005100
+         E1=1 E2=1 E3=1 E4=0 — mivon identik.
+         Fixture generate (`/tmp/elab14_gen.sv`): iverilog g1=1 g2=1 g3=1;
+         mivon g1=1 g2=1 g3=1.
+         Matriks paritas (reviewer ronde 3, `/tmp/elab14_matrix.sv`):
+         9 deklarasi param x 6 operator x 9 literal = 486 perbandingan.
+         Matriks kedua (reviewer ronde 4, `/tmp/r4/mx2.sv`): 11 param x 11
+         literal x 6 operator = 726 perbandingan.
+         Revisi 2: 76/486 salah (16 REGRESI terhadap HEAD). Revisi 3:
+         486/486 dan 726/726 identik iverilog, TAPI masih ada regresi di luar
+         matriks (literal desimal >= 2^31 dan enum member — ronde 4 B1/B2).
+         Revisi 4 (final): 486/486 dan 726/726 identik iverilog, dan tidak ada
+         regresi tersisa terhadap HEAD selain caveat (i)-(iv) di bawah.
+         Baseline HEAD: 102/486 dan 122/726 salah.
+         Fixture reviewer lain yang identik iverilog: elab14_reg, elab14_gen,
+         elab14_extra, elab14_mix, elab14_ord, elab14_cmp, elab14_inst,
+         `/tmp/r5/repro.sv` (R1=1 R2=1 R3=0), `/tmp/truth14.sv` (20 kasus),
+         `/tmp/lit14.sv` (10 kasus literal murni).
+         Sisa beda vs iverilog (SEMUANYA WT == HEAD, jadi pre-existing, bukan
+         regresi): caveat (i) package param, (ii) enum member, (iii)
+         perbandingan literal murni / operand non-Ident, ditambah bug lama di
+         luar ELAB-14 (`$bits(literal)` = 1, concat di `$display`, hier-ref
+         generate) — terukur pada elab14_pkg, cav.sv, elab14_sgn.sv,
+         `/tmp/r4/{em,enum,enum2,reg,gen2,misc}.sv`.
+         Test (11): test_param_equality_with_literal_uses_bit_pattern,
+         test_decimal_literal_width_does_not_leak_to_context_operators,
+         test_wide_parameter_equality_sign_extends_literal,
+         test_param_equality_in_overridden_child_instance,
+         test_negative_literal_comparison_follows_param_signedness,
+         test_param_width_does_not_leak_to_context_determined_operators,
+         test_param_comparison_mixed_signedness_zero_extends_both,
+         test_signed_param_relational_keeps_sign,
+         test_unsized_decimal_literal_comparison_is_context_determined,
+         test_large_decimal_literal_comparison_counts_sign_bit,
+         test_enum_member_comparison_keeps_head_behavior.
+         Mutasi revisi 4 (semuanya terbukti menggagalkan test yang dituju):
+         (m4) hapus `+1` bit tanda di `cmp_operand_width` ->
+         test_large_decimal_literal_comparison_counts_sign_bit gagal
+         (r1 left Some(0)); (m5) `has_ident_ref` = true untuk semua Ident ->
+         test_enum_member_comparison_keeps_head_behavior gagal (b1 Some(0));
+         (m6) `cmp_eq_bits` selalu lewat `const_cmp` (buang fallback HEAD) ->
+         test yang sama gagal (b1 Some(0)).
+         Mutasi (revisi 3, ketiganya terbukti menggagalkan test yang dituju):
+         (m1) `le_signed = ls` (sign-extend per operand, bug B1) ->
+         test_param_comparison_mixed_signedness_zero_extends_both gagal
+         (m1 left Some(1), harus 0); (m2) mask hasil di cabang both_signed
+         (bug B2) -> test_signed_param_relational_keeps_sign gagal
+         (`I < 0` left Some(0)); (m3) hapus `is_unsized_decimal` dari
+         pemilih jalur -> test_unsized_decimal_literal_comparison... gagal
+         (`-1 == 32'hFFFFFFFF` left Some(0)).
+         Mutasi revisi 2: (b) `param_width_ctx` -> None menggagalkan test
+         pertama (h=0, L=0, gen=2). Baseline HEAD (tanpa patch): L=0, gen=2,
+         o2=2 sehingga DUA dari empat test awal gagal di sana
+         (test_param_equality_with_literal_uses_bit_pattern,
+         test_param_equality_in_overridden_child_instance);
+         test_decimal_literal_width_does_not_leak_to_context_operators dan
+         test_wide_parameter_equality_sign_extends_literal LULUS di HEAD —
+         koreksi klaim revisi 1 yang menyebut "ketiga test regresi gagal"
+         (temuan review ronde 2, B4).
+         Suite: cargo nextest run --workspace --all-features -> 3951 passed,
+         24 skipped (ROUND 225 revisi 5).
+         Sisa caveat (semuanya PRE-EXISTING, perilakunya sama dengan HEAD;
+         diverifikasi ulang di revisi 4):
+         (i) parameter di dalam PACKAGE
+         (`package p; parameter A=-1; localparam L=(A==32'hFFFFFFFF);`) masih
+         0 (iverilog 1) karena package tidak punya scope lebar — terukur pada
+         `/tmp/elab14_pkg.sv` (g2=2, L3=L4=L5=0 vs iverilog 1) dan
+         `/tmp/r4/cav.sv` (L1=0 vs 1);
+         (ii) nilai enum member tidak dipotong ke tipe dasar: `typedef enum
+         logic [3:0] {FB = 4'shF} e_t` menyimpan FB = -1 (iverilog 15), jadi
+         `FB == 4'hF` = 0 (iverilog 1) dan `FB == -1` = 1 (iverilog 0).
+         Varian initializer unsigned (`E_B = 4'hF`): `E_B == 4'shF` = 0
+         (iverilog 1) karena literal signed sempit di-sign-extend jadi -1
+         sedangkan nilai enum 15. Terukur di `/tmp/r4/cav.sv` L6 dan
+         `/tmp/r5/enum.sv`: WT == HEAD di semua key, jadi bukan regresi;
+         `FB == 4'shF` dan `FB == 8'hFF` justru cocok iverilog (1 dan 0);
+         (iii) perbandingan yang operand-nya BUKAN Ident ber-scope / Unary+- /
+         Paren dan bukan literal tak berlebar memakai kesetaraan nilai mentah
+         i64 (perilaku HEAD). Terukur (`/tmp/elab14_sgn.sv`, WT == HEAD):
+         `4'shF == 4'hF` = 0 (iverilog 1), `8'shFF == 8'hFF` = 0 (iverilog
+         1), `4'shF == 64'hFFFFFFFFFFFFFFFF` = 1 (iverilog 0); plus
+         `~P == 8'h6F` = 0 (iverilog 1) di `/tmp/r4/cav.sv` L4. L3/L5/L8 di
+         cav.sv justru SUDAH cocok iverilog;
+         (iv) `$bits(param)` lihat ELAB-13 (15).
+         Catatan desain (non-blocking): `module_param_meta` adalah getter
+         yang menulis thread-local (`set_param_widths`) — aman karena semua
+         pemanggilnya berada di dalam scope module yang sudah di-push, tapi
+         efek samping tersembunyi ini mudah rusak bila ada pemanggil baru.
 
-ELAB-15:[] Nilai parameter i64::MIN memicu panic di const_eval (crash input legal)
+ELAB-15: ✅ FIXED (ROUND 226) Nilai parameter i64::MIN tidak lagi panic
+         di const_eval (crash input legal).
          Ditemukan saat review ELAB-13 ROUND 224. Reproduksi:
            module t; parameter P = -9223372036854775808; endmodule
-         mivon: panic "attempt to negate with overflow" di
-         crates/mivon-ast/src/const_eval.rs:327 (jalur eval_param_default);
-         iverilog 12 menerima nilai (64 bit, 0x8000000000000000).
-         Severity: High (panic pada input legal, bukan silent wrong).
-         Fix: evaluasi unary minus dengan wrapping_neg atau modelkan literal
-         desimal negatif di luar i64 sebagai bit-pattern (bukan i64).
+         Sebelum: panic "attempt to negate with overflow" di
+         crates/mivon-ast/src/const_eval.rs:545 (UnaryOp::Minus fold), karena
+         inner 9223372036854775808 (i64::MAX+1) ter-wrap jadi i64::MIN lalu
+         negasi overflow.
+         Fix: unary minus memakai wrapping_neg() (const_eval.rs:545) + guard
+         i64::MIN / -1 → 0 di const_eval.rs (Div/Mod), const_eval_ext.rs
+         (apply_bin Div/Mod) (sized_divmod sudah ada).
+         Hasil: P = 0x8000000000000000 (64 bit), sama dengan iverilog 12;
+         operasi turunan (P / -1, P % -1) mengikuti guard → 0 (no panic).
+         Test: test_parameter_i64_min_does_not_panic,
+         test_parameter_i64_min_arithmetic_no_panic (maria-tests).
+         Severity: High → RESOLVED.
 
 4.4 COMPILER GAPS
 

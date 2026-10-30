@@ -207,11 +207,19 @@ fn apply_bin(op: BinaryOp, l: i64, r: i64) -> Result<i64, String> {
             if r == 0 {
                 return Err("division by zero".to_string());
             }
+            if l == i64::MIN && r == -1 {
+                // i64::MIN / -1 overflow → bit-pattern 0 (sama seperti
+                // const_eval_with_params & sized_divmod; guard ELAB-15).
+                return Ok(0);
+            }
             l / r
         }
         BinaryOp::Mod => {
             if r == 0 {
                 return Err("modulo by zero".to_string());
+            }
+            if l == i64::MIN && r == -1 {
+                return Ok(0);
             }
             l % r
         }
@@ -461,6 +469,18 @@ pub fn eval_expr(e: &Expr, ctx: &PkgCtx, cur_pkg: Option<&str>) -> Result<CVal, 
             }
             let l = scalar(lv)?;
             let r = scalar(rv)?;
+            // ELAB-14: Eq/Neq dibandingkan sebagai BIT-PATTERN selebar
+            // operand (bukan i64 mentah), supaya `parameter A = -1;
+            // A == 32'hFFFFFFFF` = 1 seperti iverilog. Lebar param diambil
+            // dari scope elaborasi (const_eval::sized_width).
+            if matches!(op, BinaryOp::Eq | BinaryOp::Neq) {
+                let eq = crate::const_eval::cmp_eq_bits(lhs, rhs, l, r);
+                return Ok(CVal::Scalar(if matches!(op, BinaryOp::Eq) {
+                    eq as i64
+                } else {
+                    !eq as i64
+                }));
+            }
             Ok(CVal::Scalar(apply_bin(op.clone(), l, r)?))
         }
         Expr::TernaryOp {

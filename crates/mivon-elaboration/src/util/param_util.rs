@@ -94,6 +94,52 @@ fn default_literal_width(e: &Expr) -> Option<usize> {
     }
 }
 
+/// ELAB-13/14: lebar deklarasi param TANPA melihat nilai efektif — dipakai
+/// untuk menyemai scope lebar const-fold SEBELUM nilai param di-resolve
+/// (localparam/generate-if di fase prepass). Override tetap mengikuti lebar
+/// deklarasi di sini (caveat (13) ELAB-13).
+pub(crate) fn param_static_width(p: &ParamDecl, params: &HashMap<Symbol, i64>) -> Option<usize> {
+    if let Some((msb, lsb)) = &p.range {
+        let (m, l) = match (
+            const_eval_params(msb, params),
+            const_eval_params(lsb, params),
+        ) {
+            (Ok(m), Ok(l)) => (m, l),
+            _ => return None,
+        };
+        let w = (m.max(l).saturating_sub(m.min(l)) as usize).saturating_add(1);
+        return (w <= 64).then_some(w);
+    }
+    if let Some(dt) = &p.dtype {
+        return dtype_width(dt).filter(|w| *w <= 64);
+    }
+    p.default
+        .as_ref()
+        .and_then(default_literal_width)
+        .filter(|w| *w <= 64)
+}
+
+/// ELAB-13/14: peta lebar STATIS seluruh param module (header `module.params`
+/// + param di body/generate). Dipakai menyemai scope const-fold sebelum nilai
+/// param di-resolve. Nilai peta = (lebar, signed) — signedness dibutuhkan
+/// perbandingan const-fold (`parameter signed [7:0] S8 == -1`).
+pub(crate) fn static_param_widths(
+    module: &Module,
+    params: &HashMap<Symbol, i64>,
+) -> HashMap<Symbol, (usize, bool)> {
+    let mut out = HashMap::new();
+    for p in module
+        .params
+        .iter()
+        .chain(collect_body_params(module).iter())
+    {
+        if let Some(w) = param_static_width(p, params) {
+            out.insert(p.name, (w, param_decl_signed(p)));
+        }
+    }
+    out
+}
+
 /// ELAB-13: jumlah bit minimum agar `v` muat sebagai bilangan bertanda.
 fn signed_bits(v: i64) -> usize {
     let magnitude = if v >= 0 { v as u64 } else { !(v as u64) };

@@ -2007,7 +2007,18 @@ impl Elaborator {
         known_modules: &[Symbol],
     ) -> Result<IrModule, SimError> {
         self.current_module = Some(module.name);
+        // ELAB-14: scope lebar param juga untuk jalur resolve/fold di sini
+        // (localparam module di-const-fold SEBELUM elaborate_module_with_params
+        // yang punya scope sendiri).
+        let _param_width_scope = mivon_ast::const_eval::push_param_width_scope();
+        // Semai lebar STATIS dulu: localparam di header di-const-fold SELAMA
+        // resolve (sebelum nilai param final tersedia).
+        mivon_ast::const_eval::set_param_widths(crate::util::param_util::static_param_widths(
+            module,
+            &HashMap::new(),
+        ));
         let param_vals = self.resolve_param_values(module, &HashMap::new())?;
+        mivon_ast::const_eval::set_param_widths(self.module_param_meta(module, &param_vals));
         let ir = self.elaborate_module_with_params(module, known_modules, &param_vals)?;
         // Ringkasan assign-context-width per module (DBG_ELAB_STEP).
         if std::env::var("DBG_ELAB_STEP").is_ok() && self.dbg_apply_n.get() > 0 {
@@ -2054,6 +2065,15 @@ impl Elaborator {
         // "port 'in_i'" atas nama interface JTAG_DV padahal port milik modul
         // lain yang sedang di-flatten).
         self.current_module = Some(module.name);
+        // ELAB-14: scope lebar param untuk module ini (di-pop saat fungsi
+        // selesai). `module_param_widths` mengisi scope ini sehingga
+        // const-fold perbandingan (`P == 32'hFFFFFFFF`) memakai lebar
+        // deklarasi param, bukan fallback 64 bit. Scope bersarang (flatten
+        // child) otomatis terisolasi.
+        let _param_width_scope = mivon_ast::const_eval::push_param_width_scope();
+        // Isi scope lebih awal: ekspansi generate (di bawah) memakai
+        // const-fold SEBELUM `module_param_widths` dipanggil di akhir.
+        mivon_ast::const_eval::set_param_widths(self.module_param_meta(module, param_vals));
         // LRM §23.3.2: nama instance harus UNIK dalam satu scope module.
         // Dua instance bernama sama di module yang sama = illegal (iverilog:
         // "'u1' has already been declared in this scope"). Cek HANYA instance

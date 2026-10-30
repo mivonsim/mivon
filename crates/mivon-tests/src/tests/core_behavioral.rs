@@ -901,6 +901,59 @@ endmodule
     assert_eq!(hit, 1, "~(a + P) harus 8 bit: ~(8'h0E + 8'd1) == 8'hF0");
 }
 
+/// ELAB-15: parameter dengan nilai i64::MIN tidak boleh panic di const_eval.
+/// Sebelum perbaikan, unary minus pada 9223372036854775808 (i64::MAX+1)
+/// di-fold sebagai `-inner` dan panic "attempt to negate with overflow".
+#[test]
+fn test_parameter_i64_min_does_not_panic() {
+    let source = r#"
+module tb;
+    parameter P = -9223372036854775808;
+    logic [63:0] y;
+    initial begin
+        y = P;
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 5).unwrap();
+    let yv = sigs
+        .iter()
+        .find(|(n, _)| n == "y")
+        .map(|(_, v)| v.to_u64())
+        .unwrap();
+    assert_eq!(yv, 0x8000000000000000, "P harus 0x8000000000000000");
+}
+
+/// ELAB-15 (lanjutan): operasi aritmatika di atas i64::MIN tidak boleh
+/// panic dan mengikuti guard i64::MIN / -1 (hasil 0), konsisten dengan
+/// sized_divmod dan const_eval_with_params.
+#[test]
+fn test_parameter_i64_min_arithmetic_no_panic() {
+    let source = r#"
+module tb;
+    parameter P = -9223372036854775808;
+    localparam Q = P / -1;
+    localparam R = P % -1;
+    logic [63:0] a, b;
+    initial begin
+        a = Q;
+        b = R;
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 5).unwrap();
+    for (name, expected) in [("a", 0u64), ("b", 0u64)] {
+        let v = sigs
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, v)| v.to_u64())
+            .unwrap();
+        assert_eq!(v, expected, "{} harus 0 (guard i64::MIN / -1)", name);
+    }
+}
+
 /// ELAB-13: parameter tanpa range/tipe mengambil tipe nilainya (LRM 6.20.2).
 /// Desimal tak berlebar = `int` 32 bit signed, jadi `~P` harus 32 bit.
 /// Sebelum perbaikan, P di-emit Const 64 bit sehingga `~P` =
@@ -990,6 +1043,444 @@ endmodule
         width41,
         Some(1),
         "~C harus 41 bit (0x1172B5AEFFF), bukan 64 bit"
+    );
+}
+
+/// ELAB-14: perbandingan param vs literal di const-fold harus memakai
+/// bit-pattern selebar operand, bukan i64 mentah. `parameter A = -1` (int
+/// 32 bit) == 32'hFFFFFFFF harus 1 (iverilog), bukan 0. Mencakup tiga jalur:
+/// ekspresi prosedural, localparam (const_eval_ext), dan generate-if
+/// (prepass) — ketiganya punya evaluator sendiri.
+#[test]
+fn test_param_equality_with_literal_uses_bit_pattern() {
+    let source = r#"
+module tb;
+    parameter A = -1;
+    localparam L = (A == 32'hFFFFFFFF);
+    logic eq32, eq8, neq32, lv;
+    logic [3:0] gen_out;
+    generate
+        if (A == 32'hFFFFFFFF) begin : g
+            assign gen_out = 4'd1;
+        end else begin : g2
+            assign gen_out = 4'd2;
+        end
+    endgenerate
+    initial begin
+        eq32 = (A == 32'hFFFFFFFF);
+        eq8  = (A == 8'hFF);
+        neq32 = (A != 32'hFFFFFFFF);
+        lv = L;
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 5).unwrap();
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).map(|(_, v)| v.to_u64());
+    assert_eq!(get("eq32"), Some(1), "A == 32'hFFFFFFFF harus 1");
+    assert_eq!(get("eq8"), Some(0), "A == 8'hFF harus 0 (lebar 8 bit)");
+    assert_eq!(get("neq32"), Some(0), "A != 32'hFFFFFFFF harus 0");
+    assert_eq!(get("lv"), Some(1), "localparam L harus 1 (const-fold)");
+    assert_eq!(
+        get("gen_out"),
+        Some(1),
+        "generate-if harus memilih cabang g"
+    );
+}
+
+/// ELAB-14 regresi: fix lebar perbandingan TIDAK boleh mengubah lebar
+/// operator context-determined. `~0`, `1 << 40`, `2 ** 40` di konteks 64 bit
+/// harus tetap 64 bit (dulu sempat rusak saat literal desimal dipaksa 32 bit
+/// di `sized_width`).
+#[test]
+fn test_decimal_literal_width_does_not_leak_to_context_operators() {
+    let source = r#"
+module tb;
+    localparam [63:0] ALL = ~0;
+    localparam [63:0] M = 1 << 40;
+    localparam [63:0] P = 2 ** 40;
+    logic [63:0] a, m, p;
+    initial begin
+        a = ALL; m = M; p = P;
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 5).unwrap();
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).map(|(_, v)| v.to_u64());
+    assert_eq!(get("a"), Some(u64::MAX), "~0 di konteks 64 bit = semua 1");
+    assert_eq!(get("m"), Some(1 << 40), "1 << 40 harus 1099511627776");
+    assert_eq!(get("p"), Some(1 << 40), "2 ** 40 harus 1099511627776");
+}
+
+/// ELAB-14: perbandingan param berlebar 64 dengan literal negatif harus
+/// melebarkan literal ke lebar param (sign-extend), bukan me-mask per operand.
+/// `parameter [63:0] B = -1; (B == -1)` = 1 (iverilog).
+#[test]
+fn test_wide_parameter_equality_sign_extends_literal() {
+    let source = r#"
+module tb;
+    parameter [63:0] B = -1;
+    parameter longint C = -1;
+    localparam L1 = (B == -1);
+    localparam L2 = (C == -1);
+    logic l1, l2;
+    initial begin
+        l1 = L1; l2 = L2;
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 5).unwrap();
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).map(|(_, v)| v.to_u64());
+    assert_eq!(get("l1"), Some(1), "B (64 bit) == -1 harus 1");
+    assert_eq!(get("l2"), Some(1), "longint C == -1 harus 1");
+}
+
+/// ELAB-14: jalur instance ber-override (`#(.A(-1))`) juga harus memakai
+/// lebar param saat memilih cabang generate/localparam child — sebelumnya
+/// hanya instance tanpa override yang benar.
+#[test]
+fn test_param_equality_in_overridden_child_instance() {
+    let source = r#"
+module child #(parameter A = -1) (output [3:0] g);
+    localparam L = (A == 32'hFFFFFFFF) ? 4'd1 : 4'd2;
+    assign g = L;
+endmodule
+module tb;
+    logic [3:0] o1, o2;
+    child c1 (.g(o1));
+    child #(.A(-1)) c2 (.g(o2));
+    initial begin
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 5).unwrap();
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).map(|(_, v)| v.to_u64());
+    assert_eq!(
+        get("o1"),
+        Some(1),
+        "instance default harus memilih cabang 1"
+    );
+    assert_eq!(get("o2"), Some(1), "instance override #(.A(-1)) juga 1");
+}
+
+/// ELAB-14 regresi (review ronde 2, B2/B3): perbandingan dengan literal
+/// NEGATIF harus mengikuti signedness DEKLARASI param. `parameter A = -1`
+/// (int 32 bit) dan `parameter signed [7:0] S8 = -1` sama-sama == -1;
+/// sebelum perbaikan, `cmp_operand_width` tidak mengenal `-1` (unary minus)
+/// dan `is_signed_expr` menganggap `Ident` selalu unsigned → hasil 0.
+/// Test ini PENJAGA REGRESI (HEAD/iverilog sudah 1, patch sempat merusak).
+#[test]
+fn test_negative_literal_comparison_follows_param_signedness() {
+    let source = r#"
+module tb;
+    parameter A = -1;
+    parameter signed [7:0] S8 = -1;
+    parameter int I = -1;
+    localparam L1 = (A == -1);
+    localparam L2 = (S8 == -1);
+    localparam L3 = (I == -1);
+    logic [3:0] gen_out;
+    generate
+        if (A == -1) begin : g
+            assign gen_out = 4'd1;
+        end else begin : g2
+            assign gen_out = 4'd2;
+        end
+    endgenerate
+    logic l1, l2, l3;
+    initial begin
+        l1 = L1; l2 = L2; l3 = L3;
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 5).unwrap();
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).map(|(_, v)| v.to_u64());
+    assert_eq!(get("l1"), Some(1), "parameter A = -1; A == -1 harus 1");
+    assert_eq!(
+        get("l2"),
+        Some(1),
+        "parameter signed [7:0] S8; S8 == -1 = 1"
+    );
+    assert_eq!(get("l3"), Some(1), "parameter int I = -1; I == -1 harus 1");
+    assert_eq!(
+        get("gen_out"),
+        Some(1),
+        "generate-if (A == -1) harus memilih cabang g"
+    );
+}
+
+/// ELAB-14 regresi (review ronde 2, B1): lebar param TIDAK boleh bocor ke
+/// operator context-determined. `~P`, `P << 8`, `P ** 2` di konteks
+/// `localparam [63:0]` harus memakai lebar konteks 64 bit (iverilog:
+/// ff..6f / 0x100 / 0x5100). Sebelum perbaikan, arm `Expr::Ident` di
+/// `sized_width` memotong hasil ke lebar param (8 bit).
+/// Test ini PENJAGA REGRESI (HEAD/iverilog sudah benar, patch sempat merusak).
+#[test]
+fn test_param_width_does_not_leak_to_context_determined_operators() {
+    let source = r#"
+module tb;
+    parameter [7:0] P = 8'h90;
+    parameter [7:0] Z0 = 8'h01;
+    localparam [63:0] X = ~P;
+    localparam [63:0] Y = Z0 << 8;
+    localparam [63:0] W = P ** 2;
+    logic [63:0] x, y, w;
+    initial begin
+        x = X; y = Y; w = W;
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 5).unwrap();
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).map(|(_, v)| v.to_u64());
+    assert_eq!(
+        get("x"),
+        Some(0xFFFF_FFFF_FFFF_FF6F),
+        "~P di konteks 64 bit harus 0xffffffffffffff6f"
+    );
+    assert_eq!(get("y"), Some(0x100), "Z0 << 8 di konteks 64 bit = 0x100");
+    assert_eq!(get("w"), Some(0x5100), "P ** 2 di konteks 64 bit = 0x5100");
+}
+
+/// ELAB-14 (review ronde 3, B1): bila SALAH SATU operand unsigned, KEDUA
+/// operand di-zero-extend (LRM 11.8.2) — bukan di-sign-extend per operand.
+/// Regresi revisi 2: `parameter [7:0] D = -1; D == 4'shF` jadi 1 (255 vs
+/// -1 di-sign-extend). iverilog: semuanya 0 kecuali `B == -1` (literal
+/// desimal tak berlebar melebar ke lebar konteks dengan sign extension).
+#[test]
+fn test_param_comparison_mixed_signedness_zero_extends_both() {
+    let source = r#"
+module tb;
+    parameter [7:0] D = -1;
+    parameter [7:0] P = 8'h90;
+    parameter signed [7:0] S = -1;
+    parameter [63:0] B = -1;
+    parameter [7:0] MASK = 8'hFF;
+    localparam M1 = (D == 4'shF);
+    localparam M2 = (P < 4'shF);
+    localparam M3 = (B == 4'shF);
+    localparam M4 = (S == 32'hFFFFFFFF);
+    localparam M5 = (B == -1);
+    logic [3:0] g;
+    generate
+        if (MASK == 4'shF) begin : a
+            assign g = 4'd1;
+        end else begin : b
+            assign g = 4'd2;
+        end
+    endgenerate
+    logic m1, m2, m3, m4, m5;
+    initial begin
+        m1 = M1; m2 = M2; m3 = M3; m4 = M4; m5 = M5;
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 5).unwrap();
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).map(|(_, v)| v.to_u64());
+    assert_eq!(get("m1"), Some(0), "D (8 bit unsigned) == 4'shF harus 0");
+    assert_eq!(get("m2"), Some(0), "P (144) < 4'shF (15) harus 0");
+    assert_eq!(get("m3"), Some(0), "B (64 bit unsigned) == 4'shF harus 0");
+    assert_eq!(
+        get("m4"),
+        Some(0),
+        "S (signed 8 bit) == 32'hFFFFFFFF harus 0"
+    );
+    assert_eq!(
+        get("m5"),
+        Some(1),
+        "B (64 bit) == -1 harus 1 (literal tak berlebar melebar ke konteks)"
+    );
+    assert_eq!(
+        get("g"),
+        Some(2),
+        "generate-if (MASK == 4'shF) harus memilih cabang b"
+    );
+}
+
+/// ELAB-14 (review ronde 3, B2): perbandingan RELASIONAL param signed tidak
+/// boleh di-mask ke lebar operand setelah sign-extend — bit tanda harus tetap
+/// di bit 63. Sebelumnya `parameter int I = -3; I < 0` jadi 0 (mask 32 bit
+/// membuat nilainya 4294967293 sehingga "positif").
+#[test]
+fn test_signed_param_relational_keeps_sign() {
+    let source = r#"
+module tb;
+    parameter int I = -3;
+    parameter A = -1;
+    parameter signed [7:0] S8 = -1;
+    localparam R1 = (I < 0);
+    localparam R2 = (I > 0);
+    localparam R3 = (A >= 0);
+    localparam R4 = (A < 0);
+    localparam R5 = (S8 < 0);
+    localparam R6 = (S8 >= 0);
+    logic r1, r2, r3, r4, r5, r6;
+    initial begin
+        r1 = R1; r2 = R2; r3 = R3; r4 = R4; r5 = R5; r6 = R6;
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 5).unwrap();
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).map(|(_, v)| v.to_u64());
+    assert_eq!(get("r1"), Some(1), "int I = -3; I < 0 harus 1");
+    assert_eq!(get("r2"), Some(0), "int I = -3; I > 0 harus 0");
+    assert_eq!(get("r3"), Some(0), "parameter A = -1; A >= 0 harus 0");
+    assert_eq!(get("r4"), Some(1), "parameter A = -1; A < 0 harus 1");
+    assert_eq!(get("r5"), Some(1), "signed [7:0] S8 = -1; S8 < 0 harus 1");
+    assert_eq!(get("r6"), Some(0), "signed [7:0] S8 = -1; S8 >= 0 harus 0");
+}
+
+/// ELAB-14 (review ronde 3, catatan 5): literal desimal TAK BERLEBAR melebar
+/// ke lebar konteks dengan sign extension (LRM 5.7.1), sehingga
+/// `-1 == 32'hFFFFFFFF` = 1 (iverilog) — sebelumnya 0 karena mask per
+/// operand. Literal BERLEBAR tetap memakai aturan lama (`4'shF == 8'hFF` = 0).
+#[test]
+fn test_unsized_decimal_literal_comparison_is_context_determined() {
+    let source = r#"
+module tb;
+    localparam L1 = (-1 == 32'hFFFFFFFF);
+    localparam L2 = (-1 == 32'hFFFFFFFE);
+    localparam L3 = (4'shF == 8'hFF);
+    localparam L4 = (-1 == 8'hFF);
+    logic l1, l2, l3, l4;
+    initial begin
+        l1 = L1; l2 = L2; l3 = L3; l4 = L4;
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 5).unwrap();
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).map(|(_, v)| v.to_u64());
+    assert_eq!(get("l1"), Some(1), "-1 == 32'hFFFFFFFF harus 1");
+    assert_eq!(get("l2"), Some(0), "-1 == 32'hFFFFFFFE harus 0");
+    assert_eq!(get("l3"), Some(0), "4'shF == 8'hFF harus 0");
+    assert_eq!(get("l4"), Some(0), "-1 == 8'hFF harus 0");
+}
+
+/// ELAB-14 (review ronde 4, B1): literal desimal tak berlebar bertipe SIGNED,
+/// jadi lebarnya = magnitude + 1 bit tanda. Tanpa bit tanda, 2147483648
+/// dianggap 32 bit lalu di-sign-extend menjadi 0xFFFFFFFF80000000 sehingga
+/// `parameter [63:0] BASE = 2147483648; BASE == 2147483648` jadi 0
+/// (iverilog 1). Nilai negatif besar (-3000000000) juga butuh 33 bit.
+#[test]
+fn test_large_decimal_literal_comparison_counts_sign_bit() {
+    let source = r#"
+module tb;
+    parameter [63:0] BASE = 2147483648;
+    parameter [63:0] NEG = -3000000000;
+    parameter int A = -1;
+    localparam R1 = (BASE == 2147483648);
+    localparam R2 = (NEG == -3000000000);
+    localparam R3 = (A == 4294967295);
+    localparam R4 = (BASE == 2147483647);
+    logic r1, r2, r3, r4;
+    initial begin
+        r1 = R1; r2 = R2; r3 = R3; r4 = R4;
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 5).unwrap();
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).map(|(_, v)| v.to_u64());
+    assert_eq!(
+        get("r1"),
+        Some(1),
+        "BASE (2^31) == 2147483648 harus 1 (literal 33 bit)"
+    );
+    assert_eq!(
+        get("r2"),
+        Some(1),
+        "NEG (-3000000000) == -3000000000 harus 1"
+    );
+    assert_eq!(
+        get("r3"),
+        Some(0),
+        "int A = -1; A == 4294967295 harus 0 (literal 33 bit positif)"
+    );
+    assert_eq!(get("r4"), Some(0), "BASE (2^31) == 2147483647 harus 0");
+}
+
+/// ELAB-14 (review ronde 4, B2): identifier yang lebarnya TIDAK diketahui
+/// (enum member) harus memakai aturan lama. Sebelumnya jalur baru memaksa
+/// 64 bit unsigned sehingga `typedef enum logic [3:0] {FB = 4'shF} e_t;
+/// FB == 4'shF` jadi 0 (HEAD/iverilog 1).
+#[test]
+fn test_enum_member_comparison_keeps_head_behavior() {
+    let source = r#"
+typedef enum logic [3:0] {FB = 4'shF} e_t;
+module tb;
+    localparam B1 = (FB == 4'shF);
+    localparam B2 = (FB == 8'hFF);
+    localparam B3 = (FB == -1);
+    logic b1, b2, b3;
+    initial begin
+        b1 = B1; b2 = B2; b3 = B3;
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 5).unwrap();
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).map(|(_, v)| v.to_u64());
+    assert_eq!(get("b1"), Some(1), "enum FB == 4'shF harus 1");
+    assert_eq!(get("b2"), Some(0), "enum FB == 8'hFF harus 0");
+    assert_eq!(
+        get("b3"),
+        Some(1),
+        "enum FB == -1 harus 1 (perilaku HEAD, bukan regresi)"
+    );
+}
+
+/// ELAB-14 (review ronde 6, B1): lebar/signedness param di BODY/generate juga
+/// harus masuk scope const-fold setelah nilai di-resolve (`module_param_meta`
+/// memindai `collect_body_params`). Tanpa itu `localparam int N = -5;
+/// generate if (N == 32'hFFFFFFFB)` memilih cabang salah (HEAD: cabang else;
+/// iverilog: cabang then). Diskriminatif: gagal di HEAD, lulus setelah fix.
+#[test]
+fn test_body_localparam_comparison_uses_declaration_width() {
+    let source = r#"
+module tb;
+    localparam int N = -5;
+    localparam [7:0] Q = -1;
+    localparam [63:0] WIDE = -1;
+    localparam LQ = (Q == 4'shF);
+    localparam LW = (WIDE == -1);
+    logic [3:0] g;
+    generate
+        if (N == 32'hFFFFFFFB) begin : y
+            assign g = 4'd1;
+        end else begin : n
+            assign g = 4'd0;
+        end
+    endgenerate
+    logic lq, lw;
+    initial begin
+        lq = LQ; lw = LW;
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 5).unwrap();
+    let get = |n: &str| sigs.iter().find(|(s, _)| s == n).map(|(_, v)| v.to_u64());
+    assert_eq!(
+        get("g"),
+        Some(1),
+        "localparam int N = -5 harus cocok 32'hFFFFFFFB (cabang y)"
+    );
+    assert_eq!(
+        get("lq"),
+        Some(0),
+        "localparam [7:0] Q = -1; Q == 4'shF harus 0 (255 vs 15)"
+    );
+    assert_eq!(
+        get("lw"),
+        Some(1),
+        "localparam [63:0] WIDE = -1; WIDE == -1 harus 1"
     );
 }
 
