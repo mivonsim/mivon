@@ -588,6 +588,7 @@ mod tests {
             is_localparam: false,
             is_type_param: false,
             type_default: None,
+            implicit_sign: None,
         });
         let mut d = Design::default();
         d.modules.push(m);
@@ -758,6 +759,7 @@ mod tests {
             is_localparam: false,
             is_type_param: false,
             type_default: None,
+            implicit_sign: None,
         });
         let mut d = Design::default();
         d.modules.push(m);

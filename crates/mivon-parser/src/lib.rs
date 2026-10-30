@@ -1122,6 +1122,26 @@ impl Parser {
                 if self.peek() == &Token::Semi {
                     self.advance();
                 }
+            } else if matches!(self.peek(), Token::Parameter | Token::LocalParam) {
+                // ELAB-13 (11): param $unit DIDUKUNG (design.unit_params di
+                // second pass) — jangan warning "skipping top-level
+                // construct". Lewati sampai `;` di pass pemindaian ini.
+                self.advance();
+                let mut depth = 0usize;
+                while self.peek() != &Token::Eof {
+                    match self.peek() {
+                        Token::LParen | Token::LBrack | Token::LBrace => depth += 1,
+                        Token::RParen | Token::RBrack | Token::RBrace => {
+                            depth = depth.saturating_sub(1)
+                        }
+                        Token::Semi if depth == 0 => {
+                            self.advance();
+                            break;
+                        }
+                        _ => {}
+                    }
+                    self.advance();
+                }
             } else if self.peek() == &Token::Clocking {
                 // Skip clocking block in first pass
                 self.advance(); // consume 'clocking'
@@ -1670,6 +1690,10 @@ impl Parser {
                                     unit_params.push(p);
                                 }
                             }
+                            // `parse_param_list` tidak mengonsumsi `;` —
+                            // tanpa ini token `;` jatuh ke warning E1005
+                            // "skipping top-level construct: Semi".
+                            self.skip_semi();
                             false
                         }
                         Err(e) => {
@@ -2879,9 +2903,14 @@ impl Parser {
                         is_localparam,
                         is_type_param: true,
                         type_default,
+                        implicit_sign: None,
                     })));
                 }
                 let mut dtype = None;
+                // ELAB-13 (11): `parameter signed P` (tanpa tipe eksplisit)
+                // menyimpan tanda di sini — bukan dtype Signed(Int) — agar
+                // lebar mengikuti tipe nilai default, bukan dipaksa 32 bit.
+                let mut implicit_sign: Option<bool> = None;
                 // Leading signed/unsigned modifier: `localparam signed int X`
                 // — dulu `signed` dikonsumsi lalu `int` (bukan Ident) mem-break
                 // loop nama → `localparam` hilang, `int X = ...` jadi deklarasi
@@ -2959,7 +2988,11 @@ impl Parser {
                     trail_sign = Some(false);
                 }
                 if let Some(sig) = lead_sign.or(trail_sign) {
-                    dtype = Some(apply_sign_mod(dtype, sig));
+                    if dtype.is_none() {
+                        implicit_sign = Some(sig);
+                    } else {
+                        dtype = Some(apply_sign_mod(dtype, sig));
+                    }
                 }
                 let mut range = None;
                 // Packed dimensi bertingkat: `[NumCnt-1:0][Width-1:0] name = ...`.
@@ -3012,6 +3045,7 @@ impl Parser {
                         is_localparam,
                         is_type_param: false,
                         type_default: None,
+                        implicit_sign,
                     });
                     if self.peek() == &Token::Comma {
                         self.advance();

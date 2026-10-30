@@ -167,21 +167,47 @@ impl Elaborator {
         module: &Module,
     ) -> std::collections::HashSet<Symbol> {
         let mut set = std::collections::HashSet::new();
-        for p in &module.params {
+        // Param body (termasuk generate-block localparam) ikut: butir (12)
+        // memakai peta yang sama dengan `module_param_meta` agar IR dan
+        // const-fold sepakat soal signedness.
+        let body_params = crate::util::param_util::collect_body_params(module);
+        let local_names: HashSet<Symbol> = module
+            .params
+            .iter()
+            .map(|p| p.name)
+            .chain(body_params.iter().map(|p| p.name))
+            .collect();
+        for p in module.params.iter().chain(body_params.iter()) {
             if param_decl_is_signed(p) {
                 set.insert(p.name);
-            }
-        }
-        for item in &module.items {
-            if let ModuleItem::Param(p) = item {
-                if param_decl_is_signed(p) {
-                    set.insert(p.name);
-                }
             }
         }
         for p in &self.design.unit_params {
+            // Deklarasi module (header/body) menang atas $unit.
+            if local_names.contains(&p.name) {
+                continue;
+            }
             if param_decl_is_signed(p) {
                 set.insert(p.name);
+            }
+        }
+        // ELAB-13 (11): param PACKAGE yang terlihat lewat import. Nilainya
+        // tidak bisa di-override; signedness deklarasinya (`parameter int B`
+        // / `parameter signed C`) harus dipakai jalur IR & generate-if.
+        // Nama yang di-shadow deklarasi module/body tidak dimasukkan.
+        for (package, name) in self.visible_package_params(module) {
+            if local_names.contains(&name) {
+                continue;
+            }
+            let Some(items) = self.package_symbols.get(&package) else {
+                continue;
+            };
+            let Some(PackageItem::Param(p)) = items.get(&name) else {
+                continue;
+            };
+            if param_decl_is_signed(p) {
+                set.insert(name);
+                set.insert(Symbol::intern(&format!("{}::{}", package, name)));
             }
         }
         set
@@ -223,6 +249,7 @@ mod tests {
             is_localparam: false,
             is_type_param: false,
             type_default: None,
+            implicit_sign: None,
         };
         let m = Module {
             name: Symbol::intern("m"),

@@ -901,6 +901,237 @@ endmodule
     assert_eq!(hit, 1, "~(a + P) harus 8 bit: ~(8'h0E + 8'd1) == 8'hF0");
 }
 
+/// ELAB-13 butir (11): `parameter signed <tipe>` TANPA range harus
+/// truncate + sign-extend ke lebar tipe (int 32, byte 8, shortint 16).
+/// Sebelum perbaikan `dtype_width(Signed(_))` = None sehingga nilai mentah
+/// (4294967295) dipakai: `SI < 0` false. Referensi iverilog 12: -1.
+#[test]
+fn test_signed_dtype_parameter_is_sign_extended() {
+    let source = r#"
+module tb;
+    parameter int signed SI = 32'hFFFFFFFF;
+    parameter signed int SJ = 32'hFFFFFFFF;
+    parameter signed byte SB = 8'hFF;
+    parameter signed shortint SS = 16'h8000;
+    parameter signed P64 = 64'h1_0000_0001;
+    parameter signed P8 = 8'hFF;
+    logic ok1;
+    logic ok2;
+    logic ok3;
+    logic ok4;
+    logic ok5;
+    logic ok6;
+    logic ok7;
+    logic [31:0] nv;
+    logic [31:0] vsi;
+    logic [7:0] vsb;
+    logic [15:0] vss;
+    logic [63:0] vp64;
+    logic [31:0] bp64;
+    initial begin
+        ok1 = (SI < 0);
+        ok2 = (SI == -1);
+        ok3 = (SJ == -1);
+        ok4 = (SB < 0);
+        ok5 = (SS < 0);
+        ok6 = (P64 == 64'h1_0000_0001);
+        ok7 = (P8 < 0);
+        nv = ~SI;
+        vsi = SI;
+        vsb = SB;
+        vss = SS;
+        vp64 = P64;
+        bp64 = $bits(P64);
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 5).unwrap();
+    let get = |n: &str| {
+        sigs.iter()
+            .find(|(s, _)| s == n)
+            .map(|(_, v)| v.to_u64())
+            .unwrap_or(0)
+    };
+    assert_eq!(get("ok1"), 1, "parameter int signed SI harus negatif");
+    assert_eq!(get("ok2"), 1, "SI harus == -1");
+    assert_eq!(get("ok3"), 1, "parameter signed int SJ harus == -1");
+    assert_eq!(get("ok4"), 1, "parameter signed byte SB harus negatif");
+    assert_eq!(get("ok5"), 1, "parameter signed shortint SS harus negatif");
+    assert_eq!(get("nv"), 0, "~SI harus 0 (SI 32 bit -1)");
+    assert_eq!(get("vsi"), 0xFFFF_FFFF, "nilai bit SI tetap ffffffff");
+    assert_eq!(get("vsb"), 0xFF, "nilai bit SB tetap ff");
+    assert_eq!(get("vss"), 0x8000, "nilai bit SS tetap 8000");
+    // `parameter signed P` TANPA tipe: lebar ikut nilai default (64 bit),
+    // bukan dipaksa int 32 bit (regresi yang ditemukan review).
+    assert_eq!(
+        get("ok6"),
+        1,
+        "parameter signed P64 = 64'h1_0000_0001 harus utuh"
+    );
+    assert_eq!(
+        get("vp64"),
+        0x1_0000_0001,
+        "nilai P64 tidak boleh terpotong"
+    );
+    assert_eq!(get("bp64"), 64, "$bits(parameter signed P64) harus 64");
+    assert_eq!(get("ok7"), 1, "parameter signed P8 = 8'hFF harus -1");
+}
+
+/// ELAB-13 butir (11) — kelanjutan: lebar/signedness deklarasi param harus
+/// dipakai SAMA oleh tiga jalur (IR runtime, const-fold generate-if,
+/// package). Sebelum perbaikan:
+///   - generate-if `if (P8 < 0)` memilih cabang else (nilai mentah 255),
+///   - `parameter unsigned U = -1` dibandingkan sebagai 64 bit (bukan
+///     32'hFFFFFFFF),
+///   - param PACKAGE (`import p::*`) tidak membawa lebar/signedness →
+///     `SP < 0` salah dan `$display("%0d", SP)` mencetak 255.
+/// Referensi iverilog 12: semua cabang true, SP=-1, UP=4294967295, B=-1.
+#[test]
+fn test_signed_parameter_generate_and_package_parity() {
+    let source = r#"
+package p;
+    parameter signed SP = 8'hFF;
+    parameter unsigned UP = -1;
+    parameter int B = -1;
+endpackage
+
+// Package TIDAK di-import: hanya referensi qualified `q::...` (jalur peta
+// global param package).
+package q;
+    parameter signed QSP = 8'hFF;
+    parameter unsigned QUP = -1;
+endpackage
+
+module child #(parameter signed CP = 8'hFF, parameter unsigned CU = -1) (
+    output logic [7:0] o1,
+    output logic [7:0] o2
+);
+    initial begin
+        o1 = (CP < 0) ? 8'hA1 : 8'hB1;
+        o2 = (CU == 32'hFFFFFFFF) ? 8'hC2 : 8'hD2;
+    end
+endmodule
+
+module tb;
+    import p::*;
+    parameter signed P8 = 8'hFF;
+    parameter unsigned U = -1;
+    localparam signed LP = 8'hFF;
+    logic [7:0] g1, g2, g3, g4, g5, g6, g7, g8;
+    logic [7:0] c1, c2;
+    logic [31:0] uv;
+    logic [31:0] bv;
+    logic [7:0] spv;
+    child u1(.o1(c1), .o2(c2));
+    generate
+        if (P8 < 0) begin : a1 initial g1 = 8'h11; end else begin : b1 initial g1 = 8'h12; end
+        if (U == 32'hFFFFFFFF) begin : a2 initial g2 = 8'h21; end else begin : b2 initial g2 = 8'h22; end
+        if (LP < 0) begin : a3 initial g3 = 8'h31; end else begin : b3 initial g3 = 8'h32; end
+        if (SP < 0) begin : a4 initial g4 = 8'h41; end else begin : b4 initial g4 = 8'h42; end
+        if (UP == 32'hFFFFFFFF) begin : a5 initial g5 = 8'h51; end else begin : b5 initial g5 = 8'h52; end
+        if (B < 0) begin : a6 initial g6 = 8'h61; end else begin : b6 initial g6 = 8'h62; end
+        if (q::QSP < 0) begin : a7 initial g7 = 8'h71; end else begin : b7 initial g7 = 8'h72; end
+        if (q::QUP == 32'hFFFFFFFF) begin : a8 initial g8 = 8'h81; end else begin : b8 initial g8 = 8'h82; end
+    endgenerate
+    initial begin
+        uv = U;
+        bv = B;
+        spv = SP;
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 5).unwrap();
+    let get = |n: &str| {
+        sigs.iter()
+            .find(|(s, _)| s == n)
+            .map(|(_, v)| v.to_u64())
+            .unwrap_or(0)
+    };
+    assert_eq!(get("g1"), 0x11, "generate-if P8 < 0 (implicit signed)");
+    assert_eq!(
+        get("g2"),
+        0x21,
+        "generate-if U == 32'hFFFFFFFF (implicit unsigned, 32 bit)"
+    );
+    assert_eq!(get("g3"), 0x31, "generate-if localparam signed LP < 0");
+    assert_eq!(get("g4"), 0x41, "generate-if param package signed SP < 0");
+    assert_eq!(get("g5"), 0x51, "generate-if param package unsigned UP");
+    assert_eq!(get("g6"), 0x61, "generate-if param package int B < 0");
+    assert_eq!(
+        get("g7"),
+        0x71,
+        "generate-if `q::QSP < 0` (package tanpa import)"
+    );
+    assert_eq!(
+        get("g8"),
+        0x81,
+        "generate-if `q::QUP == 32'hFFFFFFFF` (package tanpa import)"
+    );
+    assert_eq!(get("c1"), 0xA1, "parameter header signed CP < 0");
+    assert_eq!(get("c2"), 0xC2, "parameter header unsigned CU");
+    assert_eq!(get("uv"), 0xFFFF_FFFF, "nilai bit U = 32'hFFFFFFFF");
+    assert_eq!(get("bv"), 0xFFFF_FFFF, "nilai bit B (int -1)");
+    assert_eq!(get("spv"), 0xFF, "nilai bit SP (8 bit)");
+}
+
+/// ELAB-13 butir (11)/(12): localparam signed di dalam generate-for dan
+/// param `$unit` harus memakai lebar/signedness deklarasinya — sama dengan
+/// iverilog 12. Sebelum perbaikan, kondisi generate-if dievaluasi setelah
+/// nama di-rename (`g[0].L`) sehingga signedness hilang → cabang else.
+#[test]
+fn test_signed_parameter_in_generate_loop_and_unit_scope() {
+    let source = r#"
+parameter signed UP = 8'hFF;
+parameter signed [7:0] X = 8'hFF;
+
+module tb;
+    parameter [7:0] X = 8'hFA;
+    logic [7:0] g0, g1, g2, g3;
+    logic [31:0] upv;
+    genvar i;
+    generate
+        for (i = 0; i < 1; i = i + 1) begin : g
+            localparam signed L = 8'hFF;
+            localparam int LI = -3;
+            localparam signed [7:0] S8 = 8'hFF;
+            if (L < 0) begin : a0 initial g0 = 8'hA0; end else begin : b0 initial g0 = 8'hB0; end
+            if (LI < 0) begin : a1 initial g1 = 8'hA1; end else begin : b1 initial g1 = 8'hB1; end
+            if (S8 < 0) begin : a2 initial g2 = 8'hA2; end else begin : b2 initial g2 = 8'hB2; end
+        end
+    endgenerate
+    generate
+        if (X > 100) begin : a3 initial g3 = 8'hA3; end else begin : b3 initial g3 = 8'hB3; end
+    endgenerate
+    initial begin
+        upv = UP;
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 5).unwrap();
+    let get = |n: &str| {
+        sigs.iter()
+            .find(|(s, _)| s == n)
+            .map(|(_, v)| v.to_u64())
+            .unwrap_or(0)
+    };
+    assert_eq!(
+        get("g0"),
+        0xA0,
+        "localparam signed implicit di generate-for"
+    );
+    assert_eq!(get("g1"), 0xA1, "localparam int LI di generate-for");
+    assert_eq!(
+        get("g2"),
+        0xA2,
+        "localparam signed [7:0] S8 di generate-for"
+    );
+    assert_eq!(get("g3"), 0xA3, "param body X shadow $unit (250 > 100)");
+    assert_eq!(get("upv"), 0xFFFF_FFFF, "$unit signed UP = -1 (32 bit)");
+}
+
 /// ELAB-13 butir (7)/(15): `$bits(param)` memakai lebar DEKLARASI parameter,
 /// bukan min-bits nilainya. Sebelum perbaikan `$bits(Q)` = 1 (nilai 1 hanya
 /// butuh 1 bit) padahal Q 8 bit, dan `$bits(P)` = 1 padahal P int 32 bit.

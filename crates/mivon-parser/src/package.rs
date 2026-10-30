@@ -90,12 +90,16 @@ impl Parser {
                                     is_localparam,
                                     is_type_param: true,
                                     type_default,
+                                    implicit_sign: None,
                                 }));
                                 continue;
                             }
 
                             // Parse optional built-in type keyword
                             let mut dtype = None;
+                            // ELAB-13 (11): `parameter signed P` tanpa tipe
+                            // eksplisit → simpan tanda terpisah (bukan Int 32).
+                            let mut implicit_sign: Option<bool> = None;
                             match self.peek() {
                                 Token::Integer => {
                                     self.advance();
@@ -139,11 +143,18 @@ impl Parser {
                             // Handle signed/unsigned
                             if self.peek() == &Token::Signed {
                                 self.advance();
-                                let inner = dtype.take().unwrap_or(DataType::Int);
-                                dtype = Some(DataType::Signed(Box::new(inner)));
+                                match dtype.take() {
+                                    Some(inner) => {
+                                        dtype = Some(DataType::Signed(Box::new(inner)));
+                                    }
+                                    None => implicit_sign = Some(true),
+                                }
                             }
                             if self.peek() == &Token::Unsigned {
                                 self.advance();
+                                if dtype.is_none() {
+                                    implicit_sign = Some(false);
+                                }
                             }
 
                             // Handle user-defined type (ident followed by ident or [)
@@ -248,6 +259,7 @@ impl Parser {
                                     is_localparam,
                                     is_type_param: false,
                                     type_default: None,
+                                    implicit_sign,
                                 }));
                                 if self.peek() == &Token::Comma {
                                     self.advance();

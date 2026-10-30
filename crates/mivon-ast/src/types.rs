@@ -349,6 +349,13 @@ pub struct ParamDecl {
     pub is_localparam: bool,
     pub is_type_param: bool,
     pub type_default: Option<DataType>,
+    /// ELAB-13 butir (11): `parameter signed/unsigned P` TANPA tipe
+    /// eksplisit. Parser menyimpan tanda di sini (bukan `dtype =
+    /// Signed(Int)`) supaya lebar tetap mengikuti tipe nilai default
+    /// (`64'h...` → 64 bit), bukan dipaksa int 32 bit. `Some(true)` =
+    /// signed, `Some(false)` = unsigned, `None` = tanpa modifier.
+    #[serde(default)]
+    pub implicit_sign: Option<bool>,
 }
 
 /// Override type param pada instansiasi (`#(.T(Wide16))`,

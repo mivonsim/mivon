@@ -388,7 +388,22 @@ fn eval_generate_cond(
 /// perbandingan/logika selalu unsigned (1-bit).
 fn gen_expr_is_signed(e: &Expr, signed_params: &std::collections::HashSet<Symbol>) -> bool {
     match e {
-        Expr::Ident { name, .. } => signed_params.contains(name),
+        // Nama hasil rename generate (`g[0].LI`) dicari lewat nama lokalnya:
+        // deklarasi localparam di dalam blok generate di-rename ber-prefix
+        // sebelum kondisi di-evaluasi, sedangkan himpunan signed dibangun
+        // pra-ekspansi dengan nama asli (ELAB-13 (12)).
+        Expr::Ident { name, .. } => {
+            if signed_params.contains(name) {
+                return true;
+            }
+            let txt = name.as_str();
+            if txt.contains('[') {
+                if let Some((_, local)) = txt.rsplit_once('.') {
+                    return signed_params.contains(&Symbol::intern(local));
+                }
+            }
+            false
+        }
         Expr::ScopedIdent { package, item, .. } => signed_params.contains(&Symbol::intern(
             &format!("{}::{}", package.as_str(), item.as_str()),
         )),
@@ -856,8 +871,15 @@ fn expand_item_list(
                     if std::env::var("DBG_GEN").is_ok() {
                         eprintln!("DBG-GEN: param {} default = {:?}", p.name.as_str(), e);
                     }
+                    // Normalisasi ke lebar/signedness deklarasi: localparam
+                    // di body generate-for tidak selalu ada di param_vals,
+                    // dan nilai mentah (`8'hFF` = 255) membuat generate-if
+                    // `L < 0` salah cabang (ELAB-13 (11)/(12)).
                     if let Ok(v) = const_eval_with_params(e, &extended) {
-                        extended.insert(p.name, v);
+                        extended.insert(
+                            p.name,
+                            crate::util::param_util::normalize_param_value(p, v, &extended),
+                        );
                     } else if let Some(v) = eval_param_default_full(
                         e,
                         &extended,
@@ -866,7 +888,10 @@ fn expand_item_list(
                         pkg_struct_ref_index,
                         pkg_array_structs,
                     ) {
-                        extended.insert(p.name, v);
+                        extended.insert(
+                            p.name,
+                            crate::util::param_util::normalize_param_value(p, v, &extended),
+                        );
                     }
                 }
             }
@@ -937,7 +962,10 @@ fn fold_localparams(
                 if !known.contains_key(&p.name) {
                     if let Some(e) = &p.default {
                         if let Ok(v) = const_eval_with_params(e, known) {
-                            out.push((p.name, v));
+                            out.push((
+                                p.name,
+                                crate::util::param_util::normalize_param_value(p, v, known),
+                            ));
                         } else if let Some(v) = eval_param_default_full(
                             e,
                             known,
@@ -946,7 +974,10 @@ fn fold_localparams(
                             pkg_struct_ref_index,
                             pkg_array_structs,
                         ) {
-                            out.push((p.name, v));
+                            out.push((
+                                p.name,
+                                crate::util::param_util::normalize_param_value(p, v, known),
+                            ));
                         }
                     }
                 }

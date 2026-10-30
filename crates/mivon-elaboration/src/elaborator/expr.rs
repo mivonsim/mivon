@@ -462,7 +462,28 @@ impl Elaborator {
                 // PackageItem, jadi tidak ada di package_symbols).
                 let qualified = Symbol::intern(&format!("{}::{}", package.as_str(), item.as_str()));
                 if let Some(&val) = self.param_vals.get(&qualified) {
-                    return Ok(IrExpr::Const(LogicVec::from_u64(val as u64, 64)));
+                    // Param package terdaftar qualified di param_widths /
+                    // param_is_signed (module_param_meta) — pakai lebar &
+                    // signedness deklarasinya (ELAB-13 (11)); enum member
+                    // tetap 64 bit unsigned seperti sebelumnya.
+                    let (width, signed) = match self.param_widths.get(&qualified).copied() {
+                        Some(w) => (w, self.param_is_signed.contains(&qualified)),
+                        // Referensi `pkg::NAME` penuh TANPA import: nama
+                        // qualified tidak disemai module_param_meta, jadi
+                        // lebar/signedness diambil dari deklarasi param.
+                        None => match self.package_symbols.get(package).and_then(|m| m.get(item)) {
+                            Some(PackageItem::Param(p)) => (
+                                crate::util::param_util::param_static_width(p, &self.param_vals)
+                                    .unwrap_or(64),
+                                super::sign::param_decl_is_signed(p),
+                            ),
+                            _ => (64, false),
+                        },
+                    };
+                    return Ok(super::sign::const_or_signed(
+                        LogicVec::from_u64(val as u64, width),
+                        signed,
+                    ));
                 }
                 // Context package global (build_pkg_param_ctx) — qualified
                 // `pkg::member` untuk enum member & konstanta package. Contoh
@@ -479,10 +500,21 @@ impl Elaborator {
                                     if let Ok(val) = const_eval_with_params(expr, &self.param_vals)
                                     {
                                         // Signed bila tipe param signed (sama
-                                        // dgn jalur plain param di atas).
+                                        // dgn jalur plain param di atas), dan
+                                        // lebar deklarasi (ELAB-13 (11)).
                                         let psign = super::sign::param_decl_is_signed(p);
+                                        let w = crate::util::param_util::param_static_width(
+                                            p,
+                                            &self.param_vals,
+                                        )
+                                        .unwrap_or(64);
+                                        let val = crate::util::param_util::normalize_param_value(
+                                            p,
+                                            val,
+                                            &self.param_vals,
+                                        );
                                         return Ok(super::sign::const_or_signed(
-                                            LogicVec::from_u64(val as u64, 64),
+                                            LogicVec::from_u64(val as u64, w),
                                             psign,
                                         ));
                                     }

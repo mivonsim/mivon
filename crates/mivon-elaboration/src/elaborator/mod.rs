@@ -2126,11 +2126,18 @@ impl Elaborator {
         };
         let mut effective_params = param_vals.clone();
 
-        // Process $unit parameters (top-level param declarations)
+        // Process $unit parameters (top-level param declarations).
+        // Nilai dinormalkan ke lebar/signedness deklarasinya — `parameter
+        // signed UP = 8'hFF` di $unit harus -1, bukan 255 (ELAB-13 (11)).
         for param in &self.design.unit_params {
             if !effective_params.contains_key(&param.name) {
                 if let Some(expr) = &param.default {
                     if let Ok(val) = const_eval_with_params(expr, &effective_params) {
+                        let val = crate::util::param_util::normalize_param_value(
+                            param,
+                            val,
+                            &effective_params,
+                        );
                         effective_params.insert(param.name, val);
                     }
                 }
@@ -2156,6 +2163,11 @@ impl Elaborator {
                         if !effective_params.contains_key(&p.name) {
                             if let Some(expr) = &p.default {
                                 if let Ok(val) = const_eval_with_params(expr, &effective_params) {
+                                    let val = crate::util::param_util::normalize_param_value(
+                                        p,
+                                        val,
+                                        &effective_params,
+                                    );
                                     effective_params.insert(p.name, val);
                                 }
                             }

@@ -52,10 +52,16 @@ pub(crate) fn param_width_of(p: &ParamDecl, params: &HashMap<Symbol, i64>) -> Op
     // mengikat bila nilai efektif memang berasal dari default itu (tanpa
     // override); kalau tidak, nilai override bisa ter-sign-extend salah.
     if param_decl_signed(p) {
+        // Bandingkan nilai default SETELAH truncate+sign-extend ke lebar
+        // deklarasinya: `parameter signed P8 = 8'hFF` punya default mentah
+        // 255 tapi nilai efektif -1 (ELAB-13 (11)). Tanpa normalisasi ini
+        // guard menganggapnya override → lebar hilang → generate-if
+        // mengevaluasi P8 < 0 sebagai unsigned (cabang salah).
         let default_val = p
             .default
             .as_ref()
-            .and_then(|e| const_eval_with_params(e, &HashMap::new()).ok());
+            .and_then(|e| const_eval_with_params(e, &HashMap::new()).ok())
+            .map(|dv| truncate_sign(dv, declared));
         match (default_val, params.get(&p.name).copied()) {
             (Some(dv), Some(v)) if dv == v => {}
             _ => return None,
@@ -63,7 +69,11 @@ pub(crate) fn param_width_of(p: &ParamDecl, params: &HashMap<Symbol, i64>) -> Op
         return (declared <= 64).then_some(declared);
     }
     let w = match params.get(&p.name) {
-        Some(&v) => declared.max(value_width(v)),
+        // Lebar tipe NILAI efektif (override / default). Nilai negatif
+        // bertipe `int` minimal 32 bit — `parameter unsigned U = -1` tetap
+        // 32 bit (0xFFFFFFFF), bukan 64 bit hasil sign-extend mentah.
+        // Tanpa aturan ini `U == 32'hFFFFFFFF` salah jadi 0 (ELAB-13 (11)).
+        Some(&v) => declared.max(value_type_width(v)),
         None => declared,
     };
     (w <= 64).then_some(w)
@@ -149,6 +159,10 @@ fn signed_bits(v: i64) -> usize {
 /// ELAB-13: signedness deklarasi param. Range tanpa dtype = unsigned
 /// (LRM 6.8/6.20.2); tipe eksplisit menang; sisanya ikut default expression.
 pub(crate) fn param_decl_signed(p: &ParamDecl) -> bool {
+    // ELAB-13 (11): `parameter signed/unsigned P` tanpa tipe eksplisit.
+    if let Some(sig) = p.implicit_sign {
+        return sig;
+    }
     if let Some(dt) = &p.dtype {
         return mivon_ast::types::is_signed_type(dt);
     }
@@ -171,19 +185,70 @@ fn value_width(v: i64) -> usize {
     }
 }
 
+/// ELAB-13: lebar TIPE nilai i64 (untuk override yang lebarnya tidak ikut di
+/// peta i64). Non-negatif = bit minimum (literal `16'hABCD` → 16); negatif =
+/// literal desimal bertanda, minimal `int` 32 bit (`-1` → 32). Diverifikasi
+/// iverilog 12: `parameter P = 8'd1` + `#(.P(16'hABCD))` → 16 bit, `#(.P(-1))`
+/// → 32 bit.
+fn value_type_width(v: i64) -> usize {
+    if v >= 0 {
+        value_width(v)
+    } else {
+        signed_bits(v).max(32)
+    }
+}
+
+/// ELAB-13 (11): truncate ke `w` bit lalu sign-extend (`w >= 64` = no-op).
+fn truncate_sign(v: i64, w: usize) -> i64 {
+    if w == 0 || w >= 64 {
+        return v;
+    }
+    let mask = (1u64 << w) - 1;
+    let raw = v as u64 & mask;
+    if raw & (1u64 << (w - 1)) != 0 {
+        (raw | !mask) as i64
+    } else {
+        raw as i64
+    }
+}
+
 /// ELAB-13: normalisasi nilai param UNSIGNED ke lebar deklarasinya. Dipakai
 /// saat mengisi peta nilai agar SEMUA jalur (const-fold localparam, generate
 /// if/for, IR) melihat nilai yang sama: parameter [7:0] D = -1 -> 255.
+///
+/// Varian ini untuk nilai DEFAULT: lebar deklarasi (termasuk inferensi dari
+/// literal default) mengikat, sehingga `parameter signed P8 = 8'hFF` menjadi
+/// -1 dan generate-if `P8 < 0` benar (ELAB-13 (11)).
 pub(crate) fn normalize_param_value(p: &ParamDecl, v: i64, params: &HashMap<Symbol, i64>) -> i64 {
-    let mut w = match param_width_of(p, params) {
-        Some(w) => w,
-        None => return v,
-    };
-    // Saat nilai baru BELUM ada di peta (insert berikutnya), lebar dari
-    // literal default tidak melihat nilai override -> naikkan ke lebar nilai
-    // agar override tidak terpotong. Range/tipe eksplisit tetap mengikat.
+    match param_static_width(p, params) {
+        Some(w) => normalize_with_width(p, v, w),
+        None => v,
+    }
+}
+
+/// ELAB-13: normalisasi nilai OVERRIDE instance. Untuk param TANPA
+/// range/tipe, lebar/signedness default TIDAK mengikat: override membawa
+/// tipenya sendiri (iverilog 12: `parameter P = 8'sd1` + `#(.P(16'hABCD))`
+/// → P 16 bit UNSIGNED, `assign y = P` 32 bit = 0x0000ABCD, bukan
+/// 0xFFFFABCD). Range/tipe eksplisit tetap mengikat.
+pub(crate) fn normalize_override_value(
+    p: &ParamDecl,
+    v: i64,
+    params: &HashMap<Symbol, i64>,
+) -> i64 {
+    match param_width_of(p, params) {
+        Some(w) => normalize_with_width(p, v, w),
+        None => v,
+    }
+}
+
+/// Truncate ke `w` (dilebarkan dulu ke lebar tipe nilai untuk param untyped)
+/// lalu sign-extend bila deklarasinya signed.
+fn normalize_with_width(p: &ParamDecl, v: i64, mut w: usize) -> i64 {
+    // Lebar dari literal default hanya inferensi: nilai yang lebih lebar
+    // (override) tidak boleh terpotong. Range/tipe eksplisit mengikat.
     if p.range.is_none() && p.dtype.is_none() {
-        w = w.max(value_width(v)).min(64);
+        w = w.max(value_type_width(v)).min(64);
     }
     if w == 0 || w >= 64 {
         return v;
@@ -191,7 +256,7 @@ pub(crate) fn normalize_param_value(p: &ParamDecl, v: i64, params: &HashMap<Symb
     let mask = (1u64 << w) - 1;
     let raw = v as u64 & mask;
     if param_decl_signed(p) {
-        // Param signed berlebar eksplisit: truncate lalu sign-extend, supaya
+        // Param signed: truncate lalu sign-extend, supaya
         // `parameter signed [7:0] S = 8'hFF` bernilai -1 (bukan +255) di
         // const-fold dan generate-if.
         let sign_bit = 1u64 << (w - 1);
@@ -203,6 +268,8 @@ pub(crate) fn normalize_param_value(p: &ParamDecl, v: i64, params: &HashMap<Symb
 }
 
 /// ELAB-13: lebar bit tipe data eksplisit (None = tipe tidak menentukan lebar).
+/// `Signed(inner)` mewarisi lebar inner — `parameter signed int SI` = 32 bit,
+/// sehingga normalisasi bisa truncate + sign-extend (butir (11)).
 fn dtype_width(dt: &DataType) -> Option<usize> {
     match dt {
         DataType::Bit | DataType::Logic => Some(1),
@@ -210,7 +277,7 @@ fn dtype_width(dt: &DataType) -> Option<usize> {
         DataType::Shortint => Some(16),
         DataType::Int | DataType::Integer => Some(32),
         DataType::Longint | DataType::Time => Some(64),
-        DataType::Signed(_) => None,
+        DataType::Signed(inner) => dtype_width(inner),
         _ => None,
     }
 }
@@ -581,17 +648,24 @@ pub fn resolve_param_values_with_ctx(
         if param.is_localparam {
             continue;
         }
-        let val = if i < positional_overrides.len() {
-            positional_overrides[i]
-        } else if let Some(override_val) = instance_overrides.get(&param.name) {
-            *override_val
+        // Override membawa tipe sendiri untuk param tanpa range/tipe —
+        // normalisasinya berbeda dari nilai default (ELAB-13 (11)/(13)).
+        let ovr = if i < positional_overrides.len() {
+            Some(positional_overrides[i])
         } else {
-            match &param.default {
+            instance_overrides.get(&param.name).copied()
+        };
+        let val = match ovr {
+            Some(v) => v,
+            None => match &param.default {
                 Some(e) => eval_param_default(e, &vals, pkg, module).unwrap_or(0),
                 None => 0,
-            }
+            },
         };
-        let val = normalize_param_value(param, val, &vals);
+        let val = match ovr {
+            Some(_) => normalize_override_value(param, val, &vals),
+            None => normalize_param_value(param, val, &vals),
+        };
         insert_val!(param.name, val);
     }
 

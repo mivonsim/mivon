@@ -1380,7 +1380,7 @@ ELAB-12: ✅ Elab-time assertion evaluation (ROUND 47) — assert immediate
            (const_eval_with_params); false → warning RT7001 assertion
            failed di elab-time (lebih awal daripada simulasi).
 
-ELAB-13: ⚠️ PARTIAL (ROUND 222/224) — Parameter berlebar eksplisit kehilangan lebarnya
+ELAB-13: ⚠️ PARTIAL (ROUND 222/228) — Parameter berlebar eksplisit kehilangan lebarnya
          Ditemukan saat review COMP-16 (ROUND 221). Reproduksi:
            module t; parameter P = 8'd1; logic [7:0] a; logic y;
              initial begin a = 8'h0E; #1;
@@ -1614,14 +1614,132 @@ ELAB-13: ⚠️ PARTIAL (ROUND 222/224) — Parameter berlebar eksplisit kehilan
          66 bit, nilai 0x1FFFFFFFFFFFFFFFF);
          (10) param `$unit` belum masuk peta saat localparam module
          di-const-fold (`localparam X = UP + 0` -> 1);
-         (11) `parameter signed <tipe>` TANPA range (dtype `Signed(_)`) tidak
-         di-sign-extend: `parameter signed int SI = 32'hFFFFFFFF` -> +4294967295
-         (SI < 0 salah); hanya bentuk ber-range yang diperbaiki;
-         (12) signedness param/localparam yang lahir di dalam generate block
-         tidak masuk `param_is_signed` (module_param_signed_set memindai
-         module.params, ModuleItem::Param top-level, dan $unit, tetapi TIDAK
-         item di dalam ModuleItem::Generate), jadi generate-if di dalamnya
-         salah cabang;
+         (11) ✅ FIXED (ROUND 228) `parameter signed <tipe>` TANPA range
+         (dtype `Signed(_)`) tidak di-sign-extend: `parameter signed int SI
+         = 32'hFFFFFFFF` -> +4294967295 (SI < 0 salah). Akar: `dtype_width`
+         mengembalikan None untuk `Signed(_)` sehingga `param_width_of`
+         tidak tahu lebarnya dan `normalize_param_value` melewati
+         truncate/sign-extend. Fix: `Signed(inner)` mewarisi lebar inner
+         (int 32, byte 8, shortint 16). Hasil: SI = -1 (`SI < 0` = 1,
+         `SI == -1` = 1), `~SI` = 0 (32 bit), SB = 0xFF (`SB < 0` = 1),
+         SS = 0x8000 (`SS < 0` = 1). CATATAN VERIFIKASI: iverilog 12
+         MENOLAK bentuk `parameter signed int` (syntax error) — hanya
+         menerima `parameter int signed` (terverifikasi: SI = -1). Mivon
+         menerima kedua urutan dan keduanya menghasilkan -1 (LRM 1800
+         §6.8/6.20.2); klaim "iverilog" hanya berlaku untuk urutan
+         `int signed`.
+         REGRESI yang ditemukan review & diperbaiki: `parameter signed P`
+         TANPA tipe eksplisit dulu dipetakan parser ke `Signed(Int)`
+         sehingga lebar 32 mengikat dan nilai `64'h1_0000_0001` terpotong
+         jadi 1 (iverilog: 4294967297, 64 bit). Fix: field baru
+         `ParamDecl.implicit_sign: Option<bool>` (parser menyimpan tanda
+         tanpa tipe; `Some(false)` = `parameter unsigned`; bincode
+         positional → `AST_FORMAT_VERSION` 9→10). Aturan lebar implicit =
+         tipe nilai default (literal 64 bit → 64), lalu truncate+sign-extend
+         bila signed: `signed P8 = 8'hFF` → -1 (8 bit), `signed P64` →
+         4294967297 (64 bit), `signed P1 = 1` → 32 bit. Parser PACKAGE
+         (`package p; parameter signed SP = ...`) juga memakai field ini
+         (sebelumnya hardcode `implicit_signed: false`), dan guard
+         `param_width_of` menormalkan default (`truncate_sign`) sebelum
+         membandingkan dengan nilai efektif — tanpa itu `P8 < 0` dianggap
+         override lalu lebarnya hilang.
+         RONDE 3 (divergensi jalur, semua diperbaiki):
+         (a) `normalize_param_value` memakai `param_width_of`, yang untuk
+             param untyped signed mengembalikan None saat nama BELUM ada di
+             peta (chicken-and-egg: nilai default sedang dinormalkan) →
+             `signed P8 = 8'hFF` tetap 255. Fix: jalur DEFAULT memakai
+             lebar deklarasi (`param_static_width`); jalur OVERRIDE tetap
+             `param_width_of` karena override membawa tipe sendiri
+             (iverilog: `parameter P = 8'sd1` + `#(.P(16'hABCD))` → P 16
+             bit unsigned, `assign y = P` (32 bit) = 0x0000ABCD, bukan
+             0xFFFFABCD — regresi ini sempat muncul dan ditangkap suite).
+         (b) `module_param_meta` tidak memuat param BODY (`ModuleItem::Param`)
+             sehingga peta prepass dari `static_param_widths` (yang sudah
+             memuatnya) DITIMPA dan generate-if kehilangan lebar/signedness
+             → `if (P8 < 0)` memilih cabang else. Fix: body param (termasuk
+             generate-block localparam) ikut disemai.
+         (c) `parameter unsigned U = -1` melebar ke 64 bit karena
+             `value_width(-1)` = 64 (raw sign-extend) → `U ==
+             32'hFFFFFFFF` salah 0. Fix: helper `value_type_width` —
+             nilai negatif bertipe literal desimal, minimal 32 bit
+             (`signed_bits(v).max(32)`); iverilog: U 32 bit 0xFFFFFFFF.
+         (d) param PACKAGE tidak membawa lebar/signedness: nilai tidak
+             dinormalkan (`parameter signed SP = 8'hFF` → 255,
+             `%0d` mencetak 255) dan `import p::*; if (SP < 0)` salah
+             cabang. Fix: normalisasi nilai param package di tiga titik
+             penyemaian (`build_pkg_param_ctx` qualified/plain + import
+             `$unit`), semai lebar/signedness param package (plain +
+             `pkg::name`) ke `module_param_meta`/`module_param_signed_set`
+             lewat `visible_package_params`, dan jalur IR `Expr::ScopedIdent`
+             memakai lebar + `IrExpr::Signed` deklarasinya (enum member
+             tetap 64 bit unsigned). Referensi qualified TANPA import
+             (`q::QSP`): peta global `PKG_PARAM_META` (kunci `pkg::name`,
+             diisi sekali di `build_pkg_param_ctx`) dipakai sebagai fallback
+             `param_width_ctx`/`param_signed_ctx`, dan helper perbandingan
+             const_eval kini punya arm `Expr::ScopedIdent`.
+         (e) param `$unit` (`parameter signed UP = 8'hFF;` di luar module)
+             disemai MENTAH di `elaborate_module` (mod.rs) → UP = 255,
+             `UP < 0` salah. Fix: nilai dinormalkan `normalize_param_value`
+             (unit param + param package pada loop import); warning palsu
+             E1005 "skipping top-level construct: parameter"/"Semi" dihapus
+             (first pass kini melewati deklarasi parameter/localparam secara
+             utuh, second pass mengonsumsi `;` setelah `parse_param_list`).
+         (f) localparam di dalam generate-for: nama di-rename
+             (`g[0].LI`) SEBELUM kondisi dievaluasi, sedangkan himpunan
+             signed/lebar dibangun dengan nama asli → `LI < 0` salah cabang;
+             nilai lokal juga bisa masuk mentah (`8'hFF` = 255). Fix:
+             fallback nama lokal (segmen setelah `.` terakhir) di
+             `gen_expr_is_signed`, `param_width_ctx`, `param_signed_ctx`
+             (pola sama dengan `$bits`), normalisasi saat `expand_item_list`/
+             `fold_localparams` menyisipkan localparam, dan
+             `module_param_signed_set` memindai body/generate param.
+             Ini menutup bagian signedness dari butir (12); sisa (12)
+             adalah kasus nama yang kebetulan sama (lihat caveat (v)).
+         Hasil vs iverilog 12 (probe gabungan, semua sama): S8=-1 SI=-1
+         U=4294967295 LP=-1 LI=-3 SP=-1 UP=4294967295 B=-1; generate-if
+         h1..h8 = 11/21/31/41/51/61/71/81; instance `#(signed CP, unsigned
+         CU)` = a1/c2; package `[31:0] A = -1` → 4294967295, `int B = -1`
+         → -1, `signed C = 8'hFF` → -1, `unsigned D = -1` → 4294967295.
+         Test: test_signed_dtype_parameter_is_sign_extended (P64/P8 +
+         `$bits`) dan test_signed_parameter_generate_and_package_parity
+         (generate-if implicit signed/unsigned/localparam signed/package
+         signed+unsigned+int, override header, package tanpa import
+         `q::QSP`/`q::QUP`, nilai bit runtime) dan
+         test_signed_parameter_in_generate_loop_and_unit_scope (localparam
+         signed/int/ranged di generate-for + `$unit` param + shadow body).
+         Mutasi: (a) arm `Signed(_) => None` dikembalikan → ok1..ok5 = 0;
+         (b) parser implicit → Signed(Int) (pra-fix) → P64 = 1,
+         `$bits` = 32; (c) `param_static_width` → `param_width_of` di
+         `normalize_param_value` → g1 = 0x12 (cabang else); (d) body param
+         dihapus dari `module_param_meta` → g1 = 0x12, g3 = 0x32;
+         (e) `value_type_width` → `value_width` → g2 = 0x22, g5 = 0x52;
+         (f) normalisasi param package dihapus → rt_SP = 255, g4 = 0x42;
+         (g) `visible_package_params` dikosongkan → g4/g5/g6 = 0x42/52/62;
+         (h) `set_pkg_param_meta` dihapus + arm ScopedIdent dikembalikan →
+         `q::QSP < 0` salah (g7 = 0x72) dan `p::SP` runtime 255;
+         (i) normalisasi `$unit` di `elaborate_module` dihapus → upv =
+         0x000000FF (bukan -1);
+         (j) fallback nama lokal (`g[0].L`) dihapus → g0/g1/g2 =
+         0xB0/0xB1/0xB2 (cabang else).
+         Sisa yang masih terbuka (dilacak di butir (13)): lebar/signedness
+         OVERRIDE param untyped — `#(.S(-1))` → 64 bit (iverilog 32 bit),
+         `#(.P8(8'hFF))` pada `parameter signed P8` → 255 / `<0` = 0
+         (iverilog -1 / 1), dan `$bits` override (`$bits(P)` = 8,
+         iverilog 32).
+         Suite: cargo nextest run --workspace --all-features
+         --no-fail-fast -> 3961 passed, 24 skipped (ROUND 228).
+         (12) ⚠️ PARTIAL (ROUND 228) signedness param/localparam yang lahir
+         di dalam generate block dulu tidak masuk `param_is_signed`
+         (module_param_signed_set hanya memindai module.params,
+         ModuleItem::Param top-level, dan $unit). Kini dipindai lewat
+         `collect_body_params` + fallback nama lokal (`g[0].L`) di
+         `gen_expr_is_signed`/`param_width_ctx`/`param_signed_ctx`, sehingga
+         `localparam signed L`/`int LI`/`signed [7:0] S8` di generate-for
+         cocok dengan iverilog (test_signed_parameter_in_generate_loop_and_
+         unit_scope). SISA: bila nama lokal generate kebetulan SAMA dengan
+         param module beda signedness, fallback suffix memakai entri module
+         (caveat (v)); dan nilai localparam yang masuk lewat jalur array/
+         struct belum dinormalkan;
          (13) lebar/signedness OVERRIDE belum dipropagasi: `#(.P(16'hABCD))`
          pada `parameter P = 1` masih 64 bit (iverilog: 16 bit, ~P = 5432).
          Root cause presisi: override MASIH membawa `Expr` lengkap
@@ -1660,11 +1778,26 @@ ELAB-13: ⚠️ PARTIAL (ROUND 222/224) — Parameter berlebar eksplisit kehilan
          'o177777777777 34 -> 35. Biner: cap 1 x jumlah digit
          ('b0 + 39 bit '1 -> 39 vs 40). Nilai selalu benar; yang berbeda
          hanya lebar.
+         (18) `parameter int unsigned PU` / `parameter byte unsigned B`:
+         modifier `unsigned` pada tipe eksplisit DIBUANG `apply_sign_mod`
+         (parser lib.rs; `(Some(dt), false)` mengembalikan dtype apa
+         adanya) → `parameter int unsigned PU = -1` bernilai -1 dan
+         `(PU > 0)` = 0 (iverilog: 4294967295 / 1). Jalur body & package
+         sama. BELUM diperbaiki — butir terpisah dari (11) (modifier
+         TRAILING pada tipe eksplisit);
+         (19) `localparam` di $unit dibuang parser (second pass hanya
+         menyimpan `!is_local`): `localparam int L = 7;` di luar module →
+         E2001 "signal 'L' not found" (iverilog: L = 7). BELUM;
+         (20) param package yang namanya SAMA dengan sinyal lokal module:
+         `effective_params` (mod.rs, loop import) diisi lebih dulu dan
+         `expr.rs` memeriksa param sebelum `signal_map` → nama itu
+         menghasilkan konstanta package, bukan sinyal (probe o=00aa;
+         iverilog 0001). Pre-existing, BELUM;
          Catatan: perbedaan `assign y = ~P` (konteks target, mis. fffe) vs
          `$display("~P")` (self-determined, fe) BUKAN bug — itu LRM §11.6;
          jalur const-fold dan prosedural sudah sepakat.
-         Suite: cargo nextest run --workspace --all-features -> 3940 passed,
-         24 skipped (ROUND 224).
+         Suite: cargo nextest run --workspace --all-features --no-fail-fast
+         -> 3961 passed, 24 skipped (ROUND 228).
 
 ELAB-14: ✅ FIXED (ROUND 225, revisi 5) Perbandingan param vs literal di
          const-fold mengabaikan lebar/signedness — lihat detail di bawah

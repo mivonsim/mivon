@@ -2297,10 +2297,16 @@ impl Parser {
                 self.module_type_params.insert(Symbol::intern(&name));
             }
 
-            let mut dtype = None;
+            // ELAB-13 (11): tanda pada param TANPA tipe eksplisit disimpan
+            // terpisah (bukan Signed(Int)) agar lebar mengikuti nilai default.
+            let mut implicit_sign: Option<bool> = None;
             if self.peek() == &Token::Signed {
                 self.advance();
-                dtype = Some(DataType::Signed(Box::new(DataType::Int)));
+                implicit_sign = Some(true);
+            }
+            if self.peek() == &Token::Unsigned {
+                self.advance();
+                implicit_sign = Some(false);
             }
 
             // Skip unpacked array dimension(s) after name:
@@ -2343,16 +2349,21 @@ impl Parser {
                 None
             };
 
-            // Use type_ident as UserDefined dtype if set
-            let resolved_dtype = type_ident
-                .as_ref()
-                .map(|t| DataType::UserDefined(*t))
-                .or(dtype);
+            // Use type_ident as UserDefined dtype if set. Tipe keyword
+            // eksplisit di jalur header ini masih dibuang (ELAB-13 butir (6)).
+            let resolved_dtype = type_ident.as_ref().map(|t| DataType::UserDefined(*t));
             // Terapkan modifier signed/unsigned (lead/trail) — `parameter
             // signed int W` → Signed(Int) agar elaborator memperlakukannya
             // signed (probe p18).
             let resolved_dtype = match lead_sign.or(trail_sign) {
-                Some(sig) => Some(crate::apply_sign_mod(resolved_dtype, sig)),
+                Some(sig) => {
+                    if resolved_dtype.is_none() {
+                        implicit_sign = Some(sig);
+                        None
+                    } else {
+                        Some(crate::apply_sign_mod(resolved_dtype, sig))
+                    }
+                }
                 None => resolved_dtype,
             };
 
@@ -2364,6 +2375,7 @@ impl Parser {
                 is_localparam,
                 is_type_param,
                 type_default,
+                implicit_sign,
             });
 
             if self.peek() == &Token::Comma {

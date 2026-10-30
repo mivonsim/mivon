@@ -180,6 +180,10 @@ pub(crate) fn cmp_operand_width(e: &Expr) -> Option<u64> {
         // HANYA di sini, BUKAN di `sized_width`: operator context-determined
         // (`~P`, `P<<n`, `P**n`) harus mengambil lebar dari konteks target.
         Expr::Ident { name, .. } => param_width_ctx(*name),
+        // `pkg::NAME` — param package berkunci qualified (ELAB-13 (11)).
+        Expr::ScopedIdent { package, item, .. } => {
+            param_width_ctx(Symbol::intern(&format!("{}::{}", package, item)))
+        }
         // `-1` / `+1` = literal desimal 32 bit (unary +/- tidak mengubah
         // lebar operand-nya).
         Expr::UnaryOp {
@@ -246,6 +250,9 @@ fn has_ident_ref(e: &Expr) -> bool {
         // mengubah hasil dibanding perilaku lama (regresi ronde 4, B2:
         // `typedef enum logic [3:0] {FB = 4'shF} e_t; FB == 4'shF`).
         Expr::Ident { name, .. } => param_width_ctx(*name).is_some(),
+        Expr::ScopedIdent { package, item, .. } => {
+            param_width_ctx(Symbol::intern(&format!("{}::{}", package, item))).is_some()
+        }
         Expr::Paren(inner) => has_ident_ref(inner),
         Expr::UnaryOp {
             op: UnaryOp::Minus | UnaryOp::Plus,
@@ -267,6 +274,9 @@ fn cmp_operand_signed(e: &Expr) -> bool {
             expr,
         } => cmp_operand_signed(expr),
         Expr::Ident { name, .. } => param_signed_ctx(*name).unwrap_or(false),
+        Expr::ScopedIdent { package, item, .. } => {
+            param_signed_ctx(Symbol::intern(&format!("{}::{}", package, item))).unwrap_or(false)
+        }
         _ => is_signed_expr(e),
     }
 }
@@ -460,6 +470,17 @@ thread_local! {
     /// sedangkan peta perbandingan sengaja konservatif.
     static PARAM_BITS_STACK: std::cell::RefCell<Vec<HashMap<Symbol, usize>>> =
         const { std::cell::RefCell::new(Vec::new()) };
+    /// ELAB-13 (11): lebar/signedness param PACKAGE berkunci `pkg::name`,
+    /// diisi SEKALI per desain (elaborator). Fallback untuk referensi
+    /// qualified `pkg::NAME` yang package-nya TIDAK di-import module —
+    /// peta per-module hanya memuat param package yang terlihat lewat import.
+    static PKG_PARAM_META: std::cell::RefCell<HashMap<Symbol, (usize, bool)>> =
+        std::cell::RefCell::new(HashMap::new());
+}
+
+/// Isi peta global lebar/signedness param package (kunci `pkg::name`).
+pub fn set_pkg_param_meta(map: HashMap<Symbol, (usize, bool)>) {
+    PKG_PARAM_META.with(|s| *s.borrow_mut() = map);
 }
 
 /// Scope lebar param: pop otomatis saat drop, sehingga module bersarang
@@ -525,13 +546,25 @@ fn param_bits_ctx(name: Symbol) -> Option<u64> {
     })
 }
 
-/// Lebar param dari scope teratas (None di luar elaborasi module).
+/// Lebar param dari scope teratas (None di luar elaborasi module). Fallback
+/// `pkg::name` dari peta global param package.
 fn param_width_ctx(name: Symbol) -> Option<u64> {
     PARAM_WIDTH_STACK.with(|s| {
-        s.borrow()
-            .last()
-            .and_then(|m| m.get(&name))
-            .map(|(w, _)| *w as u64)
+        let stack = s.borrow();
+        if let Some(top) = stack.last() {
+            if let Some(w) = top.get(&name) {
+                return Some(w.0 as u64);
+            }
+            // Nama hasil rename generate (`g[0].LI`) → nama lokalnya.
+            if name.as_str().contains('[') {
+                if let Some((_, local)) = name.as_str().rsplit_once('.') {
+                    if let Some(w) = top.get(&Symbol::intern(local)) {
+                        return Some(w.0 as u64);
+                    }
+                }
+            }
+        }
+        PKG_PARAM_META.with(|p| p.borrow().get(&name).map(|(w, _)| *w as u64))
     })
 }
 
@@ -539,10 +572,21 @@ fn param_width_ctx(name: Symbol) -> Option<u64> {
 /// param — pemanggil lalu memakai aturan ekspresi biasa).
 fn param_signed_ctx(name: Symbol) -> Option<bool> {
     PARAM_WIDTH_STACK.with(|s| {
-        s.borrow()
-            .last()
-            .and_then(|m| m.get(&name))
-            .map(|(_, sg)| *sg)
+        let stack = s.borrow();
+        if let Some(top) = stack.last() {
+            if let Some(sg) = top.get(&name) {
+                return Some(sg.1);
+            }
+            // Nama hasil rename generate (`g[0].LI`) → nama lokalnya.
+            if name.as_str().contains('[') {
+                if let Some((_, local)) = name.as_str().rsplit_once('.') {
+                    if let Some(sg) = top.get(&Symbol::intern(local)) {
+                        return Some(sg.1);
+                    }
+                }
+            }
+        }
+        PKG_PARAM_META.with(|p| p.borrow().get(&name).map(|(_, sg)| *sg))
     })
 }
 

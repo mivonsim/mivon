@@ -14,8 +14,8 @@ use mivon_core::error::SimError;
 use mivon_core::intern::Symbol;
 
 use super::super::util::param_util::{
-    collect_body_params, param_decl_bits_width, param_decl_signed, param_width_of,
-    resolve_param_values_with_ctx, PkgFullCtx,
+    collect_body_params, normalize_param_value, param_decl_bits_width, param_decl_signed,
+    param_width_of, resolve_param_values_with_ctx, PkgFullCtx,
 };
 use super::types::{eval_enum_member_value, package_overlay};
 use super::Elaborator;
@@ -118,20 +118,63 @@ impl Elaborator {
         params: &HashMap<Symbol, i64>,
     ) -> HashMap<Symbol, (usize, bool)> {
         let mut out = HashMap::new();
+        // Nama yang dideklarasikan di module (header + body/generate) —
+        // deklarasi lokal SELALU menang atas $unit / import package.
+        let body_params = collect_body_params(module);
+        let local_names: std::collections::HashSet<Symbol> = module
+            .params
+            .iter()
+            .map(|p| p.name)
+            .chain(body_params.iter().map(|p| p.name))
+            .collect();
         for p in &module.params {
             if let Some(w) = self.param_decl_width(p, params) {
                 out.insert(p.name, (w, param_decl_signed(p)));
             }
         }
-        for p in &self.design.unit_params {
-            // Nama yang dideklarasikan ulang di module (shadow) TIDAK boleh
-            // mewarisi lebar $unit: deklarasinya sendiri yang menentukan.
-            if module.params.iter().any(|mp| mp.name == p.name) {
+        // Param di BODY (termasuk generate-block localparam) ikut disemai:
+        // tanpa ini, `parameter signed P8 = 8'hFF; if (P8 < 0)` di generate
+        // kehilangan lebar/signedness saat const-fold (peta prepass dari
+        // `static_param_widths` ditimpa fungsi ini) → cabang salah
+        // (ELAB-13 (11)).
+        for p in &body_params {
+            if out.contains_key(&p.name) {
                 continue;
             }
             if let Some(w) = self.param_decl_width(p, params) {
                 out.insert(p.name, (w, param_decl_signed(p)));
             }
+        }
+        for p in &self.design.unit_params {
+            // Nama yang dideklarasikan ulang di module (header/body) TIDAK
+            // boleh mewarisi lebar $unit: deklarasinya sendiri yang menentukan.
+            if local_names.contains(&p.name) {
+                continue;
+            }
+            if let Some(w) = self.param_decl_width(p, params) {
+                out.insert(p.name, (w, param_decl_signed(p)));
+            }
+        }
+        // Param PACKAGE yang terlihat lewat import (`pkg::*` / `pkg::name`):
+        // lebar & signedness deklarasinya dibutuhkan const-fold generate-if
+        // (`import p::*; if (SP < 0)`). Tanpa ini nama package tidak punya
+        // lebar di scope → perbandingan jatuh ke 64 bit unsigned
+        // (ELAB-13 (11)). Nilai package tidak bisa di-override, jadi lebar
+        // statis deklarasi sudah benar.
+        for (package, name) in self.visible_package_params(module) {
+            let Some(items) = self.package_symbols.get(&package) else {
+                continue;
+            };
+            let Some(PackageItem::Param(p)) = items.get(&name) else {
+                continue;
+            };
+            let Some(w) = crate::util::param_util::param_static_width(p, &HashMap::new()) else {
+                continue;
+            };
+            let meta = (w, param_decl_signed(p));
+            // Nama plain hanya bila tidak di-shadow deklarasi module/$unit.
+            out.entry(name).or_insert(meta);
+            out.insert(Symbol::intern(&format!("{}::{}", package, name)), meta);
         }
         // ELAB-14: bagikan lebar ke const-fold (thread-local scope) supaya
         // perbandingan atas nama param memakai lebar deklarasinya.
@@ -140,6 +183,40 @@ impl Elaborator {
         // cap 64, dtype via DataType::width) — bagikan terpisah agar
         // generate-if/localparam const-fold konsisten dengan jalur IR.
         mivon_ast::const_eval::set_param_bits_widths(self.module_param_bits_widths(module, params));
+        out
+    }
+
+    /// ELAB-13 (11): daftar `(package, param)` yang terlihat di module lewat
+    /// `import pkg::*` / `import pkg::name` (body module + `$unit`). Dipakai
+    /// menyemai lebar/signedness param package ke const-fold.
+    pub(crate) fn visible_package_params(&self, module: &Module) -> Vec<(Symbol, Symbol)> {
+        let mut out: Vec<(Symbol, Symbol)> = Vec::new();
+        let mut seen: std::collections::HashSet<(Symbol, Symbol)> =
+            std::collections::HashSet::new();
+        let imports = module
+            .items
+            .iter()
+            .filter_map(|it| match it {
+                ModuleItem::Import { package, item } => Some((*package, *item)),
+                _ => None,
+            })
+            .chain(self.design.unit_imports.iter().copied());
+        for (package, item) in imports {
+            let Some(items) = self.package_symbols.get(&package) else {
+                continue;
+            };
+            if item == Symbol::intern("*") {
+                for (name, pi) in items {
+                    if matches!(pi, PackageItem::Param(_)) && seen.insert((package, *name)) {
+                        out.push((package, *name));
+                    }
+                }
+            } else if matches!(items.get(&item), Some(PackageItem::Param(_)))
+                && seen.insert((package, item))
+            {
+                out.push((package, item));
+            }
+        }
         out
     }
 
@@ -168,7 +245,12 @@ impl Elaborator {
             }
         }
         for p in &self.design.unit_params {
-            if module.params.iter().any(|mp| mp.name == p.name) {
+            // Shadow oleh deklarasi module (header + body) menang.
+            if module.params.iter().any(|mp| mp.name == p.name)
+                || collect_body_params(module)
+                    .iter()
+                    .any(|bp| bp.name == p.name)
+            {
                 continue;
             }
             if let Some(w) = param_decl_bits_width(p, params) {
@@ -182,6 +264,11 @@ impl Elaborator {
     /// plus konstanta package ter-evaluasi. Hasil disimpan di `self.pkg_param_ctx`
     /// dan di-clone oleh tiap module (lihat `collect_package_param_ctx`).
     pub(crate) fn build_pkg_param_ctx(&mut self) {
+        // Reset peta global param package SEBELUM fixpoint: tanpa ini peta
+        // desain sebelumnya (proses yang sama, mis. test berurutan) masih
+        // terpasang selama fixpoint berjalan dan bisa memberi lebar/signedness
+        // basi untuk nama `pkg::x` yang sama.
+        mivon_ast::const_eval::set_pkg_param_meta(HashMap::new());
         let mut ctx: HashMap<Symbol, i64> = HashMap::new();
         // Enum member dari typedef $unit (top-level `typedef enum { A, B } E;`
         // di luar package/module) — GENARASI dari `mgen` menaruh typedef level
@@ -298,6 +385,12 @@ impl Elaborator {
                             }
                         }
                         if let Ok(val) = const_eval_with_params(expr, &ctx) {
+                            // Normalisasi ke lebar/signedness deklarasi param
+                            // package: `parameter signed C = 8'hFF` = -1 dan
+                            // `parameter unsigned D = -1` = 32'hFFFFFFFF
+                            // (ELAB-13 (11)). Tanpa ini nilai mentah (255 /
+                            // -1) bocor ke const-fold & $display.
+                            let val = normalize_param_value(p, val, &ctx);
                             ctx.insert(qualified, val);
                             changed = true;
                         }
@@ -366,6 +459,29 @@ impl Elaborator {
         }
         self.pkg_param_ctx = ctx;
 
+        // ELAB-13 (11): peta GLOBAL lebar/signedness param package (kunci
+        // `pkg::name`) untuk const_eval — fallback referensi qualified
+        // `pkg::NAME` yang package-nya TIDAK di-import module (peta
+        // per-module hanya memuat param package yang terlihat via import).
+        {
+            let mut pkg_meta: HashMap<Symbol, (usize, bool)> = HashMap::new();
+            for (pkg_name, items) in &self.package_symbols {
+                for (name, item) in items {
+                    let PackageItem::Param(p) = item else {
+                        continue;
+                    };
+                    if let Some(w) = crate::util::param_util::param_static_width(p, &HashMap::new())
+                    {
+                        pkg_meta.insert(
+                            Symbol::intern(&format!("{}::{}", pkg_name, name)),
+                            (w, param_decl_signed(p)),
+                        );
+                    }
+                }
+            }
+            mivon_ast::const_eval::set_pkg_param_meta(pkg_meta);
+        }
+
         // ── Context $unit imports (unit_imports) — sekali, untuk semua module ──
         // Resolusi plain param names + flatten konstanta untuk import set global.
         let unit_imports: Vec<(Symbol, Symbol)> = self.design.unit_imports.clone();
@@ -398,6 +514,7 @@ impl Elaborator {
                                 }
                             }
                             if let Ok(val) = const_eval_with_params(expr, &unit_ctx) {
+                                let val = normalize_param_value(p, val, &unit_ctx);
                                 unit_ctx.insert(p.name, val);
                                 changed = true;
                             }
@@ -463,6 +580,7 @@ impl Elaborator {
                             }
                         }
                         if let Ok(val) = const_eval_with_params(expr, &pctx) {
+                            let val = normalize_param_value(p, val, &pctx);
                             pctx.insert(p.name, val);
                             changed = true;
                         }
@@ -724,6 +842,7 @@ mod tests {
             is_localparam: false,
             is_type_param: false,
             type_default: None,
+            implicit_sign: None,
         };
         (Symbol::intern(name), PackageItem::Param(p))
     }
