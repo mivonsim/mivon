@@ -1226,6 +1226,368 @@ endmodule
     assert_eq!(get("lbits"), 64, "$bits(longint unsigned) = 64");
 }
 
+/// ELAB-13 butir (19): `localparam` di compilation-unit scope (`$unit`, di
+/// luar module) DULU DIBUANG parser (second pass hanya menyimpan `!is_local`),
+/// sehingga `localparam int L = 7;` di luar module berujung E2001 "signal 'L'
+/// not found" dan generate-if jatuh ke RT9003 (ambil cabang true buta).
+/// Perbaikan: semua param $unit disimpan (ParamDecl.is_localparam membedakan)
+/// dan disuntikkan ke peta nilai param (`resolve_param_values_with_ctx`
+/// menerima `unit_params` dan menyuntiknya SEBELUM pass body/header param).
+/// Referensi iverilog 12: lv=7 ldv=8 luv=4294967295 l8v=a5 lsv=1 g1=11 g2=21.
+#[test]
+fn test_unit_scope_localparam_visible_in_module() {
+    let source = r#"
+localparam int L = 7;
+localparam [7:0] L8 = 8'hA5;
+localparam int unsigned LU = -1;
+localparam signed LS = 8'hFF;
+localparam int LD = L + 1;
+
+module tb;
+    logic [31:0] lv, ldv, luv;
+    logic [7:0] l8v, g1, g2, g3, g4;
+    logic lsv;
+    generate
+        if (L == 7) begin : a1 initial g1 = 8'h11; end else begin : b1 initial g1 = 8'h12; end
+        if (LS < 0) begin : a2 initial g2 = 8'h21; end else begin : b2 initial g2 = 8'h22; end
+        // Cabang FALSE yang benar — fallback RT9003 ("ambil true branch")
+        // akan menghasilkan 0x31/0x41, jadi dua if di bawah membedakan
+        // "kondisi benar-benar dievaluasi" dari "warning lalu buta".
+        if (L == 99) begin : a3 initial g3 = 8'h31; end else begin : b3 initial g3 = 8'h32; end
+        if (LS > 0) begin : a4 initial g4 = 8'h41; end else begin : b4 initial g4 = 8'h42; end
+    endgenerate
+    initial begin
+        lv = L;
+        ldv = LD;
+        luv = LU;
+        l8v = L8;
+        lsv = (LS < 0);
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 5).unwrap();
+    let get = |n: &str| {
+        sigs.iter()
+            .find(|(s, _)| s == n)
+            .map(|(_, v)| v.to_u64())
+            .unwrap_or(0)
+    };
+    assert_eq!(get("lv"), 7, "$unit localparam int L = 7");
+    assert_eq!(
+        get("ldv"),
+        8,
+        "$unit localparam LD = L + 1 (urutan deklarasi)"
+    );
+    assert_eq!(get("luv"), 0xFFFF_FFFF, "$unit localparam int unsigned LU");
+    assert_eq!(get("l8v"), 0xA5, "$unit localparam [7:0] L8");
+    assert_eq!(get("lsv"), 1, "$unit localparam signed LS = 8'hFF (< 0)");
+    assert_eq!(get("g1"), 0x11, "generate-if `L == 7` (bukan RT9003)");
+    assert_eq!(
+        get("g2"),
+        0x21,
+        "generate-if `LS < 0` (signed $unit localparam)"
+    );
+    assert_eq!(get("g3"), 0x32, "generate-if `L == 99` → cabang else");
+    assert_eq!(get("g4"), 0x42, "generate-if `LS > 0` → cabang else");
+}
+
+/// ELAB-13 butir (19) lanjutan: param `$unit` harus terlihat saat me-resolve
+/// default param module — `localparam int W = L + 1;` di body (dulu W=1,
+/// fallback) dan `#(parameter W = L)` di header instance (dulu W=0). Selain
+/// itu deklarasi SINYAL module menutupi nama `$unit`/package (LRM §3.13) —
+/// `logic [7:0] L;` tidak boleh di-resolve ke `localparam int L = 7;`.
+/// Referensi iverilog 12: W=8 g1=11 cw=07 lv=42.
+#[test]
+fn test_unit_scope_localparam_derived_header_and_shadowing() {
+    let source = r#"
+localparam int L = 7;
+
+module child #(parameter W = L) (output logic [7:0] w);
+    initial w = W;
+endmodule
+
+module shadow_mod(output logic [7:0] lv);
+    logic [7:0] L;
+    initial begin
+        L = 8'd42;
+        #1 lv = L;
+    end
+endmodule
+
+module tb;
+    localparam int W = L + 1;
+    logic [7:0] g1;
+    logic [7:0] cw;
+    logic [7:0] lv;
+    child u(.w(cw));
+    shadow_mod s(.lv(lv));
+    generate
+        if (W == 8) begin : a1 initial g1 = 8'h11; end else begin : b1 initial g1 = 8'h12; end
+    endgenerate
+    initial #2 $finish;
+endmodule
+"#;
+    let sigs = simulate_signals(source, 5).unwrap();
+    let get = |n: &str| {
+        sigs.iter()
+            .find(|(s, _)| s == n)
+            .map(|(_, v)| v.to_u64())
+            .unwrap_or(0)
+    };
+    assert_eq!(
+        get("g1"),
+        0x11,
+        "generate-if `W == 8` (W = L + 1 dari $unit)"
+    );
+    assert_eq!(get("cw"), 7, "header `#(parameter W = L)` dari $unit");
+    assert_eq!(get("lv"), 42, "sinyal `L` menutupi $unit localparam L");
+}
+
+/// ELAB-13 (19) review round 2 — dua regresi yang ditemukan reviewer:
+/// (a) loop var `for (int P ...)` didaftarkan sebagai signal sintetis dan
+///     (setelah sinyal didahulukan) menutupi param module `P` di luar loop
+///     (`out = P` jadi 0; iverilog 9);
+/// (b) `localparam int L = 5;` di dalam generate block kalah dari
+///     `$unit localparam int L = 7;` karena suntikan $unit lebih dulu
+///     (`o = 7`; iverilog 5).
+/// Referensi iverilog 12: out=9 o=5.
+#[test]
+fn test_loop_var_and_generate_localparam_do_not_hijack_params() {
+    let source = r#"
+localparam int L = 7;
+
+module tb;
+    parameter int P = 9;
+    logic [31:0] out;
+    logic [31:0] o;
+    generate
+        if (1) begin : g
+            localparam int L = 5;
+            initial o = L;
+        end
+    endgenerate
+    initial begin
+        for (int P = 0; P < 3; P = P + 1) begin
+        end
+        out = P;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 5).unwrap();
+    let get = |n: &str| {
+        sigs.iter()
+            .find(|(s, _)| s == n)
+            .map(|(_, v)| v.to_u64())
+            .unwrap_or(0)
+    };
+    assert_eq!(
+        get("out"),
+        9,
+        "loop var `P` tidak menutupi param P di luar loop"
+    );
+    assert_eq!(
+        get("o"),
+        5,
+        "localparam generate `L` menutupi $unit localparam L"
+    );
+}
+
+/// ELAB-13 (19) review round 3 — tiga regresi jalur "sinyal didahulukan":
+/// (a) BLOCKER: pemeriksaan `signal_map` di `expr.rs` tidak sadar-scope,
+///     sehingga `logic [7:0] L;` di dalam blok prosedural menutupi
+///     `parameter int L = 9` module (`a = 5`; iverilog 9);
+/// (b) MAJOR: `logic [7:0] L;` di body module (disimpan di `module.decls`,
+///     BUKAN `module.items`) tidak terdeteksi filter `$unit`, jadi
+///     `localparam int L = 7;` bocor (`lv = 7`; iverilog 42);
+/// (c) loop `for (int i = 0; i < n; ...)` dengan batas runtime harus tetap
+///     jalan (dulu guard loop-var memicu E2001).
+/// Referensi iverilog 12: a=9 lv=42 acc=3.
+#[test]
+fn test_param_shadowing_is_scope_aware_and_dynamic_loop_survives() {
+    let source = r#"
+localparam int L = 7;
+
+module body_shadow(output logic [7:0] lv);
+    logic [7:0] L;
+    initial begin
+        L = 8'd42;
+        #1 lv = L;
+    end
+endmodule
+
+module proc_local(output integer a);
+    parameter int L = 9;
+    initial begin
+        logic [7:0] L;
+        L = 8'd5;
+    end
+    initial begin
+        #1 a = L;
+    end
+endmodule
+
+module dyn_loop(output integer acc);
+    logic [7:0] n;
+    initial begin
+        n = 8'd3;
+        acc = 0;
+        #1;
+        for (int i = 0; i < n; i = i + 1) begin
+            acc = acc + i;
+        end
+    end
+endmodule
+
+module tb;
+    logic [7:0] lv;
+    integer a, acc;
+    body_shadow bs(.lv(lv));
+    proc_local pl(.a(a));
+    dyn_loop dl(.acc(acc));
+    initial #3 $finish;
+endmodule
+"#;
+    let sigs = simulate_signals(source, 8).unwrap();
+    let get = |n: &str| {
+        sigs.iter()
+            .find(|(s, _)| s == n)
+            .map(|(_, v)| v.to_u64())
+            .unwrap_or(0)
+    };
+    assert_eq!(
+        get("lv"),
+        42,
+        "sinyal body module (`module.decls`) menutupi $unit localparam L"
+    );
+    assert_eq!(
+        get("a"),
+        9,
+        "blok prosedural lokal TIDAK menutupi parameter module (LRM §3.13)"
+    );
+    assert_eq!(get("acc"), 3, "loop batas runtime tetap berjalan (0+1+2)");
+}
+
+/// ELAB-13 (19) review round 4 — filter "sinyal module menutupi `$unit`" TIDAK
+/// boleh dipakai di konteks CONST-FOLD. Sinyal module bukan konstanta, jadi
+/// default param header (`#(parameter W = L)`), default localparam body
+/// (`localparam int W = L`), dan kondisi generate (`if (L == 99)`) harus
+/// melihat nilai `$unit` walau module punya sinyal bernama `L`.
+/// Referensi iverilog 12: cw=07 y=07 lv=2a g=32.
+#[test]
+fn test_unit_param_visible_in_const_contexts_despite_signal_shadow() {
+    let source = r#"
+localparam int L = 7;
+
+module child #(parameter W = L) (output logic [7:0] w);
+    initial w = W;
+endmodule
+
+module sh(output logic [7:0] lv, output logic [7:0] y, output logic [7:0] g);
+    logic [7:0] L;
+    localparam int W = L;
+    generate
+        if (L == 99) begin : a initial g = 8'h31; end else begin : b initial g = 8'h32; end
+    endgenerate
+    initial begin
+        L = 8'd42;
+        #1 lv = L;
+        y = W;
+    end
+endmodule
+
+module tb;
+    logic [7:0] cw, lv, y, g;
+    child u(.w(cw));
+    sh s(.lv(lv), .y(y), .g(g));
+    initial #2 $finish;
+endmodule
+"#;
+    let sigs = simulate_signals(source, 5).unwrap();
+    let get = |n: &str| {
+        sigs.iter()
+            .find(|(s, _)| s == n)
+            .map(|(_, v)| v.to_u64())
+            .unwrap_or(0)
+    };
+    assert_eq!(get("cw"), 7, "header `#(parameter W = L)` memakai $unit L");
+    assert_eq!(get("y"), 7, "body `localparam int W = L` memakai $unit L");
+    assert_eq!(
+        get("g"),
+        0x32,
+        "generate-if `L == 99` memakai $unit L (bukan sinyal → RT9003)"
+    );
+    assert_eq!(get("lv"), 42, "referensi runtime `L` tetap sinyal module");
+}
+
+/// ELAB-13 (20): param package hasil `import p::*` yang namanya SAMA dengan
+/// sinyal lokal module — deklarasi sinyal menang (LRM §3.13).
+/// Referensi iverilog 12: o=01.
+#[test]
+fn test_package_param_shadowed_by_local_signal() {
+    let source = r#"
+package p;
+    parameter int V = 8'hAA;
+endpackage
+
+module tb;
+    import p::*;
+    logic [7:0] V;
+    logic [7:0] o;
+    initial begin
+        V = 8'h01;
+        #1 o = V;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 5).unwrap();
+    let get = |n: &str| {
+        sigs.iter()
+            .find(|(s, _)| s == n)
+            .map(|(_, v)| v.to_u64())
+            .unwrap_or(0)
+    };
+    assert_eq!(get("o"), 0x01, "sinyal lokal menutupi param package `V`");
+}
+
+/// ELAB-13 (19) review round 5 — deklarasi sinyal di dalam blok generate
+/// TIDAK boleh dianggap sinyal scope module. `expand_generate_block` menyalin
+/// `ModuleItem::Decl` hasil ekspansi ke `module.decls`, sehingga tanpa koreksi
+/// selisih-kemunculan `logic [7:0] L;` di dalam `generate if (1) begin : g`
+/// menghapus `$unit localparam L` dari pandangan runtime level module.
+/// Referensi iverilog 12: mL = 7 (level module tetap $unit).
+/// CATATAN: referensi `L` DI DALAM blok generate (gL) belum benar — lihat
+/// SISA butir (19) di audit.txt.
+#[test]
+fn test_generate_local_decl_does_not_shadow_unit_param_at_module_scope() {
+    let source = r#"
+localparam int L = 7;
+
+module m;
+    logic [31:0] gL, mL;
+    generate
+        if (1) begin : g
+            logic [7:0] L;
+            initial begin L = 8'h2A; gL = L; end
+        end
+    endgenerate
+    initial begin #1 mL = L; end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 5).unwrap();
+    let get = |n: &str| {
+        sigs.iter()
+            .find(|(s, _)| s == n)
+            .map(|(_, v)| v.to_u64())
+            .unwrap_or(0)
+    };
+    assert_eq!(
+        get("mL"),
+        7,
+        "sinyal di blok generate tidak menutupi $unit localparam di level module"
+    );
+}
+
 /// ELAB-13 butir (7)/(15): `$bits(param)` memakai lebar DEKLARASI parameter,
 /// bukan min-bits nilainya. Sebelum perbaikan `$bits(Q)` = 1 (nilai 1 hanya
 /// butuh 1 bit) padahal Q 8 bit, dan `$bits(P)` = 1 padahal P int 32 bit.

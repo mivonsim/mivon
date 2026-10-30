@@ -21,6 +21,36 @@ use super::types::{eval_enum_member_value, package_overlay};
 use super::Elaborator;
 
 impl Elaborator {
+    /// Set `param_vals` — pandangan RUNTIME untuk `expr.rs`/`stmt.rs`.
+    ///
+    /// Nama yang dideklarasikan sebagai SINYAL di scope module dikeluarkan dari
+    /// map: referensi runtime harus me-resolve ke sinyal (LRM §3.13), bukan ke
+    /// nilai `$unit`/package bernama sama. Const-fold (default param, kondisi
+    /// generate) TIDAK memakai `self.param_vals` — ia memakai
+    /// `effective_params`/`vals` yang masih memuat nilai `$unit` — sehingga
+    /// `#(parameter W = L)` dan `if (L == 99)` tetap melihat konstanta `L`
+    /// walau module punya sinyal bernama `L` (ELAB-13 (19) review round 4).
+    ///
+    /// `module_signals` dihitung SEKALI per module oleh pemanggil
+    /// (`module_scope_signal_names`) — fungsi ini dipanggil 5x per module.
+    ///
+    /// Efek samping yang diinginkan: param package hasil `import p::*` yang
+    /// namanya sama dengan sinyal lokal juga gugur di jalur runtime
+    /// (ELAB-13 (20)).
+    pub(crate) fn set_runtime_param_vals(
+        &mut self,
+        module_signals: &std::collections::HashSet<Symbol>,
+        effective: &HashMap<Symbol, i64>,
+    ) {
+        self.param_vals = effective.clone();
+        if self.param_vals.is_empty() {
+            return;
+        }
+        for name in module_signals {
+            self.param_vals.remove(name);
+        }
+    }
+
     pub(crate) fn resolve_param_values(
         &self,
         module: &Module,
@@ -46,17 +76,23 @@ impl Elaborator {
         mivon_ast::const_eval::set_param_bits_widths(
             self.module_param_bits_widths(module, instance_overrides),
         );
-        resolve_param_values_with_ctx(module, instance_overrides, &ctx, Some(&pkg_full)).map_err(
-            |e| {
-                self.elab_diag_at(
-                    DiagCode::ParamMismatch,
-                    e,
-                    // Posisi deklarasi module (1-based).
-                    module.line,
-                    module.col,
-                )
-            },
+        let vals = resolve_param_values_with_ctx(
+            module,
+            instance_overrides,
+            &ctx,
+            Some(&pkg_full),
+            &self.design.unit_params,
         )
+        .map_err(|e| {
+            self.elab_diag_at(
+                DiagCode::ParamMismatch,
+                e,
+                // Posisi deklarasi module (1-based).
+                module.line,
+                module.col,
+            )
+        })?;
+        Ok(vals)
     }
 
     /// ELAB-13: lebar bit deklarasi param. Urutan prioritas: range eksplisit

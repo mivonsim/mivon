@@ -480,6 +480,7 @@ impl Elaborator {
                 &HashMap::new(),
                 &ctx,
                 Some(&pkg_full),
+                &self.design.unit_params,
             )
             .map_err(|e| self.elab_diag_at(DiagCode::SimulationError, e, 0, 0))?;
             mivon_ast::const_eval::set_param_widths(
@@ -705,6 +706,7 @@ impl Elaborator {
                         &HashMap::new(),
                         &ctx,
                         Some(&pkg_full),
+                        &self.design.unit_params,
                     ) {
                         let signed_for_gen2 = self.module_param_signed_set(&self.design.modules[i]);
                         let module = &mut self.design.modules[i];

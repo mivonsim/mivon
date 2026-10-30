@@ -2071,6 +2071,11 @@ impl Elaborator {
         // "port 'in_i'" atas nama interface JTAG_DV padahal port milik modul
         // lain yang sedang di-flatten).
         self.current_module = Some(module.name);
+        // Nama sinyal scope module (port + `Module.decls`) — dipakai
+        // `set_runtime_param_vals` untuk mengeluarkan nama tersebut dari
+        // pandangan param runtime (ELAB-13 (19)/(20)). Dihitung SEKALI per
+        // module: fungsi itu dipanggil 5x di bawah.
+        let module_scope_signals = crate::util::param_util::module_scope_signal_names(module);
         // ELAB-14: scope lebar param untuk module ini (di-pop saat fungsi
         // selesai). `module_param_widths` mengisi scope ini sehingga
         // const-fold perbandingan (`P == 32'hFFFFFFFF`) memakai lebar
@@ -2129,6 +2134,14 @@ impl Elaborator {
         // Process $unit parameters (top-level param declarations).
         // Nilai dinormalkan ke lebar/signedness deklarasinya — `parameter
         // signed UP = 8'hFF` di $unit harus -1, bukan 255 (ELAB-13 (11)).
+        //
+        // ELAB-13 (19): nilai $unit SELALU disuntik di sini, termasuk nama
+        // yang juga dipakai sinyal module. Map ini dipakai const-fold (default
+        // param, kondisi generate) — di konteks itu sinyal module bukan
+        // konstanta sehingga `#(parameter W = L)` / `if (L == 99)` harus
+        // melihat nilai $unit (iverilog: W=7, cabang else). Pemisahan untuk
+        // jalur RUNTIME dilakukan `set_runtime_param_vals` (mengeluarkan nama
+        // sinyal module dari `self.param_vals`) — lihat params.rs.
         for param in &self.design.unit_params {
             if !effective_params.contains_key(&param.name) {
                 if let Some(expr) = &param.default {
@@ -2345,7 +2358,7 @@ impl Elaborator {
         // memakai nilai mentah, jadi `parameter [7:0] D = -1` harus menjadi
         // 255 (LRM 8'hFF), bukan -1/2^64-1.
         self.normalize_param_vals(&mut effective_params);
-        self.param_vals = effective_params.clone();
+        self.set_runtime_param_vals(&module_scope_signals, &effective_params);
         // Context package GLOBAL (qualified `pkg::name` + enum member) sudah
         // dijamin ada di effective_params: param_vals selalu berasal dari
         // resolve_param_values → collect_package_param_ctx yang meng-clone
@@ -3153,7 +3166,7 @@ impl Elaborator {
                 effective_params.insert(*sname, 0);
             }
         }
-        self.param_vals = effective_params.clone();
+        self.set_runtime_param_vals(&module_scope_signals, &effective_params);
         self.param_widths = self.module_param_widths(module, &effective_params);
         self.param_bits_widths = self.module_param_bits_widths(module, &effective_params);
 
@@ -3262,7 +3275,7 @@ impl Elaborator {
         }
 
         // Update param_vals after generate expansion which may add body-level params
-        self.param_vals = effective_params.clone();
+        self.set_runtime_param_vals(&module_scope_signals, &effective_params);
         self.param_widths = self.module_param_widths(module, &effective_params);
         self.param_bits_widths = self.module_param_bits_widths(module, &effective_params);
 
@@ -3443,7 +3456,7 @@ impl Elaborator {
                 struct_vals.entry(k).or_insert(v);
             }
         }
-        self.param_vals = effective_params.clone();
+        self.set_runtime_param_vals(&module_scope_signals, &effective_params);
         self.param_widths = self.module_param_widths(module, &effective_params);
         self.param_bits_widths = self.module_param_bits_widths(module, &effective_params);
 
@@ -3555,7 +3568,7 @@ impl Elaborator {
                 None,
             );
         }
-        self.param_vals = effective_params.clone();
+        self.set_runtime_param_vals(&module_scope_signals, &effective_params);
         self.param_widths = self.module_param_widths(module, &effective_params);
         self.param_bits_widths = self.module_param_bits_widths(module, &effective_params);
 

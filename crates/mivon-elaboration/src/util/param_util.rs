@@ -542,6 +542,50 @@ fn fold_param_bits(e: &Expr, module: &Module, vals: &HashMap<Symbol, i64>) -> Ex
     }
 }
 
+/// Nama yang dideklarasikan sebagai SINYAL di scope MODULE (port + deklarasi
+/// body, bukan param, dan BUKAN deklarasi di dalam blok generate).
+/// Dipakai `Elaborator::set_runtime_param_vals`: deklarasi sinyal module
+/// menutupi nama compilation-unit/package (LRM §3.13), sedangkan `signal_map`
+/// runtime juga memuat nama sintetis (loop var, net implisit) dan nama blok
+/// prosedural yang TIDAK boleh menutupi param — karena itu filter memakai
+/// deklarasi AST, bukan `signal_map` (ELAB-13 (19) review round 3).
+///
+/// PENTING — deklarasi generate TIDAK boleh ikut: `expand_generate_block`
+/// menyalin `ModuleItem::Decl` hasil ekspansi ke `module.decls` (supaya
+/// signal collection melihatnya) DAN menyisipkannya ke `module.items`.
+/// Tanpa koreksi, `logic [7:0] L;` di dalam `generate if (1) begin : g` akan
+/// dianggap sinyal scope module dan menghapus `$unit localparam L` dari
+/// pandangan runtime — referensi `L` di level module jadi 42, bukan 7
+/// (iverilog 7; ELAB-13 (19) review round 5). Deklarasi body asli HANYA ada
+/// di `module.decls`, jadi selisih jumlah kemunculan (decls − items)
+/// memisahkan keduanya, termasuk saat ada duplikat nama legal antar-blok.
+pub(crate) fn module_scope_signal_names(module: &Module) -> std::collections::HashSet<Symbol> {
+    use std::collections::{HashMap, HashSet};
+    let mut counts: HashMap<Symbol, (usize, usize)> = HashMap::new();
+    for d in &module.decls {
+        for v in &d.names {
+            counts.entry(v.name).or_insert((0, 0)).0 += 1;
+        }
+    }
+    for item in &module.items {
+        if let ModuleItem::Decl(d) = item {
+            for v in &d.names {
+                counts.entry(v.name).or_insert((0, 0)).1 += 1;
+            }
+        }
+    }
+    let mut out = HashSet::new();
+    for p in &module.ports {
+        out.insert(p.name);
+    }
+    for (name, (decls, from_items)) in counts {
+        if decls > from_items {
+            out.insert(name);
+        }
+    }
+    out
+}
+
 /// Resolusi nilai parameter module dengan dukungan override instance.
 /// positional_overrides: parameter posisional berdasarkan index.
 /// named_overrides: parameter berdasarkan nama.
@@ -549,12 +593,19 @@ pub fn resolve_param_values_fn(
     module: &Module,
     instance_overrides: &HashMap<Symbol, i64>,
 ) -> Result<HashMap<Symbol, i64>, String> {
-    resolve_param_values_with_ctx(module, instance_overrides, &HashMap::new(), None)
+    resolve_param_values_with_ctx(module, instance_overrides, &HashMap::new(), None, &[])
 }
 
 /// Resolusi nilai parameter module dengan context awal (package params dari import).
 /// `base_ctx` berisi nilai yang sudah diketahui sebelumnya (misal parameter package
 /// yang di-import ke module) dan dijadikan fallback saat mengevaluasi default param.
+///
+/// `unit_params` = `design.unit_params` (param/localparam compilation-unit).
+/// Nilainya disuntikkan ke `vals` SEBELUM param module di-resolve, sehingga
+/// default body/header param yang merujuk nama `$unit`
+/// (`localparam int W = L + 1`, `#(parameter W = L)`) melihat nilai aslinya —
+/// bukan fallback 1/0 (ELAB-13 (19)). Nama yang sudah ada di `base_ctx` TIDAK
+/// ditimpa, jadi param module tetap menang.
 ///
 /// `pkg` (opsional) membuka evaluasi PENUH: `$bits(typedef)`, inlining fungsi
 /// package, dan scoped ident `pkg::item` pada default param. Konteks gabungan
@@ -565,10 +616,42 @@ pub fn resolve_param_values_with_ctx(
     instance_overrides: &HashMap<Symbol, i64>,
     base_ctx: &HashMap<Symbol, i64>,
     pkg: Option<&PkgFullCtx>,
+    unit_params: &[ParamDecl],
 ) -> Result<HashMap<Symbol, i64>, String> {
     let _t0 = std::time::Instant::now();
     let mut vals = base_ctx.clone();
     let _t_clone_vals = _t0.elapsed();
+    // ELAB-13 (19): param/localparam compilation-unit ($unit) masuk SEBELUM
+    // param module — `localparam int W = L + 1` (body) dan
+    // `#(parameter W = L)` (header) harus melihat `L` yang asli. Guard
+    // `contains_key` menjaga nilai dari `base_ctx` (param module/package)
+    // tidak tertimpa. Urutan deklarasi dipertahankan agar `LD = L + 1` benar.
+    //
+    // `unit_names` mencatat nama yang berasal dari $unit: deklarasi di module
+    // (body/generate) HARUS boleh menimpanya (LRM §3.13 — scope lokal menang),
+    // sedangkan guard `contains_key` di loop body param akan melewatinya.
+    // Nama dibuang dari himpunan setelah override pertama (lihat loop body
+    // param) karena param body di-flatten ke satu map tanpa scope per blok.
+    //
+    // CATATAN: nilai $unit SELALU disuntik, termasuk nama yang juga dipakai
+    // sinyal module. `vals` di sini adalah konteks CONST-FOLD (default param,
+    // kondisi generate) — sinyal module bukan konstanta, jadi `#(parameter
+    // W = L)` / `if (L == 99)` harus melihat nilai $unit (iverilog: W=7,
+    // cabang else). Pemisahan jalur RUNTIME ada di
+    // `Elaborator::set_runtime_param_vals` (ELAB-13 (19) review round 4).
+    let mut unit_names: std::collections::HashSet<Symbol> = std::collections::HashSet::new();
+    for p in unit_params {
+        if vals.contains_key(&p.name) {
+            continue;
+        }
+        if let Some(e) = &p.default {
+            if let Ok(v) = const_eval_with_params(e, &vals) {
+                let v = normalize_param_value(p, v, &vals);
+                vals.insert(p.name, v);
+                unit_names.insert(p.name);
+            }
+        }
+    }
     // Konteks skalar penuh = `vals` itu sendiri: pemanggil menjamin
     // base_ctx ⊇ pkg_param_ctx ⊇ pkg_const_scalars (collect_package_param_ctx
     // meng-clone pkg_param_ctx yang meng-flatten konstanta package), jadi
@@ -616,7 +699,17 @@ pub fn resolve_param_values_with_ctx(
     }
 
     for param in collect_body_params(module) {
-        if !vals.contains_key(&param.name) {
+        // Deklarasi body/generate MENIMPA nilai $unit dengan nama sama
+        // (`generate if (1) begin : g localparam int L = 5; end` harus 5,
+        // bukan nilai $unit). Nilai lama tetap dipakai untuk mengevaluasi
+        // default yang merujuk nama lain.
+        //
+        // Override bersifat SEKALI (`remove`, bukan `contains`): param body
+        // di-flatten ke satu map tanpa scope per blok generate, jadi deklarasi
+        // kedua dengan nama sama tetap kalah dari yang pertama — perilaku yang
+        // sudah ada sebelum dukungan $unit, bukan regresi baru (ELAB-13 (19)
+        // review round 3, temuan sibling generate block).
+        if !vals.contains_key(&param.name) || unit_names.remove(&param.name) {
             match &param.default {
                 Some(e) => {
                     if let Some(v) = eval_param_default(e, &vals, pkg, module) {

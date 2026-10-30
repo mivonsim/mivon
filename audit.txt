@@ -1380,7 +1380,7 @@ ELAB-12: ✅ Elab-time assertion evaluation (ROUND 47) — assert immediate
            (const_eval_with_params); false → warning RT7001 assertion
            failed di elab-time (lebih awal daripada simulasi).
 
-ELAB-13: ⚠️ PARTIAL (ROUND 222/228/230) — Parameter berlebar eksplisit kehilangan lebarnya
+ELAB-13: ⚠️ PARTIAL (ROUND 222/228/230/231) — Parameter berlebar eksplisit kehilangan lebarnya
          Ditemukan saat review COMP-16 (ROUND 221). Reproduksi:
            module t; parameter P = 8'd1; logic [7:0] a; logic y;
              initial begin a = 8'h0E; #1;
@@ -1834,19 +1834,209 @@ ELAB-13: ⚠️ PARTIAL (ROUND 222/228/230) — Parameter berlebar eksplisit keh
          tergantung desain), iverilog mencetak nilainya (repro:
          /tmp/outprobe2.sv, param signed pun kena). Perlu telaah urutan
          region/delta t=0 di scheduler;
-         (19) `localparam` di $unit dibuang parser (second pass hanya
-         menyimpan `!is_local`): `localparam int L = 7;` di luar module →
-         E2001 "signal 'L' not found" (iverilog: L = 7). BELUM;
-         (20) param package yang namanya SAMA dengan sinyal lokal module:
-         `effective_params` (mod.rs, loop import) diisi lebih dulu dan
-         `expr.rs` memeriksa param sebelum `signal_map` → nama itu
-         menghasilkan konstanta package, bukan sinyal (probe o=00aa;
-         iverilog 0001). Pre-existing, BELUM;
-         Catatan: perbedaan `assign y = ~P` (konteks target, mis. fffe) vs
-         `$display("~P")` (self-determined, fe) BUKAN bug — itu LRM §11.6;
-         jalur const-fold dan prosedural sudah sepakat.
+         (19) ✅ FIXED (ROUND 231, revisi 6) — inti; sisa terdaftar di SISA.
+         `localparam` di $unit dibuang
+         parser: `localparam int L = 7;` di luar module → E2001 "signal 'L' not
+         found" (iverilog: L = 7). AKAR (2 lapis):
+         (a) parser `lib.rs` second pass menyimpan `if !is_local` saja;
+         (b) kalaupun disimpan, fase prepass (`resolve_param_values_with_ctx`)
+         tidak menyertakan param `$unit`, sehingga generate-if `if (L == 7)`
+         jatuh ke RT9003 "non-constant condition ... taking true branch"
+         (cabang true buta).
+         PERBAIKAN (revisi 5 — setelah review round 1/2/3/4):
+         - parser: `unit_params.extend(params)` — semua param $unit disimpan;
+           `ParamDecl.is_localparam` sudah membedakan (elaborator hanya
+           memakai nama/default).
+         - `util/param_util.rs`: `resolve_param_values_with_ctx` dapat
+           parameter baru `unit_params: &[ParamDecl]`; nilainya disuntikkan
+           ke `vals` (clone base_ctx yang MEMANG sudah dibuat) TEPAT SEBELUM
+           pass body param & header param. Ini penting: suntikan POST-resolve
+           (percobaan pertama) membuat `localparam int W = L + 1` di body
+           jatuh ke fallback 1 dan `#(parameter W = L)` di header jatuh ke 0
+           (review round 1 MAJOR 1/3). Guard `contains_key` → param module
+           tetap menang; urutan deklarasi dipertahankan (`LD = L + 1`).
+         - dipanggil di 3 titik: prepass sweep utama, prepass sweep
+           lanjutan, dan `resolve_param_values` (jalur instance
+           ber-override/flatten).
+         - PEMISAHAN KONTEKS (kunci revisi 5; review round 4 menemukan filter
+           revisi 4 dipakai juga di const-fold sehingga `#(parameter W = L)`
+           → 0, `localparam int W = L` → 1, `if (L == 99)` → cabang true +
+           RT9003, padahal iverilog 7/7/cabang-else):
+           * `vals`/`effective_params` = konteks CONST-FOLD (default param
+             header/body, kondisi generate). Nilai $unit SELALU disuntik di
+             sini, termasuk bila module punya sinyal bernama sama — sinyal
+             bukan konstanta, jadi `L` di konteks itu harus resolve ke $unit.
+           * `self.param_vals` = pandangan RUNTIME (`expr.rs`/`stmt.rs`),
+             diisi lewat method baru
+             `Elaborator::set_runtime_param_vals` (params.rs) yang
+             MENGELUARKAN nama sinyal scope module dari map. Tanpa ini
+             referensi runtime `lv = L` me-resolve ke konstanta $unit (7),
+             bukan sinyal (42).
+         - `param_util::module_scope_signal_names` (baru): himpunan nama yang
+           dideklarasikan sebagai SINYAL di scope MODULE — port + deklarasi
+           body. Dipakai `set_runtime_param_vals`. Memakai AST, BUKAN
+           `signal_map`, karena `signal_map` memuat nama sintetis (loop var)
+           dan deklarasi blok prosedural yang TIDAK boleh menutupi param.
+           Dua jebakan yang sudah ditutup:
+           (i) deklarasi body module disimpan di `Module.decls`, BUKAN
+               `Module.items` — versi pertama helper hanya memindai `items`
+               sehingga `logic [7:0] L;` di body tidak terdeteksi (lv = 7,
+               iverilog 42; review round 3);
+           (ii) `expand_generate_block` MENYALIN `ModuleItem::Decl` hasil
+               ekspansi ke `module.decls` (dan juga ke `module.items`).
+               Tanpa koreksi, `logic [7:0] L;` di dalam
+               `generate if (1) begin : g` dianggap sinyal scope module →
+               `$unit localparam L` dibuang dari pandangan runtime level
+               module (mL = 42, iverilog 7; review round 5). Deklarasi body
+               asli HANYA ada di `module.decls` (parser `instance.rs:197`);
+               jalur lain yang menambah `module.decls` tanpa pasangan di
+               `items` adalah temp inline `__func_*` dari prepass — tidak
+               bertabrakan dengan nama param. Helper membandingkan JUMLAH
+               kemunculan (decls − items) per nama — deklarasi generate
+               punya pasangan di `items` sehingga gugur.
+         - PERCOBAAN "sinyal didahulukan di expr.rs" DIBATALKAN. Pemeriksaan
+           `signal_map` tidak sadar-scope (deklarasi blok prosedural
+           di-flatten ke map level module), sehingga `parameter int L = 9;
+           initial begin logic [7:0] L; ... end initial a = L;` menghasilkan
+           `a = 5` (iverilog 9; review round 3 BLOCKER). `expr.rs` tidak
+           diubah sama sekali.
+         - `param_util.rs`: himpunan `unit_names` (nama yang berasal dari
+           $unit) — loop body param boleh MENIMPA nama tersebut
+           (`generate ... localparam int L = 5;` harus 5, bukan nilai $unit).
+           Tanpa ini, suntikan $unit lebih dulu membuat deklarasi generate
+           kalah (review round 2 MAJOR 2). Override bersifat SEKALI PAKAI
+           (`unit_names.remove`) agar deklarasi kedua bernama sama tetap
+           kalah seperti perilaku sebelum dukungan $unit (lihat SISA).
+         - GUARD LOOP VAR DI PRE-PASS DIBATALKAN (ditambahkan di revisi 2):
+           guard itu membuat loop berbatas runtime
+           (`for (int i = 0; i < n; ...)`, `n` sinyal) gagal E2001
+           (review round 3). Loop var sintetis tetap terdaftar; kasus
+           `for (int P ...)` dengan param `P` sudah aman lewat urutan
+           param-dulu di `expr.rs` (out = 9).
+         - `mod.rs`: 5 titik `self.param_vals = effective_params.clone()`
+           diganti `self.set_runtime_param_vals(&module_signals,
+           &effective_params)`; `module_signals` dihitung SEKALI di awal
+           `elaborate_module_with_params_and_type` (memanggil helper 5x per
+           module tidak diperlukan). Suntikan `$unit` → `effective_params` di
+           `elaborate_module` kembali TANPA filter (const-fold butuh
+           nilainya).
+         - `micd/mod.rs`: `COMPILER_VERSION` `-p4` → `-p5` (semantik parse
+           berubah lagi; tanpa bump AST lama tanpa unit localparam dilayani
+           dari cache). `AST_FORMAT_VERSION` TIDAK perlu bump: struct AST
+           (`Design.unit_params`) tidak berubah, hanya isinya.
+         Verifikasi iverilog 12 (/tmp/unitlp2.sv): lv=7 ldv=8
+         luv=4294967295 l8v=a5 lsv=1 g1=11 g2=21 — mivon identik (tanpa
+         warning RT9003). (/tmp/elab13rev/combo.sv): W=8 g1=11 cw=07
+         lv=42 — mivon identik. (/tmp/elab13rev/{body,shadow,gen2}.sv):
+         W=8 y=aa / L=42 y=42 / W=7 y=11 — identik.
+         (/tmp/elab13r3/{blk,dynloop}.sv): a=9 / acc=3 — identik.
+         (/tmp/elab13r4/{gen_cond_sig_shadow,hdr_sig_shadow,body_param_sig}.sv):
+         g=32 / cw=07 / W=7 — identik (kasus BLOCKER review round 4).
+         Test (6, semua di core_behavioral.rs):
+         - `test_unit_scope_localparam_visible_in_module` — 5 localparam
+           $unit (int, [7:0], int unsigned, signed, turunan) + 4 generate-if
+           (2 cabang true, 2 cabang FALSE agar fallback "ambil true branch"
+           tidak lolos diam-diam).
+         - `test_unit_scope_localparam_derived_header_and_shadowing` —
+           `localparam int W = L + 1` (body), `#(parameter W = L)` (header
+           instance), dan sinyal `L` menutupi `$unit localparam L`.
+         - `test_loop_var_and_generate_localparam_do_not_hijack_params` —
+           review round 2: loop var `for (int P ...)` tidak menutupi param
+           `P` di luar loop (out=9) dan localparam generate menutupi
+           `$unit localparam` (o=5).
+         - `test_param_shadowing_is_scope_aware_and_dynamic_loop_survives` —
+           review round 3: `logic [7:0] L;` di body module (jalur
+           `module.decls`) menutupi $unit (lv=42), blok prosedural lokal
+           TIDAK menutupi parameter module (a=9), dan loop batas runtime
+           tetap jalan (acc=3).
+         - `test_unit_param_visible_in_const_contexts_despite_signal_shadow` —
+           review round 4: header `#(parameter W = L)` = 7, body
+           `localparam int W = L` = 7, generate-if `L == 99` → cabang else
+           (g=32) walau module punya sinyal `L`, sementara runtime `lv = L`
+           tetap 42.
+         - `test_generate_local_decl_does_not_shadow_unit_param_at_module_scope`
+           — review round 5: `logic [7:0] L;` di dalam blok generate tidak
+           boleh menghapus `$unit localparam L` dari level module (mL = 7).
+         Mutasi: (a) parser dikembalikan menyaring `!is_localparam` → E2001
+         "signal 'L' not found", test GAGAL; (b) resolver dipanggil dengan
+         `&[]` (unit param tidak disuntik) → g3 = 0x31 (49) dan
+         `W == 8` gagal (g1 = 0x12), test GAGAL; (c) pengecualian
+         `unit_names` dihapus → o = 7, test GAGAL; (d) pemindaian
+         `module.decls` di `module_scope_signal_names` dihapus → lv = 7
+         (bukan 42), `test_param_shadowing_is_scope_aware_and_dynamic_loop_survives`
+         GAGAL; (e) `set_runtime_param_vals` tidak mengeluarkan nama sinyal →
+         lv = 7 (bukan 42), o = aa (bukan 01), 3 test GAGAL; (f) filter
+         sinyal dikembalikan ke jalur const-fold → y = 1 (bukan 7) dan
+         generate mengambil cabang true (g = 0x31), test GAGAL; (g) koreksi
+         jumlah-kemunculan decls/items dihapus (semua `module.decls` dihitung)
+         → mL = 42 (bukan 7), test GAGAL. Semua dikembalikan → PASS.
          Suite: cargo nextest run --workspace --all-features --no-fail-fast
-         -> 3961 passed, 24 skipped (ROUND 228).
+         -> 3973 passed, 24 skipped (ROUND 231).
+         SISA (di luar cakupan butir ini). Akar utamanya "param/sinyal
+         di-flatten tanpa scope" yang sudah ada sebelum ROUND 231; sub-kasus
+         `gL` (referensi dari DALAM blok generate) dan `resolve_param_values_fn`
+         adalah batas perbaikan ini — bukan regresi dari HEAD, karena fitur
+         `$unit localparam` belum ada di HEAD:
+         - param body di-flatten ke satu map tanpa scope per blok generate:
+           dua blok generate BERSAUDARA yang sama-sama
+           `localparam int L` → blok kedua memakai nilai blok pertama
+           (a=5 b=5; iverilog 5/6). Perlu scope map per blok generate.
+         - deklarasi lokal blok prosedural yang menutupi param module
+           bernama sama: `parameter int L = 9; initial begin
+           logic [7:0] L; L = 5; a = L; end` → mivon a = 9 (iverilog 5).
+           Di LUAR blok sudah benar (a = 9). Perlu scope stack saat
+           elaborasi statement (`elaborate_stmt` hanya `&self`, jadi
+           `param_vals` tidak bisa ditukar sementara tanpa refactor).
+           KELAS YANG SAMA: referensi ke sinyal yang dideklarasikan DI DALAM
+           blok generate dari dalam blok itu sendiri — probe
+           `/tmp/elab13r5/p3.sv` (`$unit localparam int L = 7`, generate
+           `logic [7:0] L; ... gL = L;`) → mivon gL = 7, iverilog 42.
+           Level module (mL) sudah benar (7). Butuh scope yang sama.
+         - `import p::*;` di scope $unit + `localparam int L` di $unit:
+           deklarasi eksplisit seharusnya menang (iverilog 7) tetapi mivon
+           masih memakai nilai package (3) karena guard `contains_key` di
+           suntikan $unit tidak bisa membedakan asal nilai di `base_ctx`
+           (import $unit vs import module vs konstanta package). Butuh
+           penanda provenance per entri.
+         - urutan deklarasi lintas FILE: nilai param `$unit` yang dipakai
+           file lain bergantung urutan penggabungan file. Belum ada test
+           khusus; dua urutan uji terakhir memberi hasil sama.
+         - `resolve_param_values_fn` (API publik, tanpa caller di repo) masih
+           memanggil resolver dengan `&[]` → perilaku sebelum butir ini.
+         - deklarasi sinyal di dalam blok generate tetap ikut terdaftar
+           sebagai sinyal module (`generate.rs:236` menyalin ke
+           `module.decls` dan signal collection memakainya). Akibatnya desain
+           TIDAK LEGAL yang merujuk `L` generate dari level module
+           (iverilog: "Unable to bind wire/reg/memory 'L'") tetap "jalan" di
+           mivon. Perilaku ini sudah ada di HEAD (bukan regresi), tetapi
+           perlu dibersihkan saat scope per blok generate dikerjakan.
+         - tipe KEYWORD pada `$unit` param/localparam
+           (`localparam byte B = -1`) masih dibuang parser → lebar dari
+           nilai (butir (6));
+         (20) ✅ FIXED (ROUND 231) param package yang namanya SAMA dengan
+         sinyal lokal module: `import p::*; parameter int V = 8'hAA;
+         logic [7:0] V; initial begin V = 8'h01; o = V; end` → mivon lama
+         o = aa, iverilog 12 o = 01 (deklarasi lokal menutupi hasil
+         wildcard import, LRM §3.13).
+         AKAR: param package hasil `import p::*` di-flatten ke `param_vals`
+         (lewat `base_ctx` = `pkg_param_ctx`) dan `param_vals` diperiksa
+         PALING AWAL di `expr.rs`; tidak ada penanda "param module vs param
+         package".
+         PERBAIKAN: `Elaborator::set_runtime_param_vals` (params.rs) — map
+         runtime `self.param_vals` dibangun dari `effective_params` lalu
+         nama yang ada di `module_scope_signal_names(module)` DIKELUARKAN.
+         Akibatnya `V` (konstanta package) tidak ada di map runtime → `expr`
+         jatuh ke `signal_map` → sinyal lokal menang. Tidak perlu field
+         per-module (yang berisiko state stale saat elaborasi bersarang)
+         dan `expr.rs` tidak berubah.
+         Efek samping positif: kasus $unit vs sinyal lokal (butir (19))
+         memakai mekanisme yang sama.
+         Test: `test_package_param_shadowed_by_local_signal` (o = 01,
+         iverilog 01). Mutasi: `set_runtime_param_vals` dibuat tidak
+         mengeluarkan nama → o = aa (170), test GAGAL.
+         Catatan (tidak berubah): perbedaan `assign y = ~P` (konteks target,
+         mis. fffe) vs `$display("~P")` (self-determined, fe) BUKAN bug —
+         itu LRM §11.6; jalur const-fold dan prosedural sudah sepakat.
 
 ELAB-14: ✅ FIXED (ROUND 225, revisi 5) Perbandingan param vs literal di
          const-fold mengabaikan lebar/signedness — lihat detail di bawah

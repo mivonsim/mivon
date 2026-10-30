@@ -1663,16 +1663,16 @@ impl Parser {
                     }
                 },
                 Token::Parameter | Token::LocalParam => {
-                    let is_local = self.peek() == &Token::LocalParam;
-                    self.advance();
                     let mut params = Vec::new();
                     match self.parse_param_list(&mut params) {
                         Ok(_) => {
-                            for p in params {
-                                if !is_local {
-                                    unit_params.push(p);
-                                }
-                            }
+                            // ELAB-13 (19): `localparam` di $unit DULU dibuang
+                            // (`if !is_local`) sehingga `localparam int L = 7;`
+                            // di luar module berujung E2001 "signal 'L' not
+                            // found". Simpan semuanya — `ParamDecl.is_localparam`
+                            // sudah membedakan (elaborator memakai nama/default
+                            // saja, jadi localparam aman diperlakukan sama).
+                            unit_params.extend(params);
                             // `parse_param_list` tidak mengonsumsi `;` —
                             // tanpa ini token `;` jatuh ke warning E1005
                             // "skipping top-level construct: Semi".
