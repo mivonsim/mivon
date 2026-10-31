@@ -1792,17 +1792,23 @@ ELAB-13: ⚠️ PARTIAL (ROUND 222/228/230/231) — Parameter berlebar eksplisit
            `child #(.UN(5))` → nilai 5 benar, tapi `$bits` = 1
            (iverilog 32; sebelum arm ini 64). Ini butir (13) yang masih
            open — angka 64→1 dicatat agar fix berikutnya tahu.
-         (17) literal basis tak berlebar sebagai DEFAULT param (<= 64 bit):
-         mivon memakai max(32, lebar nilai); iverilog memakai
-         max(32, min(lebar nilai + 1, lebar_basis x jumlah digit)).
-         Terukur (hex):
-         'h1FFFFFFFF 33 -> 34, 'h1FFFFFFFFF 37 -> 38, 'h1FFFFFFFFFF
-         41 -> 42, 'hFFFFFFFFF 36 -> 36, 'hFF00000000 40 -> 40,
-         'hFFFFFFFFFFF 44 -> 44, 'h0FFFFFFFFF 36 -> 37, 'h00FFFFFFFFFF
-         40 -> 41. Oktal modulo 3: 'o77777777777 33 -> 33,
-         'o177777777777 34 -> 35. Biner: cap 1 x jumlah digit
-         ('b0 + 39 bit '1 -> 39 vs 40). Nilai selalu benar; yang berbeda
-         hanya lebar.
+         (17) ⚠️ OPEN (analisis ROUND 234; percobaan fix DIBATALKAN karena
+         regresi) lebar literal BASIS tak berlebar (<= 64 bit).
+         Aturan iverilog 12 (terverifikasi): max(32, min(lebar_nilai + 1,
+         lebar_basis × jumlah_digit)), lebar_nilai dihitung SETELAH nol di
+         depan dibuang, kapasitas memakai jumlah digit ASLI, dan digit x/z
+         dihitung PENUH ('h + 9x → 36). Angka: 'h1FFFFFFFF 33→34,
+         'h1FFFFFFFFF 37→38, 'h1FFFFFFFFFF 41→42, 'hFFFFFFFFF 36→36,
+         'hFF00000000 40→40, 'hFFFFFFFFFFF 44→44, 'h0FFFFFFFFF 36→37,
+         'h00FFFFFFFFFF 40→41, 'o77777777777 33→33, 'o177777777777 34→35,
+         'b0+39x1 39→40.
+         MENGAPA DIBATALKAN: peta lebar `$bits` param bersifat PER-MODULE,
+         bukan per-instance (lihat caveat (13)); menaikkan lebar inferensi
+         default ke 34 membuat instance ber-override ikut 34, padahal
+         iverilog 32 untuk `#(.P(32'hFFFFFFFF))` — `$signed(P) < 0` jadi
+         salah. Sebelum fix, kebetulan benar karena default juga 32.
+         PRASYARAT FIX: peta lebar per-instance (atau fold `$bits` setelah
+         resolve override), baru aturan di atas bisa dipakai.
          (18) ✅ FIXED (ROUND 230) `parameter int unsigned PU` /
          `parameter byte unsigned B`: modifier `unsigned` pada tipe
          eksplisit DULU DIBUANG `apply_sign_mod` (parser lib.rs;
