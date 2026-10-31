@@ -640,8 +640,59 @@ pub fn resolve_param_values_with_ctx(
     // cabang else). Pemisahan jalur RUNTIME ada di
     // `Elaborator::set_runtime_param_vals` (ELAB-13 (19) review round 4).
     let mut unit_names: std::collections::HashSet<Symbol> = std::collections::HashSet::new();
+    // ELAB-13 (22): deklarasi EKSPLISIT di `$unit` menang atas konstanta
+    // package hasil `import p::*` (iverilog: `localparam int L = 7` di $unit
+    // + `package p localparam int L = 3` → y=7, bukan 3). Nilai di `base_ctx`
+    // tidak membawa provenance, jadi penentunya adalah nama yang berada di
+    // SCOPE MODULE: param header/localparam module, import EKSPLISIT
+    // (`import p::L`), dan member enum typedef lokal — ketiganya di-insert ke
+    // `base_ctx` oleh pemanggil (params.rs), sehingga tanpa daftar ini $unit
+    // menimpanya (regresi review ronde 1: import eksplisit 3→7, member enum
+    // 0→7). Override instance juga menang.
+    //
+    // Wildcard import di scope module (`import pkg::*`) TIDAK di-materialisasi:
+    // package nyata bisa berisi ribuan konstanta (OpenTitan: 1841–100k), dan
+    // menyusun set per pemanggilan membuat resolve 230x lebih lambat (review
+    // ronde 3). Cukup cek LAZY per nama $unit: `pkg::<nama>` ada di
+    // `pkg.scalars`? Biayanya O(#unit_params × #wildcard_import).
+    let wildcard_imports: Vec<Symbol> = module
+        .items
+        .iter()
+        .filter_map(|it| match it {
+            ModuleItem::Import { package, item } if item.as_str() == "*" => Some(*package),
+            _ => None,
+        })
+        .collect();
+    let module_scope_names: std::collections::HashSet<Symbol> = module
+        .params
+        .iter()
+        .map(|mp| mp.name)
+        .chain(module.items.iter().flat_map(|it| match it {
+            ModuleItem::Import { item, .. } if item.as_str() != "*" => vec![*item],
+            ModuleItem::Typedef(td) => match &td.dtype {
+                DataType::EnumType { members, .. } => members.iter().map(|(m, _)| *m).collect(),
+                _ => Vec::new(),
+            },
+            _ => Vec::new(),
+        }))
+        .collect();
     for p in unit_params {
-        if vals.contains_key(&p.name) {
+        let in_wildcard_import = || {
+            pkg.is_some_and(|pkg_ctx| {
+                wildcard_imports.iter().any(|package| {
+                    pkg_ctx.scalars.contains_key(&Symbol::intern(&format!(
+                        "{}::{}",
+                        package.as_str(),
+                        p.name.as_str()
+                    )))
+                })
+            })
+        };
+        if vals.contains_key(&p.name)
+            && (module_scope_names.contains(&p.name)
+                || instance_overrides.contains_key(&p.name)
+                || in_wildcard_import())
+        {
             continue;
         }
         if let Some(e) = &p.default {

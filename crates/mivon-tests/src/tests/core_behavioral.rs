@@ -1550,6 +1550,100 @@ endmodule
     assert_eq!(get("o"), 0x01, "sinyal lokal menutupi param package `V`");
 }
 
+/// ELAB-13 (22): `localparam` eksplisit di `$unit` menang atas konstanta
+/// package hasil `import p::*` (LRM §3.13 — deklarasi eksplisit > wildcard
+/// import). Sebelum fix, injeksi $unit memakai guard `contains_key` sehingga
+/// nilai package (3) bertahan; iverilog 12: y=7. Param module (header) dan
+/// override instance tetap menang atas keduanya.
+#[test]
+fn test_unit_localparam_wins_over_imported_package_const() {
+    let source = r#"
+package p;
+    localparam int L = 3;
+endpackage
+import p::*;
+localparam int L = 7;
+
+module child #(parameter int L = 9) (output [7:0] y);
+    assign y = L;
+endmodule
+
+module tb;
+    wire [7:0] y;
+    wire [7:0] a, b;
+    assign y = L;
+    child u1(.y(a));
+    child #(.L(42)) u2(.y(b));
+    initial #1 $finish;
+endmodule
+"#;
+    let sigs = simulate_signals(source, 5).unwrap();
+    let get = |n: &str| {
+        sigs.iter()
+            .find(|(s, _)| s == n)
+            .map(|(_, v)| v.to_u64())
+            .unwrap_or(0)
+    };
+    assert_eq!(
+        get("y"),
+        7,
+        "$unit localparam L = 7 menang atas package L = 3"
+    );
+    assert_eq!(get("a"), 9, "param header module tetap menang");
+    assert_eq!(get("b"), 42, "override instance tetap menang");
+}
+
+/// ELAB-13 (22) review round 1: guard $unit harus menghormati SELURUH nama
+/// scope module, bukan hanya param header — import eksplisit dan member enum
+/// typedef lokal juga di-insert ke `base_ctx` oleh pemanggil. Tanpa itu
+/// `import p::L` (iverilog 3) dan member enum `L` (iverilog 0) kalah dari
+/// `$unit localparam int L = 7`.
+#[test]
+fn test_unit_localparam_does_not_override_module_scope_names() {
+    let source = r#"
+package p;
+    localparam int L = 3;
+    localparam int W = 11;
+    localparam int E = 5;
+endpackage
+localparam int L = 7;
+localparam int W = 7;
+localparam int E = 7;
+
+module tb;
+    import p::L;
+    import p::*;
+    typedef enum logic [3:0] { E } e_t;
+    wire [7:0] y_imp = L;
+    wire [7:0] y_wild = W;
+    wire [7:0] y_enum = E;
+    initial #1 $finish;
+endmodule
+"#;
+    let sigs = simulate_signals(source, 5).unwrap();
+    let get = |n: &str| {
+        sigs.iter()
+            .find(|(s, _)| s == n)
+            .map(|(_, v)| v.to_u64())
+            .unwrap_or(0)
+    };
+    assert_eq!(
+        get("y_imp"),
+        3,
+        "import eksplisit p::L menang atas $unit L=7"
+    );
+    assert_eq!(
+        get("y_wild"),
+        11,
+        "import wildcard p::* menang atas $unit W=7"
+    );
+    assert_eq!(
+        get("y_enum"),
+        0,
+        "member enum lokal E menang atas $unit E=7"
+    );
+}
+
 /// ELAB-13 (21): localparam di dalam blok generate harus melihat param
 /// module saat default-nya dievaluasi. Dulu `resolve_param_values_with_ctx`
 /// memproses body/generate param SEBELUM param header/localparam module masuk

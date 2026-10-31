@@ -1997,11 +1997,7 @@ ELAB-13: ⚠️ PARTIAL (ROUND 222/228/230/231) — Parameter berlebar eksplisit
            `logic [7:0] L; ... gL = L;`) → mivon gL = 7, iverilog 42.
            Level module (mL) sudah benar (7). Butuh scope yang sama.
          - `import p::*;` di scope $unit + `localparam int L` di $unit:
-           deklarasi eksplisit seharusnya menang (iverilog 7) tetapi mivon
-           masih memakai nilai package (3) karena guard `contains_key` di
-           suntikan $unit tidak bisa membedakan asal nilai di `base_ctx`
-           (import $unit vs import module vs konstanta package). Butuh
-           penanda provenance per entri.
+           SELESAI di butir (22) (ROUND 233) — lihat di bawah.
          - urutan deklarasi lintas FILE: nilai param `$unit` yang dipakai
            file lain bergantung urutan penggabungan file. Belum ada test
            khusus; dua urutan uji terakhir memberi hasil sama.
@@ -2119,6 +2115,75 @@ ELAB-13: ⚠️ PARTIAL (ROUND 222/228/230/231) — Parameter berlebar eksplisit
            `localparam D = W * 2` SEBELUM blok g1 `localparam W = 3` →
            mivon g2_d=6, iverilog 16 (HEAD 1). Manifestasi flat map yang sama.
          Butuh scope map per blok generate.
+
+         ── ELAB-13 (22) (ROUND 233): localparam $unit kalah dari konstanta
+         package hasil `import p::*` ──
+         Reproduksi (iverilog 12: y=7; mivon sebelum fix: 3):
+           package p; localparam int L = 3; endpackage
+           import p::*;
+           localparam int L = 7;
+           module tb; wire [7:0] y = L; endmodule
+         AKAR: suntikan param `$unit` memakai guard `contains_key` saja, dan
+         `base_ctx` (= `pkg_param_ctx`) sudah memuat konstanta package
+         ter-flatten, jadi `L` dianggap "sudah ada" dan deklarasi eksplisit
+         $unit dilewati. Tidak ada provenance per entri `base_ctx`.
+         PERBAIKAN (revisi 3 setelah review ronde 1-2): guard diganti — `$unit`
+         hanya kalah bila nama itu ada di SCOPE MODULE (param header/
+         localparam module, import EKSPLISIT `import p::L`, import WILDCARD
+         `import p::*` di body module, member enum typedef lokal) atau
+         di-override instance; selain itu deklarasi eksplisit $unit menang.
+         Nuansa LRM 26.3: wildcard import di scope yang SAMA/lebih dalam
+         menang atas deklarasi scope luar ($unit) — jadi `import p::*` di body
+         module mengalahkan `$unit localparam` bernama sama, sedangkan
+         `import p::*` di $unit sendiri tidak. `base_ctx` tidak membawa
+         provenance, jadi daftar nama scope module dihitung sekali dari AST
+         module.
+         Revisi 4 (review ronde 3, temuan performa): nama wildcard TIDAK
+         di-materialisasi (dulu menyusun HashSet dari SELURUH `pkg.scalars`
+         per pemanggilan → `Symbol::intern` ribuan kali). Kini dicek LAZY per
+         nama $unit: `pkg.scalars.contains_key("pkg::nama")` — biaya
+         O(#unit_params × #wildcard_import). Ukur pada fixture sintetis
+         (package 2000 konstanta, 100 module `import pkg::*`):
+         resolve/module 17.6 ms vs 15.7–18.3 ms pada guard HEAD
+         (`contains_key` saja). CATATAN METODOLOGI: fixture itu tidak punya
+         `$unit` param sehingga loop guard tidak dieksekusi — review ronde 4
+         mengulang dengan 50 `$unit localparam` (perf_wild_unit.sv):
+         23.2–25.8 ms vs 21.0–24.9 ms tanpa $unit param → biaya guard ada di
+         dalam noise. Angka ~17–25 ms itu PRE-EXISTING
+         (`visible_package_params()` meng-iterasi 2000 param package per
+         module di params.rs; DBG-RESOLVE internal hanya ~158 µs/module),
+         bukan dari butir ini; dicatat sebagai catatan perf di SISA.
+         Review ronde 1 menemukan guard versi 1 (hanya `module.params`)
+         menimpa: (a) `import p::L` di module → mivon 7, iverilog 3;
+         (b) member enum lokal `typedef enum {L} e_t` → mivon 7, iverilog 0.
+         Test: `test_unit_localparam_wins_over_imported_package_const`
+         (y=7, a=9 param header, b=42 override) — mutasi M12 (guard lama
+         `contains_key` saja) → y=3, GAGAL.
+         `test_unit_localparam_does_not_override_module_scope_names`
+         (y_imp=3 import eksplisit, y_wild=11 import wildcard module,
+         y_enum=0 member enum) — mutasi M13 (guard dikembalikan ke
+         `module.params` saja) → y_imp=7, GAGAL; mutasi M14 (arm wildcard
+         dihapus) → y_wild=7, GAGAL.
+         Suite: 3980 passed / 24 skipped.
+         SISA (di luar butir ini, ditemukan review ronde 3):
+         - default param HEADER yang merujuk nama $unit saat module punya
+           `import pkg::*` bernama sama: iverilog memakai $unit (7), mivon
+           memakai package (3) — pre-existing (`base_ctx` sudah berisi nama
+           itu saat Pass 1). Butuh provenance yang sama di jalur header.
+         - presedensi import EKSPLISIT vs WILDCARD antar package
+           (`import a::*` + `import b::L`): iverilog memakai import
+           eksplisit, mivon memakai yang pertama mengisi `base_ctx`
+           (angka bergantung nilai package; review ronde 4: iverilog 3,
+           mivon 4) — pre-existing di `collect_package_param_ctx`, bukan
+           guard $unit.
+         - wildcard module vs wildcard $unit LINTAS package: module
+           `import p::*` (p.L=3) + $unit `import q::*` (q.L=5) +
+           `$unit localparam L = 7` → iverilog 3, mivon 5 (pre-existing;
+           provenance `base_ctx` memilih q).
+         - perf flatten pkg-ctx: ~17 ms/module untuk package 2000 konstanta
+           (wildcard import) vs ~50 µs tanpa import; `Symbol::intern` cache
+           256 entri thrash saat menyuntik ribuan nama. Bukan regresi butir
+           ini (sama di HEAD), tapi kandidat optimasi berikutnya.
 
 ELAB-14: ✅ FIXED (ROUND 225, revisi 5) Perbandingan param vs literal di
          const-fold mengabaikan lebar/signedness — lihat detail di bawah
