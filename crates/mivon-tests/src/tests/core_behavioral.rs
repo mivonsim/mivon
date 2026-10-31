@@ -1550,6 +1550,214 @@ endmodule
     assert_eq!(get("o"), 0x01, "sinyal lokal menutupi param package `V`");
 }
 
+/// ELAB-13 (21): localparam di dalam blok generate harus melihat param
+/// module saat default-nya dievaluasi. Dulu `resolve_param_values_with_ctx`
+/// memproses body/generate param SEBELUM param header/localparam module masuk
+/// peta nilai, sehingga `localparam int L1 = BASE` gagal const-eval dan jatuh
+/// ke fallback 1 (mivon o1=1 o2=1; iverilog 5/16). Perbaikannya: seluruh
+/// body/generate param dievaluasi ULANG setelah Pass 2 (urutan source, hanya
+/// nama yang di-insert loop pertama). Diskriminatif — gagal di HEAD.
+#[test]
+fn test_generate_block_localparam_sees_module_params() {
+    let source = r#"
+module tb #(parameter int BASE = 5);
+    localparam int MOD = BASE + 10;
+    generate
+        if (1) begin : g
+            localparam int L1 = BASE;
+            localparam int L2 = MOD + 1;
+            wire [7:0] o1 = L1;
+            wire [7:0] o2 = L2;
+        end
+    endgenerate
+    initial #1 $finish;
+endmodule
+"#;
+    let sigs = simulate_signals(source, 5).unwrap();
+    let get = |n: &str| {
+        sigs.iter()
+            .find(|(s, _)| s == n)
+            .map(|(_, v)| v.to_u64())
+            .unwrap_or(0)
+    };
+    assert_eq!(get("o1"), 5, "localparam generate L1 = BASE (param header)");
+    assert_eq!(
+        get("o2"),
+        16,
+        "localparam generate L2 = MOD + 1 (localparam body)"
+    );
+}
+
+/// ELAB-13 (21) review round 1: dua hal yang harus dijaga saat body/generate
+/// param dievaluasi ulang setelah Pass 2 —
+/// (a) RANTAI: `L2 = L1 + 1` harus memakai L1 yang sudah benar (bukan fallback
+///     1 → L2 = 2);
+/// (b) PRESEDENSI: deklarasi generate bernama sama TIDAK boleh menimpa param
+///     header (`parameter int L = 9` tetap 9 di level module).
+/// Referensi iverilog 12: v1=5 v2=6 m=9.
+#[test]
+fn test_generate_localparam_chain_and_header_precedence() {
+    let source = r#"
+module tb #(parameter int BASE = 5, parameter int L = 9);
+    generate if (1) begin : g
+        localparam int L1 = BASE;
+        localparam int L2 = L1 + 1;
+        wire [7:0] v1 = L1;
+        wire [7:0] v2 = L2;
+    end endgenerate
+    wire [7:0] m = L;
+    initial #1 $finish;
+endmodule
+"#;
+    let sigs = simulate_signals(source, 5).unwrap();
+    let get = |n: &str| {
+        sigs.iter()
+            .find(|(s, _)| s == n)
+            .map(|(_, v)| v.to_u64())
+            .unwrap_or(0)
+    };
+    assert_eq!(get("v1"), 5, "L1 = BASE");
+    assert_eq!(get("v2"), 6, "rantai L2 = L1 + 1 memakai L1 yang benar");
+    assert_eq!(
+        get("m"),
+        9,
+        "param header L menang atas localparam generate"
+    );
+}
+
+/// ELAB-13 (21) review round 1 (blocking 1): deklarasi generate bernama sama
+/// TIDAK boleh menimpa param header. Jalur FILE (`compile_files`, dipakai CLI
+/// + prepass) berbeda dari `compile_str`: retry tanpa guard presedensi membuat
+/// `wire [7:0] m = L` di level module memakai nilai blok generate (5),
+/// padahal iverilog 12 → 9.
+#[test]
+fn test_generate_localparam_does_not_override_header_param() {
+    let dir = std::env::temp_dir().join(format!("mivon_elab13_21_{}", std::process::id()));
+    let _ = fs::create_dir_all(&dir);
+    let path = dir.join("hdr.sv");
+    fs::write(
+        &path,
+        r#"
+module tb #(parameter int BASE = 5, parameter int L = 9);
+    generate if (1) begin : g
+        localparam int L = BASE;
+    end endgenerate
+    wire [7:0] m = L;
+    initial #1 $finish;
+endmodule
+"#,
+    )
+    .unwrap();
+    let design = crate::compile_files(&[path.to_string_lossy().to_string()]).unwrap();
+    let mut engine = crate::simulator::SimulationEngine::new(design, 10);
+    engine.run().unwrap();
+    let idx = engine
+        .design
+        .top
+        .signals
+        .iter()
+        .position(|s| s.name.as_str() == "m")
+        .expect("signal m ada");
+    assert_eq!(
+        engine.state.read_signal(idx).to_u64(),
+        9,
+        "param header L menang atas localparam generate bernama sama"
+    );
+}
+
+/// ELAB-13 (21) review round 2 (blocking): konstanta package (`import p::*`)
+/// tidak boleh ditimpa deklarasi generate bernama sama di level module.
+/// Loop evaluasi-ulang hanya menyentuh nama yang benar-benar di-insert loop
+/// pertama; nama dari `base_ctx` (package) tidak termasuk. Tanpa guard itu
+/// `wire [7:0] m = V` jadi 5 (iverilog 100) dan cabang generate ikut salah.
+/// Referensi iverilog 12: m=100, cabang A.
+#[test]
+fn test_generate_localparam_does_not_override_package_const() {
+    let dir = std::env::temp_dir().join(format!("mivon_elab13_21p_{}", std::process::id()));
+    let _ = fs::create_dir_all(&dir);
+    let path = dir.join("pkg.sv");
+    fs::write(
+        &path,
+        r#"
+package p;
+    localparam int V = 100;
+endpackage
+module tb;
+    import p::*;
+    generate if (1) begin : g
+        localparam int V = 5;
+    end endgenerate
+    wire [7:0] m = V;
+    generate if (V == 100) begin : h
+        initial #1 g_a = 1'b1;
+    end else begin : h2
+        initial #1 g_b = 1'b1;
+    end endgenerate
+    logic g_a, g_b;
+    initial #1 $finish;
+endmodule
+"#,
+    )
+    .unwrap();
+    let design = crate::compile_files(&[path.to_string_lossy().to_string()]).unwrap();
+    let mut engine = crate::simulator::SimulationEngine::new(design, 10);
+    engine.run().unwrap();
+    let get = |name: &str| {
+        let idx = engine
+            .design
+            .top
+            .signals
+            .iter()
+            .position(|s| s.name.as_str() == name)
+            .unwrap_or_else(|| panic!("signal {name} ada"));
+        engine.state.read_signal(idx).to_u64()
+    };
+    assert_eq!(get("m"), 100, "konstanta package V menang di level module");
+    assert_eq!(get("g_a"), 1, "generate-if V == 100 memakai nilai package");
+    assert_eq!(get("g_b"), 0, "cabang else tidak diambil");
+}
+
+/// ELAB-13 (21) review round 3 (blocking): rantai DI DALAM blok harus memakai
+/// nilai blok walau namanya juga dipakai param header. Tanpa overlay sementara,
+/// `B = L + 1` dievaluasi dengan L level module (9) → B=10; iverilog 12: b=6
+/// (L blok = 5), m=9 (level module tetap param header).
+#[test]
+fn test_generate_localparam_chain_uses_block_value_when_shadowed() {
+    let dir = std::env::temp_dir().join(format!("mivon_elab13_21s_{}", std::process::id()));
+    let _ = fs::create_dir_all(&dir);
+    let path = dir.join("shadow.sv");
+    fs::write(
+        &path,
+        r#"
+module tb #(parameter int L = 9);
+    generate if (1) begin : g
+        localparam int L = 5;
+        localparam int B = L + 1;
+        wire [7:0] b = B;
+    end endgenerate
+    wire [7:0] m = L;
+    initial #1 $finish;
+endmodule
+"#,
+    )
+    .unwrap();
+    let design = crate::compile_files(&[path.to_string_lossy().to_string()]).unwrap();
+    let mut engine = crate::simulator::SimulationEngine::new(design, 10);
+    engine.run().unwrap();
+    let get = |name: &str| {
+        let idx = engine
+            .design
+            .top
+            .signals
+            .iter()
+            .position(|s| s.name.as_str() == name)
+            .unwrap_or_else(|| panic!("signal {name} ada"));
+        engine.state.read_signal(idx).to_u64()
+    };
+    assert_eq!(get("b"), 6, "rantai blok B = L + 1 memakai L blok (5)");
+    assert_eq!(get("m"), 9, "level module tetap memakai param header L = 9");
+}
+
 /// ELAB-13 (19) review round 5 — deklarasi sinyal di dalam blok generate
 /// TIDAK boleh dianggap sinyal scope module. `expand_generate_block` menyalin
 /// `ModuleItem::Decl` hasil ekspansi ke `module.decls`, sehingga tanpa koreksi

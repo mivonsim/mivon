@@ -1981,6 +1981,10 @@ ELAB-13: ⚠️ PARTIAL (ROUND 222/228/230/231) — Parameter berlebar eksplisit
            dua blok generate BERSAUDARA yang sama-sama
            `localparam int L` → blok kedua memakai nilai blok pertama
            (a=5 b=5; iverilog 5/6). Perlu scope map per blok generate.
+           STATUS ROUND 232: nilai blok PERTAMA kini benar (lihat butir (21):
+           fallback 1 → nilai asli), blok kedua masih memakai nilai blok
+           pertama (fixture `localparam L = BASE+1` / `BASE+2`: a=6 b=6;
+           iverilog 6/7). Butir ini belum selesai.
          - deklarasi lokal blok prosedural yang menutupi param module
            bernama sama: `parameter int L = 9; initial begin
            logic [7:0] L; L = 5; a = L; end` → mivon a = 9 (iverilog 5).
@@ -2037,6 +2041,84 @@ ELAB-13: ⚠️ PARTIAL (ROUND 222/228/230/231) — Parameter berlebar eksplisit
          Catatan (tidak berubah): perbedaan `assign y = ~P` (konteks target,
          mis. fffe) vs `$display("~P")` (self-determined, fe) BUKAN bug —
          itu LRM §11.6; jalur const-fold dan prosedural sudah sepakat.
+
+         ── ELAB-13 (21) (ROUND 232): localparam di blok generate tidak
+         melihat param module ──
+         Reproduksi (iverilog 12: l1=5 l2=6; mivon sebelum fix: 1/1):
+           module tb #(parameter int BASE = 5);
+             generate if (1) begin : g
+               localparam int L1 = BASE;
+               localparam int L2 = BASE + 1;
+               wire [7:0] v1 = L1;
+               wire [7:0] v2 = L2;
+               initial #1 $display("l1=%0d l2=%0d", v1, v2);
+             end endgenerate
+           endmodule
+         AKAR MASALAH: `resolve_param_values_with_ctx` memproses
+         `collect_body_params(module)` (yang ikut memindai isi blok generate)
+         SEBELUM Pass 1 (param header) dan Pass 2 (localparam module), jadi
+         default yang merujuk param module gagal const-eval lalu jatuh ke
+         fallback 1 (`insert_val!(param.name, 1)`). Nilai fallback itu tidak
+         pernah dikoreksi: elaborator hanya mengevaluasi ulang body param
+         level module (`body_param_defaults` dari `module.items` langsung),
+         bukan yang bersarang di generate.
+         PERBAIKAN (revisi 4 setelah review ronde 1-3): seluruh body/generate
+         param dievaluasi ULANG setelah Pass 2 — saat param header +
+         localparam module + member key struct sudah ada di `vals`. Revisi 1
+         hanya mengulang entri yang GAGAL; itu tidak cukup karena RANTAI
+         (`L2 = L1 + 1`) "berhasil" dievaluasi dengan fallback L1=1 sehingga
+         tidak pernah dikoreksi (L2=2; iverilog 6). Evaluasi ulang menjaga
+         urutan deklarasi (`collect_body_params` = source order) agar rantai
+         ter-resolve berurutan.
+         Revisi 4 (review ronde 3): selama evaluasi ulang, nama body yang juga
+         dipakai param module DIPASANG SEMENTARA dengan nilai blok (overlay
+         `shadow_saved`), lalu nilai module dipulihkan. Tanpa overlay,
+         `parameter int L = 9; generate localparam int L = 5; localparam
+         int B = L + 1;` menghasilkan B=10 (iverilog 6) — regresi yang tidak
+         ada di HEAD. Setelah overlay: B=6 (blok) dan m=9 (level module).
+         Guard presedensi (temuan blocking review ronde 1 & 2): evaluasi ulang
+         hanya menyentuh nama yang BENAR-BENAR di-insert loop pertama
+         (`body_first`) DAN tidak dideklarasikan di `module.params`
+         (param header / localparam module) DAN tidak di-override instance.
+         Tanpa guard pertama: `module tb #(parameter int L = 9); generate
+         localparam int L = 5;` membuat `wire [7:0] m = L` di level module
+         jadi 5 (iverilog 9). Tanpa guard kedua (package): `import p::*`
+         dengan `package p localparam int V = 100` + `generate localparam
+         int V = 5` membuat m=5 (iverilog 100) dan generate-if `V == 100`
+         mengambil cabang else — nilai package di `base_ctx` memang tidak
+         pernah di-insert loop pertama, jadi harus dilewati.
+         Deklarasi body kedua dengan nama sama tetap dilewati (flat map).
+         Test (5; 2 diskriminatif terhadap HEAD — test 1 & 2; 3 menjaga
+         regresi revisi 3→4 lewat mutasi M9/M10/M11):
+         - `test_generate_block_localparam_sees_module_params` (o1=5, o2=16)
+           — mutasi M8 (blok evaluasi ulang dihapus) → o1=1, GAGAL.
+         - `test_generate_localparam_chain_and_header_precedence`
+           (v1=5 v2=6 m=9) — rantai + presedensi lewat jalur `compile_str`.
+         - `test_generate_localparam_does_not_override_header_param`
+           (m=9, jalur FILE `compile_files` yang dipakai CLI/prepass) —
+           mutasi M9 (guard presedensi dihapus) → m=5, GAGAL.
+         - `test_generate_localparam_does_not_override_package_const`
+           (m=100, g_a=1, g_b=0; jalur FILE) — mutasi M10 (guard
+           `body_first` dihapus) → m=5, GAGAL.
+         - `test_generate_localparam_chain_uses_block_value_when_shadowed`
+           (b=6, m=9; jalur FILE) — mutasi M11 (overlay tidak dipasang) →
+           b=10, GAGAL.
+         Suite: 3978 passed / 24 skipped.
+         SISA (tetap, satu akar: peta nilai param flat tanpa scope blok):
+         - blok generate BERSAUDARA dengan nama sama masih berbagi satu entri
+           map (fixture `L = BASE+1` / `BASE+2`: a=6 b=6; iverilog 6/7).
+         - referensi dari DALAM blok ke nama yang juga dipakai param header:
+           `module tb #(parameter int L = 9); generate localparam int L = 5;
+           wire v = L;` → mivon v=9, iverilog 5 (level module m=9 sudah
+           benar; lihat kelas yang sama di SISA butir (19)). Rantai
+           (`B = L + 1`) SUDAH benar lewat overlay, referensi langsung belum.
+         - `$unit localparam` yang di-shadow deklarasi generate di level
+           module: mivon m=5, iverilog 7 (perilaku sama dengan HEAD — bukan
+           regresi; jalur `unit_names.remove`).
+         - overlay bocor antar-blok: `parameter W = 8` (module) + blok g2
+           `localparam D = W * 2` SEBELUM blok g1 `localparam W = 3` →
+           mivon g2_d=6, iverilog 16 (HEAD 1). Manifestasi flat map yang sama.
+         Butuh scope map per blok generate.
 
 ELAB-14: ✅ FIXED (ROUND 225, revisi 5) Perbandingan param vs literal di
          const-fold mengabaikan lebar/signedness — lihat detail di bawah

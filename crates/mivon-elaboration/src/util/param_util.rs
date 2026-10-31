@@ -698,6 +698,20 @@ pub fn resolve_param_values_with_ctx(
         }
     }
 
+    // CATATAN: loop ini berjalan SEBELUM param header/localparam module
+    // di-resolve (Pass 1/2), jadi default yang merujuk param module gagal di
+    // sini. Nilai yang benar dihitung ulang setelah Pass 2 — lihat blok
+    // "evaluasi ULANG body/generate param" di bawah (ELAB-13 (21)).
+    //
+    // `body_first` = nama yang BENAR-BENAR di-insert loop ini + nilainya.
+    // Loop evaluasi-ulang hanya boleh menyentuh nama tersebut: nama yang sudah
+    // ada di `base_ctx` (konstanta package hasil `import`) atau di `vals`
+    // karena deklarasi body sebelumnya TIDAK di-insert di sini, dan nilai itu
+    // sah (package menang di level module; deklarasi pertama menang
+    // antar-blok). Nilainya dipakai sebagai OVERLAY saat evaluasi ulang agar
+    // rantai di dalam blok melihat nilai blok, bukan nilai module (ELAB-13
+    // (21) review round 3).
+    let mut body_first: HashMap<Symbol, i64> = HashMap::new();
     for param in collect_body_params(module) {
         // Deklarasi body/generate MENIMPA nilai $unit dengan nama sama
         // (`generate if (1) begin : g localparam int L = 5; end` harus 5,
@@ -715,6 +729,7 @@ pub fn resolve_param_values_with_ctx(
                     if let Some(v) = eval_param_default(e, &vals, pkg, module) {
                         let v = normalize_param_value(&param, v, &vals);
                         insert_val!(param.name, v);
+                        body_first.insert(param.name, v);
                     } else if !param_default_is_collection(e) {
                         // Fallback global: param gagal dievaluasi (default
                         // `'x`, `$bits(member)` tak ter-resolve, referensi
@@ -726,11 +741,13 @@ pub fn resolve_param_values_with_ctx(
                         // array di bawah / evaluator struct yang menangani).
                         let v = normalize_param_value(&param, 1, &vals);
                         insert_val!(param.name, v);
+                        body_first.insert(param.name, v);
                     }
                 }
                 None => {
                     let v = normalize_param_value(&param, 0, &vals);
                     insert_val!(param.name, v);
+                    body_first.insert(param.name, v);
                 }
             }
         }
@@ -790,6 +807,64 @@ pub fn resolve_param_values_with_ctx(
         } else {
             let v = normalize_param_value(param, 0, &vals);
             insert_val!(param.name, v);
+        }
+    }
+
+    // ELAB-13 (21): evaluasi ULANG body/generate param setelah param module
+    // ter-resolve. Loop pertama di atas berjalan sebelum Pass 1/2, sehingga
+    // default yang merujuk param module
+    // (`generate if (1) begin localparam int L = BASE + 1; end`) memakai
+    // fallback 1 — dan rantai antar-localparam (`L2 = L1 + 1`) ikut salah
+    // TANPA gagal, jadi tidak cukup hanya mengulang entri yang gagal.
+    // Urutan deklarasi dipertahankan (`collect_body_params` = source order)
+    // agar rantai ter-resolve berurutan.
+    //
+    // Presedensi yang dijaga:
+    // - nama yang dideklarasikan di `module.params` (param header /
+    //   localparam module) atau di-override instance TIDAK boleh ditimpa
+    //   deklarasi generate bernama sama (iverilog: param header menang);
+    // - deklarasi body kedua dengan nama sama dilewati (flat map, lihat SISA
+    //   sibling di audit.txt — belum scope-aware).
+    let module_param_names: std::collections::HashSet<Symbol> =
+        module.params.iter().map(|p| p.name).collect();
+    // OVERLAY: nama body yang juga dipakai param module (header/localparam/
+    // override) sudah ditimpa nilai module oleh Pass 1/2. Untuk mengevaluasi
+    // rantai DI DALAM blok (`localparam int L = 5; localparam int B = L + 1`)
+    // kita perlu nilai blok sementara — kalau tidak, B memakai L module
+    // (iverilog: B=6, bukan 10). Nilai module disimpan lalu dipulihkan.
+    let mut shadow_saved: Vec<(Symbol, Option<i64>)> = Vec::new();
+    for (name, v) in &body_first {
+        if module_param_names.contains(name) || instance_overrides.contains_key(name) {
+            shadow_saved.push((*name, vals.insert(*name, *v)));
+        }
+    }
+    let mut body_seen: std::collections::HashSet<Symbol> = std::collections::HashSet::new();
+    for param in collect_body_params(module) {
+        if module_param_names.contains(&param.name) || instance_overrides.contains_key(&param.name)
+        {
+            continue;
+        }
+        if !body_first.contains_key(&param.name) || !body_seen.insert(param.name) {
+            continue;
+        }
+        if let Some(e) = &param.default {
+            if let Some(v) = eval_param_default(e, &vals, pkg, module) {
+                let v = normalize_param_value(&param, v, &vals);
+                vals.insert(param.name, v);
+                body_first.insert(param.name, v);
+            }
+        }
+    }
+    // Pulihkan nilai level module untuk nama yang di-shadow (module menang di
+    // level module); nama body murni tetap memakai nilai hasil evaluasi ulang.
+    for (name, old) in shadow_saved {
+        match old {
+            Some(v) => {
+                vals.insert(name, v);
+            }
+            None => {
+                vals.remove(&name);
+            }
         }
     }
 
