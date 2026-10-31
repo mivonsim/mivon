@@ -1171,6 +1171,10 @@ fn const_eval_deep(expr: &Expr, param_vals: &HashMap<Symbol, i64>) -> Result<i64
         // Fill literal `'0`/`'1` — nilai 0 untuk konstanta (localparam struct
         // seperti `mac_bignum_contrl_t ControlDefault = '0` di
         // otbn_mac_bignum_fsm, `sha_word64_t ZeroWord = '0` di prim_sha2).
+        // ELAB-13 (16): `'1` = semua bit 1 → -1 (bukan 0), supaya
+        // `generate if ('1)` true dan `localparam [7:0] P = '1` → 255 setelah
+        // truncate. `'0`/`'x`/`'z` tetap 0 (konvensi X/Z).
+        Expr::FillLit(mivon_core::LogicVal::One) => Ok(-1),
         Expr::FillLit(_) => Ok(0),
         Expr::ScopedIdent { package, item, .. } => {
             let qualified = Symbol::intern(&format!("{}::{}", package, item));

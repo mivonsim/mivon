@@ -1550,6 +1550,57 @@ endmodule
     assert_eq!(get("o"), 0x01, "sinyal lokal menutupi param package `V`");
 }
 
+/// ELAB-13 (16): literal unbased `'1` adalah literal ISI (semua bit 1)
+/// dengan lebar dari konteks deklarasi. Sebelum fix, const-eval memetakan
+/// `'1` → 0 sehingga `parameter [7:0] P = '1` bernilai 0 (iverilog: ff) dan
+/// `generate if ('1)` memilih cabang else. Tanpa range/tipe eksplisit, param
+/// mengambil lebar nilai → `'1` = 1 bit (iverilog: `parameter UN = '1` → 1).
+#[test]
+fn test_unbased_fill_literal_param_values() {
+    let source = r#"
+module tb;
+    parameter [7:0] P = '1;
+    parameter [3:0] Q = '1;
+    parameter [7:0] R = '0;
+    parameter UN = '1;
+    parameter PA = ('1);
+    parameter signed [7:0] S = '1;
+    logic g;
+    generate if ('1) begin : y assign g = 1'b1; end else begin : n assign g = 1'b0; end endgenerate
+    logic ok_p, ok_q, ok_r, ok_un, ok_s, ok_bits, ok_pa;
+    initial begin
+        ok_p = (P == 8'hFF);
+        ok_q = (Q == 4'hF);
+        ok_r = (R == 8'h00);
+        ok_un = (UN == 1);
+        ok_bits = ($bits(UN) == 1);
+        ok_pa = (PA == 1);
+        ok_s = (S == -1);
+        #1 $finish;
+    end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 5).unwrap();
+    let get = |n: &str| {
+        sigs.iter()
+            .find(|(s, _)| s == n)
+            .map(|(_, v)| v.to_u64())
+            .unwrap_or(0)
+    };
+    assert_eq!(get("ok_p"), 1, "parameter [7:0] P = '1 harus 8'hFF");
+    assert_eq!(get("ok_q"), 1, "parameter [3:0] Q = '1 harus 4'hF");
+    assert_eq!(get("ok_r"), 1, "parameter [7:0] R = '0 harus 0");
+    assert_eq!(get("ok_un"), 1, "parameter UN = '1 (tanpa range) harus 1");
+    assert_eq!(
+        get("ok_bits"),
+        1,
+        "parameter UN = '1 selebar 1 bit ($bits=1)"
+    );
+    assert_eq!(get("ok_pa"), 1, "parameter PA = ('1) harus 1 (paren)");
+    assert_eq!(get("ok_s"), 1, "parameter signed [7:0] S = '1 harus -1");
+    assert_eq!(get("g"), 1, "generate if ('1) memilih cabang then");
+}
+
 /// ELAB-13 (22): `localparam` eksplisit di `$unit` menang atas konstanta
 /// package hasil `import p::*` (LRM §3.13 — deklarasi eksplisit > wildcard
 /// import). Sebelum fix, injeksi $unit memakai guard `contains_key` sehingga

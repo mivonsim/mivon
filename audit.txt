@@ -1763,10 +1763,35 @@ ELAB-13: ⚠️ PARTIAL (ROUND 222/228/230/231) — Parameter berlebar eksplisit
          `$bits(parameter [7:0] Q)` = 8, `$bits(signed int SI)` = 32,
          `$bits([127:0] W)` = 128. Jalur runtime (`$bits` atas sinyal) tetap
          memakai SignalInfo.width. Test + mutasi sama dengan (7).
-         (16) default param berupa literal UNBASED (`parameter F = '1` /
-         `'x` / `'z`) masih bernilai 0 dan 64 bit (iverilog: 1 bit, nilai 1
-         / x / z). Penyebab: `const_eval.rs` `Expr::FillLit(_) => Ok(0)`
-         (pre-existing, di luar cakupan (4));
+         (16) ✅ FIXED (ROUND 234) default param berupa literal UNBASED.
+         Dulu `parameter [7:0] P = '1` → 0 (iverilog ff), `parameter P = '1`
+         → 0 (iverilog 1), dan `generate if ('1)` memilih cabang else.
+         AKAR: `const_eval.rs`/`const_eval_ext.rs` memetakan `Expr::FillLit`
+         → 0 untuk SEMUA fill, padahal `'1` = semua bit 1 (literal ISI yang
+         lebarnya dari konteks).
+         PERBAIKAN (revisi 2 setelah review ronde 1): (a) `const_eval`/
+         `const_eval_ext`: `FillLit(One)` → -1 (`'0`/`'x`/`'z` tetap 0,
+         konvensi X/Z); (b) `normalize_param_value` memanggil
+         `fill_literal_value`: `'1` diisi selebar deklarasi (range/tipe
+         eksplisit; signed → -1), param TANPA range/tipe memakai lebar 1 bit,
+         dan `('1)` (paren) ikut di-unwrap; (c) `default_literal_width`
+         mendapat arm `FillLit => 1` sehingga LEBARNYA juga benar —
+         `$bits(parameter UN = '1)` = 1 (iverilog 1; dulu fallback 64).
+         Test: `test_unbased_fill_literal_param_values` (P=ff, Q=f, R=0,
+         UN=1 dengan `$bits(UN)=1`, PA=('1)=1, signed S=-1,
+         `generate if ('1)` → then). Mutasi M16 (`FillLit(One) → 0` di
+         const_eval) → g=0, GAGAL; mutasi M17 (`fill_literal_value` dilewati)
+         → `ok_un`=0 (UN=-1), GAGAL. Suite 3981 / 24.
+         SISA kecil (di luar butir, terukur review ronde 2):
+         - `'1` di dalam EKSPRESI runtime: `assign z = '1 + 8'd1` → 2
+           (iverilog 0); `localparam [15:0] C = {8{'1}}` → 65535
+           (iverilog 255), `{2{'1}}` → 255 (iverilog 3). Akar: `const_eval`
+           Concat mengisi FillLit selebar TARGET, bukan lebar replikasi —
+           murni jalur ekspresi/const_fold, bukan jalur param.
+         - param untyped ber-default fill yang DI-OVERRIDE:
+           `child #(.UN(5))` → nilai 5 benar, tapi `$bits` = 1
+           (iverilog 32; sebelum arm ini 64). Ini butir (13) yang masih
+           open — angka 64→1 dicatat agar fix berikutnya tahu.
          (17) literal basis tak berlebar sebagai DEFAULT param (<= 64 bit):
          mivon memakai max(32, lebar nilai); iverilog memakai
          max(32, min(lebar nilai + 1, lebar_basis x jumlah digit)).

@@ -285,6 +285,8 @@ pub fn eval_expr(e: &Expr, ctx: &PkgCtx, cur_pkg: Option<&str>) -> Result<CVal, 
         Expr::Value(Value::Octal { bits, .. }) => parse_base(bits, 8),
         Expr::Value(Value::Real(r)) => Ok(CVal::Scalar(*r as i64)),
         Expr::String(s) => Ok(CVal::Scalar(string_to_i64(s))),
+        // ELAB-13 (16): `'1` = semua bit 1 (lihat const_eval.rs).
+        Expr::FillLit(mivon_core::LogicVal::One) => Ok(CVal::Scalar(-1)),
         Expr::FillLit(_) | Expr::Null => Ok(CVal::Scalar(0)),
         Expr::Ident { name, .. } => {
             if let Some(pkg) = cur_pkg {

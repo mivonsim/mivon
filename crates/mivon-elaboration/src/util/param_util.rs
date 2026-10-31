@@ -100,6 +100,10 @@ fn default_literal_width(e: &Expr) -> Option<usize> {
             expr,
         } => default_literal_width(expr),
         Expr::Paren(inner) => default_literal_width(inner),
+        // ELAB-13 (16): literal unbased self-determined 1 bit (LRM 5.7.1) —
+        // param UN = '1 selebar 1 bit, bukan fallback 64. Tanpa arm ini
+        // $bits(UN) = 64 (iverilog 1) walau nilainya sudah benar.
+        Expr::FillLit(_) => Some(1),
         _ => None,
     }
 }
@@ -220,9 +224,51 @@ fn truncate_sign(v: i64, w: usize) -> i64 {
 /// literal default) mengikat, sehingga `parameter signed P8 = 8'hFF` menjadi
 /// -1 dan generate-if `P8 < 0` benar (ELAB-13 (11)).
 pub(crate) fn normalize_param_value(p: &ParamDecl, v: i64, params: &HashMap<Symbol, i64>) -> i64 {
+    // ELAB-13 (16): literal unbased `'1`/`'0` adalah literal "isi" yang
+    // mengambil lebar dari KONTEKS (deklarasi param). const-eval tidak punya
+    // konteks itu dan mengembalikan 0, sehingga `parameter [7:0] P = '1`
+    // bernilai 0 (iverilog: ff). Nilai diisi di sini memakai lebar deklarasi.
+    if let Some(f) = fill_literal_value(p, params) {
+        return f;
+    }
     match param_static_width(p, params) {
         Some(w) => normalize_with_width(p, v, w),
         None => v,
+    }
+}
+
+/// ELAB-13 (16): nilai literal unbased sesuai lebar deklarasi param.
+/// `'1` = semua bit 1 (signed → -1), `'0`/`'x`/`'z` = 0 (konvensi X/Z
+/// yang sudah dipakai const-eval). Tanpa range/tipe eksplisit, param
+/// mengambil lebar NILAI: literal unbased self-determined 1 bit (LRM 5.7.1;
+/// iverilog: parameter UN = '1 -> 1, bukan 32'hFFFFFFFF).
+fn fill_literal_value(p: &ParamDecl, params: &HashMap<Symbol, i64>) -> Option<i64> {
+    // parameter UN = ('1) — paren tidak mengubah semantik literal isi.
+    fn strip_paren(mut e: &Expr) -> &Expr {
+        while let Expr::Paren(inner) = e {
+            e = inner;
+        }
+        e
+    }
+    let lv = match strip_paren(p.default.as_ref()?) {
+        Expr::FillLit(lv) => lv,
+        _ => return None,
+    };
+    if !matches!(lv, mivon_core::LogicVal::One) {
+        return Some(0);
+    }
+    // Tanpa range/tipe eksplisit, param mengambil lebar NILAI — literal
+    // unbased `'1` self-determined 1 bit (iverilog: `parameter P = '1` → 1,
+    // bukan 32'hFFFFFFFF).
+    let w = if p.range.is_some() || p.dtype.is_some() {
+        param_width_of(p, params)?
+    } else {
+        1
+    };
+    if param_decl_signed(p) || w >= 64 {
+        Some(-1)
+    } else {
+        Some(((1u64 << w) - 1) as i64)
     }
 }
 
