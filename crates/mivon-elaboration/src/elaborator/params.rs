@@ -105,12 +105,36 @@ impl Elaborator {
     /// inferensi: override (`#(.P(16'hABCD))`) tidak membawa lebarnya di
     /// `params` (hanya i64), jadi lebar dinaikkan ke lebar nilai efektif agar
     /// nilai override tidak terpotong diam-diam.
+    ///
+    /// ELAB-13 (13): bila param TANPA range/dtype punya override, lebar
+    /// ekspresi override (LRM 6.20.2) yang mengikat — dipasok flatten lewat
+    /// `instance_param_widths`.
     pub(crate) fn param_decl_width(
         &self,
         p: &ParamDecl,
         params: &HashMap<Symbol, i64>,
     ) -> Option<usize> {
+        if p.range.is_none() && p.dtype.is_none() {
+            if let Some(w) = self.instance_param_widths.get(&p.name) {
+                return Some(*w);
+            }
+        }
         param_width_of(p, params)
+    }
+
+    /// Lebar `$bits(param)` dengan prioritas sama seperti `param_decl_width`:
+    /// override menang untuk param tanpa range/dtype (ELAB-13 (13)).
+    fn param_decl_bits_width_inst(
+        &self,
+        p: &ParamDecl,
+        params: &HashMap<Symbol, i64>,
+    ) -> Option<usize> {
+        if p.range.is_none() && p.dtype.is_none() {
+            if let Some(w) = self.instance_param_widths.get(&p.name) {
+                return Some(*w);
+            }
+        }
+        param_decl_bits_width(p, params)
     }
 
     /// ELAB-13: normalisasi nilai param UNSIGNED ke lebar deklarasinya.
@@ -265,7 +289,7 @@ impl Elaborator {
     ) -> HashMap<Symbol, usize> {
         let mut out = HashMap::new();
         for p in &module.params {
-            if let Some(w) = param_decl_bits_width(p, params) {
+            if let Some(w) = self.param_decl_bits_width_inst(p, params) {
                 out.insert(p.name, w);
             }
         }
@@ -276,7 +300,7 @@ impl Elaborator {
             if out.contains_key(&p.name) {
                 continue;
             }
-            if let Some(w) = param_decl_bits_width(p, params) {
+            if let Some(w) = self.param_decl_bits_width_inst(p, params) {
                 out.insert(p.name, w);
             }
         }
@@ -289,7 +313,7 @@ impl Elaborator {
             {
                 continue;
             }
-            if let Some(w) = param_decl_bits_width(p, params) {
+            if let Some(w) = self.param_decl_bits_width_inst(p, params) {
                 out.insert(p.name, w);
             }
         }

@@ -2198,19 +2198,46 @@ impl Parser {
                 self.advance();
             }
             let mut type_ident = None;
+            // ELAB-13 (6)/(13): rekam tipe keyword header ke `dtype` (dulu
+            // dibuang). Tanpa ini `parameter int P` ber-dtype None sehingga
+            // lebar override instance salah menyempitkannya (int harus tetap
+            // 32 bit). `int`/`integer` hasilnya sama (32), tapi `byte`/
+            // `shortint`/`logic` kini benar (8/16/1) bukan lebar literal default.
+            let mut dtype: Option<DataType> = None;
             match self.peek() {
-                Token::Integer
-                | Token::Int
-                | Token::Reg
-                | Token::Logic
-                | Token::Bit
-                | Token::String
-                | Token::Byte
-                | Token::Shortint
-                | Token::Longint
-                | Token::Real
-                | Token::RealTime
-                | Token::Time => {
+                Token::Integer => {
+                    self.advance();
+                    dtype = Some(DataType::Integer);
+                }
+                Token::Int => {
+                    self.advance();
+                    dtype = Some(DataType::Int);
+                }
+                Token::Reg | Token::Logic => {
+                    self.advance();
+                    dtype = Some(DataType::Logic);
+                }
+                Token::Bit => {
+                    self.advance();
+                    dtype = Some(DataType::Bit);
+                }
+                Token::Byte => {
+                    self.advance();
+                    dtype = Some(DataType::Byte);
+                }
+                Token::Shortint => {
+                    self.advance();
+                    dtype = Some(DataType::Shortint);
+                }
+                Token::Longint => {
+                    self.advance();
+                    dtype = Some(DataType::Longint);
+                }
+                Token::Time => {
+                    self.advance();
+                    dtype = Some(DataType::Time);
+                }
+                Token::String | Token::Real | Token::RealTime => {
                     self.advance();
                 }
                 Token::Ident(_)
@@ -2351,7 +2378,8 @@ impl Parser {
 
             // Use type_ident as UserDefined dtype if set. Tipe keyword
             // eksplisit di jalur header ini masih dibuang (ELAB-13 butir (6)).
-            let resolved_dtype = type_ident.as_ref().map(|t| DataType::UserDefined(*t));
+            let resolved_dtype =
+                dtype.or_else(|| type_ident.as_ref().map(|t| DataType::UserDefined(*t)));
             // Terapkan modifier signed/unsigned (lead/trail). Tipe keyword di
             // header masih dibuang (butir (6)), jadi `signed` hanya bisa
             // menjadi `implicit_sign` atau membungkus dtype user-defined.
@@ -2363,6 +2391,11 @@ impl Parser {
                     None
                 }
                 (Some(dt), Some(true)) => Some(DataType::Signed(Box::new(dt))),
+                (Some(dt), Some(false)) => {
+                    // DataType tak punya varian unsigned — catat di implicit_sign.
+                    implicit_sign = Some(false);
+                    Some(dt)
+                }
                 (dt, _) => dt,
             };
 

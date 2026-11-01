@@ -303,9 +303,16 @@ pub struct IrInstance {
     pub line: usize,
     pub col: usize,
     /// Atribut `(* ... *)` sebelum instance (EMULATOR.md §10 — anotasi Mivon
-    /// `mivon_region`/`mivon_irq` diteruskan ke MHIR). Field TERAKHIR —
-    /// cache bincode MICD lama gagal decode (EOF) → rebuild, bukan salah baca.
+    /// `mivon_region`/`mivon_irq` diteruskan ke MHIR).
     pub attrs: Vec<mivon_ast::types::AttrEntry>,
+    /// ELAB-13 (13): (lebar, signed) self-determined ekspresi override param
+    /// (`#(.P(16'hABCD))` → (16, false)) per nama param. `param_map` hanya
+    /// membawa nilai i64 sehingga lebar/signed-nya hilang; flatten meneruskan
+    /// peta ini ke elaborasi child supaya `$bits(P)`/normalisasi nilai memakai
+    /// tipe override (LRM 6.20.2), bukan lebar literal default deklarasi.
+    /// Field TERAKHIR — cache bincode MICD lama gagal decode (EOF) → rebuild,
+    /// bukan salah baca.
+    pub param_width_map: std::sync::Arc<std::collections::HashMap<Symbol, (usize, bool)>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]

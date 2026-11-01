@@ -206,6 +206,17 @@ pub struct Elaborator {
     /// `DataType::width` sehingga `signed int` → 32, typedef → 64, range
     /// lebar → 128). Diisi dari deklarasi param saat elaborasi module.
     pub param_bits_widths: HashMap<Symbol, usize>,
+    /// ELAB-13 (13): lebar ekspresi OVERRIDE param instance yang SEDANG
+    /// dielaborasi (`#(.P(16'hABCD))` → P=16). Dipasang flatten dari
+    /// `IrInstance.param_width_map` sebelum elaborasi child, dipulihkan
+    /// sesudahnya. Hanya berlaku untuk param TANPA range/dtype — deklarasi
+    /// eksplisit tetap mengikat lebar.
+    pub instance_param_widths: HashMap<Symbol, usize>,
+    /// ELAB-13 (13): signedness ekspresi OVERRIDE param instance
+    /// (`#(.P(16'hABCD))` → unsigned). Paralel dengan `instance_param_widths`,
+    /// dipakai `param_decl_signed` agar signedness param child ikut override
+    /// (LRM 6.20.2) — termasuk saat IR (`param_is_signed`) dihitung.
+    pub instance_param_signed: HashMap<Symbol, bool>,
     /// Lebar type param module yang SEDANG dielaborasi (nama → lebar bit
     /// efektif). Lihat inisialisasi di constructor untuk dokumentasi.
     pub cur_type_param_widths: HashMap<Symbol, usize>,
@@ -746,6 +757,8 @@ impl Elaborator {
             param_vals: HashMap::new(),
             param_widths: HashMap::new(),
             param_bits_widths: HashMap::new(),
+            instance_param_widths: HashMap::new(),
+            instance_param_signed: HashMap::new(),
             param_is_signed: std::collections::HashSet::new(),
             let_decls: HashMap::new(),
             checker_decls: HashMap::new(),
@@ -2082,6 +2095,17 @@ impl Elaborator {
         // deklarasi param, bukan fallback 64 bit. Scope bersarang (flatten
         // child) otomatis terisolasi.
         let _param_width_scope = mivon_ast::const_eval::push_param_width_scope();
+        // ELAB-13 (13): scope di atas menutupi override yang dipasang flatten;
+        // re-set dari field elaborator agar `param_decl_signed` tetap
+        // override-aware saat `param_is_signed`/IR dihitung.
+        if !self.instance_param_widths.is_empty() {
+            let mut ovr: HashMap<Symbol, (usize, bool)> = HashMap::new();
+            for (k, w) in &self.instance_param_widths {
+                let s = self.instance_param_signed.get(k).copied().unwrap_or(false);
+                ovr.insert(*k, (*w, s));
+            }
+            mivon_ast::const_eval::set_instance_override_widths(ovr);
+        }
         // Isi scope lebih awal: ekspansi generate (di bawah) memakai
         // const-fold SEBELUM `module_param_widths` dipanggil di akhir.
         mivon_ast::const_eval::set_param_widths(self.module_param_meta(module, param_vals));
@@ -2353,6 +2377,11 @@ impl Elaborator {
         // sebagai IrExpr::Signed (bukan Const unsigned 64) — `X < 0` benar.
         // Juga dipakai kondisi generate-if (util/generate.rs).
         self.param_is_signed = self.module_param_signed_set(module);
+        // ELAB-13 (13): lebar ekspresi override menimpa lebar deklarasi
+        // (LRM 6.20.2) — `~P`/`$bits(P)` memakai lebar tipe override.
+        for (k, w) in &self.instance_param_widths {
+            self.param_widths.insert(*k, *w);
+        }
         // ELAB-13: normalisasi nilai param UNSIGNED ke lebar deklarasinya
         // (setelah param_widths + signedness tersedia). Jalur const-fold
         // memakai nilai mentah, jadi `parameter [7:0] D = -1` harus menjadi
@@ -5210,6 +5239,11 @@ impl Elaborator {
                         // ilegal LRM — error di titik override (bukan tebak 0
                         // diam-diam seperti sebelumnya).
                         let mut param_map = HashMap::new();
+                        // ELAB-13 (13): lebar self-determined ekspresi
+                        // override — `param_map` hanya nilai i64, lebar tipe
+                        // override (LRM 6.20.2) harus dibawa terpisah ke
+                        // elaborasi child (flatten).
+                        let mut param_width_map: HashMap<Symbol, (usize, bool)> = HashMap::new();
                         for (pname, pexpr) in &inst.param_assigns {
                             let val = match const_eval_with_params(pexpr, &effective_params) {
                                 Ok(v) => v,
@@ -5249,6 +5283,17 @@ impl Elaborator {
                                 }
                             };
                             param_map.insert(*pname, val);
+                            if let Some(w) = crate::util::param_util::override_expr_width(
+                                pexpr,
+                                &effective_params,
+                            ) {
+                                let signed = crate::util::param_util::override_expr_signed(
+                                    pexpr,
+                                    &effective_params,
+                                )
+                                .unwrap_or(false);
+                                param_width_map.insert(*pname, (w, signed));
+                            }
                             // Override berupa Ident/ScopedIdent yang merujuk
                             // struct-parameter (field-nya SUDAH ter-flatten di
                             // `effective_params` sebagai `name.field`, mis.
@@ -5427,6 +5472,7 @@ impl Elaborator {
                             let pm = std::sync::Arc::new(port_map);
                             let pam = std::sync::Arc::new(param_map);
                             let tpam = std::sync::Arc::new(type_param_map);
+                            let pwam = std::sync::Arc::new(param_width_map);
                             for idx in start..=end {
                                 let inst_name = format!("{}[{}]", inst.instance_name, idx);
                                 sub_instances.push(IrInstance {
@@ -5438,6 +5484,7 @@ impl Elaborator {
                                     line: inst.line,
                                     col: inst.col,
                                     attrs: inst.attrs.clone(),
+                                    param_width_map: pwam.clone(),
                                 });
                             }
                         } else {
@@ -5450,6 +5497,7 @@ impl Elaborator {
                                 line: inst.line,
                                 col: inst.col,
                                 attrs: inst.attrs.clone(),
+                                param_width_map: std::sync::Arc::new(param_width_map),
                             });
                         }
                     }

@@ -470,6 +470,15 @@ thread_local! {
     /// sedangkan peta perbandingan sengaja konservatif.
     static PARAM_BITS_STACK: std::cell::RefCell<Vec<HashMap<Symbol, usize>>> =
         const { std::cell::RefCell::new(Vec::new()) };
+    /// ELAB-13 (13): lebar self-determined ekspresi OVERRIDE param instance
+    /// (`#(.P(16'hABCD))` → 16). Terpisah dari PARAM_BITS_STACK karena peta
+    /// itu selalu berisi lebar DEKLARASI (fallback), sedangkan peta ini hanya
+    /// berisi override yang lebarnya benar-benar diketahui — `None` berarti
+    /// "pakai lebar deklarasi", bukan "lebar 0". Dipakai normalisasi nilai
+    /// override (sign-extend param signed) dan fold `$bits(param)` pada
+    /// default localparam/generate.
+    static INSTANCE_OVERRIDE_STACK: std::cell::RefCell<Vec<HashMap<Symbol, (usize, bool)>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
     /// ELAB-13 (11): lebar/signedness param PACKAGE berkunci `pkg::name`,
     /// diisi SEKALI per desain (elaborator). Fallback untuk referensi
     /// qualified `pkg::NAME` yang package-nya TIDAK di-import module —
@@ -495,6 +504,9 @@ impl Drop for ParamWidthScope {
         PARAM_BITS_STACK.with(|s| {
             s.borrow_mut().pop();
         });
+        INSTANCE_OVERRIDE_STACK.with(|s| {
+            s.borrow_mut().pop();
+        });
     }
 }
 
@@ -502,7 +514,38 @@ impl Drop for ParamWidthScope {
 pub fn push_param_width_scope() -> ParamWidthScope {
     PARAM_WIDTH_STACK.with(|s| s.borrow_mut().push(HashMap::new()));
     PARAM_BITS_STACK.with(|s| s.borrow_mut().push(HashMap::new()));
+    INSTANCE_OVERRIDE_STACK.with(|s| s.borrow_mut().push(HashMap::new()));
     ParamWidthScope
+}
+
+/// Isi scope teratas dengan lebar ekspresi override param instance
+/// (ELAB-13 (13)). Dipanggil elaborator sebelum resolusi param child.
+pub fn set_instance_override_widths(map: HashMap<Symbol, (usize, bool)>) {
+    INSTANCE_OVERRIDE_STACK.with(|s| {
+        if let Some(top) = s.borrow_mut().last_mut() {
+            *top = map;
+        }
+    });
+}
+
+/// Lebar ekspresi override param (None = tidak diketahui / bukan override).
+pub fn instance_override_width(name: Symbol) -> Option<usize> {
+    INSTANCE_OVERRIDE_STACK.with(|s| {
+        s.borrow()
+            .last()
+            .and_then(|top| top.get(&name).map(|pair| pair.0))
+    })
+}
+
+/// Signedness ekspresi override param (None bila tak ada override / tak
+/// terdeterminasi). LRM 6.20.2: tipe override mengikuti ekspresi override,
+/// kecuali deklarasi memaksa signed/unsigned eksplisit.
+pub fn instance_override_signed(name: Symbol) -> Option<bool> {
+    INSTANCE_OVERRIDE_STACK.with(|s| {
+        s.borrow()
+            .last()
+            .and_then(|top| top.get(&name).map(|pair| pair.1))
+    })
 }
 
 /// Isi scope teratas dengan peta (lebar, signed) param module saat ini

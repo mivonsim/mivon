@@ -1740,17 +1740,55 @@ ELAB-13: ⚠️ PARTIAL (ROUND 222/228/230/231) — Parameter berlebar eksplisit
          param module beda signedness, fallback suffix memakai entri module
          (caveat (v)); dan nilai localparam yang masuk lewat jalur array/
          struct belum dinormalkan;
-         (13) lebar/signedness OVERRIDE belum dipropagasi: `#(.P(16'hABCD))`
-         pada `parameter P = 1` masih 64 bit (iverilog: 16 bit, ~P = 5432).
-         Root cause presisi: override MASIH membawa `Expr` lengkap
-         (`ModuleInstance.param_assigns: HashMap<Symbol, Expr>`,
-         mivon-ast types.rs), tetapi lebarnya hilang saat elaborator
-         const-eval ke `param_map: HashMap<Symbol, i64>`
-         (elaborator/mod.rs loop override instance) — jadi lebar override
-         bisa diinferensi di titik itu, bukan harus peta baru di IR.
-         Override yang nilainya SAMA dengan default (`#(.P(16'd1))`) ikut
-         lebar default (32 bit; iverilog 16 bit) karena guard `dv == v`
-         tidak bisa membedakan asal nilai;
+         (13) ✅ FIXED (ROUND 235) lebar/signedness OVERRIDE kini dipropagasi
+         per-instance (LRM 6.20.2). `#(.P(16'hABCD))` pada `parameter P = 1`
+         → 16 bit, `$bits(P)` = 16, nilai 0xABCD (bukan 32/64). Override
+         signed eksplisit (`parameter signed P8` + `#(.P8(8'hFF))`) → -1
+         (sign-extend); `#(.S(-1))` → 32-bit signed -1; override unsigned
+         pada default signed (`parameter P = 8'sd1` + `#(.P(16'hABCD))`)
+         → 0xABCD (tidak sign-extend; test lama tetap lolos).
+         AKAR: lebar/signed ekspresi override hilang saat const-eval ke
+         `param_map: HashMap<Symbol,i64>`. PERBAIKAN: (a) `override_expr_width`
+         / `override_expr_signed` menginferensi tipe self-determined ekspresi
+         override; (b) `IrInstance.param_width_map: HashMap<Symbol,(usize,bool)>`
+         dibawa flatten ke child; (c) thread-local `INSTANCE_OVERRIDE_STACK`
+         menjadi `(usize,bool)` + `instance_override_width`/`_signed`;
+         (d) `param_decl_signed`/`param_static_width`/`param_decl_width`
+         override-aware; (e) `instance_param_widths`/`instance_param_signed`
+         pada elaborator + re-set thread-local di
+         `elaborate_module_with_params_and_type` (scope push menutupi override
+         flatten); (f) `self.param_widths` ditimpa lebar override agar
+         `$bits`/ekspresi memakai lebar tipe override.
+         URUTAN PENTING: `set_instance_override_widths` HARUS sebelum
+         `set_param_widths(static_param_widths(...))`.
+         Test: test_override_parameter_width_is_self_determined (nilai 0xABCD,
+         $bits=16), test_signed_override_parameter_sign_extended (P8 8'hFF →
+         -1, S -1 → 64-bit, $bits(S)=32),
+         test_override_parameter_literal_signedness_and_typed_width
+         (8'shFF → -1, -8'h1 → 0xFF unsigned, -16'h8000 → P<0=0,
+         parameter int + override → $bits 32, parameter byte + override →
+         $bits 8) + test lama
+         test_signed_literal_parameter_override_is_not_sign_extended tetap
+         lolos.
+         REVISI review ronde 1 (3 temuan blocking diperbaiki):
+         (1) `override_expr_signed` kini memakai flag `is_signed` literal
+         (`8'shFF` signed) dan `Decimal → signed` (LRM 5.7.1);
+         (2) unary minus/plus MEMPERTAHANKAN tipe operand (`-8'h1` unsigned,
+         LRM 11.8.1) — dulu dipaksa signed;
+         (3) header parser kini merekam tipe keyword ke `dtype` (ELAB-13 (6))
+         sehingga `parameter int P` + override tetap 32 bit (bukan menyempit),
+         `parameter byte` → 8, `logic` → 1;
+         (4) BONUS: `param_ir_signature` menyertakan signedness override
+         (dulu hanya lebar → `8'hFF` vs `8'shFF` bertabrakan di
+         `param_ir_cache` dan memberi hasil salah).
+         Mutasi MUTASI_13w (`override_expr_width` → None) → semua test
+         override gagal. Suite 3984 / 24.
+         SISA (di luar propagasi lebar/signed): `~P` di `assign o[63:0] = ~P`
+         menjadi 64 bit (0xFFFF_FFFF_FFFF_5432) karena context-determined
+         width assignment melebarkan `~`; iverilog 0x5432 (self-determined).
+         Ini isu context-width operator unary, bukan propagasi tipe override.
+         Butir (17) (lebar literal basis) kini punya prasyarat peta lebar
+         per-instance yang SUDAH ada — bisa dikerjakan berikutnya;
          (14) perbandingan param vs literal di const-fold mengabaikan
          lebar/signedness: `parameter A = -1; (A == 32'hFFFFFFFF)` = 0
          (iverilog 1) padahal `w = A; (w == 32'hFFFFFFFF)` = 1 → dicatat

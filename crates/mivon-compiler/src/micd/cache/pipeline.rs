@@ -785,6 +785,7 @@ mod tests {
                 line: 10 + i,
                 col: 1,
                 attrs: Vec::new(),
+                param_width_map: std::sync::Arc::new(HashMap::new()),
             });
         }
         m.processes.push(Process::Sequential {

@@ -108,6 +108,59 @@ fn default_literal_width(e: &Expr) -> Option<usize> {
     }
 }
 
+/// ELAB-13 (13): lebar self-determined ekspresi OVERRIDE param instance.
+/// LRM 6.20.2: tipe parameter hasil override ditentukan tipe ekspresi
+/// override, sehingga `#(.P(16'hABCD))` pada `parameter P = 1` selebar 16
+/// (bukan 32 dari literal default). Hanya bentuk yang lebarnya pasti
+/// diinferensi — bentuk lain (`Ident`, cast nama tipe, dsb.) → `None` supaya
+/// pemanggil memakai lebar deklarasi seperti sebelumnya.
+pub(crate) fn override_expr_width(e: &Expr, params: &HashMap<Symbol, i64>) -> Option<usize> {
+    match e {
+        Expr::Paren(inner) => override_expr_width(inner, params),
+        Expr::UnaryOp {
+            op: UnaryOp::Minus | UnaryOp::Plus,
+            expr,
+        } => override_expr_width(expr, params),
+        // `size'(expr)`: lebar ditentukan ekspresi size.
+        Expr::CastWidth { width, .. } => const_eval_params(width, params)
+            .ok()
+            .and_then(|w| usize::try_from(w).ok())
+            .filter(|w| *w > 0 && *w <= 64),
+        Expr::Value(Value::Binary { width, .. })
+        | Expr::Value(Value::Hex { width, .. })
+        | Expr::Value(Value::Octal { width, .. }) => Some(width.unwrap_or(32)).filter(|w| *w <= 64),
+        Expr::Value(Value::Decimal(v)) => Some(signed_bits(*v).max(32)).filter(|w| *w <= 64),
+        Expr::FillLit(_) => Some(1),
+        _ => None,
+    }
+}
+
+/// ELAB-13 (13): signedness self-determined ekspresi OVERRIDE param instance
+/// (LRM 6.20.2). Aturan: unary minus/plus MEMPERTAHANKAN tipe operand
+/// (LRM 11.8.1); literal basis/biner/oktal memakai flag `is_signed` sendiri;
+/// desimal unbased SELALU signed (LRM 5.7.1); fill `'1` unsigned; bentuk lain
+/// (`Ident`, cast nama tipe) → `None` (pemanggil memakai signedness deklarasi).
+pub(crate) fn override_expr_signed(e: &Expr, _params: &HashMap<Symbol, i64>) -> Option<bool> {
+    match e {
+        Expr::Paren(inner) => override_expr_signed(inner, _params),
+        // Unary minus/plus MEMPERTAHANKAN tipe operand (LRM 11.8.1):
+        // `-8'h1` tetap unsigned 8-bit, `-1` (desimal signed) tetap signed.
+        Expr::UnaryOp {
+            op: UnaryOp::Minus | UnaryOp::Plus,
+            expr,
+        } => override_expr_signed(expr, _params),
+        // Literal basis/biner/oktal membawa flag is_signed sendiri (LRM 5.7.1).
+        Expr::Value(Value::Binary { is_signed, .. })
+        | Expr::Value(Value::Hex { is_signed, .. })
+        | Expr::Value(Value::Octal { is_signed, .. }) => Some(*is_signed),
+        // Desimal unbased SELALU signed (LRM 5.7.1).
+        Expr::Value(Value::Decimal(_)) => Some(true),
+        // Fill `'1`/`'0` unsigned (lebarnya dari konteks).
+        Expr::FillLit(_) => Some(false),
+        _ => None,
+    }
+}
+
 /// ELAB-13/14: lebar deklarasi param TANPA melihat nilai efektif — dipakai
 /// untuk menyemai scope lebar const-fold SEBELUM nilai param di-resolve
 /// (localparam/generate-if di fase prepass). Override tetap mengikuti lebar
@@ -126,6 +179,11 @@ pub(crate) fn param_static_width(p: &ParamDecl, params: &HashMap<Symbol, i64>) -
     }
     if let Some(dt) = &p.dtype {
         return dtype_width(dt).filter(|w| *w <= 64);
+    }
+    // ELAB-13 (13): lebar ekspresi OVERRIDE menimpa lebar literal default
+    // (LRM 6.20.2) bila thread-local override terset (elaborasi child).
+    if let Some(w) = mivon_ast::const_eval::instance_override_width(p.name) {
+        return (w <= 64).then_some(w);
     }
     p.default
         .as_ref()
@@ -172,6 +230,11 @@ pub(crate) fn param_decl_signed(p: &ParamDecl) -> bool {
     }
     if p.range.is_some() {
         return false;
+    }
+    // ELAB-13 (13): override membawa signedness ekspresi sendiri
+    // (LRM 6.20.2), mengalahkan signedness literal default bila ada override.
+    if let Some(ov) = mivon_ast::const_eval::instance_override_signed(p.name) {
+        return ov;
     }
     match &p.default {
         Some(expr) => crate::elaborator::sign::elab_expr_is_signed(expr),
@@ -282,10 +345,37 @@ pub(crate) fn normalize_override_value(
     v: i64,
     params: &HashMap<Symbol, i64>,
 ) -> i64 {
+    // ELAB-13 (13): param tanpa range/dtype memakai lebar ekspresi override
+    // (LRM 6.20.2). `normalize_with_width` sengaja TIDAK dipakai di sini: ia
+    // melebarkan lebar ke `value_type_width(v)` (benar untuk default, salah
+    // untuk override — `#(.P(16'hFFFF))` harus tetap 16 bit, bukan 32).
+    if p.range.is_none() && p.dtype.is_none() {
+        if let Some(w) = mivon_ast::const_eval::instance_override_width(p.name) {
+            return truncate_sign_width(p, v, w);
+        }
+    }
     match param_width_of(p, params) {
         Some(w) => normalize_with_width(p, v, w),
         None => v,
     }
+}
+
+/// Truncate `v` ke `w` bit lalu sign-extend bila param signed (lebar/signed
+/// override-aware via `param_decl_signed`, LRM 6.20.2 — dipakai override
+/// yang tipenya sudah pasti, tanpa melebarkan lebar).
+fn truncate_sign_width(p: &ParamDecl, v: i64, w: usize) -> i64 {
+    if w == 0 || w >= 64 {
+        return v;
+    }
+    let mask = (1u64 << w) - 1;
+    let raw = v as u64 & mask;
+    if param_decl_signed(p) {
+        let sign_bit = 1u64 << (w - 1);
+        if raw & sign_bit != 0 {
+            return (raw | !mask) as i64;
+        }
+    }
+    raw as i64
 }
 
 /// Truncate ke `w` (dilebarkan dulu ke lebar tipe nilai untuk param untyped)
@@ -526,17 +616,21 @@ fn param_decl_width(
     vals: &HashMap<Symbol, i64>,
     infer_default: bool,
 ) -> Option<usize> {
-    module
+    let body = collect_body_params(module);
+    let decl = module
         .params
         .iter()
         .find(|p| p.name == *name)
-        .and_then(|p| param_decl_width_one(p, vals, infer_default))
-        .or_else(|| {
-            collect_body_params(module)
-                .iter()
-                .find(|p| p.name == *name)
-                .and_then(|p| param_decl_width_one(p, vals, infer_default))
-        })
+        .or_else(|| body.iter().find(|p| p.name == *name))?;
+    // ELAB-13 (13): param tanpa range/dtype mengambil tipe ekspresi OVERRIDE
+    // (LRM 6.20.2), jadi `#(.P(16'hABCD))` selebar 16 — bukan lebar literal
+    // default deklarasi. Range/dtype eksplisit tetap mengikat.
+    if infer_default && decl.range.is_none() && decl.dtype.is_none() {
+        if let Some(w) = mivon_ast::const_eval::instance_override_width(*name) {
+            return Some(w);
+        }
+    }
+    param_decl_width_one(decl, vals, infer_default)
 }
 
 /// Ganti `$bits(Ident)`/`$size(Ident)` pada ekspresi dengan konstanta = lebar

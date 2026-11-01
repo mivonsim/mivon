@@ -901,6 +901,121 @@ endmodule
     assert_eq!(hit, 1, "~(a + P) harus 8 bit: ~(8'h0E + 8'd1) == 8'hF0");
 }
 
+/// ELAB-13 butir (13): parameter TANPA range/dtype mengambil tipe ekspresi
+/// OVERRIDE (LRM 6.20.2). `#(.P(16'hABCD))` pada `parameter P = 1` selebar
+/// 16 bit, bukan 32/64. Referensi iverilog 12: `o = ~16'hABCD = 16'h5432`,
+/// `ob = $bits(P) = 16`. Sebelum perbaikan lebar override hilang →
+/// `param_map` hanya i64 sehingga `$bits` jatuh ke lebar default (64).
+#[test]
+fn test_override_parameter_width_is_self_determined() {
+    let source = r#"
+module child #(parameter P = 1) (output [63:0] o, output [63:0] ob);
+  assign o = P;
+  assign ob = $bits(P);
+endmodule
+module tb;
+  wire [63:0] o;
+  wire [63:0] ob;
+  child #(.P(16'hABCD)) u (.o(o), .ob(ob));
+  initial begin #1 $finish; end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 5).unwrap();
+    let get = |n: &str| {
+        sigs.iter()
+            .find(|(s, _)| s == n)
+            .map(|(_, v)| v.to_u64())
+            .unwrap_or(0)
+    };
+    assert_eq!(get("o"), 0xABCD, "override 16'hABCD nilai = 0xABCD");
+    assert_eq!(
+        get("ob"),
+        16,
+        "$bits(P) override 16'hABCD = 16 (bukan 32/64)"
+    );
+}
+
+/// ELAB-13 butir (13): override BERTIPE (signed) memakai lebar ekspresi
+/// override dan sign-extend. `#(.P8(8'hFF))` pada `parameter signed P8`
+/// → -1 (255 sign-extend), `(P8 < 0)` = 1. Referensi iverilog 12.
+#[test]
+fn test_signed_override_parameter_sign_extended() {
+    let source = r#"
+module child #(parameter signed P8 = 8'sh1, parameter S = 1)
+               (output [63:0] a, output [63:0] b, output [63:0] c, output [63:0] d);
+  assign a = P8;
+  assign b = (P8 < 0);
+  assign c = S;
+  assign d = $bits(S);
+endmodule
+module tb;
+  wire [63:0] a;
+  wire [63:0] b;
+  wire [63:0] c;
+  wire [63:0] d;
+  child #(.P8(8'hFF), .S(-1)) u (.a(a), .b(b), .c(c), .d(d));
+  initial begin #1 $finish; end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 5).unwrap();
+    let get = |n: &str| {
+        sigs.iter()
+            .find(|(s, _)| s == n)
+            .map(|(_, v)| v.to_u64())
+            .unwrap_or(0)
+    };
+    // 8'hFF override pada param signed → -1 → 64-bit 0xFFFFFFFFFFFFFFFF.
+    assert_eq!(
+        get("a"),
+        0xFFFF_FFFF_FFFF_FFFF,
+        "P8 override 8'hFF sign-extend → -1"
+    );
+    assert_eq!(get("b"), 1, "(P8 < 0) must be true for signed override");
+    assert_eq!(get("c"), 0xFFFF_FFFF_FFFF_FFFF, "S override -1 → 64-bit -1");
+    assert_eq!(get("d"), 32, "$bits(S) override -1 (decimal) = 32");
+}
+
+/// ELAB-13 butir (13) revisi (review ronde 1): signedness literal basis +
+/// tipe keyword deklarasi. `8'shFF` signed → -1; `-8'h1` unsigned 8-bit →
+/// 0xFF (unary minus MEMPERTAHANKAN tipe operand, LRM 11.8.1);
+/// `parameter int P` + `#(.P(8'hFF))` → `$bits` 32 (tipe deklarasi mengikat);
+/// `parameter byte P` + override → `$bits` 8. Referensi iverilog 12.
+#[test]
+fn test_override_parameter_literal_signedness_and_typed_width() {
+    let source = r#"
+module c1 #(parameter P = 1) (output [63:0] a, output [63:0] ob, output b);
+  assign a = P; assign ob = $bits(P); assign b = (P < 0);
+endmodule
+module c2 #(parameter int P = 0) (output [63:0] ob); assign ob = $bits(P); endmodule
+module c3 #(parameter byte P = 0) (output [63:0] ob); assign ob = $bits(P); endmodule
+module tb;
+  wire [63:0] a1,a2,a3,ob1,ob2,ob3,ib,bb;
+  wire b1,b2,b3;
+  c1 #(.P(8'shFF)) u1(.a(a1),.ob(ob1),.b(b1));
+  c1 #(.P(-8'h1)) u2(.a(a2),.ob(ob2),.b(b2));
+  c1 #(.P(-16'h8000)) u3(.a(a3),.ob(ob3),.b(b3));
+  c2 #(.P(8'hFF)) u4(.ob(ib));
+  c3 #(.P(16'h1234)) u5(.ob(bb));
+  initial begin #1 $finish; end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 5).unwrap();
+    let get = |n: &str| {
+        sigs.iter()
+            .find(|(s, _)| s == n)
+            .map(|(_, v)| v.to_u64())
+            .unwrap_or(0)
+    };
+    assert_eq!(get("a1"), 0xFFFF_FFFF_FFFF_FFFF, "8'shFF signed → -1");
+    assert_eq!(get("b1"), 1, "8'shFF signed → P<0");
+    assert_eq!(get("a2"), 0xFF, "-8'h1 unsigned 8-bit → 0xFF");
+    assert_eq!(get("b2"), 0, "-8'h1 unsigned → P<0 false");
+    assert_eq!(get("a3"), 0x8000, "-16'h8000 unsigned 16-bit → 0x8000");
+    assert_eq!(get("b3"), 0, "-16'h8000 unsigned → P<0 false");
+    assert_eq!(get("ib"), 32, "parameter int P + override → $bits 32");
+    assert_eq!(get("bb"), 8, "parameter byte P + override → $bits 8");
+}
+
 /// ELAB-13 butir (11): `parameter signed <tipe>` TANPA range harus
 /// truncate + sign-extend ke lebar tipe (int 32, byte 8, shortint 16).
 /// Sebelum perbaikan `dtype_width(Signed(_))` = None sehingga nilai mentah

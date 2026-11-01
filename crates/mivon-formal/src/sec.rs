@@ -1870,6 +1870,7 @@ mod tests {
             line: 1,
             col: 1,
             attrs: Vec::new(),
+            param_width_map: Default::default(),
         }];
         match design_from_module(&m) {
             Err(msg) => assert!(msg.contains("instance sub-modul"), "{msg}"),

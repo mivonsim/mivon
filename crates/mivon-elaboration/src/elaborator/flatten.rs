@@ -41,6 +41,7 @@ impl Elaborator {
         module_name: Symbol,
         param_map: &HashMap<Symbol, i64>,
         type_param_map: &HashMap<Symbol, usize>,
+        param_width_map: &HashMap<Symbol, (usize, bool)>,
     ) -> (Symbol, u64) {
         use mivon_core::checksum::{combine_checksum, compute_checksum, compute_str_checksum};
         let mut h = compute_str_checksum(module_name.as_str());
@@ -57,6 +58,24 @@ impl Elaborator {
             h = combine_checksum(
                 h,
                 compute_checksum(&(type_param_map[k] as u64).to_le_bytes()),
+            );
+        }
+        // ELAB-13 (13): lebar override ikut signature — `#(.P(16'd1))` dan
+        // `#(.P(32'd1))` punya nilai sama tapi tipe berbeda (LRM 6.20.2).
+        let mut wkeys: Vec<&Symbol> = param_width_map.keys().collect();
+        wkeys.sort_by_key(|k| k.as_str());
+        for k in wkeys {
+            h = combine_checksum(h, compute_str_checksum(k.as_str()));
+            h = combine_checksum(
+                h,
+                compute_checksum(&(param_width_map[k].0 as u64).to_le_bytes()),
+            );
+            // Signedness WAJIB ikut: `#(.P(8'hFF))` (unsigned) vs
+            // `#(.P(8'shFF))` (signed) punya lebar sama tapi tipe beda —
+            // tanpa ini keduanya bertabrakan di `param_ir_cache`.
+            h = combine_checksum(
+                h,
+                compute_checksum(&(param_width_map[k].1 as u64).to_le_bytes()),
             );
         }
         (module_name, h)
@@ -369,6 +388,7 @@ impl Elaborator {
                     inst.module_name,
                     &inst.param_map,
                     &inst.type_param_map,
+                    &inst.param_width_map,
                 );
                 let cached = self.param_ir_cache.get(&sig).cloned();
                 match cached {
@@ -426,14 +446,44 @@ impl Elaborator {
                         // scope sendiri), sehingga tanpa ini const-fold
                         // memakai fallback 64 bit dan cabang generate/localparam
                         // salah untuk child ber-parameter.
+                        // ELAB-13 (13): `set_instance_override_widths` HARUS dijalankan
+                        // SEBELUM `set_param_widths(static_param_widths(...))`
+                        // karena `static_param_widths` membaca `param_decl_signed`
+                        // yang kini override-aware (LRM 6.20.2) — urutan salah
+                        // membuat signedness/lebar param child jatuh ke default.
                         let _param_width_scope = mivon_ast::const_eval::push_param_width_scope();
+                        mivon_ast::const_eval::set_instance_override_widths(
+                            (*inst.param_width_map).clone(),
+                        );
+                        let prev_instance_widths = std::mem::replace(
+                            &mut self.instance_param_widths,
+                            (*inst.param_width_map)
+                                .iter()
+                                .map(|(k, (w, _))| (*k, *w))
+                                .collect(),
+                        );
+                        let prev_instance_signed = std::mem::replace(
+                            &mut self.instance_param_signed,
+                            (*inst.param_width_map)
+                                .iter()
+                                .map(|(k, (_, s))| (*k, *s))
+                                .collect(),
+                        );
                         mivon_ast::const_eval::set_param_widths(
                             super::super::util::param_util::static_param_widths(
                                 &ast_module,
                                 &inst.param_map,
                             ),
                         );
-                        let param_vals = self.resolve_param_values(&ast_module, &inst.param_map)?;
+                        let param_vals =
+                            match self.resolve_param_values(&ast_module, &inst.param_map) {
+                                Ok(v) => v,
+                                Err(e) => {
+                                    self.instance_param_widths = prev_instance_widths;
+                                    self.instance_param_signed = prev_instance_signed;
+                                    return Err(e);
+                                }
+                            };
                         mivon_ast::const_eval::set_param_widths(
                             self.module_param_meta(&ast_module, &param_vals),
                         );
@@ -446,7 +496,7 @@ impl Elaborator {
                                 .any(|it| matches!(it, ModuleItem::Generate(_)))
                         {
                             let signed_for_gen = self.module_param_signed_set(&ast_module);
-                            super::super::util::expand_all_generates(
+                            let gen_res = super::super::util::expand_all_generates(
                                 &mut ast_module,
                                 &param_vals,
                                 &signed_for_gen,
@@ -457,14 +507,28 @@ impl Elaborator {
                                 &self.package_symbols,
                                 &self.pkg_struct_ref_index,
                                 &self.pkg_array_structs,
-                            )?;
+                            );
+                            if let Err(e) = gen_res {
+                                self.instance_param_widths = prev_instance_widths;
+                                self.instance_param_signed = prev_instance_signed;
+                                return Err(e.into());
+                            }
                         }
-                        let ir = self.elaborate_module_with_params_and_type(
+                        let ir = match self.elaborate_module_with_params_and_type(
                             &ast_module,
                             known_mods,
                             &param_vals,
                             &inst.type_param_map,
-                        )?;
+                        ) {
+                            Ok(ir) => ir,
+                            Err(e) => {
+                                self.instance_param_widths = prev_instance_widths;
+                                self.instance_param_signed = prev_instance_signed;
+                                return Err(e);
+                            }
+                        };
+                        self.instance_param_widths = prev_instance_widths;
+                        self.instance_param_signed = prev_instance_signed;
                         // Bounded cache: 512 entry cukup untuk duplikasi
                         // parameter umum; sisa (signature unik) dielaborasi
                         // sekali saja tanpa menyimpan.
