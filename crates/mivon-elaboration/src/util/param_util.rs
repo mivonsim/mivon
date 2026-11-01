@@ -79,24 +79,193 @@ pub(crate) fn param_width_of(p: &ParamDecl, params: &HashMap<Symbol, i64>) -> Op
     (w <= 64).then_some(w)
 }
 
-/// ELAB-13: lebar self-determined literal default param. Literal tak berlebar
-/// (desimal maupun basis) = 32 bit — LRM 6.20.2: parameter tanpa range/tipe
-/// mengambil tipe nilainya, desimal tak berlebar = `int` (32 bit signed),
-/// literal basis tak berlebar = 32 bit unsigned. Unary +/- dan tanda kurung
-/// tidak mengubah lebar.
+/// ELAB-13: lebar self-determined literal default param (LRM 6.20.2 —
+/// parameter tanpa range/tipe mengambil tipe nilainya). Desimal tak berlebar =
+/// `int` (32 bit signed, melebar bila nilai tak muat). Literal basis tak
+/// berlebar memakai `unsized_based_width`. Unary +/- dan tanda kurung tidak
+/// mengubah lebar.
+///
+/// ELAB-13 (17): lebar literal basis TAK berlebar. Aturan iverilog 12
+/// (terukur pada oracle, rincian + kasus terverifikasi di audit.txt butir
+/// (17)):
+/// - UNSIGNED: max(32, min(lebar_nilai + 1, kapasitas)). lebar_nilai dihitung
+///   setelah nol depan dibuang; digit x/z/? dihitung PENUH selebar basis.
+/// - SIGNED (`'sh...`): max(32, min(lebar_nilai + 1, kapasitas)) dengan nilai
+///   dibaca two's complement selebar kapasitas. Untuk nilai negatif dipakai
+///   komplemen digitnya (lebar(komplemen) + 1 = lebar two's complement),
+///   sehingga tidak butuh aritmetika di atas 64 bit. Digit x/z/? dibaca 0.
+/// Contoh: 'h1FFFFFFFF -> 34, 'hFFFFFFFFF -> 36, 'h0FFFFFFFFF -> 37,
+/// 'o177777777777 -> 35; 'shF00000000 -> 33, 'shFFFFFFFFFFFFFFFF -> 32,
+/// 'shFFFFFFFFFFFFFFFFFFFF -> 32, 'shF0000000000000000000 -> 85.
+fn unsized_based_width(bits: &str, base_width: usize, is_signed: bool) -> usize {
+    let chars: Vec<char> = bits.chars().filter(|c| *c != '_').collect();
+    if chars.is_empty() {
+        return 32;
+    }
+    let capacity = base_width * chars.len();
+    let is_unknown = |c: char| matches!(c.to_ascii_lowercase(), 'x' | 'z' | '?');
+    let digit = |c: char| -> u64 { c.to_digit(16).unwrap_or(0) as u64 };
+    // Akumulasi lebar nilai dari digit efektif (nol depan dibuang).
+    let mut value_width = 0usize;
+    let mut started = false;
+    let mut push = |bits_of: usize| {
+        if !started {
+            if bits_of == 0 {
+                return;
+            }
+            started = true;
+            value_width = bits_of;
+        } else {
+            value_width += base_width;
+        }
+    };
+    if !is_signed {
+        // UNSIGNED: digit tak dikenal dihitung penuh selebar basis.
+        for c in &chars {
+            let bits_of = if is_unknown(*c) {
+                base_width
+            } else {
+                let d = digit(*c);
+                if d == 0 {
+                    0
+                } else {
+                    64 - d.leading_zeros() as usize
+                }
+            };
+            push(bits_of);
+        }
+        return (value_width + 1).min(capacity).max(32);
+    }
+    // SIGNED: bit tanda = MSB digit pertama (x/z/? -> 0). Untuk nilai negatif
+    // lebar = lebar(komplemen) + 1.
+    let mask = (1u64 << base_width) - 1;
+    let negative = (digit(chars[0]) >> (base_width - 1)) & 1 == 1;
+    for c in &chars {
+        // `saturating_sub`: digit di luar basis (mis. `'sb3`, diterima lexer
+        // meski iverilog menolaknya) tidak boleh membuat underflow panic.
+        let d = digit(*c).min(mask);
+        let v = if negative { mask - d } else { d };
+        push(if v == 0 {
+            0
+        } else {
+            64 - v.leading_zeros() as usize
+        });
+    }
+    (value_width + 1).min(capacity).max(32)
+}
+
+/// Lepas pembungkus kurung: `-('h...)` sama dengan `-'h...` (iverilog 12).
+fn strip_parens(e: &Expr) -> &Expr {
+    let mut cur = e;
+    while let Expr::Paren(inner) = cur {
+        cur = inner;
+    }
+    cur
+}
+
+/// ELAB-13 (17): lebar `-<literal basis tak berlebar>`. iverilog 12 TIDAK
+/// mempertahankan lebar operand (beda dengan LRM 11.8.1): nilainya dinegasi
+/// dalam lebar kapasitas (two's complement digit) lalu aturan lebar yang sama
+/// diterapkan pada hasilnya. Terukur: -'hFFFFFFFFF 32 (hasil 1),
+/// -'h1FFFFFFFF 36, -'hF 32, -'shF00000000 34, -'sh1FFFFFFFF 34,
+/// -'o77777777777 32.
+fn negated_based_width(bits: &str, base_width: usize, is_signed: bool) -> usize {
+    let chars: Vec<char> = bits.chars().filter(|c| *c != '_').collect();
+    if chars.is_empty() {
+        return 32;
+    }
+    // Digit tak dikenal tak bisa dinegasi numerik. iverilog 12 (terukur):
+    // signed -> 32 selalu; unsigned -> kapasitas penuh (min 32).
+    if chars
+        .iter()
+        .any(|c| matches!(c.to_ascii_lowercase(), 'x' | 'z' | '?'))
+    {
+        return if is_signed {
+            32
+        } else {
+            (base_width * chars.len()).max(32)
+        };
+    }
+    let mask = (1u64 << base_width) - 1;
+    let mut digits: Vec<u64> = chars
+        .iter()
+        .map(|c| mask - (c.to_digit(16).unwrap_or(0) as u64).min(mask))
+        .collect();
+    // Two's complement: komplemen digit lalu +1 (carry dari digit terakhir).
+    let mut i = digits.len();
+    while i > 0 {
+        i -= 1;
+        if digits[i] == mask {
+            digits[i] = 0;
+        } else {
+            digits[i] += 1;
+            break;
+        }
+    }
+    let negated: String = digits
+        .iter()
+        .map(|d| std::char::from_digit(*d as u32, 16).unwrap_or('0'))
+        .collect();
+    unsized_based_width(&negated, base_width, is_signed)
+}
+
+/// Lebar self-determined literal yang dipakai sebagai nilai DEFAULT parameter
+/// tanpa range/tipe (LRM 6.20.2). Unary +/- dan tanda kurung tidak mengubah
+/// lebar (LRM 11.8.1).
 fn default_literal_width(e: &Expr) -> Option<usize> {
     match e {
-        Expr::Value(Value::Binary { width, .. })
-        | Expr::Value(Value::Hex { width, .. })
-        | Expr::Value(Value::Octal { width, .. }) => Some(width.unwrap_or(32)),
+        Expr::Value(Value::Binary {
+            bits,
+            width,
+            is_signed,
+            ..
+        }) => Some((*width).unwrap_or_else(|| unsized_based_width(bits, 1, *is_signed))),
+        Expr::Value(Value::Hex {
+            bits,
+            width,
+            is_signed,
+            ..
+        }) => Some((*width).unwrap_or_else(|| unsized_based_width(bits, 4, *is_signed))),
+        Expr::Value(Value::Octal {
+            bits,
+            width,
+            is_signed,
+            ..
+        }) => Some((*width).unwrap_or_else(|| unsized_based_width(bits, 3, *is_signed))),
         Expr::Value(Value::Decimal(v)) => {
             // LRM 5.7.1: literal desimal tak berlebar minimal 32 bit dan
             // MELEBAR bila nilainya tidak muat (iverilog: 4000000000 -> 33
             // bit, 10^12 -> 41 bit). Konstanta 32 memotong nilai >= 2^31.
             Some(signed_bits(*v).max(32))
         }
+        // ELAB-13 (17): unary MINUS pada literal basis tak berlebar mengikuti
+        // iverilog (negasi nilai lalu aturan lebar), bukan lebar operand.
         Expr::UnaryOp {
-            op: UnaryOp::Minus | UnaryOp::Plus,
+            op: UnaryOp::Minus,
+            expr,
+        } => match strip_parens(expr) {
+            Expr::Value(Value::Binary {
+                bits,
+                width: None,
+                is_signed,
+                ..
+            }) => Some(negated_based_width(bits, 1, *is_signed)),
+            Expr::Value(Value::Hex {
+                bits,
+                width: None,
+                is_signed,
+                ..
+            }) => Some(negated_based_width(bits, 4, *is_signed)),
+            Expr::Value(Value::Octal {
+                bits,
+                width: None,
+                is_signed,
+                ..
+            }) => Some(negated_based_width(bits, 3, *is_signed)),
+            _ => default_literal_width(expr),
+        },
+        Expr::UnaryOp {
+            op: UnaryOp::Plus,
             expr,
         } => default_literal_width(expr),
         Expr::Paren(inner) => default_literal_width(inner),
@@ -108,27 +277,147 @@ fn default_literal_width(e: &Expr) -> Option<usize> {
     }
 }
 
+/// ELAB-13 (13)/(17): lebar + signedness parameter modul INDUK, dipakai
+/// me-resolve override berbentuk identifier (#(.P(Q))): tipe P mengikuti
+/// tipe Q (LRM 6.20.2), bukan lebar literal default child. Tanpa ini override
+/// ident mewarisi lebar default child — untuk child dengan default literal
+/// lebar (mis. parameter P = 'h1FFFFFFFF, 34 bit) hasilnya salah: iverilog
+/// memberi P 32 bit untuk Q 32 bit, sehingga $signed(P) < 0 = 1.
+pub(crate) struct OverrideScope<'a> {
+    pub widths: &'a HashMap<Symbol, usize>,
+    pub signed: &'a std::collections::HashSet<Symbol>,
+    /// Deklarasi package — untuk override berbentuk `pkg::X`.
+    pub packages: &'a [PackageDecl],
+}
+
+/// ELAB-13 (17): tipe parameter package (`pkg::X`) untuk override instance
+/// (LRM 6.20.2: tipe parameter = tipe ekspresi override). `None` bila lebar
+/// hanya bisa diketahui dari NILAI (mis. `parameter signed X = <literal>`
+/// tanpa range/tipe — lebarnya mengikuti nilai); pemanggil lalu memakai
+/// fallback lebar deklarasi child.
+fn pkg_param_type(pkg: &PackageDecl, item: Symbol) -> Option<(usize, bool)> {
+    let p = pkg.items.iter().find_map(|it| match it {
+        PackageItem::Param(p) if p.name == item => Some(p),
+        _ => None,
+    })?;
+    if p.implicit_sign.is_some() && p.dtype.is_none() && p.range.is_none() {
+        // `parameter signed X = <literal>` tanpa range/tipe: lebarnya
+        // mengikuti NILAI (iverilog 12: 'hFFFFFFFFFF -> 32, 'h1FFFFFFFF ->
+        // 34), yaitu aturan literal SIGNED pada lebar aslinya.
+        let w = match p.default.as_ref()? {
+            Expr::Value(Value::Hex { bits, width, .. }) => {
+                width.unwrap_or_else(|| unsized_based_width(bits, 4, true))
+            }
+            Expr::Value(Value::Binary { bits, width, .. }) => {
+                width.unwrap_or_else(|| unsized_based_width(bits, 1, true))
+            }
+            Expr::Value(Value::Octal { bits, width, .. }) => {
+                width.unwrap_or_else(|| unsized_based_width(bits, 3, true))
+            }
+            Expr::Value(Value::Decimal(v)) => signed_bits(*v).max(32),
+            _ => return None,
+        };
+        return (w > 0 && w <= 64).then_some((w, true));
+    }
+    let signed = match (&p.dtype, &p.range) {
+        (Some(dt), _) => mivon_ast::types::is_signed_type(dt),
+        (None, Some(_)) => false,
+        (None, None) => p
+            .default
+            .as_ref()
+            .map_or(true, |e| crate::elaborator::sign::elab_expr_is_signed(e)),
+    };
+    let w = if let Some((msb, lsb)) = &p.range {
+        let empty: HashMap<Symbol, i64> = HashMap::new();
+        let m = const_eval_params(msb, &empty).ok()?;
+        let l = const_eval_params(lsb, &empty).ok()?;
+        (m.max(l).saturating_sub(m.min(l)) as usize).saturating_add(1)
+    } else if let Some(dt) = &p.dtype {
+        dtype_width(dt)?
+    } else {
+        default_literal_width(p.default.as_ref()?)?
+    };
+    (w > 0 && w <= 64).then_some((w, signed))
+}
+
 /// ELAB-13 (13): lebar self-determined ekspresi OVERRIDE param instance.
 /// LRM 6.20.2: tipe parameter hasil override ditentukan tipe ekspresi
-/// override, sehingga `#(.P(16'hABCD))` pada `parameter P = 1` selebar 16
-/// (bukan 32 dari literal default). Hanya bentuk yang lebarnya pasti
-/// diinferensi — bentuk lain (`Ident`, cast nama tipe, dsb.) → `None` supaya
-/// pemanggil memakai lebar deklarasi seperti sebelumnya.
-pub(crate) fn override_expr_width(e: &Expr, params: &HashMap<Symbol, i64>) -> Option<usize> {
+/// override, sehingga #(.P(16'hABCD)) pada parameter P = 1 selebar 16
+/// (bukan 32 dari literal default). Identifier di-resolve lewat `scope`
+/// (parameter induk); bentuk lain yang lebarnya tak pasti (cast nama tipe,
+/// ekspresi biner, dsb.) → `None` supaya pemanggil memakai lebar deklarasi.
+pub(crate) fn override_expr_width(
+    e: &Expr,
+    params: &HashMap<Symbol, i64>,
+    scope: Option<&OverrideScope<'_>>,
+) -> Option<usize> {
     match e {
-        Expr::Paren(inner) => override_expr_width(inner, params),
+        Expr::Paren(inner) => override_expr_width(inner, params, scope),
+        // ELAB-13 (17): unary minus pada literal basis tak berlebar.
         Expr::UnaryOp {
-            op: UnaryOp::Minus | UnaryOp::Plus,
+            op: UnaryOp::Minus,
             expr,
-        } => override_expr_width(expr, params),
+        } => match strip_parens(expr) {
+            Expr::Value(Value::Binary {
+                bits,
+                width: None,
+                is_signed,
+                ..
+            }) => Some(negated_based_width(bits, 1, *is_signed)).filter(|w| *w <= 64),
+            Expr::Value(Value::Hex {
+                bits,
+                width: None,
+                is_signed,
+                ..
+            }) => Some(negated_based_width(bits, 4, *is_signed)).filter(|w| *w <= 64),
+            Expr::Value(Value::Octal {
+                bits,
+                width: None,
+                is_signed,
+                ..
+            }) => Some(negated_based_width(bits, 3, *is_signed)).filter(|w| *w <= 64),
+            _ => override_expr_width(expr, params, scope),
+        },
+        Expr::UnaryOp {
+            op: UnaryOp::Plus,
+            expr,
+        } => override_expr_width(expr, params, scope),
+        // #(.P(Q)): lebar P = lebar parameter Q di modul induk.
+        Expr::Ident { name, .. } => scope
+            .and_then(|s| s.widths.get(name).copied())
+            .filter(|w| *w > 0 && *w <= 64),
+        // #(.P(pkg::X)): lebar dari deklarasi parameter package.
+        Expr::ScopedIdent { package, item, .. } => scope
+            .and_then(|s| s.packages.iter().find(|p| p.name == *package))
+            .and_then(|pkg| pkg_param_type(pkg, *item))
+            .map(|(w, _)| w)
+            .filter(|w| *w > 0 && *w <= 64),
         // `size'(expr)`: lebar ditentukan ekspresi size.
         Expr::CastWidth { width, .. } => const_eval_params(width, params)
             .ok()
             .and_then(|w| usize::try_from(w).ok())
             .filter(|w| *w > 0 && *w <= 64),
-        Expr::Value(Value::Binary { width, .. })
-        | Expr::Value(Value::Hex { width, .. })
-        | Expr::Value(Value::Octal { width, .. }) => Some(width.unwrap_or(32)).filter(|w| *w <= 64),
+        Expr::Value(Value::Binary {
+            bits,
+            width,
+            is_signed,
+            ..
+        }) => Some((*width).unwrap_or_else(|| unsized_based_width(bits, 1, *is_signed)))
+            .filter(|w| *w <= 64),
+        Expr::Value(Value::Hex {
+            bits,
+            width,
+            is_signed,
+            ..
+        }) => Some((*width).unwrap_or_else(|| unsized_based_width(bits, 4, *is_signed)))
+            .filter(|w| *w <= 64),
+        Expr::Value(Value::Octal {
+            bits,
+            width,
+            is_signed,
+            ..
+        }) => Some((*width).unwrap_or_else(|| unsized_based_width(bits, 3, *is_signed)))
+            .filter(|w| *w <= 64),
         Expr::Value(Value::Decimal(v)) => Some(signed_bits(*v).max(32)).filter(|w| *w <= 64),
         Expr::FillLit(_) => Some(1),
         _ => None,
@@ -138,17 +427,37 @@ pub(crate) fn override_expr_width(e: &Expr, params: &HashMap<Symbol, i64>) -> Op
 /// ELAB-13 (13): signedness self-determined ekspresi OVERRIDE param instance
 /// (LRM 6.20.2). Aturan: unary minus/plus MEMPERTAHANKAN tipe operand
 /// (LRM 11.8.1); literal basis/biner/oktal memakai flag `is_signed` sendiri;
-/// desimal unbased SELALU signed (LRM 5.7.1); fill `'1` unsigned; bentuk lain
-/// (`Ident`, cast nama tipe) → `None` (pemanggil memakai signedness deklarasi).
-pub(crate) fn override_expr_signed(e: &Expr, _params: &HashMap<Symbol, i64>) -> Option<bool> {
+/// desimal unbased SELALU signed (LRM 5.7.1); fill `'1` unsigned; identifier
+/// di-resolve lewat `scope` (parameter induk); bentuk lain (cast nama tipe)
+/// → `None` (pemanggil memakai signedness deklarasi).
+pub(crate) fn override_expr_signed(
+    e: &Expr,
+    _params: &HashMap<Symbol, i64>,
+    scope: Option<&OverrideScope<'_>>,
+) -> Option<bool> {
     match e {
-        Expr::Paren(inner) => override_expr_signed(inner, _params),
+        Expr::Paren(inner) => override_expr_signed(inner, _params, scope),
         // Unary minus/plus MEMPERTAHANKAN tipe operand (LRM 11.8.1):
         // `-8'h1` tetap unsigned 8-bit, `-1` (desimal signed) tetap signed.
         Expr::UnaryOp {
             op: UnaryOp::Minus | UnaryOp::Plus,
             expr,
-        } => override_expr_signed(expr, _params),
+        } => override_expr_signed(expr, _params, scope),
+        // #(.P(pkg::X)): signedness dari deklarasi parameter package.
+        Expr::ScopedIdent { package, item, .. } => scope
+            .and_then(|s| s.packages.iter().find(|p| p.name == *package))
+            .and_then(|pkg| pkg_param_type(pkg, *item))
+            .map(|(_, signed)| signed),
+        // #(.P(Q)): signedness P = signedness parameter Q di modul induk.
+        Expr::Ident { name, .. } => scope.and_then(|s| {
+            if s.signed.contains(name) {
+                Some(true)
+            } else if s.widths.contains_key(name) {
+                Some(false)
+            } else {
+                None
+            }
+        }),
         // Literal basis/biner/oktal membawa flag is_signed sendiri (LRM 5.7.1).
         Expr::Value(Value::Binary { is_signed, .. })
         | Expr::Value(Value::Hex { is_signed, .. })
@@ -165,6 +474,16 @@ pub(crate) fn override_expr_signed(e: &Expr, _params: &HashMap<Symbol, i64>) -> 
 /// untuk menyemai scope lebar const-fold SEBELUM nilai param di-resolve
 /// (localparam/generate-if di fase prepass). Override tetap mengikuti lebar
 /// deklarasi di sini (caveat (13) ELAB-13).
+/// ELAB-13 (17): lebar yang AKAN dipakai bila ekspresi override tak dapat
+/// diinferensi (lebar literal default child). `None` bila deklarasi punya
+/// range/tipe eksplisit (deklarasi selalu menang).
+pub(crate) fn param_decl_default_width(p: &ParamDecl) -> Option<usize> {
+    if p.range.is_some() || p.dtype.is_some() {
+        return None;
+    }
+    p.default.as_ref().and_then(default_literal_width)
+}
+
 pub(crate) fn param_static_width(p: &ParamDecl, params: &HashMap<Symbol, i64>) -> Option<usize> {
     if let Some((msb, lsb)) = &p.range {
         let (m, l) = match (

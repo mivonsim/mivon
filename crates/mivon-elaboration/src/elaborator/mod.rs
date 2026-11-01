@@ -5244,6 +5244,14 @@ impl Elaborator {
                         // override (LRM 6.20.2) harus dibawa terpisah ke
                         // elaborasi child (flatten).
                         let mut param_width_map: HashMap<Symbol, (usize, bool)> = HashMap::new();
+                        // ELAB-13 (17): override berbentuk identifier
+                        // (#(.P(Q))) mengambil lebar/signedness Q dari
+                        // parameter modul INDUK, bukan lebar default child.
+                        let parent_scope = crate::util::param_util::OverrideScope {
+                            widths: &self.param_widths,
+                            signed: &self.param_is_signed,
+                            packages: &self.design.packages,
+                        };
                         for (pname, pexpr) in &inst.param_assigns {
                             let val = match const_eval_with_params(pexpr, &effective_params) {
                                 Ok(v) => v,
@@ -5283,16 +5291,50 @@ impl Elaborator {
                                 }
                             };
                             param_map.insert(*pname, val);
-                            if let Some(w) = crate::util::param_util::override_expr_width(
+                            let child_is_type_param = target_module.is_some_and(|tm| {
+                                tm.params
+                                    .iter()
+                                    .any(|p| p.name == *pname && p.is_type_param)
+                            });
+                            match crate::util::param_util::override_expr_width(
                                 pexpr,
                                 &effective_params,
+                                Some(&parent_scope),
                             ) {
-                                let signed = crate::util::param_util::override_expr_signed(
-                                    pexpr,
-                                    &effective_params,
-                                )
-                                .unwrap_or(false);
-                                param_width_map.insert(*pname, (w, signed));
+                                Some(w) => {
+                                    let signed = crate::util::param_util::override_expr_signed(
+                                        pexpr,
+                                        &effective_params,
+                                        Some(&parent_scope),
+                                    )
+                                    .unwrap_or(false);
+                                    param_width_map.insert(*pname, (w, signed));
+                                }
+                                // ELAB-13 (17): bentuk override yang lebarnya
+                                // tak dapat diinferensi (part-select, ekspresi
+                                // biner, cast nama tipe, ...) memakai lebar
+                                // integer 32 — JANGAN mewarisi lebar literal
+                                // default child, yang sejak (17) bisa > 32.
+                                // HANYA bila pemotongan ke 32 bit tidak
+                                // menghilangkan bit nilai (mis. part-select 32
+                                // bit); bila nilai butuh > 32 bit, JANGAN pasang
+                                // batasan lebar — memaksa 32 akan memotong nilai
+                                // (miscompilation senyap).
+                                None if !child_is_type_param
+                                    && (0..=u32::MAX as i64).contains(&val) =>
+                                {
+                                    // Hanya bila lebar default child memang
+                                    // > 32 (default 8/16/4 bit dibiarkan).
+                                    let decl_w = target_module
+                                        .and_then(|tm| tm.params.iter().find(|p| p.name == *pname))
+                                        .and_then(
+                                            crate::util::param_util::param_decl_default_width,
+                                        );
+                                    if decl_w.is_some_and(|w| w > 32) {
+                                        param_width_map.insert(*pname, (32, false));
+                                    }
+                                }
+                                None => {}
                             }
                             // Override berupa Ident/ScopedIdent yang merujuk
                             // struct-parameter (field-nya SUDAH ter-flatten di

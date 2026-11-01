@@ -1830,23 +1830,137 @@ ELAB-13: ⚠️ PARTIAL (ROUND 222/228/230/231) — Parameter berlebar eksplisit
            `child #(.UN(5))` → nilai 5 benar, tapi `$bits` = 1
            (iverilog 32; sebelum arm ini 64). Ini butir (13) yang masih
            open — angka 64→1 dicatat agar fix berikutnya tahu.
-         (17) ⚠️ OPEN (analisis ROUND 234; percobaan fix DIBATALKAN karena
-         regresi) lebar literal BASIS tak berlebar (<= 64 bit).
-         Aturan iverilog 12 (terverifikasi): max(32, min(lebar_nilai + 1,
-         lebar_basis × jumlah_digit)), lebar_nilai dihitung SETELAH nol di
-         depan dibuang, kapasitas memakai jumlah digit ASLI, dan digit x/z
-         dihitung PENUH ('h + 9x → 36). Angka: 'h1FFFFFFFF 33→34,
-         'h1FFFFFFFFF 37→38, 'h1FFFFFFFFFF 41→42, 'hFFFFFFFFF 36→36,
-         'hFF00000000 40→40, 'hFFFFFFFFFFF 44→44, 'h0FFFFFFFFF 36→37,
-         'h00FFFFFFFFFF 40→41, 'o77777777777 33→33, 'o177777777777 34→35,
-         'b0+39x1 39→40.
-         MENGAPA DIBATALKAN: peta lebar `$bits` param bersifat PER-MODULE,
-         bukan per-instance (lihat caveat (13)); menaikkan lebar inferensi
-         default ke 34 membuat instance ber-override ikut 34, padahal
-         iverilog 32 untuk `#(.P(32'hFFFFFFFF))` — `$signed(P) < 0` jadi
-         salah. Sebelum fix, kebetulan benar karena default juga 32.
-         PRASYARAT FIX: peta lebar per-instance (atau fold `$bits` setelah
-         resolve override), baru aturan di atas bisa dipakai.
+         (17) ✅ FIXED (ROUND 236) lebar literal BASIS tak berlebar. DUA
+         aturan, semuanya DIUKUR pada oracle iverilog 12 (bukan asumsi):
+         - UNSIGNED: max(32, min(lebar_nilai + 1, kapasitas)); lebar_nilai
+           setelah nol depan dibuang; digit x/z/? dihitung PENUH selebar
+           basis; kapasitas = lebar_basis × jumlah digit ASLI.
+         - SIGNED ('sh/'so/'sb): max(32, min(lebar_nilai + 1, kapasitas))
+           dengan nilai dibaca two's complement selebar kapasitas. Untuk
+           nilai negatif dipakai lebar(komplemen digit) + 1, jadi TIDAK butuh
+           aritmetika di atas 64 bit (kapasitas 80/88/100 ikut benar).
+           Digit x/z/? dibaca 0 pada jalur signed.
+         Implementasi: `unsized_based_width(bits, base_width, is_signed)`
+         (param_util.rs) dipakai di `default_literal_width` DAN
+         `override_expr_width` untuk Binary/Hex/Octal width=None.
+         Angka UNSIGNED terverifikasi (mivon == iverilog 12): 'h1FFFFFFFF 34,
+         'h1FFFFFFFFF 38, 'h1FFFFFFFFFF 42, 'hFFFFFFFFF 36, 'hFF00000000 40,
+         'hFFFFFFFFFFF 44, 'h0FFFFFFFFF 37, 'h00FFFFFFFFFF 41,
+         'o77777777777 33, 'o177777777777 35, 'b0 + 40 x '1' 41, 20×F 80,
+         'h1_FFFF_FFFF 34, 'h1ffffffff 34, 'hxxxxxxxxx 36, 'h0xxxxxxxxx 37.
+         Angka SIGNED terverifikasi: 'shFFFFFFFFFFFFFFFF 32 (dulu salah 64),
+         'shF00000000 33, 'shFFFFFFFFF 32, 'sh100000000 34, 'sh(20 F) 32
+         (kapasitas 80), 'shF + 21 nol 85 (kapasitas 88), 'sh1 + 20 nol 82,
+         'sh8 + 20 nol 84, 'shFxxxxxxxx 33, 'shF0xxxxxxxx 37, 'sb/'so 32.
+         Jalur OVERRIDE ikut diuji: #(.P('h1FFFFFFFF)) 34,
+         #(.P('shF00000000)) 33, #(.P('h0FFFFFFFFF)) 37, guard lama
+         #(.P(32'hFFFFFFFF)) tetap 32.
+         KENAPA DULU DIBATALKAN (ROUND 234) kini teratasi: peta lebar
+         per-instance (butir (13) ROUND 235) memisahkan lebar override dari
+         lebar default, sehingga `#(.P(32'hFFFFFFFF))` tetap 32 sementara
+         default unsized melebar.
+         Test: test_unsized_based_literal_param_width — 22 kasus jalur
+         default (A..V, termasuk 2 digit tidak valid) + 7 kasus negasi
+         (M1..M7) + 7 kasus negasi x/z & kurung (M8..M14) + 4 kasus jalur
+         override (c1..c4), semua angka dari oracle iverilog 12. Mutasi
+         MUTASI_17 (`unsized_based_width` -> 32) -> gagal.
+         Review ronde 1 TOLAK, 2 blocking (keduanya diperbaiki):
+         B1 literal signed kapasitas > 64 jatuh ke aturan unsigned -> 80/88
+         (regresi dari 32); diperbaiki lewat jalur komplemen digit.
+         B2 klaim "signed ber-x ikut aturan unsigned" salah (36/40/64 vs
+         oracle 33); diperbaiki -> x/z/? dibaca 0 pada jalur signed.
+         Review ronde 2 TOLAK, 1 blocking (diperbaiki): B3 digit di luar
+         basis ('sb3, 'soC — diterima lexer mivon, ditolak iverilog) membuat
+         `mask - d` underflow -> panic `attempt to subtract with overflow`
+         di param_util.rs. Diperbaiki dengan `digit(*c).min(mask)`; kini
+         lebar 32 tanpa panic, dan kedua literal masuk test (u, v).
+         SISA (OPEN, terukur — JANGAN diklaim benar):
+         - Signed dengan digit tak dikenal yang digit-diketahuinya semua nol:
+           'shx00000000 iverilog 33 vs mivon 32; 'shzxxxxxxxx 33 vs 32;
+           'shx + 16 nol 65 vs 32; 'sh0x + 14 nol 61 vs 32. Matriks 44
+           kasus (11 leading HURUF KECIL × 4 tail) cocok 38/44; 6
+           menyimpang tepat 1 bit (0x…, 0z…, xz…, x0…, zx…, z0…) dan 4 kasus
+           berdigit '?' DITOLAK lexer mivon (E1005 literal tanpa digit —
+           sama seperti HEAD). Sapuan dengan X/Z kapital belum dilakukan.
+         - NILAI `-<literal basis tak berlebar>` belum di-truncate ke lebar
+           hasil: -'hFFFFFFFFF = 68719476737 (iverilog 1);
+           -'shF00000000 = -64424509440 (iverilog 4294967296). Perilaku sama
+           dengan HEAD (pre-existing); LEBAR-nya kini benar.
+         - Literal > 64 bit: NILAI tetap 0 (limitasi i64), hanya LEBAR yang
+           benar; override dengan literal > 64 bit ditolak `E3001 bad
+           literal`.
+         - Override berbentuk ekspresi yang lebarnya belum diinferensi
+           (part-select > 32 bit, `Q + 1`, cast nama tipe): `$bits` memakai
+           lebar literal default child (mis. `#(.P(QW[63:0]))` $bits 34 vs
+           iverilog 64; `Q + 1` 32/34 vs 33). NILAI tetap utuh kecuali
+           nilai >= 2^63 pada child unsigned (dipotong 63 bit,
+           `normalize_with_width` membaca i64 negatif) — keduanya
+           pre-existing, sama dengan HEAD.
+         Review ronde 3 TOLAK, 1 blocking (diperbaiki): B4 override lewat
+         identifier (`#(.P(Q))`) mewarisi lebar literal DEFAULT child, jadi
+         child `parameter P = 'h1FFFFFFFF` (34 bit) memberi P 34 bit untuk
+         Q 32 bit -> `$signed(P) < 0` = 0 (iverilog 1). Akar: lebar default
+         kini bisa > 32, sedangkan `override_expr_width` mengembalikan None
+         untuk `Expr::Ident`. Perbaikan: `OverrideScope { widths, signed }`
+         (peta `param_widths`/`param_is_signed` modul INDUK) diteruskan ke
+         `override_expr_width`/`override_expr_signed`; arm Ident mengambil
+         lebar + signedness parameter induk (LRM 6.20.2).
+         Test tambahan: test_override_parameter_ident_uses_parent_type
+         (q1=32/qn=1, r1=34/rn=0 — sama dengan iverilog 12).
+         Review ronde 4 TOLAK, 1 blocking (diperbaiki): B5 override
+         `pkg::X` juga mewarisi lebar default child ($bits 32 vs 40,
+         $signed(P) < 0 0 vs 1). Perbaikan: `OverrideScope.packages`
+         (design.packages) + `pkg_param_type()` — lebar dari range
+         (const-eval batas), dtype, atau literal default; `parameter
+         signed X` tanpa range/tipe sengaja TIDAK diinferensi karena
+         lebarnya mengikuti NILAI (iverilog: 'hFFFFFFFFFF -> 32).
+         Test: test_override_parameter_pkg_scoped_ident_width
+         (x1=40/xn=1, y1=32/yn=1, z1=40/zn=1 — sama dengan iverilog 12).
+         Review ronde 5 TOLAK, 1 blocking (diperbaiki): B6 unary minus pada
+         literal basis tak berlebar — lebar berubah dari cocok (HEAD 32)
+         menjadi 36/33. Aturan iverilog 12 (sweep 16 leading digit ×
+         kapasitas 36): negasi nilai dalam lebar kapasitas (two's complement
+         digit) lalu aturan lebar yang SAMA diterapkan pada hasilnya —
+         -'hFFFFFFFFF 32 (hasil 1), -'hF 32, -'o77777777777 32,
+         -'h1FFFFFFFF 36, -'shF00000000 34, -'sh1FFFFFFFF 34.
+         Implementasi `negated_based_width()` dipakai arm UnaryOp::Minus di
+         `default_literal_width` DAN `override_expr_width`; UnaryOp::Plus
+         tetap mempertahankan lebar operand.
+         Test: M1..M7 di test_unsized_based_literal_param_width.
+         Review ronde 6 TOLAK, 1 blocking (diperbaiki): B7 negasi literal
+         berdigit x/z dan negasi ber-kurung. Terukur pada iverilog 12:
+         -'sh…x 32 (selalu), -'h0xxxxxxxxx 40 (kapasitas), -'hx 32,
+         -'h00xxxxxxxxx 44; -('hFFFFFFFFF) 32, -('h1FFFFFFFF) 36,
+         -('shF00000000) 34. Perbaikan: fallback unknown di
+         `negated_based_width` (signed -> 32, unsigned -> kapasitas min 32)
+         dan `strip_parens()` pada arm UnaryOp::Minus di kedua fungsi.
+         Test: M8..M14.
+         Review ronde 7 TOLAK (B8): override berbentuk ekspresi yang lebarnya
+         tak terinferensi (part-select) mewarisi lebar literal default child
+         (34) — di HEAD kebetulan 32. Percobaan pertama (isi `(32, signed
+         deklarasi)` untuk semua bentuk None) DITOLAK ronde 8 lewat B9/B10:
+         memaksa 32 MEMOTONG nilai (`#(.P(QW[63:0]))` jadi
+         ffffffffcafebabe; `#(.P(Q+1))` jadi 0) dan signedness deklarasi
+         child men-sign-extend part-select (ffffffffdeadbeef vs deadbeef).
+         ATURAN FINAL: lebar 32 hanya dipasang bila pemotongan LOSSLESS
+         (nilai override 0..=u32::MAX), unsigned, DAN lebar default child
+         memang > 32; nilai > 32 bit atau child ber-default 8/16/4 bit
+         dibiarkan memakai lebar default child (perilaku HEAD).
+         Test: test_override_uninferable_expr_keeps_value — a=0xffffffff
+         ($bits 32), b=0xdeadbeefcafebabe, c=0x100000000,
+         d=0xdeadbeefcafebabe, e=0xff ($bits 8 untuk child 8'd0) — semua =
+         iverilog 12.
+         Review ronde 9 TOLAK, 3 blocking (B11/B12/B13, diperbaiki):
+         B11 rule 32 dipasang juga untuk child ber-default < 32 (8'd0 +
+         Q[7:0] jadi 32, iverilog 8) -> kini bersyarat `decl_w > 32`.
+         B12 `pkg::` parameter signed tanpa range/tipe tetap mewarisi lebar
+         default child (34, iverilog 32) -> `pkg_param_type` menghitung lebar
+         dari NILAI literal default (aturan literal signed: 'hFFFFFFFFFF 32,
+         'h1FFFFFFFF 34).
+         B13 klaim audit dikoreksi (lihat SISA) — status butir tetap FIXED
+         untuk LEBAR LITERAL; sisa override-expression typing dicatat di
+         SISA, bukan diklaim beres.
+         Suite 3988 / 24.
          (18) ✅ FIXED (ROUND 230) `parameter int unsigned PU` /
          `parameter byte unsigned B`: modifier `unsigned` pada tipe
          eksplisit DULU DIBUANG `apply_sign_mod` (parser lib.rs;

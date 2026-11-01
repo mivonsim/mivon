@@ -1016,6 +1016,297 @@ endmodule
     assert_eq!(get("bb"), 8, "parameter byte P + override → $bits 8");
 }
 
+/// ELAB-13 butir (17): lebar literal basis TAK berlebar. Dua aturan, semua
+/// angka di bawah terukur pada iverilog 12:
+/// - UNSIGNED: max(32, min(lebar_nilai + 1, kapasitas)); x/z dihitung penuh.
+/// - SIGNED: max(32, min(lebar_nilai + 1, kapasitas)) dengan nilai two's
+///   complement (negatif -> komplemen digit), termasuk kapasitas > 64 bit.
+/// Mencakup jalur default (parameter tanpa override) DAN jalur override
+/// instance (#(.P(literal))).
+#[test]
+fn test_unsized_based_literal_param_width() {
+    let f20 = "F".repeat(20);
+    let z21 = "0".repeat(21);
+    let z20 = "0".repeat(20);
+    let ones40 = "1".repeat(40);
+    let source = format!(
+        r#"
+module child #(parameter P = 32) (output [63:0] o);
+  assign o = $bits(P);
+endmodule
+
+module tb;
+  parameter A = 'h1FFFFFFFF;
+  parameter B = 'hFFFFFFFFF;
+  parameter C = 'h0FFFFFFFFF;
+  parameter D = 'o177777777777;
+  parameter E = 'h{f20};
+  parameter F = 'shFFFFFFFFFFFFFFFF;
+  parameter G = 'shF00000000;
+  parameter H = 'shFFFFFFFFF;
+  parameter I = 'sh100000000;
+  parameter J = 'sh{f20};
+  parameter K = 'shF{z21};
+  parameter L = 'sh1{z20};
+  parameter M = 'sh8{z20};
+  parameter N = 'shFxxxxxxxx;
+  parameter O = 'shF0xxxxxxxx;
+  parameter P = 'h1_FFFF_FFFF;
+  parameter Q = 'h1ffffffff;
+  parameter R = 'hxxxxxxxxx;
+  parameter S = 'h0xxxxxxxxx;
+  parameter T = 'b0{ones40};
+  parameter U = 'sb3;
+  parameter V = 'soC;
+  parameter M1 = -'hFFFFFFFFF;
+  parameter M2 = -'o77777777777;
+  parameter M3 = -'h1FFFFFFFF;
+  parameter M4 = -'shF00000000;
+  parameter M5 = -'hF;
+  parameter M6 = +'hFFFFFFFFF;
+  parameter M7 = -'h0;
+  parameter M8 = -'shFxxxxxxxx;
+  parameter M9 = -'sh1xxxxxxxx;
+  parameter M10 = -'h0xxxxxxxxx;
+  parameter M11 = -('hFFFFFFFFF);
+  parameter M12 = -('h1FFFFFFFF);
+  parameter M13 = -('shF00000000);
+  parameter M14 = -('h0xxxxxxxxx);
+  logic [63:0] a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q, r, s, t, u, v;
+  logic [63:0] m1, m2, m3, m4, m5, m6, m7;
+  logic [63:0] m8, m9, m10, m11, m12, m13, m14;
+  logic [63:0] c1o, c2o, c3o, c4o;
+  child #(.P('h1FFFFFFFF)) c1 (.o(c1o));
+  child #(.P('shF00000000)) c2 (.o(c2o));
+  child #(.P('h0FFFFFFFFF)) c3 (.o(c3o));
+  child #(.P(32'hFFFFFFFF)) c4 (.o(c4o));
+  initial begin
+    a = $bits(A); b = $bits(B); c = $bits(C); d = $bits(D); e = $bits(E);
+    f = $bits(F); g = $bits(G); h = $bits(H); i = $bits(I); j = $bits(J);
+    k = $bits(K); l = $bits(L); m = $bits(M); n = $bits(N); o = $bits(O);
+    p = $bits(P); q = $bits(Q); r = $bits(R); s = $bits(S); t = $bits(T);
+    u = $bits(U); v = $bits(V);
+    m1 = $bits(M1); m2 = $bits(M2); m3 = $bits(M3); m4 = $bits(M4);
+    m5 = $bits(M5); m6 = $bits(M6); m7 = $bits(M7);
+    m8 = $bits(M8); m9 = $bits(M9); m10 = $bits(M10); m11 = $bits(M11);
+    m12 = $bits(M12); m13 = $bits(M13); m14 = $bits(M14);
+    #1 $finish;
+  end
+endmodule
+"#
+    );
+    let sigs = simulate_signals(&source, 5).unwrap();
+    let get = |n: &str| {
+        sigs.iter()
+            .find(|(s, _)| s == n)
+            .map(|(_, v)| v.to_u64())
+            .unwrap_or(0)
+    };
+    // UNSIGNED: lebar_nilai + 1, kapasitas = basis x jumlah digit.
+    assert_eq!(get("a"), 34, "'h1FFFFFFFF = 34 bit");
+    assert_eq!(get("b"), 36, "'hFFFFFFFFF = 36 bit");
+    assert_eq!(get("c"), 37, "'h0FFFFFFFFF = 37 bit (nol depan dibuang)");
+    assert_eq!(get("d"), 35, "'o177777777777 = 35 bit");
+    assert_eq!(get("e"), 80, "'h(20 F) = 80 bit (> 64, kapasitas penuh)");
+    assert_eq!(get("p"), 34, "'h1_FFFF_FFFF = 34 bit (underscore)");
+    assert_eq!(get("q"), 34, "'h1ffffffff = 34 bit (huruf kecil)");
+    assert_eq!(get("r"), 36, "'hxxxxxxxxx = 36 bit (x penuh selebar basis)");
+    assert_eq!(get("s"), 37, "'h0xxxxxxxxx = 37 bit");
+    assert_eq!(get("t"), 41, "'b0 + 40 x '1' = 41 bit");
+    // SIGNED: nilai two's complement, tanpa bit tambahan.
+    assert_eq!(get("f"), 32, "'shFFFFFFFFFFFFFFFF (-1) = 32 bit");
+    assert_eq!(get("g"), 33, "'shF00000000 = 33 bit");
+    assert_eq!(get("h"), 32, "'shFFFFFFFFF (-1) = 32 bit");
+    assert_eq!(get("i"), 34, "'sh100000000 = 34 bit");
+    assert_eq!(get("j"), 32, "'sh(20 F) (-1) = 32 bit (kapasitas 80)");
+    assert_eq!(get("k"), 85, "'shF + 21 nol = 85 bit (kapasitas 88)");
+    assert_eq!(get("l"), 82, "'sh1 + 20 nol = 82 bit (kapasitas 84)");
+    assert_eq!(
+        get("m"),
+        84,
+        "'sh8 + 20 nol = 84 bit (negatif, kapasitas 84)"
+    );
+    assert_eq!(get("n"), 33, "'shFxxxxxxxx = 33 bit (x dibaca 0)");
+    assert_eq!(get("o"), 37, "'shF0xxxxxxxx = 37 bit");
+    // Unary minus literal basis tak berlebar: iverilog menegasi nilai lalu
+    // menerapkan aturan lebar (bukan mempertahankan lebar operand).
+    assert_eq!(get("m1"), 32, "-'hFFFFFFFFF = 32 bit");
+    assert_eq!(get("m2"), 32, "-'o77777777777 = 32 bit");
+    assert_eq!(get("m3"), 36, "-'h1FFFFFFFF = 36 bit");
+    assert_eq!(get("m4"), 34, "-'shF00000000 = 34 bit (signed)");
+    assert_eq!(get("m5"), 32, "-'hF = 32 bit");
+    assert_eq!(get("m6"), 36, "+'hFFFFFFFFF = 36 bit (plus mempertahankan)");
+    assert_eq!(get("m7"), 32, "-'h0 = 32 bit");
+    // Negasi literal berdigit x/z: signed -> 32; unsigned -> kapasitas.
+    assert_eq!(get("m8"), 32, "-'shFxxxxxxxx = 32 bit");
+    assert_eq!(get("m9"), 32, "-'sh1xxxxxxxx = 32 bit");
+    assert_eq!(get("m10"), 40, "-'h0xxxxxxxxx = 40 bit (kapasitas)");
+    // Negasi dengan kurung = tanpa kurung.
+    assert_eq!(get("m11"), 32, "-('hFFFFFFFFF) = 32 bit");
+    assert_eq!(get("m12"), 36, "-('h1FFFFFFFF) = 36 bit");
+    assert_eq!(get("m13"), 34, "-('shF00000000) = 34 bit");
+    assert_eq!(get("m14"), 40, "-('h0xxxxxxxxx) = 40 bit");
+    // NILAI `-<literal basis tak berlebar>` masih belum di-truncate ke lebar
+    // hasil (-'hFFFFFFFFF = 68719476737, iverilog 1) — gap pre-existing yang
+    // perilakunya sama dengan HEAD; lihat SISA di audit.txt butir (17).
+    // Digit di luar basis ('sb3, 'soC) ditolak iverilog; mivon harus tetap
+    // jalan (tanpa panic underflow) dan jatuh ke lebar minimum 32.
+    assert_eq!(get("u"), 32, "'sb3 (digit tidak valid) tidak panic, 32 bit");
+    assert_eq!(get("v"), 32, "'soC (digit tidak valid) tidak panic, 32 bit");
+    // Jalur OVERRIDE instance: lebar tipe nilai override, bukan default.
+    assert_eq!(get("c1o"), 34, "#(.P('h1FFFFFFFF)) = 34 bit");
+    assert_eq!(get("c2o"), 33, "#(.P('shF00000000)) = 33 bit");
+    assert_eq!(get("c3o"), 37, "#(.P('h0FFFFFFFFF)) = 37 bit");
+    assert_eq!(get("c4o"), 32, "#(.P(32'hFFFFFFFF)) tetap 32 bit");
+}
+
+/// ELAB-13 (17): override berbentuk identifier `#(.P(Q))` mengambil tipe Q
+/// (LRM 6.20.2), bukan lebar literal default child. Sebelum perbaikan P
+/// mewarisi lebar default child (34 bit) sehingga `$signed(P) < 0` = 0.
+/// Referensi iverilog 12: q1=32 qn=1 r1=34 rn=0.
+#[test]
+fn test_override_parameter_ident_uses_parent_type() {
+    let source = r#"
+module cw #(parameter P = 'h1FFFFFFFF) (output [63:0] o, output neg);
+  assign o = $bits(P);
+  assign neg = $signed(P) < 0;
+endmodule
+
+module tb;
+  parameter Q = 'hFFFFFFFF;
+  parameter R = 'h1FFFFFFFF;
+  logic [63:0] q1, r1, s1;
+  logic qn, rn, sn;
+  cw #(.P(Q)) cq (.o(q1), .neg(qn));
+  cw #(.P(R)) cr (.o(r1), .neg(rn));
+  cw #(.P(Q[31:0])) cs (.o(s1), .neg(sn));
+  initial begin
+    #1 $finish;
+  end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 5).unwrap();
+    let get = |n: &str| {
+        sigs.iter()
+            .find(|(s, _)| s == n)
+            .map(|(_, v)| v.to_u64())
+            .unwrap_or(0)
+    };
+    // Cegah assert vakum (helper get() mengembalikan 0 bila sinyal hilang).
+    for n in ["q1", "r1", "qn", "rn", "s1", "sn"] {
+        assert!(sigs.iter().any(|(s, _)| s == n), "sinyal {n} tidak ada");
+    }
+    assert_eq!(get("q1"), 32, "#(.P(Q)) dengan Q 32 bit -> 32 bit");
+    assert_eq!(get("qn"), 1, "$signed(P) < 0 untuk P 32 bit = 1");
+    assert_eq!(get("r1"), 34, "#(.P(R)) dengan R 34 bit -> 34 bit");
+    assert_eq!(get("rn"), 0, "$signed(P) < 0 untuk P 34 bit = 0");
+    // Bentuk yang lebarnya tak dapat diinferensi (part-select) memakai lebar
+    // integer 32, bukan lebar literal default child (iverilog: 32).
+    assert_eq!(get("s1"), 32, "#(.P(Q[31:0])) -> 32 bit");
+    assert_eq!(get("sn"), 1, "$signed(P) < 0 untuk P 32 bit = 1");
+}
+
+/// ELAB-13 (17): override berbentuk ekspresi yang lebarnya tak dapat
+/// diinferensi (part-select, ekspresi biner) TIDAK boleh memotong nilai
+/// parameter. Lebar 32 hanya dipasang bila pemotongan tidak kehilangan bit
+/// (mis. `Q[31:0]`); nilai yang butuh > 32 bit dibiarkan utuh (seperti HEAD).
+/// Referensi iverilog 12: a=00000000ffffffff b=deadbeefcafebabe
+/// c=0000000100000000 d=deadbeefcafebabe.
+#[test]
+fn test_override_uninferable_expr_keeps_value() {
+    let source = r#"
+module cw2 #(parameter P = 0) (output [63:0] o, output [63:0] w);
+  assign o = P;
+  assign w = $bits(P);
+endmodule
+
+module cw8 #(parameter P = 8'd0) (output [63:0] o, output [63:0] w);
+  assign o = P;
+  assign w = $bits(P);
+endmodule
+
+module tb;
+  parameter Q = 'hFFFFFFFF;
+  parameter QW = 64'hDEADBEEFCAFEBABE;
+  logic [63:0] a, b, c, d, aw, bw, e, ew;
+  cw2 #(.P(Q[31:0])) i1 (.o(a), .w(aw));
+  cw2 #(.P(QW[63:0])) i2 (.o(b), .w(bw));
+  cw2 #(.P(Q + 1)) i3 (.o(c), .w());
+  cw2 #(.P(QW)) i4 (.o(d), .w());
+  cw8 #(.P(Q[7:0])) i5 (.o(e), .w(ew));
+  initial begin
+    #1 $finish;
+  end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 5).unwrap();
+    let get = |n: &str| {
+        sigs.iter()
+            .find(|(s, _)| s == n)
+            .map(|(_, v)| v.to_u64())
+            .unwrap_or(0)
+    };
+    assert_eq!(get("aw"), 32, "part-select 32 bit -> $bits 32");
+    assert_eq!(get("a"), 0xffff_ffff, "Q[31:0] -> 0xffffffff");
+    assert_eq!(
+        get("b"),
+        0xDEAD_BEEF_CAFE_BABE,
+        "QW[63:0] -> nilai 64 bit utuh (tidak dipotong 32)"
+    );
+    assert_eq!(get("c"), 0x1_0000_0000, "Q + 1 -> 0x100000000 utuh");
+    assert_eq!(get("d"), 0xDEAD_BEEF_CAFE_BABE, "QW ident -> nilai utuh");
+    // Child ber-default 8 bit: lebar 8 dipertahankan (bukan dipaksa 32).
+    assert_eq!(get("ew"), 8, "child P = 8'd0 + Q[7:0] -> $bits 8");
+    assert_eq!(get("e"), 0xff, "nilai Q[7:0] = 0xff");
+}
+
+/// ELAB-13 (17): override `pkg::X` mengambil tipe parameter package
+/// (LRM 6.20.2). Referensi iverilog 12: x1=40 xn=1 y1=32 yn=1 z1=40 zn=1.
+/// `parameter signed Y` tanpa range/tipe lebarnya mengikuti NILAI (32),
+/// jadi sengaja TIDAK diinferensi dari literal (fallback lebar deklarasi).
+#[test]
+fn test_override_parameter_pkg_scoped_ident_width() {
+    let source = r#"
+package p;
+  parameter X = 'hFFFFFFFFFF;
+  parameter signed Y = 'hFFFFFFFFFF;
+  parameter [39:0] Z = 40'hFFFFFFFFFF;
+endpackage
+
+module cw #(parameter P = 'h1FFFFFFFF) (output [63:0] o, output [63:0] w);
+  assign o = P;
+  assign w = $bits(P);
+endmodule
+
+module tb;
+  logic [63:0] x1, y1, z1, xw, yw, zw;
+  cw #(.P(p::X)) cx (.o(x1), .w(xw));
+  cw #(.P(p::Y)) cy (.o(y1), .w(yw));
+  cw #(.P(p::Z)) cz (.o(z1), .w(zw));
+  initial begin
+    #1 $finish;
+  end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 5).unwrap();
+    let get = |n: &str| {
+        sigs.iter()
+            .find(|(s, _)| s == n)
+            .map(|(_, v)| v.to_u64())
+            .unwrap_or(0)
+    };
+    assert_eq!(get("xw"), 40, "pkg::X (literal 40 bit) -> P 40 bit");
+    assert_eq!(get("x1"), 0x00ff_ffff_ffff, "pkg::X nilainya 40 bit");
+    assert_eq!(get("yw"), 32, "pkg::Y (signed tanpa range) -> 32 bit");
+    assert_eq!(
+        get("y1"),
+        u64::MAX,
+        "pkg::Y signed 32 bit = -1 (sign-extend ke 64)"
+    );
+    assert_eq!(get("zw"), 40, "pkg::Z (range [39:0]) -> P 40 bit");
+    assert_eq!(get("z1"), 0x00ff_ffff_ffff, "pkg::Z nilainya 40 bit");
+}
+
 /// ELAB-13 butir (11): `parameter signed <tipe>` TANPA range harus
 /// truncate + sign-extend ke lebar tipe (int 32, byte 8, shortint 16).
 /// Sebelum perbaikan `dtype_width(Signed(_))` = None sehingga nilai mentah
