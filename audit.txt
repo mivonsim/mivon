@@ -14392,4 +14392,40 @@ Review agent R193 ronde 3: LOLOS — tidak ada BUG. Tindak lanjut R-1
   NIT-2 diterapkan: komentar merge_docs menyebut pemanggil menormalkan
   urutan via sorted_docs. NIT stabilitas sort dicatat (assertion
   "stabil" insidental — sort_by memang stabil secara dokumentasi).
+
+═══ ROUND 238 — LSP NIT-3: token range `[W-1:0]` tidak jadi variabel palsu ═══
+
+Ruang lingkup: menutup NIT-3 (backlog pre-existing, dicatat di review
+R197) — `logic [W-1:0] data;` membuat `W` (identifier di dalam range bit)
+muncul sebagai variabel palsu di outline LSP, padahal nama riil adalah
+`data` (setelah `]`). Akar sama juga memengaruhi `parameter [3:0] P`
+(CONST) dan `function [W:0] f` (FUNC) — token range ikut di-outline /
+menjadi nama fungsi salah.
+
+Perubahan (crates/mivon-env/src/lsp/backend/outline.rs):
+  Pelacakan kedalaman kurung siku (`depth`) ditambahkan di keempat loop
+  deklarasi (VAR_KW, CONST_KW, FUNC_KW, dan parameter inline header
+  module). Saat `depth > 0` (di dalam `[...]`), token dilewati; `[`
+  menaikkan depth, `]` menurunkannya. Nama riil setelah `]` tetap
+  ter-outline.
+
+Test baru (+1, backend.rs): test_document_symbols_no_fake_var_in_range —
+  * `logic [W-1:0] data; reg [3:0] q; wire signed [N:0] bus;` → hanya
+    {data,q,bus} (3); `W`/`N` TIDAK ada;
+  * `module p #(parameter [3:0] WIDTH = 4)` → outline {WIDTH,x} (2);
+  * `function [W:0] myfn` → nama fungsi = `myfn`, bukan `W`.
+  Test DISKRIMINATIF: tanpa fix, `W`/`N` jadi variabel dan nama fungsi
+  salah → assert gagal.
+
+Status NIT-3: CLOSED ✅.
+Item open berikutnya: LSP-14 (iklan capability butuh upgrade
+  lsp-types/tower-lsp), Arsitektur-01..04/06, JIT-01/02, ELAB-02/03/08,
+  COMP-01/02/11, SIM-03/19, FORMAL-03/04/10/13, ENT-24/39, FEAT-10/23,
+  PARSER-07, LANG-01/02.
+
+VERIFIKASI ROUND 238:
+  - cargo fmt --all -> bersih.
+  - cargo test -p mivon-env --features lsp
+    test_document_symbols_no_fake_var_in_range ... ok (+1 test).
+
 \\=======================================================================//

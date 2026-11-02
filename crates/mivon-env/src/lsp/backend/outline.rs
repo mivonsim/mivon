@@ -146,7 +146,20 @@ impl LspBackend {
                         let frame = stack.last_mut().unwrap();
                         for i in 0..rest.len() {
                             if matches!(rest[i].0.as_str(), "parameter" | "localparam") {
+                                // LSP NIT-3: lompati range `[\w-...]`.
+                                let mut depth = 0usize;
                                 for (w, c) in rest.iter().skip(i + 1).cloned() {
+                                    if w == "[" {
+                                        depth += 1;
+                                        continue;
+                                    }
+                                    if w == "]" {
+                                        depth = depth.saturating_sub(1);
+                                        continue;
+                                    }
+                                    if depth > 0 {
+                                        continue;
+                                    }
                                     if Self::is_valid_identifier(&w)
                                         && !matches!(
                                             w.as_str(),
@@ -184,7 +197,22 @@ impl LspBackend {
             // lokal di badan function menjadi children function, bukan
             // sibling module. Ditutup oleh `endfunction`/`endtask`.
             if FUNC_KW.contains(&t0.as_str()) {
+                // LSP NIT-3: lompati range `[\w-...]` (return type
+                // ber-range, mis. `function [W:0] foo`) supaya nama
+                // fungsi bukan salah satu token di dalam range.
+                let mut depth = 0usize;
                 for (w, c) in rest.iter().cloned() {
+                    if w == "[" {
+                        depth += 1;
+                        continue;
+                    }
+                    if w == "]" {
+                        depth = depth.saturating_sub(1);
+                        continue;
+                    }
+                    if depth > 0 {
+                        continue;
+                    }
                     if Self::is_valid_identifier(&w)
                         && !matches!(
                             w.as_str(),
@@ -219,7 +247,20 @@ impl LspBackend {
 
             // parameter/localparam → Constant.
             if CONST_KW.contains(&t0.as_str()) {
+                // LSP NIT-3: lompati range `[\w-...]`.
+                let mut depth = 0usize;
                 for (w, c) in rest.iter().cloned() {
+                    if w == "[" {
+                        depth += 1;
+                        continue;
+                    }
+                    if w == "]" {
+                        depth = depth.saturating_sub(1);
+                        continue;
+                    }
+                    if depth > 0 {
+                        continue;
+                    }
                     if Self::is_valid_identifier(&w)
                         && !matches!(
                             w.as_str(),
@@ -250,7 +291,22 @@ impl LspBackend {
 
             // Port/signal decl → Variable per nama.
             if VAR_KW.contains(&t0.as_str()) {
+                // LSP NIT-3: token di dalam range bit `[\w-...:...]`
+                // (mis. `logic [W-1:0] data;`) jangan dijadikan variabel
+                // palsu. Lompati token selama kedalaman kurung siku > 0.
+                let mut depth = 0usize;
                 for (w, c) in rest.iter().cloned() {
+                    if w == "[" {
+                        depth += 1;
+                        continue;
+                    }
+                    if w == "]" {
+                        depth = depth.saturating_sub(1);
+                        continue;
+                    }
+                    if depth > 0 {
+                        continue;
+                    }
                     if Self::is_valid_identifier(&w)
                         && !matches!(
                             w.as_str(),

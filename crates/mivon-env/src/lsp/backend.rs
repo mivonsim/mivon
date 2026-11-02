@@ -4795,6 +4795,47 @@ endmodule
     }
 
     #[test]
+    fn test_document_symbols_no_fake_var_in_range() {
+        // NIT-3: identifier di dalam range bit `[W-1:0]` tidak boleh
+        // muncul sebagai variabel palsu; nama sesungguhnya (setelah `]`)
+        // harus tetap ter-outline. Test ini DISKRIMINATIF: tanpa fix,
+        // `W`/`N` jadi variabel dan nama fungsi salah.
+        let src = "module m;\n  logic [W-1:0] data;\n  reg [3:0] q;\n  wire signed [N:0] bus;\nendmodule\n";
+        let m = &LspBackend::document_symbols(src)[0];
+        let names: Vec<&str> = m.children.iter().map(|c| c.name.as_str()).collect();
+        assert!(
+            !names.contains(&"W"),
+            "W di range tak boleh jadi variabel: {names:?}"
+        );
+        assert!(
+            !names.contains(&"N"),
+            "N di range tak boleh jadi variabel: {names:?}"
+        );
+        assert!(names.contains(&"data"), "data harus ada: {names:?}");
+        assert!(names.contains(&"q"), "q harus ada: {names:?}");
+        assert!(names.contains(&"bus"), "bus harus ada: {names:?}");
+        assert_eq!(names.len(), 3, "hanya 3 variabel riil: {names:?}");
+
+        // parameter ber-range: nama param (bukan token range) yang di-outline.
+        let p = "module p #(parameter [3:0] WIDTH = 4);\n  logic [WIDTH-1:0] x;\nendmodule\n";
+        let pm = &LspBackend::document_symbols(p)[0];
+        let pn: Vec<&str> = pm.children.iter().map(|c| c.name.as_str()).collect();
+        assert!(pn.contains(&"WIDTH"), "WIDTH param harus ada: {pn:?}");
+        assert!(pn.contains(&"x"), "x harus ada: {pn:?}");
+        assert_eq!(pn.len(), 2, "WIDTH + x: {pn:?}");
+
+        // function return ber-range: nama fungsi bukan token di range.
+        let f = "module f_mod;\n  function [W:0] myfn;\n  endfunction\nendmodule\n";
+        let fm = &LspBackend::document_symbols(f)[0];
+        let fnm: Vec<&str> = fm.children.iter().map(|c| c.name.as_str()).collect();
+        assert!(fnm.contains(&"myfn"), "myfn harus ter-outline: {fnm:?}");
+        assert!(
+            !fnm.contains(&"W"),
+            "token range tak boleh jadi nama fungsi: {fnm:?}"
+        );
+    }
+
+    #[test]
     fn test_type_hierarchy_extends() {
         // LSP-14 tahap 2a: rantai extends + supertypes/subtypes.
         let src = "class base;\nendclass\nclass mid extends base;\nendclass\nclass leaf extends mid;\nendclass\nclass lone;\nendclass\n";
