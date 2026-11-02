@@ -14428,4 +14428,52 @@ VERIFIKASI ROUND 238:
   - cargo test -p mivon-env --features lsp
     test_document_symbols_no_fake_var_in_range ... ok (+1 test).
 
+═══ ROUND 239 — NIT-9: deteksi siklus `extends` di elaborator (cegah hang) ═══
+
+Ruang lingkup: menutup NIT-9 (backlog pre-existing, dicatat di review
+R196/R197) — `class a extends b; class b extends a;` (extends siklik)
+menyebabkan HANG/infinite loop. Akar: walk rantai `extends` di
+`elaborate_classes` (crates/mivon-elaboration/src/elaborator/classes.rs)
+mengikuti `current.extends` tanpa deteksi siklus; walker UVM runtime
+(`is_uvm_*_hierarchy` di hierarchy.rs) juga `loop {}` tanpa guard.
+
+Perubahan (crates/mivon-elaboration/src/elaborator/classes.rs,
+  `elaborate_classes`):
+  PRE-PASS deteksi siklus di ATAS `self.design.classes` (seluruh class AST
+  tersedia sekaligus) di awal loop `for cd in &self.design.classes`. Walk
+  rantai `extends` via lookup nama → `return Err(SimError::elaborate(
+  "cyclic class inheritance: class '<nama>' participates in an extends
+  cycle (NIT-9)"))` bila nama dikunjungi lagi atau == `cd.name`.
+  Pendekatan ini ORDER-INDEPENDEN: berbeda dengan guard per-walker di
+  HashMap `classes` yang dibangun inkremental (pasangan siklik yang sedang
+  di-elaborasi tak terjangkau → lolos). FIX BENAR per catatan audit
+  ("deteksi siklus di elaborator, bukan guard per-walker"): class siklik
+  ditolak saat elaborasi dengan diagnostik deterministik, sehingga walker
+  runtime (`is_uvm_*_hierarchy` di hierarchy.rs) tidak lagi menemukan
+  rantai siklik.
+  CATATAN: attempt pertama memakai guard `seen_anc` di dua walk merge
+  method/field — GAGAL (test + review agent TIDAK LOLOS: HashMap
+  inkremental tak bisa detect siklus 2-node). Dikoreksi ke pre-pass di
+  atas `design.classes`.
+
+Test baru (+1, core_uvm.rs): test_cyclic_extends_hierarchy_detected_nit9
+  - `class left extends right; class right extends left;` → compile_str
+    Err (bukan hang); pesan mengandung "cyclic"/"cycle"/"extends".
+  - Kontrol positif: hierarki DALAM base→mid→leaf tetap is_ok().
+  Test DISKRIMINATIF: tanpa fix, siklus menyebabkan infinite loop
+  (test tidak kembali / timeout).
+
+Status NIT-9: CLOSED ✅ (akar elaborator; walker runtime kini terlindungi
+  karena class siklik ditolak saat compile).
+Item open berikutnya: NIT-5 (test harness LspService), NIT-1 (wording
+  audit), LSP-14, Arsitektur-01..04/06, JIT-02, ELAB-02/03/08,
+  COMP-01/02/11, SIM-03/19, FORMAL-03/04/10/13, ENT-24/39, FEAT-10/23,
+  PARSER-07, LANG-01/02, DEBT-01/04.
+
+VERIFIKASI ROUND 239:
+  - cargo fmt --all -> bersih.
+  - cargo test -p mivon-tests test_cyclic_extends_hierarchy_detected_nit9
+    ... ok (+1 test).
+
+
 \\=======================================================================//

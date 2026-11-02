@@ -4599,3 +4599,51 @@ endmodule
         "pesan harus menyebut method: {msg}"
     );
 }
+
+#[test]
+fn test_cyclic_extends_hierarchy_detected_nit9() {
+    // NIT-9: `extends` siklik (left<->right) tidak boleh menyebabkan
+    // hang/infinite loop saat elaborasi (walker rantai extends di
+    // elaborate_classes). Harus menghasilkan Err deterministik.
+    let cyclic = r#"
+class node;
+endclass
+class left extends right;
+endclass
+class right extends left;
+endclass
+module m;
+  initial #1 $finish;
+endmodule
+"#;
+    let r = compile_str(cyclic);
+    assert!(
+        r.is_err(),
+        "cyclic extends (left<->right) harus Err, bukan hang/loop tak berujung"
+    );
+    let msg = format!("{:?}", r.unwrap_err()).to_lowercase();
+    assert!(
+        msg.contains("cyclic") || msg.contains("cycle") || msg.contains("extends"),
+        "pesan error harus menyebut siklus/extends: {msg}"
+    );
+
+    // Kontrol positif: hierarki DALAM (bukan siklik) tetap ter-elaborasi OK.
+    let ok = r#"
+class base;
+  int a;
+endclass
+class mid extends base;
+  int b;
+endclass
+class leaf extends mid;
+  int c;
+endclass
+module m2;
+  initial #1 $finish;
+endmodule
+"#;
+    assert!(
+        compile_str(ok).is_ok(),
+        "hierarki dalam (base→mid→leaf) tidak boleh terpengaruh fix NIT-9"
+    );
+}

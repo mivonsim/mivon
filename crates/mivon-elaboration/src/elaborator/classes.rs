@@ -113,6 +113,31 @@ impl Elaborator {
     pub(super) fn elaborate_classes(&self) -> Result<HashMap<Symbol, IrClassDef>, SimError> {
         let mut classes = HashMap::new();
         for cd in &self.design.classes {
+            // NIT-9: deteksi siklus `extends` (A→B→A) — cegah infinite loop
+            // saat merge warisan. Pakai `self.design.classes` (SELURUH class AST
+            // tersedia sekaligus) agar siklus terdeteksi deterministik TANPA
+            // bergantung urutan elaborasi. Walker merge di bawah memakai HashMap
+            // `classes` yang dibangun inkremental, sehingga pasangan siklik yang
+            // sedang di-elaborasi tak terjangkau darinya — makanya cek ini
+            // dilakukan di atas design lengkap.
+            {
+                let mut chain: std::collections::HashSet<Symbol> = std::collections::HashSet::new();
+                let mut cur = cd.extends;
+                while let Some(parent) = cur {
+                    if !chain.insert(parent) || parent == cd.name {
+                        return Err(SimError::elaborate(format!(
+                            "cyclic class inheritance: class '{}' participates in an extends cycle (NIT-9)",
+                            cd.name
+                        )));
+                    }
+                    cur = self
+                        .design
+                        .classes
+                        .iter()
+                        .find(|c| c.name == parent)
+                        .and_then(|c| c.extends);
+                }
+            }
             let mut fields = Vec::new();
             for member in &cd.members {
                 if let ClassMember::Decl(decl) = member {
