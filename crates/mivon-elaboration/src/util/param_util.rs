@@ -44,7 +44,10 @@ pub(crate) fn param_width_of(p: &ParamDecl, params: &HashMap<Symbol, i64>) -> Op
     }
     let declared = match p.default.as_ref().and_then(default_literal_width) {
         Some(w) => w,
-        None => return None,
+        None => match p.default.as_ref().and_then(param_default_expr_width) {
+            Some(w) if w <= 64 => w,
+            _ => return None,
+        },
     };
     // Lebar dari literal default hanya inferensi: override (`#(.P(16'hABCD))`)
     // membawa tipe sendiri, dan lebarnya TIDAK ikut di peta i64. Untuk param
@@ -504,10 +507,12 @@ pub(crate) fn param_static_width(p: &ParamDecl, params: &HashMap<Symbol, i64>) -
     if let Some(w) = mivon_ast::const_eval::instance_override_width(p.name) {
         return (w <= 64).then_some(w);
     }
-    p.default
-        .as_ref()
-        .and_then(default_literal_width)
-        .filter(|w| *w <= 64)
+    // Literal: lebar asli tanpa cap (boleh >64, misal 'h(20F)=80).
+    // Non-literal: full-precision via param_default_expr_width (sudah cap 64).
+    match p.default.as_ref().and_then(default_literal_width) {
+        Some(w) => Some(w),
+        None => p.default.as_ref().and_then(param_default_expr_width),
+    }
 }
 
 /// ELAB-13/14: peta lebar STATIS seluruh param module (header `module.params`
@@ -559,6 +564,101 @@ pub(crate) fn param_decl_signed(p: &ParamDecl) -> bool {
         Some(expr) => crate::elaborator::sign::elab_expr_is_signed(expr),
         None => true, // implicit integer
     }
+}
+
+/// ELAB-13 (3): lebar self-determined EKSPRESI DEFAULT param yang bukan
+/// literal tunggal (mis. `parameter P = 8'd1 + 8'd1`). LRM: lebar param tanpa
+/// range/dtype = lebar ekspresi default. iverilog 12 memakai lebar
+/// FULL-PRECISION (bukan context-determined): `+`/`-` -> max(o)+1, `*` ->
+/// w1+w2, `/`/`%` -> lebar dividen (operand kiri), operator logika ->
+/// max, perbandingan -> 1, shift -> lebar operand kiri, concat -> jumlah,
+/// replicate -> count*inner. Decimal tak berlebar = 32 bit (jadi `4 * 8` -> 64).
+/// Bila ekspresi memuat `Ident`/`ScopedIdent` (param/sinyal) kita kembalikan
+/// `None` (fallback 64, perilaku lama) — kasus param-merujuk-param tetap
+/// residual (3) yang belum diinferensi.
+fn param_default_expr_width(e: &Expr) -> Option<usize> {
+    fn lit_width(v: &Value) -> Option<usize> {
+        match v {
+            Value::Binary { width, .. } => Some(width.unwrap_or(32)),
+            Value::Hex { width, .. } => Some(width.unwrap_or(32)),
+            Value::Octal { width, .. } => Some(width.unwrap_or(32)),
+            Value::Decimal(_) => Some(32),
+            Value::Real(_) => Some(64),
+            _ => None,
+        }
+    }
+    fn rec(e: &Expr) -> Option<usize> {
+        match e {
+            // Param/sinyal reference: tidak bisa diselesaikan tanpa konteks ->
+            // fallback 64 (residual param-merujuk-param).
+            Expr::Ident { .. } | Expr::ScopedIdent { .. } => None,
+            Expr::Value(v) => lit_width(v),
+            Expr::FillLit(_) => Some(1),
+            Expr::Paren(inner) => rec(inner),
+            Expr::UnaryOp { op, expr } => match op {
+                UnaryOp::ReductionAnd
+                | UnaryOp::ReductionNand
+                | UnaryOp::ReductionOr
+                | UnaryOp::ReductionNor
+                | UnaryOp::ReductionXor
+                | UnaryOp::ReductionXnor
+                | UnaryOp::Not => Some(1),
+                _ => rec(expr), // Plus/Minus/BitNot -> lebar operand
+            },
+            Expr::BinaryOp { op, lhs, rhs } => {
+                let lw = rec(lhs)?;
+                let rw = rec(rhs)?;
+                Some(match op {
+                    BinaryOp::Add | BinaryOp::Sub => lw.max(rw) + 1,
+                    BinaryOp::Mul => lw + rw,
+                    BinaryOp::Div | BinaryOp::Mod => lw, // lebar dividen
+                    BinaryOp::BitAnd | BinaryOp::BitOr | BinaryOp::BitXor | BinaryOp::BitXnor => {
+                        lw.max(rw)
+                    }
+                    BinaryOp::Eq
+                    | BinaryOp::Neq
+                    | BinaryOp::CaseEq
+                    | BinaryOp::CaseNeq
+                    | BinaryOp::EqWild
+                    | BinaryOp::NeqWild
+                    | BinaryOp::Lt
+                    | BinaryOp::Le
+                    | BinaryOp::Gt
+                    | BinaryOp::Ge
+                    | BinaryOp::LogicalAnd
+                    | BinaryOp::LogicalOr => 1,
+                    BinaryOp::Shl | BinaryOp::Shr | BinaryOp::Sshl | BinaryOp::Sshr => lw, // shift: lebar operand kiri
+                    BinaryOp::Power => lw.max(rw), // jarang; approx
+                })
+            }
+            Expr::Concat(items) => {
+                let mut total: usize = 0;
+                for it in items {
+                    total = total.checked_add(rec(it)?)?;
+                }
+                Some(total)
+            }
+            Expr::Replicate { count, expr } => {
+                let c = const_eval_with_params(count, &HashMap::new()).ok()? as usize;
+                Some(c.checked_mul(rec(expr)?)?)
+            }
+            Expr::TernaryOp {
+                true_expr,
+                false_expr,
+                ..
+            } => Some(rec(true_expr)?.max(rec(false_expr)?)),
+            Expr::CastWidth { width, .. } => const_eval_with_params(width, &HashMap::new())
+                .ok()
+                .map(|v| v.unsigned_abs().max(1) as usize),
+            // Cast nama tipe butuh resolusi typedef -> fallback 64.
+            Expr::Cast { .. } => None,
+            // RangeSelect/BitSelect/PartSelect/MemberAccess/FuncCall: butuh
+            // konteks sinyal/param -> fallback None (64).
+            _ => None,
+        }
+    }
+    let w = rec(e)?;
+    (w > 0 && w <= 64).then_some(w)
 }
 
 /// ELAB-13: lebar minimal untuk merepresentasikan nilai (negatif = 64 bit).
@@ -907,17 +1007,20 @@ fn param_decl_width_one(
     }
     // Tanpa range/dtype: lebar tipe nilai default. Literal integer → lebar
     // literal. Default non-literal (`parameter A = 4+4`) belum terinferensi
-    // (ELAB-13 butir (3), masih OPEN) → fallback 64 SERAGAM di ketiga jalur
+    // (ELAB-13 butir (3) FIXED ROUND 237) full-precision; > 64 -> fallback 64
     // (IR/localparam/generate-if), bukan min-bits nilai yang berbeda-beda.
     // Override TIDAK melebarkan lebar deklarasi di sini: tipe param hasil
     // override ditentukan tipe ekspresi override (LRM 6.20.2) yang lebarnya
     // belum dipropagasi ke peta i64 (butir (13), masih OPEN).
-    Some(
-        p.default
-            .as_ref()
-            .and_then(default_literal_width)
-            .unwrap_or(64),
-    )
+    // ELAB-13 (3): default non-literal -> lebar full-precision ekspresi
+    // (lihat param_default_expr_width). Lebar > 64 (residual (9)) dan param
+    // tanpa default (wajib override) -> fallback 64.
+    let w = p
+        .default
+        .as_ref()
+        .and_then(default_literal_width)
+        .or_else(|| p.default.as_ref().and_then(param_default_expr_width));
+    Some(w.unwrap_or(64))
 }
 
 /// Lebar `$bits` satu deklarasi param — dipakai elaborator untuk peta

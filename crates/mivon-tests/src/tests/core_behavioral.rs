@@ -1206,6 +1206,78 @@ endmodule
     assert_eq!(get("sn"), 1, "$signed(P) < 0 untuk P 32 bit = 1");
 }
 
+/// ELAB-13 (3): lebar self-determined EKSPRESI DEFAULT param non-literal.
+/// LRM: lebar param tanpa range/dtype = lebar ekspresi default. iverilog 12
+/// memakai lebar FULL-PRECISION (bukan context-determined): + / - -> max + 1,
+/// * -> w1+w2, / % -> lebar dividen, logika -> max, perbandingan -> 1, shift ->
+/// operand kiri, concat -> jumlah, replicate -> count*inner. Decimal tak
+/// berlebar = 32 bit (4 * 8 -> 64). Referensi iverilog 12 (sweep): P1=9 P2=17
+/// P3=9 P4=16 P5=16 P6=8 P7=9 P8=64 P9=33 PA=10 Q=9 D1=16 D2=16 S1=16 S2=16
+/// C1=1 N1=10 A1=8.
+#[test]
+fn test_parameter_default_nonliteral_width() {
+    let source = r#"
+module tb;
+  parameter P1 = 8'd1 + 8'd1;
+  parameter P2 = 16'd1 + 8'd1;
+  parameter P3 = 8'd5 - 8'd3;
+  parameter P4 = 8'd1 * 8'd2;
+  parameter P5 = {8'd1, 8'd2};
+  parameter P6 = 8'd3 & 8'd1;
+  parameter P7 = -8'sd1 + 8'sd1;
+  parameter P8 = 4 * 8;
+  parameter P9 = 32'd1 + 32'd1;
+  parameter PA = 8'd1 + 8'd1 + 8'd1;
+  localparam Q = 8'd10 + 8'd20;
+  parameter D1 = 16'd100 / 8'd7;
+  parameter D2 = 16'd100 % 8'd7;
+  parameter S1 = 16'd1 << 4'd4;
+  parameter S2 = 16'd1 >> 4'd4;
+  parameter C1 = 8'd1 < 8'd2;
+  parameter N1 = 8'd1 + 8'd2 + 8'd3;
+  parameter A1 = 8'sd1 & 8'sd2;
+  logic [63:0] p1, p2, p3, p4, p5, p6, p7, p8, p9, pa, q, d1, d2, s1, s2, c1, n1, a1;
+  logic [63:0] p1v;
+  assign p1v = P1;
+  initial begin
+    p1 = $bits(P1); p2 = $bits(P2); p3 = $bits(P3); p4 = $bits(P4);
+    p5 = $bits(P5); p6 = $bits(P6); p7 = $bits(P7); p8 = $bits(P8);
+    p9 = $bits(P9); pa = $bits(PA); q = $bits(Q); d1 = $bits(D1);
+    d2 = $bits(D2); s1 = $bits(S1); s2 = $bits(S2); c1 = $bits(C1);
+    n1 = $bits(N1); a1 = $bits(A1);
+    #1 $finish;
+  end
+endmodule
+"#;
+    let sigs = simulate_signals(source, 5).unwrap();
+    let get = |n: &str| {
+        sigs.iter()
+            .find(|(s, _)| s == n)
+            .map(|(_, v)| v.to_u64())
+            .unwrap_or(0)
+    };
+    assert_eq!(get("p1"), 9, "8'd1 + 8'd1 -> 9 (full precision)");
+    assert_eq!(get("p2"), 17, "16'd1 + 8'd1 -> 17");
+    assert_eq!(get("p3"), 9, "8'd5 - 8'd3 -> 9");
+    assert_eq!(get("p4"), 16, "8'd1 * 8'd2 -> 16");
+    assert_eq!(get("p5"), 16, "{{8'd1,8'd2}} -> 16 (concat)");
+    assert_eq!(get("p6"), 8, "8'd3 & 8'd1 -> 8 (logic)");
+    assert_eq!(get("p7"), 9, "-8'sd1 + 8'sd1 -> 9");
+    assert_eq!(get("p8"), 64, "4 * 8 (decimal unsized 32) -> 64");
+    assert_eq!(get("p9"), 33, "32'd1 + 32'd1 -> 33");
+    assert_eq!(get("pa"), 10, "8'd1+8'd1+8'd1 -> 10 (left-assoc)");
+    assert_eq!(get("q"), 9, "localparam 8'd10+8'd20 -> 9");
+    assert_eq!(get("d1"), 16, "16'd100 / 8'd7 -> 16 (dividend width)");
+    assert_eq!(get("d2"), 16, "16'd100 % 8'd7 -> 16");
+    assert_eq!(get("s1"), 16, "16'd1 << 4 -> 16 (shift: left op)");
+    assert_eq!(get("s2"), 16, "16'd1 >> 4 -> 16");
+    assert_eq!(get("c1"), 1, "8'd1 < 8'd2 -> 1 (comparison)");
+    assert_eq!(get("n1"), 10, "8'd1+8'd2+8'd3 -> 10");
+    assert_eq!(get("a1"), 8, "8'sd1 & 8'sd2 -> 8");
+    // Nilai tidak terpotong oleh lebar baru: P1 = 2.
+    assert_eq!(get("p1v"), 2, "nilai P1 = 8'd1+8'd1 = 2 (tidak terpotong)");
+}
+
 /// ELAB-13 (17): override berbentuk ekspresi yang lebarnya tak dapat
 /// diinferensi (part-select, ekspresi biner) TIDAK boleh memotong nilai
 /// parameter. Lebar 32 hanya dipasang bila pemotongan tidak kehilangan bit
@@ -2617,14 +2689,14 @@ endmodule
         0x88,
         "generate-if dalam for: $bits(FP)==7 harus false (8 bit)"
     );
-    // Default non-literal (`4+4`) belum terinferensi (ELAB-13 butir (3)) —
-    // fallback 64 SERAGAM di IR/localparam/generate-if.
-    assert_eq!(get("pe"), 64, "IR: $bits(default non-literal) fallback 64");
-    assert_eq!(get("be"), 64, "localparam BE = $bits(E) fallback 64");
+    // Default non-literal (`4+4`): lebar full-precision = max(32,32)+1 = 33
+    // (ELAB-13 butir (3)). Tidak lagi fallback 64 seragam.
+    assert_eq!(get("pe"), 33, "IR: $bits(4+4) = 33 (full-precision)");
+    assert_eq!(get("be"), 33, "localparam BE = $bits(E) = 33");
     assert_eq!(
         get("ge"),
         0x22,
-        "generate-if $bits(E)==8 harus false (fallback 64)"
+        "generate-if $bits(E)==8 harus false (33 bit)"
     );
     // (c) override pada param untyped: tetap lebar deklarasi (32), bukan 2
     assert_eq!(get("u1.psub"), 32, "IR: $bits(P) override tetap 32");
