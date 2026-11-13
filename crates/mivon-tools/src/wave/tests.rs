@@ -651,6 +651,33 @@ fn test_protocol_ahb_busy_only_no_false_violation() {
 }
 
 #[test]
+fn test_protocol_ahb_hwrite_unstable_during_burst() {
+    // NONSEQ(write=1) lalu SEQ(write=0) → HWRITE berubah selama burst.
+    let v = proto_check_ahb(
+        "/tmp/__proto_ahb_hwunstable.vcd",
+        &[("!", 2, "htrans"), ("\"", 1, "hready"), ("#", 1, "hwrite")],
+        "#0\nb00 !\n0\"\n0#\n#10\nb10 !\n1\"\n1#\n#20\nb11 !\n1\"\n0#\n#30\nb00 !\n0\"\n0#\n",
+    );
+    let got: Vec<(u64, &str)> = v.iter().map(|x| (x.time, x.rule)).collect();
+    assert_eq!(
+        got,
+        vec![(20, "AHB-HWRITE-UNSTABLE")],
+        "HWRITE berubah di beat SEQ → violation"
+    );
+}
+
+#[test]
+fn test_protocol_ahb_hwrite_stable_clean() {
+    // NONSEQ(write=1) → SEQ(write=1) → IDLE. HWRITE stabil → bersih.
+    let v = proto_check_ahb(
+        "/tmp/__proto_ahb_hwstable.vcd",
+        &[("!", 2, "htrans"), ("\"", 1, "hready"), ("#", 1, "hwrite")],
+        "#0\nb00 !\n0\"\n0#\n#10\nb10 !\n1\"\n1#\n#20\nb11 !\n1\"\n1#\n#30\nb00 !\n0\"\n0#\n",
+    );
+    assert!(v.is_empty(), "HWRITE stabil tak memicu pelanggaran: {v:?}");
+}
+
+#[test]
 fn test_protocol_axi4lite_clean_write_read() {
     // Write (AW+W → B) lalu read (AR → R) tanpa pelanggaran. VALID dan READY
     // turun bersamaan setelah handshake — bentuk waveform yang paling umum.

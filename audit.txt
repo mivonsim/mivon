@@ -14696,4 +14696,42 @@ VERIFIKASI ROUND 242:
   - cargo nextest run -p mivon-tools test_protocol_ahb -> 7 passed.
 
 
+═══ ROUND 243 — ENT-24 (lanjutan 3): rule AHB-HWRITE-UNSTABLE ═══
+
+Ruang lingkup: tambah aturan ke-3 checker AHB (post-sim) — HWRITE wajib
+stabil selama burst (sejak NONSEQ awal hingga IDLE). Aturan ini opsional:
+hanya aktif bila sinyal `hwrite` ada di VCD; VCD tanpa `hwrite` tetap
+bersih (tidak memicu false positive). Melanjutkan ENT-24 PARTIAL
+(rule AHB post-sim; runtime VIP saat simulasi masih open).
+
+Perubahan (crates/mivon-tools/src/wave/protocol.rs, fn check_ahb):
+  - `hwrite` dijadikan OPSIONAL: `Track::new(data,"hwrite").ok()` — bila
+    absen, aturan stabilitas dilewati.
+  - `hwrite_start: Option<bool>` + `hwrite_reported` — arah tulis saat
+    NONSEQ awal span; flag AHB-HWRITE-UNSTABLE sekali per span bila `hwrite`
+    berubah pada beat berikutnya. Di-reset di IDLE.
+  - `starts_span` = NONSEQ saat idle, untuk men-set `hwrite_start` hanya di
+    awal burst.
+
+Test baru (+2): test_protocol_ahb_hwrite_unstable_during_burst
+  (NONSEQ write=1 → SEQ write=0 → AHB-HWRITE-UNSTABLE t=20) +
+  test_protocol_ahb_hwrite_stable_clean (NONSEQ→SEQ write=1 stabil →
+  bersih). DISKRIMINATIF: bila pengecekan hwrite dihapus, test unstable
+  gagal (tidak ada flag).
+
+Status ENT-24: masih ⚠️ PARTIAL — rule AHB post-sim kini 3 aturan (NO-READY,
+  SEQ-WITHOUT-NONSEQ, HWRITE-UNSTABLE); runtime VIP checker (saat
+  simulasi) + rule tambahan (HRESP, protokol lain) masih open.
+
+Item open berikutnya: NIT-1 (wording audit), Arsitektur-01..04/06, JIT-02,
+  ELAB-02/03/08, COMP-01/02/11, SIM-03/19, FORMAL-03/04/10/13, ENT-39,
+  FEAT-10/23, PARSER-07, LANG-01/02, DEBT-01/04. LSP-14: blocker env.
+
+VERIFIKASI ROUND 243:
+  - rustfmt --check (protocol.rs + tests.rs) -> bersih.
+  - cargo nextest run -p mivon-tools -> 515 passed, 0 skipped (513 -> 515,
+    +2 test AHB).
+  - cargo nextest run -p mivon-tools test_protocol_ahb -> 9 passed.
+
+
 \\=======================================================================//

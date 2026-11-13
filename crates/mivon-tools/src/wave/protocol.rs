@@ -340,13 +340,20 @@ fn htrans_state(v: &str) -> Ht {
 ///   transfer terabaikan (aborted).
 /// - AHB-SEQ-WITHOUT-NONSEQ: HTRANS=SEQ muncul tanpa HTRANS=NONSEQ sejak
 ///   IDLE terakhir (burst tanpa awalan; termasuk BUSY→SEQ tanpa NONSEQ).
+/// - AHB-HWRITE-UNSTABLE: HWRITE berubah selama burst (harus stabil sejak
+///   NONSEQ awal hingga IDLE). Aturan ini hanya aktif bila sinyal `hwrite`
+///   ada di VCD.
 ///
 /// `hready` wajib ada (seperti `pready` di APB). `BUSY` di antara
 /// NONSEQ/SEQ diperbolehkan (bukan beat transfer sendiri); `X` netral.
 pub(crate) fn check_ahb(data: &VcdData) -> Result<Vec<Violation>, SimError> {
     let mut htrans = StrTrack::new(data, "htrans")?;
     let mut hready = Track::new(data, "hready")?;
-    // Gabungan waktu perubahan htrans + hready (sorted-unik).
+    // hwrite opsional: beberapa VCD tak menyertakannya. Dipakai untuk aturan
+    // stabilitas HWRITE selama burst.
+    let mut hwrite = Track::new(data, "hwrite").ok();
+    // Gabungan waktu perubahan htrans + hready (sorted-unik). hwrite tidak
+    // di-merge: Track::at(t) mengembalikan nilai pada t berapa pun.
     let mut times: Vec<u64> = htrans
         .changes
         .iter()
@@ -364,9 +371,16 @@ pub(crate) fn check_ahb(data: &VcdData) -> Result<Vec<Violation>, SimError> {
     let mut span_active = false;
     let mut ready_in_span = false;
     let mut saw_nonseq = false;
+    // Stabilitas HWRITE selama burst: arah tulis saat NONSEQ awal, dan flag
+    // bila berubah pada beat berikutnya (satu laporan per span).
+    let mut hwrite_start: Option<bool> = None;
+    let mut hwrite_reported = false;
     for t in times {
         let tr = htrans_state(htrans.at(t));
         let rdy = hready.at(t);
+        let hw = hwrite.as_mut().map(|tr| tr.at(t));
+        // Event ini memulai span transfer baru bila NONSEQ muncul saat idle.
+        let starts_span = tr == Ht::Nonseq && !span_active;
 
         // Aturan 2: SEQ tanpa NONSEQ pendahulu sejak IDLE terakhir (termasuk
         // BUSY→SEQ tanpa NONSEQ). Dilaporkan sekali saat SEQ muncul.
@@ -381,6 +395,10 @@ pub(crate) fn check_ahb(data: &VcdData) -> Result<Vec<Violation>, SimError> {
 
         match tr {
             Ht::Nonseq => {
+                if starts_span {
+                    hwrite_start = hw;
+                    hwrite_reported = false;
+                }
                 span_active = true;
                 saw_nonseq = true;
                 if rdy {
@@ -404,6 +422,8 @@ pub(crate) fn check_ahb(data: &VcdData) -> Result<Vec<Violation>, SimError> {
                 span_active = false;
                 ready_in_span = false;
                 saw_nonseq = false;
+                hwrite_start = None;
+                hwrite_reported = false;
             }
             Ht::Busy | Ht::X => {
                 // BUSY: wait-state dalam burst (bukan beat sendiri). X: netral.
@@ -411,6 +431,22 @@ pub(crate) fn check_ahb(data: &VcdData) -> Result<Vec<Violation>, SimError> {
                 // tetap dihitung bila span aktif.
                 if span_active && rdy {
                     ready_in_span = true;
+                }
+            }
+        }
+
+        // Aturan 3: HWRITE stabil selama burst. Dilewati bila hwrite tak ada
+        // di VCD.
+        if span_active {
+            if let (Some(start), Some(now)) = (hwrite_start, hw) {
+                if start != now && !hwrite_reported {
+                    out.push(Violation {
+                        time: t,
+                        rule: "AHB-HWRITE-UNSTABLE",
+                        detail: "HWRITE berubah selama burst (harus stabil sejak NONSEQ awal)"
+                            .to_string(),
+                    });
+                    hwrite_reported = true;
                 }
             }
         }
