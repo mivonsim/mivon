@@ -7,7 +7,7 @@ use super::compare::compare_data;
 use super::data::parse_vcd;
 use super::decode::{ahb_decode, apb_decode, axi4lite_decode};
 use super::get::get_data;
-use super::protocol::{check, check_apb, check_axi4lite, Violation};
+use super::protocol::{check, check_ahb, check_apb, check_axi4lite, Violation};
 use super::stats::stats_data;
 use super::util::{bits_val, full_name, sample_at, wildcard_match};
 
@@ -530,6 +530,94 @@ fn test_protocol_apb_requires_pready() {
     let _ = std::fs::remove_file("/tmp/__proto_apb_noready.vcd");
 }
 
+/// Tulis VCD sementara → jalankan checker AHB → hapus file.
+fn proto_check_ahb(path: &str, vars: &[(&str, usize, &str)], body: &str) -> Vec<Violation> {
+    std::fs::write(path, vcd_proto(vars, body)).unwrap();
+    let data = parse_vcd(path).unwrap();
+    let v = check_ahb(&data).unwrap();
+    let _ = std::fs::remove_file(path);
+    v
+}
+
+#[test]
+fn test_protocol_ahb_clean_single_and_burst() {
+    // Single NONSEQ dengan HREADY=1 → selesai; burst NONSEQ→BUSY→SEQ dengan
+    // HREADY=1 → selesai. Tidak ada pelanggaran.
+    let v = proto_check_ahb(
+        "/tmp/__proto_ahb_ok.vcd",
+        &[("!", 2, "htrans"), ("\"", 1, "hready")],
+        "#0\nb00 !\n0\"\n\
+         #10\nb10 !\n1\"\n#20\nb00 !\n0\"\n\
+         #30\nb10 !\n0\"\n#40\nb01 !\n0\"\n#50\nb11 !\n1\"\n#60\nb00 !\n0\"\n",
+    );
+    assert!(v.is_empty(), "AHB legal tidak boleh ada pelanggaran: {v:?}");
+}
+
+#[test]
+fn test_protocol_ahb_requires_hready() {
+    // Tanpa hready dua aturan tidak bisa dievaluasi → error eksplisit.
+    let src = vcd_proto(&[("!", 2, "htrans")], "#0\nb00 !\n#10\nb10 !\n");
+    std::fs::write("/tmp/__proto_ahb_noready.vcd", src).unwrap();
+    let data = parse_vcd("/tmp/__proto_ahb_noready.vcd").unwrap();
+    let e = check_ahb(&data).expect_err("hready wajib ada");
+    assert!(
+        format!("{e}").contains("hready"),
+        "pesan menyebut hready: {e}"
+    );
+    let _ = std::fs::remove_file("/tmp/__proto_ahb_noready.vcd");
+}
+
+#[test]
+fn test_protocol_ahb_violations() {
+    // SEQ tanpa NONSEQ pendahulu (t=10) + transfer NONSEQ/SEQ berakhir di
+    // IDLE tanpa HREADY (t=20).
+    let v = proto_check_ahb(
+        "/tmp/__proto_ahb_bad.vcd",
+        &[("!", 2, "htrans"), ("\"", 1, "hready")],
+        "#0\nb00 !\n0\"\n#10\nb11 !\n0\"\n#20\nb00 !\n0\"\n",
+    );
+    let got: Vec<(u64, &str)> = v.iter().map(|x| (x.time, x.rule)).collect();
+    assert_eq!(
+        got,
+        vec![
+            (10, "AHB-SEQ-WITHOUT-NONSEQ"),
+            (20, "AHB-TRANSFER-NO-READY"),
+        ],
+        "dua pelanggaran pada waktu yang tepat"
+    );
+}
+
+#[test]
+fn test_protocol_ahb_transfer_no_ready() {
+    // NONSEQ(t=10) lalu SEQ(t=20) tanpa HREADY sama sekali → aborted di t=30.
+    let v = proto_check_ahb(
+        "/tmp/__proto_ahb_abort.vcd",
+        &[("!", 2, "htrans"), ("\"", 1, "hready")],
+        "#0\nb00 !\n0\"\n#10\nb10 !\n0\"\n#20\nb11 !\n0\"\n#30\nb00 !\n0\"\n",
+    );
+    let got: Vec<(u64, &str)> = v.iter().map(|x| (x.time, x.rule)).collect();
+    assert_eq!(
+        got,
+        vec![(30, "AHB-TRANSFER-NO-READY")],
+        "transfer aborted tanpa HREADY"
+    );
+}
+
+#[test]
+fn test_protocol_ahb_busy_in_burst_is_clean() {
+    // NONSEQ→BUSY→SEQ dengan HREADY=1 pada beat SEQ → selesai (BUSY bukan
+    // beat sendiri, tak memicu false positive).
+    let v = proto_check_ahb(
+        "/tmp/__proto_ahb_busy.vcd",
+        &[("!", 2, "htrans"), ("\"", 1, "hready")],
+        "#0\nb00 !\n0\"\n#10\nb10 !\n0\"\n#20\nb01 !\n0\"\n#30\nb11 !\n1\"\n#40\nb00 !\n0\"\n",
+    );
+    assert!(
+        v.is_empty(),
+        "BUSY dalam burst tak memicu pelanggaran: {v:?}"
+    );
+}
+
 #[test]
 fn test_protocol_axi4lite_clean_write_read() {
     // Write (AW+W → B) lalu read (AR → R) tanpa pelanggaran. VALID dan READY
@@ -604,6 +692,19 @@ fn test_protocol_cli_gate_semantics() {
         check("/tmp/__proto_gate_ok.vcd", "axi4lite").is_ok(),
         "waveform bersih → Ok"
     );
+
+    // Dispatcher juga menerima "ahb": AHB bersih → Ok (tidak error "protokol
+    // tidak dikenal").
+    let ahb_clean = vcd_proto(
+        &[("!", 2, "htrans"), ("\"", 1, "hready")],
+        "#0\nb00 !\n0\"\n#10\nb10 !\n1\"\n#20\nb00 !\n0\"\n",
+    );
+    std::fs::write("/tmp/__proto_gate_ahb.vcd", ahb_clean).unwrap();
+    assert!(
+        check("/tmp/__proto_gate_ahb.vcd", "ahb").is_ok(),
+        "AHB bersih → Ok via dispatcher"
+    );
+    let _ = std::fs::remove_file("/tmp/__proto_gate_ahb.vcd");
 
     let bad = vcd_proto(
         &AXIL_VARS,

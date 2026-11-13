@@ -14596,4 +14596,67 @@ VERIFIKASI ROUND 240:
     24 skipped (3991 -> 3993, +2 termasuk NIT-5).
 
 
+═══ ROUND 241 — ENT-24 (lanjutan): checker rule AHB (post-sim) ═══
+
+Ruang lingkup: menutup sub-bagian "rule AHB" yang masih open di ENT-24
+(disebut di FEAT-23: "MASIH OPEN: checker runtime VIP style ... + rule
+AHB"). Sisi decode AHB (WAV-16) sudah ada; checker aturan post-sim baru
+APB (2 rule) + AXI4-Lite (5 rule) sejak ROUND 207. Kini AHB ditambahkan
+sebagai protokol ke-3 pada `mwave protocol`. Sisa ENT-24: checker runtime
+VIP (di-drive saat simulasi, bukan post-sim) — BELUM dikerjakan.
+
+Perubahan (crates/mivon-tools/src/wave/protocol.rs):
+  1. `StrTrack` — timeline sinyal multi-bit mentah (HTRANS 2-bit) + kursor
+     sweep, mirip `Track` namun menyimpan `String` (bukan bool).
+  2. `enum Ht { Idle, Busy, Nonseq, Seq, X }` + `htrans_state()` — decode
+     nilai 2-bit HTRANS ("00"=IDLE, "01"=BUSY, "10"=NONSEQ, "11"=SEQ,
+     lainnya=X/netral).
+  3. `check_ahb(data)` — aturan:
+       AHB-TRANSFER-NO-READY: beat NONSEQ/SEQ dipresentasikan namun span
+         transfer berakhir di IDLE tanpa HREADY=1 pernah tinggi → aborted
+         (satu laporan per span; BUSY di antara burst diperbolehkan).
+       AHB-SEQ-WITHOUT-NONSEQ: HTRANS=SEQ langsung setelah IDLE (burst
+         tanpa awalan NONSEQ; SEQ setelah BUSY/NONSEQ/SEQ legal).
+     `hready` wajib ada (error eksplisit bila hilang, seperti `pready`
+     di APB) — model event-time tanpa clock, toleran zero-delay.
+  4. Wiring dispatcher `check()`: `"ahb" | "ahblite" | "ahb-lite"` →
+     `check_ahb`; teks bantuan usage_err diperbarui (pilihan: apb |
+     axi4lite | ahb).
+
+Test baru (+6): 5 fungsi + 1 asersi dispatcher:
+  - test_protocol_ahb_clean_single_and_burst (NONSEQ+HREADY selesai;
+    burst NONSEQ→BUSY→SEQ+HREADY selesai → bersih).
+  - test_protocol_ahb_requires_hready (tanpa hready → Err sebut "hready").
+  - test_protocol_ahb_violations (SEQ setelah IDLE t=10 + aborted t=20 →
+    2 pelanggaran waktu tepat).
+  - test_protocol_ahb_transfer_no_ready (NONSEQ→SEQ tanpa HREADY →
+    AHB-TRANSFER-NO-READY t=30).
+  - test_protocol_ahb_busy_in_burst_is_clean (BUSY tak memicu false
+    positive).
+  - test_protocol_cli_gate_semantics: + asersi `check(.., "ahb")` bersih
+    via dispatcher.
+  DISKRIMINATIF: bila rule salah (mis. SEQ setelah IDLE tak dilaporkan,
+  atau transfer tanpa HREADY dianggap bersih) → test gagal; bila BUSY
+  salah dihitung sebagai beat → test_busy gagal.
+
+Status ENT-24: masih ⚠️ PARTIAL — "rule AHB" checker POST-SIM tertutup;
+  runtime VIP checker (saat simulasi) + rule tambahan (HRESP, protokol
+  lain) masih open.
+
+Item open berikutnya: NIT-1 (wording audit), Arsitektur-01..04/06, JIT-02,
+  ELAB-02/03/08, COMP-01/02/11, SIM-03/19, FORMAL-03/04/10/13, ENT-39,
+  FEAT-10/23, PARSER-07, LANG-01/02, DEBT-01/04. LSP-14: blocker env.
+
+VERIFIKASI ROUND 241:
+  - cargo fmt -p mivon-tools --check (protocol.rs + tests.rs) -> bersih.
+    CATATAN: lint/cache.rs punya violation fmt pre-existing (committed,
+    tak disentuh tahap ini) — di luar scope.
+  - cargo nextest run -p mivon-tools -> 511 passed, 0 skipped (505 -> 511,
+    +6 test AHB).
+  - cargo nextest run -p mivon-tools test_protocol_ahb -> 5 passed.
+  - TIDAK dijalankan: cargo nextest --workspace --features dev (gagal
+    compile di crates/mivon-fuzz/src/lib.rs:464 — pre-existing, tak
+    disentuh tahap ini).
+
+
 \\=======================================================================//

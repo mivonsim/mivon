@@ -39,7 +39,7 @@ fn usage_err(msg: impl Into<String>) -> SimError {
                 "Argumen subcommand protocol atau nama sinyal pada VCD tidak valid untuk checker ini.",
             )
             .with_suggestion(
-                "Periksa --proto (apb | axi4lite) dan nama sinyal dengan subcommand tree.",
+                "Periksa --proto (apb | axi4lite | ahb) dan nama sinyal dengan subcommand tree.",
             ),
     )
 }
@@ -103,6 +103,37 @@ impl Track {
             self.cur += 1;
         }
         self.val
+    }
+}
+
+/// Timeline satu sinyal sebagai string mentah (untuk sinyal multi-bit
+/// seperti `htrans`) + kursor sweep. `at()` wajib dipanggil dengan waktu
+/// menaik.
+struct StrTrack {
+    changes: Vec<(u64, String)>,
+    cur: usize,
+    val: String,
+}
+
+impl StrTrack {
+    fn new(data: &VcdData, name: &str) -> Result<Self, SimError> {
+        let sig = resolve(data, name)?;
+        Ok(Self {
+            changes: timeline_of(data, sig)
+                .into_iter()
+                .map(|(t, v)| (t, v.to_string()))
+                .collect(),
+            cur: 0,
+            val: String::new(),
+        })
+    }
+
+    fn at(&mut self, t: u64) -> &str {
+        while self.cur < self.changes.len() && self.changes[self.cur].0 <= t {
+            self.val = self.changes[self.cur].1.clone();
+            self.cur += 1;
+        }
+        &self.val
     }
 }
 
@@ -282,6 +313,103 @@ pub(crate) fn check_axi4lite(data: &VcdData) -> Result<Vec<Violation>, SimError>
     Ok(out)
 }
 
+/// State mesin HTRANS (2-bit). Nilai selain keempat kode valid dianggap X
+/// (netral: tak mengakhiri span transfer, tak memicu aturan beat).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Ht {
+    Idle,   // 00
+    Busy,   // 01
+    Nonseq, // 10
+    Seq,    // 11
+    X,
+}
+
+fn htrans_state(v: &str) -> Ht {
+    match v.trim().to_ascii_lowercase().as_str() {
+        "00" => Ht::Idle,
+        "01" => Ht::Busy,
+        "10" => Ht::Nonseq,
+        "11" => Ht::Seq,
+        _ => Ht::X,
+    }
+}
+
+/// Cek aturan AHB-Lite (htrans + hready), model event-time (tanpa clock):
+/// - AHB-TRANSFER-NO-READY: beat NONSEQ/SEQ dipresentasikan namun span
+///   transfer berakhir (kembali ke IDLE) tanpa HREADY=1 pernah tinggi →
+///   transfer terabaikan (aborted).
+/// - AHB-SEQ-WITHOUT-NONSEQ: HTRANS=SEQ muncul langsung setelah IDLE
+///   (lanjutan burst tanpa NONSEQ awal).
+///
+/// `hready` wajib ada (seperti `pready` di APB). `BUSY` di antara
+/// NONSEQ/SEQ diperbolehkan (bukan beat transfer sendiri); `X` netral.
+pub(crate) fn check_ahb(data: &VcdData) -> Result<Vec<Violation>, SimError> {
+    let mut htrans = StrTrack::new(data, "htrans")?;
+    let mut hready = Track::new(data, "hready")?;
+    // Gabungan waktu perubahan htrans + hready (sorted-unik).
+    let mut times: Vec<u64> = htrans
+        .changes
+        .iter()
+        .map(|(t, _)| *t)
+        .chain(hready.changes.iter().map(|(t, _)| *t))
+        .collect();
+    times.sort_unstable();
+    times.dedup();
+
+    let mut out = Vec::new();
+    let mut prev = Ht::Idle;
+    // Span transfer: aktif sejak beat NONSEQ/SEQ pertama hingga kembali
+    // IDLE; `ready_in_span` mencatat apakah HREADY pernah tinggi saat span
+    // aktif (transfer selesai).
+    let mut span_active = false;
+    let mut ready_in_span = false;
+    for t in times {
+        let tr = htrans_state(htrans.at(t));
+        let rdy = hready.at(t);
+
+        // Aturan 2: SEQ langsung setelah IDLE (tanpa NONSEQ/BUSY pendahulu).
+        // Hanya dilaporkan sekali saat transisi Idle→Seq.
+        if tr == Ht::Seq && prev == Ht::Idle {
+            out.push(Violation {
+                time: t,
+                rule: "AHB-SEQ-WITHOUT-NONSEQ",
+                detail: "HTRANS=SEQ muncul tanpa HTRANS=NONSEQ pendahulu (burst tanpa awalan)"
+                    .to_string(),
+            });
+        }
+
+        match tr {
+            Ht::Nonseq | Ht::Seq => {
+                span_active = true;
+                if rdy {
+                    ready_in_span = true;
+                }
+            }
+            Ht::Idle => {
+                if span_active && !ready_in_span {
+                    out.push(Violation {
+                        time: t,
+                        rule: "AHB-TRANSFER-NO-READY",
+                        detail: "Transfer (NONSEQ/SEQ) berakhir di IDLE tanpa HREADY=1".to_string(),
+                    });
+                }
+                span_active = false;
+                ready_in_span = false;
+            }
+            Ht::Busy | Ht::X => {
+                // BUSY: wait-state dalam burst (bukan beat sendiri). X: netral.
+                // Span tetap aktif bila sebelumnya sudah aktif; HREADY di sini
+                // tetap dihitung bila span aktif.
+                if span_active && rdy {
+                    ready_in_span = true;
+                }
+            }
+        }
+        prev = tr;
+    }
+    Ok(out)
+}
+
 /// Entry CLI: cek protokol, cetak pelanggaran, dan kembalikan Err bila ada
 /// (exit code non-zero → bisa dipakai sebagai gate CI).
 pub(crate) fn check(input: &str, proto: &str) -> Result<(), SimError> {
@@ -290,9 +418,10 @@ pub(crate) fn check(input: &str, proto: &str) -> Result<(), SimError> {
     let violations = match p.as_str() {
         "apb" => check_apb(&data)?,
         "axi4lite" | "axi-lite" | "axi4-lite" | "axilite" => check_axi4lite(&data)?,
+        "ahb" | "ahblite" | "ahb-lite" => check_ahb(&data)?,
         other => {
             return Err(usage_err(format!(
-                "protokol tidak dikenal: '{}' (pilihan: apb | axi4lite)",
+                "protokol tidak dikenal: '{}' (pilihan: apb | axi4lite | ahb)",
                 other
             )))
         }
