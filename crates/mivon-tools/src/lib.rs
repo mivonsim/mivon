@@ -64,6 +64,7 @@ pub mod sim_dashboard;
 pub mod sim_farm;
 pub mod sim_server;
 pub mod sta_interface;
+pub mod std_vip;
 pub mod synth;
 pub mod synth_interface;
 pub mod tbgen;
