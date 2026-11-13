@@ -2,6 +2,7 @@
 #![allow(clippy::result_large_err, clippy::type_complexity)]
 pub mod class;
 pub mod config;
+pub mod cst;
 pub mod decl;
 pub mod expr;
 pub mod incremental;
