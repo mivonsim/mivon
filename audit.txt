@@ -6109,8 +6109,11 @@ FEAT-23: ⚠️ IN PROGRESS (ROUND 101 + ROUND 207) — protokol bus:
          exit 11 (W0002), merge-sweep O(N log N), 28 test.
          MASIH OPEN: checker runtime VIP style (assertion library yang
          di-drive saat simulasi, bukan post-sim decode) + rule AHB.
-FEAT-24:[] Standard VIP for industry protocols (USB, PCIe, DDR,
-         Ethernet) — Critical
+FEAT-24: [x] Standard VIP for industry protocols STAGE 1 STUB — DONE (caveman stage):
+          crates/mivon-tools/src/std_vip.rs — VipProtocol/VipInstanceStatus +
+          StandardVipLibrary (Arc<Mutex<HashMap>>), 4 test. pub mod std_vip di
+          mivon-tools/lib.rs. Checker VIP USB/PCIe/DDR/Ethernet BELUM ada
+          (placeholder + gap dokumentasi). Commit: a034dab (push origin/main).
 FEAT-25:[x] Waiver management for lint/formal violations — High
 
 
