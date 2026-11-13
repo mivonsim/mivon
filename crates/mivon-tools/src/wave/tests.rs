@@ -619,6 +619,38 @@ fn test_protocol_ahb_busy_in_burst_is_clean() {
 }
 
 #[test]
+fn test_protocol_ahb_seq_without_nonseq_via_busy() {
+    // BUSY→SEQ tanpa NONSEQ pendahulu → tetap AHB-SEQ-WITHOUT-NONSEQ
+    // (burst tanpa awalan), lalu span berakhir di IDLE tanpa HREADY.
+    let v = proto_check_ahb(
+        "/tmp/__proto_ahb_busyseq.vcd",
+        &[("!", 2, "htrans"), ("\"", 1, "hready")],
+        "#0\nb00 !\n0\"\n#10\nb01 !\n0\"\n#20\nb11 !\n0\"\n#30\nb00 !\n0\"\n",
+    );
+    let got: Vec<(u64, &str)> = v.iter().map(|x| (x.time, x.rule)).collect();
+    assert_eq!(
+        got,
+        vec![
+            (20, "AHB-SEQ-WITHOUT-NONSEQ"),
+            (30, "AHB-TRANSFER-NO-READY"),
+        ],
+        "BUSY→SEQ tanpa NONSEQ tetap dilaporkan"
+    );
+}
+
+#[test]
+fn test_protocol_ahb_busy_only_no_false_violation() {
+    // BUSY saja (tanpa NONSEQ/SEQ) diakhiri IDLE tidak memicu
+    // AHB-TRANSFER-NO-READY — BUSY bukan beat transfer sendiri.
+    let v = proto_check_ahb(
+        "/tmp/__proto_ahb_busyonly.vcd",
+        &[("!", 2, "htrans"), ("\"", 1, "hready")],
+        "#0\nb00 !\n0\"\n#10\nb01 !\n0\"\n#20\nb00 !\n0\"\n",
+    );
+    assert!(v.is_empty(), "BUSY saja tak memicu pelanggaran: {v:?}");
+}
+
+#[test]
 fn test_protocol_axi4lite_clean_write_read() {
     // Write (AW+W → B) lalu read (AR → R) tanpa pelanggaran. VALID dan READY
     // turun bersamaan setelah handshake — bentuk waveform yang paling umum.

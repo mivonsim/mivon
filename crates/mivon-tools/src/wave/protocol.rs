@@ -338,8 +338,8 @@ fn htrans_state(v: &str) -> Ht {
 /// - AHB-TRANSFER-NO-READY: beat NONSEQ/SEQ dipresentasikan namun span
 ///   transfer berakhir (kembali ke IDLE) tanpa HREADY=1 pernah tinggi →
 ///   transfer terabaikan (aborted).
-/// - AHB-SEQ-WITHOUT-NONSEQ: HTRANS=SEQ muncul langsung setelah IDLE
-///   (lanjutan burst tanpa NONSEQ awal).
+/// - AHB-SEQ-WITHOUT-NONSEQ: HTRANS=SEQ muncul tanpa HTRANS=NONSEQ sejak
+///   IDLE terakhir (burst tanpa awalan; termasuk BUSY→SEQ tanpa NONSEQ).
 ///
 /// `hready` wajib ada (seperti `pready` di APB). `BUSY` di antara
 /// NONSEQ/SEQ diperbolehkan (bukan beat transfer sendiri); `X` netral.
@@ -357,19 +357,20 @@ pub(crate) fn check_ahb(data: &VcdData) -> Result<Vec<Violation>, SimError> {
     times.dedup();
 
     let mut out = Vec::new();
-    let mut prev = Ht::Idle;
     // Span transfer: aktif sejak beat NONSEQ/SEQ pertama hingga kembali
     // IDLE; `ready_in_span` mencatat apakah HREADY pernah tinggi saat span
-    // aktif (transfer selesai).
+    // aktif (transfer selesai). `saw_nonseq` mencatat apakah NONSEQ pernah
+    // muncul sejak IDLE terakhir (SEQ wajib punya NONSEQ pendahulu).
     let mut span_active = false;
     let mut ready_in_span = false;
+    let mut saw_nonseq = false;
     for t in times {
         let tr = htrans_state(htrans.at(t));
         let rdy = hready.at(t);
 
-        // Aturan 2: SEQ langsung setelah IDLE (tanpa NONSEQ/BUSY pendahulu).
-        // Hanya dilaporkan sekali saat transisi Idle→Seq.
-        if tr == Ht::Seq && prev == Ht::Idle {
+        // Aturan 2: SEQ tanpa NONSEQ pendahulu sejak IDLE terakhir (termasuk
+        // BUSY→SEQ tanpa NONSEQ). Dilaporkan sekali saat SEQ muncul.
+        if tr == Ht::Seq && !saw_nonseq {
             out.push(Violation {
                 time: t,
                 rule: "AHB-SEQ-WITHOUT-NONSEQ",
@@ -379,7 +380,14 @@ pub(crate) fn check_ahb(data: &VcdData) -> Result<Vec<Violation>, SimError> {
         }
 
         match tr {
-            Ht::Nonseq | Ht::Seq => {
+            Ht::Nonseq => {
+                span_active = true;
+                saw_nonseq = true;
+                if rdy {
+                    ready_in_span = true;
+                }
+            }
+            Ht::Seq => {
                 span_active = true;
                 if rdy {
                     ready_in_span = true;
@@ -395,6 +403,7 @@ pub(crate) fn check_ahb(data: &VcdData) -> Result<Vec<Violation>, SimError> {
                 }
                 span_active = false;
                 ready_in_span = false;
+                saw_nonseq = false;
             }
             Ht::Busy | Ht::X => {
                 // BUSY: wait-state dalam burst (bukan beat sendiri). X: netral.
@@ -405,7 +414,6 @@ pub(crate) fn check_ahb(data: &VcdData) -> Result<Vec<Violation>, SimError> {
                 }
             }
         }
-        prev = tr;
     }
     Ok(out)
 }

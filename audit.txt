@@ -14659,4 +14659,41 @@ VERIFIKASI ROUND 241:
     disentuh tahap ini).
 
 
+═══ ROUND 242 — ENT-24 (lanjutan 2): perketat rule AHB (BUSY→SEQ) ═══
+
+Ruang lingkup: menindaklanjuti NIT-2 dari review agent R241 — checker AHB
+lolos review (LOLOS) tetapi punya celah kebenaran: HTRANS=SEQ setelah
+BUSY tanpa NONSEQ pendahulu tidak terflag (hanya SEQ setelah IDLE yang
+terflag). Ini pelanggaran AHB riil (burst tanpa awalan NONSEQ).
+
+Perubahan (crates/mivon-tools/src/wave/protocol.rs, fn check_ahb):
+  - Tambah `saw_nonseq` (NONSEQ pernah muncul sejak IDLE terakhir).
+  - Aturan AHB-SEQ-WITHOUT-NONSEQ kini: SEQ muncul saat `!saw_nonseq`
+    (menutup BUSY→SEQ tanpa NONSEQ, selain SEQ setelah IDLE).
+  - `Ht::Nonseq` dipisah dari `Ht::Seq` di match: hanya NONSEQ yang
+    men-set `saw_nonseq`; IDLE me-reset `saw_nonseq`. BUSY/X tak
+    mengubah `saw_nonseq`.
+  - `prev` dihapus (tidak lagi dipakai).
+
+Test baru (+2): test_protocol_ahb_seq_without_nonseq_via_busy
+  (BUSY→SEQ tanpa NONSEQ → AHB-SEQ-WITHOUT-NONSEQ t=20 + AHB-TRANSFER-
+  NO-READY t=30) + test_protocol_ahb_busy_only_no_false_violation
+  (BUSY saja diakhiri IDLE → bersih, BUSY bukan beat transfer).
+  DISKRIMINATIF: bila rule BUSY→SEQ dikembalikan ke SEQ-setelah-IDLE
+  saja, test seq_without_nonseq_via_busy gagal (tidak ada flag).
+
+Status ENT-24: masih ⚠️ PARTIAL — rule AHB checker post-sim kini lebih
+  ketat; runtime VIP checker (saat simulasi) + rule tambahan masih open.
+
+Item open berikutnya: NIT-1 (wording audit), Arsitektur-01..04/06, JIT-02,
+  ELAB-02/03/08, COMP-01/02/11, SIM-03/19, FORMAL-03/04/10/13, ENT-39,
+  FEAT-10/23, PARSER-07, LANG-01/02, DEBT-01/04. LSP-14: blocker env.
+
+VERIFIKASI ROUND 242:
+  - rustfmt --check (protocol.rs + tests.rs) -> bersih.
+  - cargo nextest run -p mivon-tools -> 513 passed, 0 skipped (511 -> 513,
+    +2 test AHB).
+  - cargo nextest run -p mivon-tools test_protocol_ahb -> 7 passed.
+
+
 \\=======================================================================//
