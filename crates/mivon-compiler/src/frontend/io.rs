@@ -22,7 +22,7 @@ const MMAP_THRESHOLD: u64 = 4096;
 /// walau isinya sudah di-copy ke `bytes` — memori dobel (mapped pages +
 /// heap copy) dan address space tertahan selama compile tanpa batas
 /// jumlah file. Kini mapping dilepas segera setelah salinan dibuat;
-/// zero-copy penuh tetap ada di jalur MICD (`micd/format.rs`) yang
+/// zero-copy penuh tetap ada di jalur node_cache (`node-cache/format/`) yang
 /// memang membaca dari database ter-map.
 #[derive(Debug)]
 pub struct MmapFile {

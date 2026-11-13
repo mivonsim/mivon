@@ -20,7 +20,7 @@ pub(crate) fn dispatch_emu(a: &crate::cli::EmuArgs) -> ! {
 
     let result: Result<(), SimError> = (|| {
         // ── Konfigurasi emulator dari file TOML terpisah (`--config`, .meu) ──
-        // BUKAN section di project .mivon — ekstensi .mivon dipakai MICD
+        // BUKAN section di project .mivon — ekstensi .mivon dipakai node_cache
         // dan file list; konfigurasi emulator hidup di file sendiri.
         let cfg: EmuConfig = match &a.config {
             Some(path) => EmuConfig::load_file(std::path::Path::new(path))

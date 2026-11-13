@@ -2,7 +2,7 @@
 //!
 //! X-ray cepat struktur project tanpa compile penuh (hanya parse paralel +
 //! index). Subcommand: `stats`, `modules`, `hierarchy`, `packages`, `classes`,
-//! `interfaces`, `parameters`, `deps`, `cache` (laporan lapisan cache MICD).
+//! `interfaces`, `parameters`, `deps`, `cache` (laporan lapisan cache node_cache).
 
 use std::collections::{HashMap, HashSet};
 
@@ -10,7 +10,7 @@ use crate::{kv, open_project, section};
 use mivon_ast::types::{GenerateItem, Module, ModuleItem, PortDirection, TypedefDecl};
 use mivon_compiler::frontend::compile_session::CompileSession;
 use mivon_compiler::frontend::module_index::EntryKind;
-use mivon_compiler::micd::cache::CacheCategory;
+use mivon_compiler::node_cache::cache::CacheCategory;
 use mivon_core::intern::Symbol;
 
 /// Opsi minspect.
@@ -27,7 +27,7 @@ pub struct InspectArgs<'a> {
 pub fn run(args: &InspectArgs) -> Result<(), mivon_core::error::SimError> {
     let cmd = args.command.as_deref().unwrap_or("stats");
     // `cache` membaca lapisan `cache/<pid>/` (db.md) TANPA compile — cukup
-    // buka database MICD project dan lapor statistik per kategori.
+    // buka database node_cache project dan lapor statistik per kategori.
     if cmd == "cache" {
         return cache_stats(args);
     }
@@ -56,7 +56,7 @@ pub fn run(args: &InspectArgs) -> Result<(), mivon_core::error::SimError> {
 
 /// Laporan lapisan cache pipeline per kategori (db.md "Saran arsitektur
 /// cache" + Kritik 14: statistik hit/miss/ukuran/umur per kategori).
-/// Membuka database MICD project (tanpa compile) dan membaca `cache/<pid>/`.
+/// Membuka database node_cache project (tanpa compile) dan membaca `cache/<pid>/`.
 /// ProjectID dihitung dari target yang sama seperti `run`/`run_fast`, jadi
 /// laporan menunjuk lapisan cache project yang sedang dikerjakan.
 fn cache_stats(args: &InspectArgs) -> Result<(), mivon_core::error::SimError> {
@@ -66,7 +66,7 @@ fn cache_stats(args: &InspectArgs) -> Result<(), mivon_core::error::SimError> {
     section("Pipeline Cache");
     kv(
         "root",
-        mivon_compiler::micd::MicdDatabase::default_root().display(),
+        mivon_compiler::node_cache::ProjectCache::default_root().display(),
     );
     kv("project id", &pid);
     kv("files", files.len());
@@ -94,7 +94,7 @@ fn cache_stats(args: &InspectArgs) -> Result<(), mivon_core::error::SimError> {
     if layer.contains(CacheCategory::Lint, "report") {
         if let Some(bytes) = layer.get(CacheCategory::Lint, "report") {
             if let Ok(p) =
-                bincode::deserialize::<mivon_compiler::micd::cache::pipeline::LintPayload>(&bytes)
+                bincode::deserialize::<mivon_compiler::node_cache::cache::pipeline::LintPayload>(&bytes)
             {
                 let w = p.findings.iter().filter(|f| f.severity == "W").count();
                 let e = p.findings.iter().filter(|f| f.severity == "E").count();
@@ -117,7 +117,7 @@ fn cache_stats(args: &InspectArgs) -> Result<(), mivon_core::error::SimError> {
     if layer.contains(CacheCategory::Coverage, "last") {
         if let Some(bytes) = layer.get(CacheCategory::Coverage, "last") {
             if let Ok(p) = bincode::deserialize::<
-                mivon_compiler::micd::cache::pipeline::CoveragePayload,
+                mivon_compiler::node_cache::cache::pipeline::CoveragePayload,
             >(&bytes)
             {
                 let line_pct = if p.line_items > 0 {
@@ -159,7 +159,7 @@ fn cache_stats(args: &InspectArgs) -> Result<(), mivon_core::error::SimError> {
     if layer.contains(CacheCategory::Simulation, "last") {
         if let Some(bytes) = layer.get(CacheCategory::Simulation, "last") {
             if let Ok(p) = bincode::deserialize::<
-                mivon_compiler::micd::cache::pipeline::SimulationPayload,
+                mivon_compiler::node_cache::cache::pipeline::SimulationPayload,
             >(&bytes)
             {
                 section("Simulation (dari cache)");
@@ -186,7 +186,7 @@ fn cache_stats(args: &InspectArgs) -> Result<(), mivon_core::error::SimError> {
     if layer.contains(CacheCategory::Waveform, "last") {
         if let Some(bytes) = layer.get(CacheCategory::Waveform, "last") {
             if let Ok(p) = bincode::deserialize::<
-                mivon_compiler::micd::cache::pipeline::WaveformPayload,
+                mivon_compiler::node_cache::cache::pipeline::WaveformPayload,
             >(&bytes)
             {
                 section("Waveform (dari cache)");
@@ -210,7 +210,7 @@ fn cache_stats(args: &InspectArgs) -> Result<(), mivon_core::error::SimError> {
     if layer.contains(CacheCategory::Optimize, "last") {
         if let Some(bytes) = layer.get(CacheCategory::Optimize, "last") {
             if let Ok(p) = bincode::deserialize::<
-                mivon_compiler::micd::cache::pipeline::OptimizePayload,
+                mivon_compiler::node_cache::cache::pipeline::OptimizePayload,
             >(&bytes)
             {
                 section("Optimize (dari cache)");
@@ -223,7 +223,7 @@ fn cache_stats(args: &InspectArgs) -> Result<(), mivon_core::error::SimError> {
     if layer.contains(CacheCategory::Expression, "last") {
         if let Some(bytes) = layer.get(CacheCategory::Expression, "last") {
             if let Ok(p) = bincode::deserialize::<
-                mivon_compiler::micd::cache::pipeline::ExpressionPayload,
+                mivon_compiler::node_cache::cache::pipeline::ExpressionPayload,
             >(&bytes)
             {
                 section("Expression (dari cache)");
@@ -237,10 +237,10 @@ fn cache_stats(args: &InspectArgs) -> Result<(), mivon_core::error::SimError> {
 
     // ── Precompiled modules (VCS AN.DB / Questa _info analog) ──
     {
-        use mivon_compiler::micd::MicdDatabase;
-        let micd_root = MicdDatabase::default_root();
+        use mivon_compiler::node_cache::ProjectCache;
+        let micd_root = ProjectCache::default_root();
         let all_files = crate::collect_targets(args.targets)?;
-        let pid = MicdDatabase::project_id(
+        let pid = ProjectCache::project_id(
             &std::env::current_dir().unwrap_or_default(),
             &all_files,
             &args
@@ -255,10 +255,8 @@ fn cache_stats(args: &InspectArgs) -> Result<(), mivon_core::error::SimError> {
                 .map(|(k, v)| (k.to_string(), v.to_string()))
                 .collect::<Vec<_>>(),
         );
-        let pdb_root = micd_root
-            .join(mivon_compiler::micd::DIR_PRECOMPILED)
-            .join(&pid);
-        let pdb = mivon_compiler::micd::PrecompiledDb::open(&pdb_root);
+        let pdb_root = micd_root.join("precompiled").join(&pid);
+        let pdb = mivon_compiler::node_cache::PrecompiledDb::open(&pdb_root);
         let pst = pdb.stats();
         section("Precompiled Modules");
         kv("modules", pst.modules);

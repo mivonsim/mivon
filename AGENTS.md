@@ -603,26 +603,41 @@ Snapshot `StateSnapshot` disimpan setiap `snapshot_interval` cycle. `reverse_ste
 ### Signal history
 Semua signal dicatat di `signal_history: HashMap<String, Vec<(u64, LogicVec)>>` setiap cycle (maks 100k entry per signal). Dipakai oleh timeline, break-change, dan watchpoint.
 
-## MICD — Mivon Incremental Compilation Database
+## node_cache — Cache Komputasi Filesystem-Native
 
-Object database biner (bukan SQL) di `project/.mivon/database/` yang membuat compile
-lintas run incremental: file yang tidak berubah tidak di-lex/di-parse/di-verifikasi
-ulang. **Terintegrasi otomatis ke `run` dan `run_fast`** — bukan flag tambahan.
+Cache komputasi *filesystem-native* di `project/node_cache/` yang
+menggantikan MICD sepenuhnya (tanpa database/daemon/index tersembunyi). Crate:
+`crates/mivon-node-cache` (re-export `mivon_compiler::node_cache`). **Terintegrasi
+otomatis ke `run` dan `run_fast`** — bukan flag tambahan. Detail: `node_cache.md`.
 
-Struktur `crates/mivon-compiler/src/micd/` (ex `src/micd/`, migrasi monorepo;
-submodul tambahan: `cache/`, `gc.rs`, `index.rs`, `lifecycle.rs`, `lock.rs`,
-`open.rs`, `paths.rs`, `persist.rs`, `precompiled.rs`, `stats.rs`,
-`stringpool.rs`, `txn.rs`, `objects.rs`):
-- `format.rs` — format file `MDB1`: header 64B + object table + payload, dibaca via mmap (memmap2). Tulis atomik (temp+rename).
-- `metadata.rs` — per-file: content hash (xxh3), mtime, size, status, flags hash, deps.
-- `graph.rs` — dependency graph file-level + reverse index → `affected(changed)` transitive closure.
-- `ast.rs` — `Design` terserialisasi per file via bincode (AST sudah `serde::Serialize/Deserialize`; `Symbol` diserialisasi sebagai string).
-- `mod.rs` — layout Git-style (Opsi B db.md): `VERSION` + `registry.json` + `locks/` di root; payload IMMUTABLE content-addressed di `objects/<pid>/<hash>.ast|.preproc` (dedup antar file identik); index mutable di `state/<pid>/*.mdb`. Layout lama `projects/<pid>/` di-migrasi otomatis.
-- `verify.rs` — verification cache keyed by content hash (parse/elab ok, diag counts, timing).
-- `diag.rs`, `symbol.rs`, `snapshot.rs` — diagnostic per file, index simbol, snapshot build (build-NNN, rollback, di `state/<pid>/snapshots/`).
+Layout: `objects/ab/cd/<content-hash>` (BLAKE3, immutable), `nodes/01/02/<node-id>`
+(manifest biner `MNOD0001`), `graphs/<id>` (`MGRF0001`), `refs/<pid>` (`MREF0001`),
+`transactions/<id>` (`MJRN0001`), `locks/`, `tmp/`, `FORMAT`.
+
+Modul:
+- `identity.rs` — `ContentId` (BLAKE3 isi) + `NodeFingerprint`/`NodeIdentity`
+  (stage, versi, key, input, dependency, config, toolchain, target, schema).
+- `filesystem.rs`, `format/` — layout/sharding, atomic write + fsync, encoder
+  biner versioned + checksum (bukan memory layout Rust).
+- `manifest.rs`, `object.rs`, `graph.rs`, `dependency.rs`, `resolver.rs` —
+  publikasi manifest, object store, graph snapshot + `refs/<pid>`, validasi
+  include/dependency, cache hit/miss.
+- `transaction.rs`, `recovery.rs`, `gc.rs`, `scheduler.rs` — journal commit
+  atomik, pemulihan crash idempoten, mark-and-sweep berbasis reference, batch
+  paralel internal.
+- `entries.rs`, `ast.rs`, `pipeline.rs`, `cache_layer.rs`, `precompiled.rs` —
+  payload state, serialisasi AST/IR, artefak turunan tool.
+- `project.rs` — facade `ProjectCache` + `ProjectIndex` (seluruh state project
+  dalam node stage `index`).
 
 Integrasi:
-- `CompileSession::attach_micd(MicdDatabase)` — restore `prev_designs`/`prev_checksums`/`prev_combined_sources` untuk file yang content hash-nya cocok → `compile()` melewati lexer+parser.
-- `CompileSession::save_micd()` — simpan metadata/graph/ast-objek/preproc-objek/verify/symbol/types + auto-snapshot saat ada perubahan. Dipanggil `main.rs` sekali per build (bukan di `compile()` — agar statistik `changed_files` per-build akurat).
-- `run_fast`: MICD penuh (restore AST). `run` (legacy): MICD preprocess cache (reuse combined source, skip preprocessor).
-- Root: `.mivon/database` (override `MIVON_MICD_DIR`). `--recompile` melewati MICD (full rebuild). `--cache-clear` menghapus MICD.
+- `CompileSession::attach_cache()` — restore AST/preprocess yang hash-nya cocok
+  → lexer+parser dilewati. `save_cache()` — simpan metadata/graph/AST/preproc/
+  verify/simbol/type/diag/statistik + snapshot; dipanggil sekali per build.
+- `run_fast`: restore AST penuh. `run` (legacy): reuse combined source + IR.
+- `mivon-env::DatabaseContext` membungkus `ProjectCache`; tool memakai
+  `CacheLayer`/`PrecompiledDb` untuk artefak turunan.
+- Root: `node_cache/` di root project (override `MIVON_NODE_CACHE_DIR`);
+  `--target-dir X`
+  → `X/node_cache`. `--recompile` buka tanpa restore; `--cache-clear` dan
+  `mivon clean` menghapus cache.

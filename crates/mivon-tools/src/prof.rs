@@ -131,13 +131,13 @@ pub fn run(args: &ProfArgs) -> Result<(), SimError> {
 fn bottleneck_hint(name: &str) -> &'static str {
     match name {
         "Discovery" => "file scan terlalu banyak direktori; pakai file list (-f)",
-        "Preprocess" => "`include / `define berat; pakai MICD (cache preprocess)",
+        "Preprocess" => "`include / `define berat; pakai node_cache (cache preprocess)",
         "Parse" => "banyak file besar; aktifkan --fast (FastLexer + paralel)",
         "Index" => "index module — umumnya cepat",
         "Elaboration" => "generate/parameter expansion berat; pakai --lazy",
         "Simulation" => "kecilkan max_time atau pakai --packed / --jit-body",
-        "Save (MICD)" => {
-            "penulisan store MICD lambat — cache banyak file; pakai MIVON_DEBUG_MICD untuk detail"
+        "Save (node_cache)" => {
+            "penulisan store node_cache lambat — cache banyak file; pakai MIVON_DEBUG_node_cache untuk detail"
         }
         "Verify" => "verifikasi per file berat; kecilkan --checks atau pakai cache verify",
         "Optimize" => "constant folding / loop unroll; sesuaikan --opt-level",
@@ -149,10 +149,10 @@ fn bottleneck_hint(name: &str) -> &'static str {
 /// Baca profil build terakhir dari cache pipeline (db.md "20. profile/" —
 /// "Dari sini Mivon bisa mengetahui sendiri bottleneck dan bahkan memberikan
 /// rekomendasi optimasi") tanpa menjalankan compile/simulasi. Membaca entry
-/// `profile/"last"` yang ditulis `save_micd` pada build sebelumnya.
+/// `profile/"last"` yang ditulis `save_cache` pada build sebelumnya.
 pub fn run_cached(args: &ProfArgs) -> Result<(), SimError> {
-    use mivon_compiler::micd::cache::CacheCategory;
-    use mivon_compiler::micd::BuildProfile;
+    use mivon_compiler::node_cache::cache::CacheCategory;
+    use mivon_compiler::node_cache::BuildProfile;
 
     let (mut layer, pid) = crate::open_cache_layer(args.targets, args.incdirs, args.defines)?;
     let bytes = layer.get(CacheCategory::Profile, "last").ok_or_else(|| {
@@ -188,7 +188,7 @@ pub fn run_cached(args: &ProfArgs) -> Result<(), SimError> {
             ms: prof.verify_ms,
         },
         PhaseTime {
-            name: "Save (MICD)",
+            name: "Save (node_cache)",
             ms: prof.save_ms,
         },
     ];
@@ -200,7 +200,7 @@ pub fn run_cached(args: &ProfArgs) -> Result<(), SimError> {
     kv("build", prof.build_id);
     kv("files", prof.files);
     kv("changed", prof.changed_files);
-    kv("restored (MICD)", prof.restored_designs);
+    kv("restored (node_cache)", prof.restored_designs);
     kv(
         "peak mem",
         crate::human_bytes(prof.peak_mem_kb.saturating_mul(1024)),

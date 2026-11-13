@@ -206,7 +206,7 @@ fn elab_abort_diag(
 /// lto, max_parse_steps, lint check, dsb.) dibiarkan sebagai dokumentasi.
 /// jobs diterapkan langsung ke rayon pool di main() (bukan lewat cli).
 fn apply_config_to_cli(cli: &mut Cli, cfg: &mivon_core::config::MivonConfig) {
-    // compiler.cache=false / incremental=false → lewati MICD (setara --recompile).
+    // compiler.cache=false / incremental=false → lewati node_cache (setara --recompile).
     if cfg.compiler.cache == Some(false) || cfg.compiler.incremental == Some(false) {
         cli.recompile = true;
     }
@@ -282,57 +282,49 @@ fn apply_config_to_cli(cli: &mut Cli, cfg: &mivon_core::config::MivonConfig) {
     }
 }
 
-/// Bersihkan database MICD (`.mivon/database`). Menghapus isi
-/// `<root>/.mivon/database` (atau `MIVON_MICD_DIR` bila di-set).
+/// Bersihkan node_cache (`node_cache/`). Menghapus isi `<root>/node_cache`
+/// (atau `MIVON_NODE_CACHE_DIR` bila di-set).
 fn run_clean() -> ! {
-    use mivon_compiler::micd::MicdDatabase;
-    let root = MicdDatabase::default_root();
+    use mivon_compiler::node_cache::ProjectCache;
+    let root = ProjectCache::default_root();
     if root.exists() {
         match std::fs::remove_dir_all(&root) {
             Ok(()) => {
-                eprintln!("MICD database dihapus: {}", root.display());
+                eprintln!("node_cache dihapus: {}", root.display());
                 process::exit(0);
             }
             Err(e) => {
-                eprintln!("Gagal menghapus MICD database '{}': {}", root.display(), e);
+                eprintln!("Gagal menghapus node_cache '{}': {}", root.display(), e);
                 process::exit(1);
             }
         }
     } else {
-        eprintln!("Tidak ada MICD database di '{}'", root.display());
+        eprintln!("Tidak ada node_cache di '{}'", root.display());
         process::exit(0);
     }
 }
 
-/// Simpan MICD dan cetak statistik ringkas (best-effort, tidak menggagalkan run).
-/// `suppress` menekan output (saat animasi pipeline aktif di terminal).
-fn micd_save_and_print(session: &mut CompileSession, quiet: bool, suppress: bool) {
+/// Simpan node_cache dan cetak statistik ringkas (best-effort, tidak
+/// menggagalkan run). `suppress` menekan output (saat animasi pipeline aktif).
+fn cache_save_and_print(session: &mut CompileSession, quiet: bool, suppress: bool) {
     let t0 = std::time::Instant::now();
-    match session.save_micd() {
+    match session.save_cache() {
         Ok(Some(st)) => {
             if !quiet && !suppress {
-                // Tambah info precompiled bila ada.
-                let precompiled_info = session
-                    .micd
-                    .as_ref()
-                    .and_then(|db| db.precompiled_db.as_ref())
-                    .map(|pdb| format!(" precompiled={}", pdb.len()))
-                    .unwrap_or_default();
                 eprintln!(
-                    "[MICD] files={} restored={} changed={} snapshots={} save_ms={}{}",
+                    "[node_cache] files={} restored={} changed={} snapshots={} save_ms={}",
                     st.files,
                     st.restored_designs,
                     st.changed_files,
                     st.snapshot_id,
-                    t0.elapsed().as_millis(),
-                    precompiled_info
+                    t0.elapsed().as_millis()
                 );
             }
         }
         Ok(None) => {}
         Err(e) => {
             if !quiet && !suppress {
-                eprintln!("[MICD] save warning: {}", e);
+                eprintln!("[node_cache] save warning: {}", e);
             }
         }
     }
@@ -495,7 +487,7 @@ fn real_main() {
     if let Err(e) = validate_formal_sec(&cli) {
         fail(e);
     }
-    // SEC selalu full-rebuild: sidik cache MICD hanya mencatat include yang
+    // SEC selalu full-rebuild: sidik cache node_cache hanya mencatat include yang
     // BERHASIL di-resolve, jadi desain parsial (header hilang) yang sudah
     // ter-cache tidak terinvalidasi saat header muncul kemudian — verdict
     // EQUIVALENT palsu sampai --recompile. Gate verifikasi lebih penting
@@ -517,7 +509,7 @@ fn real_main() {
     }
     pool.build_global().ok();
 
-    // ── Subcommand: bersihkan database MICD (seperti `cargo clean`) ──
+    // ── Subcommand: bersihkan database node_cache (seperti `cargo clean`) ──
     if let Some(cmd) = &cli.cmd {
         match cmd {
             crate::cli::MivonCmd::Clean => run_clean(),

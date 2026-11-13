@@ -2,7 +2,7 @@
 name = "mivon-compiler"
 version = "0.3.0"
 edition = "2021"
-description = "Mivon compiler pipeline: frontend, cache, MICD, HIR, MIR, profiling, scheduler (task cluster)"
+description = "Mivon compiler pipeline: frontend, cache, node_cache, HIR, MIR, profiling, scheduler (task cluster)"
 
 [dependencies]
 mivon-core = { path = "../mivon-core" }
@@ -10,9 +10,10 @@ mivon-ast = { path = "../mivon-ast" }
 mivon-ir = { path = "../mivon-ir" }
 mivon-parser = { path = "../mivon-parser" }
 mivon-elaboration = { path = "../mivon-elaboration" }
+mivon-node-cache = { path = "../mivon-node-cache" }
 
 # Compiler pipeline: parallel parse (rayon), thread-safe maps (dashmap),
-# MICD binary serialization (bincode + lz4), mmap (memmap2)
+# Serialisasi biner artefak (bincode + lz4), mmap (memmap2)
 bincode = "1.3"
 dashmap = "6"
 lz4_flex = { version = "0.11", default-features = false, features = ["frame"] }

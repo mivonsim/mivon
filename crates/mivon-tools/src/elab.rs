@@ -166,8 +166,8 @@ fn print_inst(
 /// yang disimpan pada build sebelumnya ("1000 instance generate tidak perlu
 /// dielaborasi ulang").
 pub fn run_from_cache(args: &ElabArgs) -> Result<(), SimError> {
-    use mivon_compiler::micd::cache::pipeline::{ElaboratePayload, GeneratePayload};
-    use mivon_compiler::micd::cache::CacheCategory;
+    use mivon_compiler::node_cache::cache::pipeline::{ElaboratePayload, GeneratePayload};
+    use mivon_compiler::node_cache::cache::CacheCategory;
 
     let (mut layer, pid) = crate::open_cache_layer(args.files, args.incdirs, args.defines)?;
 

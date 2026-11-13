@@ -1,7 +1,7 @@
 //! Pipeline legacy `run()` — pipeline serial (preprocess paralel per-file +
-//! MICD preprocess cache → lexer → parser → elaborator → engine). Dipindah
+//! node_cache preprocess cache → lexer → parser → elaborator → engine). Dipindah
 //! dari `main.rs` monolitik; 1 file = 1 tanggung jawab (jalur legacy saja).
-//! Jalur cepat (`run_fast`, CompileSession + MICD penuh) di `run_fast.rs`.
+//! Jalur cepat (`run_fast`, CompileSession + node_cache penuh) di `run_fast.rs`.
 
 use std::path::{Path, PathBuf};
 
@@ -13,7 +13,7 @@ use crate::anim_glue::{
 use crate::cli::Cli;
 #[cfg(feature = "formal")]
 use crate::formal_run::run_formal;
-use crate::pipeline_config::{micd_root_for, pick_elab_mode};
+use crate::pipeline_config::{cache_root_for, pick_elab_mode};
 use crate::sim_finish;
 use crate::source_io::{content_has_timescale, read_source_bytes};
 // run() memanggil jalur cepat (di file sendiri setelah pemecahan). Binding
@@ -172,7 +172,7 @@ pub(crate) fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), S
     // PERF-1 (fix): auto-fast untuk FILE BESAR (>256 KB) — legacy `run` serial
     // + auto-incdir scan memakan 30–42s utk satu file 21k baris (opentitan
     // i3c_reg_top.sv) karena scan ribuan file + elaborasi serial; run_fast
-    // (CompileSession paralel + MICD) menyelesaikannya <1s. Mode print
+    // (CompileSession paralel + node_cache) menyelesaikannya <1s. Mode print
     // (--tokens/--ast) dan inline .mv tetap legacy.
     let total_src_bytes: u64 = sources
         .iter()
@@ -301,10 +301,10 @@ pub(crate) fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), S
     }
 
     // Combine all sources (parallel preprocessing for many files)
-    // ── MICD: hasil preprocess di-cache per file (konten-hash). File yang
+    // ── node_cache: hasil preprocess di-cache per file (konten-hash). File yang
     // tidak berubah di-reuse → preprocessor di-skip. Database scoped per
     // project (ProjectID) agar tidak tercampur antar project. ──
-    let micd_root = micd_root_for(&cli);
+    let cache_root = cache_root_for(&cli);
     let proot = std::env::current_dir().unwrap_or_default();
     let src_paths: Vec<std::path::PathBuf> = sources.iter().map(std::path::PathBuf::from).collect();
     // Fase 6: pid mencakup libfiles (sama alasan dengan run_fast).
@@ -315,21 +315,21 @@ pub(crate) fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), S
             pid_paths.push(p);
         }
     }
-    let pid = mivon_compiler::micd::MicdDatabase::project_id(
+    let pid = mivon_compiler::node_cache::ProjectCache::project_id(
         &proot,
         &pid_paths,
         &cli.incdirs.iter().map(PathBuf::from).collect::<Vec<_>>(),
         &cli.define_pairs(),
     );
-    let mut micd = mivon_compiler::micd::MicdDatabase::open_project_with_context(
-        &micd_root, &pid, &proot, &src_paths,
+    let mut node_cache = mivon_compiler::node_cache::ProjectCache::open_project_with_context(
+        &cache_root, &pid, &proot, &src_paths,
     );
-    // `--cache-clear` atau `--recompile`: hapus MICD SEBELUM reuse, agar run
-    // ini benar-benar full-rebuild (lihat juga blok attach_micd untuk jalur
+    // `--cache-clear` atau `--recompile`: hapus node_cache SEBELUM reuse, agar run
+    // ini benar-benar full-rebuild (lihat juga blok attach_cache untuk jalur
     // run_fast). `--recompile` di legacy sebelumnya tidak menghapus cache →
     // data lama bisa stale (Gap #12).
     if cli.cache_clear || cli.recompile {
-        let _ = micd.clear();
+        let _ = node_cache.clear();
     }
 
     let mut combined = String::new();
@@ -338,7 +338,7 @@ pub(crate) fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), S
     // delay tiap module diskalakan dengan satuan modul sendiri.
     let mut timescale_segments: Vec<(usize, (String, String))> = Vec::new();
 
-    // Slot per source; diisi dari MICD bila cache valid (konten + include sama).
+    // Slot per source; diisi dari node_cache bila cache valid (konten + include sama).
     // Isi tuple = (combined, `timescale global, segmen `timescale per baris) — F84:
     // segmen dibutuhkan parser supaya delay tiap module diskalakan dengan
     // satuan modul SENDIRI (LRM §19.8), bukan satuan global.
@@ -354,17 +354,17 @@ pub(crate) fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), S
             >,
         >,
     > = vec![None; sources.len()];
-    let mut micd_reused = 0usize;
+    let mut cache_reused = 0usize;
     let mut need_preprocess: Vec<(usize, &String)> = Vec::new();
     for (idx, path) in sources.iter().enumerate() {
         if let Ok(content) = read_source_bytes(Path::new(path), &inline_src) {
             let h = mivon_compiler::cache::compute_checksum(&content);
             // Koreksi correctness: jangan reuse bila header include berubah.
-            let deps_ok = micd
+            let deps_ok = node_cache
                 .deps_unchanged(std::path::Path::new(path), h)
                 .unwrap_or(false);
             if deps_ok {
-                if let Some(entry) = micd.get_preprocessed(std::path::Path::new(path), h) {
+                if let Some(entry) = node_cache.get_preprocessed(std::path::Path::new(path), h) {
                     // F84: entry yang TIDAK punya segmen `timescale` tak boleh
                     // dipakai. Directive `timescale sudah di-consume saat
                     // preprocess, jadi dari `combined` saja satuan per-module
@@ -382,7 +382,7 @@ pub(crate) fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), S
                             entry.timescale,
                             entry.timescale_segments,
                         )));
-                        micd_reused += 1;
+                        cache_reused += 1;
                         continue;
                     }
                 }
@@ -393,16 +393,16 @@ pub(crate) fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), S
 
     if !anim_active(&anim) {
         eprintln!(
-            "[TIMING] Preprocessing {} files ({} via MICD cache)...",
+            "[TIMING] Preprocessing {} files ({} via node_cache cache)...",
             sources.len(),
-            micd_reused
+            cache_reused
         );
     }
     if anim_active(&anim) {
         anim_phase_running(&anim, Phase::Lex);
-        // File yang reuse MICD cache sudah "selesai" di loop deteksi di atas.
-        anim_set_files(&anim, sources.len() as u64, micd_reused as u64);
-        anim_set_cached(&anim, micd_reused as u64);
+        // File yang reuse node_cache cache sudah "selesai" di loop deteksi di atas.
+        anim_set_files(&anim, sources.len() as u64, cache_reused as u64);
+        anim_set_cached(&anim, cache_reused as u64);
     }
     let pp_start = std::time::Instant::now();
     let pp_for_parallel = &base_pp;
@@ -512,14 +512,14 @@ pub(crate) fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), S
         }
     }
 
-    // ── MICD: simpan hasil preprocess baru untuk run berikutnya ──
+    // ── node_cache: simpan hasil preprocess baru untuk run berikutnya ──
     for (idx, combined_str, ts, segs, includes) in fresh_results.iter().flatten() {
         if let Ok(content) = read_source_bytes(Path::new(&sources[*idx]), &inline_src) {
             let h = mivon_compiler::cache::compute_checksum(&content);
             let path = std::path::PathBuf::from(&sources[*idx]);
-            micd.cache_preprocessed(
+            node_cache.cache_preprocessed(
                 path.clone(),
-                mivon_compiler::micd::PreprocEntry {
+                mivon_compiler::node_cache::PreprocEntry {
                     content_hash: h,
                     combined: combined_str.clone(),
                     timescale: ts.clone(),
@@ -543,27 +543,27 @@ pub(crate) fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), S
             // `content_hash` — bukan metadata disk (yang untuk .mv adalah
             // ukuran sumber .mv asli, bukan buffer transpile).
             let size = content.len() as u64;
-            micd.record_file(
+            node_cache.record_file(
                 path,
                 h,
                 vec![],
-                mivon_compiler::micd::FileStatus::Unchanged,
+                mivon_compiler::node_cache::FileStatus::Unchanged,
                 0,
                 size,
                 include_hashes,
             );
             // verify.mdb: jalur legacy juga menandai file terverifikasi
             // (parse) agar store lengkap walau tanpa `--fast`.
-            let mut v = mivon_compiler::micd::VerifyResult::fresh(h);
+            let mut v = mivon_compiler::node_cache::VerifyResult::fresh(h);
             v.parse_ok = true;
             v.set_check(
-                mivon_compiler::micd::VerifyCheckKind::Parse,
-                mivon_compiler::micd::CheckResult::pass(0),
+                mivon_compiler::node_cache::VerifyCheckKind::Parse,
+                mivon_compiler::node_cache::CheckResult::pass(0),
             );
-            micd.set_verify(v);
+            node_cache.set_verify(v);
         }
     }
-    // Fase 6: rekam libfiles ke MICD di bawah (setelah parse libfiles),
+    // Fase 6: rekam libfiles ke node_cache di bawah (setelah parse libfiles),
     // agar sidik input IR mencakupnya — libfile berubah → restore IR
     // ditolak (anti stale). flags_hash diset dari defines agar sidik stabil.
     // Save ditunda ke akhir run (setelah symbol/type/graph + prune_stale)
@@ -769,7 +769,7 @@ pub(crate) fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), S
             }
         }
     }
-    // Fase 6: libfiles direkam ke MICD di bawah (setelah parse) agar sidik
+    // Fase 6: libfiles direkam ke node_cache di bawah (setelah parse) agar sidik
     // input IR mencakupnya. Kumpulkan libfile yang gagal parse/preprocess.
     let mut lib_parse_failed = std::collections::HashSet::new();
     for libfile in &cli.libfiles {
@@ -818,36 +818,36 @@ pub(crate) fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), S
         }
     }
 
-    // Fase 6: rekam libfiles ke MICD (hash + status parse jujur) agar sidik
+    // Fase 6: rekam libfiles ke node_cache (hash + status parse jujur) agar sidik
     // input IR mencakupnya — libfile berubah → restore IR ditolak.
     // flags_hash diset dari defines agar sidik stabil lintas run sama.
     {
-        let flag_h = mivon_compiler::micd::flags_hash(
+        let flag_h = mivon_compiler::node_cache::flags_hash(
             &cli.define_pairs(),
             &cli.incdirs.iter().map(PathBuf::from).collect::<Vec<_>>(),
         );
-        micd.flags_hash = flag_h;
+        node_cache.flags_hash = flag_h;
         for libfile in &cli.libfiles {
             if let Ok(content) = std::fs::read(libfile) {
                 let h = mivon_compiler::cache::compute_checksum(&content);
                 let path = std::path::PathBuf::from(libfile);
-                micd.record_file(
+                node_cache.record_file(
                     path,
                     h,
                     vec![],
-                    mivon_compiler::micd::FileStatus::Unchanged,
+                    mivon_compiler::node_cache::FileStatus::Unchanged,
                     flag_h,
                     content.len() as u64,
                     vec![],
                 );
-                let mut v = mivon_compiler::micd::VerifyResult::fresh(h);
+                let mut v = mivon_compiler::node_cache::VerifyResult::fresh(h);
                 v.parse_ok = !lib_parse_failed.contains(libfile);
-                micd.set_verify(v);
+                node_cache.set_verify(v);
             }
         }
     }
 
-    // ── MICD legacy: lengkapi store symbol/type/graph + save terpadu. ──
+    // ── node_cache legacy: lengkapi store symbol/type/graph + save terpadu. ──
     // Jalur `run` (legacy) menggabungkan semua source jadi satu design.
     // Simbol → file di-atribusi via scan teks (`module X`, `package X`, dst)
     // karena AST legacy tidak membawa info file. Satu save di akhir
@@ -912,12 +912,12 @@ pub(crate) fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), S
                         pr.name.as_str().as_bytes(),
                     ));
             }
-            micd.set_module_type(m.name.to_string(), sig);
+            node_cache.set_module_type(m.name.to_string(), sig);
             let file = def_file
                 .get(m.name.as_str())
                 .cloned()
                 .unwrap_or_else(|| fallback.clone());
-            micd.add_symbol(m.name.to_string(), "module".to_string(), file.clone());
+            node_cache.add_symbol(m.name.to_string(), "module".to_string(), file.clone());
         }
         for (name, kind) in &syms {
             let file = def_file
@@ -926,9 +926,9 @@ pub(crate) fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), S
                 .unwrap_or_else(|| fallback.clone());
             // Definisikan di graph (level simbol) → graph.mdb selalu terisi
             // walau tidak ada instance/import lintas file.
-            micd.set_symbol_def(name.clone(), file.clone());
+            node_cache.set_symbol_def(name.clone(), file.clone());
             if kind != "module" {
-                micd.add_symbol(name.clone(), kind.clone(), file.clone());
+                node_cache.add_symbol(name.clone(), kind.clone(), file.clone());
             }
         }
         // graph.mdb: file deps via instance + import.
@@ -945,8 +945,8 @@ pub(crate) fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), S
                             if *f != file && !deps.contains(f) {
                                 deps.push(f.clone());
                             }
-                            micd.set_symbol_def(inst.module_name.to_string(), f.clone());
-                            micd.add_symbol_use(file.clone(), inst.module_name.to_string());
+                            node_cache.set_symbol_def(inst.module_name.to_string(), f.clone());
+                            node_cache.add_symbol_use(file.clone(), inst.module_name.to_string());
                         }
                     }
                     ModuleItem::Import { package, item } => {
@@ -955,7 +955,7 @@ pub(crate) fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), S
                                 deps.push(f.clone());
                             }
                             if item.as_str() != "*" {
-                                micd.add_symbol_use(file.clone(), item.to_string());
+                                node_cache.add_symbol_use(file.clone(), item.to_string());
                             }
                         }
                     }
@@ -963,29 +963,12 @@ pub(crate) fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), S
                 }
             }
             if !deps.is_empty() {
-                micd.set_file_deps(file, deps);
+                node_cache.set_file_deps(file, deps);
             }
         }
 
-        // ── Lapisan cache pipeline (db.md cache/, baris 1141-1605) — jalur
-        // legacy (tanpa --fast). Isi kategori dari design merged + state MICD
-        // hanya saat ada file fresh (changed); store disimpan di save terpadu. ──
-        if micd.cache_layer.is_some() && !fresh_results.is_empty() {
-            use mivon_compiler::micd::cache::pipeline::{CachePopulateInput, CachePopulator};
-            let input = CachePopulateInput {
-                designs: vec![(&fallback, &design)],
-                // Jalur legacy tidak punya IR di titik ini (elaborasi belum
-                // jalan) — elaborate/ terisi fallback AST, generate/ dari AST.
-                ir_design: None,
-                expanded_design: None,
-                opt_snapshot: None,
-            };
-            let mut layer = micd.cache_layer.take();
-            if let Some(layer) = layer.as_mut() {
-                CachePopulator::populate(layer, &input);
-            }
-            micd.cache_layer = layer;
-        }
+        // Artefak pipeline per kategori ditulis langsung oleh tool lewat
+        // `node_cache::CacheLayer`; jalur run tidak menduplikasinya.
 
         // ── Prune stale files (Gap #10): buang file yang bukan bagian
         // project aktif agar tidak menumpuk lintas-project. ──
@@ -994,42 +977,42 @@ pub(crate) fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), S
             .map(PathBuf::from)
             .chain(cli.libfiles.iter().map(PathBuf::from))
             .collect();
-        let pruned = micd.prune_stale(&active);
-        if pruned > 0 && std::env::var("MIVON_DBG_MICD").is_ok() {
-            eprintln!("[MICD-DBG] prune_stale removed {} file(s)", pruned);
+        let pruned = node_cache.prune_stale(&active);
+        if pruned > 0 && std::env::var("MIVON_DEBUG_NODE_CACHE").is_ok() {
+            eprintln!("[node_cache-DBG] prune_stale removed {} file(s)", pruned);
         }
 
         // ── Save terpadu (Gap #8): satu save untuk semua store
         // (preproc + metadata + symbol + type + graph + stats). ──
-        let changed_before = micd.changed;
-        if let Err(e) = micd.save() {
-            eprintln!("[MICD] save warning: {}", e);
+        let changed_before = node_cache.changed;
+        if let Err(e) = node_cache.save() {
+            eprintln!("[node_cache] save warning: {}", e);
         }
 
         // ── Profil build (stats.mdb) — rekam sekali setelah save. ──
-        let mut prof = micd.stats_db.next_profile();
-        prof.files = micd.files.len();
+        let mut prof = node_cache.stats_db.next_profile();
+        prof.files = node_cache.files.len();
         prof.changed_files = changed_before;
         prof.dirty_nodes = changed_before;
-        prof.restored_designs = micd_reused;
-        prof.cache_hits = micd_reused;
-        prof.cache_misses = micd.files.len().saturating_sub(micd_reused);
-        prof.peak_mem_kb = mivon_compiler::micd::peak_rss_kb();
-        micd.set_stats(prof);
-        if let Err(e) = micd.save() {
-            eprintln!("[MICD] stats save warning: {}", e);
+        prof.restored_designs = cache_reused;
+        prof.cache_hits = cache_reused;
+        prof.cache_misses = node_cache.files.len().saturating_sub(cache_reused);
+        prof.peak_mem_kb = mivon_compiler::node_cache::peak_rss_kb();
+        node_cache.set_stats(prof);
+        if let Err(e) = node_cache.save() {
+            eprintln!("[node_cache] stats save warning: {}", e);
         }
 
         // ── Auto-snapshot (Gap #4): seperti commit git, simpan state
         // saat ada perubahan nyata agar rollback tersedia. ──
-        if changed_before > 0 && changed_before > micd.last_snapshotted_changed {
-            micd.last_snapshotted_changed = changed_before;
-            if let Ok(id) = micd.snapshot(format!(
+        if changed_before > 0 && changed_before > node_cache.last_snapshotted_changed {
+            node_cache.last_snapshotted_changed = changed_before;
+            if let Ok(id) = node_cache.snapshot(format!(
                 "build: {} file(s) changed (legacy)",
                 changed_before
             )) {
                 if !cli.quiet && !anim_active(&anim) {
-                    eprintln!("[MICD] snapshot build-{:03} created", id);
+                    eprintln!("[node_cache] snapshot build-{:03} created", id);
                 }
             }
         }
@@ -1041,7 +1024,7 @@ pub(crate) fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), S
     // `--ast` diam-diam melanjutkan ke elaborasi + simulasi penuh tanpa
     // pernah menampilkan AST. Cetak `{:#?}` design (sudah termasuk modul dari
     // libdir/libfile) dan kembali SEBELUM elaborasi. Diletakkan setelah save
-    // MICD agar `--ast --recompile` tidak meninggalkan cache kosong.
+    // node_cache agar `--ast --recompile` tidak meninggalkan cache kosong.
     if cli.print_ast {
         // Flag yang hanya bermakna saat simulasi — jangan diabaikan diam-diam.
         let mut ignored: Vec<&str> = Vec::new();
@@ -1148,28 +1131,27 @@ pub(crate) fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), S
     }
     let elab_start = std::time::Instant::now();
     // ── Reuse IR cache (db.md "5. elaborate/"): seluruh source di-reuse dari
-    // MICD preprocess cache (konten tidak berubah) → coba restore IR hasil
+    // node_cache preprocess cache (konten tidak berubah) → coba restore IR hasil
     // elaborasi sebelumnya, skip elaborator. Fase 6: sidik input (termasuk
     // libfiles yang direkam) wajib cocok — libfile berubah → elaborasi ulang.
     let mut restored_legacy_ir: Option<mivon_ir::IrDesign> = None;
-    if !cli.recompile && micd_reused == sources.len() && !sources.is_empty() {
+    if !cli.recompile && cache_reused == sources.len() && !sources.is_empty() {
         let top = top_name.or_else(|| design.modules.first().map(|m| m.name.as_str()));
         if let Some(top) = top {
-            let ih = micd.elaboration_inputs_hash(top);
+            let ih = node_cache.elaboration_inputs_hash(top);
             let ctx = format!("{:?}", pick_elab_mode(&cli));
-            restored_legacy_ir = micd.restore_elaborate_ir(top, ih, &ctx);
+            restored_legacy_ir = node_cache.restore_elaborate_ir(top, ih, &ctx);
         }
     }
     let mut _from_legacy_cache = false;
     let mut elab_diags: Vec<mivon_core::diagnostics::Diagnostic> = Vec::new();
     let mut recovered = false;
-    let mut elaborator_opt: Option<Elaborator> = None;
     let mut ir_design = match restored_legacy_ir {
         Some(ir) => {
             _from_legacy_cache = true;
             if !cli.quiet && !anim_active(&anim) {
                 eprintln!(
-                    "[MICD] IR cache hit — elaborator di-skip (top '{}')",
+                    "[node_cache] IR cache hit — elaborator di-skip (top '{}')",
                     ir.top.name
                 );
             }
@@ -1226,7 +1208,6 @@ pub(crate) fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), S
             // unik karena `--top` tidak diberikan dan design tidak punya top
             // yang jelas (multiple candidate / circular / root hilang).
             recovered = elaborator.recovered;
-            elaborator_opt = Some(elaborator);
             d
         }
     };
@@ -1480,43 +1461,15 @@ pub(crate) fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), S
     // di sini (setelah elaborasi sukses) karena populate di atas belum punya
     // IR. Design diambil dari elaborator (design asli sudah dipindah saat
     // konstruksi). Best-effort; store disimpan via layer.save(). ──
-    if micd.cache_layer.is_some() {
-        use mivon_compiler::micd::cache::pipeline::{CachePopulateInput, CachePopulator};
-        let fb = sources.first().map(PathBuf::from).unwrap_or_default();
-        let (elab_designs, elab_design, opt_snapshot) = match elaborator_opt.as_ref() {
-            Some(elab) => (
-                vec![(&fb, &elab.design)],
-                Some(&elab.design),
-                Some(elab.opt_stats.snapshot()),
-            ),
-            // Jalur cache hit: IR di-restore, elaborator tidak hidup —
-            // kategori elaborate/generate sudah terisi dari run sebelumnya.
-            None => (Vec::new(), None, None),
-        };
-        let input = CachePopulateInput {
-            designs: elab_designs,
-            ir_design: Some(&ir_design),
-            // designs sudah post-expansion (elaborator.design) — fallback
-            // elaborate/ memakai designs itu sendiri.
-            expanded_design: elab_design,
-            // Statistik optimasi elaborator (db.md "6. optimize/",
-            // "10. expression/") — di-snapshot setelah elaborasi sukses.
-            opt_snapshot,
-        };
-        // Simpan IrDesign LENGKAP (bincode) di key `ir:<top>` — dipakai warm
-        // run berikutnya untuk melewati elaborator sepenuhnya (db.md
-        // "5. elaborate/"). Best-effort. Fase 6: simpan dengan sidik input
-        // (termasuk libfiles yang direkam) agar restore menolak input beda.
-        let legacy_ih = micd.elaboration_inputs_hash(ir_design.top.name.as_str());
+    // ── Simpan IrDesign LENGKAP (bincode) sebagai node `elaborate` — dipakai
+    // warm run berikutnya untuk melewati elaborator sepenuhnya. Best-effort:
+    // sidik input (termasuk libfiles) ikut menentukan identitas node. ──
+    {
+        let legacy_ih = node_cache.elaboration_inputs_hash(ir_design.top.name.as_str());
         let legacy_ctx = format!("{:?}", pick_elab_mode(&cli));
-        micd.store_elaborate_ir(&ir_design, legacy_ih, &legacy_ctx);
-        let mut layer = micd.cache_layer.take();
-        if let Some(layer) = layer.as_mut() {
-            CachePopulator::populate_elab(layer, &input);
-        }
-        micd.cache_layer = layer;
-        if let Err(e) = micd.save() {
-            eprintln!("[MICD] elaborate/generate cache save warning: {}", e);
+        node_cache.store_elaborate_ir(&ir_design, legacy_ih, &legacy_ctx);
+        if let Err(e) = node_cache.save() {
+            eprintln!("[node_cache] elaborate IR save warning: {}", e);
         }
     }
 
@@ -2101,7 +2054,5 @@ mod tests {
     #[test]
     fn run_signature_unchanged() {
         let _f: fn(Cli, &mut mivon_api::env::GlobalEnv) -> Result<(), SimError> = self::run;
-        // Konstanta default masih pub (dipakai sig sim_limit di run()).
-        assert!(crate::DEFAULT_MAX_TIME_NS > 0);
     }
 }

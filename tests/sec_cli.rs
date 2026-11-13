@@ -15,7 +15,7 @@ fn bin() -> &'static str {
     env!("CARGO_BIN_EXE_mivon")
 }
 
-/// Direktori kerja + MICD terisolasi per test (cache MICD bisa menipu: AST
+/// Direktori kerja + node_cache terisolasi per test (cache node_cache bisa menipu: AST
 /// lama di-restore sehingga verdict terlihat benar padahal flag berubah).
 struct Sandbox {
     dir: PathBuf,
@@ -48,7 +48,7 @@ impl Sandbox {
         let out = Command::new(bin())
             .args(args)
             .current_dir(&self.dir)
-            .env("MIVON_MICD_DIR", self.dir.join("micd"))
+            .env("MIVON_NODE_CACHE_DIR", self.dir.join("node_cache"))
             .output()
             .expect("jalankan binary mivon");
         let text = format!(
@@ -186,7 +186,7 @@ fn missing_include_is_rejected_on_both_sides() {
         let (code, out) = sb.run(&args);
         assert_eq!(code, 60, "setelah header ada {args:?}: {out}");
 
-        // (B) include hilang di desain UTAMA (jalur preprocessor + cache MICD).
+        // (B) include hilang di desain UTAMA (jalur preprocessor + cache node_cache).
         let sb = Sandbox::new("inc1");
         let p = sb.write("p.sv", IFDEF);
         let q = sb.write("q.sv", AND);
@@ -205,7 +205,7 @@ fn missing_include_is_rejected_on_both_sides() {
     }
 }
 
-/// Cache MICD dari run NON-SEC tidak boleh membuat verdict stale: dulu desain
+/// Cache node_cache dari run NON-SEC tidak boleh membuat verdict stale: dulu desain
 /// parsial (include hilang) ter-cache, lalu header muncul tetapi AST lama
 /// di-restore sehingga SEC tetap EQUIVALENT. SEC kini memaksa full-rebuild.
 #[test]
@@ -231,7 +231,7 @@ fn cached_partial_design_does_not_mask_new_header() {
         let (code, out) = sb.run(&warm);
         assert_eq!(code, 0, "run pemanas harus sukses {warm:?}: {out}");
 
-        // 2) Header muncul; run SEC di direktori MICD yang SAMA.
+        // 2) Header muncul; run SEC di direktori node_cache yang SAMA.
         std::fs::write(sb.dir.join("defs.svh"), "`define WIDE 1\n").expect("tulis header");
         let mut args = vec![p.as_str(), "--formal-sec", q.as_str()];
         if let Some(f) = extra {
@@ -261,7 +261,7 @@ fn bare_define_reaches_both_designs_in_both_pipelines() {
     for extra in [None, Some("--fast")] {
         // (A) define harus sampai ke desain UTAMA (jalur preprocessor).
         // Urutan penting: run ber-define dulu, lalu TANPA define di direktori
-        // MICD yang SAMA — cache yang mengabaikan define me-restore hasil run
+        // node_cache yang SAMA — cache yang mengabaikan define me-restore hasil run
         // pertama dan memberi EQUIVALENT palsu.
         let mut with = vec![
             p_ifdef.as_str(),

@@ -1,35 +1,35 @@
-use mivon_compiler::micd::{FileMeta, MicdDatabase};
+use mivon_compiler::node_cache::{FileMeta, ProjectCache};
 use std::path::Path;
 
 /// Metadata file (hash konten, ukuran, status) dari database.
-pub fn file_meta<'a>(db: &'a MicdDatabase, path: &Path) -> Option<&'a FileMeta> {
+pub fn file_meta<'a>(db: &'a ProjectCache, path: &Path) -> Option<&'a FileMeta> {
     db.files.get(path)
 }
 
 /// Jumlah file yang terdaftar di database.
-pub fn file_count(db: &MicdDatabase) -> usize {
+pub fn file_count(db: &ProjectCache) -> usize {
     db.files.len()
 }
 
 /// Jumlah file dengan status Recompiled (berubah pada build terakhir).
-pub fn recompiled_count(db: &MicdDatabase) -> usize {
+pub fn recompiled_count(db: &ProjectCache) -> usize {
     db.files
         .values()
-        .filter(|m| m.status == mivon_compiler::micd::FileStatus::Recompiled)
+        .filter(|m| m.status == mivon_compiler::node_cache::FileStatus::Recompiled)
         .count()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mivon_compiler::micd::{FileStatus, MicdDatabase};
+    use mivon_compiler::node_cache::{FileStatus, ProjectCache};
     use std::path::{Path, PathBuf};
 
     #[test]
     fn test_metadata_queries() {
         let root = std::env::temp_dir().join("mivon_db_meta");
         let _ = std::fs::create_dir_all(&root);
-        let mut db = MicdDatabase::open_project(&root, "pid-m");
+        let mut db = ProjectCache::open_project(&root, "pid-m");
         db.record_file(
             PathBuf::from("a.sv"),
             42,

@@ -256,7 +256,7 @@ pub fn transpile_mv_to_inline(
 }
 
 /// Buka project: expand target → CompileSession → parse semua file secara
-/// paralel (dengan cache MICD bila tersedia) → merged `Design` + session.
+/// paralel (dengan cache node_cache bila tersedia) → merged `Design` + session.
 ///
 /// Session dipertahankan agar tool bisa mengakses `module_index` (peta
 /// module → file) untuk output yang butuh lokasi source.
@@ -303,21 +303,20 @@ pub fn open_elaborated(
     }
 }
 
-/// Buka lapisan cache pipeline (`cache/<pid>/`) untuk project yang sama dengan
-/// targets/incdirs/defines — tanpa compile. Dipakai tool read-back
-/// (mprof --cached, melab --from-cache, minspect cache): membaca hasil build
-/// sebelumnya (db.md cache/ "tidak perlu dielaborasi ulang").
+/// Buka lapisan artefak pipeline (`cache/<pid>/`) untuk project yang sama
+/// dengan targets/incdirs/defines — tanpa compile. Dipakai tool read-back
+/// (`melab --from-cache`, `minspect cache`).
 ///
 /// Mengembalikan (CacheLayer, project id). Gagal bila targets tidak ada atau
-/// database root tidak bisa dibuka.
+/// root node_cache tidak bisa dibuka.
 pub fn open_cache_layer(
     targets: &[String],
     incdirs: &[String],
     defines: &[String],
-) -> Result<(mivon_compiler::micd::CacheLayer, String), SimError> {
-    use mivon_compiler::micd::MicdDatabase;
+) -> Result<(mivon_compiler::node_cache::CacheLayer, String), SimError> {
+    use mivon_compiler::node_cache::{flags_hash, CacheLayer, ProjectCache};
     let files = collect_targets(targets)?;
-    let root = MicdDatabase::default_root();
+    let root = ProjectCache::default_root();
     let proot = std::env::current_dir().unwrap_or_default();
     let inc: Vec<PathBuf> = incdirs.iter().map(PathBuf::from).collect();
     let defs: Vec<(String, String)> = defines
@@ -325,10 +324,10 @@ pub fn open_cache_layer(
         .filter_map(|d| d.split_once('='))
         .map(|(k, v)| (k.to_string(), v.to_string()))
         .collect();
-    let pid = MicdDatabase::project_id(&proot, &files, &inc, &defs);
-    let db = MicdDatabase::open_project_with_context(&root, &pid, &proot, &files);
-    let layer = db.cache_layer.ok_or_else(|| {
-        diag_io("lapisan cache pipeline tidak tersedia (database root tak bisa ditulis)")
+    let pid = ProjectCache::project_id(&proot, &files, &inc, &defs);
+    let config = flags_hash(&defs, &inc);
+    let layer = CacheLayer::open(&root, &pid, config).map_err(|e| {
+        diag_io(&format!("lapisan cache pipeline tidak tersedia: {}", e))
     })?;
     Ok((layer, pid))
 }

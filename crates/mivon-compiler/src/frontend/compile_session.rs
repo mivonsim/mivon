@@ -16,7 +16,7 @@ use crate::frontend::discovery::{DiscoveryOptions, FileDiscovery};
 use crate::frontend::io::MmapFile;
 use crate::frontend::lexer::FastLexer;
 use crate::frontend::module_index::{EntryKind, ModuleIndex, ModuleMeta, ParamMeta};
-use crate::micd::{self, MicdDatabase, MicdStats, PreprocEntry};
+use mivon_node_cache::{self as node_cache, CacheStats, PreprocEntry, ProjectCache};
 use crate::profiling::{Counter, Phase, Profiler};
 use crate::scheduler::dag::DependencyGraph;
 use crate::scheduler::incremental::IncrementalTracker;
@@ -100,18 +100,18 @@ pub struct CompileSession {
     cached_ir_design: Option<mivon_ir::IrDesign>,
     /// Session-level incremental elaboration cache: signature → IrModule
     cached_elab_modules: HashMap<u64, mivon_ir::IrModule>,
-    /// MICD — persistent incremental compilation database (load/save otomatis).
-    pub micd: Option<MicdDatabase>,
-    /// Jumlah AST yang di-restore dari MICD pada sesi ini.
-    micd_restored: usize,
-    /// Path yang AST-nya di-restore dari MICD (skip write-back pada save).
-    micd_restored_paths: HashSet<PathBuf>,
+    /// node_cache — persistent incremental compilation database (load/save otomatis).
+    pub node_cache: Option<ProjectCache>,
+    /// Jumlah AST yang di-restore dari node_cache pada sesi ini.
+    cache_restored: usize,
+    /// Path yang AST-nya di-restore dari node_cache (skip write-back pada save).
+    cache_restored_paths: HashSet<PathBuf>,
     /// Jumlah path restorable saat attach (sources + libfiles − inline,
     /// unik). Gerbang IR cache bandingkan ini, bukan `sources.len()` —
     /// Fase 6: libfile yang berubah/tak-terestore harus menggagalkan reuse.
-    micd_restore_expected: usize,
+    cache_restore_expected: usize,
     /// Include deps per file (dari preprocessor) untuk verifikasi header.
-    micd_include_deps: HashMap<PathBuf, Vec<PathBuf>>,
+    cache_include_deps: HashMap<PathBuf, Vec<PathBuf>>,
     /// Jumlah file yang di-lex lewat FastLexer pada compile terakhir.
     /// Counter verifikasi (PARSER-08): membuktikan cabang `use_fast_lexer`
     /// benar-benar dieksekusi, bukan hanya konfigurasi yang diabaikan.
@@ -121,7 +121,7 @@ pub struct CompileSession {
     /// Diagnostik parse PER FILE (path → diagnostics) dari compile terakhir.
     /// Menyimpan hasil file cache-hit juga — dipakai (a) mengisi ulang
     /// `parse_errors` saat `compile()` dipanggil ulang dalam sesi sama, dan
-    /// (b) disimpan ke MICD `diag.mdb` saat save, di mana entry ini sekaligus
+    /// (b) disimpan ke node_cache `diag.mdb` saat save, di mana entry ini sekaligus
     /// menjadi penanda agar file ber-diagnostik tidak di-restore (BUG #2:
     /// AST cache tidak membawa error-nya → run hangat melaporkan 0 error
     /// dan desain yang gagal parse lolos ke simulasi).
@@ -297,11 +297,11 @@ fn diag_dedup_key(
     )
 }
 
-/// Konversi `Diagnostic` → `micd::DiagEntry` untuk penyimpanan MICD
+/// Konversi `Diagnostic` → `node_cache::DiagEntry` untuk penyimpanan node_cache
 /// `diag.mdb` (dipakai LSP/IDE dan sebagai penanda "file ini punya
-/// diagnostik" di `attach_micd` — BUG #2). Lokasi diambil dari
+/// diagnostik" di `attach_cache` — BUG #2). Lokasi diambil dari
 /// `source_snippet` (file:line:col saat render), fallback `spans[0]`.
-fn diag_to_entry(d: &mivon_core::diagnostics::Diagnostic) -> micd::DiagEntry {
+fn diag_to_entry(d: &mivon_core::diagnostics::Diagnostic) -> node_cache::DiagEntry {
     let (line, col) = if let Some(ss) = &d.source_snippet {
         (ss.line, ss.col)
     } else if let Some(sp) = d.spans.first() {
@@ -309,7 +309,7 @@ fn diag_to_entry(d: &mivon_core::diagnostics::Diagnostic) -> micd::DiagEntry {
     } else {
         (0usize, 0usize)
     };
-    let mut e = micd::DiagEntry::new(
+    let mut e = node_cache::DiagEntry::new(
         line,
         col,
         d.level,
@@ -317,7 +317,7 @@ fn diag_to_entry(d: &mivon_core::diagnostics::Diagnostic) -> micd::DiagEntry {
         d.code.as_str().to_string(),
     );
     if line != 0 || col != 0 {
-        e.span = Some(micd::diag::Span::point(line, col));
+        e.span = Some(node_cache::diag::Span::point(line, col));
     }
     e
 }
@@ -341,11 +341,11 @@ impl CompileSession {
             combined_parts: std::sync::Mutex::new(Vec::new()),
             cached_ir_design: None,
             cached_elab_modules: HashMap::new(),
-            micd: None,
-            micd_restored: 0,
-            micd_restored_paths: HashSet::new(),
-            micd_restore_expected: 0,
-            micd_include_deps: HashMap::new(),
+            node_cache: None,
+            cache_restored: 0,
+            cache_restored_paths: HashSet::new(),
+            cache_restore_expected: 0,
+            cache_include_deps: HashMap::new(),
             fast_lexer_files: std::sync::atomic::AtomicUsize::new(0),
             parse_errors: Vec::new(),
             file_parse_diags: HashMap::new(),
@@ -417,7 +417,7 @@ impl CompileSession {
 
         // Shared collection for combined source strings (indexed by file position)
         let combined_parts = &self.combined_parts;
-        // Include deps per file (untuk verifikasi header MICD)
+        // Include deps per file (untuk verifikasi header node_cache)
         let include_deps = std::sync::Mutex::new(HashMap::<PathBuf, Vec<PathBuf>>::new());
         // Segmen `timescale per file (F84, LRM §19.8): koordinat baris output
         // preprocessed per-file. Dipakai phase 5 untuk mengisi
@@ -719,7 +719,7 @@ impl CompileSession {
         self.timing.parse_us = lex_parse_us.saturating_sub(self.timing.lex_us);
 
         // Simpan include deps dari sesi ini.
-        self.micd_include_deps = include_deps.into_inner().unwrap();
+        self.cache_include_deps = include_deps.into_inner().unwrap();
 
         // Count tokens
         if let Some(ref profiler) = self.profiler {
@@ -746,7 +746,7 @@ impl CompileSession {
         // "*_cov.sv"`). Kedua parse melapor di lokasi display yang SAMA (line
         // directive `include`) → pesan + file:line:col identik untuk konstruk
         // yang sama. `file_parse_diags` TETAP menyimpan salinan per file
-        // (kebenaran per-file untuk LSP/MICD); hanya agregat yang di-dedup.
+        // (kebenaran per-file untuk LSP/node_cache); hanya agregat yang di-dedup.
         let mut seen_diags = HashSet::new();
         for r in results {
             let (path, design, cksum, parse_errors) = r?;
@@ -761,11 +761,11 @@ impl CompileSession {
             }
             file_designs.push((path.clone(), design));
             file_checksums.insert(path.clone(), cksum);
-            // File yang AST-nya di-restore dari MICD (parse di-skip) TIDAK
+            // File yang AST-nya di-restore dari node_cache (parse di-skip) TIDAK
             // dihitung sebagai processed — sebelumnya semua file masuk
             // processed sehingga `cached=0 processed=861` selalu tampil
             // walaupun 861 design sukses di-restore (bug pelaporan).
-            if !self.micd_restored_paths.contains(&path) {
+            if !self.cache_restored_paths.contains(&path) {
                 self.timing.processed_files += 1;
             }
         }
@@ -797,13 +797,13 @@ impl CompileSession {
         }
 
         // Clone all designs for cache BEFORE merge (one-time O(n) cost).
-        // File yang di-restore dari MICD sudah ada di prev_designs (dari
+        // File yang di-restore dari node_cache sudah ada di prev_designs (dari
         // attach) → tidak perlu clone ulang (hemat CPU + memori).
         let mut cache_designs: Vec<Option<Design>> = designs
             .iter()
             .enumerate()
             .map(|(i, d)| {
-                if self.micd_restored_paths.contains(&paths[i]) {
+                if self.cache_restored_paths.contains(&paths[i]) {
                     None
                 } else {
                     Some(d.clone())
@@ -899,8 +899,8 @@ impl CompileSession {
         self.timing.index_us = index_start.elapsed().as_micros() as u64;
         self.timing.total_us = total_start.elapsed().as_micros() as u64;
 
-        // ── MICD: state compile disimpan eksplisit oleh caller
-        // (main.rs) via save_micd() — sekali per build agar statistik
+        // ── node_cache: state compile disimpan eksplisit oleh caller
+        // (main.rs) via save_cache() — sekali per build agar statistik
         // changed_files per-build akurat. ──
 
         Ok((merged, &self.module_index))
@@ -1349,23 +1349,23 @@ impl CompileSession {
 
     /// Clear all caches (local + remote if configured).
     ///
-    /// `clear_micd=false`: MICD tidak ikut dihapus. Dipakai `--cache-clear`
-    /// pada akhir run — MICD sudah dihapus di AWAL run (sebelum attach), jadi
+    /// `clear_node_cache=false`: node_cache tidak ikut dihapus. Dipakai `--cache-clear`
+    /// pada akhir run — node_cache sudah dihapus di AWAL run (sebelum attach), jadi
     /// clear lagi di akhir hanya membuang hasil rebuild fresh yang baru
     /// disimpan (run berikutnya jadi rebuild penuh lagi).
-    pub fn clear_cache(&mut self, clear_micd: bool) {
+    pub fn clear_cache(&mut self, clear_node_cache: bool) {
         self.cache.clear();
         // If remote is set, also clear remote
         if let Some(ref backend) = self.cache.remote {
             let _ = backend.clear();
         }
-        // Clear MICD persistent database if attached
-        if clear_micd {
-            if let Some(db) = self.micd.as_mut() {
+        // Clear node_cache persistent database if attached
+        if clear_node_cache {
+            if let Some(db) = self.node_cache.as_mut() {
                 let _ = db.clear();
             }
         }
-        self.micd_restored = 0;
+        self.cache_restored = 0;
         self.prev_checksums.clear();
         self.prev_designs.clear();
         self.prev_combined_sources.clear();
@@ -1380,34 +1380,34 @@ impl CompileSession {
         self.cache.stats()
     }
 
-    // ─────────────────────────── MICD ───────────────────────────
+    // ─────────────────────────── node_cache ───────────────────────────
     // Persistent incremental compilation database. Terpasang secara eksplisit
     // dari CLI (bukan default di new() — agar test tidak menulis database).
 
-    /// Pasang MICD dan restore state file yang tidak berubah.
+    /// Pasang node_cache dan restore state file yang tidak berubah.
     /// Untuk tiap source yang hash kontennya cocok dengan cache, AST dan
     /// combined source di-deserialize → parse/lex di-skip pada compile.
     /// Mengembalikan jumlah AST yang berhasil di-restore.
-    /// Buka database MICD TANPA restore AST (dipakai saat `--recompile`).
+    /// Buka database node_cache TANPA restore AST (dipakai saat `--recompile`).
     ///
-    /// Sebelumnya `--recompile` melewati `attach_micd` sama sekali sehingga
-    /// `self.micd` tetap `None` dan `save_micd` menjadi no-op — cache hasil
+    /// Sebelumnya `--recompile` melewati `attach_cache` sama sekali sehingga
+    /// `self.node_cache` tetap `None` dan `save_cache` menjadi no-op — cache hasil
     /// full-rebuild tidak pernah ditulis ke disk, dan run normal berikutnya
     /// selalu compile penuh ulang (restored=0). Di sini database dibuka dan
     /// flags/include-deps disalin, tapi restore dilewati: semua file dianggap
     /// fresh (rebuild penuh) dan save berikutnya menulis ulang seluruh store.
-    pub fn open_micd_no_restore(&mut self, mut db: MicdDatabase) {
-        let current_flags = micd::flags_hash(&self.config.defines, &self.config.incdirs);
+    pub fn open_cache_no_restore(&mut self, mut db: ProjectCache) {
+        let current_flags = node_cache::flags_hash(&self.config.defines, &self.config.incdirs);
         db.flags_hash = current_flags;
         db.dirty = true;
 
-        self.collect_micd_include_deps(&db);
+        self.collect_cache_include_deps(&db);
 
         db.restored = 0;
-        self.micd = Some(db);
-        self.micd_restored = 0;
-        self.micd_restored_paths = HashSet::new();
-        self.micd_restore_expected = Self::restorable_count(&self.config);
+        self.node_cache = Some(db);
+        self.cache_restored = 0;
+        self.cache_restored_paths = HashSet::new();
+        self.cache_restore_expected = Self::restorable_count(&self.config);
     }
 
     /// Himpunan path restorable (sources + libfiles − inline, unik) — Fase 6.
@@ -1427,7 +1427,7 @@ impl CompileSession {
     }
 
     /// Salin include deps dari database (dipakai saat save ulang).
-    fn collect_micd_include_deps(&mut self, db: &MicdDatabase) {
+    fn collect_cache_include_deps(&mut self, db: &ProjectCache) {
         let mut include_deps = HashMap::new();
         for (p, meta) in db.files.iter() {
             if !meta.include_hashes.is_empty() {
@@ -1437,11 +1437,11 @@ impl CompileSession {
                 );
             }
         }
-        self.micd_include_deps = include_deps;
+        self.cache_include_deps = include_deps;
     }
 
-    pub fn attach_micd(&mut self, mut db: MicdDatabase) -> usize {
-        let current_flags = micd::flags_hash(&self.config.defines, &self.config.incdirs);
+    pub fn attach_cache(&mut self, mut db: ProjectCache) -> usize {
+        let current_flags = node_cache::flags_hash(&self.config.defines, &self.config.incdirs);
         // Koreksi correctness: defines/incdirs berubah → preprocessed output
         // meng-embed ekspansi makro lama → SEMUA file harus di-reprocess.
         let flags_changed = db.flags_hash != 0 && db.flags_hash != current_flags;
@@ -1450,7 +1450,7 @@ impl CompileSession {
             db.dirty = true;
         }
         // Set flags_hash untuk save berikutnya (sebelum restore tidak
-        // diperlukan; record_file memakai current_flags pada save_micd).
+        // diperlukan; record_file memakai current_flags pada save_cache).
 
         let mut restored = 0usize;
         let mut restored_paths = HashSet::new();
@@ -1461,17 +1461,17 @@ impl CompileSession {
             .chain(self.config.libfiles.iter())
             // F10: path inline (buffer transpile `.mv`) TIDAK di-restore —
             // kontennya tidak stabil di disk (hash basis buffer vs .mv) dan
-            // selalu di-transpile ulang tiap run. MICD hanya untuk file disk.
+            // selalu di-transpile ulang tiap run. node_cache hanya untuk file disk.
             .filter(|p| !self.config.inline_sources.contains_key(*p))
             .cloned()
             .collect();
         // Fase 6: penyebut gerbang = himpunan restorable (unik), bukan
         // `sources.len()` — libfile yang tak-terestore harus menggagalkan.
-        self.micd_restore_expected = sources.iter().collect::<HashSet<_>>().len();
+        self.cache_restore_expected = sources.iter().collect::<HashSet<_>>().len();
 
         if !flags_changed {
             // Parallel restore: baca + hash + deserialize per file (independen).
-            // `&db` aman dibagi antar thread (MicdDatabase adalah Sync).
+            // `&db` aman dibagi antar thread (ProjectCache adalah Sync).
             let db_ref = &db;
             let restored_items: Vec<(PathBuf, Design, String)> = sources
                 .par_iter()
@@ -1501,7 +1501,7 @@ impl CompileSession {
                     }
                     let ast = db_ref
                         .get_ast(path, hash)
-                        .and_then(|bytes| micd::deserialize_design(&bytes))?;
+                        .and_then(|bytes| node_cache::deserialize_design(&bytes))?;
                     // Fase 0 (Kritik B): ref tanpa clone PreprocEntry penuh —
                     // clone hanya combined String, bukan timescale_segments.
                     let combined = db_ref.get_preprocessed_combined(path, hash)?.to_owned();
@@ -1526,9 +1526,9 @@ impl CompileSession {
             }
         }
 
-        // ── Debug MICD (guard env MIVON_DBG_MICD): ukur titik kegagalan
+        // ── Debug node_cache (guard env MIVON_DEBUG_NODE_CACHE): ukur titik kegagalan
         // restore agar run hangat tidak full rebuild (cached=0). ──
-        if std::env::var("MIVON_DBG_MICD").is_ok() {
+        if std::env::var("MIVON_DEBUG_NODE_CACHE").is_ok() {
             let db_ref = &db;
             let mut deps_ok = 0usize;
             let mut ast_ok = 0usize;
@@ -1549,7 +1549,7 @@ impl CompileSession {
                 }
             }
             eprintln!(
-                "[MICD-DBG] attach: files={} flags(db)={:x} flags(cur)={:x} flags_changed={} deps_ok={} ast_ok={} preproc_ok={} restored={}",
+                "[node_cache-DBG] attach: files={} flags(db)={:x} flags(cur)={:x} flags_changed={} deps_ok={} ast_ok={} preproc_ok={} restored={}",
                 db.files.len(),
                 db.flags_hash,
                 current_flags,
@@ -1561,24 +1561,24 @@ impl CompileSession {
             );
         }
 
-        self.collect_micd_include_deps(&db);
+        self.collect_cache_include_deps(&db);
 
         db.restored = restored;
         db.dirty = false;
-        self.micd = Some(db);
-        self.micd_restored = restored;
-        self.micd_restored_paths = restored_paths;
+        self.node_cache = Some(db);
+        self.cache_restored = restored;
+        self.cache_restored_paths = restored_paths;
         restored
     }
 
-    /// Simpan seluruh state compile ke MICD (file terdaftar, AST, combined
+    /// Simpan seluruh state compile ke node_cache (file terdaftar, AST, combined
     /// source, dependency graph, symbol index, verify cache, diag).
-    pub fn save_micd(&mut self) -> Result<Option<MicdStats>, String> {
-        if self.micd.is_none() {
+    pub fn save_cache(&mut self) -> Result<Option<CacheStats>, String> {
+        if self.node_cache.is_none() {
             return Ok(None);
         }
 
-        let flags = micd::flags_hash(&self.config.defines, &self.config.incdirs);
+        let flags = node_cache::flags_hash(&self.config.defines, &self.config.incdirs);
         let file_deps = self.compute_file_deps();
 
         // ── Fase 1: kumpulkan data per file (ringan untuk warm run —
@@ -1593,7 +1593,7 @@ impl CompileSession {
             u64,
             u64,
             Vec<PathBuf>,
-            micd::FileStatus,
+            node_cache::FileStatus,
             Option<String>,
             Option<Vec<u8>>,
             Vec<(PathBuf, u64)>,
@@ -1602,7 +1602,7 @@ impl CompileSession {
         let mut built_changed = 0usize;
 
         // ── Parallel gather ──
-        // save_micd untuk design besar terukur lambat: 32.9s gather utk 3888
+        // save_cache untuk design besar terukur lambat: 32.9s gather utk 3888
         // file OpenTitan (fs::read + serialize_design bincode + include hash —
         // SEQUENTIAL). Semua komponen baca-only → par_iter (skala core).
         use rayon::prelude::*;
@@ -1614,7 +1614,7 @@ impl CompileSession {
         // Pre-hash SEMUA distinct include sekali (paralel) — cache by path
         // tanpa kontensi Mutex antar worker.
         let distinct_incs: std::collections::HashSet<PathBuf> =
-            self.micd_include_deps.values().flatten().cloned().collect();
+            self.cache_include_deps.values().flatten().cloned().collect();
         let inc_hashes: HashMap<PathBuf, u64> = distinct_incs
             .par_iter()
             .map(|inc| {
@@ -1630,7 +1630,7 @@ impl CompileSession {
             u64,             // content_hash
             u64,             // size
             Vec<PathBuf>,    // deps
-            micd::FileStatus,
+            node_cache::FileStatus,
             Option<String>,      // combined
             Option<Vec<u8>>,     // design_bytes
             Vec<(PathBuf, u64)>, // include_hashes
@@ -1639,14 +1639,14 @@ impl CompileSession {
         )> = entries
             .par_iter()
             .map(|(path, design)| {
-                // F10: path inline (buffer transpile `.mv`) tidak direkam ke MICD.
+                // F10: path inline (buffer transpile `.mv`) tidak direkam ke node_cache.
                 if self.config.inline_sources.contains_key(path) {
                     return (
                         None,
                         0,
                         0,
                         Vec::new(),
-                        micd::FileStatus::Unchanged,
+                        node_cache::FileStatus::Unchanged,
                         None,
                         None,
                         Vec::new(),
@@ -1654,10 +1654,10 @@ impl CompileSession {
                         false,
                     );
                 }
-                let is_restored = self.micd_restored_paths.contains(path);
+                let is_restored = self.cache_restored_paths.contains(path);
                 let (content_hash, combined, design_bytes, ast_hash) = if is_restored {
                     let h = self
-                        .micd
+                        .node_cache
                         .as_ref()
                         .and_then(|d| d.get_file_meta(path))
                         .map(|m| m.content_hash)
@@ -1668,7 +1668,7 @@ impl CompileSession {
                         .map(|b| compute_checksum(&b))
                         .unwrap_or(0);
                     let combined = self.prev_combined_sources.get(path).cloned();
-                    let design_bytes = micd::serialize_design(design).ok();
+                    let design_bytes = node_cache::serialize_design(design).ok();
                     let ast_hash = design_bytes
                         .as_ref()
                         .map(|b| compute_checksum(b))
@@ -1678,13 +1678,13 @@ impl CompileSession {
                 let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
                 let deps = file_deps.get(path).cloned().unwrap_or_default();
                 let include_hashes: Vec<(PathBuf, u64)> = if is_restored {
-                    self.micd
+                    self.node_cache
                         .as_ref()
                         .and_then(|d| d.get_file_meta(path))
                         .map(|m| m.include_hashes.clone())
                         .unwrap_or_default()
                 } else {
-                    self.micd_include_deps
+                    self.cache_include_deps
                         .get(path)
                         .cloned()
                         .unwrap_or_default()
@@ -1696,15 +1696,15 @@ impl CompileSession {
                         .collect()
                 };
                 let prev_hash = self
-                    .micd
+                    .node_cache
                     .as_ref()
                     .and_then(|d| d.get_file_meta(path))
                     .map(|m| m.content_hash);
                 let was_changed = prev_hash != Some(content_hash);
                 let status = if is_restored {
-                    micd::FileStatus::Unchanged
+                    node_cache::FileStatus::Unchanged
                 } else {
-                    micd::FileStatus::Recompiled
+                    node_cache::FileStatus::Recompiled
                 };
                 (
                     Some(path.clone()),
@@ -1737,7 +1737,7 @@ impl CompileSession {
         // dibangun bila ada perubahan — warm run (0 perubahan) melewatinya
         // sehingga save menjadi near-no-op dan verify lama tidak di-downgrade. ──
         let mut symbols: Vec<(String, String, PathBuf)> = Vec::new();
-        let mut verify_results: Vec<micd::VerifyResult> = Vec::new();
+        let mut verify_results: Vec<node_cache::VerifyResult> = Vec::new();
         let mut type_entries: Vec<(String, u64)> = Vec::new();
         let mut symbol_defs: Vec<(String, PathBuf)> = Vec::new();
         let mut symbol_uses: Vec<(PathBuf, String)> = Vec::new();
@@ -1761,9 +1761,9 @@ impl CompileSession {
                 let content_hash = hash_by_path.get(path).copied().unwrap_or(0);
                 // Multi-level hash (Kritik 1 db.md): AST hash untuk reuse saat
                 // content hash berubah tapi AST identik (mis. komentar).
-                let is_restored = self.micd_restored_paths.contains(path);
+                let is_restored = self.cache_restored_paths.contains(path);
                 let ast_hash = if is_restored {
-                    self.micd
+                    self.node_cache
                         .as_ref()
                         .and_then(|d| d.get_verify(content_hash))
                         .map(|v| v.ast_hash)
@@ -1773,7 +1773,7 @@ impl CompileSession {
                     // bukan serialize ulang.
                     ast_hash_cache.get(path).copied().unwrap_or(0)
                 };
-                let mut v = micd::VerifyResult::fresh(content_hash);
+                let mut v = node_cache::VerifyResult::fresh(content_hash);
                 v.ast_hash = ast_hash;
                 v.parse_ok = true;
                 v.parse_ms = self
@@ -1783,10 +1783,10 @@ impl CompileSession {
                     .saturating_add(self.timing.parse_us);
                 // Kritik 9: hasil verifikasi dipisah per kategori.
                 v.set_check(
-                    micd::VerifyCheckKind::Parse,
-                    micd::CheckResult::pass(ast_hash),
+                    node_cache::VerifyCheckKind::Parse,
+                    node_cache::CheckResult::pass(ast_hash),
                 );
-                v.set_check(micd::VerifyCheckKind::Elaborate, micd::CheckResult::fresh());
+                v.set_check(node_cache::VerifyCheckKind::Elaborate, node_cache::CheckResult::fresh());
                 verify_results.push(v);
 
                 // types.mdb: signature module (deteksi perubahan struktural)
@@ -1845,40 +1845,16 @@ impl CompileSession {
             }
         }
 
-        // ── Fase 2b: lapisan cache pipeline — HANYA kategori dibaca tools
-        // (elaborate/generate/optimize/expression). 12 kategori tak-terbaca
-        // tak lagi diisi (hemat I/O ribuan put per build).
-        // Hanya saat ada perubahan (full_write) — warm run melewati (entry lama
-        // tetap valid). Save store-nya ikut `db.save()` di Fase 3.
-        if full_write {
-            let input = crate::micd::cache::pipeline::CachePopulateInput {
-                designs: self.prev_designs.iter().collect(),
-                // IR hanya tersedia bila save_micd dipanggil SETELAH
-                // compile_and_elaborate (jalur tool). Jalur run_fast memanggil
-                // save_micd sebelum elaborate — kategori elaborate/generate
-                // diisi belakangan via save_elaborate_cache().
-                ir_design: self.cached_ir_design.as_ref(),
-                // Jalur tool (compile_and_elaborate) tidak membawa design
-                // post-expansion elaborator; fallback elaborate/ memakai
-                // designs (pre-expansion).
-                expanded_design: None,
-                opt_snapshot: None,
-            };
-            let mut layer = self.micd.as_mut().and_then(|d| d.cache_layer.take());
-            if let Some(layer) = layer.as_mut() {
-                crate::micd::cache::pipeline::CachePopulator::populate(layer, &input);
-            }
-            if let Some(db) = self.micd.as_mut() {
-                db.cache_layer = layer;
-            }
-        }
+        // Artefak pipeline per kategori (elaborate/generate/optimize/
+        // expression) kini ditulis langsung oleh tool lewat
+        // `node_cache::CacheLayer`; compiler tidak lagi menduplikasinya.
 
         // ── Fase 3: terapkan ke db + simpan (hanya store yang dirty). ──
-        let db = self.micd.as_mut().expect("checked above");
-        if std::env::var("MIVON_DEBUG_MICD").is_ok() {
-            eprintln!("[MICD-DBG] gather loop = {:?}", t_gather.elapsed());
+        let db = self.node_cache.as_mut().expect("checked above");
+        if std::env::var("MIVON_DEBUG_NODE_CACHE").is_ok() {
+            eprintln!("[node_cache-DBG] gather loop = {:?}", t_gather.elapsed());
         }
-        // MICD adalah cache per-project: file aktif sesi ini (untuk prune
+        // node_cache adalah cache per-project: file aktif sesi ini (untuk prune
         // file lintas-project yang menempel di root yang sama).
         let active: Vec<PathBuf> = items
             .iter()
@@ -1901,12 +1877,9 @@ impl CompileSession {
                 db.cache_ast(path.clone(), content_hash, bytes);
             }
             if let Some(combined) = combined {
-                // Fase 2 (Kritik A): timescale dari design file itu — bukan
-                // None buta. File tanpa directive → None (fallback global).
-                let timescale = self
-                    .prev_designs
-                    .get(&path)
-                    .and_then(crate::micd::cache::pipeline::design_timescale);
+                // Direktif `timescale dibaca dari AST module saat simulasi;
+                // entry preprocess cukup menyimpan combined source.
+                let timescale = None;
                 db.cache_preprocessed(
                     path.clone(),
                     PreprocEntry {
@@ -1922,13 +1895,13 @@ impl CompileSession {
             }
             // BUG #2: rekam diagnostik parse per file ke `diag.mdb` —
             // disamping fungsinya IDE/LSP (file → daftar diagnostic tanpa
-            // compile ulang), entry ini menjadi penanda di attach_micd agar
+            // compile ulang), entry ini menjadi penanda di attach_cache agar
             // file ber-diagnostik tidak di-restore (error selalu terlapor di
             // run hangat). File yang di-restore TIDAK disentuh: tidak diparse
             // ulang → diagnostiknya tidak berubah. Tulis hanya bila berubah
             // agar run hangat tidak menandai db dirty tanpa alasan.
-            if !self.micd_restored_paths.contains(&path) {
-                let new_entries: Vec<micd::DiagEntry> = self
+            if !self.cache_restored_paths.contains(&path) {
+                let new_entries: Vec<node_cache::DiagEntry> = self
                     .file_parse_diags
                     .get(&path)
                     .map(|ds| ds.iter().map(diag_to_entry).collect())
@@ -1941,7 +1914,7 @@ impl CompileSession {
                         db.diags.remove(&path);
                         db.dirty_diag = true;
                     } else {
-                        db.set_diags(micd::FileDiags {
+                        db.set_diags(node_cache::FileDiags {
                             path: path.clone(),
                             entries: new_entries,
                             content_hash,
@@ -1972,21 +1945,21 @@ impl CompileSession {
             }
         }
 
-        // MICD adalah cache per-project: buang file yang bukan bagian dari
+        // node_cache adalah cache per-project: buang file yang bukan bagian dari
         // sources sesi ini (akumulasi run lain di root yang sama = sampah).
         let pruned = db.prune_stale(&active);
-        if std::env::var("MIVON_DEBUG_MICD").is_ok() {
-            eprintln!("[MICD-DBG] prune_stale removed {} file(s)", pruned);
+        if std::env::var("MIVON_DEBUG_NODE_CACHE").is_ok() {
+            eprintln!("[node_cache-DBG] prune_stale removed {} file(s)", pruned);
         }
-        if std::env::var("MIVON_DEBUG_MICD").is_ok() {
-            eprintln!("[MICD-DBG] apply loop = {:?}", t_apply.elapsed());
+        if std::env::var("MIVON_DEBUG_NODE_CACHE").is_ok() {
+            eprintln!("[node_cache-DBG] apply loop = {:?}", t_apply.elapsed());
         }
 
         let cum_changed = db.changed;
         let t_save = std::time::Instant::now();
         let mut stats = db.save().map_err(|e| e.to_string())?;
-        if std::env::var("MIVON_DEBUG_MICD").is_ok() {
-            eprintln!("[MICD-DBG] db.save() = {:?}", t_save.elapsed());
+        if std::env::var("MIVON_DEBUG_NODE_CACHE").is_ok() {
+            eprintln!("[node_cache-DBG] db.save() = {:?}", t_save.elapsed());
         }
         stats.changed_files = built_changed;
         // Auto-snapshot build (seperti commit git) saat ada perubahan nyata.
@@ -2010,21 +1983,21 @@ impl CompileSession {
         prof.files = db.files.len();
         prof.changed_files = built_changed;
         prof.dirty_nodes = built_changed;
-        prof.restored_designs = self.micd_restored;
-        prof.cache_hits = self.micd_restored;
-        prof.cache_misses = db.files.len().saturating_sub(self.micd_restored);
-        prof.peak_mem_kb = micd::peak_rss_kb();
+        prof.restored_designs = self.cache_restored;
+        prof.cache_hits = self.cache_restored;
+        prof.cache_misses = db.files.len().saturating_sub(self.cache_restored);
+        prof.peak_mem_kb = node_cache::peak_rss_kb();
         prof.snapshot_id = stats.snapshot_id;
         // Fase 2: cermin cache/profile "last" ditulis di dalam set_stats
         // (satu jalur via mirror) — tidak ada tulis manual ganda lagi.
         // db.save() di bawah ikut menyimpan cache_layer yang dirty.
         db.set_stats(prof);
         let _ = db.save().map_err(|e| e.to_string())?;
-        if std::env::var("MIVON_DEBUG_MICD").is_ok() {
-            eprintln!("[MICD-DBG] stats save = {:?}", t_stats.elapsed());
+        if std::env::var("MIVON_DEBUG_NODE_CACHE").is_ok() {
+            eprintln!("[node_cache-DBG] stats save = {:?}", t_stats.elapsed());
         }
 
-        self.micd_restored = 0;
+        self.cache_restored = 0;
 
         // Populate precompiled database (VCS AN.DB / Questa _info analog).
         // Artefak per module disimpan agar tool downstream baca tanpa compile ulang.
@@ -2035,15 +2008,15 @@ impl CompileSession {
 
     /// Tandai seluruh file sebagai ter-elaborasi (verify cache: elab_ok=true)
     /// dan simpan verify.mdb SAJA (ringan, tanpa tulis ulang metadata/ast).
-    pub fn micd_mark_elaborated(&mut self) {
-        if let Some(db) = self.micd.as_mut() {
+    pub fn cache_mark_elaborated(&mut self) {
+        if let Some(db) = self.node_cache.as_mut() {
             let _ = db.mark_elaborated();
         }
     }
 
     /// Isi kategori cache elaborate/ + generate/ dari IR hasil elaborasi
     /// (db.md "5. elaborate/", "16. generate/"). Dipanggil SETELAH elaborasi
-    /// sukses — save_micd (sebelum elaborate) tidak punya IR, jadi kategori
+    /// sukses — save_cache (sebelum elaborate) tidak punya IR, jadi kategori
     /// ini diisi di sini agar warm run berikutnya dapat membacanya tanpa
     /// menjalankan elaborator ulang. Best-effort: kegagalan tidak fatal.
     ///
@@ -2054,17 +2027,11 @@ impl CompileSession {
     pub fn save_elaborate_cache(
         &mut self,
         ir: &mivon_ir::IrDesign,
-        expanded_design: Option<&mivon_ast::types::Design>,
-        opt_snapshot: Option<mivon_elaboration::util::OptimizeSnapshot>,
+        _expanded_design: Option<&mivon_ast::types::Design>,
+        _opt_snapshot: Option<mivon_elaboration::util::OptimizeSnapshot>,
         context: &str,
     ) {
-        let Some(db) = self.micd.as_mut() else { return };
-        let input = crate::micd::cache::pipeline::CachePopulateInput {
-            designs: self.prev_designs.iter().collect(),
-            ir_design: Some(ir),
-            expanded_design,
-            opt_snapshot,
-        };
+        let Some(db) = self.node_cache.as_mut() else { return };
         // Simpan IrDesign LENGKAP (bincode) di key `ir:<top>` — dipakai warm
         // run untuk melewati elaborator sepenuhnya (db.md "5. elaborate/"):
         // 1000 instance generate tidak perlu dielaborasi ulang. Dipanggil
@@ -2096,43 +2063,38 @@ impl CompileSession {
                 }
             }
         }
-        let layer = match db.cache_layer.as_mut() {
-            Some(l) => l,
-            None => return,
-        };
-        crate::micd::cache::pipeline::CachePopulator::populate_elab(layer, &input);
-        if let Err(e) = layer.save() {
-            eprintln!("[MICD] elaborate/generate cache save warning: {}", e);
+        if let Err(e) = db.save() {
+            eprintln!("[node_cache] elaborate IR save warning: {}", e);
         }
     }
 
-    /// Jumlah AST yang di-restore dari MICD pada sesi ini.
-    pub fn micd_restored_count(&self) -> usize {
-        self.micd_restored
+    /// Jumlah AST yang di-restore dari node_cache pada sesi ini.
+    pub fn cache_restored_count(&self) -> usize {
+        self.cache_restored
     }
 
-    /// Jumlah file yang di-restore dari MICD — SAMA dengan
-    /// `micd_restored_count()` TAPI tidak di-reset oleh `save_micd()` (set
-    /// `micd_restored` di-nol-kan di akhir save, set path tetap). Dipakai
+    /// Jumlah file yang di-restore dari node_cache — SAMA dengan
+    /// `cache_restored_count()` TAPI tidak di-reset oleh `save_cache()` (set
+    /// `cache_restored` di-nol-kan di akhir save, set path tetap). Dipakai
     /// memutuskan reuse IR cache SETELAH save parse (lihat run_fast).
-    pub fn micd_restored_paths_count(&self) -> usize {
-        self.micd_restored_paths.len()
+    pub fn cache_restored_paths_count(&self) -> usize {
+        self.cache_restored_paths.len()
     }
 
     /// Gerbang reuse IR cache (Fase 6): SELURUH path restorable (sources +
     /// libfiles − inline) ter-restore, dan himpunan tak-kosong. Menggantikan
     /// perbandingan `== sources.len()` yang buta libfile (miss bila libfile
     /// ada; STALE bila libfile berubah).
-    pub fn micd_restore_complete(&self) -> bool {
-        self.micd_restore_expected > 0
-            && self.micd_restored_paths.len() == self.micd_restore_expected
+    pub fn cache_restore_complete(&self) -> bool {
+        self.cache_restore_expected > 0
+            && self.cache_restored_paths.len() == self.cache_restore_expected
     }
 
     /// Coba restore `IrDesign` hasil elaborasi dari cache pipeline (db.md
     /// "5. elaborate/"). Dipanggil pada warm run (seluruh file tidak berubah
-    /// — MICD restore penuh) agar elaborator bisa di-skip sepenuhnya.
+    /// — node_cache restore penuh) agar elaborator bisa di-skip sepenuhnya.
     /// `expected_inputs_hash` = sidik input kini (lihat
-    /// `MicdDatabase::elaboration_inputs_hash`); beda → `None` (Fase 6: anti
+    /// `ProjectCache::elaboration_inputs_hash`); beda → `None` (Fase 6: anti
     /// stale IR). `expected_context` = mode elaborasi (`StrictSimulation` vs
     /// `AnalysisRecovery` — IR hasil recovery tak boleh dipakai sim strict).
     /// `None` juga bila tidak ada entry / corrupt / top berbeda
@@ -2143,15 +2105,15 @@ impl CompileSession {
         expected_inputs_hash: u64,
         expected_context: &str,
     ) -> Option<mivon_ir::IrDesign> {
-        self.micd
+        self.node_cache
             .as_mut()?
             .restore_elaborate_ir(top, expected_inputs_hash, expected_context)
     }
 
-    /// Sidik input elaborasi kini (Fase 6) — `None` bila tanpa MICD.
+    /// Sidik input elaborasi kini (Fase 6) — `None` bila tanpa node_cache.
     /// Dipakai gerbang restore IR di run_fast/run.
-    pub fn micd_elaboration_inputs_hash(&self, top: &str) -> Option<u64> {
-        self.micd.as_ref().map(|db| db.elaboration_inputs_hash(top))
+    pub fn cache_elaboration_inputs_hash(&self, top: &str) -> Option<u64> {
+        self.node_cache.as_ref().map(|db| db.elaboration_inputs_hash(top))
     }
     /// Isi precompiled database dari hasil compile sesi ini (per module).
     /// Dipanggil setelah parsing/compile berhasil. Menyimpan artefak per module
@@ -2159,7 +2121,7 @@ impl CompileSession {
     /// (`mlint`, `melab`, `msim`) bisa baca tanpa compile ulang.
     /// Best-effort: kegagalan tidak fatal.
     pub fn populate_precompiled(&mut self) {
-        let Some(db) = self.micd.as_mut() else { return };
+        let Some(db) = self.node_cache.as_mut() else { return };
         let Some(pdb) = db.precompiled_db.as_mut() else {
             return;
         };
@@ -2211,7 +2173,7 @@ impl CompileSession {
 
                 // Port info.
                 use mivon_ast::types::PortDirection;
-                let ports: Vec<crate::micd::precompiled::PortInfo> = m
+                let ports: Vec<crate::node_cache::precompiled::PortInfo> = m
                     .ports
                     .iter()
                     .map(|p| {
@@ -2221,7 +2183,7 @@ impl CompileSession {
                             PortDirection::Inout => "inout",
                             PortDirection::Ref => "ref",
                         };
-                        crate::micd::precompiled::PortInfo {
+                        crate::node_cache::precompiled::PortInfo {
                             name: p.name.to_string(),
                             dir: dir.to_string(),
                             width: p.range.as_ref().map(|r| r.width()).unwrap_or(1),
@@ -2263,13 +2225,13 @@ impl CompileSession {
                 let error_count = 0; // TODO: dari session.parse_errors
                 let warn_count = 0;
 
-                let mut module = crate::micd::precompiled::PrecompiledModule {
+                let mut module = crate::node_cache::precompiled::PrecompiledModule {
                     name: name.clone(),
                     content_hash,
                     ast_hash,
                     type_signature: sig,
                     source_file: path.clone(),
-                    analyzed_at_ns: crate::micd::verify::now_ns(),
+                    analyzed_at_ns: crate::node_cache::verify::now_ns(),
                     library: "work".to_string(),
                     ports,
                     depends_on,
@@ -2297,7 +2259,7 @@ impl CompileSession {
         &self,
         path: &std::path::Path,
     ) -> Option<(Option<mivon_ast::Design>, Option<mivon_ir::IrDesign>)> {
-        let db = self.micd.as_ref()?;
+        let db = self.node_cache.as_ref()?;
         let pdb = db.precompiled_db.as_ref()?;
 
         // Hitung content hash file saat ini.
@@ -2367,16 +2329,16 @@ impl CompileSession {
     }
 
     /// Daftar file yang terdampak bila `changed` berubah (via graph.mdb).
-    pub fn micd_affected(&mut self, changed: &[PathBuf]) -> Vec<PathBuf> {
-        self.micd
+    pub fn cache_affected(&mut self, changed: &[PathBuf]) -> Vec<PathBuf> {
+        self.node_cache
             .as_mut()
             .map(|db| db.affected(changed))
             .unwrap_or_default()
     }
 
-    /// Ringkasan MICD (untuk output CLI).
+    /// Ringkasan node_cache (untuk output CLI).
     pub fn micd_summary(&self) -> Option<String> {
-        self.micd.as_ref().map(|db| db.summary())
+        self.node_cache.as_ref().map(|db| db.summary())
     }
 
     /// Elaborate a module lazily (on-demand via HIR pipeline).
@@ -2620,9 +2582,9 @@ impl CompileSession {
 
     /// Get merged source info: (source_lines, first_source_file)
     /// Returns None if merged_source hasn't been populated (e.g., before first compile).
-    /// Lepas cache parse-hit dari memori setelah `save_micd()` (run_fast jalur
+    /// Lepas cache parse-hit dari memori setelah `save_cache()` (run_fast jalur
     /// main.rs): prev_designs + prev_combined_sources + combined_parts +
-    /// cache in-memory MICD (ast_cache/preproc_cache — sudah ditulis ke disk
+    /// cache in-memory node_cache (ast_cache/preproc_cache — sudah ditulis ke disk
     /// oleh save; ~1GB+ AST bytes pada design besar). TIDAK lagi dibutuhkan
     /// selama ELABORASI/SIMULASI berikutnya — bocor memori penyebab OOM utk
     /// design besar (OpenTitan): parse ~2.9GB → elaborasi/sim harus muat
@@ -2631,7 +2593,7 @@ impl CompileSession {
         self.prev_designs.clear();
         self.prev_combined_sources.clear();
         self.combined_parts.lock().unwrap().clear();
-        if let Some(db) = self.micd.as_mut() {
+        if let Some(db) = self.node_cache.as_mut() {
             db.release_memory_cache();
         }
     }
@@ -2890,7 +2852,7 @@ mod tests {
         // Cache should have entries: `compile()` mendaftarkan checksum tiap
         // file ke prev_checksums (pipeline incremental). `stats.ast_entries`
         // (CacheManager in-memory AST) TIDAK terisi di jalur compile() — AST
-        // disimpan via MICD (db.cache_ast) saat save_micd, bukan CacheManager
+        // disimpan via node_cache (db.cache_ast) saat save_cache, bukan CacheManager
         // (sebelumnya assertion `|| total_invalidations >= 0` selalu true →
         // e5f7489 menyederhanakannya menjadi `ast_entries > 0` → fail palsu).
         let stats = session.cache_stats();
@@ -3053,13 +3015,13 @@ mod tests {
     }
 
     #[test]
-    fn test_micd_persists_across_sessions() {
-        // MICD: compile lintas sesi (proses) — file tidak berubah di-restore,
+    fn test_node_cache_persists_across_sessions() {
+        // node_cache: compile lintas sesi (proses) — file tidak berubah di-restore,
         // parse di-skip; file berubah diproses ulang.
-        use crate::micd::MicdDatabase;
+        use crate::node_cache::ProjectCache;
         use std::io::Write;
 
-        let dir = std::env::temp_dir().join(format!("mivon_micd_compile_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("mivon_cache_compile_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let db_root = dir.join("db");
@@ -3085,18 +3047,19 @@ mod tests {
                 sources: sources.clone(),
                 ..Default::default()
             });
-            let restored = s.attach_micd(MicdDatabase::open(&db_root));
+            let restored = s.attach_cache(ProjectCache::open(&db_root));
             assert_eq!(restored, 0, "cold compile: tidak ada yang di-restore");
             let (design, _) = s.compile().unwrap();
             assert!(design.modules.iter().any(|m| m.name == "mod_a"));
             assert!(design.modules.iter().any(|m| m.name == "mod_b"));
-            let stats = s.save_micd().unwrap().expect("database terpasang");
+            let stats = s.save_cache().unwrap().expect("database terpasang");
             assert_eq!(stats.changed_files, 2, "cold compile: semua file berubah");
-            // Layout Opsi B: payload AST sebagai objek CAS di objects/default/.
-            assert!(
-                db_root.join("objects").join("default").exists(),
-                "database harus tersimpan"
-            );
+            // Layout node_cache: FORMAT + object content-addressed + ref project.
+            assert!(db_root.join("FORMAT").exists(), "cache harus tersimpan");
+            let has_ref = std::fs::read_dir(db_root.join("refs"))
+                .map(|mut d| d.next().is_some())
+                .unwrap_or(false);
+            assert!(has_ref, "reference graph harus tersimpan");
         }
 
         // Sesi 2: tanpa perubahan → semua file di-restore (parse di-skip).
@@ -3105,12 +3068,12 @@ mod tests {
                 sources: sources.clone(),
                 ..Default::default()
             });
-            let restored = s.attach_micd(MicdDatabase::open(&db_root));
-            assert_eq!(restored, 2, "semua AST harus di-restore dari MICD");
+            let restored = s.attach_cache(ProjectCache::open(&db_root));
+            assert_eq!(restored, 2, "semua AST harus di-restore dari node_cache");
             let (design, _) = s.compile().unwrap();
             assert!(design.modules.iter().any(|m| m.name == "mod_a"));
             assert!(design.modules.iter().any(|m| m.name == "mod_b"));
-            let stats = s.save_micd().unwrap().expect("database terpasang");
+            let stats = s.save_cache().unwrap().expect("database terpasang");
             assert_eq!(stats.changed_files, 0, "warm compile: tidak ada perubahan");
         }
 
@@ -3126,18 +3089,18 @@ mod tests {
                 sources: sources.clone(),
                 ..Default::default()
             });
-            let restored = s.attach_micd(MicdDatabase::open(&db_root));
+            let restored = s.attach_cache(ProjectCache::open(&db_root));
             assert_eq!(restored, 1, "mod_a di-restore, mod_b berubah");
             let (design, _) = s.compile().unwrap();
             assert!(design.modules.iter().any(|m| m.name == "mod_a"));
             assert!(design.modules.iter().any(|m| m.name == "mod_b"));
-            let stats = s.save_micd().unwrap().expect("database terpasang");
+            let stats = s.save_cache().unwrap().expect("database terpasang");
             assert_eq!(stats.changed_files, 1, "hanya mod_b yang berubah");
         }
 
         // Affected set: mod_a tidak tergantung mod_b → tidak terdampak.
         {
-            let mut db = MicdDatabase::open(&db_root);
+            let mut db = ProjectCache::open(&db_root);
             let affected = db.affected(std::slice::from_ref(&f2));
             assert!(!affected.contains(&f1), "mod_a tidak tergantung mod_b");
         }
@@ -3146,13 +3109,13 @@ mod tests {
     }
 
     #[test]
-    fn test_micd_include_change_invalidates_cache() {
+    fn test_node_cache_include_change_invalidates_cache() {
         // Correctness: bila header (`include) berubah, file yang meng-include
         // TIDAK boleh di-restore (preprocessed output meng-embed konten lama).
-        use crate::micd::MicdDatabase;
+        use crate::node_cache::ProjectCache;
         use std::io::Write;
 
-        let dir = std::env::temp_dir().join(format!("mivon_micd_inc_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("mivon_cache_inc_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let db_root = dir.join("db");
@@ -3179,10 +3142,10 @@ mod tests {
                 incdirs: incdirs.clone(),
                 ..Default::default()
             });
-            assert_eq!(s.attach_micd(MicdDatabase::open(&db_root)), 0);
+            assert_eq!(s.attach_cache(ProjectCache::open(&db_root)), 0);
             let (design, _) = s.compile().unwrap();
             assert_eq!(design.modules.len(), 1);
-            s.save_micd().unwrap();
+            s.save_cache().unwrap();
         }
 
         // Sesi 2: tanpa perubahan → restore.
@@ -3192,10 +3155,10 @@ mod tests {
                 incdirs: incdirs.clone(),
                 ..Default::default()
             });
-            assert_eq!(s.attach_micd(MicdDatabase::open(&db_root)), 1);
+            assert_eq!(s.attach_cache(ProjectCache::open(&db_root)), 1);
             let (design, _) = s.compile().unwrap();
             assert_eq!(design.modules.len(), 1);
-            s.save_micd().unwrap();
+            s.save_cache().unwrap();
         }
 
         // Ubah header include (top.sv TIDAK berubah).
@@ -3212,7 +3175,7 @@ mod tests {
                 incdirs: incdirs.clone(),
                 ..Default::default()
             });
-            let restored = s.attach_micd(MicdDatabase::open(&db_root));
+            let restored = s.attach_cache(ProjectCache::open(&db_root));
             assert_eq!(
                 restored, 0,
                 "file dengan include yang berubah tidak boleh di-restore"
@@ -3225,14 +3188,14 @@ mod tests {
     }
 
     #[test]
-    fn test_micd_restore_complete_covers_libfiles() {
+    fn test_cache_restore_complete_covers_libfiles() {
         // Fase 6: gerbang reuse IR harus mencakup libfiles. Gerbang lama
         // (`restored == sources.len()`) MISS bila libfile ada (2 != 1) dan
         // STALE bila libfile berubah (1 == 1 lolos padahal input beda).
-        use crate::micd::MicdDatabase;
+        use crate::node_cache::ProjectCache;
         use std::io::Write;
 
-        let dir = std::env::temp_dir().join(format!("mivon_micd_libgate_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("mivon_cache_libgate_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let db_root = dir.join("db");
@@ -3253,19 +3216,19 @@ mod tests {
         // Sesi 1: cold compile + save.
         {
             let mut s = CompileSession::new(mk());
-            assert_eq!(s.attach_micd(MicdDatabase::open(&db_root)), 0);
+            assert_eq!(s.attach_cache(ProjectCache::open(&db_root)), 0);
             let (design, _) = s.compile().unwrap();
             assert_eq!(design.modules.len(), 2, "libfile ikut dikompilasi");
-            s.save_micd().unwrap();
-            assert!(!s.micd_restore_complete(), "cold run bukan reuse penuh");
+            s.save_cache().unwrap();
+            assert!(!s.cache_restore_complete(), "cold run bukan reuse penuh");
         }
 
         // Sesi 2: tanpa perubahan → SEMUA ter-restore → gerbang benar.
         {
             let mut s = CompileSession::new(mk());
-            assert_eq!(s.attach_micd(MicdDatabase::open(&db_root)), 2);
+            assert_eq!(s.attach_cache(ProjectCache::open(&db_root)), 2);
             assert!(
-                s.micd_restore_complete(),
+                s.cache_restore_complete(),
                 "semua restorable ter-restore → reuse IR aman"
             );
         }
@@ -3281,10 +3244,10 @@ mod tests {
         // Sesi 3: libfile berubah → gerbang GAGAL (anti stale IR).
         {
             let mut s = CompileSession::new(mk());
-            let restored = s.attach_micd(MicdDatabase::open(&db_root));
+            let restored = s.attach_cache(ProjectCache::open(&db_root));
             assert_eq!(restored, 1, "hanya source yang ter-restore");
             assert!(
-                !s.micd_restore_complete(),
+                !s.cache_restore_complete(),
                 "libfile berubah → reuse IR ditolak"
             );
         }
@@ -3293,18 +3256,18 @@ mod tests {
     }
 
     #[test]
-    fn test_micd_parse_errors_survive_warm_run() {
-        // BUG #2 (CRITICAL): file yang di-restore dari MICD harus tetap
+    fn test_node_cache_parse_errors_survive_warm_run() {
+        // BUG #2 (CRITICAL): file yang di-restore dari node_cache harus tetap
         // menyumbang diagnostik parse. Dulu cache-hit mengembalikan
         // `Vec::new()` → run hangat melaporkan 0 error dan desain yang gagal
         // parse lolos ke simulasi (silent miscompilation). Fix: file ber-
         // diagnostik TIDAK di-restore (di-parse ulang tiap run) → jumlah error
         // deterministik: dingin == hangat. Sesi 1 juga menguji dedup dua-pass
         // (BUG #1): satu error nyata ≠ 2-3× lipatan.
-        use crate::micd::MicdDatabase;
+        use crate::node_cache::ProjectCache;
         use std::io::Write;
 
-        let dir = std::env::temp_dir().join(format!("mivon_micd_perr_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("mivon_cache_perr_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let db_root = dir.join("db");
@@ -3337,10 +3300,10 @@ mod tests {
                 sources: sources.clone(),
                 ..Default::default()
             });
-            assert_eq!(s.attach_micd(MicdDatabase::open(&db_root)), 0);
+            assert_eq!(s.attach_cache(ProjectCache::open(&db_root)), 0);
             s.compile().unwrap();
             assert_eq!(count_err(&s), 1, "cold: 1 masalah nyata, bukan 2-3×");
-            s.save_micd().unwrap().expect("database terpasang");
+            s.save_cache().unwrap().expect("database terpasang");
         }
 
         // Sesi 2: warm — file bersih di-restore, file error di-parse ulang →
@@ -3350,7 +3313,7 @@ mod tests {
                 sources: sources.clone(),
                 ..Default::default()
             });
-            let restored = s.attach_micd(MicdDatabase::open(&db_root));
+            let restored = s.attach_cache(ProjectCache::open(&db_root));
             assert_eq!(
                 restored, 1,
                 "warm {}: hanya file bersih yang di-restore",
@@ -3363,7 +3326,7 @@ mod tests {
                 "warm {}: error parse HARUS tetap terlapor (BUG #2)",
                 round
             );
-            s.save_micd().unwrap().expect("database terpasang");
+            s.save_cache().unwrap().expect("database terpasang");
         }
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -3376,8 +3339,8 @@ mod tests {
         // OpenTitan: `*_pkg.sv` `include "*_cov.sv"`). Kedua parse melapor
         // di lokasi display yang SAMA (line directive `include`) → satu
         // konstruk terhitung 2×. Dedup lintas file di compile() wajib
-        // menyisakan satu; diagnostik per file tetap utuh untuk LSP/MICD.
-        use crate::micd::MicdDatabase;
+        // menyisakan satu; diagnostik per file tetap utuh untuk LSP/node_cache.
+        use crate::node_cache::ProjectCache;
         use std::io::Write;
 
         let dir = std::env::temp_dir().join(format!("mivon_xfile_{}", std::process::id()));
@@ -3411,7 +3374,7 @@ mod tests {
             sources: sources.clone(),
             ..Default::default()
         });
-        s.attach_micd(MicdDatabase::open(&db_root));
+        s.attach_cache(ProjectCache::open(&db_root));
         s.compile().unwrap();
         let hits: Vec<String> = s
             .parse_errors
@@ -3442,13 +3405,13 @@ mod tests {
     }
 
     #[test]
-    fn test_micd_flags_change_invalidates_all() {
+    fn test_node_cache_flags_change_invalidates_all() {
         // Correctness: -D define berubah → preprocessed output meng-embed
         // makro lama → SEMUA file harus di-reprocess (jangan ada restore).
-        use crate::micd::MicdDatabase;
+        use crate::node_cache::ProjectCache;
         use std::io::Write;
 
-        let dir = std::env::temp_dir().join(format!("mivon_micd_flags_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("mivon_cache_flags_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let db_root = dir.join("db");
@@ -3469,27 +3432,27 @@ mod tests {
         // Sesi 1: WIDTH=4.
         {
             let mut s = CompileSession::new(mk(vec![("WIDTH".into(), "4".into())]));
-            assert_eq!(s.attach_micd(MicdDatabase::open(&db_root)), 0);
+            assert_eq!(s.attach_cache(ProjectCache::open(&db_root)), 0);
             s.compile().unwrap();
-            s.save_micd().unwrap();
+            s.save_cache().unwrap();
         }
         // Sesi 2: define sama → restore.
         {
             let mut s = CompileSession::new(mk(vec![("WIDTH".into(), "4".into())]));
-            assert_eq!(s.attach_micd(MicdDatabase::open(&db_root)), 1);
+            assert_eq!(s.attach_cache(ProjectCache::open(&db_root)), 1);
             s.compile().unwrap();
-            s.save_micd().unwrap();
+            s.save_cache().unwrap();
         }
         // Sesi 3: WIDTH=8 (flags berubah) → TIDAK boleh restore.
         {
             let mut s = CompileSession::new(mk(vec![("WIDTH".into(), "8".into())]));
             assert_eq!(
-                s.attach_micd(MicdDatabase::open(&db_root)),
+                s.attach_cache(ProjectCache::open(&db_root)),
                 0,
                 "flags berubah → semua harus di-reprocess"
             );
             s.compile().unwrap();
-            s.save_micd().unwrap();
+            s.save_cache().unwrap();
         }
 
         let _ = std::fs::remove_dir_all(&dir);

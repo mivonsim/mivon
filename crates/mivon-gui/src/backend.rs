@@ -137,7 +137,7 @@ fn spawn_worker<F: FnOnce() + Send + 'static>(f: F) {
 }
 
 /// Compile + elaborate project di worker thread. `project_root` dipakai untuk
-/// mencari database MICD (`.mivon/database`) — bila ada, compile menjadi
+/// mencari database node_cache (`.mivon/database`) — bila ada, compile menjadi
 /// incremental (file tak berubah di-restore AST, lexer+parser di-skip).
 pub fn spawn_compile(tx: Sender<GuiEvent>, paths: Vec<PathBuf>, project_root: Option<PathBuf>) {
     spawn_worker(move || {
@@ -159,7 +159,7 @@ fn simerr_to_diags(err: &SimError) -> Vec<DiagEntry> {
 
 /// Compile + elaborate semua file. Mengembalikan info + design ter-elaborasi,
 /// atau daftar diagnostics (error) dengan lokasi file/line.
-/// `project_root` dipakai mencari database MICD (`.mivon/database`) — bila
+/// `project_root` dipakai mencari database node_cache (`.mivon/database`) — bila
 /// ada, compile incremental: file tak berubah di-restore AST-nya (lexer+
 /// parser di-skip), lalu state disimpan kembali setelah compile.
 pub fn compile_project(
@@ -177,22 +177,23 @@ pub fn compile_project(
 
     let mut session = CompileSession::new(config);
 
-    // ── MICD: attach database persisten (incremental compile lintas run) ──
+    // ── node_cache: attach database persisten (incremental compile lintas run) ──
     // Bila database belum ada (compile pertama), open memberi DB kosong dan
-    // save_micd() di bawah akan membuatnya — run berikutnya file yang hash
+    // save_cache() di bawah akan membuatnya — run berikutnya file yang hash
     // kontennya sama di-restore AST-nya (skip lexer+parser). Root database =
     // `<project>/.mivon/database` (sama dengan CLI). Scoped per project
     // (ProjectID dari root + sources): OpenTitan dan test/counter.sv tidak
     // pernah berbagi database. Payload CAS di objects/<pid>/, index di
     // state/<pid>/.
-    let micd_root = project_root.map(|r| r.join(".mivon").join("database"));
-    if let Some(micd_root) = micd_root.as_deref() {
-        let proot = project_root.expect("micd_root hanya ada bila project_root ada");
-        let pid = mivon_compiler::micd::MicdDatabase::project_id(proot, paths, &[], &[]);
-        let db = mivon_compiler::micd::MicdDatabase::open_project_with_context(
-            micd_root, &pid, proot, paths,
+    let cache_root = project_root
+        .map(|r| mivon_compiler::node_cache::ProjectCache::default_root_for(r));
+    if let Some(cache_root) = cache_root.as_deref() {
+        let proot = project_root.expect("cache_root hanya ada bila project_root ada");
+        let pid = mivon_compiler::node_cache::ProjectCache::project_id(proot, paths, &[], &[]);
+        let db = mivon_compiler::node_cache::ProjectCache::open_project_with_context(
+            cache_root, &pid, proot, paths,
         );
-        session.attach_micd(db);
+        session.attach_cache(db);
     }
 
     let (_design, ir_design, _idx) = match session.compile_and_elaborate(None) {
@@ -200,31 +201,31 @@ pub fn compile_project(
         Err(e) => return Err(simerr_to_diags(&e)),
     };
 
-    // ── MICD: tandai ter-elaborasi + simpan database + kumpulkan statistik ──
+    // ── node_cache: tandai ter-elaborasi + simpan database + kumpulkan statistik ──
     // untuk panel Pipeline. Best-effort: kegagalan save tidak menggagalkan
     // compile (statistik hanya berisi 0/None).
-    let micd = if session.micd.is_some() {
-        session.micd_mark_elaborated();
-        let stats = session.save_micd().ok().flatten();
-        let db_ref = session.micd.as_ref();
+    let micd = if session.node_cache.is_some() {
+        session.cache_mark_elaborated();
+        let stats = session.save_cache().ok().flatten();
+        let db_ref = session.node_cache.as_ref();
         Some(MicdInfo {
             present: true,
             files: db_ref.map(|d| d.files.len()).unwrap_or(0),
             restored_ast: stats
                 .as_ref()
                 .map(|s| s.restored_designs)
-                .unwrap_or_else(|| session.micd_restored_count()),
+                .unwrap_or_else(|| session.cache_restored_count()),
             changed_files: stats.as_ref().map(|s| s.changed_files).unwrap_or(0),
             verify_hits: stats
                 .as_ref()
                 .map(|s| s.verify_hits)
-                .unwrap_or_else(|| db_ref.map(micd_verify_hits).unwrap_or(0)),
+                .unwrap_or_else(|| db_ref.map(cache_verify_hits).unwrap_or(0)),
             verify_misses: stats
                 .as_ref()
                 .map(|s| s.verify_misses)
-                .unwrap_or_else(|| db_ref.map(micd_verify_misses).unwrap_or(0)),
+                .unwrap_or_else(|| db_ref.map(cache_verify_misses).unwrap_or(0)),
             snapshots: db_ref.map(|d| d.snapshots.len()).unwrap_or(0),
-            db_bytes: micd_db_bytes(micd_root.as_deref()),
+            db_bytes: cache_db_bytes(cache_root.as_deref()),
         })
     } else {
         None
@@ -465,21 +466,21 @@ pub fn compile_project(
     ))
 }
 
-/// Helper: jumlah hit verification cache (dari MicdDatabase — dipakai bila
+/// Helper: jumlah hit verification cache (dari ProjectCache — dipakai bila
 /// MicdStats tidak tersedia).
-fn micd_verify_hits(db: &mivon_compiler::micd::MicdDatabase) -> usize {
+fn cache_verify_hits(db: &mivon_compiler::node_cache::ProjectCache) -> usize {
     db.verify.values().filter(|v| v.ok()).count()
 }
 
 /// Helper: jumlah miss verification cache.
-fn micd_verify_misses(db: &mivon_compiler::micd::MicdDatabase) -> usize {
-    db.files.len().saturating_sub(micd_verify_hits(db))
+fn cache_verify_misses(db: &mivon_compiler::node_cache::ProjectCache) -> usize {
+    db.files.len().saturating_sub(cache_verify_hits(db))
 }
 
-/// Helper: total ukuran database MICD di disk (bytes). Menghitung SEMUA file
+/// Helper: total ukuran database node_cache di disk (bytes). Menghitung SEMUA file
 /// di database root — store `.mdb`, objek CAS `.ast`/`.preproc`, snapshot,
 /// `registry.json`, `VERSION` (sesuai layout Opsi B db.md).
-fn micd_db_bytes(root: Option<&std::path::Path>) -> u64 {
+fn cache_db_bytes(root: Option<&std::path::Path>) -> u64 {
     let Some(root) = root else {
         return 0;
     };

@@ -183,8 +183,8 @@ pub fn run(args: &CovArgs) -> Result<(), SimError> {
 /// Simpan ringkasan coverage ke cache pipeline (`coverage/"last"`, db.md
 /// "19. coverage/"). Best-effort — kegagalan cache tidak menggagalkan mcov.
 fn save_coverage_cache(args: &CovArgs, stats: &std::collections::HashMap<String, f64>) {
-    use mivon_compiler::micd::cache::pipeline::CoveragePayload;
-    use mivon_compiler::micd::cache::CacheCategory;
+    use mivon_compiler::node_cache::cache::pipeline::CoveragePayload;
+    use mivon_compiler::node_cache::cache::CacheCategory;
 
     let Ok((mut layer, _pid)) = crate::open_cache_layer(args.files, args.incdirs, args.defines)
     else {

@@ -52,7 +52,7 @@ impl CompilerContext {
         self.elab_mode = mode;
     }
 
-    /// Parse semua file (paralel, dengan MICD bila di-attach) → merged Design.
+    /// Parse semua file (paralel, dengan node_cache bila di-attach) → merged Design.
     pub fn compile(&mut self) -> Result<(Design, &ModuleIndex), SimError> {
         self.session.compile()
     }
@@ -75,7 +75,7 @@ impl CompilerContext {
         &self.session.module_index
     }
 
-    /// Akses session mentah (untuk MICD attach/save oleh DatabaseContext).
+    /// Akses session mentah (untuk cache attach/save oleh DatabaseContext).
     pub fn session_mut(&mut self) -> &mut CompileSession {
         &mut self.session
     }

@@ -7,6 +7,7 @@ members = [
     "crates/mivon-core",
     "crates/mivon-ast",
     "crates/mivon-ir",
+    "crates/mivon-node-cache",
     "crates/mivon-parser",
     "crates/mivon-elaboration",
     "crates/mivon-compiler",

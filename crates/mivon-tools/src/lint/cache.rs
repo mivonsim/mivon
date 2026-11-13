@@ -4,8 +4,8 @@ use super::Finding;
 use super::LintArgs;
 
 pub(crate) fn save_lint_cache(args: &LintArgs, findings: &[Finding]) {
-    use mivon_compiler::micd::cache::pipeline::LintPayload;
-    use mivon_compiler::micd::cache::CacheCategory;
+    use mivon_compiler::node_cache::cache::pipeline::LintPayload;
+    use mivon_compiler::node_cache::cache::CacheCategory;
 
     let Ok((mut layer, _pid)) = crate::open_cache_layer(args.targets, args.incdirs, args.defines)
     else {
@@ -14,7 +14,7 @@ pub(crate) fn save_lint_cache(args: &LintArgs, findings: &[Finding]) {
     let payload = LintPayload {
         findings: findings
             .iter()
-            .map(|f| mivon_compiler::micd::cache::pipeline::LintFinding {
+            .map(|f| mivon_compiler::node_cache::cache::pipeline::LintFinding {
                 module: f.module.clone(),
                 check: f.check.to_string(),
                 severity: f.severity.to_string(),

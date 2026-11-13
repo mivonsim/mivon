@@ -70,7 +70,7 @@ pub(crate) fn load_project_foreign_libs(proj: &mivon_api::ProjectFile, cli: &Cli
 
 /// Apakah source mentah memuat directive ```timescale` (F84).
 ///
-/// Dipakai sebagai gerbang reuse MICD: entry preproc yang tak menyimpan
+/// Dipakai sebagai gerbang reuse node_cache: entry preproc yang tak menyimpan
 /// segmen hanya aman bila source-nya memang tak punya directive sama sekali
 /// (sehingga satuan global sudah benar). Scan baris demi baris — cukup untuk
 /// keputusan cache, tak perlu parser.

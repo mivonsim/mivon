@@ -7,7 +7,7 @@ use clap::Subcommand;
 /// Subcommands `mivon`.
 #[derive(Subcommand, Clone)]
 pub enum MivonCmd {
-    /// Bersihkan database MICD (.mivon/database)
+    /// Bersihkan node_cache (node_cache/)
     Clean,
 
     // ── Tools terminal (tools.md) ──
@@ -805,7 +805,7 @@ pub struct EmuArgs {
     pub top: Option<String>,
 
     /// File konfigurasi emulator TOML (`.meu`) — top/mode/accuracy/cpu/ram/
-    /// devices/seed. File TERPISAH dari project `.mivon` (MICD memakai
+    /// devices/seed. File TERPISAH dari project `.mivon` (node_cache memakai
     /// ekstensi/direktori .mivon — tidak boleh bentrok).
     #[arg(long = "config")]
     pub config: Option<String>,

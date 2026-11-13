@@ -50,7 +50,7 @@ fn mk(
     }
 }
 
-/// Isolasi MICD DB per-case: `MIVON_MICD_DIR` → temp unik. Subprocess mivon
+/// Isolasi MICD DB per-case: `MIVON_NODE_CACHE_DIR` → temp unik. Subprocess mivon
 /// (sim/sdf/cli/vcd/micd) TIDAK menyentuh `.mivon/database` project →
 /// bebas lock contention + stale-lock cascade dari subprocess yang di-kill
 /// (terukur: 39 lock basi + hang palsu beruntun di kampanye SDF).
@@ -1793,7 +1793,7 @@ fn evaluate_sdf(source: &str, timeout_ms: u64) -> CaseResult {
 ///    Jika beda → cache drift / silent miscompilation = bug CRITICAL.
 /// 5. O1: panic/hang di jalur --fast = bug.
 ///
-/// MIVON_MICD_DIR diarahkan ke temp per-case agar tidak mencemari
+/// MIVON_NODE_CACHE_DIR diarahkan ke temp per-case agar tidak mencemari
 /// `.mivon/database` project.
 fn evaluate_micd(source: &str, timeout_ms: u64) -> CaseResult {
     let mk_m = |c: Category, o: Oracle, d: &str| mk(Target::Micd, o, c, d, source);

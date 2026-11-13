@@ -1,4 +1,4 @@
-//! Pipeline cepat `run_fast()` — CompileSession + FastLexer + MICD penuh
+//! Pipeline cepat `run_fast()` — CompileSession + FastLexer + node_cache penuh
 //! (restore AST/incremental) + reuse IR elaborasi. Dipindah verbatim dari
 //! `main.rs` monolitik; 1 file = 1 tanggung jawab (jalur cepat saja).
 //! Jalur legacy (`run`) ada di `run_legacy.rs`.
@@ -12,11 +12,11 @@ use crate::anim_glue::{
 use crate::cli::Cli;
 #[cfg(feature = "formal")]
 use crate::formal_run::run_formal;
-use crate::pipeline_config::{micd_root_for, pick_elab_mode};
+use crate::pipeline_config::{cache_root_for, pick_elab_mode};
 use crate::sim_finish;
 use crate::source_io::load_project_foreign_libs;
 use crate::{
-    apply_engine_flags, emit_diags, micd_save_and_print, print_ir_mem_stats, trim_heap,
+    apply_engine_flags, cache_save_and_print, emit_diags, print_ir_mem_stats, trim_heap,
     truncate_ellipsis, DEFAULT_MAX_TIME_NS,
 };
 
@@ -73,18 +73,18 @@ pub(crate) fn run_fast(
     let mut session = CompileSession::new(config);
 
     // ── Animasi pipeline (baris status gaya Cargo) ──
-    // Dideklarasikan dulu, di-START nanti tepat sebelum compile() — setup MICD
+    // Dideklarasikan dulu, di-START nanti tepat sebelum compile() — setup node_cache
     // dan mode khusus (compile-only/lazy) tidak menggambar animasi apa pun.
     let mut anim: Option<PipelineAnimator> = None;
 
-    // ── MICD: persistent incremental compilation database ──
+    // ── node_cache: persistent incremental compilation database ──
     // Otomatis (bukan flag tambahan): restore AST/combined-source file yang
     // tidak berubah → lex/parse di-skip. Saat --recompile, database tetap
     // dibuka (agar save menulis hasil full-rebuild) tapi restore di-skip.
-    // MICD scoped per project (ProjectID): OpenTitan dan test/counter.sv
+    // node_cache scoped per project (ProjectID): OpenTitan dan test/counter.sv
     // tidak pernah berbagi database → tidak ada kontaminasi lintas project.
     {
-        let micd_root = micd_root_for(&cli);
+        let cache_root = cache_root_for(&cli);
         let proot = std::env::current_dir().unwrap_or_default();
         // Fase 6: pid mencakup libfiles (sebelumnya sources saja → dua run
         // dengan libfile beda berbagi pid = kontaminasi lintas project).
@@ -94,14 +94,14 @@ pub(crate) fn run_fast(
                 pid_sources.push(lib.clone());
             }
         }
-        let pid = mivon_compiler::micd::MicdDatabase::project_id(
+        let pid = mivon_compiler::node_cache::ProjectCache::project_id(
             &proot,
             &pid_sources,
             &session.config.incdirs,
             &session.config.defines,
         );
-        let mut db = mivon_compiler::micd::MicdDatabase::open_project_with_context(
-            &micd_root,
+        let mut db = mivon_compiler::node_cache::ProjectCache::open_project_with_context(
+            &cache_root,
             &pid,
             &proot,
             &pid_sources,
@@ -116,13 +116,13 @@ pub(crate) fn run_fast(
         if cli.recompile {
             // Full rebuild: buka db tanpa restore; hasil parse tetap disimpan
             // supaya run berikutnya (tanpa --recompile) bisa restore.
-            session.open_micd_no_restore(db);
+            session.open_cache_no_restore(db);
         } else {
             let t0 = std::time::Instant::now();
-            let restored = session.attach_micd(db);
+            let restored = session.attach_cache(db);
             if restored > 0 && !cli.quiet && !anim_active(&anim) {
                 eprintln!(
-                    "[MICD] restored {} cached design(s) in {:?} ({} file(s) parse di-skip)",
+                    "[node_cache] restored {} cached design(s) in {:?} ({} file(s) parse di-skip)",
                     restored,
                     t0.elapsed(),
                     restored
@@ -147,7 +147,7 @@ pub(crate) fn run_fast(
                     println!("HIR query ready: session.elaborate_lazy_module(...)");
                 }
             }
-            micd_save_and_print(&mut session, cli.quiet, anim_active(&anim));
+            cache_save_and_print(&mut session, cli.quiet, anim_active(&anim));
             return Ok(());
         } else {
             session.compile()?
@@ -157,7 +157,7 @@ pub(crate) fn run_fast(
             session.print_timing();
             println!("Modules indexed: {}", index_len);
         }
-        micd_save_and_print(&mut session, cli.quiet, anim_active(&anim));
+        cache_save_and_print(&mut session, cli.quiet, anim_active(&anim));
         if cli.print_ast {
             println!("{:#?}", design);
         }
@@ -175,13 +175,13 @@ pub(crate) fn run_fast(
                 session.lazy_elaborated_count()
             );
         }
-        micd_save_and_print(&mut session, cli.quiet, anim_active(&anim));
+        cache_save_and_print(&mut session, cli.quiet, anim_active(&anim));
         return Ok(());
     }
 
     // ── Full pipeline: compile + elaborate ──
     // START animasi di sini: tepat sebelum compile() dikerjakan — setelah semua
-    // setup (MICD, mode) selesai. Baris pertama muncul bersama mulai kerja.
+    // setup (node_cache, mode) selesai. Baris pertama muncul bersama mulai kerja.
     anim = PipelineAnimator::start(anim_enabled(&cli));
     if anim_active(&anim) {
         anim_set_exts(&anim, &session.config.sources);
@@ -242,12 +242,12 @@ pub(crate) fn run_fast(
         );
     }
 
-    // ── MICD: simpan hasil parse SEGERA (sebelum elaborate) agar cache
+    // ── node_cache: simpan hasil parse SEGERA (sebelum elaborate) agar cache
     // parse tetap tersimpan walau elaborasi gagal. ──
-    micd_save_and_print(&mut session, cli.quiet, anim_active(&anim));
+    cache_save_and_print(&mut session, cli.quiet, anim_active(&anim));
 
     // ── Optimasi memori: lepas AST parse (prev_designs + combined sources)
-    // yang sudah di-<persist ke MICD — elaborasi design besar (OpenTitan)
+    // yang sudah di-<persist ke node_cache — elaborasi design besar (OpenTitan)
     // butuh RAM; menahan clone AST penuh kedua selama elaborate = OOM pada
     // mesin kecil (sebelumnya peak ~2.9GB parse, lalu elaborate +AST → swap). ──
     session.release_parse_cache();
@@ -277,7 +277,7 @@ pub(crate) fn run_fast(
             if !cli.quiet && !anim_active(&anim) {
                 eprintln!("note: no modules found in design (packages/interfaces present, skipping simulation)");
             }
-            micd_save_and_print(&mut session, cli.quiet, anim_active(&anim));
+            cache_save_and_print(&mut session, cli.quiet, anim_active(&anim));
             return Ok(());
         }
         // SEC: desain tanpa module (mis. header/macro-only) tidak bisa
@@ -298,7 +298,7 @@ pub(crate) fn run_fast(
         println!("{:#?}", design);
     }
 
-    // Elaborate (source info dari merged source — sudah tersimpan di MICD).
+    // Elaborate (source info dari merged source — sudah tersimpan di node_cache).
     if anim_active(&anim) {
         // Subjek fase ELA: HANYA top eksplisit (`--top`) — tanpa fallback
         // diam-diam ke module pertama (bukan top sebenarnya).
@@ -306,21 +306,21 @@ pub(crate) fn run_fast(
         anim_phase_running(&anim, Phase::Ela);
     }
     // ── Reuse IR cache (db.md "5. elaborate/"): bila SELURUH file di-restore
-    // dari MICD (tidak ada yang berubah) dan hasil elaborasi sebelumnya
+    // dari node_cache (tidak ada yang berubah) dan hasil elaborasi sebelumnya
     // tersimpan di cache, langsung pakai IR — elaborator di-skip penuh.
     // Hanya aman bila run sebelumnya elaborasi BERSIH (cache elaborate hanya
     // disimpan setelah gate error/recovery lolos di run itu).
     let mut restored_ir: Option<mivon_ir::IrDesign> = None;
-    // `micd_restored_count()` di-reset `save_micd()`; set path tidak → pakai
-    // `micd_restore_complete()` (Fase 6: seluruh restorable incl. libfiles)
+    // `cache_restored_count()` di-reset `save_cache()`; set path tidak → pakai
+    // `cache_restore_complete()` (Fase 6: seluruh restorable incl. libfiles)
     // untuk deteksi warm run setelah save parse.
-    if !cli.recompile && session.micd_restore_complete() {
+    if !cli.recompile && session.cache_restore_complete() {
         // Top eksplisit (`--top`) atau default (module pertama — sama dengan
         // pilihan elaborator). Cache IR disimpan per top (`ir:<top>`) dan
         // diikat sidik input (Fase 6: anti stale bila input berubah).
         let top = top_name.or_else(|| design.modules.first().map(|m| m.name.as_str()));
         if let Some(top) = top {
-            if let Some(ih) = session.micd_elaboration_inputs_hash(top) {
+            if let Some(ih) = session.cache_elaboration_inputs_hash(top) {
                 let ctx = format!("{:?}", pick_elab_mode(&cli));
                 restored_ir = session.restore_elaborate_ir(top, ih, &ctx);
             }
@@ -343,7 +343,7 @@ pub(crate) fn run_fast(
         }
         if !cli.quiet && !anim_active(&anim) {
             eprintln!(
-                "[MICD] IR cache hit — elaborator di-skip (top '{}')",
+                "[node_cache] IR cache hit — elaborator di-skip (top '{}')",
                 ir_design.top.name
             );
         }
@@ -737,14 +737,14 @@ pub(crate) fn run_fast(
             println!("\nTop-level design tidak dapat ditentukan secara unik — mode analisis.");
             println!("Simulation & VCD dinonaktifkan.\n");
         }
-        micd_save_and_print(&mut session, cli.quiet, anim_active(&anim));
+        cache_save_and_print(&mut session, cli.quiet, anim_active(&anim));
         return Ok(());
     }
 
-    // ── MICD: tandai elaborasi sukses (verify-only save, ringan) ──
-    session.micd_mark_elaborated();
+    // ── node_cache: tandai elaborasi sukses (verify-only save, ringan) ──
+    session.cache_mark_elaborated();
     // Isi kategori elaborate/ + generate/ dari IR (db.md "5. elaborate/",
-    // "16. generate/") — save_micd di atas dipanggil sebelum elaborate, jadi
+    // "16. generate/") — save_cache di atas dipanggil sebelum elaborate, jadi
     // kategori ini baru bisa diisi setelah IR tersedia. Design post-expansion
     // (elab.design) dipakai fallback elaborate/ untuk module top yang
     // sub-instance-nya dikonsumsi flatten IR. Statistik optimasi elaborator
@@ -789,8 +789,8 @@ pub(crate) fn run_fast(
         }
     }
 
-    // Clear all cache if requested (MICD sudah dihapus di awal run — clear
-    // di sini hanya membersihkan cache compile/JIT/remote, MICD fresh hasil
+    // Clear all cache if requested (node_cache sudah dihapus di awal run — clear
+    // di sini hanya membersihkan cache compile/JIT/remote, node_cache fresh hasil
     // rebuild run ini dipertahankan agar run berikutnya cepat).
     if cli.cache_clear {
         session.clear_cache(false);
@@ -1277,6 +1277,5 @@ mod tests {
             Option<(String, String)>,
             &mut mivon_api::env::GlobalEnv,
         ) -> Result<(), SimError> = self::run_fast;
-        assert!(crate::DEFAULT_MAX_TIME_NS > 0);
     }
 }

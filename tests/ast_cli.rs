@@ -47,7 +47,7 @@ impl Sandbox {
         let out = Command::new(bin())
             .args(args)
             .current_dir(&self.dir)
-            .env("MIVON_MICD_DIR", self.dir.join("micd"))
+            .env("MIVON_NODE_CACHE_DIR", self.dir.join("node_cache"))
             .output()
             .expect("jalankan binary mivon");
         let text = format!(

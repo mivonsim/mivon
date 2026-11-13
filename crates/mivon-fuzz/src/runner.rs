@@ -37,7 +37,7 @@ pub struct Outcome {
 //
 // Dulu `with_micd_isolated` memakai `std::env::set_var` — RACE: worker
 // watchdog yang dibiarkan hidup setelah timeout masih membaca
-// `MIVON_MICD_DIR` saat case berikut mengganti env (dan `setenv`
+// `MIVON_NODE_CACHE_DIR` saat case berikut mengganti env (dan `setenv`
 // concurrent = hazard data race). Thread-local hanya terbaca thread case
 // yang sedang berjalan; worker bocor punya thread-local sendiri (None)
 // sehingga tak terpengaruh. Dipasang ke subprocess via `Command::env`.
@@ -56,7 +56,7 @@ pub fn set_micd_override(dir: Option<&std::path::Path>) {
 
 fn apply_micd_env(cmd: &mut Command) {
     if let Some(v) = MICD_OVERRIDE.with(|c| c.borrow().clone()) {
-        cmd.env("MIVON_MICD_DIR", v);
+        cmd.env("MIVON_NODE_CACHE_DIR", v);
     }
 }
 

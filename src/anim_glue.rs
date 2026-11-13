@@ -128,7 +128,7 @@ pub(crate) fn anim_set_top(anim: &Option<PipelineAnimator>, top: &str) {
     }
 }
 
-/// Pasang jumlah file cache-hit (MICD) — tampil sebagai `N cached`.
+/// Pasang jumlah file cache-hit (node_cache) — tampil sebagai `N cached`.
 pub(crate) fn anim_set_cached(anim: &Option<PipelineAnimator>, n: u64) {
     if let Some(a) = anim.as_ref() {
         a.set_cached(n);

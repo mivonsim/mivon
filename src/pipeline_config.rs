@@ -1,4 +1,4 @@
-//! Konfigurasi pipeline yang berasal dari CLI (mode elaborasi, root MICD).
+//! Konfigurasi pipeline yang berasal dari CLI (mode elaborasi, root node_cache).
 //!
 //! Fungsi murni atas `Cli` — dipisah dari main.rs agar bisa diuji tanpa
 //! menjalankan simulasi.
@@ -31,14 +31,14 @@ pub(crate) fn pick_elab_mode(cli: &Cli) -> ElaborateMode {
     }
 }
 
-/// Path root database MICD, dengan support `--target-dir`.
-/// `--target-dir <path>` override path default (`.mivon/database`).
-pub(crate) fn micd_root_for(cli: &Cli) -> std::path::PathBuf {
-    use mivon_compiler::micd::MicdDatabase;
+/// Path root node_cache, dengan support `--target-dir`.
+/// `--target-dir <path>` override path default (`node_cache/`).
+pub(crate) fn cache_root_for(cli: &Cli) -> std::path::PathBuf {
+    use mivon_compiler::node_cache::ProjectCache;
     if let Some(ref dir) = cli.target_dir {
-        std::path::PathBuf::from(dir).join("database")
+        std::path::PathBuf::from(dir).join("node_cache")
     } else {
-        MicdDatabase::default_root()
+        ProjectCache::default_root()
     }
 }
 
@@ -73,13 +73,13 @@ mod tests {
         );
     }
 
-    /// --target-dir menambahkan segmen "database".
+    /// --target-dir menambahkan segmen "node_cache".
     #[test]
-    fn micd_root_honours_target_dir() {
+    fn cache_root_honours_target_dir() {
         let cli = parse(&["mivon", "a.sv", "--target-dir", "/tmp/mivon-target"]);
         assert_eq!(
-            micd_root_for(&cli),
-            std::path::PathBuf::from("/tmp/mivon-target/database")
+            cache_root_for(&cli),
+            std::path::PathBuf::from("/tmp/mivon-target/node_cache")
         );
     }
 }

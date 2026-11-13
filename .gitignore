@@ -16,8 +16,8 @@
 /cva6
 /Cores-VeeR-EH1
 
-# MICD — incremental compilation database (build artifact, semua level crate)
-**/.mivon/database/
+# node_cache — filesystem-native incremental cache (build artifact, semua level crate)
+**/node_cache/
 **/.mdme_corpus
 **/.codegraph
 **/.mivon-fuzz-bugs
