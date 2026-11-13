@@ -71,6 +71,7 @@ pub mod classes;
 pub mod diag;
 pub mod expr;
 pub mod lvalue;
+pub mod parallel_elab;
 pub mod params;
 pub mod prepass;
 pub mod sign;
