@@ -5972,7 +5972,13 @@ FEAT-01: [x] Design database server STAGE 1 STUB — DONE (caveman stage):
           pub mod design_db di mivon-tools/lib.rs.
           Belum ada server/database nyata (model data + tes gap saja),
           belum di-wire ke MICD/CompileSession.
-FEAT-02:[] Collaborative debug (multi-user debugging session) — High
+FEAT-02: [x] Collaborative debug STAGE 1 STUB — DONE (caveman stage):
+          crates/mivon-tools/src/collab_debug.rs — DebugSession/
+          SharedBreakpoint/DebugSessionStatus + CollabDebugManager
+          (Arc<Mutex<HashMap>>), 4 test. pub mod collab_debug di
+          mivon-tools/lib.rs. Server/WebSocket multi-user debug BELUM
+          ada (placeholder + gap dokumentasi). Commit: 090b794
+          (push origin/main).
 FEAT-03: ✅ Web-based simulation control dashboard (ROUND 151-154, review tuntas) —
          modul crates/mivon-tools/src/sim_dashboard/{mod,api,page}.rs di
          atas SimServer (ENT-18) + RestServer (FEAT-04): GET / (HTML:
@@ -6054,7 +6060,11 @@ FEAT-14:[x] IP packaging (IP-XACT) — High
 FEAT-15:✅ (ROUND 157) Design-for-debug infrastructure — Medium
 FEAT-16:[x] Simulation farm orchestration — Critical
 FEAT-18:✅ (ROUND 159) Post-silicon validation alignment — Medium
-FEAT-19:[] Emulation/prototyping integration — High
+FEAT-19: [x] Emulation/prototyping integration STAGE 1 STUB — DONE (caveman stage):
+          crates/mivon-tools/src/emulation.rs — EmuTarget/EmuTargetStatus +
+          EmuManager (Arc<Mutex<HashMap>>), 4 test. pub mod emulation di
+          mivon-tools/lib.rs. Integrasi emulator/JTAG/bitstream BELUM ada
+          (placeholder + gap dokumentasi). Commit: a429598 (push origin/main).
 FEAT-20:[] Hardware acceleration co-simulation — High
 FEAT-21: ✅ ECO support (Engineering Change Order) — ROUND 141
          crates/mivon-tools/src/eco.rs: EcoDb (create/transition/comment/
