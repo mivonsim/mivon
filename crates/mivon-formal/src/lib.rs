@@ -12,6 +12,7 @@
 pub mod abstract_interp;
 pub mod bmc;
 pub mod connectivity;
+pub mod bdd;
 pub mod sat;
 pub mod sec;
 pub mod xprop;
