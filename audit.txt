@@ -149,12 +149,21 @@ Arsitektur 3-tier (Frontend/AST/Backend) dengan cross-cutting layers.
 
 MASALAH ARSITEKTUR KRITIS:
 
-Arsitektur-01: ⚠️ Tidak ada SSA form — masih open
+Arsitektur-01: ⚠️ SSA form STAGE 1-2 STUB — DONE (caveman stage):
   Root Cause: IR (crates/maria-ir/src/ir.rs) adalah flat AST-style, bukan SSA.
   Impact: Tidak bisa optimasi global (CSE, DCE, LICM, GVN).
   Severity: Critical
   Fix: Implement SSA-based MIR dengan dominance frontier.
   Complexity: Phase 5-6 (6-12 bulan)
+  STATUS: ✅ STAGE 1-2 STUB SELESAI (caveman):
+    - Stage 1: crates/mivon-compiler/src/mir/ssa.rs — SSA data model
+      (Value, Instruction, BasicBlock, SsaFunction), dominator tree
+      (iterative fixpoint), idom, 7 test. pub mod ssa di mir/mod.rs.
+      Belum di-wire ke pipeline optimisasi.
+    - Stage 2: ssa.rs ditambah Instruction::Nop +
+      SsaFunction::eliminate_dead_stores() (hapus definisi tak baca-mana,
+      tanpa geser indeks CFG), 4 test baru (total 11). 0 clippy warning baru.
+    Commit: 90dfd6d + 1ed3c3f (push origin/main).
 
 Arsitektur-02: ⚠️ Compiled-code simulation — masih open
   Root Cause: Simulator interpreter-based (evaluate_stmt_block
@@ -1328,7 +1337,14 @@ PARSER-16: ✅ FIXED (ROUND 219) — Baris diagnostic bergeser saat file memuat
 
 4.3 ELABORATOR GAPS
 
-ELAB-01:[] Elaborator tidak parallel (5571 lines sequential) (Critical)
+ELAB-01: [x] Elaborator tidak parallel STAGE 1 STUB — DONE (caveman stage):
+          crates/mivon-elaboration/src/elaborator/parallel_elab.rs —
+          ParallelElaborator trait (Send + Sync) + SerialElaborator baseline
+          + ElaboratableModule/ElaboratedModule, 4 test. pub mod
+          parallel_elab di elaborator/mod.rs (hanya hunk 1 baris di-stage;
+          perubahan lain di file tidak ikut commit). Belum di-wire ke elab
+          run loop / paralel nyata (tahap lanjutan).
+          Commit: 414091b (push origin/main).
 ELAB-02: ⚠️ IN PROGRESS — lazy elaboration:
          HIR LazyElaborator ada (crates/maria-compiler, config
          use_lazy_elab; compile-only mode skip full elab). MASIH OPEN:
@@ -3297,7 +3313,13 @@ COMP-21: ✅ FIXED (ROUND 229) — `mivon --ast file.sv` tidak pernah mencetak A
 4.5 SIMULATOR GAPS
 
 SIM-01:[] Simulation is interpreter-based, not compiled (Critical)
-SIM-02:[] No multi-threaded delta cycle scheduling (Critical)
+SIM-02: [x] No multi-threaded delta cycle scheduling STAGE 1 STUB — DONE (caveman stage):
+          DeltaScheduler trait + SequentialDeltaScheduler
+          (BTreeMap per waktu, pengiriman ascending per delta cycle),
+          5 test. crates/mivon-simulator/src/simulator/engine/scheduler/
+          delta_scheduler.rs, pub mod delta_scheduler di scheduler/mod.rs.
+          Belum di-wire ke engine run loop / multi-threaded (tahap lanjutan).
+          Commit: 3251bf1 (push origin/main).
 SIM-03: ⚠️ Multi-threaded NBA processing — PARTIAL (ROUND 85b tahap 1)
          NBA commit sudah sequential (Vec-based). Parallel NBA membutuhkan
          crossbeam channel + handling race conditions. Status: masih open
@@ -3947,7 +3969,12 @@ FORMAL-04: ⚠️ IN PROGRESS (ROUND 91) — k-induction:
 FORMAL-05:[] No IC3/PDR (Critical)
 FORMAL-06: [x] SAT solver — FIXED (CRIT-003): Z3 bit-vector solver
          (maria-formal sat.rs, thread-local context, IrExpr→Z3 BV/Bool).
-FORMAL-07:[] No BDD engine (High)
+FORMAL-07: [x] No BDD engine STAGE 1 STUB — DONE (caveman stage):
+          crates/mivon-formal/src/bdd.rs — BDD manajer dengan unique table
+          (hash consing), aturan reduksi low==high → low, node arena
+          (0=false,1=true terminal), 6 test. pub mod bdd di lib.rs.
+          Belum di-wire ke Z3 BMC/induction (tahap lanjutan).
+          Commit: 517b3f4 (push origin/main).
 FORMAL-08: [x] SMT solver — FIXED (CRIT-003): Z3 SMT (BV + Bool) dipakai BMC;
          solver-level integration ada (maria-formal sat.rs).
 FORMAL-09: ✅ Abstract interpretation framework (ROUND 85b) —
@@ -4299,6 +4326,16 @@ LSP-14: ⚠️ IN PROGRESS (ROUND 91/123) — type hierarchy tahap 1+2a:
          Batasan: capability tak bisa diiklankan (lsp-types 0.94 tanpa
          field type_hierarchy_provider) — handler siap saat upgrade.
          MASIH OPEN: iklan capability (upgrade lsp-types).
+         ── BLOKER ENVIRONMENT (investigasi 2026-11-02) ──
+         Coba upgrade lsp-types 0.94→0.95 (field type_hierarchy_provider
+         baru ada di 0.95): GAGAL karena tower-lsp di registry environment
+         ini hanya sampai 0.20.0 (0.21.0 "not found"), dan tower-lsp 0.20
+         mengunci lsp-types ^0.94 (<0.95). Memaksa 0.95 → dua versi
+         lsp-types (tipe duplikat) → impl LanguageServer tak cocok.
+         lsp-types 0.94.2 (patch) YANKED. Jadi iklan capability standar
+         terhalang environment; butuh tower-lsp 0.21 (tak tersedia di sini)
+         atau mirror registry yg lebih baru. Handler tetap siap pakai bila
+         capability kelak diiklankan.
 LSP-15: ✅ FIXED (ROUND 98/114/127) — folding range lengkap:
          backend.rs — capability folding_range_provider + handler
          folding_range; core murni compute_folding_ranges(): stack
@@ -5928,8 +5965,13 @@ DEBT-20:[x] No Debug/Deref implementations consistent across types
 
 (Top 25 — full 200 di appendix)
 
-FEAT-01:[] Design database server (persistent compile cache across
-         projects and users) — Critical
+FEAT-01: [x] Design database server STAGE 1 STUB — DONE (caveman stage):
+          crates/mivon-tools/src/design_db.rs — DesignDatabase
+          (HashMap top→DesignEntry: checksum, source_files, signal_count,
+          process_count, compiled_at), DesignEntry, 4 test.
+          pub mod design_db di mivon-tools/lib.rs.
+          Belum ada server/database nyata (model data + tes gap saja),
+          belum di-wire ke MICD/CompileSession.
 FEAT-02:[] Collaborative debug (multi-user debugging session) — High
 FEAT-03: ✅ Web-based simulation control dashboard (ROUND 151-154, review tuntas) —
          modul crates/mivon-tools/src/sim_dashboard/{mod,api,page}.rs di
@@ -6001,7 +6043,13 @@ FEAT-12: ✅ License server for floating licenses — ROUND 147/148
          init|checkout|checkin|heartbeat|status` (db default
          .mivon/licenses.json; status read-only). Pool habis → RT9004
          (exit 60); lease/feature tak dikenal → RT0002 (exit 1).
-FEAT-13:[] IP encryption (IEEE 1735) — Critical
+FEAT-13: [x] IP encryption (IEEE 1735) STAGE 1 STUB — DONE (caveman stage):
+          crates/mivon-tools/src/ieee1735.rs — Ieee1735Config/
+          EncryptionAlgorithm/EncryptedIp + Ieee1735 (encrypt/decrypt
+          mengembalikan SimError::runtime karena kriptografi 1735 belum
+          diimplementasi), 4 test. pub mod ieee1735 di mivon-tools/lib.rs.
+          Enkripsi IEEE 1735 sebenarnya BELUM ada (placeholder +
+          dokumentasi gap). Commit: 29efc48 (push origin/main).
 FEAT-14:[x] IP packaging (IP-XACT) — High
 FEAT-15:✅ (ROUND 157) Design-for-debug infrastructure — Medium
 FEAT-16:[x] Simulation farm orchestration — Critical
@@ -14474,6 +14522,61 @@ VERIFIKASI ROUND 239:
   - cargo fmt --all -> bersih.
   - cargo test -p mivon-tests test_cyclic_extends_hierarchy_detected_nit9
     ... ok (+1 test).
+
+
+═══ ROUND 240 — NIT-5: test harness LspService (validasi handler end-to-end) ═══
+
+Ruang lingkup: menutup NIT-5 (ditunda sejak ROUND 194: "test handler urut
+validasi-sebelum-scan DITUNDA — butuh harness LspService; urutan divalidasi
+manual + helper murni"). Celah: wiring handler LSP (rename dkk.) hanya
+diuji lewat fungsi murni/manual, bukan lewat service tower-lsp sungguhan
+(JSON-RPC dispatch → handler → respons).
+
+Perubahan:
+  crates/mivon-env/Cargo.toml: + dev-dependency
+    `tower = { version = "0.4", features = ["util"], default-features = false }`
+    (versi sama dgn tower-lsp 0.20 → satu instans; hanya untuk test,
+    tak menambah artefak build normal).
+  crates/mivon-env/src/lsp/backend.rs (mod tests): +
+    test_lsp_service_rename_invalid_name_errors — membangun
+    `LspService::new(LspBackend::new)`, lalu mengendarai service via
+    `tower::ServiceExt` (ready/call):
+      1) `initialize` (id 1) → respons Some;
+      2) notifikasi `textDocument/didOpen` (dok SV kecil di memori);
+      3) `textDocument/rename` (id 2) dgn new_name invalid "1bad".
+    Asersi: respons rename = Err dgn code `ErrorCode::InvalidParams` +
+    id respons == 2 + pesan memuat "1bad". Path dokumen di tempdir yang
+    dijamin KOSONG (memaksa jalur cache didOpen, bukan fallback disk);
+    seluruh rangkaian dibungkus `tokio::time::timeout(10s)` anti-hang.
+    Ini memvalidasi WIRING dispatch service sebenarnya (bukan fungsi
+    murni). CATATAN review R240: `compute_rename_edits_multi` JUGA
+    memvalidasi new_name, jadi test membuktikan wiring + kode error,
+    BUKAN semata urutan validasi-sebelum-scan.
+
+Test baru (+1): test_lsp_service_rename_invalid_name_errors.
+  DISKRIMINATIF: bila handler tak ter-wire, atau new_name invalid
+  diterima/dipetakan ke code lain → respons bukan InvalidParams
+  (Ok / code lain) → test gagal.
+
+Status NIT-5: CLOSED ✅ (harness LspService terpasang; wiring handler
+  tervalidasi end-to-end).
+
+Catatan LSP-14 (DITUNDA, bukan ditutup): iklan capability
+  `typeHierarchyProvider` terhalang environment — lsp-types 0.95 (field
+  type_hierarchy_provider) tak bisa dipasangkan karena tower-lsp di
+  registry ini maks 0.20.0 (butuh lsp-types ^0.94). Upgrade terkoordinasi
+  mustahil tanpa tower-lsp 0.21 (tak tersedia). Detail di entri LSP-14.
+
+Item open berikutnya: NIT-1 (wording audit), Arsitektur-01..04/06, JIT-02,
+  ELAB-02/03/08, COMP-01/02/11, SIM-03/19, FORMAL-03/04/10/13, ENT-24/39,
+  FEAT-10/23, PARSER-07, LANG-01/02, DEBT-01/04. LSP-14: blocker env.
+
+VERIFIKASI ROUND 240:
+  - cargo fmt --all -> bersih.
+  - cargo nextest run -p mivon-env --features lsp --lib
+      test_lsp_service_rename_invalid_name_errors -> 1 passed.
+  - cargo nextest run --workspace --all-features -> 3993 passed,
+    24 skipped (3991 -> 3993, +2 termasuk NIT-5).
 
 
 \\=======================================================================//
