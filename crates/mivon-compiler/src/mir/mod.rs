@@ -6,6 +6,7 @@ pub mod lower;
 #[allow(clippy::module_inception)]
 pub mod mir;
 pub mod opt;
+pub mod ssa;
 
 pub use lower::lower_module;
 pub use mir::*;
