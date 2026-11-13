@@ -26,6 +26,7 @@ pub mod dft_interface;
 pub mod distributed_compile;
 pub mod eco;
 pub mod elab;
+pub mod emulation;
 pub mod epoll_async;
 pub mod equiv_check;
 pub mod fmt;
