@@ -5,9 +5,9 @@
 //! Tiap kali `parse_module_item`/`parse_stmt` gagal, recovery melakukan
 //! skip-to-sync-token (`skip_until_semi_or_end` / `skip_to_stmt_boundary`)
 //! + guard kemajuan (`if pos == before { advance() }` — lihat komentar
-//! flood 71 ribu E1002 di stmt.rs). Bukti: 11 input malformed → 0 duplikat
-//! (line,col), observasi maks 2 error per file (bound kasar +1 guard;
-//! audit PERF-19, ROUND 86).
+//!   flood 71 ribu E1002 di stmt.rs). Bukti: 11 input malformed → 0 duplikat
+//!   (line,col), observasi maks 2 error per file (bound kasar +1 guard;
+//!   audit PERF-19, ROUND 86).
 //!
 //! Sifat yang dijaga test:
 //! 1. Tidak ada error DUPLIKAT di posisi (line,col) sama — flood historis

@@ -96,8 +96,12 @@ pub(crate) fn dispatch_tbgen(a: &crate::cli::MtbgenArgs) -> ! {
         };
         let tb = if let Some(ref file) = a.file {
             // Jalur otomatis: port dibaca dari AST module.
-            let (design, _session) =
-                mivon_api::tools::open_project(&[file.clone()], &[], &[], a.module.as_deref())?;
+            let (design, _session) = mivon_api::tools::open_project(
+                std::slice::from_ref(file),
+                &[],
+                &[],
+                a.module.as_deref(),
+            )?;
             tbgen::generate_for_module(&design, a.module.as_deref(), &config)
                 .map_err(|e| SimError::with_diag(DiagCode::ModuleNotFound, e))?
         } else {

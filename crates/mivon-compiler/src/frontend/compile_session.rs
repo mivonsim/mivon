@@ -2336,10 +2336,11 @@ impl CompileSession {
             .unwrap_or_default()
     }
 
-    /// Ringkasan node_cache (untuk output CLI).
-    pub fn micd_summary(&self) -> Option<String> {
+    pub fn cache_summary(&self) -> Option<String> {
         self.node_cache.as_ref().map(|db| db.summary())
     }
+
+    /// Sinonim untuk kompatibilitas panggilan lama (gradual rename).
 
     /// Elaborate a module lazily (on-demand via HIR pipeline).
     /// Returns the elaborated HIR module if it exists and lazy mode is enabled.

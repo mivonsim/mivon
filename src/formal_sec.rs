@@ -22,17 +22,19 @@ pub(crate) fn compile_design(
     cli: &crate::cli::Cli,
     top: Option<&str>,
 ) -> Result<IrDesign, SimError> {
-    let mut cfg = mivon_api::SessionConfig::default();
-    cfg.sources = vec![path.to_path_buf()];
-    cfg.incdirs = cli.incdirs.iter().map(std::path::PathBuf::from).collect();
-    cfg.defines = cli.define_pairs();
-    cfg.libdirs = cli.libdirs.iter().map(std::path::PathBuf::from).collect();
-    cfg.libfiles = cli.libfiles.iter().map(std::path::PathBuf::from).collect();
-    // Modul target (bukan sekadar --top) menentukan top desain kedua: tanpa
-    // ini file kedua dengan >1 root gagal E3006 walau modulnya ada.
-    cfg.top_module = top.map(str::to_string);
-    cfg.auto_incdirs = true;
-    cfg.use_fast_lexer = !cli.legacy_lexer;
+    let cfg = mivon_api::SessionConfig {
+        sources: vec![path.to_path_buf()],
+        incdirs: cli.incdirs.iter().map(std::path::PathBuf::from).collect(),
+        defines: cli.define_pairs(),
+        libdirs: cli.libdirs.iter().map(std::path::PathBuf::from).collect(),
+        libfiles: cli.libfiles.iter().map(std::path::PathBuf::from).collect(),
+        // Modul target (bukan sekadar --top) menentukan top desain kedua:
+        // tanpa ini file kedua dengan >1 root gagal E3006 walau modulnya ada.
+        top_module: top.map(str::to_string),
+        auto_incdirs: true,
+        use_fast_lexer: !cli.legacy_lexer,
+        ..mivon_api::SessionConfig::default()
+    };
     compile_design_with_config(cfg)
 }
 
@@ -321,9 +323,11 @@ endmodule
         )
         .unwrap();
 
-        let mut cfg = mivon_api::SessionConfig::default();
-        cfg.sources = vec![file.clone()];
-        cfg.top_module = Some("m".to_string());
+        let cfg = mivon_api::SessionConfig {
+            sources: vec![file.clone()],
+            top_module: Some("m".to_string()),
+            ..mivon_api::SessionConfig::default()
+        };
         let ir = compile_design_with_config(cfg).expect("top eksplisit harus dipakai");
         assert_eq!(ir.top.name.as_str(), "m");
 
@@ -343,8 +347,10 @@ endmodule
         )
         .unwrap();
 
-        let mut cfg = mivon_api::SessionConfig::default();
-        cfg.sources = vec![file];
+        let cfg = mivon_api::SessionConfig {
+            sources: vec![file],
+            ..mivon_api::SessionConfig::default()
+        };
         let err = compile_design_with_config(cfg).expect_err("parse error harus ditolak");
         let msg = format!("{err}");
         assert!(msg.contains("gagal dikompilasi"), "{msg}");
@@ -367,8 +373,10 @@ endmodule
         )
         .unwrap();
 
-        let mut cfg = mivon_api::SessionConfig::default();
-        cfg.sources = vec![file];
+        let cfg = mivon_api::SessionConfig {
+            sources: vec![file],
+            ..mivon_api::SessionConfig::default()
+        };
         let err = compile_design_with_config(cfg).expect_err("include hilang harus ditolak");
         let msg = format!("{err}");
         assert!(msg.contains("include"), "{msg}");

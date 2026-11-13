@@ -2719,7 +2719,6 @@ endmodule
 }
 
 #[test]
-#[test]
 fn test_sva_multicycle_antecedent_implication_fails() {
     // Regresi: assertion a ##1 b |-> c — antecedent multi-cycle harus
     // dievaluasi pada cycle saat ia SELESAI, bukan hanya elapsed==0 (yang
@@ -2776,6 +2775,7 @@ endmodule
     );
 }
 
+#[test]
 fn test_sva_labeled_assertion() {
     // LANG-48: assertion berlabel `lbl: assert property (...)` di level
     // module TIDAK boleh dibuang — label di-consume, body di-parse penuh,

@@ -146,7 +146,7 @@ pub fn check_equivalence(a: &SecDesign, b: &SecDesign) -> SecOutcome {
         diffs.push(va.eq(&vb).not());
     }
     let diff_refs: Vec<&z3::ast::Bool> = diffs.iter().collect();
-    solver.assert(&z3::ast::Bool::or(&diff_refs));
+    solver.assert(z3::ast::Bool::or(&diff_refs));
 
     match solver.check() {
         z3::SatResult::Unsat => SecOutcome::Equivalent,
@@ -570,7 +570,7 @@ impl<'a> Extract<'a> {
 
     /// Ganti setiap `Input(nama)` yang punya persamaan dengan ekspresinya.
     fn substitute(&self, expr: &SecExpr, stack: &mut Vec<usize>) -> Result<SecExpr, String> {
-        let mut recur = |e: &Box<SecExpr>| self.substitute(e, stack);
+        let mut recur = |e: &SecExpr| self.substitute(e, stack);
         Ok(match expr {
             SecExpr::Input(name) => match self.names.iter().position(|n| n == name) {
                 // Nama yang bukan input wajib punya persamaan; resolve() yang

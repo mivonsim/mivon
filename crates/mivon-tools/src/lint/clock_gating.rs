@@ -12,17 +12,14 @@ pub(crate) fn find_clock_gating(scope: &str, stmts: &[Stmt], out: &mut Vec<Findi
                 false_branch,
                 ..
             } => {
-                if false_branch.is_none() {
-                    if has_nonblocking(std::slice::from_ref(true_branch)) {
-                        out.push(Finding {
-                            module: scope.to_string(),
-                            check: "clock_gating",
-                            severity: "W",
-                            message:
-                                "always_ff dengan if tanpa else: potensi clock gating implisit"
-                                    .to_string(),
-                        });
-                    }
+                if false_branch.is_none() && has_nonblocking(std::slice::from_ref(true_branch)) {
+                    out.push(Finding {
+                        module: scope.to_string(),
+                        check: "clock_gating",
+                        severity: "W",
+                        message: "always_ff dengan if tanpa else: potensi clock gating implisit"
+                            .to_string(),
+                    });
                 }
                 find_clock_gating(scope, std::slice::from_ref(true_branch), out);
                 if let Some(fb) = false_branch {

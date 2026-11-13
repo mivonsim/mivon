@@ -292,7 +292,7 @@ fn module_param_values(m: &Module) -> std::collections::HashMap<mivon_core::Symb
 /// `clk_i`/`rst_ni` dikenali tanpa false-positive `first`/`burst`.
 fn name_tokens(name: &str) -> Vec<String> {
     name.to_ascii_lowercase()
-        .split(|c: char| c == '_' || c == '-')
+        .split(['_', '-'])
         .filter(|t| !t.is_empty())
         .map(|t| t.to_string())
         .collect()
@@ -315,11 +315,17 @@ fn detect_clock(ports: &[PortInfo]) -> Option<String> {
 /// Active-high dari nama reset: token terakhir bukan penanda active-low.
 fn reset_active_high(name: &str) -> bool {
     let toks = name_tokens(name);
-    match toks.last().map(|s| s.as_str()) {
-        Some("n") | Some("ni") | Some("b") | Some("low") | Some("rstn") | Some("resetn")
-        | Some("rstb") | Some("resetb") => false,
-        _ => true,
-    }
+    !matches!(
+        toks.last().map(|s| s.as_str()),
+        Some("n")
+            | Some("ni")
+            | Some("b")
+            | Some("low")
+            | Some("rstn")
+            | Some("resetn")
+            | Some("rstb")
+            | Some("resetb")
+    )
 }
 
 /// Deteksi port reset: input dengan token `rst`/`reset`/`rstn`/`resetn`

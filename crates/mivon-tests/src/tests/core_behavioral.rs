@@ -1021,8 +1021,8 @@ endmodule
 /// - UNSIGNED: max(32, min(lebar_nilai + 1, kapasitas)); x/z dihitung penuh.
 /// - SIGNED: max(32, min(lebar_nilai + 1, kapasitas)) dengan nilai two's
 ///   complement (negatif -> komplemen digit), termasuk kapasitas > 64 bit.
-/// Mencakup jalur default (parameter tanpa override) DAN jalur override
-/// instance (#(.P(literal))).
+///   Mencakup jalur default (parameter tanpa override) DAN jalur override
+///   instance (#(.P(literal))).
 #[test]
 fn test_unsized_based_literal_param_width() {
     let f20 = "F".repeat(20);
@@ -1210,10 +1210,10 @@ endmodule
 /// LRM: lebar param tanpa range/dtype = lebar ekspresi default. iverilog 12
 /// memakai lebar FULL-PRECISION (bukan context-determined): + / - -> max + 1,
 /// * -> w1+w2, / % -> lebar dividen, logika -> max, perbandingan -> 1, shift ->
-/// operand kiri, concat -> jumlah, replicate -> count*inner. Decimal tak
-/// berlebar = 32 bit (4 * 8 -> 64). Referensi iverilog 12 (sweep): P1=9 P2=17
-/// P3=9 P4=16 P5=16 P6=8 P7=9 P8=64 P9=33 PA=10 Q=9 D1=16 D2=16 S1=16 S2=16
-/// C1=1 N1=10 A1=8.
+///   operand kiri, concat -> jumlah, replicate -> count*inner. Decimal tak
+///   berlebar = 32 bit (4 * 8 -> 64). Referensi iverilog 12 (sweep): P1=9 P2=17
+///   P3=9 P4=16 P5=16 P6=8 P7=9 P8=64 P9=33 PA=10 Q=9 D1=16 D2=16 S1=16 S2=16
+///   C1=1 N1=10 A1=8.
 #[test]
 fn test_parameter_default_nonliteral_width() {
     let source = r#"
@@ -1464,7 +1464,7 @@ endmodule
 ///     32'hFFFFFFFF),
 ///   - param PACKAGE (`import p::*`) tidak membawa lebar/signedness →
 ///     `SP < 0` salah dan `$display("%0d", SP)` mencetak 255.
-/// Referensi iverilog 12: semua cabang true, SP=-1, UP=4294967295, B=-1.
+///     Referensi iverilog 12: semua cabang true, SP=-1, UP=4294967295, B=-1.
 #[test]
 fn test_signed_parameter_generate_and_package_parity() {
     let source = r#"
@@ -2251,8 +2251,8 @@ endmodule
 /// ELAB-13 (21) review round 1 (blocking 1): deklarasi generate bernama sama
 /// TIDAK boleh menimpa param header. Jalur FILE (`compile_files`, dipakai CLI
 /// + prepass) berbeda dari `compile_str`: retry tanpa guard presedensi membuat
-/// `wire [7:0] m = L` di level module memakai nilai blok generate (5),
-/// padahal iverilog 12 → 9.
+///   `wire [7:0] m = L` di level module memakai nilai blok generate (5),
+///   padahal iverilog 12 → 9.
 #[test]
 fn test_generate_localparam_does_not_override_header_param() {
     let dir = std::env::temp_dir().join(format!("mivon_elab13_21_{}", std::process::id()));

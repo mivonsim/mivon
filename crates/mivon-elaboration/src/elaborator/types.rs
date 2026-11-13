@@ -703,7 +703,7 @@ impl Elaborator {
                     // bila tersedia — fallback nama tetap di find_name_in_source.
                     let (l, c) = member_expr
                         .iter()
-                        .map(|e| expr_location(e))
+                        .map(expr_location)
                         .next()
                         .unwrap_or((0, 0));
                     self.elab_warn_at(

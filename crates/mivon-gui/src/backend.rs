@@ -137,8 +137,8 @@ fn spawn_worker<F: FnOnce() + Send + 'static>(f: F) {
 }
 
 /// Compile + elaborate project di worker thread. `project_root` dipakai untuk
-/// mencari database node_cache (`.mivon/database`) — bila ada, compile menjadi
-/// incremental (file tak berubah di-restore AST, lexer+parser di-skip).
+/// mencari node_cache (`node_cache/`) — bila ada, compile menjadi incremental
+/// (file tak berubah di-restore AST, lexer+parser di-skip).
 pub fn spawn_compile(tx: Sender<GuiEvent>, paths: Vec<PathBuf>, project_root: Option<PathBuf>) {
     spawn_worker(move || {
         let result = compile_project(&paths, project_root.as_deref());
@@ -157,11 +157,11 @@ fn simerr_to_diags(err: &SimError) -> Vec<DiagEntry> {
     vec![DiagEntry::from_diagnostic(&err.to_diagnostic())]
 }
 
-/// Compile + elaborate semua file. Mengembalikan info + design ter-elaborasi,
-/// atau daftar diagnostics (error) dengan lokasi file/line.
-/// `project_root` dipakai mencari database node_cache (`.mivon/database`) — bila
-/// ada, compile incremental: file tak berubah di-restore AST-nya (lexer+
-/// parser di-skip), lalu state disimpan kembali setelah compile.
+/// Compile + elaborate semua file. Mengembalikan (info, design), atau daftar
+/// diagnostics (error) dengan lokasi file/line.
+/// `project_root` dipakai mencari node_cache (`node_cache/`) — bila ada,
+/// compile incremental: file tak berubah di-restore AST-nya (lexer+parser
+/// di-skip), lalu state disimpan kembali setelah compile.
 pub fn compile_project(
     paths: &[PathBuf],
     project_root: Option<&std::path::Path>,
@@ -177,14 +177,14 @@ pub fn compile_project(
 
     let mut session = CompileSession::new(config);
 
-    // ── node_cache: attach database persisten (incremental compile lintas run) ──
-    // Bila database belum ada (compile pertama), open memberi DB kosong dan
-    // save_cache() di bawah akan membuatnya — run berikutnya file yang hash
-    // kontennya sama di-restore AST-nya (skip lexer+parser). Root database =
-    // `<project>/.mivon/database` (sama dengan CLI). Scoped per project
+    // ── node_cache: attach cache persisten (incremental compile lintas run) ──
+    // Bila cache belum ada (compile pertama), open memberi instance kosong
+    // dan save_cache() di bawah akan membuatnya — run berikutnya file yang
+    // hash kontennya sama di-restore AST-nya (skip lexer+parser). Root cache
+    // = `<project>/node_cache/` (sama dengan CLI). Scoped per project
     // (ProjectID dari root + sources): OpenTitan dan test/counter.sv tidak
-    // pernah berbagi database. Payload CAS di objects/<pid>/, index di
-    // state/<pid>/.
+    // pernah berbagi cache. Artefak content-addressed di objects/ dan
+    // manifest node di nodes/; graph snapshot + reference di graphs/refs/.
     let cache_root = project_root
         .map(|r| mivon_compiler::node_cache::ProjectCache::default_root_for(r));
     if let Some(cache_root) = cache_root.as_deref() {
@@ -201,7 +201,7 @@ pub fn compile_project(
         Err(e) => return Err(simerr_to_diags(&e)),
     };
 
-    // ── node_cache: tandai ter-elaborasi + simpan database + kumpulkan statistik ──
+    // ── node_cache: tandai ter-elaborasi + simpan cache + kumpulkan statistik ──
     // untuk panel Pipeline. Best-effort: kegagalan save tidak menggagalkan
     // compile (statistik hanya berisi 0/None).
     let micd = if session.node_cache.is_some() {

@@ -458,10 +458,7 @@ fn start_worker(
             store.release_slot();
             finish_session(&store, &config, &id, outcome);
         });
-    match handle {
-        Ok(_) => true,
-        Err(_) => false,
-    }
+    handle.is_ok()
 }
 
 /// Simpan hasil eksekusi. Sesi yang sudah dibatalkan tidak ditimpa.

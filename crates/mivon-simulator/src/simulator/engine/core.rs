@@ -1388,10 +1388,11 @@ impl SimulationEngine {
                                     // hilang: deltas di-reset sebelum Reactive jalan,
                                     // posedge 0→1 tak pernah terlihat oleh event yang
                                     // menunggu (bug hier port conn — LANG-51).
-                                    if !self.pending_events.is_empty() && !deltas.is_empty() {
-                                        if self.process_pending_events(&deltas)? {
-                                            activity = true;
-                                        }
+                                    if !self.pending_events.is_empty()
+                                        && !deltas.is_empty()
+                                        && self.process_pending_events(&deltas)?
+                                    {
+                                        activity = true;
                                     }
                                     self.recycle_region_events(events);
                                     break;

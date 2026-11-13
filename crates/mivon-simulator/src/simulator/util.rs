@@ -346,7 +346,7 @@ pub(crate) fn mem_to_text(
     for k in start_word..start_word.saturating_add(n_words) {
         // Header alamat relatif terhadap awal output (paritas iverilog).
         let rel = k - start_word;
-        if rel % 16 == 0 {
+        if rel.is_multiple_of(16) {
             out.push_str(&format!("// 0x{:08x}\n", rel));
         }
         let start = k * elem_w;

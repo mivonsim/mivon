@@ -499,7 +499,7 @@ pub fn extract_fsms(design: &IrDesign) -> Vec<FsmInfo> {
             let (states, transitions, outputs) =
                 extract_from_case(items, default, *sig_id, *sig_id, &module.signals);
             let info = FsmInfo {
-                process_name: qualify_process_name(&pname, &sig_info.name.to_string()),
+                process_name: qualify_process_name(&pname, sig_info.name.as_ref()),
                 state_signal: sig_info.name.to_string(),
                 state_width: sig_info.width,
                 states,
@@ -591,7 +591,7 @@ pub fn extract_fsms(design: &IrDesign) -> Vec<FsmInfo> {
                         continue;
                     }
                     fsms.push(FsmInfo {
-                        process_name: qualify_process_name(&pname, &sig_info.name.to_string()),
+                        process_name: qualify_process_name(&pname, sig_info.name.as_ref()),
                         state_signal: sig_info.name.to_string(),
                         state_width: sig_info.width,
                         states,

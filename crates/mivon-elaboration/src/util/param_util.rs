@@ -97,9 +97,9 @@ pub(crate) fn param_width_of(p: &ParamDecl, params: &HashMap<Symbol, i64>) -> Op
 ///   dibaca two's complement selebar kapasitas. Untuk nilai negatif dipakai
 ///   komplemen digitnya (lebar(komplemen) + 1 = lebar two's complement),
 ///   sehingga tidak butuh aritmetika di atas 64 bit. Digit x/z/? dibaca 0.
-/// Contoh: 'h1FFFFFFFF -> 34, 'hFFFFFFFFF -> 36, 'h0FFFFFFFFF -> 37,
-/// 'o177777777777 -> 35; 'shF00000000 -> 33, 'shFFFFFFFFFFFFFFFF -> 32,
-/// 'shFFFFFFFFFFFFFFFFFFFF -> 32, 'shF0000000000000000000 -> 85.
+///   Contoh: 'h1FFFFFFFF -> 34, 'hFFFFFFFFF -> 36, 'h0FFFFFFFFF -> 37,
+///   'o177777777777 -> 35; 'shF00000000 -> 33, 'shFFFFFFFFFFFFFFFF -> 32,
+///   'shFFFFFFFFFFFFFFFFFFFF -> 32, 'shF0000000000000000000 -> 85.
 fn unsized_based_width(bits: &str, base_width: usize, is_signed: bool) -> usize {
     let chars: Vec<char> = bits.chars().filter(|c| *c != '_').collect();
     if chars.is_empty() {
@@ -328,7 +328,7 @@ fn pkg_param_type(pkg: &PackageDecl, item: Symbol) -> Option<(usize, bool)> {
         (None, None) => p
             .default
             .as_ref()
-            .map_or(true, |e| crate::elaborator::sign::elab_expr_is_signed(e)),
+            .is_none_or(crate::elaborator::sign::elab_expr_is_signed),
     };
     let w = if let Some((msb, lsb)) = &p.range {
         let empty: HashMap<Symbol, i64> = HashMap::new();
@@ -517,8 +517,8 @@ pub(crate) fn param_static_width(p: &ParamDecl, params: &HashMap<Symbol, i64>) -
 
 /// ELAB-13/14: peta lebar STATIS seluruh param module (header `module.params`
 /// + param di body/generate). Dipakai menyemai scope const-fold sebelum nilai
-/// param di-resolve. Nilai peta = (lebar, signed) — signedness dibutuhkan
-/// perbandingan const-fold (`parameter signed [7:0] S8 == -1`).
+///   param di-resolve. Nilai peta = (lebar, signed) — signedness dibutuhkan
+///   perbandingan const-fold (`parameter signed [7:0] S8 == -1`).
 pub(crate) fn static_param_widths(
     module: &Module,
     params: &HashMap<Symbol, i64>,
@@ -584,7 +584,6 @@ fn param_default_expr_width(e: &Expr) -> Option<usize> {
             Value::Octal { width, .. } => Some(width.unwrap_or(32)),
             Value::Decimal(_) => Some(32),
             Value::Real(_) => Some(64),
-            _ => None,
         }
     }
     fn rec(e: &Expr) -> Option<usize> {

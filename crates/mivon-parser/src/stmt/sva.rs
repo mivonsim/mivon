@@ -789,22 +789,18 @@ endmodule
         assert!(ids.iter().any(|n| n == "a") && ids.iter().any(|n| n == "b"));
     }
 
-    /// Parse dan kembalikan Design + diagnostik parser (warning ikut).
-
     fn first_clock_event(design: &crate::types::Design) -> Option<crate::types::ClockEvent> {
         for item in &design.modules[0].items {
-            match item {
-                crate::types::ModuleItem::PropertyAssert(s) => {
-                    if let crate::Stmt::PropertySeq { clock_event, .. } = &**s {
-                        return clock_event.clone();
-                    }
+            if let crate::types::ModuleItem::PropertyAssert(s) = item {
+                if let crate::Stmt::PropertySeq { clock_event, .. } = &**s {
+                    return clock_event.clone();
                 }
-                _ => {}
             }
         }
         None
     }
 
+    /// Parse dan kembalikan Design + diagnostik parser (warning ikut).
     fn parse_with_diags(
         src: &str,
     ) -> (

@@ -70,7 +70,7 @@ tb_counter.sv
 - UVM macros: `uvm_macros.svh` — info/warning/error/fatal, factory utils, field macros
 - Picorv32 RISC-V CPU (3049 LOC) compilation + simulation completed
 - AXI + Wishbone wrapper simulation via `--top`
-- IEEE 1800 compliance ~78% fitur relevan RTL
+- IEEE 1800 compliance  fitur relevan RTL
 
 ## Build & test
 

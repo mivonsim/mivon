@@ -2,8 +2,8 @@
 //!
 //! Dukungan penuh: lexer `defparam` keyword → parser (compilation-unit scope
 //! + module body, path hierarki dgn indeks array `u_a[0]`) → AST
-//! `ModuleItem::DefParam` → collect di `elaborate()` → apply saat flatten
-//! (merge ke `param_map` SEBELUM signature → child re-elaborasi dgn override).
+//!   `ModuleItem::DefParam` → collect di `elaborate()` → apply saat flatten
+//!   (merge ke `param_map` SEBELUM signature → child re-elaborasi dgn override).
 //!
 //! Golden perilaku: iverilog `-g2012` (defparam menimpa override `#()`,
 //! menarget instance path per-individu termasuk elemen instance array).

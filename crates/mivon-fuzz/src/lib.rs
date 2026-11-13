@@ -1178,7 +1178,7 @@ fn run_single(cfg: FuzzConfig, corpus: &corpus::Corpus) -> FuzzReport {
                     oracle::WATCHDOG_LEAK_CAP
                 );
             }
-            if merged % progress_every == 0 {
+            if merged.is_multiple_of(progress_every) {
                 let _ = ledger.lock().unwrap_or_else(|p| p.into_inner()).save();
                 eprint!(
                     "\r  [{}/{}] bugs: {} large: {}",
@@ -1554,20 +1554,22 @@ mod bugdb_tests {
     /// dua-run dalam satu test tidak apple-to-apple.
     #[test]
     fn parallel_matches_serial_preproc() {
-        let seed = 0xC0FFEE_BEEF;
+        let seed = 0x00C0_FFEE_BEEF;
         let tmp = std::env::temp_dir().join(format!(
             "mivon-fuzz-ledger-{}-{:?}",
             std::process::id(),
             std::thread::current().id()
         ));
         let _ = std::fs::remove_dir_all(&tmp);
-        let mut serial = FuzzConfig::default();
-        serial.target = Target::Preproc;
-        serial.cases = 10;
-        serial.jobs = 1;
-        serial.seed = seed;
-        serial.save_bugs = false;
-        serial.ledger_path = Some(tmp.join("serial.txt"));
+        let serial = FuzzConfig {
+            target: Target::Preproc,
+            cases: 10,
+            jobs: 1,
+            seed,
+            save_bugs: false,
+            ledger_path: Some(tmp.join("serial.txt")),
+            ..FuzzConfig::default()
+        };
         let rep_serial = run(serial.clone());
 
         let mut par = serial.clone();

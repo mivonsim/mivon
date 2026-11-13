@@ -564,12 +564,10 @@ impl SimulationEngine {
                 return Some(layer);
             }
             match self.design.classes.get(&Symbol::intern(current)) {
-                Some(c) => match &c.extends {
-                    Some(parent) => current = parent.as_str(),
-                    // Kelas user tanpa extends: BUKAN kelas library — jangan
-                    // didispatch ke builtin (review R196 NIT-6).
-                    None => return None,
-                },
+                Some(c) => {
+                    let parent = c.extends.as_ref()?;
+                    current = parent.as_str();
+                }
                 // Terminal chain = kelas library yang tidak di-compile.
                 // NIT-10: nama library di luar tabel (uvm_sequence_base,
                 // uvm_reg_adapter, uvm_printer, ...) tetap dapat layer

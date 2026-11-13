@@ -5007,8 +5007,10 @@ impl Elaborator {
                         let mut inserted_lets: Vec<Symbol> = Vec::new();
                         for item in &cd.items {
                             if let ModuleItem::Let(ld) = item {
-                                if !self.let_decls.contains_key(&ld.name) {
-                                    self.let_decls.insert(ld.name, ld.clone());
+                                if let std::collections::hash_map::Entry::Vacant(entry) =
+                                    self.let_decls.entry(ld.name)
+                                {
+                                    entry.insert(ld.clone());
                                     inserted_lets.push(ld.name);
                                 }
                             }

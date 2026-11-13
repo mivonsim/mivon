@@ -716,41 +716,41 @@ impl SimulationEngine {
             // call-site apply_parallel_writes (DAG comb, layer, follower
             // domain, batch seq/AWD).
             if let Some(sig) = info {
-                if sig.delay_rise.is_some() || sig.delay_fall.is_some() {
-                    if old_before.bits != new_val.bits {
-                        let delay_ps = match (old_before.bits.first(), new_val.bits.first()) {
-                            (Some(mivon_ir::LogicVal::Zero), Some(mivon_ir::LogicVal::One)) => {
-                                sig.delay_rise.unwrap_or(0)
-                            }
-                            (Some(mivon_ir::LogicVal::One), Some(mivon_ir::LogicVal::Zero)) => {
-                                sig.delay_fall.unwrap_or(0)
-                            }
-                            _ => sig.delay_rise.unwrap_or(0).min(sig.delay_fall.unwrap_or(0)),
-                        };
-                        let delay_units = self.sdf_ps_to_time_units(delay_ps);
-                        if delay_units > 0 {
-                            let t = self.state.time + delay_units;
-                            // NIT-1 (review ronde 3): utk multi-driver, serial
-                            // menjadwalkan nilai MENTAH lalu commit_delayed_
-                            // signal_write yang me-resolve. Kirim patch mentah
-                            // agar resolve tidak terjadi dua kali.
-                            let value = if is_net_resolve {
-                                patch.clone()
-                            } else {
-                                new_val
-                            };
-                            self.push_event(
-                                t as usize,
-                                RegionEvent {
-                                    region: EventRegion::Active,
-                                    event: EventKind::SdfDelayedWrite {
-                                        sig_id: *sig_id,
-                                        value,
-                                    },
-                                },
-                            );
-                            continue;
+                if (sig.delay_rise.is_some() || sig.delay_fall.is_some())
+                    && old_before.bits != new_val.bits
+                {
+                    let delay_ps = match (old_before.bits.first(), new_val.bits.first()) {
+                        (Some(mivon_ir::LogicVal::Zero), Some(mivon_ir::LogicVal::One)) => {
+                            sig.delay_rise.unwrap_or(0)
                         }
+                        (Some(mivon_ir::LogicVal::One), Some(mivon_ir::LogicVal::Zero)) => {
+                            sig.delay_fall.unwrap_or(0)
+                        }
+                        _ => sig.delay_rise.unwrap_or(0).min(sig.delay_fall.unwrap_or(0)),
+                    };
+                    let delay_units = self.sdf_ps_to_time_units(delay_ps);
+                    if delay_units > 0 {
+                        let t = self.state.time + delay_units;
+                        // NIT-1 (review ronde 3): utk multi-driver, serial
+                        // menjadwalkan nilai MENTAH lalu commit_delayed_
+                        // signal_write yang me-resolve. Kirim patch mentah
+                        // agar resolve tidak terjadi dua kali.
+                        let value = if is_net_resolve {
+                            patch.clone()
+                        } else {
+                            new_val
+                        };
+                        self.push_event(
+                            t as usize,
+                            RegionEvent {
+                                region: EventRegion::Active,
+                                event: EventKind::SdfDelayedWrite {
+                                    sig_id: *sig_id,
+                                    value,
+                                },
+                            },
+                        );
+                        continue;
                     }
                 }
             }
@@ -1025,7 +1025,7 @@ impl SimulationEngine {
                                 );
                                 let mut overlay = std::collections::HashMap::new();
                                 let mut view =
-                                    parallel::SignalView::new(&snapshot, &identity, &mut overlay);
+                                    parallel::SignalView::new(snapshot, &identity, &mut overlay);
                                 let mut writes = Vec::new();
                                 match parallel::with_packed_eval(use_packed, || {
                                     parallel::evaluate_stmt_block_parallel(

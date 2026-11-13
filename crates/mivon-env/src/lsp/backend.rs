@@ -4160,7 +4160,7 @@ endmodule
                 .push((*line, *start, *end));
         }
         assert_eq!(per_uri.len(), 2, "harus ada edit di 2 file: {per_uri:?}");
-        for (_, edits) in per_uri.iter() {
+        for edits in per_uri.values() {
             let lines: Vec<u32> = edits.iter().map(|e| e.0).collect();
             let mut sorted = lines.clone();
             sorted.sort();
@@ -6125,5 +6125,91 @@ endmodule
         assert_eq!(caret_width_utf16("", 0), 1);
         // Byte di tengah emoji (tidak mungkin dari kolom lexer) → 1.
         assert_eq!(caret_width_utf16("😀abc", 2), 1);
+    }
+
+    // NIT-5 (ROUND 240): test harness LspService — jalankan handler rename
+    // end-to-end lewat service tower-lsp sungguhan (JSON-RPC dispatch →
+    // handler → respons), menutup celah "wiring handler hanya divalidasi
+    // manual" (ROUND 194 NIT-5 ditunda).
+    //
+    // Catatan (review R240): `compute_rename_edits_multi` JUGA memvalidasi
+    // new_name, jadi test ini membuktikan WIRING dispatch + kode error
+    // (InvalidParams) — bukan semata urutan validasi-sebelum-scan.
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_lsp_service_rename_invalid_name_errors() {
+        use lsp_types::Url;
+        use tower::{Service, ServiceExt};
+        use tower_lsp::jsonrpc::{ErrorCode, Id, Request};
+        use tower_lsp::LspService;
+
+        // Batas waktu: cegah hang bila handler tak pernah resolve
+        // (mis. notifikasi memblokir kanal klien). NIT review R240.
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            let (mut service, _socket) = LspService::new(LspBackend::new);
+
+            // 1) initialize — wajib sebelum request lainnya.
+            let init = Request::build("initialize")
+                .params(serde_json::json!({"capabilities": {}}))
+                .id(1)
+                .finish();
+            let resp = service.ready().await.unwrap().call(init).await.unwrap();
+            assert!(resp.is_some(), "initialize harus mengembalikan Response");
+
+            // 2) buka dokumen SV kecil lewat notifikasi didOpen. Path di
+            //    tempdir yang dijamin KOSONG agar `document_text` tak
+            //    membaca dari disk — membuktikan cache didOpen yang dipakai.
+            let dir = tempfile::tempdir().unwrap();
+            let file = dir.path().join("nit5_rename.sv");
+            let uri = Url::from_file_path(&file).unwrap();
+            let text = "module m; reg clk; endmodule\n";
+            let did_open = Request::build("textDocument/didOpen")
+                .params(serde_json::json!({
+                    "textDocument": {
+                        "uri": uri,
+                        "languageId": "systemverilog",
+                        "version": 1,
+                        "text": text
+                    }
+                }))
+                .finish();
+            let _ = service.ready().await.unwrap().call(did_open).await.unwrap();
+
+            // 3) rename dengan new_name tidak valid ("1bad") -> InvalidParams.
+            let rename = Request::build("textDocument/rename")
+                .id(2)
+                .params(serde_json::json!({
+                    "textDocument": {"uri": uri},
+                    "position": {"line": 0, "character": 14},
+                    "newName": "1bad"
+                }))
+                .finish();
+            let resp = service
+                .ready()
+                .await
+                .unwrap()
+                .call(rename)
+                .await
+                .unwrap()
+                .expect("rename harus mengembalikan Response");
+            let (id, result) = resp.into_parts();
+            assert_eq!(id, Id::from(2i64), "id respons harus sama dgn request");
+            match result {
+                Err(e) => {
+                    assert_eq!(
+                        e.code,
+                        ErrorCode::InvalidParams,
+                        "rename new_name invalid harus InvalidParams"
+                    );
+                    assert!(
+                        e.message.contains("1bad"),
+                        "pesan error harus menyebut nama invalid: {}",
+                        e.message
+                    );
+                }
+                Ok(_) => panic!("rename new_name '1bad' seharusnya error, bukan Ok"),
+            }
+        })
+        .await
+        .expect("test tidak boleh hang (timeout 10s)");
     }
 }

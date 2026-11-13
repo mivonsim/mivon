@@ -352,7 +352,7 @@ impl SimulationEngine {
             let count = if end >= start { end - start + 1 } else { 0 };
             let packed = self.state.read_signal(sig_id);
             let text = crate::simulator::util::mem_to_text(
-                &packed,
+                packed,
                 elem_w,
                 radix,
                 start,

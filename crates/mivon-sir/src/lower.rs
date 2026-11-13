@@ -528,7 +528,7 @@ impl<'a> Builder<'a> {
                         };
                         let v = self.lower_expr(arg);
                         let w = self.value_width(v).max(1);
-                        let out_w = (usize::BITS - (w as usize).leading_zeros()) as usize + 1;
+                        let out_w = (usize::BITS - w.leading_zeros()) as usize + 1;
                         let mut acc: Option<ValueId> = None;
                         for i in 0..w {
                             let bit = self.slice_of(v, i, i);
