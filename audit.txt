@@ -6065,7 +6065,11 @@ FEAT-19: [x] Emulation/prototyping integration STAGE 1 STUB — DONE (caveman st
           EmuManager (Arc<Mutex<HashMap>>), 4 test. pub mod emulation di
           mivon-tools/lib.rs. Integrasi emulator/JTAG/bitstream BELUM ada
           (placeholder + gap dokumentasi). Commit: a429598 (push origin/main).
-FEAT-20:[] Hardware acceleration co-simulation — High
+FEAT-20: [x] Hardware acceleration co-simulation STAGE 1 STUB — DONE (caveman stage):
+          crates/mivon-tools/src/hw_accel.rs — HwAccelTarget/HwAccelStatus +
+          HwAccelManager (Arc<Mutex<HashMap>>), 4 test. pub mod hw_accel di
+          mivon-tools/lib.rs. Integrasi accelerator/PCIe/DPI BELUM ada
+          (placeholder + gap dokumentasi). Commit: b9ad850 (push origin/main).
 FEAT-21: ✅ ECO support (Engineering Change Order) — ROUND 141
          crates/mivon-tools/src/eco.rs: EcoDb (create/transition/comment/
          open_ecos/by_severity/summary/save/load) dengan state machine
