@@ -32,6 +32,7 @@ pub mod equiv_check;
 pub mod fmt;
 pub mod gen;
 pub mod hugepage;
+pub mod hw_accel;
 pub mod ieee1735;
 pub mod ieee_coverage;
 pub mod incremental_compile;
