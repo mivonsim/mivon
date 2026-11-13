@@ -9,6 +9,8 @@
 //! entry block dominates every reachable block.
 
 
+use std::collections::HashSet;
+
 /// A value in SSA form. A value is defined exactly once: either a constant,
 /// or the result of an instruction identified by (block index, instr index).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -33,6 +35,9 @@ pub enum Instruction {
         r#else: usize,
     },
     Return(Value),
+    /// Placeholder for a removed dead definition. Keeps instruction indices
+    /// stable so existing `Value::Instr(block, idx)` references stay valid.
+    Nop,
 }
 
 /// A single basic block.
@@ -193,6 +198,82 @@ impl SsaFunction {
         }
         result
     }
+
+    /// Local dead-store elimination on SSA form.
+    ///
+    /// Replaces every non-terminator instruction whose defined result is never
+    /// read anywhere in the function with `Instruction::Nop`. Indices are not
+    /// shifted and the CFG is not modified, so existing `Value::Instr(block,
+    /// idx)` references stay valid. Returns the number of stores eliminated.
+    ///
+    /// Safe for stage 2: no block removal (no index renumbering), no CFG
+    /// change, and a value is only eliminated when provably unread.
+    pub fn eliminate_dead_stores(&mut self) -> usize {
+        let mut read: HashSet<Value> = HashSet::new();
+        for block in &self.blocks {
+            for instr in &block.instrs {
+                collect_reads(instr, &mut read);
+            }
+        }
+        let mut removed = 0;
+        for (bi, block) in self.blocks.iter_mut().enumerate() {
+            for (ii, instr) in block.instrs.iter_mut().enumerate() {
+                if is_terminator(instr) {
+                    continue;
+                }
+                // Only non-terminators (Add/Sub/Mul/Phi) define a result.
+                if !defines_result(instr) {
+                    continue;
+                }
+                let defined = Value::Instr(bi, ii);
+                if !read.contains(&defined) {
+                    *instr = Instruction::Nop;
+                    removed += 1;
+                }
+            }
+        }
+        removed
+    }
+}
+
+/// Values read by an instruction (its operands).
+fn collect_reads(instr: &Instruction, out: &mut HashSet<Value>) {
+    match instr {
+        Instruction::Add(a, b)
+        | Instruction::Sub(a, b)
+        | Instruction::Mul(a, b) => {
+            out.insert(*a);
+            out.insert(*b);
+        }
+        Instruction::Phi(pairs) => {
+            for (v, _) in pairs {
+                out.insert(*v);
+            }
+        }
+        Instruction::Branch { cond, .. } => {
+            out.insert(*cond);
+        }
+        Instruction::Return(v) => {
+            out.insert(*v);
+        }
+        Instruction::Jump(_) | Instruction::Nop => {}
+    }
+}
+
+/// True if the instruction ends a basic block (defines no SSA value).
+fn is_terminator(instr: &Instruction) -> bool {
+    matches!(
+        instr,
+        Instruction::Jump(_) | Instruction::Branch { .. } | Instruction::Return(_)
+    )
+}
+
+/// True if the instruction defines an SSA result (Add/Sub/Mul/Phi).
+fn defines_result(instr: &Instruction) -> bool {
+    matches!(
+        instr,
+        Instruction::Add(..) | Instruction::Sub(..) | Instruction::Mul(..) | Instruction::Phi(..)
+    )
 }
 
 /// Set of values defined by a block (the result of each non-terminator
@@ -334,5 +415,81 @@ mod tests {
         assert_eq!(idom[0], None);
         assert_eq!(idom[1], Some(0));
         assert_eq!(idom[2], None);
+    }
+
+    #[test]
+    fn dead_store_eliminates_unused() {
+        // block 0: dead = add(1,2); live = add(4,5); return live
+        let mut f = SsaFunction::new();
+        f.push_block(block(vec![
+            Instruction::Add(Value::Const(1), Value::Const(2)), // Instr(0,0) dead
+            Instruction::Add(Value::Const(4), Value::Const(5)), // Instr(0,1) live
+            Instruction::Return(Value::Instr(0, 1)),
+        ]));
+        let removed = f.eliminate_dead_stores();
+        assert_eq!(removed, 1);
+        assert!(matches!(f.blocks[0].instrs[0], Instruction::Nop));
+        assert!(matches!(f.blocks[0].instrs[1], Instruction::Add(..)));
+        assert!(matches!(f.blocks[0].instrs[2], Instruction::Return(_)));
+    }
+
+    #[test]
+    fn dead_store_chain_eliminates_only_bottom() {
+        // a=add(1,2) is read by b=add(a,3); b is unused; c=add(7,8) live.
+        // Only b is eliminated (a is still "read" by b in the original read set).
+        let mut f = SsaFunction::new();
+        f.push_block(block(vec![
+            Instruction::Add(Value::Const(1), Value::Const(2)), // Instr(0,0) = a
+            Instruction::Add(Value::Instr(0, 0), Value::Const(3)), // Instr(0,1) = b
+            Instruction::Add(Value::Const(7), Value::Const(8)), // Instr(0,2) = c
+            Instruction::Return(Value::Instr(0, 2)),
+        ]));
+        let removed = f.eliminate_dead_stores();
+        assert_eq!(removed, 1);
+        assert!(matches!(f.blocks[0].instrs[0], Instruction::Add(..))); // a kept
+        assert!(matches!(f.blocks[0].instrs[1], Instruction::Nop)); // b eliminated
+        assert!(matches!(f.blocks[0].instrs[2], Instruction::Add(..))); // c kept
+    }
+
+    #[test]
+    fn dead_store_none_when_all_used() {
+        let mut f = SsaFunction::new();
+        f.push_block(block(vec![
+            Instruction::Add(Value::Const(1), Value::Const(2)), // Instr(0,0)
+            Instruction::Return(Value::Instr(0, 0)),
+        ]));
+        let removed = f.eliminate_dead_stores();
+        assert_eq!(removed, 0);
+        assert!(matches!(f.blocks[0].instrs[0], Instruction::Add(..)));
+    }
+
+    #[test]
+    fn dead_store_phi_eliminated() {
+        // block0 -> block1 (p=add) -> block2 (q=add) -> block3
+        // block3: r=phi(p,q) [dead], s=add(5,6), return s
+        let mut f = SsaFunction::new();
+        f.push_block(block(vec![Instruction::Jump(1)])); // 0
+        f.push_block(block(vec![
+            Instruction::Add(Value::Const(1), Value::Const(2)), // p=Instr(1,0)
+            Instruction::Jump(2),
+        ])); // 1
+        f.push_block(block(vec![
+            Instruction::Add(Value::Const(3), Value::Const(4)), // q=Instr(2,0)
+            Instruction::Jump(3),
+        ])); // 2
+        f.push_block(block(vec![
+            Instruction::Phi(vec![
+                (Value::Instr(1, 0), 1),
+                (Value::Instr(2, 0), 2),
+            ]), // r=Instr(3,0) dead
+            Instruction::Add(Value::Const(5), Value::Const(6)), // s=Instr(3,1)
+            Instruction::Return(Value::Instr(3, 1)),
+        ])); // 3
+        let removed = f.eliminate_dead_stores();
+        assert_eq!(removed, 1);
+        assert!(matches!(f.blocks[3].instrs[0], Instruction::Nop)); // r eliminated
+        assert!(matches!(f.blocks[3].instrs[1], Instruction::Add(..))); // s kept
+        assert!(matches!(f.blocks[1].instrs[0], Instruction::Add(..))); // p kept
+        assert!(matches!(f.blocks[2].instrs[0], Instruction::Add(..))); // q kept
     }
 }
