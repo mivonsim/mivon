@@ -199,6 +199,93 @@ impl SsaFunction {
         result
     }
 
+    /// Global unreachable-block elimination on SSA form.
+    ///
+    /// Uses the dominator tree: a block is reachable iff the entry block
+    /// dominates it (equivalently `dom[b][b]` is true after
+    /// [`Self::dominators`], since unreachable blocks are cleared to all-false).
+    /// Unreachable blocks are removed and all jump/branch/phi targets are
+    /// remapped to the new (dense) block indices. Entry is always placed at
+    /// index 0. Indices are shifted, so this is NOT index-stable — callers
+    /// holding `Value::Instr(block, idx)` across this call must rebuild them.
+    ///
+    /// The `.expect` sites panic only on a malformed/inconsistent CFG where a
+    /// reachable block references an unreachable block (e.g. a `Phi` whose
+    /// predecessor block is unreachable). On a well-formed SSA graph every
+    /// terminator target of a reachable block is itself reachable, so the
+    /// remap always succeeds.
+    ///
+    /// Returns `true` if at least one block was removed.
+    pub fn eliminate_unreachable_blocks(&mut self) -> bool {
+        let n = self.blocks.len();
+        if n == 0 {
+            return false;
+        }
+        let dom = self.dominators();
+        // reachable(b) <=> dom[b][b] (entry always reaches itself).
+        let reachable: Vec<bool> = (0..n).map(|b| dom[b][b]).collect();
+        let reachable_count = reachable.iter().filter(|&&x| x).count();
+        if reachable_count == n {
+            return false;
+        }
+
+        // Dense remap: entry first at index 0, then other reachable blocks in
+        // original order. Unreachable blocks map to None (dropped).
+        let mut remap: Vec<Option<usize>> = vec![None; n];
+        let mut new_blocks: Vec<BasicBlock> = Vec::with_capacity(reachable_count);
+
+        if reachable[self.entry] {
+            remap[self.entry] = Some(0);
+            new_blocks.push(self.blocks[self.entry].clone());
+        }
+        for b in 0..n {
+            if b == self.entry {
+                continue;
+            }
+            if reachable[b] {
+                remap[b] = Some(new_blocks.len());
+                new_blocks.push(self.blocks[b].clone());
+            }
+        }
+
+        // Fix up terminators + phi predecessor indices to the dense remap.
+        for block in &mut new_blocks {
+            let mut i = 0;
+            while i < block.instrs.len() {
+                match &block.instrs[i] {
+                    Instruction::Jump(t) => {
+                        let nt = remap[*t].expect("jump targets unreachable block");
+                        block.instrs[i] = Instruction::Jump(nt);
+                    }
+                    Instruction::Branch { cond, then, r#else } => {
+                        let nt = remap[*then].expect("branch targets unreachable block");
+                        let ne = remap[*r#else].expect("branch targets unreachable block");
+                        block.instrs[i] = Instruction::Branch {
+                            cond: *cond,
+                            then: nt,
+                            r#else: ne,
+                        };
+                    }
+                    Instruction::Phi(pairs) => {
+                        let mut new_pairs = Vec::with_capacity(pairs.len());
+                        for (val, pred_block) in pairs.iter() {
+                            let np =
+                                remap[*pred_block].expect("phi from unreachable block");
+                            new_pairs.push((*val, np));
+                        }
+                        block.instrs[i] = Instruction::Phi(new_pairs);
+                    }
+                    _ => {}
+                }
+                i += 1;
+            }
+        }
+
+        self.blocks = new_blocks;
+        self.entry = 0;
+        true
+    }
+
     /// Local dead-store elimination on SSA form.
     ///
     /// Replaces every non-terminator instruction whose defined result is never
@@ -491,5 +578,116 @@ mod tests {
         assert!(matches!(f.blocks[3].instrs[1], Instruction::Add(..))); // s kept
         assert!(matches!(f.blocks[1].instrs[0], Instruction::Add(..))); // p kept
         assert!(matches!(f.blocks[2].instrs[0], Instruction::Add(..))); // q kept
+    }
+
+    #[test]
+    fn unreachable_block_removed() {
+        // block0(entry)->block1->block2, block3 isolated (no preds => unreachable).
+        let mut f = SsaFunction::new();
+        f.push_block(block(vec![Instruction::Jump(1)])); // 0 entry
+        f.push_block(block(vec![Instruction::Jump(2)])); // 1
+        f.push_block(block(vec![Instruction::Return(Value::Const(0))])); // 2
+        f.push_block(block(vec![Instruction::Return(Value::Const(1))])); // 3 unreachable
+        let removed = f.eliminate_unreachable_blocks();
+        assert!(removed);
+        assert_eq!(f.blocks.len(), 3);
+        assert_eq!(f.entry, 0);
+        assert!(matches!(f.blocks[0].instrs[0], Instruction::Jump(1)));
+        assert!(matches!(f.blocks[1].instrs[0], Instruction::Jump(2)));
+        assert!(matches!(f.blocks[2].instrs[0], Instruction::Return(_)));
+    }
+
+    #[test]
+    fn unreachable_block_remaps_jump_targets() {
+        // block0(entry)->Jump(2), block1 unreachable (no preds), block2 reachable via block0.
+        let mut f = SsaFunction::new();
+        f.push_block(block(vec![Instruction::Jump(2)])); // 0 entry
+        f.push_block(block(vec![Instruction::Return(Value::Const(5))])); // 1 unreachable
+        f.push_block(block(vec![Instruction::Return(Value::Const(1))])); // 2
+        let removed = f.eliminate_unreachable_blocks();
+        assert!(removed);
+        assert_eq!(f.blocks.len(), 2);
+        assert_eq!(f.entry, 0);
+        // block0's jump target block2 remapped to index 1.
+        assert!(matches!(f.blocks[0].instrs[0], Instruction::Jump(1)));
+        assert!(matches!(f.blocks[1].instrs[0], Instruction::Return(_)));
+    }
+
+    #[test]
+    fn unreachable_block_remaps_branch_targets() {
+        // block0(entry)->Branch{then:2, relse:3}, block1 unreachable (no preds),
+        // block2 and block3 reachable via block0.
+        let mut f = SsaFunction::new();
+        f.push_block(block(vec![
+            Instruction::Branch {
+                cond: Value::Instr(0, 0),
+                then: 2,
+                r#else: 3,
+            },
+        ])); // 0 entry
+        f.push_block(block(vec![Instruction::Return(Value::Const(5))])); // 1 unreachable
+        f.push_block(block(vec![Instruction::Return(Value::Const(1))])); // 2
+        f.push_block(block(vec![Instruction::Return(Value::Const(2))])); // 3
+        let removed = f.eliminate_unreachable_blocks();
+        assert!(removed);
+        assert_eq!(f.blocks.len(), 3);
+        assert_eq!(f.entry, 0);
+        // block2->index 1, block3->index 2 (block1 removed at index 1).
+        assert!(matches!(
+            f.blocks[0].instrs[0],
+            Instruction::Branch {
+                then: 1, r#else: 2, ..
+            }
+        ));
+        assert!(matches!(f.blocks[1].instrs[0], Instruction::Return(_)));
+        assert!(matches!(f.blocks[2].instrs[0], Instruction::Return(_)));
+    }
+
+    #[test]
+    fn unreachable_block_loop_preserved() {
+        // block0(entry)<->block1 loop, block2 unreachable removed.
+        let mut f = SsaFunction::new();
+        f.push_block(block(vec![Instruction::Jump(1)])); // 0 entry
+        f.push_block(block(vec![Instruction::Jump(0)])); // 1 jumps back to entry
+        f.push_block(block(vec![Instruction::Return(Value::Const(9))])); // 2 unreachable
+        let removed = f.eliminate_unreachable_blocks();
+        assert!(removed);
+        assert_eq!(f.blocks.len(), 2);
+        assert_eq!(f.entry, 0);
+        assert!(matches!(f.blocks[0].instrs[0], Instruction::Jump(1)));
+        assert!(matches!(f.blocks[1].instrs[0], Instruction::Jump(0)));
+    }
+
+    #[test]
+    fn all_reachable_no_change() {
+        let mut f = SsaFunction::new();
+        f.push_block(block(vec![Instruction::Jump(1)])); // 0
+        f.push_block(block(vec![Instruction::Return(Value::Const(0))])); // 1
+        let before = f.blocks.clone();
+        let removed = f.eliminate_unreachable_blocks();
+        assert!(!removed);
+        assert_eq!(f.blocks, before);
+        assert_eq!(f.entry, 0);
+    }
+
+    #[test]
+    fn entry_only_no_change() {
+        let mut f = SsaFunction::new();
+        f.push_block(block(vec![Instruction::Return(Value::Const(0))])); // 0 entry
+        let removed = f.eliminate_unreachable_blocks();
+        assert!(!removed);
+        assert_eq!(f.blocks.len(), 1);
+        assert_eq!(f.entry, 0);
+    }
+
+    #[test]
+    fn reachable_block_dominates_itself() {
+        let mut f = SsaFunction::new();
+        f.push_block(block(vec![Instruction::Jump(1)])); // 0 entry
+        f.push_block(block(vec![Instruction::Return(Value::Const(0))])); // 1
+        let dom = f.dominators();
+        assert!(dom[0][0], "entry dominates itself");
+        assert!(dom[1][1], "block 1 dominates itself");
+        assert!(dom[1][0], "entry dominates block 1");
     }
 }
