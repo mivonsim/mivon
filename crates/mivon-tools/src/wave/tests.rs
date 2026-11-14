@@ -423,6 +423,48 @@ fn test_ahb_decode_single_transfers() {
 }
 
 #[test]
+fn test_ahb_decode_captures_hresp() {
+    // WRITE selesai t=20 dengan hresp=1 (ERROR) → resp Some(1); READ selesai
+    // t=50 dengan hresp=0 (OKAY) → resp Some(0). hresp ditangkap pada data
+    // phase (saat hready=1).
+    let src = vcd_proto(
+        &[
+            ("a", 2, "htrans"),
+            ("b", 1, "hwrite"),
+            ("c", 1, "hready"),
+            ("d", 8, "haddr"),
+            ("e", 8, "hwdata"),
+            ("f", 8, "hrdata"),
+            ("g", 1, "hresp"),
+        ],
+        "#0\nb00 a\n0b\n1c\nb00000000 d\ne\nf\n0g\n\
+         #10\nb10 a\n1b\nb01100000 d\nb10011010 e\n0g\n\
+         #20\nb00 a\nb10011010 e\n1g\n\
+         #40\nb10 a\n0b\nb01100100 d\nb00111110 f\n1g\n\
+         #50\nb00 a\nb00111110 f\n0g\n",
+    );
+    std::fs::write("/tmp/__dec_ahb_hresp.vcd", src).unwrap();
+    let data = parse_vcd("/tmp/__dec_ahb_hresp.vcd").unwrap();
+    let txs = ahb_decode(&data).expect("ahb decode ok");
+    assert_eq!(txs.len(), 2, "2 transfer AHB");
+    assert_eq!(txs[0].kind, "WRITE");
+    assert_eq!(txs[0].end, 20);
+    assert_eq!(
+        txs[0].resp,
+        Some(1),
+        "hresp=1 (ERROR) ditangkap saat data phase"
+    );
+    assert_eq!(txs[1].kind, "READ");
+    assert_eq!(txs[1].end, 50);
+    assert_eq!(
+        txs[1].resp,
+        Some(0),
+        "hresp=0 (OKAY) ditangkap saat data phase"
+    );
+    let _ = std::fs::remove_file("/tmp/__dec_ahb_hresp.vcd");
+}
+
+#[test]
 fn test_decode_missing_signal_errors() {
     // VCD tanpa psel → apb_decode error jelas.
     let src = vcd_proto(

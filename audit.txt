@@ -14804,4 +14804,33 @@ VERIFIKASI ROUND 245:
     regresi lintas-crate).
 
 
+═══ ROUND 246 — FEAT-23 (lanjutan): decode AHB tangkap hresp ═══
+
+Ruang lingkup: perkuat decode AHB (sisi WAV-16) — tangkap sinyal `hresp`
+opsional sebagai `resp` transaksi (saat data phase, hready=1). Sebelumnya
+`DecodedTx.resp` selalu `None` untuk AHB. Menutup celah "decode tak
+menangkap response AHB". VCD tanpa `hresp` tetap menghasilkan `resp: None`
+(tanpa false positive).
+
+Perubahan (crates/mivon-tools/src/wave/decode.rs, fn ahb_decode):
+  - `hresp = tl("hresp")` (timeline kosong bila sinyal absen).
+  - Pada data phase selesai (push DecodedTx): `resp = if hresp.is_empty()
+    { None } else { Some(bits_val(sample_at(hresp, t))) }`.
+  - Update dokumentasi `DecodedTx.resp` (None untuk APB/AHB-tanpa-hresp;
+    AHB dengan hresp menangkap nilainya).
+
+Test baru (+1): test_ahb_decode_captures_hresp (WRITE selesai hresp=1 ->
+    Some(1); READ selesai hresp=0 -> Some(0)). DISKRIMINATIF: bila
+    penangkapan hresp dihapus, test gagal (resp tetap None).
+
+VERIFIKASI ROUND 246:
+  - rustfmt --check (decode.rs + tests.rs) -> bersih.
+  - cargo nextest run -p mivon-tools test_ahb_decode -> 2 passed.
+  - cargo nextest run -p mivon-tools -> 518 passed, 0 skipped (517 -> 518,
+    +1).
+  - cargo nextest run --workspace --features dev -> 3973 passed,
+    24 skipped, EXIT=0 (3972 -> 3973, +1; gate penuh hijau, tanpa
+    regresi lintas-crate).
+
+
 \\=======================================================================//

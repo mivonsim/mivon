@@ -18,7 +18,8 @@ pub struct DecodedTx {
     pub addr: u64,
     /// wdata (write) atau rdata (read)
     pub data: u64,
-    /// response AXI4-Lite (bresp/rresp), None utk APB/AHB
+    /// response: AXI4-Lite (bresp/rresp), atau AHB `hresp` bila sinyal
+    /// tersebut ada di VCD; None untuk APB maupun AHB tanpa `hresp`.
     pub resp: Option<u64>,
 }
 
@@ -210,6 +211,9 @@ pub fn ahb_decode(data: &VcdData) -> Result<Vec<DecodedTx>, SimError> {
     let hready = tl("hready");
     let hwdata = tl("hwdata");
     let hrdata = tl("hrdata");
+    // hresp opsional: banyak VCD AHB tak menyertakannya. Bila ada, ditangkap
+    // sebagai response transaksi pada data phase (saat hready=1).
+    let hresp = tl("hresp");
 
     let is_addr_phase = |tr: &str| tr == "10" || tr == "11"; // NONSEQ | SEQ
 
@@ -246,7 +250,11 @@ pub fn ahb_decode(data: &VcdData) -> Result<Vec<DecodedTx>, SimError> {
                         end: t,
                         addr,
                         data: data_v,
-                        resp: None,
+                        resp: if hresp.is_empty() {
+                            None
+                        } else {
+                            Some(bits_val(&sample_at(&hresp, t)))
+                        },
                     });
                 } else {
                     cur = Some((write, start, addr));
