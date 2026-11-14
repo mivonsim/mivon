@@ -855,7 +855,11 @@ Par-03: ✅ Arc body sharing + differential snapshot (ROUND 181-182)
 
 4.1 LANGUAGE DESIGN GAPS
 
-LANG-01: [] Tidak ada VHDL Support (Critical)
+LANG-01: ⚠️ STUB (ROUND 247) Tidak ada VHDL Support (Critical)
+         Stage 1: crate `mivon-vhdl` (terisolasi) — scanner terbatas yang
+         mengenali batas `entity`/`architecture` (nama + nomor baris) dari
+         source VHDL, 5 test. BUKAN parser lengkap; belum di-wire ke
+         pipeline compile. Sisa besar: lexer/parser/elaborasi/simulasi VHDL.
 LANG-02: [] Tidak ada SystemC Support (Critical)
 LANG-03: ✅ PSL boolean (IEEE 1850) (ROUND 74) — `assert always (expr)
          @(posedge clk);` / `assert never (expr) @(posedge clk);` di-parse
@@ -14831,6 +14835,39 @@ VERIFIKASI ROUND 246:
   - cargo nextest run --workspace --features dev -> 3973 passed,
     24 skipped, EXIT=0 (3972 -> 3973, +1; gate penuh hijau, tanpa
     regresi lintas-crate).
+
+
+═══ ROUND 247 — LANG-01 (stage 1 STUB): scanner entitas/arsitektur VHDL ═══
+
+Ruang lingkup: mulai item LANG-01 (Tidak ada VHDL Support, Critical) sebagai
+  STUB berbatas — crate terisolasi `mivon-vhdl` dengan scanner kasar yang
+  mengenali batas `entity`/`architecture` (nama + nomor baris) dari source
+  VHDL. Ini titik awal yang ter-test; parser/elaborasi/simulasi VHDL tetap
+  open (stage lanjut). Item besar dipecah jadi stub per izin goal.
+
+Perubahan:
+  - crates/mivon-vhdl/Cargo.toml (krate baru, anggota workspace, std-only).
+  - crates/mivon-vhdl/src/lib.rs: `scan()` + `VhdlEntity`/`VhdlArchitecture`/
+    `VhdlScan`/`VhdlScanError`; tokenisasi kasar (komentar `--` dibuang,
+    case-insensitive); +5 test unit.
+  - Cargo.toml (root): daftarkan `crates/mivon-vhdl` ke workspace members.
+  - Krate terisolasi — TIDAK di-wire ke pipeline compile (lexer/parser SV);
+    tidak jadi dependensi crate lain → tak memengaruhi build mereka.
+
+Test baru (+5): scan_entity_and_architecture, scan_case_insensitive_keywords,
+  scan_skips_line_comments, scan_unterminated_entity_errors,
+  scan_two_entities_two_architectures. DISKRIMINATIF: scanner salah → test
+  gagal (nama/baris/error tak cocok).
+
+VERIFIKASI ROUND 247:
+  - cargo test -p mivon-vhdl -> 5 passed.
+  - rustfmt --check (lib.rs) -> bersih.
+  - cargo nextest run --workspace --features dev -> 3978 passed,
+    24 skipped, EXIT=0 (3973 -> 3978, +5; krate baru masuk gate penuh,
+    tanpa regresi lintas-crate).
+
+Status LANG-01: ⚠️ STUB (stage 1) — scanner entitas/arsitektur ada; sisa
+  besar (lexer/parser/elaborasi/simulasi VHDL) masih open.
 
 
 \\=======================================================================//

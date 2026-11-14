@@ -1,0 +1,7 @@
+[package]
+name = "mivon-vhdl"
+version = "0.1.0"
+edition = "2021"
+description = "VHDL front-end stub (LANG-01): entity/architecture scanner"
+
+[dependencies]
