@@ -343,6 +343,9 @@ fn htrans_state(v: &str) -> Ht {
 /// - AHB-HWRITE-UNSTABLE: HWRITE berubah selama burst (harus stabil sejak
 ///   NONSEQ awal hingga IDLE). Aturan ini hanya aktif bila sinyal `hwrite`
 ///   ada di VCD.
+/// - AHB-HRESP-ERROR: saat transfer benar-benar selesai (span aktif + HREADY=1)
+///   namun `hresp` menunjukkan ERROR (hresp=1). Aturan ini hanya aktif bila
+///   sinyal `hresp` ada di VCD (sebagian besar VCD tak menyertakannya).
 ///
 /// `hready` wajib ada (seperti `pready` di APB). `BUSY` di antara
 /// NONSEQ/SEQ diperbolehkan (bukan beat transfer sendiri); `X` netral.
@@ -352,6 +355,9 @@ pub(crate) fn check_ahb(data: &VcdData) -> Result<Vec<Violation>, SimError> {
     // hwrite opsional: beberapa VCD tak menyertakannya. Dipakai untuk aturan
     // stabilitas HWRITE selama burst.
     let mut hwrite = Track::new(data, "hwrite").ok();
+    // hresp opsional: sebagian besar VCD tak menyertakannya. Dipakai untuk
+    // aturan AHB-HRESP-ERROR (response ERROR saat transfer selesai).
+    let mut hresp = Track::new(data, "hresp").ok();
     // Gabungan waktu perubahan htrans + hready (sorted-unik). hwrite tidak
     // di-merge: Track::at(t) mengembalikan nilai pada t berapa pun.
     let mut times: Vec<u64> = htrans
@@ -379,6 +385,7 @@ pub(crate) fn check_ahb(data: &VcdData) -> Result<Vec<Violation>, SimError> {
         let tr = htrans_state(htrans.at(t));
         let rdy = hready.at(t);
         let hw = hwrite.as_mut().map(|tr| tr.at(t));
+        let hr = hresp.as_mut().map(|tr| tr.at(t));
         // Event ini memulai span transfer baru bila NONSEQ muncul saat idle.
         let starts_span = tr == Ht::Nonseq && !span_active;
 
@@ -448,6 +455,20 @@ pub(crate) fn check_ahb(data: &VcdData) -> Result<Vec<Violation>, SimError> {
                     });
                     hwrite_reported = true;
                 }
+            }
+        }
+
+        // Aturan 4: HRESP=ERROR saat transfer selesai (span aktif + HREADY=1).
+        // Dilewati bila hresp tak ada di VCD. hr: Option<bool> (None bila
+        // hresp absen); Some(true) = ERROR.
+        if span_active && rdy {
+            if hr == Some(true) {
+                out.push(Violation {
+                    time: t,
+                    rule: "AHB-HRESP-ERROR",
+                    detail: "Transfer selesai (HREADY=1) namun HRESP=ERROR (respon error)"
+                        .to_string(),
+                });
             }
         }
     }

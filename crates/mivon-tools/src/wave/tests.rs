@@ -678,6 +678,42 @@ fn test_protocol_ahb_hwrite_stable_clean() {
 }
 
 #[test]
+fn test_protocol_ahb_hresp_error_flagged() {
+    // Transfer selesai (HREADY=1) pada beat NONSEQ dan SEQ; hresp=1 saat
+    // beat SEQ selesai → AHB-HRESP-ERROR.
+    let v = proto_check_ahb(
+        "/tmp/__proto_ahb_hresp_err.vcd",
+        &[("!", 2, "htrans"), ("\"", 1, "hready"), ("$", 1, "hresp")],
+        "#0\nb00 !\n0\"\n0$\n\
+         #10\nb10 !\n0\"\n0$\n\
+         #20\nb10 !\n1\"\n0$\n\
+         #30\nb11 !\n1\"\n1$\n\
+         #40\nb00 !\n0\"\n0$\n",
+    );
+    let got: Vec<(u64, &str)> = v.iter().map(|x| (x.time, x.rule)).collect();
+    assert_eq!(
+        got,
+        vec![(30, "AHB-HRESP-ERROR")],
+        "HRESP=ERROR saat transfer selesai → violation"
+    );
+}
+
+#[test]
+fn test_protocol_ahb_hresp_ok_clean() {
+    // Sama namun hresp=0 (OKAY) saat transfer selesai → bersih.
+    let v = proto_check_ahb(
+        "/tmp/__proto_ahb_hresp_ok.vcd",
+        &[("!", 2, "htrans"), ("\"", 1, "hready"), ("$", 1, "hresp")],
+        "#0\nb00 !\n0\"\n0$\n\
+         #10\nb10 !\n0\"\n0$\n\
+         #20\nb10 !\n1\"\n0$\n\
+         #30\nb11 !\n1\"\n0$\n\
+         #40\nb00 !\n0\"\n0$\n",
+    );
+    assert!(v.is_empty(), "HRESP=OKAY tak memicu pelanggaran: {v:?}");
+}
+
+#[test]
 fn test_protocol_axi4lite_clean_write_read() {
     // Write (AW+W → B) lalu read (AR → R) tanpa pelanggaran. VALID dan READY
     // turun bersamaan setelah handshake — bentuk waveform yang paling umum.

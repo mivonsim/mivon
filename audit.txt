@@ -14771,4 +14771,37 @@ Status: BUILD FIX — blocker gate workspace teratasi; tiap stage berikutnya
   dapat diverifikasi dengan `cargo nextest run --workspace --features dev`.
 
 
+═══ ROUND 245 — ENT-24 (lanjutan 4): rule AHB-HRESP-ERROR (post-sim) ═══
+
+Ruang lingkup: tambah aturan ke-4 checker AHB (post-sim) — AHB-HRESP-ERROR:
+saat transfer benar-benar selesai (span aktif + HREADY=1) namun `hresp`
+menunjukkan ERROR (hresp=1). Menutup sebagian "rule tambahan (HRESP)" yang
+masih open di ENT-24. Aturan ini OPSIONAL: hanya aktif bila sinyal `hresp`
+ada di VCD; VCD tanpa `hresp` tetap bersih (tidak false positive).
+
+Perubahan (crates/mivon-tools/src/wave/protocol.rs, fn check_ahb):
+  - `hresp` dijadikan OPSIONAL: `Track::new(data,"hresp").ok()`.
+  - `hr = hresp.as_mut().map(|tr| tr.at(t))` tiap waktu.
+  - Aturan 4: bila `span_active && rdy && hr == Some(true)` →
+    AHB-HRESP-ERROR.
+
+Test baru (+2): test_protocol_ahb_hresp_error_flagged
+  (NONSEQ→SEQ, hresp=1 saat beat SEQ selesai → AHB-HRESP-ERROR t=30) +
+  test_protocol_ahb_hresp_ok_clean (hresp=0 → bersih). DISKRIMINATIF: bila
+  pengecekan hresp dihapus, test error_flagged gagal (tidak ada flag).
+
+Status ENT-24: masih ⚠️ PARTIAL — rule AHB post-sim kini 4 aturan
+  (NO-READY, SEQ-WITHOUT-NONSEQ, HWRITE-UNSTABLE, HRESP-ERROR); runtime
+  VIP checker (saat simulasi) + protokol lain masih open.
+
+VERIFIKASI ROUND 245:
+  - rustfmt --check (protocol.rs + tests.rs) -> bersih.
+  - cargo nextest run -p mivon-tools -> 517 passed, 0 skipped (515 -> 517,
+    +2 test AHB).
+  - cargo nextest run -p mivon-tools test_protocol_ahb -> 11 passed.
+  - cargo nextest run --workspace --features dev -> 3972 passed,
+    24 skipped, EXIT=0 (3970 -> 3972, +2; gate penuh hijau, tanpa
+    regresi lintas-crate).
+
+
 \\=======================================================================//
