@@ -1,9 +1,11 @@
 //! FEAT-24: Standard VIP for industry protocols (USB, PCIe, DDR, Ethernet).
-//! Stage 1 stub (Critical, open).
+//! Stage 2 (lanjut dari stage 1 stub).
 //!
-//! Model library VIP standar untuk protokol industri. Implementasi checker
-//! VIP nyata (USB/PCIe/DDR/Ethernet) BELUM ada — stage 1 adalah model data
-//! + tes yang mendokumentasikan gap. Belum di-wire ke engine/VIP runtime.
+//! Model library VIP standar untuk protokol industri (stage 1: model data
+//! + register/enable). Stage 2 menambahkan checker VIP DDR tahap 1: decode
+//! enkoding perintah bus 3-bit (JEDEC) + validasi enkoding reserved.
+//! Belum di-wire ke engine/VIP runtime — alat diagnostik mandiri.
+//! Sisa open: checker USB/PCIe/Ethernet + runtime VIP assertion library.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
