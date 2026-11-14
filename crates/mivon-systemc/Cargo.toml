@@ -1,0 +1,7 @@
+[package]
+name = "mivon-systemc"
+version = "0.1.0"
+edition = "2021"
+description = "SystemC front-end stub (LANG-02): SC_MODULE/SC_CTOR scanner"
+
+[dependencies]

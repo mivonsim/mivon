@@ -2379,6 +2379,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "mivon-systemc"
+version = "0.1.0"
+
+[[package]]
 name = "mivon-tech"
 version = "0.1.0"
 

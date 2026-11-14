@@ -15013,4 +15013,44 @@ Status FEAT-24: ⚠️ STUB (stage 1+2+3) — library VIP + DDR + USB/PCIe/
   (di-drive saat simulasi, bukan post-sim decode).
 
 
+═══ ROUND 252 — LANG-02 (stage 1): SystemC front-end stub (SC_MODULE/SC_CTOR scanner) ═══
+
+Ruang lingkup: mulai LANG-02 (SystemC front-end, Critical, open) sebagai
+  stub kecil namun ter-test. mivon tidak punya dukungan SystemC sama
+  sekali. Stage 1 = scanner terbatas yang mengenali makro `SC_MODULE(<n>)`
+  dan `SC_CTOR(<n>)` dari source SystemC (C++), mengembalikan nama +
+  nomor baris. BUKAN parser C++/SystemC lengkap: belum parse port
+  (sc_in/sc_out), signal, process, maupun tipe SystemC; belum di-wire ke
+  pipeline compile mivon (SystemVerilog). Krate BARU terisolasi
+  `mivon-systemc` (tidak di-depend crate lain -> risiko regresi nol).
+
+Perubahan:
+  - Cargo.toml (root): tambah "crates/mivon-systemc" ke [members].
+  - crates/mivon-systemc/Cargo.toml (NEW): paket mivon-systemc v0.1.0.
+  - crates/mivon-systemc/src/lib.rs (NEW):
+      * SystemCModule{name,line}, SystemCCtor{name,line},
+        SystemCScan{modules,ctors}, SystemCScanError::Unterminated(String).
+      * tokenize: word alphanumerik/`_` + punct, track baris; abaikan
+        komentar `//` dan `/* */`.
+      * scan(src): kenali `SC_MODULE(`/`SC_CTOR(` (case-sensitive), ambil
+        nama = word setelah `(`, wajib `)` penutup, else Err(Unterminated).
+      * +5 test: scan_sc_module_and_ctor, scan_skips_line_comment,
+        scan_skips_block_comment, scan_case_sensitive_macro,
+        scan_unterminated_module_errors.
+
+Test DISKRIMINATIF: makro di komentar ikut terhitung / lowercase `sc_module`
+  ikut dikenali / `)` penutup hilang tapi tetap Ok -> tiap assertion gagal.
+  Revert fix -> compile/test gagal.
+
+VERIFIKASI ROUND 252:
+  - rustfmt --edition 2021 --check (lib.rs) -> bersih.
+  - cargo test -p mivon-systemc -> 5 passed.
+  - cargo nextest run --workspace --features dev -> 4002 passed
+    (3997 -> 4002, +5 mivon-systemc; tanpa regresi lintas-crate).
+
+Status LANG-02: ⚠️ STUB (stage 1) — scanner SC_MODULE/SC_CTOR ada di
+  krate terisolasi; sisa open: parser C++/SystemC (port/signal/process),
+  elaborasi, simulasi, dan wiring ke pipeline mivon.
+
+
 \\=======================================================================//

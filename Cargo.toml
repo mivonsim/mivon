@@ -23,6 +23,7 @@ members = [
     "crates/mivon-emu",
     "crates/mivon-tools",
     "crates/mivon-vhdl",
+    "crates/mivon-systemc",
     "crates/mivon-gui",
     "crates/mivon-api",
     "crates/mivon-fuzz",
