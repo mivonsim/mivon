@@ -855,11 +855,13 @@ Par-03: ✅ Arc body sharing + differential snapshot (ROUND 181-182)
 
 4.1 LANGUAGE DESIGN GAPS
 
-LANG-01: ⚠️ STUB (ROUND 247) Tidak ada VHDL Support (Critical)
-         Stage 1: crate `mivon-vhdl` (terisolasi) — scanner terbatas yang
-         mengenali batas `entity`/`architecture` (nama + nomor baris) dari
-         source VHDL, 5 test. BUKAN parser lengkap; belum di-wire ke
-         pipeline compile. Sisa besar: lexer/parser/elaborasi/simulasi VHDL.
+LANG-01: ⚠️ STUB (ROUND 247 + ROUND 248) Tidak ada VHDL Support (Critical)
+         Stage 1 (ROUND 247): crate `mivon-vhdl` (terisolasi) — scanner
+         terbatas kenali batas `entity`/`architecture` (nama + baris).
+         Stage 2 (ROUND 248): ekstraksi klausa `port (...)` — nama + mode +
+         tipe (kasar, tipe vektor diambil partial). BUKAN parser lengkap;
+         belum di-wire ke pipeline compile. Sisa besar: lexer/parser/
+         elaborasi/simulasi VHDL, generik, tipe, statement.
 LANG-02: [] Tidak ada SystemC Support (Critical)
 LANG-03: ✅ PSL boolean (IEEE 1850) (ROUND 74) — `assert always (expr)
          @(posedge clk);` / `assert never (expr) @(posedge clk);` di-parse
@@ -14868,6 +14870,40 @@ VERIFIKASI ROUND 247:
 
 Status LANG-01: ⚠️ STUB (stage 1) — scanner entitas/arsitektur ada; sisa
   besar (lexer/parser/elaborasi/simulasi VHDL) masih open.
+
+
+═══ ROUND 248 — LANG-01 (stage 2): ekstraksi port VHDL ═══
+
+Ruang lingkup: lanjutkan stub LANG-01 (krate mivon-vhdl) — ekstraksi
+  klausa `port (...)` entitas: nama sinyal + mode (in/out/inout/...) + tipe
+  (kasar). Tahap berbatas, ter-test; belum parser VHDL lengkap.
+
+Perubahan (crates/mivon-vhdl/src/lib.rs):
+  - `VhdlEntity.ports: Vec<VhdlPort>`; struct baru `VhdlPort { name, mode,
+    type_name }`.
+  - `tokenize` kini juga lacak offset karakter tiap token (untuk ekstrak
+    body entitas).
+  - `scan`: saat temukan entitas, ambil body (src[is_off..end_off]) lalu
+    `extract_ports(body)`.
+  - `extract_ports`: temukan `port (`, cocokkan kurung bersarang, tiap
+    segmen `;` → nama (sebelum `:`, bisa beberapa dipisah koma) + mode +
+    tipe (sesudah `:`). Komentar `--` di body diabaikan via `strip_comments`.
+  - +3 test port (multiple names + tipe vektor, no-port kosong, skip
+    komentar) → total mivon-vhdl 8 test.
+
+Test baru (+3): scan_ports_multiple_names_and_vector_type,
+  extract_ports_no_port_clause_is_empty, extract_ports_skips_comments.
+  DISKRIMINATIF: ekstraksi port salah → assertion nama/mode/jumlah gagal.
+
+VERIFIKASI ROUND 248:
+  - cargo test -p mivon-vhdl -> 8 passed.
+  - rustfmt --check (lib.rs) -> bersih.
+  - cargo nextest run --workspace --features dev -> 3981 passed
+    (3978 -> 3981, +3; gate penuh hijau).
+
+Status LANG-01: ⚠️ STUB (stage 1+2) — scanner entitas/arsitektur + ekstraksi
+  port ada; sisa besar (lexer/parser/elaborasi/simulasi VHDL, generik,
+  tipe, statement) masih open.
 
 
 \\=======================================================================//
