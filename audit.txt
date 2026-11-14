@@ -862,7 +862,14 @@ LANG-01: ⚠️ STUB (ROUND 247 + ROUND 248 + ROUND 250) Tidak ada VHDL Support 
          tipe (kasar, tipe vektor diambil partial). BUKAN parser lengkap;
          belum di-wire ke pipeline compile. Sisa besar: lexer/parser/
          elaborasi/simulasi VHDL, generik, tipe, statement.
-LANG-02: [] Tidak ada SystemC Support (Critical)
+LANG-02: ⚠️ STUB (ROUND 252 + ROUND 253) Tidak ada SystemC Support (Critical)
+         Stage 1 (ROUND 252): crate `mivon-systemc` (terisolasi) — scanner
+         terbatas kenali makro `SC_MODULE`/`SC_CTOR` (case-sensitive) +
+         error Unterminated. Stage 2 (ROUND 253): ekstraksi deklarasi
+         port/signal `sc_in`/`sc_out`/`sc_inout`/`sc_signal` (nama + arah +
+         tipe). BUKAN parser C++/SystemC lengkap; belum di-wire ke pipeline
+         compile mivon. Sisa besar: parser body/process, elaborasi,
+         simulasi, dan wiring ke pipeline.
 LANG-03: ✅ PSL boolean (IEEE 1850) (ROUND 74) — `assert always (expr)
          @(posedge clk);` / `assert never (expr) @(posedge clk);` di-parse
          → Stmt::Assert ber-clock (always = properti true tiap cycle;
@@ -15048,9 +15055,48 @@ VERIFIKASI ROUND 252:
   - cargo nextest run --workspace --features dev -> 4002 passed
     (3997 -> 4002, +5 mivon-systemc; tanpa regresi lintas-crate).
 
-Status LANG-02: ⚠️ STUB (stage 1) — scanner SC_MODULE/SC_CTOR ada di
-  krate terisolasi; sisa open: parser C++/SystemC (port/signal/process),
-  elaborasi, simulasi, dan wiring ke pipeline mivon.
+Status LANG-02: ⚠️ STUB (stage 1+2) — scanner SC_MODULE/SC_CTOR + ekstraksi
+  port/signal sc_in/sc_out/sc_inout/sc_signal ada di krate terisolasi;
+  sisa open: parser C++/SystemC (body/process), elaborasi, simulasi, dan
+  wiring ke pipeline mivon.
+
+
+═══ ROUND 253 — LANG-02 (stage 2): ekstraksi port/signal SystemC ═══
+
+Ruang lingkup: lanjutkan LANG-02 (SystemC front-end, Critical, open) —
+  stage 2 tambahkan ekstraksi deklarasi port/signal `sc_in<T>`/`sc_out<T>`/
+  `sc_inout<T>`/`sc_signal<T>` dari source SystemC, mengembalikan nama +
+  arah + tipe (kata pertama setelah `<`; template bersarang diabaikan
+  stage ini) + nomor baris. Tetap stub kasar, terisolasi di krate
+  `mivon-systemc`, BUKAN parser C++/SystemC lengkap, belum di-wire ke
+  pipeline compile mivon. Risiko regresi lintas-crate = 0 (krate mandiri).
+
+Perubahan (crates/mivon-systemc/src/lib.rs):
+  - `SystemCPortDirection { In, Out, InOut, Signal }`.
+  - `SystemCPort { name, direction, type_name, line }`.
+  - `SystemCScan.ports: Vec<SystemCPort>` (flat, sejajar modules/ctors).
+  - `scan()`: branch `sc_in`/`sc_out`/`sc_inout`/`sc_signal` — cari `<`
+    pertama, ambil tipe = kata pertama setelah `<`, cari `>` penutup
+    (tangani `<`/`>` bersarang via depth counter), nama = word setelah
+    `>`, arah dari keyword. Case-sensitive (sama dengan makro).
+  - Update doc header "STUB stage 1" -> "STUB stage 1-2" + deskripsi port.
+  - +2 test: scan_extracts_ports (4 port: in/out/inout/signal + tipe
+    bersarang sc_uint<8>/sc_int<4> diambil kata luar; modul/ctor tetap
+    terdeteksi), scan_ports_case_sensitive (`SC_IN` uppercase tak dikenali).
+
+Test DISKRIMINATIF: arah port salah / tipe tak terambil / `SC_IN`
+  uppercase ikut terhitung / `>` penutup hilang tapi tetap Ok -> tiap
+  assertion gagal. Revert fix -> compile/test gagal.
+
+VERIFIKASI ROUND 253:
+  - rustfmt --edition 2021 --check (lib.rs) -> bersih.
+  - cargo test -p mivon-systemc -> 7 passed (5 lama + 2 baru).
+  - cargo nextest run --workspace --features dev -> 4004 passed
+    (4002 -> 4004, +2 mivon-systemc; tanpa regresi lintas-crate).
+
+Status LANG-02: ⚠️ STUB (stage 1+2) — scanner SC_MODULE/SC_CTOR + ekstraksi
+  port/signal ada di krate terisolasi; sisa open: parser C++/SystemC
+  (body/process), elaborasi, simulasi, dan wiring ke pipeline mivon.
 
 
 \\=======================================================================//
