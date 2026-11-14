@@ -634,7 +634,7 @@ impl<'r> Mutator<'r> {
         };
         let mut out = String::with_capacity(source.len() + 8);
         out.push_str(&source[..s]);
-        out.push_str(self.rng.pick(&extremes));
+        out.push_str(*self.rng.pick(&extremes));
         out.push_str(&source[e..]);
         out
     }
@@ -1248,5 +1248,38 @@ mod tests {
         assert!(!kw_at("logical x;", "logic"));
         assert!(kw_at("byte x;", "byte"));
         assert!(!kw_at("byte_enable x;", "byte"));
+    }
+
+    /// Regresi: `tweak_literal` menyisipkan nilai ekstrem via
+    /// `self.rng.pick(&extremes)` (array `&[&str; 10]`). Dulu baris ini tak
+    /// compile — `pick` mengembalikan `&&str` bukan `&str` → crate mivon-fuzz
+    /// gagal build (blocker gate `cargo nextest --workspace --features dev`).
+    /// Fix: deref `*` sekali. Test ini ikut gagal compile bila fix dicabut.
+    #[test]
+    fn tweak_literal_inserts_extreme_value() {
+        let src = "module m;\n  logic [7:0] a;\n  assign a = 8'hFF;\nendmodule\n";
+        let extremes = [
+            "'0",
+            "'1",
+            "'x",
+            "'z",
+            "32'hffffffff",
+            "64'd0",
+            "-1",
+            "1e308",
+            "2**31",
+            "18446744073709551615",
+        ];
+        let mut saw = false;
+        for seed in 0..200u64 {
+            let mut rng = crate::Rng::new(seed);
+            let mut m = Mutator::new(&mut rng);
+            let out = m.tweak_literal(src);
+            if extremes.iter().any(|e| out.contains(e)) {
+                saw = true;
+                break;
+            }
+        }
+        assert!(saw, "tweak_literal tak pernah menyisipkan nilai ekstrem");
     }
 }

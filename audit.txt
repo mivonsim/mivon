@@ -14734,4 +14734,41 @@ VERIFIKASI ROUND 243:
   - cargo nextest run -p mivon-tools test_protocol_ahb -> 9 passed.
 
 
+═══ ROUND 244 — BUILD FIX: mivon-fuzz compile (blocker gate workspace) ═══
+
+Ruang lingkup: perbaiki error compile di crates/mivon-fuzz yang memblokir
+  gate verifikasi `cargo nextest run --workspace --features dev` sejak
+  beberapa ronde (crate mivon-fuzz tak ter-compile → seluruh workspace
+  test tak bisa dijalankan). Ini prasyarat agar tiap stage berikutnya bisa
+  diverifikasi penuh.
+
+Akar masalah:
+  - crates/mivon-fuzz/src/mutator.rs:637 — `out.push_str(self.rng.pick(&extremes))`.
+    `extremes: [&str; 10]` → `pick` (fn `Rng::pick<T>`) mengembalikan `&&str`,
+    sedangkan `push_str` butuh `&str` → E0308 + E0277 (str tidak Sized).
+    Seluruh pemanggil `pick` lain sudah pakai deref `*` atau `&[T]` berukuran;
+    hanya baris ini yang lupa deref.
+
+Perubahan (LOW risk, satu karakter semantik):
+  - mutator.rs:637 -> `out.push_str(*self.rng.pick(&extremes));` (deref `&str`).
+  - mutator.rs: +1 test `tweak_literal_inserts_extreme_value` (menjalankan
+    jalur `pick` yang diperbaiki; akan GAGAL compile bila fix dicabut →
+    diskriminatif di level compile).
+
+Verifikasi:
+  - cargo check -p mivon-fuzz --features dev -> bersih (sebelumnya E0308/E0277).
+  - cargo nextest run -p mivon-fuzz --features dev
+      tweak_literal_inserts_extreme_value -> 1 passed.
+  - cargo fmt --check (mutator.rs) -> bersih.
+  - cargo nextest run --workspace --features dev -> 3970 passed,
+    24 skipped, EXIT=0 (GATE PENUH KINI LOLOS; sebelumnya gagal compile
+    di mivon-fuzz). Catatan: hitungan 3970 memakai `--features dev`
+    (mivon-fuzz aktif), berbeda dengan 3993 di ROUND 240 yang memakai
+    `--all-features`; keduanya set feature berbeda, tidak sebanding
+    langsung.
+
+Status: BUILD FIX — blocker gate workspace teratasi; tiap stage berikutnya
+  dapat diverifikasi dengan `cargo nextest run --workspace --features dev`.
+
+
 \\=======================================================================//
