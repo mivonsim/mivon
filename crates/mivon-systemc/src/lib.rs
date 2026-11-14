@@ -4,9 +4,10 @@
 //! terbatas yang mengenali makro `SC_MODULE(<nama>)` dan `SC_CTOR(<nama>)`
 //! dari source SystemC (C++). Stage 2 menambah ekstraksi deklarasi
 //! port/signal `sc_in`/`sc_out`/`sc_inout`/`sc_signal` (nama + arah + tipe).
-//! BUKAN parser C++/SystemC lengkap: belum mem-parse process
-//! (`SC_METHOD`/`SC_THREAD`), body, maupun tipe SystemC bersarang penuh.
-//! Belum di-wire ke pipeline compile mivon (SystemVerilog).
+//! Stage 3 menambah ekstraksi process `SC_METHOD`/`SC_THREAD`/`SC_CTHREAD`.
+//! BUKAN parser C++/SystemC lengkap: belum mem-parse body process, maupun
+//! tipe SystemC bersarang penuh. Belum di-wire ke pipeline compile mivon
+//! (SystemVerilog).
 //!
 //! Ini titik awal yang kecil namun ter-test; item besar LANG-02 akan
 //! dipecah bertahap (parser C++/SystemC, elaborasi, simulasi) di stage
@@ -35,6 +36,30 @@ pub struct SystemCScan {
     pub ctors: Vec<SystemCCtor>,
     /// Deklarasi port/signal (`sc_in`/`sc_out`/`sc_inout`/`sc_signal`).
     pub ports: Vec<SystemCPort>,
+    /// Deklarasi process (`SC_METHOD`/`SC_THREAD`/`SC_CTHREAD`); stage 3.
+    pub processes: Vec<SystemCProcess>,
+}
+
+/// Jenis process SystemC.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SystemCProcessKind {
+    /// `SC_METHOD`.
+    Method,
+    /// `SC_THREAD`.
+    Thread,
+    /// `SC_CTHREAD`.
+    CThread,
+}
+
+/// Satu deklarasi process SystemC (`SC_METHOD`/`SC_THREAD`/`SC_CTHREAD`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SystemCProcess {
+    pub kind: SystemCProcessKind,
+    /// Nama metode/thread yang dijadikan process (identifier tepat setelah
+    /// keyword, mis. `SC_METHOD(run)` -> "run").
+    pub name: String,
+    /// 1-based baris tempat keyword muncul.
+    pub line: usize,
 }
 
 /// Arah deklarasi port/signal SystemC.
@@ -132,8 +157,8 @@ enum Tok {
 }
 
 /// Scan source SystemC dan kenali makro `SC_MODULE(<nama>)` dan
-/// `SC_CTOR(<nama>)`, serta deklarasi port/signal `sc_in`/`sc_out`/
-/// `sc_inout`/`sc_signal`.
+/// `SC_CTOR(<nama>)`, deklarasi port/signal `sc_in`/`sc_out`/`sc_inout`/
+/// `sc_signal`, serta process `SC_METHOD`/`SC_THREAD`/`SC_CTHREAD`.
 ///
 /// Aturan (kasar, case-sensitive):
 /// - Makro `SC_MODULE`/`SC_CTOR`: setelah kata makro, harapkan `(` lalu
@@ -141,6 +166,9 @@ enum Tok {
 /// - Deklarasi port/signal: setelah keyword `sc_in`/`sc_out`/`sc_inout`/
 ///   `sc_signal`, harapkan `<tipe>` lalu identifier nama, lalu `;`. Tipe
 ///   diambil sebagai kata pertama setelah `<` (template bersarang diabaikan).
+/// - Process: setelah keyword `SC_METHOD`/`SC_THREAD`/`SC_CTHREAD`, harapkan
+///   `(` lalu identifier nama, lalu `)`. Nama = word tepat setelah `(`
+///   (untuk `SC_CTHREAD(nama, clk)` diambil nama pertama).
 pub fn scan(src: &str) -> Result<SystemCScan, SystemCScanError> {
     let toks = tokenize(src);
     let n = toks.len();
@@ -253,6 +281,51 @@ pub fn scan(src: &str) -> Result<SystemCScan, SystemCScanError> {
                         line: nline,
                     });
                     i = end + 1;
+                }
+                "SC_METHOD" | "SC_THREAD" | "SC_CTHREAD" => {
+                    // Jenis process dari keyword.
+                    let kind = match w.as_str() {
+                        "SC_METHOD" => SystemCProcessKind::Method,
+                        "SC_THREAD" => SystemCProcessKind::Thread,
+                        _ => SystemCProcessKind::CThread,
+                    };
+                    // Cari `(` setelah keyword, lalu nama, lalu `)`.
+                    let mut j = i + 1;
+                    while j < n {
+                        if let (_, Tok::Punct('(')) = &toks[j] {
+                            break;
+                        }
+                        j += 1;
+                    }
+                    if j >= n {
+                        i = j;
+                        continue;
+                    }
+                    let name = if let Some((nl, Tok::Word(pn))) = toks.get(j + 1) {
+                        (*nl, pn.clone())
+                    } else {
+                        i = j + 1;
+                        continue;
+                    };
+                    let mut k = j + 2;
+                    let mut found = false;
+                    while k < n {
+                        if let (_, Tok::Punct(')')) = &toks[k] {
+                            found = true;
+                            break;
+                        }
+                        k += 1;
+                    }
+                    if !found {
+                        i = j + 1;
+                        continue;
+                    }
+                    res.processes.push(SystemCProcess {
+                        kind,
+                        name: name.1,
+                        line: name.0,
+                    });
+                    i = k;
                 }
                 _ => {}
             }
@@ -398,5 +471,51 @@ SC_MODULE(alu) {
         let src = "SC_IN<bool> not_a_port;\n";
         let s = scan(src).unwrap();
         assert!(s.ports.is_empty());
+    }
+
+    #[test]
+    fn scan_extracts_processes() {
+        // Process SC_METHOD/SC_THREAD/SC_CTHREAD diekstrak (nama + jenis).
+        let src = "\
+SC_MODULE(alu) {
+    SC_CTOR(alu) {
+        SC_METHOD(run);
+        SC_THREAD(worker);
+        SC_CTHREAD(tick, clk);
+    }
+};
+";
+        let s = scan(src).unwrap();
+        assert_eq!(
+            s.processes,
+            vec![
+                SystemCProcess {
+                    kind: SystemCProcessKind::Method,
+                    name: "run".to_string(),
+                    line: 3
+                },
+                SystemCProcess {
+                    kind: SystemCProcessKind::Thread,
+                    name: "worker".to_string(),
+                    line: 4
+                },
+                SystemCProcess {
+                    kind: SystemCProcessKind::CThread,
+                    name: "tick".to_string(),
+                    line: 5
+                },
+            ]
+        );
+        // Modul/ctor tetap terdeteksi.
+        assert_eq!(s.modules.len(), 1);
+        assert_eq!(s.ctors.len(), 1);
+    }
+
+    #[test]
+    fn scan_process_case_sensitive() {
+        // `sc_method` (lowercase) BUKAN process SystemC -> tidak terhitung.
+        let src = "sc_method(not_proc);\n";
+        let s = scan(src).unwrap();
+        assert!(s.processes.is_empty());
     }
 }
