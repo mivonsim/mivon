@@ -3,8 +3,9 @@
 //! mivon tidak memiliki dukungan VHDL sama sekali. Stage 1 adalah scanner
 //! terbatas yang mengenali batas `entity` / `architecture` dari source VHDL
 //! (nama + nomor baris). Stage 2 mengekstrak klausa `port`, stage 3 mengekstrak
-//! klausa `generic` (keduanya kasar: nama + mode/tipe). BUKAN parser lengkap:
-//! belum mem-parse concurrent/sequential statement, maupun tipe VHDL penuh.
+//! klausa `generic`, stage 4 mengekstrak deklarasi `signal` di body arsitektur
+//! (ketiganya kasar: nama + mode/tipe). BUKAN parser lengkap: belum mem-parse
+//! concurrent/sequential statement, process, maupun tipe VHDL penuh.
 //! Belum di-wire ke pipeline compile (lexer/parser SystemVerilog di mivon-parser).
 //!
 //! Ini titik awal yang kecil namun ter-test; item besar LANG-01 akan
@@ -41,6 +42,16 @@ pub struct VhdlEntity {
     pub ports: Vec<VhdlPort>,
 }
 
+/// Satu sinyal VHDL (stage 4: ekstraksi kasar dari body arsitektur).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VhdlSignal {
+    pub name: String,
+    /// Nama tipe (mis. `bit`, `std_logic_vector`). Tipe dengan kurung
+    /// (mis. `std_logic_vector(7 downto 0)`) diambil partial (sampai spasi
+    /// pertama) — sama seperti perlakuan port stage 2.
+    pub type_name: String,
+}
+
 /// Satu arsitektur VHDL yang dikenali.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VhdlArchitecture {
@@ -48,6 +59,9 @@ pub struct VhdlArchitecture {
     pub entity: String,
     /// 1-based baris tempat kata kunci `architecture` muncul.
     pub line: usize,
+    /// Daftar sinyal (stage 4; kosong bila arsitektur tak punya deklarasi
+    /// `signal`).
+    pub signals: Vec<VhdlSignal>,
 }
 
 /// Hasil scan VHDL.
@@ -183,7 +197,22 @@ pub fn scan(src: &str) -> Result<VhdlScan, VhdlScanError> {
                             let arch_line = *ln;
                             let aname = an.clone();
                             let ename = en.clone();
-                            let mut k = i + 4;
+                            // Cari `is` (batas awal body) sejak i+4.
+                            let mut is_k = i + 4;
+                            while is_k < n {
+                                if let (_, _, Tok::Word(w2)) = &toks[is_k] {
+                                    if w2.to_ascii_lowercase() == "is" {
+                                        break;
+                                    }
+                                }
+                                is_k += 1;
+                            }
+                            let body_start = if is_k < n {
+                                toks[is_k].1 + 2 // lewati "is"
+                            } else {
+                                toks.get(i + 4).map(|(_, o, _)| *o).unwrap_or(src.len())
+                            };
+                            let mut k = is_k.max(i + 4);
                             let mut found = false;
                             while k < n {
                                 if let (_, _, Tok::Word(w2)) = &toks[k] {
@@ -197,10 +226,18 @@ pub fn scan(src: &str) -> Result<VhdlScan, VhdlScanError> {
                             if !found {
                                 return Err(VhdlScanError::Unterminated(aname));
                             }
+                            let end_off = toks[k].1;
+                            let body = if end_off > body_start {
+                                &src[body_start..end_off]
+                            } else {
+                                ""
+                            };
+                            let signals = extract_signals(body);
                             res.architectures.push(VhdlArchitecture {
                                 name: aname,
                                 entity: ename,
                                 line: arch_line,
+                                signals,
                             });
                             i = k;
                         }
@@ -345,6 +382,66 @@ pub fn extract_generics(body: &str) -> Vec<VhdlGeneric> {
     gens
 }
 
+/// Ekstrak deklarasi sinyal dari body arsitektur (stage 4, kasar).
+///
+/// Mencari keyword `signal` (dengan boundary kata utuh), lalu deklarasi
+/// `signal <nama> : <tipe> ;` — nama sebelum `:` (bisa beberapa dipisah
+/// koma), tipe sesudah `:`. Tipe berikut boleh mengandung kurung (mirip
+/// port stage 2). Komentar `--` di body diabaikan. Sinyal dideklarasikan
+/// di bagian deklaratif arsitektur (sebelum `begin`); keyword `signal`
+/// di luar konteks itu tetap diambil (stub kasar).
+pub fn extract_signals(body: &str) -> Vec<VhdlSignal> {
+    let is_ident = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_alphanumeric() || c == '_');
+    let stripped = strip_comments(body);
+    let low = stripped.to_ascii_lowercase();
+    let mut signals = Vec::new();
+    let mut pos = 0usize;
+    while let Some(p) = low[pos..].find("signal") {
+        let abs = pos + p;
+        // Boundary kata: karakter sebelum/sepenuhnya bukan alphanumeric/`_`.
+        let before_ok = abs == 0
+            || !stripped[..abs]
+                .chars()
+                .last()
+                .map(|c| c.is_alphanumeric() || c == '_')
+                .unwrap_or(false);
+        let after_idx = abs + "signal".len();
+        let after_ok = after_idx >= stripped.len()
+            || !stripped[after_idx..]
+                .chars()
+                .next()
+                .map(|c| c.is_alphanumeric() || c == '_')
+                .unwrap_or(false);
+        if before_ok && after_ok {
+            if let Some(semi) = stripped[after_idx..].find(';') {
+                let decl = &stripped[after_idx..after_idx + semi];
+                if let Some(colon) = decl.find(':') {
+                    let type_name = decl[colon + 1..]
+                        .split_whitespace()
+                        .next()
+                        .unwrap_or("")
+                        .to_string();
+                    for name in decl[..colon].split(',') {
+                        let name = name.trim();
+                        if is_ident(name) {
+                            signals.push(VhdlSignal {
+                                name: name.to_string(),
+                                type_name: type_name.clone(),
+                            });
+                        }
+                    }
+                }
+                pos = after_idx + semi + 1;
+            } else {
+                break;
+            }
+        } else {
+            pos = after_idx;
+        }
+    }
+    signals
+}
+
 /// Buang komentar baris `--` dari sebuah teks.
 fn strip_comments(s: &str) -> String {
     let ch: Vec<char> = s.chars().collect();
@@ -405,7 +502,8 @@ end rtl;
             vec![VhdlArchitecture {
                 name: "rtl".to_string(),
                 entity: "my_ent".to_string(),
-                line: 5
+                line: 5,
+                signals: vec![]
             }]
         );
     }
@@ -547,5 +645,42 @@ end my_ent;
         assert_eq!(gens[2].name, "c");
         assert_eq!(gens[0].type_name, "integer");
         assert_eq!(gens[2].type_name, "positive");
+    }
+
+    #[test]
+    fn scan_architecture_extracts_signals() {
+        // Sinyal di body arsitektur (sebelum begin) diekstrak.
+        let src = "\
+entity my_ent is
+  port (clk : in bit);
+end my_ent;
+
+architecture rtl of my_ent is
+  signal a : bit;
+  signal b, c : std_logic_vector(7 downto 0);
+begin
+  b <= a;
+end rtl;
+";
+        let s = scan(src).unwrap();
+        assert_eq!(s.architectures.len(), 1);
+        let sigs = &s.architectures[0].signals;
+        // a, b, c -> 3 sinyal.
+        assert_eq!(sigs.len(), 3, "3 sinyal dikenali: {sigs:?}");
+        assert_eq!(sigs[0].name, "a");
+        assert_eq!(sigs[0].type_name, "bit");
+        assert_eq!(sigs[1].name, "b");
+        assert_eq!(sigs[1].type_name, "std_logic_vector(7");
+        assert_eq!(sigs[2].name, "c");
+        // Entitas tetap terdeteksi dengan 1 port.
+        assert_eq!(s.entities.len(), 1);
+        assert_eq!(s.entities[0].ports.len(), 1);
+    }
+
+    #[test]
+    fn extract_signals_no_signal_is_empty() {
+        // Body tanpa deklarasi signal -> kosong.
+        let body = "is begin b <= a; end";
+        assert!(extract_signals(body).is_empty());
     }
 }

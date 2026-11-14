@@ -855,7 +855,7 @@ Par-03: ✅ Arc body sharing + differential snapshot (ROUND 181-182)
 
 4.1 LANGUAGE DESIGN GAPS
 
-LANG-01: ⚠️ STUB (ROUND 247 + ROUND 248 + ROUND 250) Tidak ada VHDL Support (Critical)
+LANG-01: ⚠️ STUB (ROUND 247 + ROUND 248 + ROUND 250 + ROUND 254) Tidak ada VHDL Support (Critical)
          Stage 1 (ROUND 247): crate `mivon-vhdl` (terisolasi) — scanner
          terbatas kenali batas `entity`/`architecture` (nama + baris).
          Stage 2 (ROUND 248): ekstraksi klausa `port (...)` — nama + mode +
@@ -15097,6 +15097,45 @@ VERIFIKASI ROUND 253:
 Status LANG-02: ⚠️ STUB (stage 1+2) — scanner SC_MODULE/SC_CTOR + ekstraksi
   port/signal ada di krate terisolasi; sisa open: parser C++/SystemC
   (body/process), elaborasi, simulasi, dan wiring ke pipeline mivon.
+
+
+═══ ROUND 254 — LANG-01 (stage 4): ekstraksi deklarasi signal VHDL ═══
+
+Ruang lingkup: lanjutkan LANG-01 (VHDL front-end, Critical, open) —
+  stage 4 tambahkan ekstraksi deklarasi `signal` dari body arsitektur
+  (nama + tipe), di krate terisolasi `mivon-vhdl`. Stage 1-3 sudah:
+  entity/architecture, port, generic. Stage 4: `signal a, b : tipe ;`
+  diekstrak via `extract_signals`. BUKAN parser VHDL lengkap; belum
+  di-wire ke pipeline compile. Risiko regresi lintas-crate = 0.
+
+Perubahan (crates/mivon-vhdl/src/lib.rs):
+  - `VhdlSignal { name, type_name }`.
+  - `VhdlArchitecture.signals: Vec<VhdlSignal>` (field baru).
+  - `scan()`: branch `architecture` kini tangkap body (cari `is` lalu
+    `end`) dan panggil `extract_signals`; boundary kata dijaga (char
+    sebelum/sesudah `signal` bukan alphanumeric/`_`).
+  - `extract_signals(body)` (baru): cari keyword `signal`, deklarasi
+    `signal <nama> : <tipe> ;` — nama sebelum `:` (bisa beberapa dipisah
+    koma), tipe sesudah `:` (kurung diabaikan, partial spt port stage 2).
+  - Update doc header "STUB stage 1-3" -> "STUB stage 1-4".
+  - +2 test: scan_architecture_extracts_signals (3 sinyal: a, b, c; tipe
+    vector partial; entitas tetap 1 port), extract_signals_no_signal_is_empty.
+  - Test lama scan_entity_and_architecture diupdate (literal struct tambah
+    `signals: vec![]`).
+
+Test DISKRIMINATIF: nama sinyal tak terambil / tipe tak terambil / keyword
+  `signal` dalam nama lain ikut terhitung / arsitektur tanpa signal tetap
+  kosong -> tiap assertion gagal. Revert fix -> compile/test gagal.
+
+VERIFIKASI ROUND 254:
+  - rustfmt --edition 2021 --check (lib.rs) -> bersih.
+  - cargo test -p mivon-vhdl -> 13 passed (11 lama + 2 baru).
+  - cargo nextest run --workspace --features dev -> 4006 passed
+    (4004 -> 4006, +2 mivon-vhdl; tanpa regresi lintas-crate).
+
+Status LANG-01: ⚠️ STUB (stage 1-4) — scanner entity/architecture + port +
+  generic + signal ada di krate terisolasi; sisa open: lexer/parser VHDL
+  lengkap, process, concurrent/sequential statement, elaborasi, simulasi.
 
 
 \\=======================================================================//
