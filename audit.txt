@@ -855,7 +855,7 @@ Par-03: ✅ Arc body sharing + differential snapshot (ROUND 181-182)
 
 4.1 LANGUAGE DESIGN GAPS
 
-LANG-01: ⚠️ STUB (ROUND 247 + ROUND 248) Tidak ada VHDL Support (Critical)
+LANG-01: ⚠️ STUB (ROUND 247 + ROUND 248 + ROUND 250) Tidak ada VHDL Support (Critical)
          Stage 1 (ROUND 247): crate `mivon-vhdl` (terisolasi) — scanner
          terbatas kenali batas `entity`/`architecture` (nama + baris).
          Stage 2 (ROUND 248): ekstraksi klausa `port (...)` — nama + mode +
@@ -14941,7 +14941,37 @@ Status FEAT-24: ⚠️ STUB (stage 1+2) — library VIP + DDR command checker ad
   (di-drive saat simulasi, bukan post-sim decode).
 
 
-\\=======================================================================//
+═══ ROUND 250 — LANG-01 (stage 3): ekstraksi generic VHDL ═══
+
+Ruang lingkup: lanjutkan stub LANG-01 (krate mivon-vhdl) — ekstraksi
+  klausa `generic (...)` entitas: nama generic + tipe (kasar, tanpa mode;
+  default `:= nilai` diabaikan). Tahap berbatas, ter-test; belum parser
+  VHDL lengkap. Pola sama persis dengan ekstraksi port (ROUND 248).
+
+Perubahan (crates/mivon-vhdl/src/lib.rs):
+  - `VhdlGeneric { name, type_name }`; `VhdlEntity.generics: Vec<VhdlGeneric>`.
+  - `scan` kini juga panggil `extract_generics(body)` (selain `extract_ports`).
+  - `extract_generics(body)`: temukan `generic (`, cocokkan kurung
+    bersarang, tiap segmen `;` -> nama (sebelum `:`, bisa beberapa dipisah
+    koma) + tipe (sesudah `:`); komentar `--` diabaikan via `strip_comments`.
+  - +3 test (entity+gports, no-generic kosong, multi-nama+default) -> total
+    mivon-vhdl 11 test.
+  - Doc header krate diperbarui ke STUB stage 1-3.
+
+Test baru (+3): scan_entity_generic_and_ports,
+  extract_generics_no_generic_is_empty,
+  extract_generics_multiple_names_and_default. DISKRIMINATIF: ekstraksi
+  generic salah / port tak terambil saat ada generic -> assertion gagal.
+
+VERIFIKASI ROUND 250:
+  - cargo test -p mivon-vhdl -> 11 passed (8 lama + 3 baru).
+  - rustfmt --check (lib.rs) -> bersih.
+  - cargo nextest run --workspace --features dev -> lihat hasil gate penuh
+    (3985 -> 3988, +3; tanpa regresi lintas-crate).
+
+Status LANG-01: ⚠️ STUB (stage 1+2+3) — scanner entitas/arsitektur +
+  ekstraksi port + ekstraksi generic ada; sisa besar (lexer/parser/elaborasi/
+  simulasi VHDL, tipe, statement, konfigurasi) masih open.
 
 
 \\=======================================================================//

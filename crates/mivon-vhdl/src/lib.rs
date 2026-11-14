@@ -1,10 +1,11 @@
-//! LANG-01: VHDL front-end — STUB stage 1 (Critical, open).
+//! LANG-01: VHDL front-end — STUB stage 1-3 (Critical, open).
 //!
 //! mivon tidak memiliki dukungan VHDL sama sekali. Stage 1 adalah scanner
 //! terbatas yang mengenali batas `entity` / `architecture` dari source VHDL
-//! (nama + nomor baris). BUKAN parser lengkap: belum mem-parse port,
-//! generic, concurrent/sequential statement, maupun tipe VHDL. Belum
-//! di-wire ke pipeline compile (lexer/parser SystemVerilog di mivon-parser).
+//! (nama + nomor baris). Stage 2 mengekstrak klausa `port`, stage 3 mengekstrak
+//! klausa `generic` (keduanya kasar: nama + mode/tipe). BUKAN parser lengkap:
+//! belum mem-parse concurrent/sequential statement, maupun tipe VHDL penuh.
+//! Belum di-wire ke pipeline compile (lexer/parser SystemVerilog di mivon-parser).
 //!
 //! Ini titik awal yang kecil namun ter-test; item besar LANG-01 akan
 //! dipecah bertahap (lexer VHDL, parser, elaborasi, simulasi) di stage
@@ -20,12 +21,22 @@ pub struct VhdlPort {
     pub type_name: String,
 }
 
+/// Satu generic VHDL (stage 3: ekstraksi kasar dari klausa `generic`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VhdlGeneric {
+    pub name: String,
+    /// Nama tipe (mis. `integer`, `positive`, `std_logic_vector`).
+    pub type_name: String,
+}
+
 /// Satu entitas VHDL yang dikenali.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VhdlEntity {
     pub name: String,
     /// 1-based baris tempat kata kunci `entity` muncul.
     pub line: usize,
+    /// Daftar generic (stage 3; kosong bila entitas tak punya klausa `generic`).
+    pub generics: Vec<VhdlGeneric>,
     /// Daftar port (stage 2; kosong bila entitas tak punya klausa `port`).
     pub ports: Vec<VhdlPort>,
 }
@@ -150,9 +161,11 @@ pub fn scan(src: &str) -> Result<VhdlScan, VhdlScanError> {
                             ""
                         };
                         let ports = extract_ports(body);
+                        let generics = extract_generics(body);
                         res.entities.push(VhdlEntity {
                             name: ename,
                             line: entity_line,
+                            generics,
                             ports,
                         });
                         i = k;
@@ -268,6 +281,70 @@ pub fn extract_ports(body: &str) -> Vec<VhdlPort> {
     ports
 }
 
+/// Ekstrak deklarasi generic dari body entitas (stage 3, kasar).
+///
+/// Sama seperti `extract_ports` namun untuk klausa `generic (...)`: tiap
+/// segmen dipisahkan `;`; nama sebelum `:` (bisa beberapa dipisah koma),
+/// tipe sesudah `:`. Generic VHDL tidak punya mode. Tipe berikut boleh
+/// mengandung kurung (mis. `std_logic_vector(7 downto 0)`), karena nama
+/// diambil sebelum `:` pertama. Default `:= nilai` diabaikan (di luar tipe).
+/// Komentar `--` di body diabaikan.
+pub fn extract_generics(body: &str) -> Vec<VhdlGeneric> {
+    let stripped = strip_comments(body);
+    let low = stripped.to_ascii_lowercase();
+    let pos = match low.find("generic") {
+        Some(p) => p,
+        None => return Vec::new(),
+    };
+    let open = match stripped[pos..].find('(') {
+        Some(o) => pos + o,
+        None => return Vec::new(),
+    };
+    // Cocokkan kurung bersarang untuk menemukan `)` penutup klausa.
+    let mut depth = 0i32;
+    let mut close = None;
+    for (idx, c) in stripped[open..].char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    close = Some(open + idx);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let close = match close {
+        Some(c) => c,
+        None => return Vec::new(),
+    };
+    let inner = &stripped[open + 1..close];
+    let mut gens = Vec::new();
+    for seg in inner.split(';') {
+        let colon = match seg.find(':') {
+            Some(c) => c,
+            None => continue,
+        };
+        let after = seg[colon + 1..].trim();
+        let type_name = after.split_whitespace().next().unwrap_or("").to_string();
+        if type_name.is_empty() {
+            continue;
+        }
+        for name in seg[..colon].split(',') {
+            let name = name.trim();
+            if !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                gens.push(VhdlGeneric {
+                    name: name.to_string(),
+                    type_name: type_name.clone(),
+                });
+            }
+        }
+    }
+    gens
+}
+
 /// Buang komentar baris `--` dari sebuah teks.
 fn strip_comments(s: &str) -> String {
     let ch: Vec<char> = s.chars().collect();
@@ -308,6 +385,7 @@ end rtl;
             vec![VhdlEntity {
                 name: "my_ent".to_string(),
                 line: 1,
+                generics: vec![],
                 ports: vec![
                     VhdlPort {
                         name: "a".to_string(),
@@ -341,6 +419,7 @@ end rtl;
             vec![VhdlEntity {
                 name: "FOO".to_string(),
                 line: 1,
+                generics: vec![],
                 ports: vec![]
             }]
         );
@@ -418,5 +497,55 @@ end my_ent;
         let ports = extract_ports(body);
         assert_eq!(ports.len(), 1);
         assert_eq!(ports[0].name, "a");
+    }
+
+    #[test]
+    fn scan_entity_generic_and_ports() {
+        // Entity dengan klausa generic (sebelum port) — keduanya dikenali.
+        let src = "\
+entity my_ent is
+  generic (
+    g : integer := 32;
+    w : positive
+  );
+  port (
+    clk : in bit;
+    d : out std_logic_vector(7 downto 0)
+  );
+end my_ent;
+";
+        let s = scan(src).unwrap();
+        assert_eq!(s.entities.len(), 1);
+        let e = &s.entities[0];
+        // Generic: g (integer), w (positive).
+        assert_eq!(e.generics.len(), 2, "2 generic dikenali: {e:?}");
+        assert_eq!(e.generics[0].name, "g");
+        assert_eq!(e.generics[0].type_name, "integer");
+        assert_eq!(e.generics[1].name, "w");
+        assert_eq!(e.generics[1].type_name, "positive");
+        // Port tetap diekstrak walau ada generic di atasnya.
+        assert_eq!(e.ports.len(), 2);
+        assert_eq!(e.ports[0].name, "clk");
+        assert_eq!(e.ports[1].name, "d");
+    }
+
+    #[test]
+    fn extract_generics_no_generic_is_empty() {
+        // Body tanpa klausa generic -> kosong.
+        let body = "is port (a : in bit); end";
+        assert!(extract_generics(body).is_empty());
+    }
+
+    #[test]
+    fn extract_generics_multiple_names_and_default() {
+        // Nama ganda (dipisah koma) + default := diabaikan.
+        let body = "is generic (a, b : integer := 8; c : positive); end";
+        let gens = extract_generics(body);
+        assert_eq!(gens.len(), 3, "a, b, c -> 3 generic: {gens:?}");
+        assert_eq!(gens[0].name, "a");
+        assert_eq!(gens[1].name, "b");
+        assert_eq!(gens[2].name, "c");
+        assert_eq!(gens[0].type_name, "integer");
+        assert_eq!(gens[2].type_name, "positive");
     }
 }
