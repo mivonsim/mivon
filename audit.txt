@@ -6120,6 +6120,10 @@ FEAT-24: [x] Standard VIP for industry protocols STAGE 1 STUB — DONE (caveman 
           StandardVipLibrary (Arc<Mutex<HashMap>>), 4 test. pub mod std_vip di
           mivon-tools/lib.rs. Checker VIP USB/PCIe/DDR/Ethernet BELUM ada
           (placeholder + gap dokumentasi). Commit: a034dab (push origin/main).
+          ROUND 249: DDR command checker stage 1 — decode_ddr_command()
+          (JEDEC 3-bit, reserved 110/111 -> None) + check_ddr_commands()
+          (flag DDR-INVALID-CMD). +4 test diskriminatif (total 8). Sisa open:
+          USB/PCIe/Ethernet checker + runtime VIP assertion library.
 FEAT-25:[x] Waiver management for lint/formal violations — High
 
 
@@ -14904,6 +14908,40 @@ VERIFIKASI ROUND 248:
 Status LANG-01: ⚠️ STUB (stage 1+2) — scanner entitas/arsitektur + ekstraksi
   port ada; sisa besar (lexer/parser/elaborasi/simulasi VHDL, generik,
   tipe, statement) masih open.
+
+═══ ROUND 249 — FEAT-24 (stage 2): DDR command checker ═══
+
+Ruang lingkup: lanjutkan FEAT-24 (Standard VIP industri) — tambahkan
+  checker VIP DDR tahap 1: decode enkoding perintah bus 3-bit (JEDEC
+  DDR3/4) + validasi bahwa deretan perintah tidak memakai enkoding
+  reserved (110/111). Berbatas, ter-test, berisiko-rendah (alat
+  diagnostik mandiri di std_vip.rs; TIDAK di-wire ke engine/VIP runtime).
+
+Perubahan (crates/mivon-tools/src/std_vip.rs):
+  - `decode_ddr_command(cmd3)` -> Option<&'static str>: NOP/ACT/RD/WR/PRE/REF
+    (0b000..0b101); 0b110/0b111 -> None (reserved, invalid).
+  - `DdrViolation { index, cmd, kind }`.
+  - `check_ddr_commands(&[u8]) -> Vec<DdrViolation>`: flag tiap enkoding
+    reserved sebagai "DDR-INVALID-CMD".
+  - +4 test unit (total std_vip 8 test): ddr_command_decode_known,
+    ddr_command_decode_reserved_invalid, ddr_check_flags_reserved_only,
+    ddr_check_clean.
+
+Test baru DISKRIMINATIF: decode salah / reserved tak terflag akan gagal
+  assertion (cmd/kind/index). Revert fix -> compile/test gagal.
+
+VERIFIKASI ROUND 249:
+  - rustfmt --check (std_vip.rs) -> bersih.
+  - cargo test -p mivon-tools std_vip -> 8 passed (4 lama + 4 baru).
+  - cargo nextest run --workspace --features dev -> lihat hasil gate penuh
+    (3981 -> 3985, +4; tanpa regresi lintas-crate).
+
+Status FEAT-24: ⚠️ STUB (stage 1+2) — library VIP + DDR command checker ada;
+  sisa open: checker USB/PCIe/Ethernet + runtime VIP assertion library
+  (di-drive saat simulasi, bukan post-sim decode).
+
+
+\\=======================================================================//
 
 
 \\=======================================================================//
