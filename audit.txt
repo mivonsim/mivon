@@ -6122,8 +6122,10 @@ FEAT-24: [x] Standard VIP for industry protocols STAGE 1 STUB — DONE (caveman 
           (placeholder + gap dokumentasi). Commit: a034dab (push origin/main).
           ROUND 249: DDR command checker stage 1 — decode_ddr_command()
           (JEDEC 3-bit, reserved 110/111 -> None) + check_ddr_commands()
-          (flag DDR-INVALID-CMD). +4 test diskriminatif (total 8). Sisa open:
-          USB/PCIe/Ethernet checker + runtime VIP assertion library.
+          (flag DDR-INVALID-CMD). +4 test diskriminatif (total 8). ROUND 251:
+          USB/PCIe/Ethernet command decoder (decode + flag reserved/invalid)
+          +9 test (total 17). Sisa open: runtime VIP assertion library
+          (di-drive saat simulasi, bukan post-sim decode).
 FEAT-25:[x] Waiver management for lint/formal violations — High
 
 
@@ -14972,6 +14974,43 @@ VERIFIKASI ROUND 250:
 Status LANG-01: ⚠️ STUB (stage 1+2+3) — scanner entitas/arsitektur +
   ekstraksi port + ekstraksi generic ada; sisa besar (lexer/parser/elaborasi/
   simulasi VHDL, tipe, statement, konfigurasi) masih open.
+
+
+═══ ROUND 251 — FEAT-24 (stage 3): USB/PCIe/Ethernet command decoder ═══
+
+Ruang lingkup: lanjutkan FEAT-24 (Standard VIP industri) — tutup gap
+  "checker VIP USB/PCIe/Ethernet BELUM ada" dengan decoder + validasi
+  enkoding perintah untuk ketiga protokol (decode + flag reserved/invalid).
+  Berbatas, ter-test, berisiko-rendah (alat diagnostik mandiri di
+  std_vip.rs; TIDAK di-wire ke engine/VIP runtime). Runtime VIP assertion
+  library (di-drive saat simulasi) tetap open sebagai stage lanjut.
+
+Perubahan (crates/mivon-tools/src/std_vip.rs):
+  - `VipViolation { index, code, kind }` (generic).
+  - USB: `decode_usb_pid(pid4)` (4-bit PID USB 2.0; hanya 0b1000 reserved
+    -> None) + `check_usb_pids` (flag USB-INVALID-PID).
+  - PCIe: `decode_pcie_tlp_type(t)` (subset TLP Type 5-bit: MRd/MRdLk/
+    IORd/IOWr/Cfg*/Cpl*/Msg + varian 4DW; reserved -> None) +
+    `check_pcie_tlp_types` (flag PCIE-RESERVED-TYPE).
+  - Ethernet: `decode_ether_type(et)` (EtherType 16-bit; 0x0000/0xFFFF
+    invalid -> None; unknown valid -> None tanpa flag) + `check_ether_types`
+    (flag ETH-INVALID-ETYPE).
+  - +9 test (3 per protokol: decode-known, reserved/invalid, check-flags)
+    -> total std_vip 17 test (dari 8).
+
+Test baru DISKRIMINATIF: decode salah / reserved tak terflag / invalid
+  tak terflag akan gagal assertion. Revert fix -> compile/test gagal.
+
+VERIFIKASI ROUND 251:
+  - rustfmt --check (std_vip.rs) -> bersih.
+  - cargo nextest run -p mivon-tools std_vip -> 17 passed (8 lama + 9 baru).
+  - cargo nextest run --workspace --features dev -> 3997 passed
+    (3985 -> 3997, +12 total: ROUND 250 +3 vhdl + ROUND 251 +9 std_vip;
+    tanpa regresi lintas-crate).
+
+Status FEAT-24: ⚠️ STUB (stage 1+2+3) — library VIP + DDR + USB/PCIe/
+  Ethernet command decoder ada; sisa open: runtime VIP assertion library
+  (di-drive saat simulasi, bukan post-sim decode).
 
 
 \\=======================================================================//
