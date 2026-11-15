@@ -855,7 +855,7 @@ Par-03: ✅ Arc body sharing + differential snapshot (ROUND 181-182)
 
 4.1 LANGUAGE DESIGN GAPS
 
-LANG-01: ⚠️ STUB (ROUND 247 + ROUND 248 + ROUND 250 + ROUND 254 + ROUND 256) Tidak ada VHDL Support (Critical)
+LANG-01: ⚠️ STUB (ROUND 247 + ROUND 248 + ROUND 250 + ROUND 254 + ROUND 256 + ROUND 257) Tidak ada VHDL Support (Critical)
          Stage 1 (ROUND 247): crate `mivon-vhdl` (terisolasi) — scanner
          terbatas kenali batas `entity`/`architecture` (nama + baris).
          Stage 2 (ROUND 248): ekstraksi klausa `port (...)` — nama + mode +
@@ -15205,10 +15205,47 @@ VERIFIKASI ROUND 256:
   - cargo nextest run --workspace --features dev -> 4010 passed (+2,
     no regression).
 
-Status LANG-01: ⚠️ STUB (stage 1-5) — scanner entity/architecture + port +
-  generic + signal + component ada di krate terisolasi; sisa open: lexer/
-  parser VHDL lengkap, process, concurrent/sequential statement, elaborasi,
-  simulasi.
+Status LANG-01: ⚠️ STUB (stage 1-6) — scanner entity/architecture + port +
+  generic + signal + component + process ada di krate terisolasi; sisa open:
+  lexer/parser VHDL lengkap, concurrent/sequential statement dalam process,
+  elaborasi, simulasi.
+
+
+═══ ROUND 257 — LANG-01 (stage 6): ekstraksi deklarasi process VHDL ═══
+
+Item: LANG-01 (VHDL front-end) — stage 6.
+Perubahan (LOW-RISK, stub terisolasi di crates/mivon-vhdl/src/lib.rs):
+- Tambah `VhdlProcess { label: Option<String>, sensitivity: Vec<String>,
+  line }` dan field `processes: Vec<VhdlProcess>` di `VhdlArchitecture`.
+- Fungsi baru `extract_processes(body, start_line)`: cari keyword `process`
+  (boundary kata utuh), lewati kemunculan penutup `end process`, ambil label
+  dari pola `label : process`, dan ambil sensitivity list dari `(` ... `)`
+  (token `all` dan kurung kosong -> list kosong).
+- `scan()` panggil `extract_processes(body, start_line)` di branch
+  `architecture`.
+- +2 test diskriminatif:
+  * scan_architecture_extracts_processes — arsitektur berisi 2 process
+    (p0 berlabel + sensitivity [clk]; p1 berlabel tanpa `(`); sinyal `a`
+    tetap 1; entitas tetap 1 port. Memvalidasi skip `end process` + nested-end.
+  * extract_processes_sensitivity_list — sensitivity multi-sinyal
+    [clk,rst,en]; `process (all)` -> list kosong (token `all` tak dimasukkan).
+- Total test mivon-vhdl kini 17 (15 lama + 2 baru stage 6).
+
+ROOT CAUSE / mengapa ini perlu: VHDL `process` adalah unit konkuren utama;
+stub stage 6 memberi visibilitas label + sensitivity (fondasi untuk nanti
+mem-parse body sequential). Boundary `end process` diabaikan agar tak
+doble-count dengan pembuka.
+
+VERIFIKASI ROUND 257:
+  - rustfmt --edition 2021 --check (lib.rs) -> bersih.
+  - cargo test -p mivon-vhdl -> 17 passed.
+  - cargo nextest run --workspace --features dev -> 4012 passed (+2,
+    no regression).
+
+Status LANG-01: ⚠️ STUB (stage 1-6) — scanner entity/architecture + port +
+  generic + signal + component + process ada di krate terisolasi; sisa open:
+  lexer/parser VHDL lengkap, concurrent/sequential statement dalam process,
+  elaborasi, simulasi.
 
 
 \\=======================================================================//

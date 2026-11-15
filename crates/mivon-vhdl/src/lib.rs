@@ -1,13 +1,15 @@
-//! LANG-01: VHDL front-end — STUB stage 1-3 (Critical, open).
+//! LANG-01: VHDL front-end — STUB stage 1-6 (Critical, open).
 //!
 //! mivon tidak memiliki dukungan VHDL sama sekali. Stage 1 adalah scanner
 //! terbatas yang mengenali batas `entity` / `architecture` dari source VHDL
 //! (nama + nomor baris). Stage 2 mengekstrak klausa `port`, stage 3 mengekstrak
 //! klausa `generic`, stage 4 mengekstrak deklarasi `signal` di body arsitektur,
-//! stage 5 mengekstrak deklarasi `component` (nama + port) dari body arsitektur
-//! (semuanya kasar: nama + mode/tipe). BUKAN parser lengkap: belum mem-parse
-//! concurrent/sequential statement, process, maupun tipe VHDL penuh.
-//! Belum di-wire ke pipeline compile (lexer/parser SystemVerilog di mivon-parser).
+//! stage 5 mengekstrak deklarasi `component` (nama + port) dari body arsitektur,
+//! stage 6 mengekstrak deklarasi `process` (label + sensitivity list) dari body
+//! arsitektur (semuanya kasar: nama + mode/tipe). BUKAN parser lengkap: belum
+//! mem-parse concurrent/sequential statement dalam process, maupun tipe VHDL
+//! penuh. Belum di-wire ke pipeline compile (lexer/parser SystemVerilog di
+//! mivon-parser).
 //!
 //! Ini titik awal yang kecil namun ter-test; item besar LANG-01 akan
 //! dipecah bertahap (lexer VHDL, parser, elaborasi, simulasi) di stage
@@ -65,6 +67,20 @@ pub struct VhdlComponent {
     pub ports: Vec<VhdlPort>,
 }
 
+/// Satu process VHDL (stage 6: ekstraksi kasar dari `label : process (...)`
+/// ... `end process`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VhdlProcess {
+    /// Label process (mis. `foo` dalam `foo : process`), atau `None` bila
+    /// tak berlabel.
+    pub label: Option<String>,
+    /// Daftar sinyal dalam sensitivity list. Kosong bila `process` tanpa
+    /// `(` ... `)` atau memakai `process (all)` (token `all` tak dimasukkan).
+    pub sensitivity: Vec<String>,
+    /// 1-based baris tempat kata kunci `process` muncul.
+    pub line: usize,
+}
+
 /// Satu arsitektur VHDL yang dikenali.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VhdlArchitecture {
@@ -78,6 +94,8 @@ pub struct VhdlArchitecture {
     /// Daftar komponen (stage 5; kosong bila arsitektur tak punya deklarasi
     /// `component`).
     pub components: Vec<VhdlComponent>,
+    /// Daftar process (stage 6; kosong bila arsitektur tak punya `process`).
+    pub processes: Vec<VhdlProcess>,
 }
 
 /// Hasil scan VHDL.
@@ -288,12 +306,14 @@ pub fn scan(src: &str) -> Result<VhdlScan, VhdlScanError> {
                             };
                             let signals = extract_signals(body);
                             let components = extract_components(body, start_line);
+                            let processes = extract_processes(body, start_line);
                             res.architectures.push(VhdlArchitecture {
                                 name: aname,
                                 entity: ename,
                                 line: arch_line,
                                 signals,
                                 components,
+                                processes,
                             });
                             i = k;
                         }
@@ -558,6 +578,115 @@ pub fn extract_components(body: &str, start_line: usize) -> Vec<VhdlComponent> {
     comps
 }
 
+/// Ekstrak deklarasi process dari body arsitektur (stage 6, kasar).
+///
+/// Mencari keyword `process` (boundary kata utuh). Label diambil dari
+/// pola `label : process` (kata tepat sebelum `:` yang diikuti langsung
+/// `process`). Sensitivity list diambil dari `(` ... `)` tepat setelah
+/// `process` (token `all` maupun kurung kosong menghasilkan list kosong).
+/// `start_line` = nomor baris (1-based) karakter pertama `body`.
+pub fn extract_processes(body: &str, start_line: usize) -> Vec<VhdlProcess> {
+    let stripped = strip_comments(body);
+    let low = stripped.to_ascii_lowercase();
+    let mut procs = Vec::new();
+    let mut pos = 0usize;
+    while let Some(p) = low[pos..].find("process") {
+        let abs = pos + p;
+        let before_ok = abs == 0
+            || !stripped[..abs]
+                .chars()
+                .last()
+                .map(|c| c.is_alphanumeric() || c == '_')
+                .unwrap_or(false);
+        let after_idx = abs + "process".len();
+        let after_ok = after_idx >= stripped.len()
+            || !stripped[after_idx..]
+                .chars()
+                .next()
+                .map(|c| c.is_alphanumeric() || c == '_')
+                .unwrap_or(false);
+        if before_ok && after_ok {
+            // Lewati kemunculan `process` yang merupakan penutup
+            // (`end process`), bukan pembuka process.
+            let prev_word = stripped[..abs]
+                .trim_end()
+                .rsplit(|c: char| !(c.is_alphanumeric() || c == '_'))
+                .next();
+            if prev_word == Some("end") {
+                pos = after_idx;
+                continue;
+            }
+            // Label: `label : process` — `:` tepat sebelum process.
+            let label = {
+                let before = &stripped[..abs];
+                let mut lab = None;
+                if let Some(colon) = before.rfind(':') {
+                    if before[colon + 1..].trim().is_empty() {
+                        let pre = before[..colon].trim_end();
+                        if let Some(start) = pre.rfind(|c: char| !(c.is_alphanumeric() || c == '_'))
+                        {
+                            let word = &pre[start + 1..];
+                            if !word.is_empty() {
+                                lab = Some(word.to_string());
+                            }
+                        } else if !pre.is_empty() {
+                            lab = Some(pre.to_string());
+                        }
+                    }
+                }
+                lab
+            };
+            // Sensitivity list: setelah `process`, bila ada `(` ... `)`.
+            let mut sensitivity = Vec::new();
+            let rest = &stripped[after_idx..];
+            if let Some(open) = rest.find('(') {
+                let chars: Vec<char> = rest.chars().collect();
+                let mut depth = 0i32;
+                let mut cur = String::new();
+                let mut i = open;
+                while i < chars.len() {
+                    let c = chars[i];
+                    if c == '(' {
+                        depth += 1;
+                        if depth == 1 {
+                            i += 1;
+                            continue;
+                        }
+                    } else if c == ')' {
+                        depth -= 1;
+                        if depth == 0 {
+                            if !cur.trim().is_empty() && cur.trim() != "all" {
+                                sensitivity.push(cur.trim().to_string());
+                            }
+                            break;
+                        }
+                    } else if depth == 1 {
+                        if c.is_whitespace() || c == ',' {
+                            if !cur.trim().is_empty() && cur.trim() != "all" {
+                                sensitivity.push(cur.trim().to_string());
+                            }
+                            cur.clear();
+                        } else {
+                            cur.push(c);
+                        }
+                    }
+                    i += 1;
+                }
+            }
+            let line = start_line + stripped[..abs].matches('\n').count();
+            procs.push(VhdlProcess {
+                label,
+                sensitivity,
+                line,
+            });
+            pos = after_idx;
+        } else {
+            pos = after_idx;
+        }
+    }
+    procs
+}
+
 /// Buang komentar baris `--` dari sebuah teks.
 fn strip_comments(s: &str) -> String {
     let ch: Vec<char> = s.chars().collect();
@@ -620,7 +749,8 @@ end rtl;
                 entity: "my_ent".to_string(),
                 line: 5,
                 signals: vec![],
-                components: vec![]
+                components: vec![],
+                processes: vec![]
             }]
         );
     }
@@ -841,5 +971,62 @@ end rtl;
         // Body tanpa deklarasi component -> kosong.
         let body = "is begin b <= a; end";
         assert!(extract_components(body, 1).is_empty());
+    }
+
+    #[test]
+    fn scan_architecture_extracts_processes() {
+        // Process di body arsitektur diekstrak (label + sensitivity).
+        let src = "\
+entity my_ent is
+  port (clk : in bit);
+end my_ent;
+
+architecture rtl of my_ent is
+  signal a : bit;
+begin
+  p0 : process (clk) is
+  begin
+    a <= '0';
+  end process p0;
+  p1 : process is
+  begin
+    a <= '1';
+  end process p1;
+end rtl;
+";
+        let s = scan(src).unwrap();
+        assert_eq!(s.architectures.len(), 1);
+        let procs = &s.architectures[0].processes;
+        assert_eq!(procs.len(), 2, "2 process dikenali: {procs:?}");
+        assert_eq!(procs[0].label.as_deref(), Some("p0"));
+        assert_eq!(procs[0].sensitivity, vec!["clk".to_string()]);
+        assert_eq!(procs[1].label.as_deref(), Some("p1"));
+        // process tanpa `(` ... `)` -> sensitivity kosong.
+        assert!(procs[1].sensitivity.is_empty());
+        // Sinyal tetap diekstrak (a), entitas tetap 1 port.
+        assert_eq!(s.architectures[0].signals.len(), 1);
+        assert_eq!(s.entities[0].ports.len(), 1);
+    }
+
+    #[test]
+    fn extract_processes_sensitivity_list() {
+        // Sensitivity list multi-sinyal + `all` (tak dimasukkan).
+        let body = "\
+begin
+  foo : process (clk, rst, en) is
+  begin null; end process;
+  bar : process (all) is
+  begin null; end process;
+end";
+        let procs = extract_processes(body, 1);
+        assert_eq!(procs.len(), 2);
+        assert_eq!(procs[0].label.as_deref(), Some("foo"));
+        assert_eq!(
+            procs[0].sensitivity,
+            vec!["clk".to_string(), "rst".to_string(), "en".to_string()]
+        );
+        assert_eq!(procs[1].label.as_deref(), Some("bar"));
+        // `all` tak dimasukkan -> kosong.
+        assert!(procs[1].sensitivity.is_empty());
     }
 }
