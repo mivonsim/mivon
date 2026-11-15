@@ -3,8 +3,9 @@
 //! mivon tidak memiliki dukungan VHDL sama sekali. Stage 1 adalah scanner
 //! terbatas yang mengenali batas `entity` / `architecture` dari source VHDL
 //! (nama + nomor baris). Stage 2 mengekstrak klausa `port`, stage 3 mengekstrak
-//! klausa `generic`, stage 4 mengekstrak deklarasi `signal` di body arsitektur
-//! (ketiganya kasar: nama + mode/tipe). BUKAN parser lengkap: belum mem-parse
+//! klausa `generic`, stage 4 mengekstrak deklarasi `signal` di body arsitektur,
+//! stage 5 mengekstrak deklarasi `component` (nama + port) dari body arsitektur
+//! (semuanya kasar: nama + mode/tipe). BUKAN parser lengkap: belum mem-parse
 //! concurrent/sequential statement, process, maupun tipe VHDL penuh.
 //! Belum di-wire ke pipeline compile (lexer/parser SystemVerilog di mivon-parser).
 //!
@@ -52,6 +53,18 @@ pub struct VhdlSignal {
     pub type_name: String,
 }
 
+/// Satu komponen VHDL (stage 5: ekstraksi kasar dari `component ... end
+/// component`). Port di dalamnya diekstrak dengan `extract_ports` (sama
+/// seperti port entitas).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VhdlComponent {
+    pub name: String,
+    /// 1-based baris tempat kata kunci `component` muncul.
+    pub line: usize,
+    /// Port komponen (kosong bila tak ada klausa `port`).
+    pub ports: Vec<VhdlPort>,
+}
+
 /// Satu arsitektur VHDL yang dikenali.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VhdlArchitecture {
@@ -62,6 +75,9 @@ pub struct VhdlArchitecture {
     /// Daftar sinyal (stage 4; kosong bila arsitektur tak punya deklarasi
     /// `signal`).
     pub signals: Vec<VhdlSignal>,
+    /// Daftar komponen (stage 5; kosong bila arsitektur tak punya deklarasi
+    /// `component`).
+    pub components: Vec<VhdlComponent>,
 }
 
 /// Hasil scan VHDL.
@@ -217,6 +233,39 @@ pub fn scan(src: &str) -> Result<VhdlScan, VhdlScanError> {
                             while k < n {
                                 if let (_, _, Tok::Word(w2)) = &toks[k] {
                                     if w2.to_ascii_lowercase() == "end" {
+                                        // Lewati `end` bersarang (mis. `end
+                                        // component`, `end if`, `end case`).
+                                        // Penutup arsitektur adalah `end`
+                                        // (diikuti `architecture`/<nama>/`;`).
+                                        let nested_kw: [&str; 16] = [
+                                            "component",
+                                            "if",
+                                            "case",
+                                            "loop",
+                                            "process",
+                                            "record",
+                                            "generate",
+                                            "block",
+                                            "for",
+                                            "while",
+                                            "entity",
+                                            "function",
+                                            "procedure",
+                                            "package",
+                                            "configuration",
+                                            "array",
+                                        ];
+                                        let next_is_nested = matches!(
+                                            &toks.get(k + 1),
+                                            Some((_, _, Tok::Word(nx)))
+                                                if nested_kw.contains(
+                                                    &nx.to_ascii_lowercase().as_str()
+                                                )
+                                        );
+                                        if next_is_nested {
+                                            k += 1;
+                                            continue;
+                                        }
                                         found = true;
                                         break;
                                     }
@@ -232,12 +281,19 @@ pub fn scan(src: &str) -> Result<VhdlScan, VhdlScanError> {
                             } else {
                                 ""
                             };
+                            let start_line = if body_start <= src.len() {
+                                src[..body_start].lines().count()
+                            } else {
+                                arch_line
+                            };
                             let signals = extract_signals(body);
+                            let components = extract_components(body, start_line);
                             res.architectures.push(VhdlArchitecture {
                                 name: aname,
                                 entity: ename,
                                 line: arch_line,
                                 signals,
+                                components,
                             });
                             i = k;
                         }
@@ -442,6 +498,66 @@ pub fn extract_signals(body: &str) -> Vec<VhdlSignal> {
     signals
 }
 
+/// Ekstrak deklarasi komponen dari body arsitektur (stage 5, kasar).
+///
+/// Mencari keyword `component` (dengan boundary kata utuh), lalu nama
+/// komponen (word setelah `component`), lalu klausa `end component`
+/// penutup. Port di dalam komponen diekstrak via `extract_ports` (sama
+/// seperti port entitas). `start_line` = nomor baris (1-based) karakter
+/// pertama `body` — dipakai menghitung baris komponen secara absolut.
+pub fn extract_components(body: &str, start_line: usize) -> Vec<VhdlComponent> {
+    let stripped = strip_comments(body);
+    let low = stripped.to_ascii_lowercase();
+    let mut comps = Vec::new();
+    let mut pos = 0usize;
+    while let Some(p) = low[pos..].find("component") {
+        let abs = pos + p;
+        let before_ok = abs == 0
+            || !stripped[..abs]
+                .chars()
+                .last()
+                .map(|c| c.is_alphanumeric() || c == '_')
+                .unwrap_or(false);
+        let after_idx = abs + "component".len();
+        let after_ok = after_idx >= stripped.len()
+            || !stripped[after_idx..]
+                .chars()
+                .next()
+                .map(|c| c.is_alphanumeric() || c == '_')
+                .unwrap_or(false);
+        if before_ok && after_ok {
+            let cname = stripped[after_idx..]
+                .split_whitespace()
+                .next()
+                .unwrap_or("")
+                .to_string();
+            let name_ok =
+                !cname.is_empty() && cname.chars().all(|c| c.is_alphanumeric() || c == '_');
+            if name_ok {
+                if let Some(end_pos) = low[abs..].find("end component") {
+                    let comp_end = abs + end_pos;
+                    let inner = &stripped[after_idx..comp_end];
+                    let ports = extract_ports(inner);
+                    let line = start_line + stripped[..abs].matches('\n').count();
+                    comps.push(VhdlComponent {
+                        name: cname,
+                        line,
+                        ports,
+                    });
+                    pos = comp_end + "end component".len();
+                } else {
+                    break;
+                }
+            } else {
+                pos = after_idx;
+            }
+        } else {
+            pos = after_idx;
+        }
+    }
+    comps
+}
+
 /// Buang komentar baris `--` dari sebuah teks.
 fn strip_comments(s: &str) -> String {
     let ch: Vec<char> = s.chars().collect();
@@ -503,7 +619,8 @@ end rtl;
                 name: "rtl".to_string(),
                 entity: "my_ent".to_string(),
                 line: 5,
-                signals: vec![]
+                signals: vec![],
+                components: vec![]
             }]
         );
     }
@@ -682,5 +799,47 @@ end rtl;
         // Body tanpa deklarasi signal -> kosong.
         let body = "is begin b <= a; end";
         assert!(extract_signals(body).is_empty());
+    }
+
+    #[test]
+    fn scan_architecture_extracts_components() {
+        // Komponen di body arsitektur diekstrak (nama + port).
+        let src = "\
+entity my_ent is
+  port (clk : in bit);
+end my_ent;
+
+architecture rtl of my_ent is
+  component and2 is
+    port (a, b : in bit; y : out bit);
+  end component;
+  component dff is
+    port (d, clk : in bit; q : out bit);
+  end component;
+begin
+  u0 : and2 port map (a => x, b => y, y => z);
+end rtl;
+";
+        let s = scan(src).unwrap();
+        assert_eq!(s.architectures.len(), 1);
+        let comps = &s.architectures[0].components;
+        // and2, dff -> 2 komponen.
+        assert_eq!(comps.len(), 2, "2 komponen dikenali: {comps:?}");
+        assert_eq!(comps[0].name, "and2");
+        assert_eq!(comps[0].ports.len(), 3); // a, b, y
+        assert_eq!(comps[0].ports[2].name, "y");
+        assert_eq!(comps[0].ports[2].mode, "out");
+        assert_eq!(comps[1].name, "dff");
+        assert_eq!(comps[1].ports.len(), 3); // d, clk, q
+        assert!(s.architectures[0].signals.is_empty());
+        assert_eq!(s.entities.len(), 1);
+        assert_eq!(s.entities[0].ports.len(), 1);
+    }
+
+    #[test]
+    fn extract_components_no_component_is_empty() {
+        // Body tanpa deklarasi component -> kosong.
+        let body = "is begin b <= a; end";
+        assert!(extract_components(body, 1).is_empty());
     }
 }

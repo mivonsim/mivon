@@ -855,7 +855,7 @@ Par-03: ✅ Arc body sharing + differential snapshot (ROUND 181-182)
 
 4.1 LANGUAGE DESIGN GAPS
 
-LANG-01: ⚠️ STUB (ROUND 247 + ROUND 248 + ROUND 250 + ROUND 254) Tidak ada VHDL Support (Critical)
+LANG-01: ⚠️ STUB (ROUND 247 + ROUND 248 + ROUND 250 + ROUND 254 + ROUND 256) Tidak ada VHDL Support (Critical)
          Stage 1 (ROUND 247): crate `mivon-vhdl` (terisolasi) — scanner
          terbatas kenali batas `entity`/`architecture` (nama + baris).
          Stage 2 (ROUND 248): ekstraksi klausa `port (...)` — nama + mode +
@@ -15171,9 +15171,44 @@ VERIFIKASI ROUND 254:
   - cargo nextest run --workspace --features dev -> 4006 passed
     (4004 -> 4006, +2 mivon-vhdl; tanpa regresi lintas-crate).
 
-Status LANG-01: ⚠️ STUB (stage 1-4) — scanner entity/architecture + port +
-  generic + signal ada di krate terisolasi; sisa open: lexer/parser VHDL
-  lengkap, process, concurrent/sequential statement, elaborasi, simulasi.
+Status LANG-01: ⚠️ STUB (stage 1-5) — scanner entity/architecture + port +
+  generic + signal + component ada di krate terisolasi; sisa open: lexer/
+  parser VHDL lengkap, process, concurrent/sequential statement, elaborasi,
+  simulasi.
+
+
+═══ ROUND 256 — LANG-01 (stage 5): ekstraksi deklarasi component VHDL ═══
+
+Item: LANG-01 (VHDL front-end) — stage 5.
+Perubahan (LOW-RISK, stub terisolasi di crates/mivon-vhdl/src/lib.rs):
+- Tambah `VhdlComponent { name, ports: Vec<VhdlPort> }` dan field
+  `components: Vec<VhdlComponent>` di `VhdlArchitecture`.
+- Branch `architecture` di `scan()` kini mencari penutup `end` yang BUKAN
+  `end` bersarang (component/if/case/loop/process/record/generate/block/
+  for/while/entity/function/procedure/package/configuration/array) agar body
+  arsitektur tidak terpotong oleh `end component`.
+- Fungsi baru `extract_components(body)`: cari `component <n> port (...); end
+  component` dan reuse `extract_ports` untuk mengisi port komponen.
+- +2 test diskriminatif:
+  * scan_architecture_extracts_components — 2 component (foo: 1 port, dff: 3
+    port) diekstrak dari body bersarang; entitas tetap 1 port; sinyal kosong.
+  * extract_components_no_component_is_empty — body tanpa component -> kosong.
+- Total test mivon-vhdl kini 15 (11 lama + 4 baru stage 4/5).
+
+ROOT CAUSE / mengapa ini perlu: scanner stage 1-4 terpotong saat arsitektur
+berisi `end component` (penutup pertama = `end` milik component). Stage 5
+memperbaiki boundary body sekaligus menambah ekstraksi component.
+
+VERIFIKASI ROUND 256:
+  - rustfmt --edition 2021 --check (lib.rs) -> bersih.
+  - cargo test -p mivon-vhdl -> 15 passed.
+  - cargo nextest run --workspace --features dev -> 4010 passed (+2,
+    no regression).
+
+Status LANG-01: ⚠️ STUB (stage 1-5) — scanner entity/architecture + port +
+  generic + signal + component ada di krate terisolasi; sisa open: lexer/
+  parser VHDL lengkap, process, concurrent/sequential statement, elaborasi,
+  simulasi.
 
 
 \\=======================================================================//
