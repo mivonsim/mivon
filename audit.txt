@@ -855,7 +855,7 @@ Par-03: ✅ Arc body sharing + differential snapshot (ROUND 181-182)
 
 4.1 LANGUAGE DESIGN GAPS
 
-LANG-01: ⚠️ STUB (ROUND 247 + ROUND 248 + ROUND 250 + ROUND 254 + ROUND 256 + ROUND 257 + ROUND 259 + ROUND 261 + ROUND 263) Tidak ada VHDL Support (Critical)
+LANG-01: ⚠️ STUB (ROUND 247 + ROUND 248 + ROUND 250 + ROUND 254 + ROUND 256 + ROUND 257 + ROUND 259 + ROUND 261 + ROUND 263 + ROUND 264) Tidak ada VHDL Support (Critical)
          Stage 1 (ROUND 247): crate `mivon-vhdl` (terisolasi) — scanner
          terbatas kenali batas `entity`/`architecture` (nama + baris).
          Stage 2 (ROUND 248): ekstraksi klausa `port (...)` — nama + mode +
@@ -15432,10 +15432,49 @@ VERIFIKASI ROUND 263:
   - cargo nextest run --workspace --features dev -> 4024 passed (+2,
     no regression).
 
-Status LANG-01: ⚠️ STUB (stage 1-9) — scanner entity/architecture + port +
+Status LANG-01: ⚠️ STUB (stage 1-10) — scanner entity/architecture + port +
   generic + signal + component + process + library/use + package +
-  subprogram ada di krate terisolasi; sisa open: lexer/parser VHDL lengkap,
-  concurrent/sequential statement dalam process, elaborasi, simulasi.
+  subprogram + type/subtype ada di krate terisolasi; sisa open: lexer/parser
+  VHDL lengkap, concurrent/sequential statement dalam process, elaborasi,
+  simulasi.
+
+
+═══ ROUND 264 — LANG-01 (stage 10): ekstraksi deklarasi type/subtype VHDL ═══
+
+Ruang lingkup: lanjutkan stub LANG-01 (krate mivon-vhdl) — ekstraksi
+deklarasi `type`/`subtype` (nama + jenis Enum/Record/Subtype/Other) dari
+seluruh source, melengkapi daftar konstruk deklaratif VHDL tingkat file
+dan dalam package/architecture.
+
+Perubahan (crates/mivon-vhdl/src/lib.rs):
+  - Tambah `VhdlTypeKind{Enum,Record,Subtype,Other}` dan `VhdlTypeDecl
+    {name,kind,line}`.
+  - Tambah field `type_decls` di `VhdlScan`.
+  - Fungsi `extract_types(src)` baru: iterasi token `type`/`subtype`
+    (case-insensitive, guard `prev == end` untuk skip `end type`/`end
+    subtype`), nama = word setelah keyword, jenis ditentukan dari token
+    setelah `is` (`record` -> Record, `(` -> Enum, `subtype` -> Subtype,
+    lainnya -> Other).
+  - `scan()` panggil `extract_types(src)` sebelum `Ok(res)`.
+  - Doc header update ke "stage 1-10".
+
+Test diskriminatif (+2, total 25):
+  - `scan_extracts_type_declarations`: package berisi type enum/array/
+    record + subtype -> 4 ditemukan dengan kind benar.
+  - `scan_type_end_not_double_counted`: `end type`/`end subtype` tidak
+    dihitung (tanpa guard jadi 4, aktual 2).
+
+VERIFIKASI ROUND 264:
+  - rustfmt --edition 2021 --check (lib.rs) -> bersih.
+  - cargo test -p mivon-vhdl -> 25 passed.
+  - cargo nextest run --workspace --features dev -> lihat hasil gate
+    (target 4026 passed, +2, no regression).
+
+Status LANG-01: ⚠️ STUB (stage 1-10) — scanner entity/architecture + port +
+  generic + signal + component + process + library/use + package +
+  subprogram + type/subtype ada di krate terisolasi; sisa open: lexer/parser
+  VHDL lengkap, concurrent/sequential statement dalam process, elaborasi,
+  simulasi.
 
 
 \\=======================================================================//

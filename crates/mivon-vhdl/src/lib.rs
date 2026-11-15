@@ -1,4 +1,4 @@
-//! LANG-01: VHDL front-end — STUB stage 1-9 (Critical, open).
+//! LANG-01: VHDL front-end — STUB stage 1-10 (Critical, open).
 //!
 //! mivon tidak memiliki dukungan VHDL sama sekali. Stage 1 adalah scanner
 //! terbatas yang mengenali batas `entity` / `architecture` dari source VHDL
@@ -9,10 +9,11 @@
 //! arsitektur, stage 7 mengekstrak klausa `library`/`use` tingkat file, stage 8
 //! mengekstrak deklarasi `package`/`package body` (nama + jenis) tingkat file,
 //! stage 9 mengekstrak deklarasi subprogram `function`/`procedure` (nama +
-//! jenis) (semuanya kasar: nama + mode/tipe). BUKAN parser lengkap: belum
-//! mem-parse concurrent/sequential statement dalam process, maupun tipe VHDL
-//! penuh. Belum di-wire ke pipeline compile (lexer/parser SystemVerilog di
-//! mivon-parser).
+//! jenis), stage 10 mengekstrak deklarasi `type`/`subtype` (nama + jenis
+//! Enum/Record/Subtype/Other). Semuanya kasar: nama + mode/tipe. BUKAN parser
+//! lengkap: belum mem-parse concurrent/sequential statement dalam process,
+//! maupun tipe VHDL penuh. Belum di-wire ke pipeline compile (lexer/parser
+//! SystemVerilog di mivon-parser).
 //!
 //! Ini titik awal yang kecil namun ter-test; item besar LANG-01 akan
 //! dipecah bertahap (lexer VHDL, parser, elaborasi, simulasi) di stage
@@ -120,6 +121,28 @@ pub struct VhdlSubprogram {
     pub line: usize,
 }
 
+/// Jenis deklarasi tipe VHDL (stage 10).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VhdlTypeKind {
+    /// `type <nama> is (...);` (enumerasi).
+    Enum,
+    /// `type <nama> is record ... end record;`
+    Record,
+    /// `subtype <nama> is ...;`
+    Subtype,
+    /// `type <nama> is array (...) of ...;` / `access` / `file` / skalar dll.
+    Other,
+}
+
+/// Satu deklarasi tipe VHDL (stage 10: ekstraksi kasar nama + jenis).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VhdlTypeDecl {
+    pub name: String,
+    pub kind: VhdlTypeKind,
+    /// 1-based baris tempat kata kunci `type`/`subtype` muncul.
+    pub line: usize,
+}
+
 /// Satu arsitektur VHDL yang dikenali.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VhdlArchitecture {
@@ -150,6 +173,8 @@ pub struct VhdlScan {
     pub packages: Vec<VhdlPackage>,
     /// Deklarasi subprogram `function`/`procedure` (stage 9, kasar: nama).
     pub subprograms: Vec<VhdlSubprogram>,
+    /// Deklarasi `type`/`subtype` (stage 10, kasar: nama + jenis).
+    pub type_decls: Vec<VhdlTypeDecl>,
 }
 
 /// Kesalahan scan tingkat rendah (stage 1).
@@ -422,6 +447,7 @@ pub fn scan(src: &str) -> Result<VhdlScan, VhdlScanError> {
     let (libraries, uses) = extract_clauses(src);
     res.libraries = libraries;
     res.uses = uses;
+    res.type_decls = extract_types(src);
     Ok(res)
 }
 
@@ -856,6 +882,79 @@ pub fn extract_processes(body: &str, start_line: usize) -> Vec<VhdlProcess> {
         }
     }
     procs
+}
+
+/// Ekstrak deklarasi `type`/`subtype` dari seluruh source (stage 10, kasar).
+///
+/// Mendeteksi `type <nama> is ...` dan `subtype <nama> is ...`. Jenis
+/// ditentukan dari token setelah `is`: `record` -> Record, `(` -> Enum,
+/// keyword `subtype` -> Subtype, lainnya -> Other. Penutup `end type`/`end
+/// subtype` dilewati (guard kata sebelumnya = `end`). Komentar `--` sudah
+/// dibuang oleh `tokenize`.
+pub fn extract_types(src: &str) -> Vec<VhdlTypeDecl> {
+    let toks = tokenize(src);
+    let n = toks.len();
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i < n {
+        let (ln, _, t) = &toks[i];
+        if let Tok::Word(w) = t {
+            let lw = w.to_ascii_lowercase();
+            if lw == "type" || lw == "subtype" {
+                let prev_is_end = matches!(
+                    toks.get(i.wrapping_sub(1)),
+                    Some((_, _, Tok::Word(pw))) if pw.to_ascii_lowercase() == "end"
+                );
+                if prev_is_end {
+                    i += 1;
+                    continue;
+                }
+                let name = match toks.get(i + 1) {
+                    Some((_, _, Tok::Word(nx))) => nx.clone(),
+                    _ => {
+                        i += 1;
+                        continue;
+                    }
+                };
+                // Cari `is` setelah nama untuk menentukan jenis.
+                let mut is_j = None;
+                let mut j = i + 2;
+                while j < n {
+                    if let (_, _, Tok::Word(wj)) = &toks[j] {
+                        if wj.to_ascii_lowercase() == "is" {
+                            is_j = Some(j);
+                            break;
+                        }
+                    }
+                    j += 1;
+                }
+                let kind = if lw == "subtype" {
+                    VhdlTypeKind::Subtype
+                } else if let Some(k) = is_j {
+                    match toks.get(k + 1) {
+                        Some((_, _, Tok::Word(wk))) if wk.to_ascii_lowercase() == "record" => {
+                            VhdlTypeKind::Record
+                        }
+                        Some((_, _, Tok::Punct('('))) => VhdlTypeKind::Enum,
+                        _ => VhdlTypeKind::Other,
+                    }
+                } else {
+                    VhdlTypeKind::Other
+                };
+                out.push(VhdlTypeDecl {
+                    name,
+                    kind,
+                    line: *ln,
+                });
+                i += 1;
+            } else {
+                i += 1;
+            }
+        } else {
+            i += 1;
+        }
+    }
+    out
 }
 
 /// Buang komentar baris `--` dari sebuah teks.
@@ -1307,5 +1406,47 @@ procedure p is begin null; end procedure p;
         assert_eq!(s.subprograms.len(), 1);
         assert_eq!(s.subprograms[0].name, "p");
         assert_eq!(s.subprograms[0].kind, VhdlSubprogramKind::Procedure);
+    }
+
+    #[test]
+    fn scan_extracts_type_declarations() {
+        // `type`/`subtype` terdeteksi (nama + jenis benar).
+        let src = "\
+package p is
+  type state_t is (idle, busy, done);
+  type byte_t is array (7 downto 0) of bit;
+  type reg_t is record f1 : bit; f2 : bit; end record;
+  subtype small_int is integer range 0 to 7;
+end package;
+";
+        let s = scan(src).unwrap();
+        // state_t(Enum), byte_t(Other), reg_t(Record), small_int(Subtype).
+        assert_eq!(s.type_decls.len(), 4, "4 tipe dikenali: {s:?}");
+        assert_eq!(s.type_decls[0].name, "state_t");
+        assert_eq!(s.type_decls[0].kind, VhdlTypeKind::Enum);
+        assert_eq!(s.type_decls[1].name, "byte_t");
+        assert_eq!(s.type_decls[1].kind, VhdlTypeKind::Other);
+        assert_eq!(s.type_decls[2].name, "reg_t");
+        assert_eq!(s.type_decls[2].kind, VhdlTypeKind::Record);
+        assert_eq!(s.type_decls[3].name, "small_int");
+        assert_eq!(s.type_decls[3].kind, VhdlTypeKind::Subtype);
+        // Package tetap terdeteksi (1).
+        assert_eq!(s.packages.len(), 1);
+    }
+
+    #[test]
+    fn scan_type_end_not_double_counted() {
+        // Penutup `end type`/`end subtype` tidak dihitung sebagai deklarasi.
+        // Tanpa guard akan menjadi 4 (doble-count).
+        let src = "\
+type e is (a, b); end type e;
+subtype s is integer range 0 to 3; end subtype s;
+";
+        let s = scan(src).unwrap();
+        assert_eq!(s.type_decls.len(), 2, "1 type + 1 subtype: {s:?}");
+        assert_eq!(s.type_decls[0].name, "e");
+        assert_eq!(s.type_decls[0].kind, VhdlTypeKind::Enum);
+        assert_eq!(s.type_decls[1].name, "s");
+        assert_eq!(s.type_decls[1].kind, VhdlTypeKind::Subtype);
     }
 }
