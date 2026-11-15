@@ -855,7 +855,7 @@ Par-03: ✅ Arc body sharing + differential snapshot (ROUND 181-182)
 
 4.1 LANGUAGE DESIGN GAPS
 
-LANG-01: ⚠️ STUB (ROUND 247 + ROUND 248 + ROUND 250 + ROUND 254 + ROUND 256 + ROUND 257 + ROUND 259 + ROUND 261) Tidak ada VHDL Support (Critical)
+LANG-01: ⚠️ STUB (ROUND 247 + ROUND 248 + ROUND 250 + ROUND 254 + ROUND 256 + ROUND 257 + ROUND 259 + ROUND 261 + ROUND 263) Tidak ada VHDL Support (Critical)
          Stage 1 (ROUND 247): crate `mivon-vhdl` (terisolasi) — scanner
          terbatas kenali batas `entity`/`architecture` (nama + baris).
          Stage 2 (ROUND 248): ekstraksi klausa `port (...)` — nama + mode +
@@ -15401,6 +15401,41 @@ Status LANG-02: ⚠️ STUB (stage 1-6) — scanner SC_MODULE/SC_CTOR + ekstraks
   port/signal + process + clock + kontrol simulasi (sc_start/sc_stop) +
   entry point sc_main ada di krate terisolasi; sisa open: parser C++/SystemC
   (body process/ctor), elaborasi, simulasi, wiring pipeline.
+
+
+═══ ROUND 263 — LANG-01 (stage 9): ekstraksi subprogram function/procedure ═══
+
+Item: LANG-01 (VHDL front-end) — stage 9.
+Perubahan (LOW-RISK, stub terisolasi di crates/mivon-vhdl/src/lib.rs):
+- Tambah `VhdlSubprogramKind{Function,Procedure}`, `VhdlSubprogram{name,
+  kind,line}`, dan field `subprograms: Vec<VhdlSubprogram>` di `VhdlScan`.
+- Branch `function`/`procedure` di `scan()` (case-insensitive): nama = word
+  setelah keyword (impure/pure function tetap ambil nama setelah `function`);
+  `end function`/`end procedure` di-skip (prev token == `end`) agar tak
+  doble-count.
+- +2 test diskriminatif:
+  * scan_extracts_subprograms — `function add` (Function) + `procedure run`
+    (Procedure) dalam package, + `function top_f` top-level; `end function
+    top_f` penutup tak dihitung; total 3; packages tetap 1.
+  * scan_subprogram_end_not_double_counted — `end procedure p` penutup tak
+    dihitung (1 subprogram "p").
+- Total test mivon-vhdl kini 23 (21 lama + 2 baru stage 9).
+
+ROOT CAUSE / mengapa ini perlu: `function`/`procedure` adalah subprogram
+VHDL (sering di `package`); stub stage 9 memberi visibilitas nama subprogram
+(fondasi untuk nanti mem-parse parameter & body). Skip `end function/
+procedure` mencegah doble-count penutup.
+
+VERIFIKASI ROUND 263:
+  - rustfmt --edition 2021 --check (lib.rs) -> bersih.
+  - cargo test -p mivon-vhdl -> 23 passed.
+  - cargo nextest run --workspace --features dev -> 4024 passed (+2,
+    no regression).
+
+Status LANG-01: ⚠️ STUB (stage 1-9) — scanner entity/architecture + port +
+  generic + signal + component + process + library/use + package +
+  subprogram ada di krate terisolasi; sisa open: lexer/parser VHDL lengkap,
+  concurrent/sequential statement dalam process, elaborasi, simulasi.
 
 
 \\=======================================================================//

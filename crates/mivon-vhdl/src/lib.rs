@@ -1,4 +1,4 @@
-//! LANG-01: VHDL front-end — STUB stage 1-8 (Critical, open).
+//! LANG-01: VHDL front-end — STUB stage 1-9 (Critical, open).
 //!
 //! mivon tidak memiliki dukungan VHDL sama sekali. Stage 1 adalah scanner
 //! terbatas yang mengenali batas `entity` / `architecture` dari source VHDL
@@ -7,10 +7,11 @@
 //! stage 5 mengekstrak deklarasi `component` (nama + port) dari body arsitektur,
 //! stage 6 mengekstrak deklarasi `process` (label + sensitivity list) dari body
 //! arsitektur, stage 7 mengekstrak klausa `library`/`use` tingkat file, stage 8
-//! mengekstrak deklarasi `package`/`package body` (nama + jenis) tingkat file
-//! (semuanya kasar: nama + mode/tipe). BUKAN parser lengkap: belum mem-parse
-//! concurrent/sequential statement dalam process, maupun tipe VHDL penuh.
-//! Belum di-wire ke pipeline compile (lexer/parser SystemVerilog di
+//! mengekstrak deklarasi `package`/`package body` (nama + jenis) tingkat file,
+//! stage 9 mengekstrak deklarasi subprogram `function`/`procedure` (nama +
+//! jenis) (semuanya kasar: nama + mode/tipe). BUKAN parser lengkap: belum
+//! mem-parse concurrent/sequential statement dalam process, maupun tipe VHDL
+//! penuh. Belum di-wire ke pipeline compile (lexer/parser SystemVerilog di
 //! mivon-parser).
 //!
 //! Ini titik awal yang kecil namun ter-test; item besar LANG-01 akan
@@ -101,6 +102,24 @@ pub struct VhdlPackage {
     pub line: usize,
 }
 
+/// Jenis subprogram VHDL (stage 9).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VhdlSubprogramKind {
+    /// `function`.
+    Function,
+    /// `procedure`.
+    Procedure,
+}
+
+/// Satu deklarasi subprogram VHDL (stage 9: ekstraksi kasar nama + jenis).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VhdlSubprogram {
+    pub name: String,
+    pub kind: VhdlSubprogramKind,
+    /// 1-based baris tempat kata kunci `function`/`procedure` muncul.
+    pub line: usize,
+}
+
 /// Satu arsitektur VHDL yang dikenali.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VhdlArchitecture {
@@ -129,6 +148,8 @@ pub struct VhdlScan {
     pub uses: Vec<String>,
     /// Deklarasi `package` / `package body` (stage 8).
     pub packages: Vec<VhdlPackage>,
+    /// Deklarasi subprogram `function`/`procedure` (stage 9, kasar: nama).
+    pub subprograms: Vec<VhdlSubprogram>,
 }
 
 /// Kesalahan scan tingkat rendah (stage 1).
@@ -359,6 +380,34 @@ pub fn scan(src: &str) -> Result<VhdlScan, VhdlScanError> {
                     if let Some((_, _, Tok::Word(pn))) = toks.get(name_idx) {
                         res.packages.push(VhdlPackage {
                             name: pn.clone(),
+                            kind,
+                            line: mline,
+                        });
+                    }
+                    i += 1;
+                }
+                "function" | "procedure" => {
+                    // Nama = word tepat setelah keyword (mis. `function f
+                    // return ...` -> "f"; `impure function f` -> "f" juga,
+                    // karena keyword yang di-match adalah `function`).
+                    // Lewati `end function`/`end procedure` (penutup).
+                    let prev_is_end = matches!(
+                        toks.get(i.wrapping_sub(1)),
+                        Some((_, _, Tok::Word(pw))) if pw.to_ascii_lowercase() == "end"
+                    );
+                    if prev_is_end {
+                        i += 1;
+                        continue;
+                    }
+                    let mline = *ln;
+                    let kind = if w.to_ascii_lowercase() == "function" {
+                        VhdlSubprogramKind::Function
+                    } else {
+                        VhdlSubprogramKind::Procedure
+                    };
+                    if let Some((_, _, Tok::Word(sn))) = toks.get(i + 1) {
+                        res.subprograms.push(VhdlSubprogram {
+                            name: sn.clone(),
                             kind,
                             line: mline,
                         });
@@ -1221,5 +1270,42 @@ entity e is end e;
         assert_eq!(s.packages.len(), 1);
         assert_eq!(s.packages[0].name, "up");
         assert_eq!(s.packages[0].kind, VhdlPackageKind::Decl);
+    }
+
+    #[test]
+    fn scan_extracts_subprograms() {
+        // Subprogram `function`/`procedure` terdeteksi (nama + jenis).
+        let src = "\
+package p is
+  function add return integer;
+  procedure run;
+end package;
+
+function top_f return boolean is begin return true; end function;
+";
+        let s = scan(src).unwrap();
+        // package p: function add + procedure run.
+        // top-level: function top_f.
+        assert_eq!(s.subprograms.len(), 3, "3 subprogram: {s:?}");
+        assert_eq!(s.subprograms[0].name, "add");
+        assert_eq!(s.subprograms[0].kind, VhdlSubprogramKind::Function);
+        assert_eq!(s.subprograms[1].name, "run");
+        assert_eq!(s.subprograms[1].kind, VhdlSubprogramKind::Procedure);
+        assert_eq!(s.subprograms[2].name, "top_f");
+        assert_eq!(s.subprograms[2].kind, VhdlSubprogramKind::Function);
+        // `end function top_f` tidak doble-count (penutup di-skip).
+        assert_eq!(s.packages.len(), 1);
+    }
+
+    #[test]
+    fn scan_subprogram_end_not_double_counted() {
+        // `end procedure p` (penutup) tidak dihitung sebagai subprogram.
+        let src = "\
+procedure p is begin null; end procedure p;
+";
+        let s = scan(src).unwrap();
+        assert_eq!(s.subprograms.len(), 1);
+        assert_eq!(s.subprograms[0].name, "p");
+        assert_eq!(s.subprograms[0].kind, VhdlSubprogramKind::Procedure);
     }
 }
