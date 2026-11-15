@@ -1,13 +1,14 @@
-//! LANG-02: SystemC front-end — STUB stage 1-4 (Critical, open).
+//! LANG-02: SystemC front-end — STUB stage 1-5 (Critical, open).
 //!
 //! mivon tidak memiliki dukungan SystemC sama sekali. Stage 1 adalah scanner
 //! terbatas yang mengenali makro `SC_MODULE(<nama>)` dan `SC_CTOR(<nama>)`
 //! dari source SystemC (C++). Stage 2 menambah ekstraksi deklarasi
 //! port/signal `sc_in`/`sc_out`/`sc_inout`/`sc_signal` (nama + arah + tipe).
 //! Stage 3 menambah ekstraksi process `SC_METHOD`/`SC_THREAD`/`SC_CTHREAD`.
-//! Stage 4 menambah ekstraksi deklarasi clock `sc_clock` (nama). BUKAN
-//! parser C++/SystemC lengkap: belum mem-parse body process/ctor, maupun
-//! tipe SystemC bersarang penuh. Belum di-wire ke pipeline compile mivon
+//! Stage 4 menambah ekstraksi deklarasi clock `sc_clock` (nama). Stage 5
+//! menambah deteksi kontrol simulasi `sc_start`/`sc_stop`. BUKAN parser
+//! C++/SystemC lengkap: belum mem-parse body process/ctor, maupun tipe
+//! SystemC bersarang penuh. Belum di-wire ke pipeline compile mivon
 //! (SystemVerilog).
 //!
 //! Ini titik awal yang kecil namun ter-test; item besar LANG-02 akan
@@ -41,6 +42,8 @@ pub struct SystemCScan {
     pub processes: Vec<SystemCProcess>,
     /// Deklarasi clock (`sc_clock`); stage 4.
     pub clocks: Vec<SystemCClock>,
+    /// Kontrol simulasi (`sc_start`/`sc_stop`); stage 5.
+    pub sim_control: Vec<SystemCSimControl>,
 }
 
 /// Jenis process SystemC.
@@ -70,6 +73,23 @@ pub struct SystemCProcess {
 pub struct SystemCClock {
     /// Nama sinyal clock (identifier tepat setelah keyword `sc_clock`).
     pub name: String,
+    /// 1-based baris tempat keyword muncul.
+    pub line: usize,
+}
+
+/// Jenis kontrol simulasi SystemC (`sc_start`/`sc_stop`, stage 5).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SystemCSimControlKind {
+    /// `sc_start(<durasi>)` — memulai simulasi.
+    Start,
+    /// `sc_stop()` — menghentikan simulasi.
+    Stop,
+}
+
+/// Satu pemanggilan kontrol simulasi SystemC (`sc_start`/`sc_stop`, stage 5).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SystemCSimControl {
+    pub kind: SystemCSimControlKind,
     /// 1-based baris tempat keyword muncul.
     pub line: usize,
 }
@@ -170,8 +190,8 @@ enum Tok {
 
 /// Scan source SystemC dan kenali makro `SC_MODULE(<nama>)` dan
 /// `SC_CTOR(<nama>)`, deklarasi port/signal `sc_in`/`sc_out`/`sc_inout`/
-/// `sc_signal`, process `SC_METHOD`/`SC_THREAD`/`SC_CTHREAD`, serta clock
-/// `sc_clock`.
+/// `sc_signal`, process `SC_METHOD`/`SC_THREAD`/`SC_CTHREAD`, clock
+/// `sc_clock`, serta kontrol simulasi `sc_start`/`sc_stop`.
 ///
 /// Aturan (kasar, case-sensitive):
 /// - Makro `SC_MODULE`/`SC_CTOR`: setelah kata makro, harapkan `(` lalu
@@ -184,6 +204,8 @@ enum Tok {
 ///   (untuk `SC_CTHREAD(nama, clk)` diambil nama pertama).
 /// - Clock: setelah keyword `sc_clock`, identifier tepat berikutnya adalah
 ///   nama clock (mis. `sc_clock clk;` atau `sc_clock clk("clk", 10, SC_NS);`).
+/// - Kontrol simulasi: keyword `sc_start`/`sc_stop` dihitung sebagai panggilan
+///   kontrol (jenis + baris).
 pub fn scan(src: &str) -> Result<SystemCScan, SystemCScanError> {
     let toks = tokenize(src);
     let n = toks.len();
@@ -352,6 +374,20 @@ pub fn scan(src: &str) -> Result<SystemCScan, SystemCScanError> {
                             line: *mline,
                         });
                     }
+                    i += 1;
+                }
+                "sc_start" => {
+                    res.sim_control.push(SystemCSimControl {
+                        kind: SystemCSimControlKind::Start,
+                        line: *ln,
+                    });
+                    i += 1;
+                }
+                "sc_stop" => {
+                    res.sim_control.push(SystemCSimControl {
+                        kind: SystemCSimControlKind::Stop,
+                        line: *ln,
+                    });
                     i += 1;
                 }
                 _ => {}
@@ -582,5 +618,40 @@ SC_MODULE(tb) {
         let src = "SC_CLOCK(not_clk);\n";
         let s = scan(src).unwrap();
         assert!(s.clocks.is_empty());
+    }
+
+    #[test]
+    fn scan_extracts_sim_control() {
+        // Panggilan `sc_start`/`sc_stop` terdeteksi (jenis + baris).
+        let src = "\
+int sc_main(int argc, char* argv[]) {
+    sc_start(100, SC_NS);
+    run_simulation();
+    sc_stop();
+    return 0;
+}
+";
+        let s = scan(src).unwrap();
+        assert_eq!(
+            s.sim_control,
+            vec![
+                SystemCSimControl {
+                    kind: SystemCSimControlKind::Start,
+                    line: 2
+                },
+                SystemCSimControl {
+                    kind: SystemCSimControlKind::Stop,
+                    line: 4
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn scan_sim_control_case_sensitive() {
+        // `SC_START` (uppercase) BUKAN keyword -> tidak terhitung.
+        let src = "SC_START(100);\n";
+        let s = scan(src).unwrap();
+        assert!(s.sim_control.is_empty());
     }
 }

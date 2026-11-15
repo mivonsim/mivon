@@ -862,7 +862,7 @@ LANG-01: ⚠️ STUB (ROUND 247 + ROUND 248 + ROUND 250 + ROUND 254 + ROUND 256 
          tipe (kasar, tipe vektor diambil partial). BUKAN parser lengkap;
          belum di-wire ke pipeline compile. Sisa besar: lexer/parser/
          elaborasi/simulasi VHDL, generik, tipe, statement.
-LANG-02: ⚠️ STUB (ROUND 252 + ROUND 253 + ROUND 255 + ROUND 258) Tidak ada SystemC Support (Critical)
+LANG-02: ⚠️ STUB (ROUND 252 + ROUND 253 + ROUND 255 + ROUND 258 + ROUND 260) Tidak ada SystemC Support (Critical)
          Stage 1 (ROUND 252): crate `mivon-systemc` (terisolasi) — scanner
          terbatas kenali makro `SC_MODULE`/`SC_CTOR` (case-sensitive) +
          error Unterminated. Stage 2 (ROUND 253): ekstraksi deklarasi
@@ -15306,6 +15306,36 @@ Status LANG-01: ⚠️ STUB (stage 1-7) — scanner entity/architecture + port +
   generic + signal + component + process + library/use ada di krate
   terisolasi; sisa open: lexer/parser VHDL lengkap, concurrent/sequential
   statement dalam process, elaborasi, simulasi.
+
+
+═══ ROUND 260 — LANG-02 (stage 5): deteksi kontrol simulasi sc_start/sc_stop ═══
+
+Item: LANG-02 (SystemC front-end) — stage 5.
+Perubahan (LOW-RISK, stub terisolasi di crates/mivon-systemc/src/lib.rs):
+- Tambah `SystemCSimControlKind{Start,Stop}`, `SystemCSimControl{kind,line}`,
+  dan field `sim_control: Vec<SystemCSimControl>` di `SystemCScan`.
+- Branch `sc_start`/`sc_stop` di `scan()` (case-sensitive) — keyword dihitung
+  sebagai panggilan kontrol (jenis + baris).
+- +2 test diskriminatif:
+  * scan_extracts_sim_control — `sc_start` (baris 2) + `sc_stop` (baris 4)
+    terdeteksi; `run_simulation()`/`return` tak terhitung.
+  * scan_sim_control_case_sensitive — `SC_START` uppercase tak dikenali.
+- Total test mivon-systemc kini 13 (11 lama + 2 baru stage 5).
+
+ROOT CAUSE / mengapa ini perlu: `sc_start`/`sc_stop` adalah kontrol siklus
+hidup simulasi SystemC; stub stage 5 memberi heuristik "testbench detection"
+(fondasi untuk nanti mem-parse durasi/jadwal). Case-sensitive konsisten.
+
+VERIFIKASI ROUND 260:
+  - rustfmt --edition 2021 --check (lib.rs) -> bersih.
+  - cargo test -p mivon-systemc -> 13 passed.
+  - cargo nextest run --workspace --features dev -> 4018 passed (+2,
+    no regression).
+
+Status LANG-02: ⚠️ STUB (stage 1-5) — scanner SC_MODULE/SC_CTOR + ekstraksi
+  port/signal + process + clock + kontrol simulasi (sc_start/sc_stop) ada di
+  krate terisolasi; sisa open: parser C++/SystemC (body process/ctor),
+  elaborasi, simulasi, wiring pipeline.
 
 
 \\=======================================================================//
