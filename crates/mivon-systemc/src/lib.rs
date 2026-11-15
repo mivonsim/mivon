@@ -1,11 +1,12 @@
-//! LANG-02: SystemC front-end — STUB stage 1-2 (Critical, open).
+//! LANG-02: SystemC front-end — STUB stage 1-4 (Critical, open).
 //!
 //! mivon tidak memiliki dukungan SystemC sama sekali. Stage 1 adalah scanner
 //! terbatas yang mengenali makro `SC_MODULE(<nama>)` dan `SC_CTOR(<nama>)`
 //! dari source SystemC (C++). Stage 2 menambah ekstraksi deklarasi
 //! port/signal `sc_in`/`sc_out`/`sc_inout`/`sc_signal` (nama + arah + tipe).
 //! Stage 3 menambah ekstraksi process `SC_METHOD`/`SC_THREAD`/`SC_CTHREAD`.
-//! BUKAN parser C++/SystemC lengkap: belum mem-parse body process, maupun
+//! Stage 4 menambah ekstraksi deklarasi clock `sc_clock` (nama). BUKAN
+//! parser C++/SystemC lengkap: belum mem-parse body process/ctor, maupun
 //! tipe SystemC bersarang penuh. Belum di-wire ke pipeline compile mivon
 //! (SystemVerilog).
 //!
@@ -38,6 +39,8 @@ pub struct SystemCScan {
     pub ports: Vec<SystemCPort>,
     /// Deklarasi process (`SC_METHOD`/`SC_THREAD`/`SC_CTHREAD`); stage 3.
     pub processes: Vec<SystemCProcess>,
+    /// Deklarasi clock (`sc_clock`); stage 4.
+    pub clocks: Vec<SystemCClock>,
 }
 
 /// Jenis process SystemC.
@@ -57,6 +60,15 @@ pub struct SystemCProcess {
     pub kind: SystemCProcessKind,
     /// Nama metode/thread yang dijadikan process (identifier tepat setelah
     /// keyword, mis. `SC_METHOD(run)` -> "run").
+    pub name: String,
+    /// 1-based baris tempat keyword muncul.
+    pub line: usize,
+}
+
+/// Satu deklarasi clock SystemC (`sc_clock`, stage 4).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SystemCClock {
+    /// Nama sinyal clock (identifier tepat setelah keyword `sc_clock`).
     pub name: String,
     /// 1-based baris tempat keyword muncul.
     pub line: usize,
@@ -158,7 +170,8 @@ enum Tok {
 
 /// Scan source SystemC dan kenali makro `SC_MODULE(<nama>)` dan
 /// `SC_CTOR(<nama>)`, deklarasi port/signal `sc_in`/`sc_out`/`sc_inout`/
-/// `sc_signal`, serta process `SC_METHOD`/`SC_THREAD`/`SC_CTHREAD`.
+/// `sc_signal`, process `SC_METHOD`/`SC_THREAD`/`SC_CTHREAD`, serta clock
+/// `sc_clock`.
 ///
 /// Aturan (kasar, case-sensitive):
 /// - Makro `SC_MODULE`/`SC_CTOR`: setelah kata makro, harapkan `(` lalu
@@ -169,6 +182,8 @@ enum Tok {
 /// - Process: setelah keyword `SC_METHOD`/`SC_THREAD`/`SC_CTHREAD`, harapkan
 ///   `(` lalu identifier nama, lalu `)`. Nama = word tepat setelah `(`
 ///   (untuk `SC_CTHREAD(nama, clk)` diambil nama pertama).
+/// - Clock: setelah keyword `sc_clock`, identifier tepat berikutnya adalah
+///   nama clock (mis. `sc_clock clk;` atau `sc_clock clk("clk", 10, SC_NS);`).
 pub fn scan(src: &str) -> Result<SystemCScan, SystemCScanError> {
     let toks = tokenize(src);
     let n = toks.len();
@@ -326,6 +341,18 @@ pub fn scan(src: &str) -> Result<SystemCScan, SystemCScanError> {
                         line: name.0,
                     });
                     i = k;
+                }
+                "sc_clock" => {
+                    // Nama = identifier tepat setelah keyword `sc_clock`
+                    // (mis. `sc_clock clk;` atau `sc_clock clk("clk", 10,
+                    // SC_NS);`).
+                    if let Some((mline, Tok::Word(cn))) = toks.get(i + 1) {
+                        res.clocks.push(SystemCClock {
+                            name: cn.clone(),
+                            line: *mline,
+                        });
+                    }
+                    i += 1;
                 }
                 _ => {}
             }
@@ -517,5 +544,43 @@ SC_MODULE(alu) {
         let src = "sc_method(not_proc);\n";
         let s = scan(src).unwrap();
         assert!(s.processes.is_empty());
+    }
+
+    #[test]
+    fn scan_extracts_clocks() {
+        // Deklarasi `sc_clock` diekstrak (nama), baik dengan maupun tanpa
+        // argumen konstruktor.
+        let src = "\
+SC_MODULE(tb) {
+    sc_clock clk;
+    sc_clock fast_clk(\"fast\", 10, SC_NS);
+    SC_CTOR(tb) {}
+};
+";
+        let s = scan(src).unwrap();
+        assert_eq!(
+            s.clocks,
+            vec![
+                SystemCClock {
+                    name: "clk".to_string(),
+                    line: 2
+                },
+                SystemCClock {
+                    name: "fast_clk".to_string(),
+                    line: 3
+                },
+            ]
+        );
+        // Modul/ctor tetap terdeteksi.
+        assert_eq!(s.modules.len(), 1);
+        assert_eq!(s.ctors.len(), 1);
+    }
+
+    #[test]
+    fn scan_clock_case_sensitive() {
+        // `SC_CLOCK` (uppercase) BUKAN keyword sc_clock -> tidak terhitung.
+        let src = "SC_CLOCK(not_clk);\n";
+        let s = scan(src).unwrap();
+        assert!(s.clocks.is_empty());
     }
 }

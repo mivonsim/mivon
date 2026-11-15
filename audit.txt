@@ -862,7 +862,7 @@ LANG-01: ⚠️ STUB (ROUND 247 + ROUND 248 + ROUND 250 + ROUND 254 + ROUND 256 
          tipe (kasar, tipe vektor diambil partial). BUKAN parser lengkap;
          belum di-wire ke pipeline compile. Sisa besar: lexer/parser/
          elaborasi/simulasi VHDL, generik, tipe, statement.
-LANG-02: ⚠️ STUB (ROUND 252 + ROUND 253 + ROUND 255) Tidak ada SystemC Support (Critical)
+LANG-02: ⚠️ STUB (ROUND 252 + ROUND 253 + ROUND 255 + ROUND 258) Tidak ada SystemC Support (Critical)
          Stage 1 (ROUND 252): crate `mivon-systemc` (terisolasi) — scanner
          terbatas kenali makro `SC_MODULE`/`SC_CTOR` (case-sensitive) +
          error Unterminated. Stage 2 (ROUND 253): ekstraksi deklarasi
@@ -15246,6 +15246,35 @@ Status LANG-01: ⚠️ STUB (stage 1-6) — scanner entity/architecture + port +
   generic + signal + component + process ada di krate terisolasi; sisa open:
   lexer/parser VHDL lengkap, concurrent/sequential statement dalam process,
   elaborasi, simulasi.
+
+
+═══ ROUND 258 — LANG-02 (stage 4): ekstraksi deklarasi clock sc_clock ═══
+
+Item: LANG-02 (SystemC front-end) — stage 4.
+Perubahan (LOW-RISK, stub terisolasi di crates/mivon-systemc/src/lib.rs):
+- Tambah `SystemCClock { name, line }` dan field `clocks: Vec<SystemCClock>`
+  di `SystemCScan`.
+- Branch `sc_clock` di `scan()`: nama = identifier tepat setelah keyword
+  (baik `sc_clock clk;` maupun `sc_clock clk("clk", 10, SC_NS);`).
+- +2 test diskriminatif:
+  * scan_extracts_clocks — 2 clock (clk baris 2; fast_clk baris 3, dengan
+    argumen konstruktor) diekstrak; modul/ctor tetap 1.
+  * scan_clock_case_sensitive — `SC_CLOCK` uppercase tak dikenali.
+- Total test mivon-systemc kini 11 (9 lama + 2 baru stage 4).
+
+ROOT CAUSE / mengapa ini perlu: clock adalah primitif waktu SystemC; stub
+stage 4 memberi visibilitas nama clock (fondasi untuk nanti mem-parse
+periode/event). Case-sensitive konsisten dengan makro SystemC.
+
+VERIFIKASI ROUND 258:
+  - rustfmt --edition 2021 --check (lib.rs) -> bersih.
+  - cargo test -p mivon-systemc -> 11 passed.
+  - cargo nextest run --workspace --features dev -> 4014 passed (+2,
+    no regression).
+
+Status LANG-02: ⚠️ STUB (stage 1-4) — scanner SC_MODULE/SC_CTOR + ekstraksi
+  port/signal + process + clock ada di krate terisolasi; sisa open: parser
+  C++/SystemC (body process/ctor), elaborasi, simulasi, wiring pipeline.
 
 
 \\=======================================================================//
