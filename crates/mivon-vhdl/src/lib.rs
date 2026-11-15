@@ -1,4 +1,4 @@
-//! LANG-01: VHDL front-end — STUB stage 1-7 (Critical, open).
+//! LANG-01: VHDL front-end — STUB stage 1-8 (Critical, open).
 //!
 //! mivon tidak memiliki dukungan VHDL sama sekali. Stage 1 adalah scanner
 //! terbatas yang mengenali batas `entity` / `architecture` dari source VHDL
@@ -6,7 +6,8 @@
 //! klausa `generic`, stage 4 mengekstrak deklarasi `signal` di body arsitektur,
 //! stage 5 mengekstrak deklarasi `component` (nama + port) dari body arsitektur,
 //! stage 6 mengekstrak deklarasi `process` (label + sensitivity list) dari body
-//! arsitektur, stage 7 mengekstrak klausa `library`/`use` tingkat file
+//! arsitektur, stage 7 mengekstrak klausa `library`/`use` tingkat file, stage 8
+//! mengekstrak deklarasi `package`/`package body` (nama + jenis) tingkat file
 //! (semuanya kasar: nama + mode/tipe). BUKAN parser lengkap: belum mem-parse
 //! concurrent/sequential statement dalam process, maupun tipe VHDL penuh.
 //! Belum di-wire ke pipeline compile (lexer/parser SystemVerilog di
@@ -82,6 +83,24 @@ pub struct VhdlProcess {
     pub line: usize,
 }
 
+/// Jenis deklarasi package VHDL (stage 8).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VhdlPackageKind {
+    /// `package <nama> is ... end package;`
+    Decl,
+    /// `package body <nama> is ... end package body;`
+    Body,
+}
+
+/// Satu deklarasi package VHDL (stage 8: ekstraksi kasar nama + jenis).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VhdlPackage {
+    pub name: String,
+    pub kind: VhdlPackageKind,
+    /// 1-based baris tempat kata kunci `package` muncul.
+    pub line: usize,
+}
+
 /// Satu arsitektur VHDL yang dikenali.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VhdlArchitecture {
@@ -108,6 +127,8 @@ pub struct VhdlScan {
     pub libraries: Vec<String>,
     /// Klausa `use <path>;` tingkat file (stage 7).
     pub uses: Vec<String>,
+    /// Deklarasi `package` / `package body` (stage 8).
+    pub packages: Vec<VhdlPackage>,
 }
 
 /// Kesalahan scan tingkat rendah (stage 1).
@@ -323,6 +344,26 @@ pub fn scan(src: &str) -> Result<VhdlScan, VhdlScanError> {
                             i = k;
                         }
                     }
+                }
+                "package" => {
+                    // `package <nama> is ...` atau `package body <nama> is ...`.
+                    let mline = *ln;
+                    let mut kind = VhdlPackageKind::Decl;
+                    let mut name_idx = i + 1;
+                    if let Some((_, _, Tok::Word(nx))) = toks.get(i + 1) {
+                        if nx.to_ascii_lowercase() == "body" {
+                            kind = VhdlPackageKind::Body;
+                            name_idx = i + 2;
+                        }
+                    }
+                    if let Some((_, _, Tok::Word(pn))) = toks.get(name_idx) {
+                        res.packages.push(VhdlPackage {
+                            name: pn.clone(),
+                            kind,
+                            line: mline,
+                        });
+                    }
+                    i += 1;
                 }
                 _ => {}
             }
@@ -1146,5 +1187,39 @@ entity e is end e;
         assert_eq!(libs, vec!["ieee".to_string()]);
         // `reuse_this` (substring) dan komentar `-- use` tak terhitung.
         assert!(uses.is_empty());
+    }
+
+    #[test]
+    fn scan_extracts_packages() {
+        // Deklarasi `package` dan `package body` terdeteksi (nama + jenis).
+        let src = "\
+package my_pkg is
+  type t is (a, b);
+end package;
+
+package body my_pkg is
+  function f return integer is begin return 0; end;
+end package body;
+
+entity e is end e;
+";
+        let s = scan(src).unwrap();
+        assert_eq!(s.packages.len(), 2);
+        assert_eq!(s.packages[0].name, "my_pkg");
+        assert_eq!(s.packages[0].kind, VhdlPackageKind::Decl);
+        assert_eq!(s.packages[1].name, "my_pkg");
+        assert_eq!(s.packages[1].kind, VhdlPackageKind::Body);
+        // Entitas tetap terdeteksi (terpisah dari package).
+        assert_eq!(s.entities.len(), 1);
+    }
+
+    #[test]
+    fn scan_package_case_insensitive() {
+        // Keyword `PACKAGE` (uppercase) tetap dikenali (case-insensitive).
+        let src = "PACKAGE up is end PACKAGE;\n";
+        let s = scan(src).unwrap();
+        assert_eq!(s.packages.len(), 1);
+        assert_eq!(s.packages[0].name, "up");
+        assert_eq!(s.packages[0].kind, VhdlPackageKind::Decl);
     }
 }

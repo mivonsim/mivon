@@ -855,7 +855,7 @@ Par-03: ✅ Arc body sharing + differential snapshot (ROUND 181-182)
 
 4.1 LANGUAGE DESIGN GAPS
 
-LANG-01: ⚠️ STUB (ROUND 247 + ROUND 248 + ROUND 250 + ROUND 254 + ROUND 256 + ROUND 257 + ROUND 259) Tidak ada VHDL Support (Critical)
+LANG-01: ⚠️ STUB (ROUND 247 + ROUND 248 + ROUND 250 + ROUND 254 + ROUND 256 + ROUND 257 + ROUND 259 + ROUND 261) Tidak ada VHDL Support (Critical)
          Stage 1 (ROUND 247): crate `mivon-vhdl` (terisolasi) — scanner
          terbatas kenali batas `entity`/`architecture` (nama + baris).
          Stage 2 (ROUND 248): ekstraksi klausa `port (...)` — nama + mode +
@@ -15336,6 +15336,40 @@ Status LANG-02: ⚠️ STUB (stage 1-5) — scanner SC_MODULE/SC_CTOR + ekstraks
   port/signal + process + clock + kontrol simulasi (sc_start/sc_stop) ada di
   krate terisolasi; sisa open: parser C++/SystemC (body process/ctor),
   elaborasi, simulasi, wiring pipeline.
+
+
+═══ ROUND 261 — LANG-01 (stage 8): ekstraksi deklarasi package/package body ═══
+
+Item: LANG-01 (VHDL front-end) — stage 8.
+Perubahan (LOW-RISK, stub terisolasi di crates/mivon-vhdl/src/lib.rs):
+- Tambah `VhdlPackageKind{Decl,Body}`, `VhdlPackage{name,kind,line}`, dan
+  field `packages: Vec<VhdlPackage>` di `VhdlScan`.
+- Branch `package` di `scan()` (case-insensitive): deteksi `package body`
+  (jenis Body) vs `package <nama>` (jenis Decl); nama = word setelah keyword
+  (atau setelah `body`). Keyword `package` di `end package body` tidak
+  doble-count (karena token setelahnya bukan `Word` nama).
+- +2 test diskriminatif:
+  * scan_extracts_packages — `package my_pkg` (Decl) + `package body my_pkg`
+    (Body) terdeteksi; entitas tetap 1 (terpisah).
+  * scan_package_case_insensitive — `PACKAGE up is ...` (uppercase) tetap
+    dikenali (Decl).
+- Total test mivon-vhdl kini 21 (19 lama + 2 baru stage 8).
+
+ROOT CAUSE / mengapa ini perlu: `package`/`package body` adalah unit desain
+VHDL yang memuat tipe/prosedur/function bersama; stub stage 8 memberi
+visibilitas nama paket (fondasi untuk nanti mem-parse isi paket & resolve
+`use`). Case-insensitive konsisten dengan entity/architecture.
+
+VERIFIKASI ROUND 261:
+  - rustfmt --edition 2021 --check (lib.rs) -> bersih.
+  - cargo test -p mivon-vhdl -> 21 passed.
+  - cargo nextest run --workspace --features dev -> 4020 passed (+2,
+    no regression; 1 flaky mivon-fuzz terkonfirmasi unrelated).
+
+Status LANG-01: ⚠️ STUB (stage 1-8) — scanner entity/architecture + port +
+  generic + signal + component + process + library/use + package ada di krate
+  terisolasi; sisa open: lexer/parser VHDL lengkap, concurrent/sequential
+  statement dalam process, elaborasi, simulasi.
 
 
 \\=======================================================================//
