@@ -1,4 +1,4 @@
-//! LANG-02: SystemC front-end — STUB stage 1-5 (Critical, open).
+//! LANG-02: SystemC front-end — STUB stage 1-6 (Critical, open).
 //!
 //! mivon tidak memiliki dukungan SystemC sama sekali. Stage 1 adalah scanner
 //! terbatas yang mengenali makro `SC_MODULE(<nama>)` dan `SC_CTOR(<nama>)`
@@ -6,10 +6,10 @@
 //! port/signal `sc_in`/`sc_out`/`sc_inout`/`sc_signal` (nama + arah + tipe).
 //! Stage 3 menambah ekstraksi process `SC_METHOD`/`SC_THREAD`/`SC_CTHREAD`.
 //! Stage 4 menambah ekstraksi deklarasi clock `sc_clock` (nama). Stage 5
-//! menambah deteksi kontrol simulasi `sc_start`/`sc_stop`. BUKAN parser
-//! C++/SystemC lengkap: belum mem-parse body process/ctor, maupun tipe
-//! SystemC bersarang penuh. Belum di-wire ke pipeline compile mivon
-//! (SystemVerilog).
+//! menambah deteksi kontrol simulasi `sc_start`/`sc_stop`. Stage 6 menambah
+//! deteksi entry point `sc_main`. BUKAN parser C++/SystemC lengkap: belum
+//! mem-parse body process/ctor, maupun tipe SystemC bersarang penuh. Belum
+//! di-wire ke pipeline compile mivon (SystemVerilog).
 //!
 //! Ini titik awal yang kecil namun ter-test; item besar LANG-02 akan
 //! dipecah bertahap (parser C++/SystemC, elaborasi, simulasi) di stage
@@ -44,6 +44,9 @@ pub struct SystemCScan {
     pub clocks: Vec<SystemCClock>,
     /// Kontrol simulasi (`sc_start`/`sc_stop`); stage 5.
     pub sim_control: Vec<SystemCSimControl>,
+    /// Entry point `sc_main` (`int sc_main(...)`); stage 6. `None` bila
+    /// source tak punya `sc_main` (biasanya modul/header, bukan testbench).
+    pub sc_main: Option<usize>,
 }
 
 /// Jenis process SystemC.
@@ -206,6 +209,8 @@ enum Tok {
 ///   nama clock (mis. `sc_clock clk;` atau `sc_clock clk("clk", 10, SC_NS);`).
 /// - Kontrol simulasi: keyword `sc_start`/`sc_stop` dihitung sebagai panggilan
 ///   kontrol (jenis + baris).
+/// - Entry point: keyword `sc_main` menandai baris entry point (hanya diambil
+///   yang pertama; testbench SystemC wajib punya `sc_main`).
 pub fn scan(src: &str) -> Result<SystemCScan, SystemCScanError> {
     let toks = tokenize(src);
     let n = toks.len();
@@ -388,6 +393,13 @@ pub fn scan(src: &str) -> Result<SystemCScan, SystemCScanError> {
                         kind: SystemCSimControlKind::Stop,
                         line: *ln,
                     });
+                    i += 1;
+                }
+                "sc_main" => {
+                    // Entry point `int sc_main(int argc, char* argv[])`.
+                    if res.sc_main.is_none() {
+                        res.sc_main = Some(*ln);
+                    }
                     i += 1;
                 }
                 _ => {}
@@ -653,5 +665,28 @@ int sc_main(int argc, char* argv[]) {
         let src = "SC_START(100);\n";
         let s = scan(src).unwrap();
         assert!(s.sim_control.is_empty());
+    }
+
+    #[test]
+    fn scan_extracts_sc_main() {
+        // Entry point `sc_main` terdeteksi (baris pertama diambil).
+        let src = "\
+#include \"systemc.h\"
+int sc_main(int argc, char* argv[]) {
+    sc_start(100, SC_NS);
+    sc_stop();
+    return 0;
+}
+";
+        let s = scan(src).unwrap();
+        assert_eq!(s.sc_main, Some(2));
+    }
+
+    #[test]
+    fn scan_sc_main_case_sensitive() {
+        // `SC_MAIN` (uppercase) BUKAN keyword -> tidak terhitung.
+        let src = "int SC_MAIN(int argc, char* argv[]) { return 0; }\n";
+        let s = scan(src).unwrap();
+        assert_eq!(s.sc_main, None);
     }
 }

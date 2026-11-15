@@ -862,7 +862,7 @@ LANG-01: ⚠️ STUB (ROUND 247 + ROUND 248 + ROUND 250 + ROUND 254 + ROUND 256 
          tipe (kasar, tipe vektor diambil partial). BUKAN parser lengkap;
          belum di-wire ke pipeline compile. Sisa besar: lexer/parser/
          elaborasi/simulasi VHDL, generik, tipe, statement.
-LANG-02: ⚠️ STUB (ROUND 252 + ROUND 253 + ROUND 255 + ROUND 258 + ROUND 260) Tidak ada SystemC Support (Critical)
+LANG-02: ⚠️ STUB (ROUND 252 + ROUND 253 + ROUND 255 + ROUND 258 + ROUND 260 + ROUND 262) Tidak ada SystemC Support (Critical)
          Stage 1 (ROUND 252): crate `mivon-systemc` (terisolasi) — scanner
          terbatas kenali makro `SC_MODULE`/`SC_CTOR` (case-sensitive) +
          error Unterminated. Stage 2 (ROUND 253): ekstraksi deklarasi
@@ -15370,6 +15370,37 @@ Status LANG-01: ⚠️ STUB (stage 1-8) — scanner entity/architecture + port +
   generic + signal + component + process + library/use + package ada di krate
   terisolasi; sisa open: lexer/parser VHDL lengkap, concurrent/sequential
   statement dalam process, elaborasi, simulasi.
+
+
+═══ ROUND 262 — LANG-02 (stage 6): deteksi entry point sc_main SystemC ═══
+
+Item: LANG-02 (SystemC front-end) — stage 6.
+Perubahan (LOW-RISK, stub terisolasi di crates/mivon-systemc/src/lib.rs):
+- Tambah field `sc_main: Option<usize>` di `SystemCScan` (baris entry point;
+  `None` bila tak ada — menandai ini modul/header, bukan testbench).
+- Branch `sc_main` di `scan()` (case-sensitive): ambil baris pertama
+  kemunculan `sc_main`.
+- +2 test diskriminatif:
+  * scan_extracts_sc_main — `int sc_main(int argc, char* argv[]) { ... }`
+    di baris 2 terdeteksi (Some(2)); sc_start/sc_stop tetap terhitung.
+  * scan_sc_main_case_sensitive — `SC_MAIN` uppercase tak dikenali (None).
+- Total test mivon-systemc kini 15 (13 lama + 2 baru stage 6).
+
+ROOT CAUSE / mengapa ini perlu: `sc_main` adalah fungsi entry point wajib
+testbench SystemC; stub stage 6 memberi heuristik "apakah source ini
+testbench" (fondasi untuk nanti mem-parse argumen/jadwal simulasi).
+Case-sensitive konsisten dengan makro SystemC.
+
+VERIFIKASI ROUND 262:
+  - rustfmt --edition 2021 --check (lib.rs) -> bersih.
+  - cargo test -p mivon-systemc -> 15 passed.
+  - cargo nextest run --workspace --features dev -> 4022 passed (+2,
+    no regression).
+
+Status LANG-02: ⚠️ STUB (stage 1-6) — scanner SC_MODULE/SC_CTOR + ekstraksi
+  port/signal + process + clock + kontrol simulasi (sc_start/sc_stop) +
+  entry point sc_main ada di krate terisolasi; sisa open: parser C++/SystemC
+  (body process/ctor), elaborasi, simulasi, wiring pipeline.
 
 
 \\=======================================================================//
