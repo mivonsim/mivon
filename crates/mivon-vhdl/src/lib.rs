@@ -1,4 +1,4 @@
-//! LANG-01: VHDL front-end — STUB stage 1-6 (Critical, open).
+//! LANG-01: VHDL front-end — STUB stage 1-7 (Critical, open).
 //!
 //! mivon tidak memiliki dukungan VHDL sama sekali. Stage 1 adalah scanner
 //! terbatas yang mengenali batas `entity` / `architecture` dari source VHDL
@@ -6,9 +6,10 @@
 //! klausa `generic`, stage 4 mengekstrak deklarasi `signal` di body arsitektur,
 //! stage 5 mengekstrak deklarasi `component` (nama + port) dari body arsitektur,
 //! stage 6 mengekstrak deklarasi `process` (label + sensitivity list) dari body
-//! arsitektur (semuanya kasar: nama + mode/tipe). BUKAN parser lengkap: belum
-//! mem-parse concurrent/sequential statement dalam process, maupun tipe VHDL
-//! penuh. Belum di-wire ke pipeline compile (lexer/parser SystemVerilog di
+//! arsitektur, stage 7 mengekstrak klausa `library`/`use` tingkat file
+//! (semuanya kasar: nama + mode/tipe). BUKAN parser lengkap: belum mem-parse
+//! concurrent/sequential statement dalam process, maupun tipe VHDL penuh.
+//! Belum di-wire ke pipeline compile (lexer/parser SystemVerilog di
 //! mivon-parser).
 //!
 //! Ini titik awal yang kecil namun ter-test; item besar LANG-01 akan
@@ -103,6 +104,10 @@ pub struct VhdlArchitecture {
 pub struct VhdlScan {
     pub entities: Vec<VhdlEntity>,
     pub architectures: Vec<VhdlArchitecture>,
+    /// Klausa `library <nama>;` tingkat file (stage 7).
+    pub libraries: Vec<String>,
+    /// Klausa `use <path>;` tingkat file (stage 7).
+    pub uses: Vec<String>,
 }
 
 /// Kesalahan scan tingkat rendah (stage 1).
@@ -324,7 +329,83 @@ pub fn scan(src: &str) -> Result<VhdlScan, VhdlScanError> {
         }
         i += 1;
     }
+    let (libraries, uses) = extract_clauses(src);
+    res.libraries = libraries;
+    res.uses = uses;
     Ok(res)
+}
+
+/// Ekstrak klausa `library` dan `use` tingkat file (stage 7, kasar).
+///
+/// `library ieee, work;` -> ["ieee", "work"]; `use ieee.std_logic_1164.all;`
+/// -> ["ieee.std_logic_1164.all"]. Boundary kata dijaga agar substring
+/// (mis. `reuse`, `because`) tak ikut terhitung. Komentar `--` diabaikan.
+pub fn extract_clauses(src: &str) -> (Vec<String>, Vec<String>) {
+    let stripped = strip_comments(src);
+    let low = stripped.to_ascii_lowercase();
+    let mut libs = Vec::new();
+    let mut uses = Vec::new();
+    let boundary_ok = |abs: usize, after_idx: usize| {
+        let before_ok = abs == 0
+            || !stripped[..abs]
+                .chars()
+                .last()
+                .map(|c| c.is_alphanumeric() || c == '_')
+                .unwrap_or(false);
+        let after_ok = after_idx >= stripped.len()
+            || !stripped[after_idx..]
+                .chars()
+                .next()
+                .map(|c| c.is_alphanumeric() || c == '_')
+                .unwrap_or(false);
+        before_ok && after_ok
+    };
+    // `library <nama>[, <nama>...];`
+    let mut pos = 0usize;
+    while let Some(p) = low[pos..].find("library") {
+        let abs = pos + p;
+        let after_idx = abs + "library".len();
+        if boundary_ok(abs, after_idx) {
+            if let Some(semi) = stripped[after_idx..].find(';') {
+                let seg = &stripped[after_idx..after_idx + semi];
+                for name in seg.split(',') {
+                    let name = name.trim();
+                    if !name.is_empty()
+                        && name
+                            .chars()
+                            .all(|c| c.is_alphanumeric() || c == '_' || c == '.')
+                    {
+                        libs.push(name.to_string());
+                    }
+                }
+                pos = after_idx + semi + 1;
+            } else {
+                break;
+            }
+        } else {
+            pos = after_idx;
+        }
+    }
+    // `use <path>;`
+    let mut pos = 0usize;
+    while let Some(p) = low[pos..].find("use") {
+        let abs = pos + p;
+        let after_idx = abs + "use".len();
+        if boundary_ok(abs, after_idx) {
+            if let Some(semi) = stripped[after_idx..].find(';') {
+                let seg = stripped[after_idx..after_idx + semi].trim();
+                if !seg.is_empty() {
+                    uses.push(seg.to_string());
+                }
+                pos = after_idx + semi + 1;
+            } else {
+                break;
+            }
+        } else {
+            pos = after_idx;
+        }
+    }
+    (libs, uses)
 }
 
 /// Ekstrak deklarasi port dari body entitas (stage 2, kasar).
@@ -1028,5 +1109,42 @@ end";
         assert_eq!(procs[1].label.as_deref(), Some("bar"));
         // `all` tak dimasukkan -> kosong.
         assert!(procs[1].sensitivity.is_empty());
+    }
+
+    #[test]
+    fn scan_extracts_library_and_use_clauses() {
+        // Klausa library/use tingkat file diekstrak.
+        let src = "\
+library ieee;
+use ieee.std_logic_1164.all;
+use work.my_pkg.all;
+
+entity my_ent is
+end my_ent;
+";
+        let s = scan(src).unwrap();
+        assert_eq!(s.libraries, vec!["ieee".to_string()]);
+        assert_eq!(
+            s.uses,
+            vec![
+                "ieee.std_logic_1164.all".to_string(),
+                "work.my_pkg.all".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn extract_clauses_substring_not_counted() {
+        // Substring `use`/`library` di dalam kata lain tak terhitung.
+        let src = "\
+library ieee;
+-- use ini komentar, diabaikan
+reuse_this not_a_clause;
+entity e is end e;
+";
+        let (libs, uses) = extract_clauses(src);
+        assert_eq!(libs, vec!["ieee".to_string()]);
+        // `reuse_this` (substring) dan komentar `-- use` tak terhitung.
+        assert!(uses.is_empty());
     }
 }

@@ -855,7 +855,7 @@ Par-03: ✅ Arc body sharing + differential snapshot (ROUND 181-182)
 
 4.1 LANGUAGE DESIGN GAPS
 
-LANG-01: ⚠️ STUB (ROUND 247 + ROUND 248 + ROUND 250 + ROUND 254 + ROUND 256 + ROUND 257) Tidak ada VHDL Support (Critical)
+LANG-01: ⚠️ STUB (ROUND 247 + ROUND 248 + ROUND 250 + ROUND 254 + ROUND 256 + ROUND 257 + ROUND 259) Tidak ada VHDL Support (Critical)
          Stage 1 (ROUND 247): crate `mivon-vhdl` (terisolasi) — scanner
          terbatas kenali batas `entity`/`architecture` (nama + baris).
          Stage 2 (ROUND 248): ekstraksi klausa `port (...)` — nama + mode +
@@ -15275,6 +15275,37 @@ VERIFIKASI ROUND 258:
 Status LANG-02: ⚠️ STUB (stage 1-4) — scanner SC_MODULE/SC_CTOR + ekstraksi
   port/signal + process + clock ada di krate terisolasi; sisa open: parser
   C++/SystemC (body process/ctor), elaborasi, simulasi, wiring pipeline.
+
+
+═══ ROUND 259 — LANG-01 (stage 7): ekstraksi klausa library/use VHDL ═══
+
+Item: LANG-01 (VHDL front-end) — stage 7.
+Perubahan (LOW-RISK, stub terisolasi di crates/mivon-vhdl/src/lib.rs):
+- Tambah field `libraries: Vec<String>` dan `uses: Vec<String>` di
+  `VhdlScan`; fungsi baru `extract_clauses(src)` (boundary kata dijaga agar
+  substring `reuse`/`because` tak terhitung; komentar `--` diabaikan).
+- `scan()` panggil `extract_clauses(src)` sebelum `Ok(res)`.
+- +2 test diskriminatif:
+  * scan_extracts_library_and_use_clauses — `library ieee;` -> ["ieee"]; dua
+    `use` -> ["ieee.std_logic_1164.all", "work.my_pkg.all"].
+  * extract_clauses_substring_not_counted — substring `use` di `reuse_this`
+    dan komentar `-- use` tak terhitung; library tetap ["ieee"].
+- Total test mivon-vhdl kini 19 (17 lama + 2 baru stage 7).
+
+ROOT CAUSE / mengapa ini perlu: `library`/`use` adalah klausa pra-compile
+wajib untuk resolusi paket VHDL; stub stage 7 memberi visibilitas dependensi
+paket (fondasi untuk nanti mem-parse deklarasi `use`-d).
+
+VERIFIKASI ROUND 259:
+  - rustfmt --edition 2021 --check (lib.rs) -> bersih.
+  - cargo test -p mivon-vhdl -> 19 passed.
+  - cargo nextest run --workspace --features dev -> 4016 passed (+2,
+    no regression).
+
+Status LANG-01: ⚠️ STUB (stage 1-7) — scanner entity/architecture + port +
+  generic + signal + component + process + library/use ada di krate
+  terisolasi; sisa open: lexer/parser VHDL lengkap, concurrent/sequential
+  statement dalam process, elaborasi, simulasi.
 
 
 \\=======================================================================//
