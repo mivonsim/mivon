@@ -1,4 +1,4 @@
-//! LANG-01: VHDL front-end — STUB stage 1-10 (Critical, open).
+//! LANG-01: VHDL front-end — STUB stage 1-11 (Critical, open).
 //!
 //! mivon tidak memiliki dukungan VHDL sama sekali. Stage 1 adalah scanner
 //! terbatas yang mengenali batas `entity` / `architecture` dari source VHDL
@@ -10,7 +10,8 @@
 //! mengekstrak deklarasi `package`/`package body` (nama + jenis) tingkat file,
 //! stage 9 mengekstrak deklarasi subprogram `function`/`procedure` (nama +
 //! jenis), stage 10 mengekstrak deklarasi `type`/`subtype` (nama + jenis
-//! Enum/Record/Subtype/Other). Semuanya kasar: nama + mode/tipe. BUKAN parser
+//! Enum/Record/Subtype/Other), stage 11 mengekstrak deklarasi `constant`
+//! (nama + tipe + nilai). Semuanya kasar: nama + mode/tipe. BUKAN parser
 //! lengkap: belum mem-parse concurrent/sequential statement dalam process,
 //! maupun tipe VHDL penuh. Belum di-wire ke pipeline compile (lexer/parser
 //! SystemVerilog di mivon-parser).
@@ -143,6 +144,18 @@ pub struct VhdlTypeDecl {
     pub line: usize,
 }
 
+/// Satu deklarasi `constant` VHDL (stage 11: ekstraksi kasar nama + tipe +
+/// nilai). Tipe = word pertama setelah `:`, nilai = word pertama setelah
+/// `:=` (literal seperti `'0'` atau `"teks"` diambil isinya secara kasar).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VhdlConstant {
+    pub name: String,
+    pub type_name: String,
+    pub value: String,
+    /// 1-based baris tempat kata kunci `constant` muncul.
+    pub line: usize,
+}
+
 /// Satu arsitektur VHDL yang dikenali.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VhdlArchitecture {
@@ -175,6 +188,8 @@ pub struct VhdlScan {
     pub subprograms: Vec<VhdlSubprogram>,
     /// Deklarasi `type`/`subtype` (stage 10, kasar: nama + jenis).
     pub type_decls: Vec<VhdlTypeDecl>,
+    /// Deklarasi `constant` (stage 11, kasar: nama + tipe + nilai).
+    pub constants: Vec<VhdlConstant>,
 }
 
 /// Kesalahan scan tingkat rendah (stage 1).
@@ -448,6 +463,7 @@ pub fn scan(src: &str) -> Result<VhdlScan, VhdlScanError> {
     res.libraries = libraries;
     res.uses = uses;
     res.type_decls = extract_types(src);
+    res.constants = extract_constants(src);
     Ok(res)
 }
 
@@ -957,6 +973,90 @@ pub fn extract_types(src: &str) -> Vec<VhdlTypeDecl> {
     out
 }
 
+/// Ekstrak deklarasi `constant` dari seluruh source (stage 11, kasar).
+///
+/// Mendeteksi `constant <nama> : <tipe> := <nilai>;`. Tipe = word pertama
+/// setelah `:`, nilai = word pertama setelah `:=`. Penutup `end constant`
+/// dilewati (guard kata sebelumnya = `end`). Komentar `--` sudah dibuang
+/// oleh `tokenize`.
+pub fn extract_constants(src: &str) -> Vec<VhdlConstant> {
+    let toks = tokenize(src);
+    let n = toks.len();
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i < n {
+        let (ln, _, t) = &toks[i];
+        if let Tok::Word(w) = t {
+            if w.to_ascii_lowercase() == "constant" {
+                let prev_is_end = matches!(
+                    toks.get(i.wrapping_sub(1)),
+                    Some((_, _, Tok::Word(pw))) if pw.to_ascii_lowercase() == "end"
+                );
+                if prev_is_end {
+                    i += 1;
+                    continue;
+                }
+                let name = match toks.get(i + 1) {
+                    Some((_, _, Tok::Word(nx))) => nx.clone(),
+                    _ => {
+                        i += 1;
+                        continue;
+                    }
+                };
+                // Tipe: word tepat setelah ':' (bukan ':' dari ':=').
+                let mut type_name = String::new();
+                let mut j = i + 2;
+                while j + 1 < n {
+                    if matches!(&toks[j].2, Tok::Punct(':')) {
+                        match toks.get(j + 1) {
+                            Some((_, _, Tok::Punct('='))) => {
+                                // Ini ':=', bukan pemisah tipe — lanjut cari.
+                            }
+                            Some((_, _, Tok::Word(ty))) => {
+                                type_name = ty.clone();
+                                break;
+                            }
+                            _ => {}
+                        }
+                    }
+                    j += 1;
+                }
+                // Nilai: word setelah ':='; lewati tanda kutip literal
+                // (`'0'`, `"teks"`) bila ada.
+                let mut value = String::new();
+                let mut k = i + 2;
+                while k + 1 < n {
+                    if matches!(&toks[k].2, Tok::Punct(':'))
+                        && matches!(toks.get(k + 1), Some((_, _, Tok::Punct('='))))
+                    {
+                        let mut v = k + 2;
+                        if matches!(toks.get(v), Some((_, _, Tok::Punct(_)))) {
+                            v += 1;
+                        }
+                        if let Some((_, _, Tok::Word(val))) = toks.get(v) {
+                            value = val.clone();
+                        }
+                        break;
+                    }
+                    k += 1;
+                }
+                out.push(VhdlConstant {
+                    name,
+                    type_name,
+                    value,
+                    line: *ln,
+                });
+                i += 1;
+            } else {
+                i += 1;
+            }
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
 /// Buang komentar baris `--` dari sebuah teks.
 fn strip_comments(s: &str) -> String {
     let ch: Vec<char> = s.chars().collect();
@@ -1448,5 +1548,43 @@ subtype s is integer range 0 to 3; end subtype s;
         assert_eq!(s.type_decls[0].kind, VhdlTypeKind::Enum);
         assert_eq!(s.type_decls[1].name, "s");
         assert_eq!(s.type_decls[1].kind, VhdlTypeKind::Subtype);
+    }
+
+    #[test]
+    fn scan_extracts_constants() {
+        // Deklarasi `constant` diekstrak (nama + tipe + nilai + baris).
+        let src = "\
+constant WIDTH : integer := 8;
+constant RESET : bit := '0';
+";
+        let s = scan(src).unwrap();
+        assert_eq!(
+            s.constants,
+            vec![
+                VhdlConstant {
+                    name: "WIDTH".to_string(),
+                    type_name: "integer".to_string(),
+                    value: "8".to_string(),
+                    line: 1,
+                },
+                VhdlConstant {
+                    name: "RESET".to_string(),
+                    type_name: "bit".to_string(),
+                    value: "0".to_string(),
+                    line: 2,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn scan_constant_case_insensitive() {
+        // VHDL case-insensitive: keyword uppercase tetap dikenali.
+        let src = "CONSTANT WIDTH : INTEGER := 8;\n";
+        let s = scan(src).unwrap();
+        assert_eq!(s.constants.len(), 1, "{s:?}");
+        assert_eq!(s.constants[0].name, "WIDTH");
+        assert_eq!(s.constants[0].type_name, "INTEGER");
+        assert_eq!(s.constants[0].value, "8");
     }
 }

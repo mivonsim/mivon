@@ -855,7 +855,7 @@ Par-03: ✅ Arc body sharing + differential snapshot (ROUND 181-182)
 
 4.1 LANGUAGE DESIGN GAPS
 
-LANG-01: ⚠️ STUB (ROUND 247 + ROUND 248 + ROUND 250 + ROUND 254 + ROUND 256 + ROUND 257 + ROUND 259 + ROUND 261 + ROUND 263 + ROUND 264) Tidak ada VHDL Support (Critical)
+LANG-01: ⚠️ STUB (ROUND 247 + ROUND 248 + ROUND 250 + ROUND 254 + ROUND 256 + ROUND 257 + ROUND 259 + ROUND 261 + ROUND 263 + ROUND 264 + ROUND 267) Tidak ada VHDL Support (Critical)
          Stage 1 (ROUND 247): crate `mivon-vhdl` (terisolasi) — scanner
          terbatas kenali batas `entity`/`architecture` (nama + baris).
          Stage 2 (ROUND 248): ekstraksi klausa `port (...)` — nama + mode +
@@ -15565,6 +15565,49 @@ Status LANG-02: ⚠️ STUB (stage 1-8) — scanner SC_MODULE/SC_CTOR + port/sig
   + process + clock + kontrol simulasi + sc_main + channel/sinkronisasi
   + sensitivity list ada di krate terisolasi; sisa open: parser C++/
   SystemC penuh, body process/ctor, elaborasi, simulasi, wiring pipeline.
+
+═══ ROUND 267 — LANG-01 (stage 11): ekstraksi deklarasi constant VHDL ═══
+
+Ruang lingkup: lanjutkan stub LANG-01 (krate mivon-vhdl) — ekstraksi
+deklarasi `constant <nama> : <tipe> := <nilai>;` (nama + tipe + nilai +
+baris), melengkapi konstruk VHDL yang dikenali.
+
+Perubahan (crates/mivon-vhdl/src/lib.rs):
+  - Tambah `VhdlConstant{name,type_name,value,line}`.
+  - Tambah field `constants: Vec<VhdlConstant>` di `VhdlScan`.
+  - Fungsi publik `extract_constants(src)`: case-insensitive, guard
+    `end constant`, tipe = word tepat setelah `:`, nilai = word setelah
+    `:=` (tanda kutip literal dilewati), baris 1-based.
+  - Dipanggil di akhir `scan()`; doc header update ke "stage 1-11".
+  - Catatan: saat edit muncul bug off-by-one (tipe diambil dari `j+2`
+    padahal di `j+1`) dan literal `'0'` tak terbaca; keduanya ditemukan
+    oleh test diskriminatif lalu diperbaiki.
+
+Test diskriminatif (+2, total 27):
+  - `scan_extracts_constants`: 2 constant -> nama + tipe (`integer`,`bit`)
+    + nilai (`8`,`0` dari `'0'`) + baris (1,2) persis; menangkap regresi
+    off-by-one dan literal berkutip.
+  - `scan_constant_case_insensitive`: `CONSTANT` uppercase tetap dikenali.
+
+VERIFIKASI ROUND 267:
+  - rustfmt --edition 2021 --check (lib.rs) -> bersih.
+  - cargo test -p mivon-vhdl -> 27 passed.
+  - cargo nextest run --workspace --features dev --no-fail-fast -> 4032 run:
+    4031 passed, 1 failed, 24 skipped. Satu kegagalan = test flaky
+    `reg_bug_3813d7d69afe_lrm_violation` (`MivonInternalFailure { kind:
+    Hang }`), tidak terkait perubahan ini (crate terisolasi).
+  - Konfirmasi: gate dengan exclude 2 test flaky yang sudah dikenal
+    (`cargo nextest run --workspace --features dev -E 'not test(
+    reg_bug_3813d7d69afe_lrm_violation) and not test(
+    spawn_slow_with_progress_is_slow_not_hang)'`) -> 4030 run:
+    4030 passed, 0 failed, 26 skipped. Seluruh test non-flaky hijau.
+  - Review agent independen (READ-ONLY) -> VERDICT: LOLOS.
+
+Status LANG-01: ⚠️ STUB (stage 1-11) — scanner entity/architecture + port/
+  generic + signal + component + process + library/use + package +
+  subprogram + type/subtype + constant ada di krate terisolasi; sisa open:
+  parser VHDL penuh, concurrent/sequential statement, elaborasi,
+  simulasi, wiring pipeline.
 
 
 \\=======================================================================//
