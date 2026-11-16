@@ -1,4 +1,4 @@
-//! LANG-02: SystemC front-end — STUB stage 1-8 (Critical, open).
+//! LANG-02: SystemC front-end — STUB stage 1-9 (Critical, open).
 //!
 //! mivon tidak memiliki dukungan SystemC sama sekali. Stage 1 adalah scanner
 //! terbatas yang mengenali makro `SC_MODULE(<nama>)` dan `SC_CTOR(<nama>)`
@@ -10,8 +10,9 @@
 //! deteksi entry point `sc_main`. Stage 7 menambah ekstraksi deklarasi
 //! channel/sinkronisasi `sc_fifo`/`sc_event`/`sc_mutex`/`sc_semaphore`
 //! (nama + jenis). Stage 8 menambah ekstraksi sensitivity list
-//! `sensitive << clk.pos()` (sinyal + edge). BUKAN parser C++/SystemC
-//! lengkap: belum mem-parse body process/ctor, maupun tipe SystemC
+//! `sensitive << clk.pos()` (sinyal + edge). Stage 9 menambah deteksi
+//! `wait()` / `wait(<durasi>, <satuan>)` (durasi + satuan). BUKAN parser
+//! C++/SystemC lengkap: belum mem-parse body process/ctor, maupun tipe SystemC
 //! bersarang penuh. Belum
 //! di-wire ke pipeline compile mivon (SystemVerilog).
 //!
@@ -56,6 +57,8 @@ pub struct SystemCScan {
     pub channels: Vec<SystemCChannel>,
     /// Sensitivity list process (`sensitive << clk.pos()`); stage 8.
     pub sensitivities: Vec<SystemCSensitivity>,
+    /// Pemanggilan `wait()` / `wait(<durasi>, <satuan>)`; stage 9.
+    pub waits: Vec<SystemCWait>,
 }
 
 /// Jenis process SystemC.
@@ -150,6 +153,18 @@ pub struct SystemCSensitivity {
     /// Edge dari `.pos()` / `.neg()`, bila ada.
     pub edge: SystemCEdge,
     /// 1-based baris tempat sinyal muncul.
+    pub line: usize,
+}
+
+/// Satu pemanggilan `wait()` SystemC (stage 9: deteksi kasar durasi +
+/// satuan). `wait()` tanpa argumen menyimpan `None` untuk keduanya.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SystemCWait {
+    /// Word pertama di dalam `wait(...)` (mis. `"10"`), `None` bila `wait()`.
+    pub amount: Option<String>,
+    /// Word setelah koma (mis. `"SC_NS"`), `None` bila tak ada.
+    pub unit: Option<String>,
+    /// 1-based baris tempat keyword `wait` muncul.
     pub line: usize,
 }
 
@@ -269,6 +284,8 @@ enum Tok {
 ///   yang pertama; testbench SystemC wajib punya `sc_main`).
 /// - Sensitivity: keyword `sensitive` diikuti `<< <sinyal>` (bisa beberapa,
 ///   dipisah `<<` lagi) sampai `;`; edge diambil dari `.pos()` / `.neg()`.
+/// - Wait: keyword `wait` diikuti `(...)`; word pertama = durasi, word
+///   setelah koma = satuan (mis. `SC_NS`). `wait()` kosong = keduanya None.
 pub fn scan(src: &str) -> Result<SystemCScan, SystemCScanError> {
     let toks = tokenize(src);
     let n = toks.len();
@@ -548,6 +565,35 @@ pub fn scan(src: &str) -> Result<SystemCScan, SystemCScanError> {
                         }
                     }
                     i = end;
+                }
+                "wait" => {
+                    // `wait();` -> None/None; `wait(10, SC_NS);` -> Some/Some.
+                    let mut amount = None;
+                    let mut unit = None;
+                    if matches!(toks.get(i + 1), Some((_, Tok::Punct('(')))) {
+                        if let Some((_, Tok::Word(a))) = toks.get(i + 2) {
+                            amount = Some(a.clone());
+                            let mut j = i + 3;
+                            while j < n {
+                                if matches!(toks.get(j), Some((_, Tok::Punct(')')))) {
+                                    break;
+                                }
+                                if matches!(toks.get(j), Some((_, Tok::Punct(',')))) {
+                                    if let Some((_, Tok::Word(u))) = toks.get(j + 1) {
+                                        unit = Some(u.clone());
+                                    }
+                                    break;
+                                }
+                                j += 1;
+                            }
+                        }
+                    }
+                    res.waits.push(SystemCWait {
+                        amount,
+                        unit,
+                        line: *ln,
+                    });
+                    i += 1;
                 }
                 _ => {}
             }
@@ -916,5 +962,43 @@ SC_MODULE(tb) {
         let src = "SENSITIVE << clk.pos();\n";
         let s = scan(src).unwrap();
         assert!(s.sensitivities.is_empty());
+    }
+
+    #[test]
+    fn scan_extracts_waits() {
+        // `wait(10, SC_NS)` -> durasi + satuan; `wait()` -> keduanya None.
+        let src = "\
+SC_MODULE(tb) {
+    void run() {
+        wait(10, SC_NS);
+        wait();
+    }
+};
+";
+        let s = scan(src).unwrap();
+        assert_eq!(
+            s.waits,
+            vec![
+                SystemCWait {
+                    amount: Some("10".to_string()),
+                    unit: Some("SC_NS".to_string()),
+                    line: 3,
+                },
+                SystemCWait {
+                    amount: None,
+                    unit: None,
+                    line: 4,
+                },
+            ]
+        );
+        assert_eq!(s.modules.len(), 1);
+    }
+
+    #[test]
+    fn scan_wait_case_sensitive() {
+        // `WAIT` (uppercase) BUKAN keyword -> tidak terhitung.
+        let src = "WAIT(10, SC_NS);\n";
+        let s = scan(src).unwrap();
+        assert!(s.waits.is_empty());
     }
 }

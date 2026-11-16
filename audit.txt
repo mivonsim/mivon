@@ -862,7 +862,7 @@ LANG-01: ⚠️ STUB (ROUND 247 + ROUND 248 + ROUND 250 + ROUND 254 + ROUND 256 
          tipe (kasar, tipe vektor diambil partial). BUKAN parser lengkap;
          belum di-wire ke pipeline compile. Sisa besar: lexer/parser/
          elaborasi/simulasi VHDL, generik, tipe, statement.
-LANG-02: ⚠️ STUB (ROUND 252 + ROUND 253 + ROUND 255 + ROUND 258 + ROUND 260 + ROUND 262 + ROUND 265 + ROUND 266) Tidak ada SystemC Support (Critical)
+LANG-02: ⚠️ STUB (ROUND 252 + ROUND 253 + ROUND 255 + ROUND 258 + ROUND 260 + ROUND 262 + ROUND 265 + ROUND 266 + ROUND 268) Tidak ada SystemC Support (Critical)
          Stage 1 (ROUND 252): crate `mivon-systemc` (terisolasi) — scanner
          terbatas kenali makro `SC_MODULE`/`SC_CTOR` (case-sensitive) +
          error Unterminated. Stage 2 (ROUND 253): ekstraksi deklarasi
@@ -15608,6 +15608,44 @@ Status LANG-01: ⚠️ STUB (stage 1-11) — scanner entity/architecture + port/
   subprogram + type/subtype + constant ada di krate terisolasi; sisa open:
   parser VHDL penuh, concurrent/sequential statement, elaborasi,
   simulasi, wiring pipeline.
+
+═══ ROUND 268 — LANG-02 (stage 9): deteksi wait SystemC ═══
+
+Ruang lingkup: lanjutkan stub LANG-02 (krate mivon-systemc) — deteksi
+`wait()` / `wait(<durasi>, <satuan>)` (durasi + satuan + baris), melengkapi
+konstruk sinkronisasi SystemC yang dikenali.
+
+Perubahan (crates/mivon-systemc/src/lib.rs):
+  - Tambah `SystemCWait{amount:Option<String>,unit:Option<String>,line}`.
+  - Tambah field `waits: Vec<SystemCWait>` di `SystemCScan`.
+  - Branch `wait` di `scan()` (case-sensitive): `wait()` -> None/None;
+    `wait(10, SC_NS)` -> Some("10")/Some("SC_NS"); durasi = word pertama
+    setelah `(`, satuan = word setelah koma.
+  - Doc header update ke "stage 1-9" + aturan wait di doc `scan()`.
+
+Test diskriminatif (+2, total 21):
+  - `scan_extracts_waits`: `wait(10, SC_NS)` dan `wait()` -> 2 entri
+    (Some/Some dan None/None) dengan baris 3,4; modul tetap terdeteksi.
+  - `scan_wait_case_sensitive`: `WAIT` uppercase tidak terhitung.
+
+VERIFIKASI ROUND 268:
+  - rustfmt --edition 2021 --check (lib.rs) -> bersih.
+  - cargo test -p mivon-systemc -> 21 passed.
+  - cargo nextest run --workspace --features dev --no-fail-fast -> 4034 run:
+    4033 passed, 1 failed, 24 skipped. Satu kegagalan = test flaky
+    `reg_bug_3813d7d69afe_lrm_violation` (`MivonInternalFailure { kind:
+    Hang }`), tidak terkait perubahan ini (crate terisolasi).
+  - Konfirmasi: gate dengan exclude 2 test flaky yang sudah dikenal
+    (`cargo nextest run --workspace --features dev -E 'not test(
+    reg_bug_3813d7d69afe_lrm_violation) and not test(
+    spawn_slow_with_progress_is_slow_not_hang)'`) -> 4032 run:
+    4032 passed, 0 failed, 26 skipped. Seluruh test non-flaky hijau.
+  - Review agent independen (READ-ONLY) -> VERDICT: LOLOS.
+
+Status LANG-02: ⚠️ STUB (stage 1-9) — scanner SC_MODULE/SC_CTOR + port/signal
+  + process + clock + kontrol simulasi + sc_main + channel/sinkronisasi
+  + sensitivity list + wait ada di krate terisolasi; sisa open: parser C++/
+  SystemC penuh, body process/ctor, elaborasi, simulasi, wiring pipeline.
 
 
 \\=======================================================================//
