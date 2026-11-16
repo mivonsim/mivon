@@ -1,4 +1,4 @@
-//! LANG-02: SystemC front-end — STUB stage 1-6 (Critical, open).
+//! LANG-02: SystemC front-end — STUB stage 1-7 (Critical, open).
 //!
 //! mivon tidak memiliki dukungan SystemC sama sekali. Stage 1 adalah scanner
 //! terbatas yang mengenali makro `SC_MODULE(<nama>)` dan `SC_CTOR(<nama>)`
@@ -7,7 +7,9 @@
 //! Stage 3 menambah ekstraksi process `SC_METHOD`/`SC_THREAD`/`SC_CTHREAD`.
 //! Stage 4 menambah ekstraksi deklarasi clock `sc_clock` (nama). Stage 5
 //! menambah deteksi kontrol simulasi `sc_start`/`sc_stop`. Stage 6 menambah
-//! deteksi entry point `sc_main`. BUKAN parser C++/SystemC lengkap: belum
+//! deteksi entry point `sc_main`. Stage 7 menambah ekstraksi deklarasi
+//! channel/sinkronisasi `sc_fifo`/`sc_event`/`sc_mutex`/`sc_semaphore`
+//! (nama + jenis). BUKAN parser C++/SystemC lengkap: belum
 //! mem-parse body process/ctor, maupun tipe SystemC bersarang penuh. Belum
 //! di-wire ke pipeline compile mivon (SystemVerilog).
 //!
@@ -47,6 +49,9 @@ pub struct SystemCScan {
     /// Entry point `sc_main` (`int sc_main(...)`); stage 6. `None` bila
     /// source tak punya `sc_main` (biasanya modul/header, bukan testbench).
     pub sc_main: Option<usize>,
+    /// Deklarasi channel/sinkronisasi (`sc_fifo`/`sc_event`/`sc_mutex`/
+    /// `sc_semaphore`); stage 7.
+    pub channels: Vec<SystemCChannel>,
 }
 
 /// Jenis process SystemC.
@@ -93,6 +98,30 @@ pub enum SystemCSimControlKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SystemCSimControl {
     pub kind: SystemCSimControlKind,
+    /// 1-based baris tempat keyword muncul.
+    pub line: usize,
+}
+
+/// Jenis channel/sinkronisasi SystemC (stage 7).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SystemCChannelKind {
+    /// `sc_fifo<T>` — channel FIFO (template tipe).
+    Fifo,
+    /// `sc_event` — event sinkronisasi.
+    Event,
+    /// `sc_mutex` — mutex.
+    Mutex,
+    /// `sc_semaphore` — semaphore.
+    Semaphore,
+}
+
+/// Satu deklarasi channel/sinkronisasi SystemC (stage 7: ekstraksi kasar
+/// nama + jenis). Nama = identifier setelah keyword (untuk `sc_fifo`,
+/// setelah `>` penutup template).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SystemCChannel {
+    pub name: String,
+    pub kind: SystemCChannelKind,
     /// 1-based baris tempat keyword muncul.
     pub line: usize,
 }
@@ -402,6 +431,57 @@ pub fn scan(src: &str) -> Result<SystemCScan, SystemCScanError> {
                     }
                     i += 1;
                 }
+                "sc_fifo" | "sc_event" | "sc_mutex" | "sc_semaphore" => {
+                    // Jenis channel dari keyword (case-sensitive).
+                    let kind = match w.as_str() {
+                        "sc_fifo" => SystemCChannelKind::Fifo,
+                        "sc_event" => SystemCChannelKind::Event,
+                        "sc_mutex" => SystemCChannelKind::Mutex,
+                        _ => SystemCChannelKind::Semaphore,
+                    };
+                    let mline = *ln;
+                    // Nama: bila ada template `<...>` (sc_fifo), ambil word
+                    // setelah `>` penutup; selain itu word tepat setelah
+                    // keyword (seperti `sc_clock`).
+                    let mut name = String::new();
+                    let mut k = i + 1;
+                    if let Some((_, Tok::Punct('<'))) = toks.get(k) {
+                        let mut depth = 0i32;
+                        let mut end = k;
+                        let mut kk = k;
+                        while kk < n {
+                            match &toks[kk] {
+                                (_, Tok::Punct('<')) => depth += 1,
+                                (_, Tok::Punct('>')) => {
+                                    depth -= 1;
+                                    if depth == 0 {
+                                        end = kk;
+                                        break;
+                                    }
+                                }
+                                _ => {}
+                            }
+                            kk += 1;
+                        }
+                        if let Some((_, Tok::Word(cn))) = toks.get(end + 1) {
+                            name = cn.clone();
+                            k = end + 1;
+                        } else {
+                            k = end + 1;
+                        }
+                    } else if let Some((_, Tok::Word(cn))) = toks.get(k) {
+                        name = cn.clone();
+                        k = k + 1;
+                    }
+                    if !name.is_empty() {
+                        res.channels.push(SystemCChannel {
+                            name,
+                            kind,
+                            line: mline,
+                        });
+                    }
+                    i = k;
+                }
                 _ => {}
             }
         }
@@ -688,5 +768,40 @@ int sc_main(int argc, char* argv[]) {
         let src = "int SC_MAIN(int argc, char* argv[]) { return 0; }\n";
         let s = scan(src).unwrap();
         assert_eq!(s.sc_main, None);
+    }
+
+    #[test]
+    fn scan_extracts_channels() {
+        // Channel/sinkronisasi `sc_fifo`/`sc_event`/`sc_mutex`/`sc_semaphore`
+        // terdeteksi (nama + jenis).
+        let src = "\
+#include \"systemc.h\"
+SC_MODULE(tb) {
+    sc_fifo<int> data_fifo;
+    sc_event done_evt;
+    sc_mutex bus_mutex;
+    sc_semaphore port_sem;
+};
+";
+        let s = scan(src).unwrap();
+        assert_eq!(s.channels.len(), 4, "4 channel dikenali: {s:?}");
+        assert_eq!(s.channels[0].name, "data_fifo");
+        assert_eq!(s.channels[0].kind, SystemCChannelKind::Fifo);
+        assert_eq!(s.channels[1].name, "done_evt");
+        assert_eq!(s.channels[1].kind, SystemCChannelKind::Event);
+        assert_eq!(s.channels[2].name, "bus_mutex");
+        assert_eq!(s.channels[2].kind, SystemCChannelKind::Mutex);
+        assert_eq!(s.channels[3].name, "port_sem");
+        assert_eq!(s.channels[3].kind, SystemCChannelKind::Semaphore);
+        // Modul tetap terdeteksi (1).
+        assert_eq!(s.modules.len(), 1);
+    }
+
+    #[test]
+    fn scan_channel_case_sensitive() {
+        // Keyword uppercase (`SC_FIFO`/`SC_EVENT`) BUKAN keyword -> kosong.
+        let src = "SC_FIFO<int> f;\nSC_EVENT e;\n";
+        let s = scan(src).unwrap();
+        assert!(s.channels.is_empty());
     }
 }

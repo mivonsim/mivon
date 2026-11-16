@@ -862,7 +862,7 @@ LANG-01: ⚠️ STUB (ROUND 247 + ROUND 248 + ROUND 250 + ROUND 254 + ROUND 256 
          tipe (kasar, tipe vektor diambil partial). BUKAN parser lengkap;
          belum di-wire ke pipeline compile. Sisa besar: lexer/parser/
          elaborasi/simulasi VHDL, generik, tipe, statement.
-LANG-02: ⚠️ STUB (ROUND 252 + ROUND 253 + ROUND 255 + ROUND 258 + ROUND 260 + ROUND 262) Tidak ada SystemC Support (Critical)
+LANG-02: ⚠️ STUB (ROUND 252 + ROUND 253 + ROUND 255 + ROUND 258 + ROUND 260 + ROUND 262 + ROUND 265) Tidak ada SystemC Support (Critical)
          Stage 1 (ROUND 252): crate `mivon-systemc` (terisolasi) — scanner
          terbatas kenali makro `SC_MODULE`/`SC_CTOR` (case-sensitive) +
          error Unterminated. Stage 2 (ROUND 253): ekstraksi deklarasi
@@ -15475,6 +15475,53 @@ Status LANG-01: ⚠️ STUB (stage 1-10) — scanner entity/architecture + port 
   subprogram + type/subtype ada di krate terisolasi; sisa open: lexer/parser
   VHDL lengkap, concurrent/sequential statement dalam process, elaborasi,
   simulasi.
+
+
+═══ ROUND 265 — LANG-02 (stage 7): ekstraksi channel/sinkronisasi SystemC ═══
+
+Ruang lingkup: lanjutkan stub LANG-02 (krate mivon-systemc) — ekstraksi
+deklarasi channel/sinkronisasi `sc_fifo`/`sc_event`/`sc_mutex`/
+`sc_semaphore` (nama + jenis), melengkapi konstruk SystemC yang dikenali.
+
+Perubahan (crates/mivon-systemc/src/lib.rs):
+  - Tambah `SystemCChannelKind{Fifo,Event,Mutex,Semaphore}` dan
+    `SystemCChannel{name,kind,line}`.
+  - Tambah field `channels: Vec<SystemCChannel>` di `SystemCScan`.
+  - Branch `sc_fifo`/`sc_event`/`sc_mutex`/`sc_semaphore` di `scan()`
+    (case-sensitive): jenis dari keyword, nama = identifier setelah keyword
+    (untuk `sc_fifo`, word setelah `>` penutup template `<...>`).
+  - Doc header update ke "stage 1-7".
+  - Catatan: saat edit sempat muncul duplikat definisi (E0428/E0119) karena
+    sebagian kode stage 7 sudah ada; duplikat dihapus → definisi tunggal.
+
+Test diskriminatif (+2, total 17):
+  - `scan_extracts_channels`: sc_fifo<int>/sc_event/sc_mutex/sc_semaphore
+    -> 4 channel dikenali dengan nama + jenis benar.
+  - `scan_channel_case_sensitive`: `SC_FIFO`/`SC_EVENT` (uppercase) tidak
+    terhitung.
+
+VERIFIKASI ROUND 265:
+  - rustfmt --edition 2021 --check (lib.rs) -> bersih.
+  - cargo test -p mivon-systemc -> 17 passed.
+  - cargo nextest run --workspace --features dev --no-fail-fast -> 4028 run:
+    4027 passed, 1 failed, 24 skipped. Satu kegagalan = test flaky yang
+    sudah dikenal `mivon-fuzz::fuzz_regression
+    reg_bug_3813d7d69afe_lrm_violation` (panic `MivonInternalFailure {
+    kind: Hang }` dari `oracle::evaluate` budget 20000 pada source UVM
+    besar). Test yang sama lolos di gate ROUND 264 (4026 passed,
+    0 failed) -> mengonfirmasi nondeterministik. Tidak terkait perubahan
+    ini: `mivon-systemc` = crate stub terisolasi, tidak di-depend crate
+    mana pun. Seluruh 17 test `mivon-systemc` lolos.
+  - Konfirmasi: gate dengan exclude 2 test flaky yang sudah dikenal
+    (`cargo nextest run --workspace --features dev -E 'not test(
+    reg_bug_3813d7d69afe_lrm_violation) and not test(
+    spawn_slow_with_progress_is_slow_not_hang)'`) -> 4026 run:
+    4026 passed, 0 failed, 26 skipped. Seluruh test non-flaky hijau.
+
+Status LANG-02: ⚠️ STUB (stage 1-7) — scanner SC_MODULE/SC_CTOR + port/signal
+  + process + clock + kontrol simulasi + sc_main + channel/sinkronisasi ada
+  di krate terisolasi; sisa open: parser C++/SystemC penuh, body process/
+  ctor, elaborasi, simulasi, wiring pipeline.
 
 
 \\=======================================================================//
