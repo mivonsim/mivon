@@ -1,4 +1,4 @@
-//! LANG-02: SystemC front-end — STUB stage 1-9 (Critical, open).
+//! LANG-02: SystemC front-end — STUB stage 1-10 (Critical, open).
 //!
 //! mivon tidak memiliki dukungan SystemC sama sekali. Stage 1 adalah scanner
 //! terbatas yang mengenali makro `SC_MODULE(<nama>)` dan `SC_CTOR(<nama>)`
@@ -11,7 +11,9 @@
 //! channel/sinkronisasi `sc_fifo`/`sc_event`/`sc_mutex`/`sc_semaphore`
 //! (nama + jenis). Stage 8 menambah ekstraksi sensitivity list
 //! `sensitive << clk.pos()` (sinyal + edge). Stage 9 menambah deteksi
-//! `wait()` / `wait(<durasi>, <satuan>)` (durasi + satuan). BUKAN parser
+//! `wait()` / `wait(<durasi>, <satuan>)` (durasi + satuan). Stage 10
+//! menambah deteksi makro pelaporan `SC_REPORT_INFO`/`SC_REPORT_WARNING`/
+//! `SC_REPORT_ERROR`/`SC_REPORT_FATAL` (jenis + baris). BUKAN parser
 //! C++/SystemC lengkap: belum mem-parse body process/ctor, maupun tipe SystemC
 //! bersarang penuh. Belum
 //! di-wire ke pipeline compile mivon (SystemVerilog).
@@ -59,6 +61,8 @@ pub struct SystemCScan {
     pub sensitivities: Vec<SystemCSensitivity>,
     /// Pemanggilan `wait()` / `wait(<durasi>, <satuan>)`; stage 9.
     pub waits: Vec<SystemCWait>,
+    /// Pemanggilan makro pelaporan `SC_REPORT_*`; stage 10.
+    pub reports: Vec<SystemCReport>,
 }
 
 /// Jenis process SystemC.
@@ -165,6 +169,27 @@ pub struct SystemCWait {
     /// Word setelah koma (mis. `"SC_NS"`), `None` bila tak ada.
     pub unit: Option<String>,
     /// 1-based baris tempat keyword `wait` muncul.
+    pub line: usize,
+}
+
+/// Jenis makro pelaporan SystemC (stage 10).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SystemCReportKind {
+    /// `SC_REPORT_INFO`.
+    Info,
+    /// `SC_REPORT_WARNING`.
+    Warning,
+    /// `SC_REPORT_ERROR`.
+    Error,
+    /// `SC_REPORT_FATAL`.
+    Fatal,
+}
+
+/// Satu pemanggilan makro pelaporan SystemC (stage 10: jenis + baris).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SystemCReport {
+    pub kind: SystemCReportKind,
+    /// 1-based baris tempat makro muncul.
     pub line: usize,
 }
 
@@ -286,6 +311,8 @@ enum Tok {
 ///   dipisah `<<` lagi) sampai `;`; edge diambil dari `.pos()` / `.neg()`.
 /// - Wait: keyword `wait` diikuti `(...)`; word pertama = durasi, word
 ///   setelah koma = satuan (mis. `SC_NS`). `wait()` kosong = keduanya None.
+/// - Makro `SC_REPORT_INFO`/`SC_REPORT_WARNING`/`SC_REPORT_ERROR`/
+///   `SC_REPORT_FATAL` dihitung sebagai laporan (jenis + baris).
 pub fn scan(src: &str) -> Result<SystemCScan, SystemCScanError> {
     let toks = tokenize(src);
     let n = toks.len();
@@ -593,6 +620,16 @@ pub fn scan(src: &str) -> Result<SystemCScan, SystemCScanError> {
                         unit,
                         line: *ln,
                     });
+                    i += 1;
+                }
+                "SC_REPORT_INFO" | "SC_REPORT_WARNING" | "SC_REPORT_ERROR" | "SC_REPORT_FATAL" => {
+                    let kind = match w.as_str() {
+                        "SC_REPORT_INFO" => SystemCReportKind::Info,
+                        "SC_REPORT_WARNING" => SystemCReportKind::Warning,
+                        "SC_REPORT_ERROR" => SystemCReportKind::Error,
+                        _ => SystemCReportKind::Fatal,
+                    };
+                    res.reports.push(SystemCReport { kind, line: *ln });
                     i += 1;
                 }
                 _ => {}
@@ -1000,5 +1037,51 @@ SC_MODULE(tb) {
         let src = "WAIT(10, SC_NS);\n";
         let s = scan(src).unwrap();
         assert!(s.waits.is_empty());
+    }
+
+    #[test]
+    fn scan_extracts_reports() {
+        // Makro SC_REPORT_* terdeteksi (jenis + baris).
+        let src = "\
+SC_MODULE(tb) {
+    void run() {
+        SC_REPORT_INFO(\"ID\", \"msg\");
+        SC_REPORT_WARNING(\"ID\", \"msg\");
+        SC_REPORT_ERROR(\"ID\", \"msg\");
+        SC_REPORT_FATAL(\"ID\", \"msg\");
+    }
+};
+";
+        let s = scan(src).unwrap();
+        assert_eq!(
+            s.reports,
+            vec![
+                SystemCReport {
+                    kind: SystemCReportKind::Info,
+                    line: 3,
+                },
+                SystemCReport {
+                    kind: SystemCReportKind::Warning,
+                    line: 4,
+                },
+                SystemCReport {
+                    kind: SystemCReportKind::Error,
+                    line: 5,
+                },
+                SystemCReport {
+                    kind: SystemCReportKind::Fatal,
+                    line: 6,
+                },
+            ]
+        );
+        assert_eq!(s.modules.len(), 1);
+    }
+
+    #[test]
+    fn scan_report_case_sensitive() {
+        // `sc_report_info` (lowercase) BUKAN makro -> tidak terhitung.
+        let src = "sc_report_info(\"ID\", \"msg\");\n";
+        let s = scan(src).unwrap();
+        assert!(s.reports.is_empty());
     }
 }
