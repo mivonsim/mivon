@@ -1,4 +1,4 @@
-//! LANG-01: VHDL front-end — STUB stage 1-11 (Critical, open).
+//! LANG-01: VHDL front-end — STUB stage 1-12 (Critical, open).
 //!
 //! mivon tidak memiliki dukungan VHDL sama sekali. Stage 1 adalah scanner
 //! terbatas yang mengenali batas `entity` / `architecture` dari source VHDL
@@ -11,7 +11,8 @@
 //! stage 9 mengekstrak deklarasi subprogram `function`/`procedure` (nama +
 //! jenis), stage 10 mengekstrak deklarasi `type`/`subtype` (nama + jenis
 //! Enum/Record/Subtype/Other), stage 11 mengekstrak deklarasi `constant`
-//! (nama + tipe + nilai). Semuanya kasar: nama + mode/tipe. BUKAN parser
+//! (nama + tipe + nilai), stage 12 mengekstrak deklarasi `alias`
+//! (nama + tipe + target). Semuanya kasar: nama + mode/tipe. BUKAN parser
 //! lengkap: belum mem-parse concurrent/sequential statement dalam process,
 //! maupun tipe VHDL penuh. Belum di-wire ke pipeline compile (lexer/parser
 //! SystemVerilog di mivon-parser).
@@ -156,6 +157,18 @@ pub struct VhdlConstant {
     pub line: usize,
 }
 
+/// Satu deklarasi `alias` VHDL (stage 12: ekstraksi kasar nama + tipe +
+/// target). Bentuk: `alias <nama> : <tipe> is <target>;`. Tipe = word pertama
+/// setelah `:`, target = word pertama setelah `is`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VhdlAlias {
+    pub name: String,
+    pub type_name: String,
+    pub target: String,
+    /// 1-based baris tempat kata kunci `alias` muncul.
+    pub line: usize,
+}
+
 /// Satu arsitektur VHDL yang dikenali.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VhdlArchitecture {
@@ -190,6 +203,8 @@ pub struct VhdlScan {
     pub type_decls: Vec<VhdlTypeDecl>,
     /// Deklarasi `constant` (stage 11, kasar: nama + tipe + nilai).
     pub constants: Vec<VhdlConstant>,
+    /// Deklarasi `alias` (stage 12, kasar: nama + tipe + target).
+    pub aliases: Vec<VhdlAlias>,
 }
 
 /// Kesalahan scan tingkat rendah (stage 1).
@@ -464,6 +479,7 @@ pub fn scan(src: &str) -> Result<VhdlScan, VhdlScanError> {
     res.uses = uses;
     res.type_decls = extract_types(src);
     res.constants = extract_constants(src);
+    res.aliases = extract_aliases(src);
     Ok(res)
 }
 
@@ -1057,6 +1073,80 @@ pub fn extract_constants(src: &str) -> Vec<VhdlConstant> {
     out
 }
 
+/// Ekstrak deklarasi `alias` dari seluruh source (stage 12, kasar).
+///
+/// Mendeteksi `alias <nama> : <tipe> is <target>;`. Tipe = word pertama
+/// setelah `:`, target = word pertama setelah `is`. Guard `end alias`
+/// dilewati. Komentar `--` sudah dibuang oleh `tokenize`.
+pub fn extract_aliases(src: &str) -> Vec<VhdlAlias> {
+    let toks = tokenize(src);
+    let n = toks.len();
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i < n {
+        let (ln, _, t) = &toks[i];
+        if let Tok::Word(w) = t {
+            if w.to_ascii_lowercase() == "alias" {
+                let prev_is_end = matches!(
+                    toks.get(i.wrapping_sub(1)),
+                    Some((_, _, Tok::Word(pw))) if pw.to_ascii_lowercase() == "end"
+                );
+                if prev_is_end {
+                    i += 1;
+                    continue;
+                }
+                let name = match toks.get(i + 1) {
+                    Some((_, _, Tok::Word(nx))) => nx.clone(),
+                    _ => {
+                        i += 1;
+                        continue;
+                    }
+                };
+                // Tipe: word tepat setelah ':'.
+                let mut type_name = String::new();
+                let mut j = i + 2;
+                while j + 1 < n {
+                    if matches!(&toks[j].2, Tok::Punct(':'))
+                        && !matches!(toks.get(j + 1), Some((_, _, Tok::Punct('='))))
+                    {
+                        if let Some((_, _, Tok::Word(ty))) = toks.get(j + 1) {
+                            type_name = ty.clone();
+                        }
+                        break;
+                    }
+                    j += 1;
+                }
+                // Target: word setelah keyword `is`.
+                let mut target = String::new();
+                let mut k = i + 2;
+                while k + 1 < n {
+                    if let Some((_, _, Tok::Word(kw))) = toks.get(k) {
+                        if kw.to_ascii_lowercase() == "is" {
+                            if let Some((_, _, Tok::Word(tg))) = toks.get(k + 1) {
+                                target = tg.clone();
+                            }
+                            break;
+                        }
+                    }
+                    k += 1;
+                }
+                out.push(VhdlAlias {
+                    name,
+                    type_name,
+                    target,
+                    line: *ln,
+                });
+                i += 1;
+            } else {
+                i += 1;
+            }
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
 /// Buang komentar baris `--` dari sebuah teks.
 fn strip_comments(s: &str) -> String {
     let ch: Vec<char> = s.chars().collect();
@@ -1586,5 +1676,43 @@ constant RESET : bit := '0';
         assert_eq!(s.constants[0].name, "WIDTH");
         assert_eq!(s.constants[0].type_name, "INTEGER");
         assert_eq!(s.constants[0].value, "8");
+    }
+
+    #[test]
+    fn scan_extracts_aliases() {
+        // Deklarasi `alias` diekstrak (nama + tipe + target + baris).
+        let src = "\
+alias data_out : std_logic_vector is internal_data;
+alias clk_alias : bit is clk;
+";
+        let s = scan(src).unwrap();
+        assert_eq!(
+            s.aliases,
+            vec![
+                VhdlAlias {
+                    name: "data_out".to_string(),
+                    type_name: "std_logic_vector".to_string(),
+                    target: "internal_data".to_string(),
+                    line: 1,
+                },
+                VhdlAlias {
+                    name: "clk_alias".to_string(),
+                    type_name: "bit".to_string(),
+                    target: "clk".to_string(),
+                    line: 2,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn scan_alias_case_insensitive() {
+        // VHDL case-insensitive: keyword uppercase tetap dikenali.
+        let src = "ALIAS DATA : BIT IS SIG;\n";
+        let s = scan(src).unwrap();
+        assert_eq!(s.aliases.len(), 1, "{s:?}");
+        assert_eq!(s.aliases[0].name, "DATA");
+        assert_eq!(s.aliases[0].type_name, "BIT");
+        assert_eq!(s.aliases[0].target, "SIG");
     }
 }
