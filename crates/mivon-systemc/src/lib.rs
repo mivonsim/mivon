@@ -1,4 +1,4 @@
-//! LANG-02: SystemC front-end — STUB stage 1-7 (Critical, open).
+//! LANG-02: SystemC front-end — STUB stage 1-8 (Critical, open).
 //!
 //! mivon tidak memiliki dukungan SystemC sama sekali. Stage 1 adalah scanner
 //! terbatas yang mengenali makro `SC_MODULE(<nama>)` dan `SC_CTOR(<nama>)`
@@ -9,8 +9,10 @@
 //! menambah deteksi kontrol simulasi `sc_start`/`sc_stop`. Stage 6 menambah
 //! deteksi entry point `sc_main`. Stage 7 menambah ekstraksi deklarasi
 //! channel/sinkronisasi `sc_fifo`/`sc_event`/`sc_mutex`/`sc_semaphore`
-//! (nama + jenis). BUKAN parser C++/SystemC lengkap: belum
-//! mem-parse body process/ctor, maupun tipe SystemC bersarang penuh. Belum
+//! (nama + jenis). Stage 8 menambah ekstraksi sensitivity list
+//! `sensitive << clk.pos()` (sinyal + edge). BUKAN parser C++/SystemC
+//! lengkap: belum mem-parse body process/ctor, maupun tipe SystemC
+//! bersarang penuh. Belum
 //! di-wire ke pipeline compile mivon (SystemVerilog).
 //!
 //! Ini titik awal yang kecil namun ter-test; item besar LANG-02 akan
@@ -52,6 +54,8 @@ pub struct SystemCScan {
     /// Deklarasi channel/sinkronisasi (`sc_fifo`/`sc_event`/`sc_mutex`/
     /// `sc_semaphore`); stage 7.
     pub channels: Vec<SystemCChannel>,
+    /// Sensitivity list process (`sensitive << clk.pos()`); stage 8.
+    pub sensitivities: Vec<SystemCSensitivity>,
 }
 
 /// Jenis process SystemC.
@@ -123,6 +127,29 @@ pub struct SystemCChannel {
     pub name: String,
     pub kind: SystemCChannelKind,
     /// 1-based baris tempat keyword muncul.
+    pub line: usize,
+}
+
+/// Edge sensitivity SystemC (stage 8).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SystemCEdge {
+    /// `.pos()` — edge naik.
+    Pos,
+    /// `.neg()` — edge turun.
+    Neg,
+    /// Tanpa `.pos()`/`.neg()` — sensitif pada perubahan nilai.
+    None,
+}
+
+/// Satu entri sensitivity list SystemC
+/// (`sensitive << clk.pos() << rst.neg();`, stage 8).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SystemCSensitivity {
+    /// Nama sinyal setelah `<<`.
+    pub signal: String,
+    /// Edge dari `.pos()` / `.neg()`, bila ada.
+    pub edge: SystemCEdge,
+    /// 1-based baris tempat sinyal muncul.
     pub line: usize,
 }
 
@@ -240,6 +267,8 @@ enum Tok {
 ///   kontrol (jenis + baris).
 /// - Entry point: keyword `sc_main` menandai baris entry point (hanya diambil
 ///   yang pertama; testbench SystemC wajib punya `sc_main`).
+/// - Sensitivity: keyword `sensitive` diikuti `<< <sinyal>` (bisa beberapa,
+///   dipisah `<<` lagi) sampai `;`; edge diambil dari `.pos()` / `.neg()`.
 pub fn scan(src: &str) -> Result<SystemCScan, SystemCScanError> {
     let toks = tokenize(src);
     let n = toks.len();
@@ -481,6 +510,44 @@ pub fn scan(src: &str) -> Result<SystemCScan, SystemCScanError> {
                         });
                     }
                     i = k;
+                }
+                "sensitive" => {
+                    // Batasi pencarian sampai `;` akhir statement agar `<<`
+                    // di tempat lain tidak ikut terhitung.
+                    let mut end = i + 1;
+                    while end < n && !matches!(&toks[end].1, Tok::Punct(';')) {
+                        end += 1;
+                    }
+                    let mut k = i + 1;
+                    while k + 2 < end {
+                        let is_shift = matches!(toks.get(k), Some((_, Tok::Punct('<'))))
+                            && matches!(toks.get(k + 1), Some((_, Tok::Punct('<'))));
+                        if !is_shift {
+                            k += 1;
+                            continue;
+                        }
+                        if let Some((sline, Tok::Word(sig))) = toks.get(k + 2) {
+                            let mut edge = SystemCEdge::None;
+                            if matches!(toks.get(k + 3), Some((_, Tok::Punct('.')))) {
+                                if let Some((_, Tok::Word(m))) = toks.get(k + 4) {
+                                    edge = match m.as_str() {
+                                        "pos" => SystemCEdge::Pos,
+                                        "neg" => SystemCEdge::Neg,
+                                        _ => SystemCEdge::None,
+                                    };
+                                }
+                            }
+                            res.sensitivities.push(SystemCSensitivity {
+                                signal: sig.clone(),
+                                edge,
+                                line: *sline,
+                            });
+                            k += 3;
+                        } else {
+                            k += 1;
+                        }
+                    }
+                    i = end;
                 }
                 _ => {}
             }
@@ -803,5 +870,51 @@ SC_MODULE(tb) {
         let src = "SC_FIFO<int> f;\nSC_EVENT e;\n";
         let s = scan(src).unwrap();
         assert!(s.channels.is_empty());
+    }
+
+    #[test]
+    fn scan_extracts_sensitivity() {
+        // Sensitivity list `sensitive << sinyal.pos()` diekstrak (nama +
+        // edge + baris); beberapa sinyal dalam satu statement didukung.
+        let src = "\
+SC_MODULE(tb) {
+    SC_CTOR(tb) {
+        SC_METHOD(run);
+        sensitive << clk.pos() << rst.neg();
+        sensitive << data;
+    }
+};
+";
+        let s = scan(src).unwrap();
+        assert_eq!(
+            s.sensitivities,
+            vec![
+                SystemCSensitivity {
+                    signal: "clk".to_string(),
+                    edge: SystemCEdge::Pos,
+                    line: 4,
+                },
+                SystemCSensitivity {
+                    signal: "rst".to_string(),
+                    edge: SystemCEdge::Neg,
+                    line: 4,
+                },
+                SystemCSensitivity {
+                    signal: "data".to_string(),
+                    edge: SystemCEdge::None,
+                    line: 5,
+                },
+            ]
+        );
+        assert_eq!(s.modules.len(), 1);
+        assert_eq!(s.processes.len(), 1);
+    }
+
+    #[test]
+    fn scan_sensitivity_case_sensitive() {
+        // `SENSITIVE` (uppercase) BUKAN keyword -> tidak terhitung.
+        let src = "SENSITIVE << clk.pos();\n";
+        let s = scan(src).unwrap();
+        assert!(s.sensitivities.is_empty());
     }
 }

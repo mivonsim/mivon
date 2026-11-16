@@ -862,7 +862,7 @@ LANG-01: ⚠️ STUB (ROUND 247 + ROUND 248 + ROUND 250 + ROUND 254 + ROUND 256 
          tipe (kasar, tipe vektor diambil partial). BUKAN parser lengkap;
          belum di-wire ke pipeline compile. Sisa besar: lexer/parser/
          elaborasi/simulasi VHDL, generik, tipe, statement.
-LANG-02: ⚠️ STUB (ROUND 252 + ROUND 253 + ROUND 255 + ROUND 258 + ROUND 260 + ROUND 262 + ROUND 265) Tidak ada SystemC Support (Critical)
+LANG-02: ⚠️ STUB (ROUND 252 + ROUND 253 + ROUND 255 + ROUND 258 + ROUND 260 + ROUND 262 + ROUND 265 + ROUND 266) Tidak ada SystemC Support (Critical)
          Stage 1 (ROUND 252): crate `mivon-systemc` (terisolasi) — scanner
          terbatas kenali makro `SC_MODULE`/`SC_CTOR` (case-sensitive) +
          error Unterminated. Stage 2 (ROUND 253): ekstraksi deklarasi
@@ -15522,6 +15522,49 @@ Status LANG-02: ⚠️ STUB (stage 1-7) — scanner SC_MODULE/SC_CTOR + port/sig
   + process + clock + kontrol simulasi + sc_main + channel/sinkronisasi ada
   di krate terisolasi; sisa open: parser C++/SystemC penuh, body process/
   ctor, elaborasi, simulasi, wiring pipeline.
+
+═══ ROUND 266 — LANG-02 (stage 8): ekstraksi sensitivity list SystemC ═══
+
+Ruang lingkup: lanjutkan stub LANG-02 (krate mivon-systemc) — ekstraksi
+sensitivity list process `sensitive << clk.pos() << rst.neg();`
+(sinyal + edge + baris), melengkapi konstruk SystemC yang dikenali.
+
+Perubahan (crates/mivon-systemc/src/lib.rs):
+  - Tambah `SystemCEdge{Pos,Neg,None}` dan
+    `SystemCSensitivity{signal,edge,line}`.
+  - Tambah field `sensitivities: Vec<SystemCSensitivity>` di `SystemCScan`.
+  - Branch `sensitive` di `scan()`: pindai pasangan `<< <sinyal>` sampai `;`
+    (case-sensitive), edge dari `.pos()`/`.neg()`, dukung beberapa sinyal
+    per statement; `i` dilompat ke `;` agar `<<` di statement lain tak
+    tertangkap.
+  - Doc header update ke "stage 1-8" + aturan sensitivity di doc `scan()`.
+
+Test diskriminatif (+2, total 19):
+  - `scan_extracts_sensitivity`: `sensitive << clk.pos() << rst.neg();`
+    + `sensitive << data;` -> 3 entri (Pos/Neg/None) dengan baris benar;
+    modul + process tetap terdeteksi.
+  - `scan_sensitivity_case_sensitive`: `SENSITIVE` (uppercase) tidak
+    terhitung.
+
+VERIFIKASI ROUND 266:
+  - rustfmt --edition 2021 --check (lib.rs) -> bersih.
+  - cargo test -p mivon-systemc -> 19 passed.
+  - cargo nextest run --workspace --features dev --no-fail-fast -> 4030 run:
+    4029 passed, 1 failed, 24 skipped. Satu kegagalan = test flaky yang
+    sudah dikenal `reg_bug_3813d7d69afe_lrm_violation`
+    (`MivonInternalFailure { kind: Hang }` dari `oracle::evaluate`),
+    tidak terkait perubahan ini (crate terisolasi).
+  - Konfirmasi: gate dengan exclude 2 test flaky yang sudah dikenal
+    (`cargo nextest run --workspace --features dev -E 'not test(
+    reg_bug_3813d7d69afe_lrm_violation) and not test(
+    spawn_slow_with_progress_is_slow_not_hang)'`) -> 4028 run:
+    4028 passed, 0 failed, 26 skipped. Seluruh test non-flaky hijau.
+  - Review agent independen (READ-ONLY) -> VERDICT: LOLOS.
+
+Status LANG-02: ⚠️ STUB (stage 1-8) — scanner SC_MODULE/SC_CTOR + port/signal
+  + process + clock + kontrol simulasi + sc_main + channel/sinkronisasi
+  + sensitivity list ada di krate terisolasi; sisa open: parser C++/
+  SystemC penuh, body process/ctor, elaborasi, simulasi, wiring pipeline.
 
 
 \\=======================================================================//
