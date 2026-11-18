@@ -1,4 +1,4 @@
-//! LANG-01: VHDL front-end — STUB stage 1-23 (Critical, open).
+//! LANG-01: VHDL front-end — STUB stage 1-24 (Critical, open).
 //!
 //! mivon tidak memiliki dukungan VHDL sama sekali. Stage 1 adalah scanner
 //! terbatas yang mengenali batas `entity` / `architecture` dari source VHDL
@@ -21,7 +21,8 @@
 //! stage 19 mengekstrak blok (label), stage 20 mengekstrak pernyataan
 //! `assert` (baris), stage 21 mengekstrak pernyataan `report` (baris),
 //! stage 22 mengekstrak pernyataan `wait` (baris),
-//! stage 23 mengekstrak penetapan sinyal konkuren `<=`.
+//! stage 23 mengekstrak penetapan sinyal konkuren `<=`,
+//! stage 24 mengekstrak generate statement (label + baris).
 //! Semuanya kasar: nama + mode/tipe. BUKAN parser
 //! lengkap: belum mem-parse concurrent/sequential statement dalam process,
 //! maupun tipe VHDL penuh. Belum di-wire ke pipeline compile (lexer/parser
@@ -296,6 +297,16 @@ pub struct VhdlConcurrentAssign {
     pub line: usize,
 }
 
+/// Satu generate statement VHDL (stage 24: ekstraksi kasar label + baris).
+/// Bentuk: `[<label> :] generate ... end generate [label];`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VhdlGenerate {
+    /// Label generate (opsional), atau None bila tak berlabel.
+    pub label: Option<String>,
+    /// 1-based baris tempat kata kunci `generate` muncul.
+    pub line: usize,
+}
+
 /// Satu arsitektur VHDL yang dikenali.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VhdlArchitecture {
@@ -354,6 +365,8 @@ pub struct VhdlScan {
     pub waits: Vec<VhdlWait>,
     /// Penetapan sinyal konkuren (stage 23, kasar: baris).
     pub concurrent_assigns: Vec<VhdlConcurrentAssign>,
+    /// Generate statement (stage 24, kasar: label + baris).
+    pub generates: Vec<VhdlGenerate>,
 }
 
 /// Kesalahan scan tingkat rendah (stage 1).
@@ -640,6 +653,7 @@ pub fn scan(src: &str) -> Result<VhdlScan, VhdlScanError> {
     res.reports = extract_report(src);
     res.waits = extract_wait(src);
     res.concurrent_assigns = extract_concurrent_assign(src);
+    res.generates = extract_generate(src);
     Ok(res)
 }
 
@@ -1818,6 +1832,45 @@ pub fn extract_concurrent_assign(src: &str) -> Vec<VhdlConcurrentAssign> {
     out
 }
 
+/// Ekstrak generate statement VHDL dari seluruh source (stage 24, kasar).
+///
+/// Mendeteksi `[<label> :] generate ... end generate [label];`. Label diambil
+/// dari kata sebelum `:` tepat sebelum `generate`; bila tidak ada label,
+/// None. Hanya baris dicatat. Komentar `--` sudah dibuang oleh `tokenize`.
+pub fn extract_generate(src: &str) -> Vec<VhdlGenerate> {
+    let toks = tokenize(src);
+    let n = toks.len();
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i < n {
+        let (ln, _, t) = &toks[i];
+        if let Tok::Word(w) = t {
+            if w.to_ascii_lowercase() == "generate" {
+                // Lewati `end generate` (kata sebelumnya = `end`).
+                if i >= 1 {
+                    if let Tok::Word(pw) = &toks[i - 1].2 {
+                        if pw.to_ascii_lowercase() == "end" {
+                            i += 1;
+                            continue;
+                        }
+                    }
+                }
+                let mut label = None;
+                if i >= 2 {
+                    if let Tok::Word(lb) = &toks[i - 2].2 {
+                        if matches!(&toks[i - 1].2, Tok::Punct(':')) {
+                            label = Some(lb.clone());
+                        }
+                    }
+                }
+                out.push(VhdlGenerate { label, line: *ln });
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
 /// Buang komentar baris `--` dari sebuah teks.
 fn strip_comments(s: &str) -> String {
     let ch: Vec<char> = s.chars().collect();
@@ -2709,5 +2762,31 @@ f <= g;
         // Source tanpa `<=` -> kosong.
         assert!(extract_concurrent_assign("signal a : bit;").is_empty());
         assert!(extract_concurrent_assign("a + b;").is_empty());
+    }
+
+    #[test]
+    fn scan_extracts_generates() {
+        // Generate statement diekstrak (label + baris).
+        let src = "\
+g1 : generate
+  a <= b;
+end generate g1;
+
+generate
+  c <= d;
+end generate;
+";
+        let s = scan(src).unwrap();
+        assert_eq!(s.generates.len(), 2, "{s:?}");
+        assert_eq!(s.generates[0].label.as_deref(), Some("g1"));
+        assert_eq!(s.generates[0].line, 1);
+        assert_eq!(s.generates[1].label, None);
+        assert_eq!(s.generates[1].line, 5); // baris 4 kosong
+    }
+
+    #[test]
+    fn extract_generate_no_generate_is_empty() {
+        // Source tanpa `generate` -> kosong.
+        assert!(extract_generate("signal a : bit;").is_empty());
     }
 }

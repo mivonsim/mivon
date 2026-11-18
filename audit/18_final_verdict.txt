@@ -9398,12 +9398,37 @@ VERIFIKASI ROUND 282:
   - cargo check --workspace -> bersih (tanpa regresi lintas-crate).
   - Review agent: LOLOS.
 
-Status LANG-01: ⚠️ STUB (stage 1-23) — scanner entity/architecture + port/
+═══ ROUND 283 — LANG-01 (stage 24): ekstraksi generate statement VHDL ═══
+
+Ruang lingkup: lanjutkan stub LANG-01 (krate mivon-vhdl) — ekstraksi generate
+statement `[<label> :] generate ... end generate [label];` (label + baris),
+melengkapi konstruk VHDL yang dikenali.
+
+Perubahan (crates/mivon-vhdl/src/lib.rs):
+  - Tambah `VhdlGenerate { label, line }` dan field
+    `generates: Vec<VhdlGenerate>` di `VhdlScan`.
+  - Fungsi publik `extract_generate(src)`: deteksi kata kunci `generate`
+    (lewati `end generate`), ambil label dari kata sebelum `:`. Dipanggil
+    di akhir `scan()`.
+  - Doc header update ke "stage 1-24".
+  - +2 test diskriminatif (total 58):
+    * scan_extracts_generates: 2 generate (dengan/tanpa label) -> label +
+      baris persis.
+    * extract_generate_no_generate_is_empty: tanpa generate -> kosong.
+
+VERIFIKASI ROUND 283:
+  - rustfmt --edition 2021 --check (lib.rs) -> bersih.
+  - cargo nextest run -p mivon-vhdl -> 58 passed (56 lama + 2 baru).
+  - cargo check --workspace -> bersih (tanpa regresi lintas-crate).
+  - Review agent: LOLOS.
+
+Status LANG-01: ⚠️ STUB (stage 1-24) — scanner entity/architecture + port/
   generic + signal + component + process + library/use + package +
   subprogram + type/subtype + constant + alias + configuration + variable +
   file + attribute + group + instansi komponen + blok + assert + report +
-  wait + penetapan konkuren ada di krate terisolasi; sisa open: parser VHDL
-  penuh, concurrent/sequential statement, elaborasi, simulasi, wiring pipeline.
+  wait + penetapan konkuren + generate ada di krate terisolasi; sisa open:
+  parser VHDL penuh, concurrent/sequential statement, elaborasi, simulasi,
+  wiring pipeline.
 
 
 \\=======================================================================//
