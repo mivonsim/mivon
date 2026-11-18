@@ -534,3 +534,70 @@ impl SimulationEngine {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_util::compile_str;
+
+    #[test]
+    fn test_uvm_reg_field_set_get() {
+        let design = compile_str("module top; endmodule").unwrap();
+        let mut engine = SimulationEngine::new(design, 100);
+        let obj_id = 1;
+
+        // Create field
+        let args = vec![string_to_logicvec("my_field")];
+        assert!(engine
+            .execute_uvm_reg_field_method(obj_id, "new", &args)
+            .is_ok());
+
+        // Set value and get it back
+        let val = LogicVec::from_u64(0xAB, 8);
+        assert!(engine
+            .execute_uvm_reg_field_method(obj_id, "set", &[val.clone()])
+            .is_ok());
+        let got = engine.execute_uvm_reg_field_method(obj_id, "get", &[]).unwrap();
+        assert_eq!(got, val);
+
+        // Set desired and get desired
+        let desired = LogicVec::from_u64(0xCD, 8);
+        assert!(engine
+            .execute_uvm_reg_field_method(obj_id, "set_desired", &[desired.clone()])
+            .is_ok());
+        let got_desired = engine
+            .execute_uvm_reg_field_method(obj_id, "get_desired", &[])
+            .unwrap();
+        assert_eq!(got_desired, desired);
+    }
+
+    #[test]
+    fn test_uvm_reg_field_reset() {
+        let design = compile_str("module top; endmodule").unwrap();
+        let mut engine = SimulationEngine::new(design, 100);
+        let obj_id = 1;
+
+        let args = vec![string_to_logicvec("my_field")];
+        assert!(engine
+            .execute_uvm_reg_field_method(obj_id, "new", &args)
+            .is_ok());
+
+        // Set a non-zero value
+        let val = LogicVec::from_u64(0xFF, 8);
+        assert!(engine
+            .execute_uvm_reg_field_method(obj_id, "set", &[val.clone()])
+            .is_ok());
+        assert_eq!(
+            engine.execute_uvm_reg_field_method(obj_id, "get", &[]).unwrap(),
+            val
+        );
+
+        // Reset should clear the value
+        assert!(engine
+            .execute_uvm_reg_field_method(obj_id, "reset", &[])
+            .is_ok());
+        let after_reset = engine.execute_uvm_reg_field_method(obj_id, "get", &[]).unwrap();
+        // After reset, value should differ from the pre-reset value
+        assert_ne!(after_reset, val);
+    }
+}
