@@ -27,7 +27,7 @@ pub struct DesignEntry {
 /// Database desain dalam memori (stage 1). Sebuah implementasi nyata akan
 /// menyimpan ini ke disk (content-addressed, seperti MICD) dan menyediakan
 /// antarmuka server untuk multi-proyek/multi-user.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DesignDatabase {
     designs: HashMap<String, DesignEntry>, // key: top module name (string)
 }
@@ -60,6 +60,34 @@ impl DesignDatabase {
 
     pub fn is_empty(&self) -> bool {
         self.designs.is_empty()
+    }
+
+    /// True bila top module sudah tercatat.
+    pub fn contains(&self, top: &Symbol) -> bool {
+        self.designs.contains_key(top.as_str())
+    }
+
+    /// Hapus entri desain menurut nama top module.
+    pub fn remove(&mut self, top: &Symbol) -> bool {
+        self.designs.remove(top.as_str()).is_some()
+    }
+
+    /// Hapus semua entri desain.
+    pub fn clear(&mut self) {
+        self.designs.clear();
+    }
+
+    /// Simpan database ke berkas JSON.
+    pub fn save(&self, path: &std::path::Path) -> Result<(), String> {
+        let json = serde_json::to_string_pretty(self)
+            .map_err(|e| format!("serialize: {}", e))?;
+        std::fs::write(path, json).map_err(|e| e.to_string())
+    }
+
+    /// Muat database dari berkas JSON.
+    pub fn load(path: &std::path::Path) -> Result<Self, String> {
+        let json = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+        serde_json::from_str(&json).map_err(|e| e.to_string())
     }
 
     /// Waktu sekarang dalam UNIX epoch seconds (untuk compiled_at).
@@ -153,5 +181,61 @@ mod tests {
         let db = DesignDatabase::new();
         assert!(db.is_empty());
         assert_eq!(db.len(), 0);
+    }
+
+    #[test]
+    fn contains_and_remove_design() {
+        let mut db = DesignDatabase::new();
+        let top = Symbol::intern("a");
+        assert!(!db.contains(&top));
+        db.record(DesignEntry::new(top, vec![], 0, 0, "x".into()));
+        assert!(db.contains(&top));
+        assert!(db.remove(&top));
+        assert!(!db.contains(&top));
+        assert!(!db.remove(&top));
+    }
+
+    #[test]
+    fn clear_empties_database() {
+        let mut db = DesignDatabase::new();
+        db.record(DesignEntry::new(
+            Symbol::intern("a"),
+            vec![],
+            0,
+            0,
+            "x".into(),
+        ));
+        db.record(DesignEntry::new(
+            Symbol::intern("b"),
+            vec![],
+            0,
+            0,
+            "y".into(),
+        ));
+        assert_eq!(db.len(), 2);
+        db.clear();
+        assert!(db.is_empty());
+        assert_eq!(db.len(), 0);
+    }
+
+    #[test]
+    fn save_and_load_json_roundtrip() {
+        let mut db = DesignDatabase::new();
+        db.record(DesignEntry::new(
+            Symbol::intern("top"),
+            vec!["top.sv".into()],
+            42,
+            7,
+            "abc123".into(),
+        ));
+        let path = std::env::temp_dir().join("mivon_design_db_test.json");
+        let _ = std::fs::remove_file(&path);
+        db.save(&path).expect("save harus sukses");
+        let loaded = DesignDatabase::load(&path).expect("load harus sukses");
+        assert_eq!(loaded.len(), 1);
+        let got = loaded.get(&Symbol::intern("top")).unwrap();
+        assert_eq!(got.signal_count, 42);
+        assert_eq!(got.checksum, "abc123");
+        let _ = std::fs::remove_file(&path);
     }
 }
