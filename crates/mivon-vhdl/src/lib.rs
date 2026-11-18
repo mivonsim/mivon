@@ -1,4 +1,4 @@
-//! LANG-01: VHDL front-end — STUB stage 1-28 (Critical, open).
+//! LANG-01: VHDL front-end — STUB stage 1-29 (Critical, open).
 //!
 //! mivon tidak memiliki dukungan VHDL sama sekali. Stage 1 adalah scanner
 //! terbatas yang mengenali batas `entity` / `architecture` dari source VHDL
@@ -26,7 +26,8 @@
 //! stage 25 mengekstrak pernyataan `null` (baris),
 //! stage 26 mengekstrak pernyataan `if` (baris),
 //! stage 27 mengekstrak pernyataan `case` (baris),
-//! stage 28 mengekstrak pernyataan `loop` (baris).
+//! stage 28 mengekstrak pernyataan `loop` (baris),
+//! stage 29 mengekstrak pernyataan `exit`/`next` (baris).
 //! Semuanya kasar: nama + mode/tipe. BUKAN parser
 //! lengkap: belum mem-parse concurrent/sequential statement dalam process,
 //! maupun tipe VHDL penuh. Belum di-wire ke pipeline compile (lexer/parser
@@ -343,6 +344,15 @@ pub struct VhdlLoopStmt {
     pub line: usize,
 }
 
+/// Satu pernyataan `exit`/`next` VHDL (stage 29: ekstraksi kasar baris).
+/// Bentuk: `exit [label] [when condition];` atau `next [label] [when condition];`.
+/// Hanya baris dicatat; label dan kondisi tidak di-parse dalam stub ini.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VhdlExitStmt {
+    /// 1-based baris tempat kata kunci `exit` atau `next` muncul.
+    pub line: usize,
+}
+
 /// Satu arsitektur VHDL yang dikenali.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VhdlArchitecture {
@@ -411,6 +421,8 @@ pub struct VhdlScan {
     pub case_stmts: Vec<VhdlCaseStmt>,
     /// Pernyataan `loop` (stage 28, kasar: baris).
     pub loop_stmts: Vec<VhdlLoopStmt>,
+    /// Pernyataan `exit`/`next` (stage 29, kasar: baris).
+    pub exit_stmts: Vec<VhdlExitStmt>,
 }
 
 /// Kesalahan scan tingkat rendah (stage 1).
@@ -702,6 +714,7 @@ pub fn scan(src: &str) -> Result<VhdlScan, VhdlScanError> {
     res.if_stmts = extract_if_stmt(src);
     res.case_stmts = extract_case_stmt(src);
     res.loop_stmts = extract_loop_stmt(src);
+    res.exit_stmts = extract_exit_stmt(src);
     Ok(res)
 }
 
@@ -2035,6 +2048,32 @@ pub fn extract_loop_stmt(src: &str) -> Vec<VhdlLoopStmt> {
     out
 }
 
+/// Ekstrak pernyataan `exit`/`next` VHDL dari seluruh source (stage 29, kasar).
+///
+/// Mendeteksi kata kunci `exit` atau `next` (lewati `end exit` tidak relevan
+/// karena `exit`/`next` tidak punya penutup `end`). Hanya baris dicatat;
+/// label dan kondisi setelahnya tidak di-parse dalam stub ini. Komentar
+/// `--` sudah dibuang oleh `tokenize`.
+pub fn extract_exit_stmt(src: &str) -> Vec<VhdlExitStmt> {
+    let toks = tokenize(src);
+    let n = toks.len();
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i < n {
+        let (ln, _, t) = &toks[i];
+        if let Tok::Word(w) = t {
+            let lw = w.to_ascii_lowercase();
+            if lw == "exit" || lw == "next" {
+                // Jika ada `when`, lewati hingga `;` agar tidak terlambat;
+                // namun hanya baris dicatat, jadi cukup catat dan lanjut.
+                out.push(VhdlExitStmt { line: *ln });
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
 /// Buang komentar baris `--` dari sebuah teks.
 fn strip_comments(s: &str) -> String {
     let ch: Vec<char> = s.chars().collect();
@@ -3045,5 +3084,27 @@ end loop;
         // `end loop` tidak dihitung sebagai loop.
         assert_eq!(extract_loop_stmt("end loop;").len(), 0);
         assert_eq!(extract_loop_stmt("signal a : bit;").len(), 0);
+    }
+
+    #[test]
+    fn scan_extracts_exit_stmts() {
+        // Pernyataan `exit`/`next` diekstrak (baris).
+        let src = "\
+exit;
+next when condition;
+exit loop1;
+";
+        let s = scan(src).unwrap();
+        assert_eq!(s.exit_stmts.len(), 3, "{s:?}");
+        assert_eq!(s.exit_stmts[0].line, 1);
+        assert_eq!(s.exit_stmts[1].line, 2);
+        assert_eq!(s.exit_stmts[2].line, 3);
+    }
+
+    #[test]
+    fn extract_exit_stmt_not_counted_other() {
+        // Keyword bukan exit/next tidak dihitung.
+        assert_eq!(extract_exit_stmt("signal a : bit;").len(), 0);
+        assert_eq!(extract_exit_stmt("loop ... end loop;").len(), 0);
     }
 }
