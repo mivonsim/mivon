@@ -9112,11 +9112,33 @@ VERIFIKASI ROUND 270:
     4036 passed, 0 failed, 26 skipped. Seluruh test non-flaky hijau.
   - Review agent independen (READ-ONLY) -> VERDICT: LOLOS.
 
-Status LANG-02: ⚠️ STUB (stage 1-10) — scanner SC_MODULE/SC_CTOR + port/signal
+═══ ROUND 281 — LANG-02 (stage 11): ekstraksi pemanggilan sc_trace SystemC ═══
+
+Ruang lingkup: lanjutkan stub LANG-02 (krate mivon-systemc) — ekstraksi pemanggilan
+`sc_trace(tf, sinyal, "nama");` (baris), melengkapi konstruk SystemC yang
+dikenali.
+
+Perubahan (crates/mivon-systemc/src/lib.rs):
+  - Tambah `SystemCTrace { line }` dan field `traces: Vec<SystemCTrace>` di
+    `SystemCScan`.
+  - Arm `"sc_trace" | "SC_TRACE"` di dalam `scan()` (case-insensitive, deteksi
+    kata kunci `sc_trace`). Dipanggil secara inline di `scan()`.
+  - Doc header update ke "stage 1-11".
+  - +2 test diskriminatif (total 25):
+    * scan_extracts_traces: 2 sc_trace -> baris persis.
+    * scan_trace_case_sensitive: `SC_TRACE` uppercase terdeteksi.
+
+VERIFIKASI ROUND 281:
+  - rustfmt --edition 2021 --check (lib.rs) -> bersih.
+  - cargo nextest run -p mivon-systemc -> 25 passed (23 lama + 2 baru).
+  - cargo check --workspace -> bersih (tanpa regresi lintas-crate).
+  - Review agent: LOLOS.
+
+Status LANG-02: ⚠️ STUB (stage 1-11) — scanner SC_MODULE/SC_CTOR + port/signal
   + process + clock + kontrol simulasi + sc_main + channel/sinkronisasi
-  + sensitivity list + wait + SC_REPORT_* ada di krate terisolasi; sisa open:
-  parser C++/SystemC penuh, body process/ctor, elaborasi, simulasi,
-  wiring pipeline.
+  + sensitivity list + wait + SC_REPORT_* + sc_trace ada di krate terisolasi;
+  sisa open: parser C++/SystemC penuh, body process/ctor, elaborasi,
+  simulasi, wiring pipeline.
 
 ═══ ROUND 271 — LANG-01 (stage 13): ekstraksi deklarasi configuration VHDL ═══
 

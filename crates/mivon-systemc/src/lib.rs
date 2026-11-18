@@ -1,4 +1,4 @@
-//! LANG-02: SystemC front-end — STUB stage 1-10 (Critical, open).
+//! LANG-02: SystemC front-end — STUB stage 1-11 (Critical, open).
 //!
 //! mivon tidak memiliki dukungan SystemC sama sekali. Stage 1 adalah scanner
 //! terbatas yang mengenali makro `SC_MODULE(<nama>)` dan `SC_CTOR(<nama>)`
@@ -13,7 +13,8 @@
 //! `sensitive << clk.pos()` (sinyal + edge). Stage 9 menambah deteksi
 //! `wait()` / `wait(<durasi>, <satuan>)` (durasi + satuan). Stage 10
 //! menambah deteksi makro pelaporan `SC_REPORT_INFO`/`SC_REPORT_WARNING`/
-//! `SC_REPORT_ERROR`/`SC_REPORT_FATAL` (jenis + baris). BUKAN parser
+//! `SC_REPORT_ERROR`/`SC_REPORT_FATAL` (jenis + baris). Stage 11 menambah
+//! deteksi pemanggilan `sc_trace` (baris). BUKAN parser
 //! C++/SystemC lengkap: belum mem-parse body process/ctor, maupun tipe SystemC
 //! bersarang penuh. Belum
 //! di-wire ke pipeline compile mivon (SystemVerilog).
@@ -63,6 +64,8 @@ pub struct SystemCScan {
     pub waits: Vec<SystemCWait>,
     /// Pemanggilan makro pelaporan `SC_REPORT_*`; stage 10.
     pub reports: Vec<SystemCReport>,
+    /// Pemanggilan `sc_trace`; stage 11.
+    pub traces: Vec<SystemCTrace>,
 }
 
 /// Jenis process SystemC.
@@ -190,6 +193,14 @@ pub enum SystemCReportKind {
 pub struct SystemCReport {
     pub kind: SystemCReportKind,
     /// 1-based baris tempat makro muncul.
+    pub line: usize,
+}
+
+/// Satu pemanggilan `sc_trace` SystemC (stage 11: baris).
+/// Bentuk: `sc_trace(tf, sinyal, "nama");`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SystemCTrace {
+    /// 1-based baris tempat `sc_trace` muncul.
     pub line: usize,
 }
 
@@ -630,6 +641,10 @@ pub fn scan(src: &str) -> Result<SystemCScan, SystemCScanError> {
                         _ => SystemCReportKind::Fatal,
                     };
                     res.reports.push(SystemCReport { kind, line: *ln });
+                    i += 1;
+                }
+                "sc_trace" | "SC_TRACE" => {
+                    res.traces.push(SystemCTrace { line: *ln });
                     i += 1;
                 }
                 _ => {}
@@ -1083,5 +1098,29 @@ SC_MODULE(tb) {
         let src = "sc_report_info(\"ID\", \"msg\");\n";
         let s = scan(src).unwrap();
         assert!(s.reports.is_empty());
+    }
+
+    #[test]
+    fn scan_extracts_traces() {
+        // Pemanggilan `sc_trace` diekstrak (baris).
+        let src = "\
+sc_trace(tf, clk, \"clk\");
+sc_trace(tf, rst, \"rst\");
+";
+        let s = scan(src).unwrap();
+        assert_eq!(s.traces.len(), 2, "{s:?}");
+        assert_eq!(s.traces[0].line, 1);
+        assert_eq!(s.traces[1].line, 2);
+        assert_eq!(s.modules.len(), 0);
+    }
+
+    #[test]
+    fn scan_trace_case_sensitive() {
+        // `SC_TRACE` uppercase juga terdeteksi (arm terima keduanya).
+        let src = "SC_TRACE(tf, a, \"a\");\n";
+        let s = scan(src).unwrap();
+        assert_eq!(s.traces.len(), 1, "{s:?}");
+        assert_eq!(s.traces[0].line, 1);
+        assert_eq!(s.modules.len(), 0);
     }
 }
