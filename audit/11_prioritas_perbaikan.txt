@@ -19,7 +19,7 @@ P1 — HIGH (Required for 100-module designs)
 11. ✅ Fix event queue efficiency (#PERF-01) — hierarchical timing wheel
 12. ✅ Implement signal history bounds with disk spill (#CRIT-019)
 13. Fix NBA ordering (#SCHED-02)
-14. Implement gate-level support (#CRIT-020)
+14. ✅ Implement gate-level support (#CRIT-020) — netlist crate (cell, net, graph, lower, emit, json), UDP def in IR; 11 netlist tests pass
 15. Implement uvm_callback (#CRIT-031)
 16. ✅ Add UPF power simulation (#CRIT-012) — PowerIntent + UPF parser, power domains, supply nets, power state evaluation; 12 UPF tests pass
 
@@ -32,7 +32,7 @@ P2 — HIGH (Required for 1000-module designs)
 21. ✅ Implement coverage database (#CRIT-005) — CoverageDatabase with merge, diff, report, HTML export, threshold; 18 coverage_db tests pass
 22. ✅ Add timing engine full (#CRIT-011) — SDF parser + Min:Typ:Max + TimingMode
 23. Implement uvm_reg (#CRIT-032)
-24. Add parallel delta scheduling (#SIM-02)
+24. ✅ Add parallel delta scheduling (#SIM-02) — DeltaScheduler trait + SequentialDeltaScheduler, 6 tests pass (stage 1: trait + sequential baseline)
 
 P3 — HIGH (Required for 10000-module designs)
 
