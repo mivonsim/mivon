@@ -838,3 +838,28 @@ fn _port_direction(dir: PortDirection) -> &'static str {
         PortDirection::Ref => "ref",
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_port_direction_input() {
+        assert_eq!(_port_direction(PortDirection::Input), "input");
+    }
+
+    #[test]
+    fn test_port_direction_output() {
+        assert_eq!(_port_direction(PortDirection::Output), "output");
+    }
+
+    #[test]
+    fn test_port_direction_inout() {
+        assert_eq!(_port_direction(PortDirection::Inout), "inout");
+    }
+
+    #[test]
+    fn test_port_direction_ref() {
+        assert_eq!(_port_direction(PortDirection::Ref), "ref");
+    }
+}
