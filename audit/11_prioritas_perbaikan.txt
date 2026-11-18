@@ -29,7 +29,7 @@ P2 — HIGH (Required for 1000-module designs)
 18. Implement incremental elaboration (#ELAB-04)
 19. Add dynamic/associative/queue arrays (#CRIT-028-030)
 20. Implement FSDB waveform (#CRIT-033)
-21. Implement coverage database (#CRIT-005)
+21. ✅ Implement coverage database (#CRIT-005) — CoverageDatabase with merge, diff, report, HTML export, threshold; 18 coverage_db tests pass
 22. ✅ Add timing engine full (#CRIT-011) — SDF parser + Min:Typ:Max + TimingMode
 23. Implement uvm_reg (#CRIT-032)
 24. Add parallel delta scheduling (#SIM-02)
@@ -41,7 +41,7 @@ P3 — HIGH (Required for 10000-module designs)
 27. Implement CDC analysis (#CRIT-013)
 28. Implement cell library parsing (#CRIT-020)
 29. Add save/restore (#CRIT-014)
-30. Add formal verification engine (#CRIT-003)
+30. ✅ Add formal verification engine (#CRIT-003) — Z3 SMT solver + BMC engine, IrExpr→Z3 translation, per-depth assertion check; 125 tests pass with --features formal
 31. Implement native code generation (#CRIT-006 phase 2)
 32. Add multi-machine compile (#COMP-18)
 
