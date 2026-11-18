@@ -1641,3 +1641,101 @@ fn register_struct_member_keys(module: &Module, vals: &mut HashMap<Symbol, i64>,
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mivon_ast::types::{Module, ModuleItem, ParamDecl};
+
+    #[test]
+    fn collect_body_params_from_items() {
+        let module = Module {
+            name: Symbol::intern("top"),
+            line: 1,
+            col: 1,
+            ports: Vec::new(),
+            params: Vec::new(),
+            decls: Vec::new(),
+            items: vec![
+                ModuleItem::Param(ParamDecl {
+                    name: Symbol::intern("WIDTH"),
+                    dtype: None,
+                    range: None,
+                    default: None,
+                    is_localparam: false,
+                    is_type_param: false,
+                    implicit_sign: None,
+                    type_default: None,
+                }),
+                ModuleItem::Param(ParamDecl {
+                    name: Symbol::intern("DEPTH"),
+                    dtype: None,
+                    range: None,
+                    default: None,
+                    is_localparam: false,
+                    is_type_param: false,
+                    implicit_sign: None,
+                    type_default: None,
+                }),
+            ],
+            timescale: None,
+        };
+        let params = collect_body_params(&module);
+        assert_eq!(params.len(), 2);
+        assert_eq!(params[0].name, Symbol::intern("WIDTH"));
+        assert_eq!(params[1].name, Symbol::intern("DEPTH"));
+    }
+
+    #[test]
+    fn collect_body_params_ignores_non_param_items() {
+        let module = Module {
+            name: Symbol::intern("top"),
+            line: 1,
+            col: 1,
+            ports: Vec::new(),
+            params: Vec::new(),
+            decls: Vec::new(),
+            items: vec![ModuleItem::Decl(mivon_ast::types::Decl {
+                dtype: mivon_ast::types::DataType::Logic,
+                kind: mivon_ast::types::DeclKind::Logic,
+                names: vec![mivon_ast::types::DeclVar {
+                    name: Symbol::intern("a"),
+                    range: None,
+                    expr_range: None,
+                    array_range: None,
+                    array_size_expr: None,
+                    extra_unpacked_dims: Vec::new(),
+                    extra_packed_dims: Vec::new(),
+                    is_dynamic: false,
+                    is_queue: false,
+                    is_associative: false,
+                    assoc_key_type: None,
+                    is_rand: false,
+                    is_const: false,
+                    is_static: false,
+                    expr: None,
+                    col: 0,
+                    line: 1,
+                }],
+            })],
+            timescale: None,
+        };
+        let params = collect_body_params(&module);
+        assert!(params.is_empty());
+    }
+
+    #[test]
+    fn collect_body_params_empty_module() {
+        let module = Module {
+            name: Symbol::intern("top"),
+            line: 1,
+            col: 1,
+            ports: Vec::new(),
+            params: Vec::new(),
+            decls: Vec::new(),
+            items: Vec::new(),
+            timescale: None,
+        };
+        assert!(collect_body_params(&module).is_empty());
+    }
+}

@@ -3221,4 +3221,50 @@ f := g;
         assert!(extract_variable_assign("signal a : bit;").is_empty());
         assert!(extract_variable_assign("a <= b;").is_empty());
     }
+
+    #[test]
+    fn extract_component_inst_none() {
+        // Tidak boleh panic; input tanpa instansi komponen -> kosong.
+        assert!(extract_component_inst("signal a : bit;").is_empty());
+        assert!(extract_component_inst("").is_empty());
+    }
+
+    #[test]
+    fn extract_assert_basic() {
+        let src = "assert x = 1 report \"bad\" severity error;";
+        let asrts = extract_assert(src);
+        assert_eq!(asrts.len(), 1);
+        assert_eq!(asrts[0].line, 1);
+    }
+
+    #[test]
+    fn extract_assert_none() {
+        assert!(extract_assert("signal a : bit;").is_empty());
+    }
+
+    #[test]
+    fn extract_wait_basic() {
+        let src = "wait until clk = '1';";
+        let waits = extract_wait(src);
+        assert_eq!(waits.len(), 1);
+        assert_eq!(waits[0].line, 1);
+    }
+
+    #[test]
+    fn extract_wait_none() {
+        assert!(extract_wait("signal a : bit;").is_empty());
+    }
+
+    #[test]
+    fn extract_concurrent_assign_basic() {
+        let src = "y <= a and b;";
+        let assigns = extract_concurrent_assign(src);
+        assert_eq!(assigns.len(), 1);
+        assert_eq!(assigns[0].line, 1);
+    }
+
+    #[test]
+    fn extract_concurrent_assign_none() {
+        assert!(extract_concurrent_assign("signal a : bit;").is_empty());
+    }
 }
