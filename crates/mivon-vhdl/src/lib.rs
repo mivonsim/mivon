@@ -1,4 +1,4 @@
-//! LANG-01: VHDL front-end — STUB stage 1-22 (Critical, open).
+//! LANG-01: VHDL front-end — STUB stage 1-23 (Critical, open).
 //!
 //! mivon tidak memiliki dukungan VHDL sama sekali. Stage 1 adalah scanner
 //! terbatas yang mengenali batas `entity` / `architecture` dari source VHDL
@@ -20,7 +20,8 @@
 //! stage 18 mengekstrak instansi komponen (label + nama komponen),
 //! stage 19 mengekstrak blok (label), stage 20 mengekstrak pernyataan
 //! `assert` (baris), stage 21 mengekstrak pernyataan `report` (baris),
-//! stage 22 mengekstrak pernyataan `wait` (baris).
+//! stage 22 mengekstrak pernyataan `wait` (baris),
+//! stage 23 mengekstrak penetapan sinyal konkuren `<=`.
 //! Semuanya kasar: nama + mode/tipe. BUKAN parser
 //! lengkap: belum mem-parse concurrent/sequential statement dalam process,
 //! maupun tipe VHDL penuh. Belum di-wire ke pipeline compile (lexer/parser
@@ -287,6 +288,14 @@ pub struct VhdlWait {
     pub line: usize,
 }
 
+/// Satu penetapan sinyal konkuren VHDL (stage 23: ekstraksi kasar baris).
+/// Bentuk: `<sinyal> <= <ekspresi>;`. Hanya baris dicatat.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VhdlConcurrentAssign {
+    /// 1-based baris tempat operator `<=` muncul.
+    pub line: usize,
+}
+
 /// Satu arsitektur VHDL yang dikenali.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VhdlArchitecture {
@@ -343,6 +352,8 @@ pub struct VhdlScan {
     pub reports: Vec<VhdlReport>,
     /// Pernyataan `wait` (stage 22, kasar: baris).
     pub waits: Vec<VhdlWait>,
+    /// Penetapan sinyal konkuren (stage 23, kasar: baris).
+    pub concurrent_assigns: Vec<VhdlConcurrentAssign>,
 }
 
 /// Kesalahan scan tingkat rendah (stage 1).
@@ -628,6 +639,7 @@ pub fn scan(src: &str) -> Result<VhdlScan, VhdlScanError> {
     res.asserts = extract_assert(src);
     res.reports = extract_report(src);
     res.waits = extract_wait(src);
+    res.concurrent_assigns = extract_concurrent_assign(src);
     Ok(res)
 }
 
@@ -1782,6 +1794,30 @@ pub fn extract_wait(src: &str) -> Vec<VhdlWait> {
     out
 }
 
+/// Ekstrak penetapan sinyal konkuren VHDL dari seluruh source (stage 23, kasar).
+///
+/// Mendeteksi operator `<=` (token `+` `=` bersebelahan). Hanya baris dicatat;
+/// sinial dan ekspresi tidak di-parse dalam stub ini. Lewati satu token setelah
+/// `<=` agar tidak dihitung dua kali.
+pub fn extract_concurrent_assign(src: &str) -> Vec<VhdlConcurrentAssign> {
+    let toks = tokenize(src);
+    let n = toks.len();
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i + 1 < n {
+        let (ln, _, t) = &toks[i];
+        if let Tok::Punct('<') = t {
+            if let Tok::Punct('=') = &toks[i + 1].2 {
+                out.push(VhdlConcurrentAssign { line: *ln });
+                i += 2;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
 /// Buang komentar baris `--` dari sebuah teks.
 fn strip_comments(s: &str) -> String {
     let ch: Vec<char> = s.chars().collect();
@@ -2651,5 +2687,27 @@ wait until x = '1';
     fn extract_wait_no_wait_is_empty() {
         // Source tanpa `wait` -> kosong.
         assert!(extract_wait("signal a : bit;").is_empty());
+    }
+
+    #[test]
+    fn scan_extracts_concurrent_assigns() {
+        // Operator `<=` diekstrak (baris).
+        let src = "\
+a <= b;
+c <= d and e;
+f <= g;
+";
+        let s = scan(src).unwrap();
+        assert_eq!(s.concurrent_assigns.len(), 3, "{s:?}");
+        assert_eq!(s.concurrent_assigns[0].line, 1);
+        assert_eq!(s.concurrent_assigns[1].line, 2);
+        assert_eq!(s.concurrent_assigns[2].line, 3);
+    }
+
+    #[test]
+    fn extract_concurrent_assign_no_assign_is_empty() {
+        // Source tanpa `<=` -> kosong.
+        assert!(extract_concurrent_assign("signal a : bit;").is_empty());
+        assert!(extract_concurrent_assign("a + b;").is_empty());
     }
 }
