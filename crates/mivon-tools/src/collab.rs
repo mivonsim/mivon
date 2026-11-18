@@ -343,6 +343,11 @@ impl ReviewStore {
         }
         counts
     }
+
+    /// Apakah tersedia setidaknya satu ulasan?
+    pub fn has_reviews(&self) -> bool {
+        self.list_reviews().len() > 0
+    }
 }
 
 impl Default for ReviewStore {
@@ -419,5 +424,13 @@ mod tests {
         let report = review.report();
         assert!(report.contains("Review R1"));
         assert!(report.contains("alice"));
+    }
+
+    #[test]
+    fn test_has_reviews() {
+        let store = ReviewStore::new();
+        assert!(!store.has_reviews(), "kosong awalnya");
+        store.create_review("R1", "First", "alice");
+        assert!(store.has_reviews(), "setelah ada review");
     }
 }
