@@ -455,4 +455,37 @@ mod tests {
         assert!(!origin_allowed("null", "127.0.0.1:8090"));
         assert!(!origin_allowed("http://127.0.0.1:8090", ""));
     }
+
+    #[test]
+    fn parse_query_no_query_string() {
+        assert!(parse_query("/api/v1/sessions").is_empty());
+        assert!(parse_query("/api/v1/sessions?").is_empty());
+    }
+
+    #[test]
+    fn parse_query_pair_without_value_and_duplicate_key() {
+        let q = parse_query("/api/v1/sessions?flag&user=alice&user=bob");
+        assert!(q.get("flag").is_none()); // pasang tanpa '=' di-skip
+        assert_eq!(q.get("user").unwrap(), "bob"); // kunci duplikat: nilai terakhir menang
+    }
+
+    #[test]
+    fn parse_query_empty_value() {
+        let q = parse_query("/api/v1/sessions?user=");
+        assert_eq!(q.get("user").unwrap(), "");
+    }
+
+    #[test]
+    fn percent_decode_trailing_percent_and_plus() {
+        assert_eq!(percent_decode("100%"), "100%");          // '%' akhir tidak valid
+        assert_eq!(percent_decode("a+b"), "a b");             // '+' spasi
+        assert_eq!(percent_decode("%2Fpath%40x"), "/path@x"); // campuran
+        assert_eq!(percent_decode(""), "");                   // kosong
+    }
+
+    #[test]
+    fn percent_decode_invalid_hex_kept_literal() {
+        assert_eq!(percent_decode("%ZZ"), "%ZZ");             // hex tidak valid ditahan
+        assert_eq!(percent_decode("%2"), "%2");               // '%2' tidak lengkap, ditahan literal
+    }
 }
