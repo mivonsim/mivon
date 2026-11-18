@@ -1,4 +1,4 @@
-//! LANG-01: VHDL front-end — STUB stage 1-30 (Critical, open).
+//! LANG-01: VHDL front-end — STUB stage 1-31 (Critical, open).
 //!
 //! mivon tidak memiliki dukungan VHDL sama sekali. Stage 1 adalah scanner
 //! terbatas yang mengenali batas `entity` / `architecture` dari source VHDL
@@ -28,7 +28,8 @@
 //! stage 27 mengekstrak pernyataan `case` (baris),
 //! stage 28 mengekstrak pernyataan `loop` (baris),
 //! stage 29 mengekstrak pernyataan `exit`/`next` (baris),
-//! stage 30 mengekstrak pernyataan `return` (baris).
+//! stage 30 mengekstrak pernyataan `return` (baris),
+//! stage 31 mengekstrak penetapan variabel `:=`.
 //! Semuanya kasar: nama + mode/tipe. BUKAN parser
 //! lengkap: belum mem-parse concurrent/sequential statement dalam process,
 //! maupun tipe VHDL penuh. Belum di-wire ke pipeline compile (lexer/parser
@@ -362,6 +363,14 @@ pub struct VhdlReturnStmt {
     pub line: usize,
 }
 
+/// Satu penetapan variabel VHDL (stage 31: ekstraksi kasar baris).
+/// Bentuk: `<nama> := <ekspresi];`. Hanya baris dicatat.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VhdlVariableAssign {
+    /// 1-based baris tempat operator `:=` muncul.
+    pub line: usize,
+}
+
 /// Satu arsitektur VHDL yang dikenali.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VhdlArchitecture {
@@ -434,6 +443,8 @@ pub struct VhdlScan {
     pub exit_stmts: Vec<VhdlExitStmt>,
     /// Pernyataan `return` (stage 30, kasar: baris).
     pub return_stmts: Vec<VhdlReturnStmt>,
+    /// Penetapan variabel (stage 31, kasar: baris).
+    pub variable_assigns: Vec<VhdlVariableAssign>,
 }
 
 /// Kesalahan scan tingkat rendah (stage 1).
@@ -727,6 +738,7 @@ pub fn scan(src: &str) -> Result<VhdlScan, VhdlScanError> {
     res.loop_stmts = extract_loop_stmt(src);
     res.exit_stmts = extract_exit_stmt(src);
     res.return_stmts = extract_return_stmt(src);
+    res.variable_assigns = extract_variable_assign(src);
     Ok(res)
 }
 
@@ -2108,6 +2120,30 @@ pub fn extract_return_stmt(src: &str) -> Vec<VhdlReturnStmt> {
     out
 }
 
+/// Ekstrak penetapan variabel VHDL dari seluruh source (stage 31, kasar).
+///
+/// Mendeteksi operator `:=` (dua token `:` dan `=` bersebelahan).
+/// Hanya baris dicatat; nama variabel dan ekspresi tidak di-parse dalam
+/// stub ini. Komentar `--` sudah dibuang oleh `tokenize`.
+pub fn extract_variable_assign(src: &str) -> Vec<VhdlVariableAssign> {
+    let toks = tokenize(src);
+    let n = toks.len();
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i + 1 < n {
+        let (ln, _, t) = &toks[i];
+        if let Tok::Punct(':') = t {
+            if let Tok::Punct('=') = &toks[i + 1].2 {
+                out.push(VhdlVariableAssign { line: *ln });
+                i += 2;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
 /// Buang komentar baris `--` dari sebuah teks.
 fn strip_comments(s: &str) -> String {
     let ch: Vec<char> = s.chars().collect();
@@ -3162,5 +3198,27 @@ return 42;
         // Keyword bukan return tidak dihitung.
         assert_eq!(extract_return_stmt("signal a : bit;").len(), 0);
         assert_eq!(extract_return_stmt("returnx;").len(), 0);
+    }
+
+    #[test]
+    fn scan_extracts_variable_assigns() {
+        // Operator `:=` diekstrak (baris).
+        let src = "\
+a := b;
+c := d + e;
+f := g;
+";
+        let s = scan(src).unwrap();
+        assert_eq!(s.variable_assigns.len(), 3, "{s:?}");
+        assert_eq!(s.variable_assigns[0].line, 1);
+        assert_eq!(s.variable_assigns[1].line, 2);
+        assert_eq!(s.variable_assigns[2].line, 3);
+    }
+
+    #[test]
+    fn extract_variable_assign_not_counted_other() {
+        // Operator `:=` tidak ada -> kosong.
+        assert!(extract_variable_assign("signal a : bit;").is_empty());
+        assert!(extract_variable_assign("a <= b;").is_empty());
     }
 }

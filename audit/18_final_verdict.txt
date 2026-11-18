@@ -9553,13 +9553,36 @@ VERIFIKASI ROUND 289:
   - cargo check --workspace -> bersih (tanpa regresi lintas-crate).
   - Review agent: LOLOS.
 
-Status LANG-01: ⚠️ STUB (stage 1-30) — scanner entity/architecture + port/
+═══ ROUND 290 — LANG-01 (stage 31): ekstraksi penetapan variabel VHDL ═══
+
+Ruang lingkup: lanjutkan stub LANG-01 (krate mivon-vhdl) — ekstraksi penetapan
+variabel `:=` (baris), melengkapi konstruk VHDL yang dikenali.
+
+Perubahan (crates/mivon-vhdl/src/lib.rs):
+  - Tambah `VhdlVariableAssign { line }` dan field
+    `variable_assigns: Vec<VhdlVariableAssign>` di `VhdlScan`.
+  - Fungsi publik `extract_variable_assign(src)`: deteksi token `:` dan `=`
+    bersebelahan sebagai operator `:=`, catat baris, lewati satu token.
+    Dipanggil di akhir `scan()`.
+  - Doc header update ke "stage 1-31".
+  - +2 test diskriminatif (total 72):
+    * scan_extracts_variable_assigns: 3 operator `:=` -> baris persis.
+    * extract_variable_assign_not_counted_other: tanpa `:=` -> kosong.
+
+VERIFIKASI ROUND 290:
+  - rustfmt --edition 2021 --check (lib.rs) -> bersih.
+  - cargo nextest run -p mivon-vhdl -> 72 passed (70 lama + 2 baru).
+  - cargo check --workspace -> bersih (tanpa regresi lintas-crate).
+  - Review agent: LOLOS.
+
+Status LANG-01: ⚠️ STUB (stage 1-31) — scanner entity/architecture + port/
   generic + signal + component + process + library/use + package +
   subprogram + type/subtype + constant + alias + configuration + variable +
   file + attribute + group + instansi komponen + blok + assert + report +
   wait + penetapan konkuren + generate + null + if + case + loop +
-  exit/next + return ada di krate terisolasi; sisa open: parser VHDL penuh,
-  concurrent/sequential statement, elaborasi, simulasi, wiring pipeline.
+  exit/next + return + variabel `:=` ada di krate terisolasi; sisa open:
+  parser VHDL penuh, concurrent/sequential statement, elaborasi, simulasi,
+  wiring pipeline.
 
 
 \\=======================================================================//
