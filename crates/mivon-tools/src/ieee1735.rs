@@ -61,6 +61,24 @@ impl Ieee1735 {
     pub fn is_supported(&self) -> bool {
         false
     }
+
+    /// Daftar algoritma yang dikenali (semua masih placeholder — belum ada
+    /// implementasi kriptografi sebenarnya).
+    pub fn supported_algorithms(&self) -> Vec<EncryptionAlgorithm> {
+        vec![
+            EncryptionAlgorithm::Aes128Gcm,
+            EncryptionAlgorithm::Aes256Gcm,
+            EncryptionAlgorithm::Placeholder,
+        ]
+    }
+
+    /// Konfigurasi default (placeholder, tidak aman untuk produksi).
+    pub fn default_config() -> Ieee1735Config {
+        Ieee1735Config {
+            algorithm: EncryptionAlgorithm::Placeholder,
+            key_id: String::new(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -102,5 +120,24 @@ mod tests {
         };
         assert_eq!(cfg.key_id, "k2");
         assert!(matches!(cfg.algorithm, EncryptionAlgorithm::Aes256Gcm));
+    }
+
+    #[test]
+    fn supported_algorithms_lists_known() {
+        let e = Ieee1735::new();
+        let algs = e.supported_algorithms();
+        assert_eq!(algs.len(), 3);
+        assert!(algs.contains(&EncryptionAlgorithm::Aes128Gcm));
+        assert!(algs.contains(&EncryptionAlgorithm::Aes256Gcm));
+        assert!(algs.contains(&EncryptionAlgorithm::Placeholder));
+    }
+
+    #[test]
+    fn default_config_is_placeholder() {
+        let e = Ieee1735::new();
+        let cfg = Ieee1735::default_config();
+        assert!(matches!(cfg.algorithm, EncryptionAlgorithm::Placeholder));
+        assert!(cfg.key_id.is_empty());
+        assert!(!e.is_supported());
     }
 }
