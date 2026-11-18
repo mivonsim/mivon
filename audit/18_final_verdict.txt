@@ -9222,11 +9222,35 @@ VERIFIKASI ROUND 274:
   - cargo check --workspace -> bersih (tanpa regresi lintas-crate).
   - Review agent: LOLOS.
 
-Status LANG-01: ⚠️ STUB (stage 1-16) — scanner entity/architecture + port/
+═══ ROUND 275 — LANG-01 (stage 17): ekstraksi deklarasi group VHDL ═══
+
+Ruang lingkup: lanjutkan stub LANG-01 (krate mivon-vhdl) — ekstraksi deklarasi
+`group template <nama> : <tipe_grup> is (daftar);` (nama + tipe grup + baris),
+melengkapi konstruk VHDL yang dikenali.
+
+Perubahan (crates/mivon-vhdl/src/lib.rs):
+  - Tambah `VhdlGroup { name, type_name, line }` dan field
+    `groups: Vec<VhdlGroup>` di `VhdlScan`.
+  - Fungsi publik `extract_group(src)`: case-insensitive, tipe = word pertama
+    setelah `:`; berhenti di `;`. Dipanggil di akhir `scan()`.
+  - Doc header update ke "stage 1-17".
+  - +3 test diskriminatif (total 44):
+    * scan_extracts_groups: 3 group -> nama + tipe grup + baris persis.
+    * scan_group_case_insensitive: `GROUP`/`BUS` uppercase tetap dikenali.
+    * extract_group_no_group_is_empty: tanpa group -> kosong.
+
+VERIFIKASI ROUND 275:
+  - rustfmt --edition 2021 --check (lib.rs) -> bersih.
+  - cargo nextest run -p mivon-vhdl -> 44 passed (41 lama + 3 baru).
+  - cargo check --workspace -> bersih (tanpa regresi lintas-crate).
+  - Review agent: LOLOS.
+
+Status LANG-01: ⚠️ STUB (stage 1-17) — scanner entity/architecture + port/
   generic + signal + component + process + library/use + package +
   subprogram + type/subtype + constant + alias + configuration + variable +
-  file + attribute ada di krate terisolasi; sisa open: parser VHDL penuh,
-  concurrent/sequential statement, elaborasi, simulasi, wiring pipeline.
+  file + attribute + group ada di krate terisolasi; sisa open: parser VHDL
+  penuh, concurrent/sequential statement, elaborasi, simulasi,
+  wiring pipeline.
 
 
 \\=======================================================================//

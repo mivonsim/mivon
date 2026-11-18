@@ -1,4 +1,4 @@
-//! LANG-01: VHDL front-end — STUB stage 1-16 (Critical, open).
+//! LANG-01: VHDL front-end — STUB stage 1-17 (Critical, open).
 //!
 //! mivon tidak memiliki dukungan VHDL sama sekali. Stage 1 adalah scanner
 //! terbatas yang mengenali batas `entity` / `architecture` dari source VHDL
@@ -15,7 +15,8 @@
 //! (nama + tipe + target), stage 13 mengekstrak deklarasi `configuration`
 //! (nama + entitas), stage 14 mengekstrak deklarasi `variable` (nama + tipe +
 //! nilai opsional), stage 15 mengekstrak deklarasi `file` (nama + tipe file +
-//! path opsional), stage 16 mengekstrak deklarasi `attribute` (nama + tipe).
+//! path opsional), stage 16 mengekstrak deklarasi `attribute` (nama + tipe),
+//! stage 17 mengekstrak deklarasi `group template` (nama + tipe grup).
 //! Semuanya kasar: nama + mode/tipe. BUKAN parser
 //! lengkap: belum mem-parse concurrent/sequential statement dalam process,
 //! maupun tipe VHDL penuh. Belum di-wire ke pipeline compile (lexer/parser
@@ -225,6 +226,18 @@ pub struct VhdlAttribute {
     pub line: usize,
 }
 
+/// Satu deklarasi `group template` VHDL (stage 17: ekstraksi kasar nama +
+/// tipe grup). Bentuk: `group <nama> : <tipe_grup> is (daftar);`. Nama =
+/// word pertama setelah `group`, tipe = word pertama setelah `:`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VhdlGroup {
+    pub name: String,
+    /// Tipe grup (mis. `clock`, `signal`).
+    pub type_name: String,
+    /// 1-based baris tempat kata kunci `group` muncul.
+    pub line: usize,
+}
+
 /// Satu arsitektur VHDL yang dikenali.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VhdlArchitecture {
@@ -269,6 +282,8 @@ pub struct VhdlScan {
     pub files: Vec<VhdlFile>,
     /// Deklarasi `attribute` (stage 16, kasar: nama + tipe).
     pub attributes: Vec<VhdlAttribute>,
+    /// Deklarasi `group template` (stage 17, kasar: nama + tipe grup).
+    pub groups: Vec<VhdlGroup>,
 }
 
 /// Kesalahan scan tingkat rendah (stage 1).
@@ -548,6 +563,7 @@ pub fn scan(src: &str) -> Result<VhdlScan, VhdlScanError> {
     res.variables = extract_variable(src);
     res.files = extract_file(src);
     res.attributes = extract_attribute(src);
+    res.groups = extract_group(src);
     Ok(res)
 }
 
@@ -1478,6 +1494,59 @@ pub fn extract_attribute(src: &str) -> Vec<VhdlAttribute> {
     out
 }
 
+/// Ekstrak deklarasi `group template` dari seluruh source (stage 17, kasar).
+///
+/// Mendeteksi `group <nama> : <tipe_grup> is (daftar);`. Nama = word pertama
+/// setelah `group`, tipe = word pertama setelah `:`. Hentikan di `;` agar
+/// tidak menangkap deklarasi berikutnya. Komentar `--` sudah dibuang oleh
+/// `tokenize`.
+pub fn extract_group(src: &str) -> Vec<VhdlGroup> {
+    let toks = tokenize(src);
+    let n = toks.len();
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i < n {
+        let (ln, _, t) = &toks[i];
+        if let Tok::Word(w) = t {
+            if w.to_ascii_lowercase() == "group" {
+                let name = match toks.get(i + 1) {
+                    Some((_, _, Tok::Word(nx))) => nx.clone(),
+                    _ => {
+                        i += 1;
+                        continue;
+                    }
+                };
+                let mut type_name = String::new();
+                // Cari ':' pertama setelah nama; word sesudahnya = tipe grup.
+                let mut j = i + 2;
+                while j + 1 < n {
+                    if matches!(&toks[j].2, Tok::Punct(':')) {
+                        if let Some((_, _, Tok::Word(ty))) = toks.get(j + 1) {
+                            type_name = ty.clone();
+                        }
+                        break;
+                    }
+                    if matches!(&toks[j].2, Tok::Punct(';')) {
+                        break;
+                    }
+                    j += 1;
+                }
+                out.push(VhdlGroup {
+                    name,
+                    type_name,
+                    line: *ln,
+                });
+                i += 1;
+            } else {
+                i += 1;
+            }
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
 /// Buang komentar baris `--` dari sebuah teks.
 fn strip_comments(s: &str) -> String {
     let ch: Vec<char> = s.chars().collect();
@@ -2201,5 +2270,42 @@ attribute x : integer;
     fn extract_attribute_no_attribute_is_empty() {
         // Source tanpa `attribute` -> kosong.
         assert!(extract_attribute("signal a : bit;").is_empty());
+    }
+
+    #[test]
+    fn scan_extracts_groups() {
+        // Deklarasi `group template` diekstrak (nama + tipe grup + baris).
+        let src = "\
+group clk_grp : clock is (clk1, clk2);
+group sig_grp : signal is (a, b);
+group x : integer;
+";
+        let s = scan(src).unwrap();
+        assert_eq!(s.groups.len(), 3, "{s:?}");
+        assert_eq!(s.groups[0].name, "clk_grp");
+        assert_eq!(s.groups[0].type_name, "clock");
+        assert_eq!(s.groups[0].line, 1);
+        assert_eq!(s.groups[1].name, "sig_grp");
+        assert_eq!(s.groups[1].type_name, "signal");
+        assert_eq!(s.groups[1].line, 2);
+        assert_eq!(s.groups[2].name, "x");
+        assert_eq!(s.groups[2].type_name, "integer");
+        assert_eq!(s.groups[2].line, 3);
+    }
+
+    #[test]
+    fn scan_group_case_insensitive() {
+        // VHDL case-insensitive: keyword uppercase tetap dikenali.
+        let src = "GROUP Y : BUS;\n";
+        let s = scan(src).unwrap();
+        assert_eq!(s.groups.len(), 1, "{s:?}");
+        assert_eq!(s.groups[0].name, "Y");
+        assert_eq!(s.groups[0].type_name, "BUS");
+    }
+
+    #[test]
+    fn extract_group_no_group_is_empty() {
+        // Source tanpa `group` -> kosong.
+        assert!(extract_group("signal a : bit;").is_empty());
     }
 }
