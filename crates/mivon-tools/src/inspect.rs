@@ -862,4 +862,41 @@ mod tests {
     fn test_port_direction_ref() {
         assert_eq!(_port_direction(PortDirection::Ref), "ref");
     }
+
+    #[test]
+    fn test_count_params() {
+        let mut module = mivon_ast::types::Module {
+            name: Symbol::intern("top"),
+            line: 1,
+            col: 1,
+            ports: Vec::new(),
+            params: Vec::new(),
+            decls: Vec::new(),
+            items: Vec::new(),
+            timescale: None,
+        };
+        assert_eq!(count_params(&module), 0);
+
+        module.params.push(mivon_ast::types::ParamDecl {
+            name: Symbol::intern("WIDTH"),
+            dtype: None,
+            range: None,
+            default: None,
+            is_localparam: false,
+            is_type_param: false,
+            implicit_sign: None,
+            type_default: None,
+        });
+        module.params.push(mivon_ast::types::ParamDecl {
+            name: Symbol::intern("DEPTH"),
+            dtype: None,
+            range: None,
+            default: None,
+            is_localparam: false,
+            is_type_param: false,
+            implicit_sign: None,
+            type_default: None,
+        });
+        assert_eq!(count_params(&module), 2);
+    }
 }
