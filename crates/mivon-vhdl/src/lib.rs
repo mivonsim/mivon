@@ -1,4 +1,4 @@
-//! LANG-01: VHDL front-end — STUB stage 1-25 (Critical, open).
+//! LANG-01: VHDL front-end — STUB stage 1-26 (Critical, open).
 //!
 //! mivon tidak memiliki dukungan VHDL sama sekali. Stage 1 adalah scanner
 //! terbatas yang mengenali batas `entity` / `architecture` dari source VHDL
@@ -23,7 +23,8 @@
 //! stage 22 mengekstrak pernyataan `wait` (baris),
 //! stage 23 mengekstrak penetapan sinyal konkuren `<=`,
 //! stage 24 mengekstrak generate statement (label + baris),
-//! stage 25 mengekstrak pernyataan `null` (baris).
+//! stage 25 mengekstrak pernyataan `null` (baris),
+//! stage 26 mengekstrak pernyataan `if` (baris).
 //! Semuanya kasar: nama + mode/tipe. BUKAN parser
 //! lengkap: belum mem-parse concurrent/sequential statement dalam process,
 //! maupun tipe VHDL penuh. Belum di-wire ke pipeline compile (lexer/parser
@@ -316,6 +317,14 @@ pub struct VhdlNullStmt {
     pub line: usize,
 }
 
+/// Satu pernyataan `if` VHDL (stage 26: ekstraksi kasar baris).
+/// Bentuk: `if <kondisi> then ... end if;`. Hanya baris dicatat.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VhdlIfStmt {
+    /// 1-based baris tempat kata kunci `if` muncul.
+    pub line: usize,
+}
+
 /// Satu arsitektur VHDL yang dikenali.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VhdlArchitecture {
@@ -378,6 +387,8 @@ pub struct VhdlScan {
     pub generates: Vec<VhdlGenerate>,
     /// Pernyataan `null` (stage 25, kasar: baris).
     pub null_stmts: Vec<VhdlNullStmt>,
+    /// Pernyataan `if` (stage 26, kasar: baris).
+    pub if_stmts: Vec<VhdlIfStmt>,
 }
 
 /// Kesalahan scan tingkat rendah (stage 1).
@@ -666,6 +677,7 @@ pub fn scan(src: &str) -> Result<VhdlScan, VhdlScanError> {
     res.concurrent_assigns = extract_concurrent_assign(src);
     res.generates = extract_generate(src);
     res.null_stmts = extract_null_stmt(src);
+    res.if_stmts = extract_if_stmt(src);
     Ok(res)
 }
 
@@ -1906,6 +1918,37 @@ pub fn extract_null_stmt(src: &str) -> Vec<VhdlNullStmt> {
     out
 }
 
+/// Ekstrak pernyataan `if` VHDL dari seluruh source (stage 26, kasar).
+///
+/// Mendeteksi kata kunci `if` (lewati `end if` di mana kata sebelumnya
+/// = `end`). Hanya baris dicatat; kondisi dan badan tidak di-parse dalam
+/// stub ini. Komentar `--` sudah dibuang oleh `tokenize`.
+pub fn extract_if_stmt(src: &str) -> Vec<VhdlIfStmt> {
+    let toks = tokenize(src);
+    let n = toks.len();
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i < n {
+        let (ln, _, t) = &toks[i];
+        if let Tok::Word(w) = t {
+            if w.to_ascii_lowercase() == "if" {
+                // Lewati `end if`.
+                if i >= 1 {
+                    if let Tok::Word(pw) = &toks[i - 1].2 {
+                        if pw.to_ascii_lowercase() == "end" {
+                            i += 1;
+                            continue;
+                        }
+                    }
+                }
+                out.push(VhdlIfStmt { line: *ln });
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
 /// Buang komentar baris `--` dari sebuah teks.
 fn strip_comments(s: &str) -> String {
     let ch: Vec<char> = s.chars().collect();
@@ -2844,5 +2887,29 @@ null;
         // Source tanpa `null;` -> kosong.
         assert!(extract_null_stmt("signal a : bit;").is_empty());
         assert!(extract_null_stmt("a <= b;").is_empty());
+    }
+
+    #[test]
+    fn scan_extracts_if_stmts() {
+        // Pernyataan `if` diekstrak (baris).
+        let src = "\
+if a = b then
+  c <= d;
+end if;
+if e > f then
+  g <= h;
+end if;
+";
+        let s = scan(src).unwrap();
+        assert_eq!(s.if_stmts.len(), 2, "{s:?}");
+        assert_eq!(s.if_stmts[0].line, 1);
+        assert_eq!(s.if_stmts[1].line, 4); // baris 3 adalah end if
+    }
+
+    #[test]
+    fn extract_if_stmt_end_if_not_counted() {
+        // `end if` tidak dihitung sebagai if.
+        assert_eq!(extract_if_stmt("end if;").len(), 0);
+        assert_eq!(extract_if_stmt("signal a : bit;").len(), 0);
     }
 }
