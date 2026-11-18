@@ -39,7 +39,7 @@ P3 — HIGH (Required for 10000-module designs)
 25. ✅ Implement distributed simulation (#CRIT-015) — distributed/ module (master, slave, partitioner, protocol); 12 tests pass
 26. ✅ Implement remote/distributed cache (#CRIT-035) — cache/remote.rs + cache_manager.rs; 11 remote cache tests pass
 27. ✅ Implement CDC analysis (#CRIT-013) — scheduler/cdc.rs (clock domain crossing detection, synchronizer check, report); 10 CDC tests pass
-28. Implement cell library parsing (#CRIT-020)
+28. ✅ Implement cell library parsing (#CRIT-020) — liberty.rs (.lib parser, cell/pin/timing); 8 liberty tests pass
 29. ✅ Add save/restore (#CRIT-014) — checkpoint.rs (basic, file, UVM data, cover data roundtrip); 4 checkpoint tests pass
 30. ✅ Add formal verification engine (#CRIT-003) — Z3 SMT solver + BMC engine, IrExpr→Z3 translation, per-depth assertion check; 125 tests pass with --features formal
 31. ✅ Implement native code generation (#CRIT-006 phase 2) — jit_cranelift.rs (MIR→native via Cranelift); JIT tests pass
