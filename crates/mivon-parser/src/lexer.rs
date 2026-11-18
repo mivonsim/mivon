@@ -3,6 +3,8 @@ use std::fmt;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Token {
+    // Sintetik: root pohon CST untuk satu berkas sumber (fondasi PARSER-15).
+    File,
     // Keywords
     Module,
     Endmodule,
@@ -291,6 +293,7 @@ pub enum Token {
 impl fmt::Display for Token {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Token::File => write!(f, "file"),
             Token::Module => write!(f, "module"),
             Token::Endmodule => write!(f, "endmodule"),
             Token::Input => write!(f, "input"),

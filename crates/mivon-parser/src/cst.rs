@@ -44,6 +44,18 @@ impl CstTree {
     pub fn root(token: Token) -> Self {
         Self { root: CstNode::token(token) }
     }
+
+    /// Bangun pohon lossless dari daftar token: setiap token menjadi anak
+    /// langsung dari root, urutan dan identitas token terjaga (fondasi LSP
+    /// go-to-definition/hover — PARSER-15). Trivia dikosongi di sini dan
+    /// diisi pada stage pelengkap trivia.
+    pub fn from_tokens(tokens: &[Token]) -> Self {
+        let mut root = CstNode::token(Token::File);
+        for t in tokens {
+            root = root.add_child(CstNode::token(t.clone()));
+        }
+        Self { root }
+    }
 }
 
 impl CstNode {
@@ -55,6 +67,22 @@ impl CstNode {
             out.extend(child.tokens());
         }
         out
+    }
+
+    /// Cari pertama node (pre-order) whose token cocok `pred`.
+    pub fn find_by_token<F>(&self, pred: F) -> Option<&CstNode>
+    where
+        F: Fn(&Token) -> bool + Clone,
+    {
+        if pred(&self.token) {
+            return Some(self);
+        }
+        for child in &self.children {
+            if let Some(found) = child.find_by_token(pred.clone()) {
+                return Some(found);
+            }
+        }
+        None
     }
 }
 
@@ -110,5 +138,42 @@ mod tests {
         let a = CstTree::root(Token::Module);
         let b = a.clone();
         assert!(a == b);
+    }
+
+    #[test]
+    fn cst_from_tokens_round_trip() {
+        let toks = vec![
+            Token::Module,
+            Token::Ident(Symbol::intern("top")),
+            Token::Semi,
+            Token::Endmodule,
+        ];
+        let tree = CstTree::from_tokens(&toks);
+        let back: Vec<Token> = tree.root.tokens();
+        // root sintetis (File) diikuti semua token asli dalam urutan sama.
+        assert_eq!(back.len(), toks.len() + 1);
+        assert!(matches!(back[0], Token::File));
+        assert_eq!(&back[1..], toks.as_slice());
+    }
+
+    #[test]
+    fn cst_find_by_token_found() {
+        let toks = vec![
+            Token::Module,
+            Token::Ident(Symbol::intern("top")),
+            Token::Semi,
+        ];
+        let tree = CstTree::from_tokens(&toks);
+        let found = tree.root.find_by_token(|t| matches!(t, Token::Ident(s) if s == "top"));
+        assert!(found.is_some());
+        assert!(matches!(found.unwrap().token, Token::Ident(_)));
+    }
+
+    #[test]
+    fn cst_find_by_token_not_found() {
+        let toks = vec![Token::Module, Token::Semi];
+        let tree = CstTree::from_tokens(&toks);
+        let found = tree.root.find_by_token(|t| matches!(t, Token::Endmodule));
+        assert!(found.is_none());
     }
 }
