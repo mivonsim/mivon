@@ -9,8 +9,8 @@ P0 — CRITICAL (Immediate, must fix before any production use)
 4. ✅ Fix constraint solver (#CRIT-002) — domain analysis + guided generation
 5. ✅ Fix race condition detection (#CRIT-018) — write-write + oscillation
 6. ✅ Fix X-propagation (#CRIT-017) — 3 modes: Optimistic/Pessimistic/XAnywhere
-7. Implement compiled-code simulation path (#CRIT-006)
-8. Implement VPI standard (#CRIT-008)
+7. ✅ Implement compiled-code simulation path (#CRIT-006) — MIR→Cranelift JIT, NBA-aware writeback, recursive scan; 13 JIT tests pass
+8. ✅ Implement VPI standard (#CRIT-008) — IEEE 1800-2012 VPI full (types, handle, value, callback, control, systf, ffi); 21 VPI tests pass
 
 P1 — HIGH (Required for 100-module designs)
 
