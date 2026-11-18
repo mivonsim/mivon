@@ -200,6 +200,15 @@ impl RequirementsReport {
         "Requirement ID,Description,Status,Test,Module"
     }
 
+    /// True bila setiap requirement ter-cover sepenuhnya (tidak ada failed /
+    /// partial / not-covered) dan setidaknya satu requirement ada.
+    pub fn is_fully_covered(&self) -> bool {
+        self.total_requirements > 0
+            && self.failed == 0
+            && self.partial == 0
+            && self.not_covered == 0
+    }
+
     /// Export sebagai JSON.
     pub fn to_json(&self) -> String {
         serde_json::to_string_pretty(self).unwrap_or_default()
@@ -726,5 +735,52 @@ mod tests {
         let s = report.summary();
         assert!(s.contains("1/2"));
         assert!(s.contains("50.0%"));
+    }
+
+    #[test]
+    fn test_requirements_fully_covered() {
+        let mappings = vec![RequirementMapping {
+            requirement_id: "R1".into(),
+            test_name: "t1".into(),
+            module: None,
+            description: None,
+            priority: None,
+        }];
+        let results = vec![TestResult {
+            name: "t1".into(),
+            passed: true,
+            duration_ms: 1,
+            module: None,
+        }];
+        let report = RequirementsReport::generate(&mappings, &results);
+        assert!(report.is_fully_covered());
+        assert_eq!(report.coverage_percent, 100.0);
+
+        // Partial coverage (one pass, one missing) is not fully covered.
+        let mappings2 = vec![
+            RequirementMapping {
+                requirement_id: "R1".into(),
+                test_name: "t1".into(),
+                module: None,
+                description: None,
+                priority: None,
+            },
+            RequirementMapping {
+                requirement_id: "R2".into(),
+                test_name: "t2".into(),
+                module: None,
+                description: None,
+                priority: None,
+            },
+        ];
+        let results2 = vec![TestResult {
+            name: "t1".into(),
+            passed: true,
+            duration_ms: 1,
+            module: None,
+        }];
+        let report2 = RequirementsReport::generate(&mappings2, &results2);
+        assert!(!report2.is_fully_covered());
+        assert_eq!(report2.coverage_percent, 50.0);
     }
 }
