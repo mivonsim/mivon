@@ -8,3 +8,4 @@ description = "Mivon elaboration: AST → IR, signal resolution, parameter overr
 mivon-core = { path = "../mivon-core" }
 mivon-ast = { path = "../mivon-ast" }
 mivon-ir = { path = "../mivon-ir" }
+rayon = "1"

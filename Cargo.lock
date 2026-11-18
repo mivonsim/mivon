@@ -2209,6 +2209,7 @@ dependencies = [
  "mivon-ast",
  "mivon-core",
  "mivon-ir",
+ "rayon",
 ]
 
 [[package]]
