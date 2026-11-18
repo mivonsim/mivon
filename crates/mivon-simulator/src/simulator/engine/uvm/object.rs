@@ -411,3 +411,92 @@ impl SimulationEngine {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_util::compile_str;
+    use mivon_core::Symbol;
+
+    #[test]
+    fn test_uvm_callback_register_add() {
+        let design = compile_str("module top; endmodule").unwrap();
+        let mut engine = SimulationEngine::new(design, 100);
+
+        // Add a callback object to state
+        let cb_obj_id = engine
+            .state
+            .alloc_object(Symbol::intern("my_callback"));
+        engine.uvm_object_data.insert(
+            cb_obj_id,
+            UvmObjectData {
+                name: "my_cb".to_string(),
+            },
+        );
+
+        // Register callback: uvm_callbacks#add(cb_obj, comp_type, cb_name)
+        let args = vec![
+            LogicVec::from_u64(cb_obj_id as u64, 32),
+            string_to_logicvec("my_component"),
+            string_to_logicvec("my_callback_instance"),
+        ];
+        let result = engine.execute_uvm_callbacks_add(cb_obj_id, "add", &args);
+        assert!(result.is_ok(), "callback add should succeed");
+
+        // Verify callback was stored in callback_queues
+        let key = ("my_component".to_string(), "my_callback".to_string());
+        assert!(
+            engine.callback_queues.contains_key(&key),
+            "callback queue should contain entry for (my_component, my_callback)"
+        );
+
+        let data = engine.callback_queues.get(&key).unwrap();
+        assert_eq!(data.callbacks.len(), 1);
+        assert_eq!(data.callbacks[0].0, cb_obj_id);
+        assert!(data.enabled);
+    }
+
+    #[test]
+    fn test_uvm_callback_delete_removes_entry() {
+        let design = compile_str("module top; endmodule").unwrap();
+        let mut engine = SimulationEngine::new(design, 100);
+
+        // Add a callback object to state
+        let cb_obj_id = engine
+            .state
+            .alloc_object(Symbol::intern("my_callback"));
+        engine.uvm_object_data.insert(
+            cb_obj_id,
+            UvmObjectData {
+                name: "my_cb".to_string(),
+            },
+        );
+
+        // Register then delete
+        let add_args = vec![
+            LogicVec::from_u64(cb_obj_id as u64, 32),
+            string_to_logicvec("my_component"),
+            string_to_logicvec("my_callback_instance"),
+        ];
+        assert!(engine
+            .execute_uvm_callbacks_add(cb_obj_id, "add", &add_args)
+            .is_ok());
+
+        let del_args = vec![
+            LogicVec::from_u64(cb_obj_id as u64, 32),
+            string_to_logicvec("my_component"),
+        ];
+        assert!(engine
+            .execute_uvm_callbacks_add(cb_obj_id, "delete", &del_args)
+            .is_ok());
+
+        let key = ("my_component".to_string(), "my_callback".to_string());
+        if let Some(data) = engine.callback_queues.get(&key) {
+            assert_eq!(
+                data.callbacks.len(),
+                0,
+                "callback should be removed after delete"
+            );
+        }
+    }
+}

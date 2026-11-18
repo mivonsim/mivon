@@ -20,7 +20,7 @@ P1 — HIGH (Required for 100-module designs)
 12. ✅ Implement signal history bounds with disk spill (#CRIT-019)
 13. Fix NBA ordering (#SCHED-02)
 14. ✅ Implement gate-level support (#CRIT-020) — netlist crate (cell, net, graph, lower, emit, json), UDP def in IR; 11 netlist tests pass
-15. Implement uvm_callback (#CRIT-031)
+15. ✅ Implement uvm_callback (#CRIT-031) — uvm_callbacks#add/delete/display, invoke_callbacks with pre/post; 2 new uvm_callback tests pass
 16. ✅ Add UPF power simulation (#CRIT-012) — PowerIntent + UPF parser, power domains, supply nets, power state evaluation; 12 UPF tests pass
 
 P2 — HIGH (Required for 1000-module designs)
