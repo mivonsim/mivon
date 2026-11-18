@@ -1,4 +1,4 @@
-//! LANG-01: VHDL front-end — STUB stage 1-12 (Critical, open).
+//! LANG-01: VHDL front-end — STUB stage 1-13 (Critical, open).
 //!
 //! mivon tidak memiliki dukungan VHDL sama sekali. Stage 1 adalah scanner
 //! terbatas yang mengenali batas `entity` / `architecture` dari source VHDL
@@ -12,7 +12,8 @@
 //! jenis), stage 10 mengekstrak deklarasi `type`/`subtype` (nama + jenis
 //! Enum/Record/Subtype/Other), stage 11 mengekstrak deklarasi `constant`
 //! (nama + tipe + nilai), stage 12 mengekstrak deklarasi `alias`
-//! (nama + tipe + target). Semuanya kasar: nama + mode/tipe. BUKAN parser
+//! (nama + tipe + target), stage 13 mengekstrak deklarasi `configuration`
+//! (nama + entitas). Semuanya kasar: nama + mode/tipe. BUKAN parser
 //! lengkap: belum mem-parse concurrent/sequential statement dalam process,
 //! maupun tipe VHDL penuh. Belum di-wire ke pipeline compile (lexer/parser
 //! SystemVerilog di mivon-parser).
@@ -102,6 +103,18 @@ pub struct VhdlPackage {
     pub name: String,
     pub kind: VhdlPackageKind,
     /// 1-based baris tempat kata kunci `package` muncul.
+    pub line: usize,
+}
+
+/// Satu deklarasi `configuration` VHDL (stage 13: ekstraksi kasar nama +
+/// entitas). Bentuk: `configuration <nama> of <entity> is ... end
+/// configuration [nama];`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VhdlConfiguration {
+    pub name: String,
+    /// Nama entitas yang dikonfigurasi (word setelah `of`).
+    pub entity: String,
+    /// 1-based baris tempat kata kunci `configuration` muncul.
     pub line: usize,
 }
 
@@ -205,6 +218,8 @@ pub struct VhdlScan {
     pub constants: Vec<VhdlConstant>,
     /// Deklarasi `alias` (stage 12, kasar: nama + tipe + target).
     pub aliases: Vec<VhdlAlias>,
+    /// Deklarasi `configuration` (stage 13, kasar: nama + entitas).
+    pub configurations: Vec<VhdlConfiguration>,
 }
 
 /// Kesalahan scan tingkat rendah (stage 1).
@@ -480,6 +495,7 @@ pub fn scan(src: &str) -> Result<VhdlScan, VhdlScanError> {
     res.type_decls = extract_types(src);
     res.constants = extract_constants(src);
     res.aliases = extract_aliases(src);
+    res.configurations = extract_configuration(src);
     Ok(res)
 }
 
@@ -1147,6 +1163,66 @@ pub fn extract_aliases(src: &str) -> Vec<VhdlAlias> {
     out
 }
 
+/// Ekstrak deklarasi `configuration` dari seluruh source (stage 13, kasar).
+///
+/// Mendeteksi `configuration <nama> of <entitas> is ... end configuration [nama];`.
+/// Nama = word setelah `configuration`, entitas = word setelah `of`.
+/// Penutup `end configuration` dilewati (guard kata sebelumnya = `end`).
+/// Komentar `--` sudah dibuang oleh `tokenize`.
+pub fn extract_configuration(src: &str) -> Vec<VhdlConfiguration> {
+    let toks = tokenize(src);
+    let n = toks.len();
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i < n {
+        let (ln, _, t) = &toks[i];
+        if let Tok::Word(w) = t {
+            if w.to_ascii_lowercase() == "configuration" {
+                let prev_is_end = matches!(
+                    toks.get(i.wrapping_sub(1)),
+                    Some((_, _, Tok::Word(pw))) if pw.to_ascii_lowercase() == "end"
+                );
+                if prev_is_end {
+                    i += 1;
+                    continue;
+                }
+                let name = match toks.get(i + 1) {
+                    Some((_, _, Tok::Word(nx))) => nx.clone(),
+                    _ => {
+                        i += 1;
+                        continue;
+                    }
+                };
+                // Entitas: word tepat setelah kata kunci `of`.
+                let mut entity = String::new();
+                let mut j = i + 2;
+                while j + 1 < n {
+                    if let Some((_, _, Tok::Word(kw))) = toks.get(j) {
+                        if kw.to_ascii_lowercase() == "of" {
+                            if let Some((_, _, Tok::Word(ent))) = toks.get(j + 1) {
+                                entity = ent.clone();
+                            }
+                            break;
+                        }
+                    }
+                    j += 1;
+                }
+                out.push(VhdlConfiguration {
+                    name,
+                    entity,
+                    line: *ln,
+                });
+                i += 1;
+            } else {
+                i += 1;
+            }
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
 /// Buang komentar baris `--` dari sebuah teks.
 fn strip_comments(s: &str) -> String {
     let ch: Vec<char> = s.chars().collect();
@@ -1714,5 +1790,41 @@ alias clk_alias : bit is clk;
         assert_eq!(s.aliases[0].name, "DATA");
         assert_eq!(s.aliases[0].type_name, "BIT");
         assert_eq!(s.aliases[0].target, "SIG");
+    }
+
+    #[test]
+    fn scan_extracts_configurations() {
+        // Deklarasi `configuration` diekstrak (nama + entitas + baris).
+        let src = "\
+configuration cfg1 of my_ent is
+end configuration;
+configuration cfg2 of other_ent is
+end configuration cfg2;
+";
+        let s = scan(src).unwrap();
+        assert_eq!(s.configurations.len(), 2, "{s:?}");
+        assert_eq!(s.configurations[0].name, "cfg1");
+        assert_eq!(s.configurations[0].entity, "my_ent");
+        assert_eq!(s.configurations[0].line, 1);
+        assert_eq!(s.configurations[1].name, "cfg2");
+        assert_eq!(s.configurations[1].entity, "other_ent");
+        assert_eq!(s.configurations[1].line, 3);
+    }
+
+    #[test]
+    fn scan_configuration_case_insensitive() {
+        // VHDL case-insensitive: keyword uppercase tetap dikenali.
+        let src = "CONFIGURATION C OF E IS END CONFIGURATION;\n";
+        let s = scan(src).unwrap();
+        assert_eq!(s.configurations.len(), 1, "{s:?}");
+        assert_eq!(s.configurations[0].name, "C");
+        assert_eq!(s.configurations[0].entity, "E");
+        assert_eq!(s.configurations[0].line, 1);
+    }
+
+    #[test]
+    fn extract_configuration_no_configuration_is_empty() {
+        // Source tanpa `configuration` -> kosong.
+        assert!(extract_configuration("entity e is end e;").is_empty());
     }
 }
