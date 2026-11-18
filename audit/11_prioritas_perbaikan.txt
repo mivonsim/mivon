@@ -1,0 +1,128 @@
+11. PRIORITAS PERBAIKAN
+═══════════════════════════════════════════════════════════════════════════════
+
+P0 — CRITICAL (Immediate, must fix before any production use)
+
+1. ✅ Fix 6 failing tests (#CRIT-001) — ALL FIXED (0 fail)
+2. Add CI/CD pipeline (#CRIT-036) — ✅ CI aktif
+3. ✅ Add code coverage infrastructure (#CRIT-004) — line, toggle, branch, FSM coverage via coverage_db.rs + engine/coverage.rs; 18 coverage_db tests pass; mcov tool (cov.rs) available
+4. ✅ Fix constraint solver (#CRIT-002) — domain analysis + guided generation
+5. ✅ Fix race condition detection (#CRIT-018) — write-write + oscillation
+6. ✅ Fix X-propagation (#CRIT-017) — 3 modes: Optimistic/Pessimistic/XAnywhere
+7. Implement compiled-code simulation path (#CRIT-006)
+8. Implement VPI standard (#CRIT-008)
+
+P1 — HIGH (Required for 100-module designs)
+
+9. Implement LSP server (#CRIT-007)
+10. Implement DPI-C full (#CRIT-009)
+11. ✅ Fix event queue efficiency (#PERF-01) — hierarchical timing wheel
+12. ✅ Implement signal history bounds with disk spill (#CRIT-019)
+13. Fix NBA ordering (#SCHED-02)
+14. Implement gate-level support (#CRIT-020)
+15. Implement uvm_callback (#CRIT-031)
+16. Add UPF power simulation (#CRIT-012)
+
+P2 — HIGH (Required for 1000-module designs)
+
+17. Implement parallel elaboration (#ELAB-01)
+18. Implement incremental elaboration (#ELAB-04)
+19. Add dynamic/associative/queue arrays (#CRIT-028-030)
+20. Implement FSDB waveform (#CRIT-033)
+21. Implement coverage database (#CRIT-005)
+22. ✅ Add timing engine full (#CRIT-011) — SDF parser + Min:Typ:Max + TimingMode
+23. Implement uvm_reg (#CRIT-032)
+24. Add parallel delta scheduling (#SIM-02)
+
+P3 — HIGH (Required for 10000-module designs)
+
+25. Implement distributed simulation (#CRIT-015)
+26. Implement remote/distributed cache (#CRIT-035)
+27. Implement CDC analysis (#CRIT-013)
+28. Implement cell library parsing (#CRIT-020)
+29. Add save/restore (#CRIT-014)
+30. Add formal verification engine (#CRIT-003)
+31. Implement native code generation (#CRIT-006 phase 2)
+32. Add multi-machine compile (#COMP-18)
+
+P4 — MEDIUM (Performance optimization)
+
+33. SIMD LogicVec operations (#PERF-07)
+34. Thread-local string interning (#PERF-08)
+35. Streaming VCD output (#PERF-14)
+36. JIT cache persistence (#PERF-12)
+37. Background waveform writer (#PERF-13)
+38. Lazy signal snapshot (#PERF-03) — ✅ Arc sharing selesai ROUND 210;
+    sisa opsional: refresh per-delta pakai snapshot_signal (lazy X)
+39. NBA bucketing (#PERF-15)
+40. Covergroup hash lookup (#PERF-16)
+
+P5 — MEDIUM (Verification completeness)
+
+41. UVM 1.2 full compliance
+42. uvm_comparator, uvm_subscriber
+43. uvm_event, uvm_barrier
+44. uvm_tlm_fifo, uvm_queue
+45. uvm_transaction recording
+46. Coverage HTML reports
+47. Coverage merge across runs
+48. Assertion coverage metrics
+49. Sequence coverage
+50. Random stability guarantees
+
+P6 — MEDIUM (Enterprise infrastructure)
+
+51. Remote cache server
+52. License management
+53. IP encryption (IEEE 1735)
+54. REST API
+55. Python bindings
+56. Tcl scripting
+57. Protocol VIP library (AXI, APB, AHB)
+58. Standard VIP for USB/PCIe/DDR
+59. Regression management dashboard
+60. Multi-user collaboration
+
+P7 — LOW-PRIORITY (Nice to have)
+
+61. VHDL support
+62. SystemC support
+63. Analog/mixed-signal
+64. KVM acceleration
+65. Containerized deployment
+66. macOS support
+67. Windows support
+68. Web-based IDE
+69. Plugin marketplace
+70. AI-assisted debugging
+
+
+═══════════════════════════════════════════════════════════════════════════════
+
+=== PROGRES REFACTORING (SRP — 1 FILE = 1 TANGGUNG JAWAB) ===
+
+[COMPLETED] Phase 1-2: Pemisahan elaboration/util.rs → 9 submodule files:
+  - type_util.rs     — type checking + parse_type_spec_str
+  - param_util.rs    — parameter resolution
+  - generate.rs      — generate block expansion
+  - loop_unroll.rs   — loop unrolling
+  - signal_analysis.rs — signal analysis + detect_sync_reset
+  - const_fold.rs    — constant folding
+  - operator.rs      — operator mapping + gate expressions
+  - width.rs         — width computation
+  - type_subst.rs    — type substitution
+
+[COMPLETED] Phase 3: Pemisahan parser.rs → parser/ directory:
+  - parser/mod.rs    — core parser (struct, helpers, parse_design, module, class,
+                       package, statement/expression parsing, dll.) — 6600+ lines
+  - parser/specify.rs — clocking block + specify block (timing checks)
+  - parser/udp.rs     — UDP (User-Defined Primitive) declarations
+  Catatan: Semua method masih extend impl Parser via use super::Parser;
+
+[COMPLETED] Ekstra minor:
+  - detect_sync_reset → signal_analysis.rs (bukan type_util.rs)
+  - parse_type_spec_str → type_util.rs (bukan elaborator.rs)
+  - Helper functions → engine_utils.rs dari simulator/engine/mod.rs
+  - impl DataType + impl DeclKind → ast/types.rs dari elaborator.rs
+
+═══════════════════════════════════════════════════════════════════════════════
