@@ -291,4 +291,18 @@ mod tests {
         assert_eq!(result.definitely_lost, 256);
         assert_eq!(result.errors, 2);
     }
+
+    #[test]
+    fn test_extract_tag() {
+        assert_eq!(
+            extract_tag("<definitely-lost>100</definitely-lost>", "definitely-lost"),
+            Some("100")
+        );
+        assert_eq!(
+            extract_tag("<indirectly-lost>200</indirectly-lost>", "indirectly-lost"),
+            Some("200")
+        );
+        assert_eq!(extract_tag("<tags>foo</tags>", "bar"), None);
+        assert_eq!(extract_tag("<foo>bar</foo>", "foo"), Some("bar"));
+    }
 }
