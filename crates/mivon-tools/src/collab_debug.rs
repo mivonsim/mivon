@@ -116,6 +116,31 @@ impl CollabDebugManager {
     pub fn session_count(&self) -> usize {
         self.sessions.lock().unwrap().len()
     }
+
+    /// Daftar ID semua sesi yang ada.
+    pub fn list_sessions(&self) -> Vec<String> {
+        self.sessions
+            .lock()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect()
+    }
+
+    /// Ambil klon sesi menurut ID.
+    pub fn get_session(&self, session_id: &str) -> Option<DebugSession> {
+        self.sessions.lock().unwrap().get(session_id).cloned()
+    }
+
+    /// Hapus sesi menurut ID.
+    pub fn remove_session(&self, session_id: &str) -> bool {
+        self.sessions.lock().unwrap().remove(session_id).is_some()
+    }
+
+    /// Hapus semua sesi.
+    pub fn clear_sessions(&self) {
+        self.sessions.lock().unwrap().clear();
+    }
 }
 
 #[cfg(test)]
@@ -163,5 +188,45 @@ mod tests {
         let s = DebugSession::new("s1", "alice");
         assert!(!s.is_multi_user());
         assert_eq!(s.status, DebugSessionStatus::Waiting);
+    }
+
+    #[test]
+    fn list_sessions_tracks_all_ids() {
+        let mgr = CollabDebugManager::new();
+        assert!(mgr.list_sessions().is_empty());
+        mgr.create_session("s1", "alice");
+        mgr.create_session("s2", "bob");
+        let mut list = mgr.list_sessions();
+        list.sort();
+        assert_eq!(
+            list,
+            vec!["s1".to_string(), "s2".to_string()]
+        );
+        assert_eq!(mgr.session_count(), 2);
+    }
+
+    #[test]
+    fn get_and_remove_session() {
+        let mgr = CollabDebugManager::new();
+        mgr.create_session("s1", "alice");
+        let s = mgr.get_session("s1").unwrap();
+        assert_eq!(s.session_id, "s1");
+        assert_eq!(s.owner, "alice");
+        assert!(mgr.get_session("nope").is_none());
+        assert!(mgr.remove_session("s1"));
+        assert!(mgr.get_session("s1").is_none());
+        assert!(!mgr.remove_session("s1"));
+        assert_eq!(mgr.session_count(), 0);
+    }
+
+    #[test]
+    fn clear_sessions_empties_manager() {
+        let mgr = CollabDebugManager::new();
+        mgr.create_session("s1", "alice");
+        mgr.create_session("s2", "bob");
+        assert_eq!(mgr.session_count(), 2);
+        mgr.clear_sessions();
+        assert!(mgr.list_sessions().is_empty());
+        assert_eq!(mgr.session_count(), 0);
     }
 }
