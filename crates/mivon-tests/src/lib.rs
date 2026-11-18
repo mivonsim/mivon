@@ -134,5 +134,9 @@ mod unit_scope_tests;
 #[cfg(test)]
 mod vif_write_tests;
 
+/// COMP-02: elimina sinyal IR yang tidak terpakai + remap SignalId.
+#[cfg(test)]
+mod unused_signal_tests;
+
 // Guided structure-aware fuzzer (metode test fuzzing "tidak buta"):
 // grammar-aware generation + coverage feedback + differential oracle.

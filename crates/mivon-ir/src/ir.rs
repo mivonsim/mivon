@@ -1,6 +1,6 @@
 use mivon_core::intern::Symbol;
 use mivon_core::{LogicVal, LogicVec};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 pub type SignalId = usize;
 pub type ClassId = usize;
@@ -44,6 +44,948 @@ pub struct IrDesign {
     /// mer-direct read/write member ke canonical (state.alias_redirect),
     /// sehingga menulis ke salah satu terlihat di semua (short).
     pub net_aliases: HashMap<SignalId, SignalId>,
+}
+
+/// COMP-02: Elimina sinyal IR yang tidak pernah dibaca/ditulis oleh statement
+/// manapun di semua proses, dan tidak terdaftar sebagai input/output/inout.
+/// Setelah menghapus, remap semua SignalId agar indeks tetap konsisten.
+///
+/// Mengembalikan `true` jika minimal satu sinyal dihapus dari mana-mana
+/// module dalam design (termasuk `top`).
+pub fn eliminate_unused_signals_ir(design: &mut IrDesign) -> bool {
+    let mut removed_any = false;
+
+    // Proses top module terlebih dahulu
+    if eliminate_unused_signals_in_module(&mut design.top) {
+        removed_any = true;
+    }
+
+    // Proses semua module non-top
+    for module in design.modules.values_mut() {
+        if eliminate_unused_signals_in_module(module) {
+            removed_any = true;
+        }
+    }
+
+    removed_any
+}
+
+/// Kumpulkan semua SignalId yang direferensikan oleh sebuah IrStmt.
+fn collect_signal_ids_from_stmt(stmt: &IrStmt, used: &mut HashSet<SignalId>) {
+    match stmt {
+        IrStmt::Block { stmts } => {
+            for s in stmts {
+                collect_signal_ids_from_stmt(s, used);
+            }
+        }
+        IrStmt::NamedBlock { stmts, .. } => {
+            for s in stmts {
+                collect_signal_ids_from_stmt(s, used);
+            }
+        }
+        IrStmt::BlockingAssign { lhs, rhs, .. } => {
+            collect_signal_ids_from_lvalue(lhs, used);
+            collect_signal_ids_from_expr(rhs, used);
+        }
+        IrStmt::NonBlockingAssign { lhs, rhs, .. } => {
+            collect_signal_ids_from_lvalue(lhs, used);
+            collect_signal_ids_from_expr(rhs, used);
+        }
+        IrStmt::If {
+            cond,
+            true_branch,
+            false_branch,
+            ..
+        } => {
+            collect_signal_ids_from_expr(cond, used);
+            for s in true_branch {
+                collect_signal_ids_from_stmt(s, used);
+            }
+            for s in false_branch {
+                collect_signal_ids_from_stmt(s, used);
+            }
+        }
+        IrStmt::Case {
+            expr,
+            items,
+            default,
+            ..
+        } => {
+            collect_signal_ids_from_expr(expr, used);
+            for item in items {
+                for label_expr in &item.labels {
+                    collect_signal_ids_from_expr(label_expr, used);
+                }
+                for s in &item.body {
+                    collect_signal_ids_from_stmt(s, used);
+                }
+            }
+            for s in default {
+                collect_signal_ids_from_stmt(s, used);
+            }
+        }
+        IrStmt::LoopFor {
+            cond,
+            init,
+            step,
+            body,
+            ..
+        } => {
+            collect_signal_ids_from_expr(cond, used);
+            if let Some(init) = init {
+                collect_signal_ids_from_stmt(init, used);
+            }
+            if let Some(step) = step {
+                collect_signal_ids_from_stmt(step, used);
+            }
+            for s in body {
+                collect_signal_ids_from_stmt(s, used);
+            }
+        }
+        IrStmt::LoopWhile { cond, body, .. } => {
+            collect_signal_ids_from_expr(cond, used);
+            for s in body {
+                collect_signal_ids_from_stmt(s, used);
+            }
+        }
+        IrStmt::LoopDoWhile { cond, body, .. } => {
+            collect_signal_ids_from_expr(cond, used);
+            for s in body {
+                collect_signal_ids_from_stmt(s, used);
+            }
+        }
+        IrStmt::Repeat { count, body, .. } => {
+            collect_signal_ids_from_expr(count, used);
+            for s in body {
+                collect_signal_ids_from_stmt(s, used);
+            }
+        }
+        IrStmt::Foreach {
+            array_var,
+            body,
+            ..
+        } => {
+            collect_signal_ids_from_expr(array_var, used);
+            for s in body {
+                collect_signal_ids_from_stmt(s, used);
+            }
+        }
+        IrStmt::Delay { body, .. } => {
+            for s in body {
+                collect_signal_ids_from_stmt(s, used);
+            }
+        }
+        IrStmt::Force { lvalue, rhs, .. } => {
+            collect_signal_ids_from_lvalue(lvalue, used);
+            collect_signal_ids_from_expr(rhs, used);
+        }
+        IrStmt::Wait { cond, body, .. } => {
+            collect_signal_ids_from_expr(cond, used);
+            for s in body {
+                collect_signal_ids_from_stmt(s, used);
+            }
+        }
+        IrStmt::SysCall { args, .. } => {
+            for arg in args {
+                collect_signal_ids_from_expr(arg, used);
+            }
+        }
+        IrStmt::SysFinish | IrStmt::Null => {}
+        IrStmt::EventControl {
+            sigs,
+            body,
+            iff,
+            ..
+        } => {
+            for (sig_id, _) in sigs {
+                used.insert(*sig_id);
+            }
+            for s in body {
+                collect_signal_ids_from_stmt(s, used);
+            }
+            if let Some(iff_expr) = iff {
+                collect_signal_ids_from_expr(iff_expr, used);
+            }
+        }
+        IrStmt::EventTrigger { sig_id, .. } => {
+            used.insert(*sig_id);
+        }
+        IrStmt::MethodCallStmt { obj, args, .. } => {
+            collect_signal_ids_from_expr(obj, used);
+            for arg in args {
+                collect_signal_ids_from_expr(arg, used);
+            }
+        }
+        IrStmt::Break | IrStmt::Continue => {}
+        IrStmt::Disable { .. } => {}
+        IrStmt::Release { lvalue, .. } => {
+            collect_signal_ids_from_lvalue(lvalue, used);
+        }
+        IrStmt::Deassign { lvalue, .. } => {
+            collect_signal_ids_from_lvalue(lvalue, used);
+        }
+        IrStmt::Fork { processes, .. } => {
+            for branch in processes {
+                for s in branch {
+                    collect_signal_ids_from_stmt(s, used);
+                }
+            }
+        }
+        IrStmt::Assert {
+            cond,
+            pass_stmt,
+            fail_stmt,
+            ..
+        } => {
+            collect_signal_ids_from_expr(cond, used);
+            for s in pass_stmt {
+                collect_signal_ids_from_stmt(s, used);
+            }
+            for s in fail_stmt {
+                collect_signal_ids_from_stmt(s, used);
+            }
+        }
+        IrStmt::Cover { .. } => {}
+        IrStmt::Expect { .. } => {}
+        IrStmt::Assume {
+            cond,
+            pass_stmt,
+            fail_stmt,
+            ..
+        } => {
+            collect_signal_ids_from_expr(cond, used);
+            for s in pass_stmt {
+                collect_signal_ids_from_stmt(s, used);
+            }
+            for s in fail_stmt {
+                collect_signal_ids_from_stmt(s, used);
+            }
+        }
+        IrStmt::WaitOrder {
+            events,
+            failure_stmts,
+        } => {
+            for ev in events {
+                used.insert(*ev);
+            }
+            for s in failure_stmts {
+                collect_signal_ids_from_stmt(s, used);
+            }
+        }
+        IrStmt::WaitFork => {}
+        IrStmt::RandCase { items } => {
+            for (cond, body) in items {
+                collect_signal_ids_from_expr(cond, used);
+                for s in body {
+                    collect_signal_ids_from_stmt(s, used);
+                }
+            }
+        }
+        IrStmt::RandSequence { productions } => {
+            for (_name, items) in productions {
+                for (cond, body) in items {
+                    collect_signal_ids_from_expr(cond, used);
+                    for s in body {
+                        collect_signal_ids_from_stmt(s, used);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Kumpulkan semua SignalId yang direferensikan oleh sebuah IrLValue.
+fn collect_signal_ids_from_lvalue(lvalue: &IrLValue, used: &mut HashSet<SignalId>) {
+    match lvalue {
+        IrLValue::Signal(sig_id, ..) => {
+            used.insert(*sig_id);
+        }
+        IrLValue::RangeSelect(sig_id, ..) => {
+            used.insert(*sig_id);
+        }
+        IrLValue::BitSelect(sig_id, ..) => {
+            used.insert(*sig_id);
+        }
+        IrLValue::ArrayIndex { sig_id, index, .. } => {
+            used.insert(*sig_id);
+            collect_signal_ids_from_expr(index, used);
+        }
+        IrLValue::ArrayRangeSelect { sig_id, .. } => {
+            used.insert(*sig_id);
+        }
+        IrLValue::ArrayBitSelect { sig_id, .. } => {
+            used.insert(*sig_id);
+        }
+        IrLValue::ExprPartSelect { sig_id, .. } => {
+            used.insert(*sig_id);
+        }
+        IrLValue::ObjectField { sig_id, .. } => {
+            used.insert(*sig_id);
+        }
+        IrLValue::HierRef(_) | IrLValue::HierRefIndex { .. } => {}
+        IrLValue::VifField { .. } => {}
+        IrLValue::Concat(lvalues) => {
+            for lv in lvalues {
+                collect_signal_ids_from_lvalue(lv, used);
+            }
+        }
+    }
+}
+
+/// Kumpulkan semua SignalId yang direferensikan oleh sebuah IrExpr.
+fn collect_signal_ids_from_expr(expr: &IrExpr, used: &mut HashSet<SignalId>) {
+    match expr {
+        IrExpr::Signal(sig_id, ..) => {
+            used.insert(*sig_id);
+        }
+        IrExpr::RangeSelect(sig_id, ..) => {
+            used.insert(*sig_id);
+        }
+        IrExpr::BitSelect(sig_id, ..) => {
+            used.insert(*sig_id);
+        }
+        IrExpr::ExprRangeSelect(inner, ..)
+        | IrExpr::ExprBitSelect(inner, ..)
+        | IrExpr::ExprPartSelect(inner, ..) => {
+            collect_signal_ids_from_expr(inner, used);
+        }
+        IrExpr::ArrayIndex { sig_id, index, .. } => {
+            used.insert(*sig_id);
+            collect_signal_ids_from_expr(index, used);
+        }
+        IrExpr::Concat(slices) => {
+            for e in slices {
+                collect_signal_ids_from_expr(e, used);
+            }
+        }
+        IrExpr::Replicate(_, inner) => {
+            collect_signal_ids_from_expr(inner, used);
+        }
+        IrExpr::UnaryOp(_, inner) => {
+            collect_signal_ids_from_expr(inner, used);
+        }
+        IrExpr::BinaryOp(_, lhs, rhs) => {
+            collect_signal_ids_from_expr(lhs, used);
+            collect_signal_ids_from_expr(rhs, used);
+        }
+        IrExpr::Cond(cond, true_branch, false_branch) => {
+            collect_signal_ids_from_expr(cond, used);
+            collect_signal_ids_from_expr(true_branch, used);
+            collect_signal_ids_from_expr(false_branch, used);
+        }
+        IrExpr::Signed(inner) => {
+            collect_signal_ids_from_expr(inner, used);
+        }
+        IrExpr::String(_) | IrExpr::FillLit(_) | IrExpr::This => {}
+        IrExpr::SysFunc { args, .. } => {
+            for arg in args {
+                collect_signal_ids_from_expr(arg, used);
+            }
+        }
+        IrExpr::NewCall { .. } | IrExpr::UdpLookup { .. } => {}
+        IrExpr::MethodCall { obj, args, .. } => {
+            collect_signal_ids_from_expr(obj, used);
+            for arg in args {
+                collect_signal_ids_from_expr(arg, used);
+            }
+        }
+        IrExpr::MemberAccess { obj, .. } => {
+            collect_signal_ids_from_expr(obj, used);
+        }
+        IrExpr::DpiCall { args, .. } => {
+            for arg in args {
+                collect_signal_ids_from_expr(arg, used);
+            }
+        }
+        IrExpr::HierRef(_) => {}
+        IrExpr::Inside { expr, list } => {
+            collect_signal_ids_from_expr(expr, used);
+            for e in list {
+                collect_signal_ids_from_expr(e, used);
+            }
+        }
+        IrExpr::InsideRange { expr, lo, hi } => {
+            collect_signal_ids_from_expr(expr, used);
+            collect_signal_ids_from_expr(lo, used);
+            collect_signal_ids_from_expr(hi, used);
+        }
+        IrExpr::Cast { expr, .. } => {
+            collect_signal_ids_from_expr(expr, used);
+        }
+        IrExpr::StreamingConcat { slices, .. } => {
+            for e in slices {
+                collect_signal_ids_from_expr(e, used);
+            }
+        }
+        IrExpr::Dist { expr, items, .. } => {
+            collect_signal_ids_from_expr(expr, used);
+            // IrDistItem doesn't contain SignalId references (only range/weight values)
+        }
+        IrExpr::FuncCall { args, .. } => {
+            for arg in args {
+                collect_signal_ids_from_expr(arg, used);
+            }
+        }
+        IrExpr::Const(_) | IrExpr::VifBinding { .. } | IrExpr::VirtualIfaceAccess { .. } => {}
+        IrExpr::RealConst(_) => {}
+        IrExpr::IncDec { read, lv, .. } => {
+            collect_signal_ids_from_expr(read, used);
+            collect_signal_ids_from_lvalue(lv, used);
+        }
+    }
+}
+
+/// Remap semua SignalId dalam sebuah IrStmt menggunakan peta old->new.
+fn remap_signal_ids_in_stmt(stmt: &mut IrStmt, mapping: &HashMap<SignalId, SignalId>) {
+    match stmt {
+        IrStmt::Block { stmts } => {
+            for s in stmts {
+                remap_signal_ids_in_stmt(s, mapping);
+            }
+        }
+        IrStmt::NamedBlock { stmts, .. } => {
+            for s in stmts {
+                remap_signal_ids_in_stmt(s, mapping);
+            }
+        }
+        IrStmt::BlockingAssign { lhs, rhs, .. } => {
+            remap_signal_ids_in_lvalue(lhs, mapping);
+            remap_signal_ids_in_expr(rhs, mapping);
+        }
+        IrStmt::NonBlockingAssign { lhs, rhs, .. } => {
+            remap_signal_ids_in_lvalue(lhs, mapping);
+            remap_signal_ids_in_expr(rhs, mapping);
+        }
+        IrStmt::If {
+            cond,
+            true_branch,
+            false_branch,
+            ..
+        } => {
+            remap_signal_ids_in_expr(cond, mapping);
+            for s in true_branch {
+                remap_signal_ids_in_stmt(s, mapping);
+            }
+            for s in false_branch {
+                remap_signal_ids_in_stmt(s, mapping);
+            }
+        }
+        IrStmt::Case {
+            expr,
+            items,
+            default,
+            ..
+        } => {
+            remap_signal_ids_in_expr(expr, mapping);
+            for item in items {
+                for label_expr in &mut item.labels {
+                    remap_signal_ids_in_expr(label_expr, mapping);
+                }
+                for s in &mut item.body {
+                    remap_signal_ids_in_stmt(s, mapping);
+                }
+            }
+            for s in default {
+                remap_signal_ids_in_stmt(s, mapping);
+            }
+        }
+        IrStmt::LoopFor {
+            cond,
+            init,
+            step,
+            body,
+            ..
+        } => {
+            remap_signal_ids_in_expr(cond, mapping);
+            if let Some(init) = init {
+                remap_signal_ids_in_stmt(init, mapping);
+            }
+            if let Some(step) = step {
+                remap_signal_ids_in_stmt(step, mapping);
+            }
+            for s in body {
+                remap_signal_ids_in_stmt(s, mapping);
+            }
+        }
+        IrStmt::LoopWhile { cond, body, .. } => {
+            remap_signal_ids_in_expr(cond, mapping);
+            for s in body {
+                remap_signal_ids_in_stmt(s, mapping);
+            }
+        }
+        IrStmt::LoopDoWhile { cond, body, .. } => {
+            remap_signal_ids_in_expr(cond, mapping);
+            for s in body {
+                remap_signal_ids_in_stmt(s, mapping);
+            }
+        }
+        IrStmt::Repeat { count, body, .. } => {
+            remap_signal_ids_in_expr(count, mapping);
+            for s in body {
+                remap_signal_ids_in_stmt(s, mapping);
+            }
+        }
+        IrStmt::Foreach {
+            body,
+            ..
+        } => {
+            for s in body {
+                remap_signal_ids_in_stmt(s, mapping);
+            }
+        }
+        IrStmt::Delay { body, .. } => {
+            for s in body {
+                remap_signal_ids_in_stmt(s, mapping);
+            }
+        }
+        IrStmt::Force { lvalue, rhs, .. } => {
+            remap_signal_ids_in_lvalue(lvalue, mapping);
+            remap_signal_ids_in_expr(rhs, mapping);
+        }
+        IrStmt::Wait { cond, body, .. } => {
+            remap_signal_ids_in_expr(cond, mapping);
+            for s in body {
+                remap_signal_ids_in_stmt(s, mapping);
+            }
+        }
+        IrStmt::SysCall { args, .. } => {
+            for arg in args {
+                remap_signal_ids_in_expr(arg, mapping);
+            }
+        }
+        IrStmt::SysFinish | IrStmt::Null => {}
+        IrStmt::EventControl {
+            sigs,
+            body,
+            iff,
+            ..
+        } => {
+            for (sig_id, _) in sigs.iter_mut() {
+                if let Some(&new_id) = mapping.get(sig_id) {
+                    *sig_id = new_id;
+                }
+            }
+            for s in body {
+                remap_signal_ids_in_stmt(s, mapping);
+            }
+            if let Some(iff_expr) = iff {
+                remap_signal_ids_in_expr(iff_expr, mapping);
+            }
+        }
+        IrStmt::EventTrigger { sig_id, .. } => {
+            if let Some(&new_id) = mapping.get(sig_id) {
+                *sig_id = new_id;
+            }
+        }
+        IrStmt::MethodCallStmt { obj, args, .. } => {
+            remap_signal_ids_in_expr(obj, mapping);
+            for arg in args {
+                remap_signal_ids_in_expr(arg, mapping);
+            }
+        }
+        IrStmt::Break | IrStmt::Continue => {}
+        IrStmt::Disable { .. } => {}
+        IrStmt::Release { lvalue, .. } => {
+            remap_signal_ids_in_lvalue(lvalue, mapping);
+        }
+        IrStmt::Deassign { lvalue, .. } => {
+            remap_signal_ids_in_lvalue(lvalue, mapping);
+        }
+        IrStmt::Fork { processes, .. } => {
+            for branch in processes {
+                for s in branch {
+                    remap_signal_ids_in_stmt(s, mapping);
+                }
+            }
+        }
+        IrStmt::Assert {
+            cond,
+            pass_stmt,
+            fail_stmt,
+            ..
+        } => {
+            remap_signal_ids_in_expr(cond, mapping);
+            for s in pass_stmt {
+                remap_signal_ids_in_stmt(s, mapping);
+            }
+            for s in fail_stmt {
+                remap_signal_ids_in_stmt(s, mapping);
+            }
+        }
+        IrStmt::Cover { .. } | IrStmt::Expect { .. } => {}
+        IrStmt::Assume {
+            cond,
+            pass_stmt,
+            fail_stmt,
+            ..
+        } => {
+            remap_signal_ids_in_expr(cond, mapping);
+            for s in pass_stmt {
+                remap_signal_ids_in_stmt(s, mapping);
+            }
+            for s in fail_stmt {
+                remap_signal_ids_in_stmt(s, mapping);
+            }
+        }
+        IrStmt::WaitOrder {
+            events,
+            failure_stmts,
+        } => {
+            for ev in events.iter_mut() {
+                if let Some(&new_id) = mapping.get(ev) {
+                    *ev = new_id;
+                }
+            }
+            for s in failure_stmts {
+                remap_signal_ids_in_stmt(s, mapping);
+            }
+        }
+        IrStmt::WaitFork => {}
+        IrStmt::RandCase { items } => {
+            for (cond, body) in items {
+                remap_signal_ids_in_expr(cond, mapping);
+                for s in body {
+                    remap_signal_ids_in_stmt(s, mapping);
+                }
+            }
+        }
+        IrStmt::RandSequence { productions } => {
+            for (_name, items) in productions {
+                for (cond, body) in items {
+                    remap_signal_ids_in_expr(cond, mapping);
+                    for s in body {
+                        remap_signal_ids_in_stmt(s, mapping);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Remap semua SignalId dalam sebuah IrLValue.
+fn remap_signal_ids_in_lvalue(lvalue: &mut IrLValue, mapping: &HashMap<SignalId, SignalId>) {
+    match lvalue {
+        IrLValue::Signal(sig_id, ..) => {
+            if let Some(&new_id) = mapping.get(sig_id) {
+                *sig_id = new_id;
+            }
+        }
+        IrLValue::RangeSelect(sig_id, ..) => {
+            if let Some(&new_id) = mapping.get(sig_id) {
+                *sig_id = new_id;
+            }
+        }
+        IrLValue::BitSelect(sig_id, ..) => {
+            if let Some(&new_id) = mapping.get(sig_id) {
+                *sig_id = new_id;
+            }
+        }
+        IrLValue::ArrayIndex { sig_id, index, .. } => {
+            if let Some(&new_id) = mapping.get(sig_id) {
+                *sig_id = new_id;
+            }
+            remap_signal_ids_in_expr(index, mapping);
+        }
+        IrLValue::ArrayRangeSelect { sig_id, .. } => {
+            if let Some(&new_id) = mapping.get(sig_id) {
+                *sig_id = new_id;
+            }
+        }
+        IrLValue::ArrayBitSelect { sig_id, .. } => {
+            if let Some(&new_id) = mapping.get(sig_id) {
+                *sig_id = new_id;
+            }
+        }
+        IrLValue::ExprPartSelect { sig_id, .. } => {
+            if let Some(&new_id) = mapping.get(sig_id) {
+                *sig_id = new_id;
+            }
+        }
+        IrLValue::ObjectField { sig_id, .. } => {
+            if let Some(&new_id) = mapping.get(sig_id) {
+                *sig_id = new_id;
+            }
+        }
+        IrLValue::HierRef(_) | IrLValue::HierRefIndex { .. } => {}
+        IrLValue::VifField { .. } => {}
+        IrLValue::Concat(lvalues) => {
+            for lv in lvalues {
+                remap_signal_ids_in_lvalue(lv, mapping);
+            }
+        }
+    }
+}
+
+/// Remap semua SignalId dalam sebuah IrExpr.
+fn remap_signal_ids_in_expr(expr: &mut IrExpr, mapping: &HashMap<SignalId, SignalId>) {
+    match expr {
+        IrExpr::Signal(sig_id, ..) => {
+            if let Some(&new_id) = mapping.get(sig_id) {
+                *sig_id = new_id;
+            }
+        }
+        IrExpr::RangeSelect(sig_id, ..) => {
+            if let Some(&new_id) = mapping.get(sig_id) {
+                *sig_id = new_id;
+            }
+        }
+        IrExpr::BitSelect(sig_id, ..) => {
+            if let Some(&new_id) = mapping.get(sig_id) {
+                *sig_id = new_id;
+            }
+        }
+        IrExpr::ExprRangeSelect(inner, ..)
+        | IrExpr::ExprBitSelect(inner, ..)
+        | IrExpr::ExprPartSelect(inner, ..) => {
+            remap_signal_ids_in_expr(inner, mapping);
+        }
+        IrExpr::ArrayIndex { sig_id, index, .. } => {
+            if let Some(&new_id) = mapping.get(sig_id) {
+                *sig_id = new_id;
+            }
+            remap_signal_ids_in_expr(index, mapping);
+        }
+        IrExpr::Concat(slices) => {
+            for e in slices {
+                remap_signal_ids_in_expr(e, mapping);
+            }
+        }
+        IrExpr::Replicate(_, inner) => {
+            remap_signal_ids_in_expr(inner, mapping);
+        }
+        IrExpr::UnaryOp(_, inner) => {
+            remap_signal_ids_in_expr(inner, mapping);
+        }
+        IrExpr::BinaryOp(_, lhs, rhs) => {
+            remap_signal_ids_in_expr(lhs, mapping);
+            remap_signal_ids_in_expr(rhs, mapping);
+        }
+        IrExpr::Cond(cond, true_branch, false_branch) => {
+            remap_signal_ids_in_expr(cond, mapping);
+            remap_signal_ids_in_expr(true_branch, mapping);
+            remap_signal_ids_in_expr(false_branch, mapping);
+        }
+        IrExpr::Signed(inner) => {
+            remap_signal_ids_in_expr(inner, mapping);
+        }
+        IrExpr::String(_) | IrExpr::FillLit(_) | IrExpr::This => {}
+        IrExpr::SysFunc { args, .. } => {
+            for arg in args {
+                remap_signal_ids_in_expr(arg, mapping);
+            }
+        }
+        IrExpr::NewCall { .. } | IrExpr::UdpLookup { .. } => {}
+        IrExpr::MethodCall { obj, args, .. } => {
+            remap_signal_ids_in_expr(obj, mapping);
+            for arg in args {
+                remap_signal_ids_in_expr(arg, mapping);
+            }
+        }
+        IrExpr::MemberAccess { obj, .. } => {
+            remap_signal_ids_in_expr(obj, mapping);
+        }
+        IrExpr::DpiCall { args, .. } => {
+            for arg in args {
+                remap_signal_ids_in_expr(arg, mapping);
+            }
+        }
+        IrExpr::HierRef(_) => {}
+        IrExpr::Inside { expr, list } => {
+            remap_signal_ids_in_expr(expr, mapping);
+            for e in list {
+                remap_signal_ids_in_expr(e, mapping);
+            }
+        }
+        IrExpr::InsideRange { expr, lo, hi } => {
+            remap_signal_ids_in_expr(expr, mapping);
+            remap_signal_ids_in_expr(lo, mapping);
+            remap_signal_ids_in_expr(hi, mapping);
+        }
+        IrExpr::Cast { expr, .. } => {
+            remap_signal_ids_in_expr(expr, mapping);
+        }
+        IrExpr::StreamingConcat { slices, .. } => {
+            for e in slices {
+                remap_signal_ids_in_expr(e, mapping);
+            }
+        }
+        IrExpr::Dist { expr, items, .. } => {
+            remap_signal_ids_in_expr(expr, mapping);
+            // IrDistItem.range_lo/range_hi are Option<i64>, not SignalId refs
+        }
+        IrExpr::FuncCall { args, .. } => {
+            for arg in args {
+                remap_signal_ids_in_expr(arg, mapping);
+            }
+        }
+        IrExpr::Const(_) | IrExpr::VifBinding { .. } | IrExpr::VirtualIfaceAccess { .. } => {}
+        IrExpr::RealConst(_) => {}
+        IrExpr::IncDec { read, lv, .. } => {
+            remap_signal_ids_in_expr(read, mapping);
+            remap_signal_ids_in_lvalue(lv, mapping);
+        }
+    }
+}
+
+/// Elimina sinyal yang tidak pernah digunakan dari satu modul IrModule.
+/// Mengembalikan `true` jika minimal satu sinyal dihapus.
+fn eliminate_unused_signals_in_module(module: &mut IrModule) -> bool {
+    let mut used: HashSet<SignalId> = HashSet::new();
+
+    // Input/output/inout selalu dianggap digunakan (interface eksternal)
+    for &sig in &module.inputs {
+        used.insert(sig);
+    }
+    for &sig in &module.outputs {
+        used.insert(sig);
+    }
+    for &sig in &module.inouts {
+        used.insert(sig);
+    }
+
+    // Kumpulkan sinyal yang digunakan oleh semua proses
+    // (sensitivity/clock/reset ditangani di dalam collect_signal_ids_from_process)
+    for process in &module.processes {
+        collect_signal_ids_from_process(process, &mut used);
+    }
+
+    // Bangun mapping old -> new untuk sinyal yang digunakan
+    let mut old_to_new: HashMap<SignalId, SignalId> = HashMap::new();
+    let mut kept: Vec<SignalInfo> = Vec::new();
+    for (old_idx, sig) in module.signals.iter().enumerate() {
+        if used.contains(&old_idx) {
+            let new_idx = kept.len();
+            old_to_new.insert(old_idx, new_idx);
+            kept.push(sig.clone());
+        }
+    }
+
+    let removed = module.signals.len() - kept.len();
+    if removed == 0 {
+        return false;
+    }
+
+    // Ganti sinyal
+    module.signals = kept;
+
+    // Remap semua referensi di proses
+    for process in &mut module.processes {
+        remap_signal_ids_in_process(process, &old_to_new);
+    }
+
+    // Remap input/output/inout
+    for sig in &mut module.inputs {
+        if let Some(&new_id) = old_to_new.get(sig) {
+            *sig = new_id;
+        }
+    }
+    for sig in &mut module.outputs {
+        if let Some(&new_id) = old_to_new.get(sig) {
+            *sig = new_id;
+        }
+    }
+    for sig in &mut module.inouts {
+        if let Some(&new_id) = old_to_new.get(sig) {
+            *sig = new_id;
+        }
+    }
+
+    true
+}
+
+/// Kumpulkan semua SignalId yang direferensikan oleh sebuah Proses.
+fn collect_signal_ids_from_process(process: &Process, used: &mut HashSet<SignalId>) {
+    match process {
+        Process::Combinational {
+            sensitivity,
+            body,
+            ..
+        }
+        | Process::CombReactive {
+            sensitivity,
+            body,
+            ..
+        } => {
+            for sens in sensitivity {
+                used.insert(sens.sig_id);
+            }
+            for s in body {
+                collect_signal_ids_from_stmt(s, used);
+            }
+        }
+        Process::Sequential {
+            clock,
+            reset,
+            body,
+            ..
+        } => {
+            match clock {
+                ClockEdge::PosEdge(sig_id) | ClockEdge::NegEdge(sig_id) => {
+                    used.insert(*sig_id);
+                }
+                ClockEdge::PosEdgeHier(_) | ClockEdge::NegEdgeHier(_) => {}
+            }
+            if let Some(reset_info) = reset {
+                used.insert(reset_info.signal);
+            }
+            for s in body {
+                collect_signal_ids_from_stmt(s, used);
+            }
+        }
+        Process::Initial { body, .. } | Process::Final { body, .. } => {
+            for s in body {
+                collect_signal_ids_from_stmt(s, used);
+            }
+        }
+        Process::AlwaysWithDelay { body, .. } => {
+            for s in body {
+                collect_signal_ids_from_stmt(s, used);
+            }
+        }
+    }
+}
+
+/// Remap semua SignalId dalam sebuah Proses.
+fn remap_signal_ids_in_process(process: &mut Process, mapping: &HashMap<SignalId, SignalId>) {
+    match process {
+        Process::Combinational { body, .. }
+        | Process::CombReactive { body, .. }
+        | Process::Sequential { body, .. }
+        | Process::AlwaysWithDelay { body, .. }
+        | Process::Initial { body, .. }
+        | Process::Final { body, .. } => {
+            for s in body {
+                remap_signal_ids_in_stmt(s, mapping);
+            }
+        }
+    }
+    // Remap sensitivity/clock/reset signal IDs
+    match process {
+        Process::Combinational { sensitivity, .. }
+        | Process::CombReactive { sensitivity, .. } => {
+            for sens in sensitivity.iter_mut() {
+                if let Some(&new_id) = mapping.get(&sens.sig_id) {
+                    sens.sig_id = new_id;
+                }
+            }
+        }
+        Process::Sequential { clock, reset, .. } => {
+            match clock {
+                ClockEdge::PosEdge(sig_id) | ClockEdge::NegEdge(sig_id) => {
+                    if let Some(&new_id) = mapping.get(sig_id) {
+                        *sig_id = new_id;
+                    }
+                }
+                ClockEdge::PosEdgeHier(_) | ClockEdge::NegEdgeHier(_) => {}
+            }
+            if let Some(reset_info) = reset {
+                if let Some(&new_id) = mapping.get(&reset_info.signal) {
+                    reset_info.signal = new_id;
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
