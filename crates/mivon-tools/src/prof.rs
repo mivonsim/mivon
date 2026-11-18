@@ -238,3 +238,53 @@ pub fn run_cached(args: &ProfArgs) -> Result<(), SimError> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_bottleneck_hint_discovery() {
+        assert_eq!(
+            bottleneck_hint("Discovery"),
+            "file scan terlalu banyak direktori; pakai file list (-f)"
+        );
+    }
+
+    #[test]
+    fn test_bottleneck_hint_simulation() {
+        assert_eq!(
+            bottleneck_hint("Simulation"),
+            "kecilkan max_time atau pakai --packed / --jit-body"
+        );
+    }
+
+    #[test]
+    fn test_bottleneck_hint_unknown() {
+        assert_eq!(bottleneck_hint("NotARealPhase"), "—");
+    }
+
+    #[test]
+    fn test_bottleneck_hint_parse() {
+        assert_eq!(
+            bottleneck_hint("Parse"),
+            "banyak file besar; aktifkan --fast (FastLexer + paralel)"
+        );
+    }
+
+    #[test]
+    fn test_bottleneck_hint_elaboration() {
+        assert_eq!(
+            bottleneck_hint("Elaboration"),
+            "generate/parameter expansion berat; pakai --lazy"
+        );
+    }
+
+    #[test]
+    fn test_bottleneck_hint_lexer() {
+        assert_eq!(
+            bottleneck_hint("Lexer"),
+            "tokenisasi berat; aktifkan FastLexer (--fast)"
+        );
+    }
+}
