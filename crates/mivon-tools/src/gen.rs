@@ -348,3 +348,27 @@ fn write_if_changed(path: &Path, content: &str) -> Result<bool, SimError> {
     std::fs::write(path, content).map_err(|e| diag(format!("{}: {}", path.display(), e)))?;
     Ok(true)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_mv_source_mv() {
+        assert!(is_mv_source(Path::new("design.mv")));
+    }
+
+    #[test]
+    fn test_is_mv_source_mvh() {
+        assert!(is_mv_source(Path::new("header.mvh")));
+    }
+
+    #[test]
+    fn test_is_mv_source_not_sv() {
+        assert!(!is_mv_source(Path::new("tb.sv")));
+        assert!(!is_mv_source(Path::new("header.svh")));
+        assert!(!is_mv_source(Path::new("readme.txt")));
+        assert!(!is_mv_source(Path::new("noextension")));
+        assert!(!is_mv_source(Path::new("mv.txt")));
+    }
+}
