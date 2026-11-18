@@ -97,6 +97,13 @@ impl LazyElaborator {
         module
     }
 
+    /// ELAB-02 stage 2: on-demand module elaboration convenience.
+    /// Returns cached elaborated module if already elaborated, otherwise None
+    /// (caller must supply AST data via elaborate_with_data).
+    pub fn elaborate_module(&self, name: Symbol) -> Option<Arc<HirModule>> {
+        self.elaborate(name)
+    }
+
     /// Check if a module has been elaborated.
     pub fn is_elaborated(&self, name: Symbol) -> bool {
         self.elaborated.contains_key(&name)
@@ -154,6 +161,20 @@ mod tests {
     }
 
     #[test]
+    fn test_lazy_elab_module_convenience() {
+        let elab = LazyElaborator::new();
+        let name = Symbol::intern("mod_a");
+
+        // Not elaborated yet -> None.
+        assert!(elab.elaborate_module(name).is_none());
+
+        // After elaborate_with_data, convenience wrapper returns Some.
+        elab.elaborate_with_data(name, vec![], vec![], vec![]);
+        assert!(elab.elaborate_module(name).is_some());
+        assert_eq!(elab.elaborate_module(name).unwrap().name, name);
+    }
+
+    #[test]
     fn test_lazy_elab_invalidate() {
         let elab = LazyElaborator::new();
         let name = Symbol::intern("inv_mod");
@@ -163,5 +184,42 @@ mod tests {
 
         elab.invalidate(name);
         assert!(!elab.is_elaborated(name));
+    }
+
+    #[test]
+    fn test_lazy_elab_module_names() {
+        let elab = LazyElaborator::new();
+        let a = Symbol::intern("mod_a");
+        let b = Symbol::intern("mod_b");
+        elab.elaborate_with_data(a, vec![], vec![], vec![]);
+        elab.elaborate_with_data(b, vec![], vec![], vec![]);
+        let names = elab.module_names();
+        assert_eq!(names.len(), 2);
+        assert!(names.contains(&a));
+        assert!(names.contains(&b));
+        assert_eq!(elab.len(), 2);
+        assert!(!elab.is_empty());
+    }
+
+    #[test]
+    fn test_lazy_elab_invalidate_all() {
+        let elab = LazyElaborator::new();
+        elab.elaborate_with_data(Symbol::intern("x"), vec![], vec![], vec![]);
+        elab.elaborate_with_data(Symbol::intern("y"), vec![], vec![], vec![]);
+        assert_eq!(elab.len(), 2);
+        elab.invalidate_all();
+        assert!(elab.is_empty());
+        assert_eq!(elab.len(), 0);
+        assert!(!elab.is_elaborated(Symbol::intern("x")));
+    }
+
+    #[test]
+    fn test_lazy_elab_shared_type_system() {
+        let elab = LazyElaborator::new();
+        let ts1 = elab.shared_type_system();
+        let ts2 = elab.shared_type_system();
+        assert!(Arc::ptr_eq(&ts1, &ts2));
+        // type_system() selalu mengembalikan referensi valid (tidak pernah None).
+        let _ = elab.type_system();
     }
 }
