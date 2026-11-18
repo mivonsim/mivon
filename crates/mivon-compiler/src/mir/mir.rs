@@ -28,6 +28,8 @@ pub enum MirSignalKind {
     Inout,
     Parameter,
     Localparam,
+    /// Clock sinyal (digunakan oleh AlwaysClk/AlwaysFF sensitivity).
+    Clock,
 }
 
 /// MIR instruction — flat, linear for fast interpretation.

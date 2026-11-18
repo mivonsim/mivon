@@ -10,7 +10,7 @@
 //! 7. sign_ext_eliminate   — eliminate redundant sign-extension patterns (COMP-08)
 //! 8. xz_propagate         — fold operations with known-zero/X operands (COMP-09)
 
-use super::mir::{MirBinOp, MirInstr, MirModule, MirSignal};
+use super::mir::{MirBinOp, MirEdge, MirInstr, MirModule, MirSignal, MirSensitivity};
 use std::collections::{HashMap, HashSet};
 
 /// Optimize a MIR module (peephole + dataflow).
@@ -42,6 +42,14 @@ fn eliminate_unused_signals(module: &mut MirModule) -> bool {
                 }
                 _ => {}
             }
+        }
+        // Sensitivity signal juga dipakai oleh proses (clock untuk
+        // always_ff/always_clk) dan jangan dianggap unused.
+        match &process.sensitivity {
+            MirSensitivity::AlwaysClk { signal, .. } | MirSensitivity::AlwaysFF { signal, .. } => {
+                used.insert(*signal);
+            }
+            MirSensitivity::AlwaysComb | MirSensitivity::Initial | MirSensitivity::Always => {}
         }
     }
 
@@ -92,6 +100,16 @@ fn eliminate_unused_signals(module: &mut MirModule) -> bool {
                 }
                 _ => {}
             }
+        }
+        // Perbarui signal sensitivitas process (clock untuk always_ff /
+        // always_clk) agar indeks tetap konsisten setelah sinyal disusun ulang.
+        match &mut process.sensitivity {
+            MirSensitivity::AlwaysClk { signal, .. } | MirSensitivity::AlwaysFF { signal, .. } => {
+                if let Some(&new_idx) = old_to_new.get(signal) {
+                    *signal = new_idx;
+                }
+            }
+            MirSensitivity::AlwaysComb | MirSensitivity::Initial | MirSensitivity::Always => {}
         }
     }
 
@@ -2237,5 +2255,121 @@ mod tests {
         assert!(eliminate_unused_signals(&mut module));
         assert_eq!(module.signals.len(), 0, "semua sinyal tidak terpakai harus dihapus");
         assert!(module.signal_map.is_empty());
+    }
+
+    #[test]
+    fn test_eliminate_unused_signals_keeps_clock_signal() {
+        // Clock sinyal hanya dipakai oleh AlwaysClk (tidak ada
+        // Load/Store/NonBlocking yang merujuknya) — jangan dianggap unused.
+        let mut module = MirModule::new(Symbol::intern("test"));
+        let clk = module.add_signal(MirSignal {
+            name: Symbol::intern("clk"),
+            width: 1,
+            kind: MirSignalKind::Clock,
+            initial_value: None,
+        });
+        let unused = module.add_signal(MirSignal {
+            name: Symbol::intern("unused"),
+            width: 8,
+            kind: MirSignalKind::Wire,
+            initial_value: None,
+        });
+        assert_eq!(clk, 0);
+        assert_eq!(unused, 1);
+
+        module.processes.push(MirProcess {
+            name: Symbol::intern("p"),
+            sensitivity: MirSensitivity::AlwaysClk {
+                signal: clk,
+                edge: MirEdge::Posedge,
+            },
+            instrs: vec![],
+        });
+
+        assert!(eliminate_unused_signals(&mut module));
+        // Clock harus tetap ada, unused dihapus → hanya 1 sinyal tersisa.
+        assert_eq!(module.signals.len(), 1);
+        assert_eq!(module.signals[0].name, Symbol::intern("clk"));
+        assert_eq!(module.signal_map[&Symbol::intern("clk")], 0);
+        // Sensitivity clock harus tetap 0 (tidak berubah karena clk tetap indeks 0).
+        assert!(
+            matches!(
+                module.processes[0].sensitivity,
+                MirSensitivity::AlwaysClk { signal: 0, .. }
+            ),
+            "clock sensitivity harus tetap 0: {:?}",
+            module.processes[0].sensitivity
+        );
+    }
+
+    #[test]
+    fn test_eliminate_unused_signals_remaps_clock_signal() {
+        // Clock sinyal dipakai oleh AlwaysFF DAN oleh instruksi Load; sinyal
+        // lain unused. Setelah penghapusan, clock indeks harus diremap dengan
+        // benar dan sensitivity harus mengikuti.
+        let mut module = MirModule::new(Symbol::intern("test"));
+        let clk = module.add_signal(MirSignal {
+            name: Symbol::intern("clk"),
+            width: 1,
+            kind: MirSignalKind::Clock,
+            initial_value: None,
+        });
+        let unused = module.add_signal(MirSignal {
+            name: Symbol::intern("unused"),
+            width: 8,
+            kind: MirSignalKind::Wire,
+            initial_value: None,
+        });
+        let data = module.add_signal(MirSignal {
+            name: Symbol::intern("data"),
+            width: 8,
+            kind: MirSignalKind::Wire,
+            initial_value: None,
+        });
+        assert_eq!(clk, 0);
+        assert_eq!(unused, 1);
+        assert_eq!(data, 2);
+
+        module.processes.push(MirProcess {
+            name: Symbol::intern("p"),
+            sensitivity: MirSensitivity::AlwaysFF {
+                signal: clk,
+                edge: MirEdge::Posedge,
+            },
+            instrs: vec![
+                MirInstr::Load { dest: 10, signal: data }, // pakai sinyal 2
+                MirInstr::Store { signal: data, src: 10 }, // pakai sinyal 2
+            ],
+        });
+
+        assert!(eliminate_unused_signals(&mut module));
+        // Sisa 2 sinyal: clk dan data. unused (indeks lama 1) dihapus.
+        assert_eq!(module.signals.len(), 2);
+        assert_eq!(module.signals[0].name, Symbol::intern("clk"));
+        assert_eq!(module.signals[1].name, Symbol::intern("data"));
+
+        // Referensi instruksi harus diremap: data (2) -> 1.
+        let instr = &module.processes[0].instrs;
+        assert!(
+            matches!(instr[0], MirInstr::Load { signal: 1, .. }),
+            "Load data harus jadi 1: {:?}",
+            instr[0]
+        );
+        assert!(
+            matches!(instr[1], MirInstr::Store { signal: 1, .. }),
+            "Store data harus jadi 1: {:?}",
+            instr[1]
+        );
+
+        // Sensitivity clock harus diremap: clk tetap 0 (tidak berubah karena clk
+        // tetap indeks 0).
+        assert!(
+            matches!(
+                module.processes[0].sensitivity,
+                MirSensitivity::AlwaysFF { signal: 0, .. }
+            ),
+            "clock sensitivity harus tetap 0: {:?}",
+            module.processes[0].sensitivity
+        );
     }
 }

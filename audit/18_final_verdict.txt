@@ -9611,6 +9611,44 @@ VERIFIKASI ROUND 291:
 Status COMP-02: ⚠️ IN PROGRESS — MIR DSE aktif + dead module detect +
   unused-signal elimination (baru). Sisa: IR-level DCE sinyal/blok.
 
+═══ ROUND 292 — COMP-02 fix: unused-signal elimination harus mempertahankan
+  sensitivity clock (bug review independen) ═══
+
+Reviewer independen menemukan bug krusial: `eliminate_unused_signals` hanya
+memindai `Load`/`Store`/`NonBlocking` untuk kumpulkan sinyal "digunakan",
+jadi sinyal clock yang hanya muncul di `MirSensitivity::AlwaysClk` /
+`AlwaysFF` sensitivity akan dianggap unused dan dihapus — padahal masih
+diperlukan sebagai trigger sensitivitas. Sinyal yang kept akan disusun ulang
+indeks, tetapi `sensitivity.signal` tidak diremap → indeks salah → engine
+baca sinyal salah atau panic out-of-bounds.
+
+Perubahan (crates/mivon-compiler/src/mir/opt.rs + mir.rs):
+  - `eliminate_unused_signals`: tambah pemindaian `MirSensitivity::AlwaysClk
+    { signal }` dan `AlwaysFF { signal }` ke himpunan `used`, dan update
+    `sensitivity.signal` pada `MirProcess` saat renumbering (mirror write
+    signal, pola sama).
+  - `crates/mivon-compiler/src/mir/mir.rs`: tambah variant
+    `MirSignalKind::Clock` (masih ada Wire/Reg/Logic/Input/Output/Inout/
+    Parameter/Localparam, tidak ada match exhaustive yang pecah).
+  - Impor `MirEdge, MirSensitivity` di bagian atas opt.rs.
+  - +2 test baru:
+    * test_eliminate_unused_signals_keeps_clock_signal: clock hanya dipakai
+      oleh AlwaysClk (tidak ada Load/Store/NonBlocking) → tidak dihapus,
+      sensitivity tetap 0.
+    * test_eliminate_unused_signals_remaps_clock_signal: clock dipakai oleh
+      AlwaysFF DAN Load → indeks diremap benar, sensitivity mengikuti.
+
+VERIFIKASI ROUND 292:
+  - rustfmt --edition 2021 --check (opt.rs, mir.rs) -> bersih.
+  - cargo nextest run -p mivon-compiler -> 212 passed (210 lama + 2 baru),
+    1 skipped, 0 failed.
+  - cargo check --workspace -> bersih (tanpa regresi lintas-crate).
+  - Review agent independen: LOLOS (setelah fix bug sensitivity).
+
+Status COMP-02: ⚠️ IN PROGRESS — MIR DSE aktif + dead module detect +
+  unused-signal elimination (dengan sensitivity clock handling). Sisa:
+  IR-level DCE sinyal/blok.
+
 Status LANG-01: ⚠️ STUB (stage 1-31) — scanner entity/architecture + port/
   generic + signal + component + process + library/use + package +
   subprogram + type/subtype + constant + alias + configuration + variable +
