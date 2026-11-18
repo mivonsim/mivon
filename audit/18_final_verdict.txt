@@ -9531,12 +9531,34 @@ VERIFIKASI ROUND 288:
   - cargo check --workspace -> bersih (tanpa regresi lintas-crate).
   - Review agent: LOLOS.
 
-Status LANG-01: ⚠️ STUB (stage 1-29) — scanner entity/architecture + port/
+═══ ROUND 289 — LANG-01 (stage 30): ekstraksi pernyataan return VHDL ═══
+
+Ruang lingkup: lanjutkan stub LANG-01 (krate mivon-vhdl) — ekstraksi pernyataan
+`return [ekspresi];` (baris), melengkapi konstruk VHDL yang dikenali.
+
+Perubahan (crates/mivon-vhdl/src/lib.rs):
+  - Tambah `VhdlReturnStmt { line }` dan field
+    `return_stmts: Vec<VhdlReturnStmt>` di `VhdlScan`.
+  - Fungsi publik `extract_return_stmt(src)`: deteksi kata kunci `return`
+    case-insensitive. Dipanggil di akhir `scan()`.
+  - Doc header update ke "stage 1-30".
+  - +2 test diskriminatif (total 70):
+    * scan_extracts_return_stmts: 3 return -> baris persis.
+    * extract_return_stmt_not_counted_other: keyword bukan return tidak
+      terhitung (termasuk `returnx`).
+
+VERIFIKASI ROUND 289:
+  - rustfmt --edition 2021 --check (lib.rs) -> bersih.
+  - cargo nextest run -p mivon-vhdl -> 70 passed (68 lama + 2 baru).
+  - cargo check --workspace -> bersih (tanpa regresi lintas-crate).
+  - Review agent: LOLOS.
+
+Status LANG-01: ⚠️ STUB (stage 1-30) — scanner entity/architecture + port/
   generic + signal + component + process + library/use + package +
   subprogram + type/subtype + constant + alias + configuration + variable +
   file + attribute + group + instansi komponen + blok + assert + report +
   wait + penetapan konkuren + generate + null + if + case + loop +
-  exit/next ada di krate terisolasi; sisa open: parser VHDL penuh,
+  exit/next + return ada di krate terisolasi; sisa open: parser VHDL penuh,
   concurrent/sequential statement, elaborasi, simulasi, wiring pipeline.
 
 

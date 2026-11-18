@@ -1,4 +1,4 @@
-//! LANG-01: VHDL front-end — STUB stage 1-29 (Critical, open).
+//! LANG-01: VHDL front-end — STUB stage 1-30 (Critical, open).
 //!
 //! mivon tidak memiliki dukungan VHDL sama sekali. Stage 1 adalah scanner
 //! terbatas yang mengenali batas `entity` / `architecture` dari source VHDL
@@ -27,7 +27,8 @@
 //! stage 26 mengekstrak pernyataan `if` (baris),
 //! stage 27 mengekstrak pernyataan `case` (baris),
 //! stage 28 mengekstrak pernyataan `loop` (baris),
-//! stage 29 mengekstrak pernyataan `exit`/`next` (baris).
+//! stage 29 mengekstrak pernyataan `exit`/`next` (baris),
+//! stage 30 mengekstrak pernyataan `return` (baris).
 //! Semuanya kasar: nama + mode/tipe. BUKAN parser
 //! lengkap: belum mem-parse concurrent/sequential statement dalam process,
 //! maupun tipe VHDL penuh. Belum di-wire ke pipeline compile (lexer/parser
@@ -353,6 +354,14 @@ pub struct VhdlExitStmt {
     pub line: usize,
 }
 
+/// Satu pernyataan `return` VHDL (stage 30: ekstraksi kasar baris).
+/// Bentuk: `return [ekspresi];`. Hanya baris dicatat.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VhdlReturnStmt {
+    /// 1-based baris tempat kata kunci `return` muncul.
+    pub line: usize,
+}
+
 /// Satu arsitektur VHDL yang dikenali.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VhdlArchitecture {
@@ -423,6 +432,8 @@ pub struct VhdlScan {
     pub loop_stmts: Vec<VhdlLoopStmt>,
     /// Pernyataan `exit`/`next` (stage 29, kasar: baris).
     pub exit_stmts: Vec<VhdlExitStmt>,
+    /// Pernyataan `return` (stage 30, kasar: baris).
+    pub return_stmts: Vec<VhdlReturnStmt>,
 }
 
 /// Kesalahan scan tingkat rendah (stage 1).
@@ -715,6 +726,7 @@ pub fn scan(src: &str) -> Result<VhdlScan, VhdlScanError> {
     res.case_stmts = extract_case_stmt(src);
     res.loop_stmts = extract_loop_stmt(src);
     res.exit_stmts = extract_exit_stmt(src);
+    res.return_stmts = extract_return_stmt(src);
     Ok(res)
 }
 
@@ -2074,6 +2086,28 @@ pub fn extract_exit_stmt(src: &str) -> Vec<VhdlExitStmt> {
     out
 }
 
+/// Ekstrak pernyataan `return` VHDL dari seluruh source (stage 30, kasar).
+///
+/// Mendeteksi kata kunci `return`. Hanya baris dicatat; ekspresi
+/// setelahnya tidak di-parse dalam stub ini. Komentar `--` sudah dibuang
+/// oleh `tokenize`.
+pub fn extract_return_stmt(src: &str) -> Vec<VhdlReturnStmt> {
+    let toks = tokenize(src);
+    let n = toks.len();
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i < n {
+        let (ln, _, t) = &toks[i];
+        if let Tok::Word(w) = t {
+            if w.to_ascii_lowercase() == "return" {
+                out.push(VhdlReturnStmt { line: *ln });
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
 /// Buang komentar baris `--` dari sebuah teks.
 fn strip_comments(s: &str) -> String {
     let ch: Vec<char> = s.chars().collect();
@@ -3106,5 +3140,27 @@ exit loop1;
         // Keyword bukan exit/next tidak dihitung.
         assert_eq!(extract_exit_stmt("signal a : bit;").len(), 0);
         assert_eq!(extract_exit_stmt("loop ... end loop;").len(), 0);
+    }
+
+    #[test]
+    fn scan_extracts_return_stmts() {
+        // Pernyataan `return` diekstrak (baris).
+        let src = "\
+return;
+return a + b;
+return 42;
+";
+        let s = scan(src).unwrap();
+        assert_eq!(s.return_stmts.len(), 3, "{s:?}");
+        assert_eq!(s.return_stmts[0].line, 1);
+        assert_eq!(s.return_stmts[1].line, 2);
+        assert_eq!(s.return_stmts[2].line, 3);
+    }
+
+    #[test]
+    fn extract_return_stmt_not_counted_other() {
+        // Keyword bukan return tidak dihitung.
+        assert_eq!(extract_return_stmt("signal a : bit;").len(), 0);
+        assert_eq!(extract_return_stmt("returnx;").len(), 0);
     }
 }
