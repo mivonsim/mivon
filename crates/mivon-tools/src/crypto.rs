@@ -77,6 +77,11 @@ impl EncryptedIp {
         out
     }
 
+    /// Format version enkripsi (saat ini selalu 1).
+    pub fn version(&self) -> u8 {
+        self.version
+    }
+
     /// Deserialize dari bytes.
     pub fn from_bytes(data: &[u8]) -> Result<Self, String> {
         if data.len() < 57 {
@@ -284,5 +289,16 @@ mod tests {
         let b = EncryptedIp::encrypt(b"module b; endmodule", "key");
         // Different plaintexts → different payloads
         assert_ne!(a.payload, b.payload);
+    }
+
+    #[test]
+    fn test_version_is_one() {
+        let e = EncryptedIp::encrypt(b"module m; endmodule", "key");
+        assert_eq!(e.version(), 1);
+        // Round-trip preserved.
+        let bytes = e.to_bytes();
+        let round = EncryptedIp::from_bytes(&bytes).unwrap();
+        assert_eq!(round.version(), 1);
+        assert_eq!(round.decrypt("key").unwrap(), b"module m; endmodule");
     }
 }
