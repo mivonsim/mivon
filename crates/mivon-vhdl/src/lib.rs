@@ -1,4 +1,4 @@
-//! LANG-01: VHDL front-end — STUB stage 1-17 (Critical, open).
+//! LANG-01: VHDL front-end — STUB stage 1-18 (Critical, open).
 //!
 //! mivon tidak memiliki dukungan VHDL sama sekali. Stage 1 adalah scanner
 //! terbatas yang mengenali batas `entity` / `architecture` dari source VHDL
@@ -16,7 +16,8 @@
 //! (nama + entitas), stage 14 mengekstrak deklarasi `variable` (nama + tipe +
 //! nilai opsional), stage 15 mengekstrak deklarasi `file` (nama + tipe file +
 //! path opsional), stage 16 mengekstrak deklarasi `attribute` (nama + tipe),
-//! stage 17 mengekstrak deklarasi `group template` (nama + tipe grup).
+//! stage 17 mengekstrak deklarasi `group template` (nama + tipe grup),
+//! stage 18 mengekstrak instansi komponen (label + nama komponen).
 //! Semuanya kasar: nama + mode/tipe. BUKAN parser
 //! lengkap: belum mem-parse concurrent/sequential statement dalam process,
 //! maupun tipe VHDL penuh. Belum di-wire ke pipeline compile (lexer/parser
@@ -238,6 +239,17 @@ pub struct VhdlGroup {
     pub line: usize,
 }
 
+/// Satu instansi komponen VHDL (stage 18: ekstraksi kasar label + nama
+/// komponen). Bentuk: `<label> : <nama_komponen> port map (...);`. Label =
+/// word pertama, nama komponen = word pertama setelah `:`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VhdlComponentInst {
+    pub label: String,
+    pub name: String,
+    /// 1-based baris tempat kata kunci komponen instansi muncul.
+    pub line: usize,
+}
+
 /// Satu arsitektur VHDL yang dikenali.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VhdlArchitecture {
@@ -284,6 +296,8 @@ pub struct VhdlScan {
     pub attributes: Vec<VhdlAttribute>,
     /// Deklarasi `group template` (stage 17, kasar: nama + tipe grup).
     pub groups: Vec<VhdlGroup>,
+    /// Instanisasi komponen (stage 18, kasar: label + nama komponen).
+    pub component_insts: Vec<VhdlComponentInst>,
 }
 
 /// Kesalahan scan tingkat rendah (stage 1).
@@ -564,6 +578,7 @@ pub fn scan(src: &str) -> Result<VhdlScan, VhdlScanError> {
     res.files = extract_file(src);
     res.attributes = extract_attribute(src);
     res.groups = extract_group(src);
+    res.component_insts = extract_component_inst(src);
     Ok(res)
 }
 
@@ -1547,6 +1562,47 @@ pub fn extract_group(src: &str) -> Vec<VhdlGroup> {
     out
 }
 
+/// Ekstrak instansi komponen dari seluruh source (stage 18, kasar).
+///
+/// Mendeteksi `<label> : <nama_komponen> port map (...);`. Label = word
+/// pertama, nama komponen = word pertama setelah `:`, kedua kata setelah
+/// label harus `port` lalu `map`. Hentikan scan per instansi di `;`.
+/// Komentar `--` sudah dibuang oleh `tokenize`.
+pub fn extract_component_inst(src: &str) -> Vec<VhdlComponentInst> {
+    let toks = tokenize(src);
+    let n = toks.len();
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i + 4 < n {
+        let (ln, _, label_tok) = &toks[i];
+        let Tok::Word(label) = label_tok else {
+            i += 1;
+            continue;
+        };
+        if matches!(&toks[i + 1].2, Tok::Punct(':')) {
+            if let Tok::Word(name) = &toks[i + 2].2 {
+                if let Tok::Word(kw) = &toks[i + 3].2 {
+                    if kw.to_ascii_lowercase() == "port" {
+                        if let Tok::Word(kw2) = &toks[i + 4].2 {
+                            if kw2.to_ascii_lowercase() == "map" {
+                                out.push(VhdlComponentInst {
+                                    label: label.clone(),
+                                    name: name.clone(),
+                                    line: *ln,
+                                });
+                                i += 5;
+                                continue;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
 /// Buang komentar baris `--` dari sebuah teks.
 fn strip_comments(s: &str) -> String {
     let ch: Vec<char> = s.chars().collect();
@@ -2307,5 +2363,33 @@ group x : integer;
     fn extract_group_no_group_is_empty() {
         // Source tanpa `group` -> kosong.
         assert!(extract_group("signal a : bit;").is_empty());
+    }
+
+    #[test]
+    fn scan_extracts_component_insts() {
+        // Instanisasi komponen diekstrak (label + nama komponen + baris).
+        let src = "\
+u0 : and2 port map (a => x, b => y, y => z);
+u1 : dff port map (d, clk, q);
+u2 : buf port map (i, o);
+";
+        let s = scan(src).unwrap();
+        assert_eq!(s.component_insts.len(), 3, "{s:?}");
+        assert_eq!(s.component_insts[0].label, "u0");
+        assert_eq!(s.component_insts[0].name, "and2");
+        assert_eq!(s.component_insts[0].line, 1);
+        assert_eq!(s.component_insts[1].label, "u1");
+        assert_eq!(s.component_insts[1].name, "dff");
+        assert_eq!(s.component_insts[1].line, 2);
+        assert_eq!(s.component_insts[2].label, "u2");
+        assert_eq!(s.component_insts[2].name, "buf");
+        assert_eq!(s.component_insts[2].line, 3);
+    }
+
+    #[test]
+    fn extract_component_inst_no_inst_is_empty() {
+        // Source tanpa instansi komponen -> kosong.
+        assert!(extract_component_inst("signal a : bit;").is_empty());
+        assert!(extract_component_inst("entity e is end e;").is_empty());
     }
 }
