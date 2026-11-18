@@ -9333,12 +9333,33 @@ VERIFIKASI ROUND 279:
   - cargo check --workspace -> bersih (tanpa regresi lintas-crate).
   - Review agent: LOLOS.
 
-Status LANG-01: ⚠️ STUB (stage 1-21) — scanner entity/architecture + port/
+═══ ROUND 280 — LANG-01 (stage 22): ekstraksi pernyataan wait VHDL ═══
+
+Ruang lingkup: lanjutkan stub LANG-01 (krate mivon-vhdl) — ekstraksi pernyataan
+`wait;` / `wait on <sinyal>;` / `wait until <kondisi>;` (baris), melengkapi
+konstruk VHDL yang dikenali.
+
+Perubahan (crates/mivon-vhdl/src/lib.rs):
+  - Tambah `VhdlWait { line }` dan field `waits: Vec<VhdlWait>` di `VhdlScan`.
+  - Fungsi publik `extract_wait(src)`: case-insensitive, deteksi kata kunci
+    `wait`, lompat ke `;` berikutnya. Dipanggil di akhir `scan()`.
+  - Doc header update ke "stage 1-22".
+  - +2 test diskriminatif (total 54):
+    * scan_extracts_waits: 2 wait -> baris persis.
+    * extract_wait_no_wait_is_empty: tanpa wait -> kosong.
+
+VERIFIKASI ROUND 280:
+  - rustfmt --edition 2021 --check (lib.rs) -> bersih.
+  - cargo nextest run -p mivon-vhdl -> 54 passed (52 lama + 2 baru).
+  - cargo check --workspace -> bersih (tanpa regresi lintas-crate).
+  - Review agent: LOLOS.
+
+Status LANG-01: ⚠️ STUB (stage 1-22) — scanner entity/architecture + port/
   generic + signal + component + process + library/use + package +
   subprogram + type/subtype + constant + alias + configuration + variable +
-  file + attribute + group + instansi komponen + blok + assert + report ada
-  di krate terisolasi; sisa open: parser VHDL penuh, concurrent/sequential
-  statement, elaborasi, simulasi, wiring pipeline.
+  file + attribute + group + instansi komponen + blok + assert + report +
+  wait ada di krate terisolasi; sisa open: parser VHDL penuh,
+  concurrent/sequential statement, elaborasi, simulasi, wiring pipeline.
 
 
 \\=======================================================================//

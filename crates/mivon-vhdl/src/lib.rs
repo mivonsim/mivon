@@ -1,4 +1,4 @@
-//! LANG-01: VHDL front-end — STUB stage 1-21 (Critical, open).
+//! LANG-01: VHDL front-end — STUB stage 1-22 (Critical, open).
 //!
 //! mivon tidak memiliki dukungan VHDL sama sekali. Stage 1 adalah scanner
 //! terbatas yang mengenali batas `entity` / `architecture` dari source VHDL
@@ -19,7 +19,8 @@
 //! stage 17 mengekstrak deklarasi `group template` (nama + tipe grup),
 //! stage 18 mengekstrak instansi komponen (label + nama komponen),
 //! stage 19 mengekstrak blok (label), stage 20 mengekstrak pernyataan
-//! `assert` (baris), stage 21 mengekstrak pernyataan `report` (baris).
+//! `assert` (baris), stage 21 mengekstrak pernyataan `report` (baris),
+//! stage 22 mengekstrak pernyataan `wait` (baris).
 //! Semuanya kasar: nama + mode/tipe. BUKAN parser
 //! lengkap: belum mem-parse concurrent/sequential statement dalam process,
 //! maupun tipe VHDL penuh. Belum di-wire ke pipeline compile (lexer/parser
@@ -278,6 +279,14 @@ pub struct VhdlReport {
     pub line: usize,
 }
 
+/// Satu pernyataan `wait` VHDL (stage 22: ekstraksi kasar baris).
+/// Bentuk: `wait;` / `wait on <sinyal>;` / `wait until <kondisi>;`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VhdlWait {
+    /// 1-based baris tempat kata kunci `wait` muncul.
+    pub line: usize,
+}
+
 /// Satu arsitektur VHDL yang dikenali.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VhdlArchitecture {
@@ -332,6 +341,8 @@ pub struct VhdlScan {
     pub asserts: Vec<VhdlAssert>,
     /// Pernyataan `report` (stage 21, kasar: baris).
     pub reports: Vec<VhdlReport>,
+    /// Pernyataan `wait` (stage 22, kasar: baris).
+    pub waits: Vec<VhdlWait>,
 }
 
 /// Kesalahan scan tingkat rendah (stage 1).
@@ -616,6 +627,7 @@ pub fn scan(src: &str) -> Result<VhdlScan, VhdlScanError> {
     res.blocks = extract_block(src);
     res.asserts = extract_assert(src);
     res.reports = extract_report(src);
+    res.waits = extract_wait(src);
     Ok(res)
 }
 
@@ -1737,6 +1749,39 @@ pub fn extract_report(src: &str) -> Vec<VhdlReport> {
     out
 }
 
+/// Ekstrak pernyataan `wait` dari seluruh source (stage 22, kasar).
+///
+/// Mendeteksi `wait;` / `wait on <sinyal>;` / `wait until <kondisi>;`.
+/// Hanya baris dicatat. Hentikan scan per pernyataan di `;`. Komentar `--`
+/// sudah dibuang oleh `tokenize`.
+pub fn extract_wait(src: &str) -> Vec<VhdlWait> {
+    let toks = tokenize(src);
+    let n = toks.len();
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i < n {
+        let (ln, _, t) = &toks[i];
+        if let Tok::Word(w) = t {
+            if w.to_ascii_lowercase() == "wait" {
+                out.push(VhdlWait { line: *ln });
+                let mut j = i + 1;
+                while j < n {
+                    if matches!(&toks[j].2, Tok::Punct(';')) {
+                        break;
+                    }
+                    j += 1;
+                }
+                i = j;
+            } else {
+                i += 1;
+            }
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
 /// Buang komentar baris `--` dari sebuah teks.
 fn strip_comments(s: &str) -> String {
     let ch: Vec<char> = s.chars().collect();
@@ -2586,5 +2631,25 @@ report \"done\" severity error;
     fn extract_report_no_report_is_empty() {
         // Source tanpa `report` -> kosong.
         assert!(extract_report("signal a : bit;").is_empty());
+    }
+
+    #[test]
+    fn scan_extracts_waits() {
+        // Pernyataan `wait` diekstrak (baris).
+        let src = "\
+wait;
+signal a : bit;
+wait until x = '1';
+";
+        let s = scan(src).unwrap();
+        assert_eq!(s.waits.len(), 2, "{s:?}");
+        assert_eq!(s.waits[0].line, 1);
+        assert_eq!(s.waits[1].line, 3);
+    }
+
+    #[test]
+    fn extract_wait_no_wait_is_empty() {
+        // Source tanpa `wait` -> kosong.
+        assert!(extract_wait("signal a : bit;").is_empty());
     }
 }
