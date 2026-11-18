@@ -72,6 +72,7 @@ pub mod diag;
 pub mod expr;
 pub mod lvalue;
 pub mod parallel_elab;
+pub use parallel_elab::{ParallelElaborator, RayonElaborator, SerialElaborator};
 pub mod params;
 pub mod prepass;
 pub mod sign;
@@ -235,6 +236,10 @@ pub struct Elaborator {
     /// module items saat elaborate; instance checker di-resolve ke sini lalu
     /// assertion body di-drive dengan port binding.
     pub checker_decls: HashMap<Symbol, CheckerDecl>,
+    /// ELAB-01 stage 3: paralel elaborator yang di-wire ke elab run loop.
+    /// None = sequential baseline (SerialElaborator); Some(RayonElaborator)
+    /// mengaktifkan evaluasi per-modul dengan rayon work-stealing.
+    pub parallel_elaborator: Option<Box<dyn ParallelElaborator>>,
     /// ELAB-09: kumpulan `defparam` (IEEE 1800-2017 §23.11) — dikumpulkan
     /// dari compilation-unit scope (`scope_module = None`, path absolut dari
     /// top) dan module body (`scope_module = Some(M)`, path relatif terhadap
@@ -763,6 +768,7 @@ impl Elaborator {
             param_is_signed: std::collections::HashSet::new(),
             let_decls: HashMap::new(),
             checker_decls: HashMap::new(),
+            parallel_elaborator: None,
             defparams: Vec::new(),
             defparam_warned: std::collections::HashSet::new(),
             typedef_map: HashMap::new(),
@@ -5943,6 +5949,25 @@ impl Elaborator {
             sub_instances,
         })
     }
+
+    /// ELAB-01 stage 3: atur paralel elaborator (RayonElaborator untuk evaluasi
+    /// per-modul dengan rayon work-stealing; None = sequential baseline).
+    pub fn set_parallel_elaborator(&mut self, e: Box<dyn ParallelElaborator>) {
+        self.parallel_elaborator = Some(e);
+    }
+
+    /// ELAB-01 stage 3: jalankan elaborasi per-modul lewat parallel_elaborator
+    /// bila diset; fallback sequential baseline (SerialElaborator) bila belum
+    /// diatur. Mengembalikan daftar nama modul yang berhasil dielaborasi.
+    pub fn run_parallel(
+        &mut self,
+        modules: &[parallel_elab::ElaboratableModule],
+    ) -> Result<Vec<parallel_elab::ElaboratedModule>, SimError> {
+        match &mut self.parallel_elaborator {
+            Some(e) => e.elaborate_modules(modules),
+            None => SerialElaborator::new().elaborate_modules(modules),
+        }
+    }
 }
 
 /// Traverse statements secara rekursif dan kumpulkan deklarasi procedural lokal
@@ -6086,4 +6111,38 @@ fn pkg_struct_fields_for_ref(
         _ => return None,
     };
     index.get(&Symbol::intern(base)).cloned()
+}
+
+#[cfg(test)]
+mod elab_parallel_tests {
+    use super::*;
+
+    #[test]
+    fn run_parallel_falls_back_to_serial_elaborator() {
+        let mut elab = Elaborator::new(Default::default());
+        let modules = vec![
+            parallel_elab::ElaboratableModule {
+                name: Symbol::intern("top"),
+            },
+            parallel_elab::ElaboratableModule {
+                name: Symbol::intern("sub"),
+            },
+        ];
+        let r = elab.run_parallel(&modules).unwrap();
+        assert_eq!(r.len(), 2);
+        assert_eq!(r[0].name, Symbol::intern("top"));
+        assert_eq!(r[1].name, Symbol::intern("sub"));
+    }
+
+    #[test]
+    fn run_parallel_uses_rayon_elaborator_when_set() {
+        let mut elab = Elaborator::new(Default::default());
+        elab.set_parallel_elaborator(Box::new(RayonElaborator::new()));
+        let modules = vec![parallel_elab::ElaboratableModule {
+            name: Symbol::intern("top"),
+        }];
+        let r = elab.run_parallel(&modules).unwrap();
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].name, Symbol::intern("top"));
+    }
 }
