@@ -345,3 +345,14 @@ pub fn run(args: &SynthArgs) -> Result<(), SimError> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_device_kind_name() {
+        assert_eq!(DeviceKind::FpgaX7.name(), "fpga-x7");
+        assert_eq!(DeviceKind::Generic.name(), "generic");
+    }
+}
