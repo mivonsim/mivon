@@ -168,6 +168,11 @@ impl EcoDb {
         self.entries.iter().filter(|e| &e.severity == sev).collect()
     }
 
+    /// Count ECOs by status.
+    pub fn count_by_status(&self, status: &EcoStatus) -> usize {
+        self.entries.iter().filter(|e| &e.status == status).count()
+    }
+
     /// Summary.
     pub fn summary(&self) -> String {
         let total = self.entries.len();
@@ -379,5 +384,16 @@ mod tests {
         let s = db.summary();
         assert!(s.contains("2 total"));
         assert!(s.contains("1 critical open"));
+    }
+
+    #[test]
+    fn test_count_by_status() {
+        let mut db = EcoDb::new();
+        let id1 = db.create("t1", "d1", EcoSeverity::Critical, "alice");
+        let id2 = db.create("t2", "d2", EcoSeverity::Minor, "bob");
+        db.transition(&id2, EcoStatus::Submitted).unwrap();
+        assert_eq!(db.count_by_status(&EcoStatus::Draft), 1);
+        assert_eq!(db.count_by_status(&EcoStatus::Submitted), 1);
+        assert_eq!(db.count_by_status(&EcoStatus::Closed), 0);
     }
 }
