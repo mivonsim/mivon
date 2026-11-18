@@ -9146,11 +9146,37 @@ VERIFIKASI ROUND 271:
     regresi lintas-crate).
   - Review agent: LOLOS.
 
-Status LANG-01: ⚠️ STUB (stage 1-13) — scanner entity/architecture + port/
+═══ ROUND 272 — LANG-01 (stage 14): ekstraksi deklarasi variable VHDL ═══
+
+Ruang lingkup: lanjutkan stub LANG-01 (krate mivon-vhdl) — ekstraksi deklarasi
+`variable <nama> : <tipe> [:= <nilai>];` (nama + tipe + nilai opsional + baris),
+melengkapi konstruk VHDL yang dikenali.
+
+Perubahan (crates/mivon-vhdl/src/lib.rs):
+  - Tambah `VhdlVariable { name, type_name, value, line }` dan field
+    `variables: Vec<VhdlVariable>` di `VhdlScan`.
+  - Fungsi publik `extract_variable(src)`: case-insensitive, tipe = word
+    setelah `:`, nilai = word setelah `:=` (berhenti di `;` agar tidak
+    menangkap deklarasi berikutnya). Dipanggil di akhir `scan()`.
+  - Doc header update ke "stage 1-14".
+  - +3 test diskriminatif (total 35):
+    * scan_extracts_variables: 3 variable (dengan/tanpa nilai) -> nama +
+      tipe + nilai + baris persis.
+    * scan_variable_case_insensitive: `VARIABLE`/`BOOLEAN`/`TRUE` uppercase
+      tetap dikenali.
+    * extract_variable_no_variable_is_empty: tanpa variable -> kosong.
+
+VERIFIKASI ROUND 272:
+  - rustfmt --edition 2021 --check (lib.rs) -> bersih.
+  - cargo nextest run -p mivon-vhdl -> 35 passed (32 lama + 3 baru).
+  - cargo check --workspace -> bersih (tanpa regresi lintas-crate).
+  - Review agent: LOLOS.
+
+Status LANG-01: ⚠️ STUB (stage 1-14) — scanner entity/architecture + port/
   generic + signal + component + process + library/use + package +
-  subprogram + type/subtype + constant + alias + configuration ada di krate
-  terisolasi; sisa open: parser VHDL penuh, concurrent/sequential statement,
-  elaborasi, simulasi, wiring pipeline.
+  subprogram + type/subtype + constant + alias + configuration + variable
+  ada di krate terisolasi; sisa open: parser VHDL penuh,
+  concurrent/sequential statement, elaborasi, simulasi, wiring pipeline.
 
 
 \\=======================================================================//

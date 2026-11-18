@@ -1,4 +1,4 @@
-//! LANG-01: VHDL front-end — STUB stage 1-13 (Critical, open).
+//! LANG-01: VHDL front-end — STUB stage 1-14 (Critical, open).
 //!
 //! mivon tidak memiliki dukungan VHDL sama sekali. Stage 1 adalah scanner
 //! terbatas yang mengenali batas `entity` / `architecture` dari source VHDL
@@ -13,7 +13,8 @@
 //! Enum/Record/Subtype/Other), stage 11 mengekstrak deklarasi `constant`
 //! (nama + tipe + nilai), stage 12 mengekstrak deklarasi `alias`
 //! (nama + tipe + target), stage 13 mengekstrak deklarasi `configuration`
-//! (nama + entitas). Semuanya kasar: nama + mode/tipe. BUKAN parser
+//! (nama + entitas), stage 14 mengekstrak deklarasi `variable` (nama + tipe +
+//! nilai opsional). Semuanya kasar: nama + mode/tipe. BUKAN parser
 //! lengkap: belum mem-parse concurrent/sequential statement dalam process,
 //! maupun tipe VHDL penuh. Belum di-wire ke pipeline compile (lexer/parser
 //! SystemVerilog di mivon-parser).
@@ -182,6 +183,20 @@ pub struct VhdlAlias {
     pub line: usize,
 }
 
+/// Satu deklarasi `variable` VHDL (stage 14: ekstraksi kasar nama + tipe +
+/// nilai opsional). Bentuk: `variable <nama> : <tipe> [:= <nilai>];`.
+/// Tipe = word pertama setelah `:`, nilai = word pertama setelah `:=`
+/// bila ada.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VhdlVariable {
+    pub name: String,
+    pub type_name: String,
+    /// Nilai awal opsional (word setelah `:=`), kosong bila tidak ada.
+    pub value: String,
+    /// 1-based baris tempat kata kunci `variable` muncul.
+    pub line: usize,
+}
+
 /// Satu arsitektur VHDL yang dikenali.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VhdlArchitecture {
@@ -220,6 +235,8 @@ pub struct VhdlScan {
     pub aliases: Vec<VhdlAlias>,
     /// Deklarasi `configuration` (stage 13, kasar: nama + entitas).
     pub configurations: Vec<VhdlConfiguration>,
+    /// Deklarasi `variable` (stage 14, kasar: nama + tipe + nilai opsional).
+    pub variables: Vec<VhdlVariable>,
 }
 
 /// Kesalahan scan tingkat rendah (stage 1).
@@ -496,6 +513,7 @@ pub fn scan(src: &str) -> Result<VhdlScan, VhdlScanError> {
     res.constants = extract_constants(src);
     res.aliases = extract_aliases(src);
     res.configurations = extract_configuration(src);
+    res.variables = extract_variable(src);
     Ok(res)
 }
 
@@ -1223,6 +1241,83 @@ pub fn extract_configuration(src: &str) -> Vec<VhdlConfiguration> {
     out
 }
 
+/// Ekstrak deklarasi `variable` dari seluruh source (stage 14, kasar).
+///
+/// Mendeteksi `variable <nama> : <tipe> [:= <nilai>];`. Tipe = word pertama
+/// setelah `:`, nilai = word pertama setelah `:=` bila ada. Guard `end
+/// variable` tidak relevan (variable tak punya penutup `end`), namun keyword
+/// `variable` di dalam kata lain tidak terdeteksi karena boundary kata.
+/// Komentar `--` sudah dibuang oleh `tokenize`.
+pub fn extract_variable(src: &str) -> Vec<VhdlVariable> {
+    let toks = tokenize(src);
+    let n = toks.len();
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i < n {
+        let (ln, _, t) = &toks[i];
+        if let Tok::Word(w) = t {
+            if w.to_ascii_lowercase() == "variable" {
+                let name = match toks.get(i + 1) {
+                    Some((_, _, Tok::Word(nx))) => nx.clone(),
+                    _ => {
+                        i += 1;
+                        continue;
+                    }
+                };
+                // Tipe: word tepat setelah ':' (lewati ':' dari ':=').
+                let mut type_name = String::new();
+                let mut value = String::new();
+                let mut j = i + 2;
+                while j + 1 < n {
+                    if matches!(&toks[j].2, Tok::Punct(':')) {
+                        match toks.get(j + 1) {
+                            Some((_, _, Tok::Word(ty))) => {
+                                type_name = ty.clone();
+                            }
+                            _ => {}
+                        }
+                        break;
+                    }
+                    j += 1;
+                }
+                // Nilai opsional: word setelah ':='. Hentikan di ';' (akhir
+                // deklarasi) agar tidak menangkap ':= deklarasi berikutnya.
+                let mut k = i + 2;
+                while k + 1 < n {
+                    if matches!(&toks[k].2, Tok::Punct(';')) {
+                        break;
+                    }
+                    if matches!(&toks[k].2, Tok::Punct(':'))
+                        && matches!(toks.get(k + 1), Some((_, _, Tok::Punct('='))))
+                    {
+                        let mut v = k + 2;
+                        if matches!(toks.get(v), Some((_, _, Tok::Punct(_)))) {
+                            v += 1;
+                        }
+                        if let Some((_, _, Tok::Word(val))) = toks.get(v) {
+                            value = val.clone();
+                        }
+                        break;
+                    }
+                    k += 1;
+                }
+                out.push(VhdlVariable {
+                    name,
+                    type_name,
+                    value,
+                    line: *ln,
+                });
+                i += 1;
+            } else {
+                i += 1;
+            }
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
 /// Buang komentar baris `--` dari sebuah teks.
 fn strip_comments(s: &str) -> String {
     let ch: Vec<char> = s.chars().collect();
@@ -1826,5 +1921,46 @@ end configuration cfg2;
     fn extract_configuration_no_configuration_is_empty() {
         // Source tanpa `configuration` -> kosong.
         assert!(extract_configuration("entity e is end e;").is_empty());
+    }
+
+    #[test]
+    fn scan_extracts_variables() {
+        // Deklarasi `variable` diekstrak (nama + tipe + nilai opsional + baris).
+        let src = "\
+variable cnt : integer := 0;
+variable flag : bit;
+variable idx : natural := 7;
+";
+        let s = scan(src).unwrap();
+        assert_eq!(s.variables.len(), 3, "{s:?}");
+        assert_eq!(s.variables[0].name, "cnt");
+        assert_eq!(s.variables[0].type_name, "integer");
+        assert_eq!(s.variables[0].value, "0");
+        assert_eq!(s.variables[0].line, 1);
+        assert_eq!(s.variables[1].name, "flag");
+        assert_eq!(s.variables[1].type_name, "bit");
+        assert!(s.variables[1].value.is_empty());
+        assert_eq!(s.variables[1].line, 2);
+        assert_eq!(s.variables[2].name, "idx");
+        assert_eq!(s.variables[2].type_name, "natural");
+        assert_eq!(s.variables[2].value, "7");
+        assert_eq!(s.variables[2].line, 3);
+    }
+
+    #[test]
+    fn scan_variable_case_insensitive() {
+        // VHDL case-insensitive: keyword uppercase tetap dikenali.
+        let src = "VARIABLE X : BOOLEAN := TRUE;\n";
+        let s = scan(src).unwrap();
+        assert_eq!(s.variables.len(), 1, "{s:?}");
+        assert_eq!(s.variables[0].name, "X");
+        assert_eq!(s.variables[0].type_name, "BOOLEAN");
+        assert_eq!(s.variables[0].value, "TRUE");
+    }
+
+    #[test]
+    fn extract_variable_no_variable_is_empty() {
+        // Source tanpa `variable` -> kosong.
+        assert!(extract_variable("signal a : bit;").is_empty());
     }
 }
