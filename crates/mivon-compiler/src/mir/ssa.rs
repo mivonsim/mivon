@@ -9,13 +9,17 @@
 //! entry block dominates every reachable block.
 
 
+use mivon_core::intern::Symbol;
 use std::collections::HashSet;
 
 /// A value in SSA form. A value is defined exactly once: either a constant,
-/// or the result of an instruction identified by (block index, instr index).
+/// a signal variable, or the result of an instruction identified by (block
+/// index, instr index).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Value {
     Const(u64),
+    /// A signal identified by its interned Symbol.
+    Var(Symbol),
     /// Result of `instr_idx`-th instruction inside `block_idx`.
     Instr(usize, usize),
 }
@@ -23,6 +27,12 @@ pub enum Value {
 /// An SSA instruction. Terminators end a basic block.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Instruction {
+    /// Constant value at current instruction position.
+    Const(u64),
+    /// Load signal value into current instruction position.
+    Load(Value),
+    /// Store value to signal.
+    Store(Value, Value),
     Add(Value, Value),
     Sub(Value, Value),
     Mul(Value, Value),
@@ -343,6 +353,11 @@ fn collect_reads(instr: &Instruction, out: &mut HashSet<Value>) {
         Instruction::Return(v) => {
             out.insert(*v);
         }
+        Instruction::Load(_) => {}
+        Instruction::Store(_, v) => {
+            out.insert(*v);
+        }
+        Instruction::Const(_) => {}
         Instruction::Jump(_) | Instruction::Nop => {}
     }
 }
@@ -355,11 +370,15 @@ fn is_terminator(instr: &Instruction) -> bool {
     )
 }
 
-/// True if the instruction defines an SSA result (Add/Sub/Mul/Phi).
+/// True if the instruction defines an SSA result (Add/Sub/Mul/Phi/Load).
 fn defines_result(instr: &Instruction) -> bool {
     matches!(
         instr,
-        Instruction::Add(..) | Instruction::Sub(..) | Instruction::Mul(..) | Instruction::Phi(..)
+        Instruction::Add(..)
+            | Instruction::Sub(..)
+            | Instruction::Mul(..)
+            | Instruction::Phi(..)
+            | Instruction::Load(_)
     )
 }
 
@@ -373,7 +392,8 @@ pub fn defined_values(block: &BasicBlock) -> Vec<Value> {
         .filter_map(|(i, instr)| match instr {
             Instruction::Jump(_)
             | Instruction::Branch { .. }
-            | Instruction::Return(_) => None,
+            | Instruction::Return(_)
+            | Instruction::Store(_, _) => None,
             _ => Some(Value::Instr(0, i)), // block index filled in by caller
         })
         .collect()

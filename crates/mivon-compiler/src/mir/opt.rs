@@ -10,7 +10,9 @@
 //! 7. sign_ext_eliminate   — eliminate redundant sign-extension patterns (COMP-08)
 //! 8. xz_propagate         — fold operations with known-zero/X operands (COMP-09)
 
-use super::mir::{MirBinOp, MirEdge, MirInstr, MirModule, MirSignal, MirSensitivity};
+use super::mir::{MirBinOp, MirInstr, MirModule, MirSignal, MirSensitivity};
+use crate::mir::ssa::{BasicBlock, Instruction, SsaFunction, Value};
+use mivon_core::intern::Symbol;
 use std::collections::{HashMap, HashSet};
 
 /// Optimize a MIR module (peephole + dataflow).
@@ -19,6 +21,165 @@ pub fn optimize_module(module: &mut MirModule) {
         optimize_process(&mut process.instrs);
     }
     eliminate_unused_signals(module);
+    mir_to_ssa_and_back(module);
+}
+
+/// Convert MIR instructions to SSA form. Each instruction at position idx
+/// defines Value::Instr(block_idx, idx).
+fn mir_to_ssa(instrs: &[MirInstr], signal_map: &HashMap<Symbol, usize>, signals: &[MirSignal]) -> SsaFunction {
+    let mut f = SsaFunction::new();
+    let _block_idx = f.push_block(BasicBlock { instrs: Vec::new() });
+
+    for instr in instrs {
+        let ssainstr = mir_instr_to_ssa(instr, signal_map, signals);
+        f.blocks[0].instrs.push(ssainstr);
+    }
+    f
+}
+
+/// Convert a single MIR instruction to SSA instruction.
+fn mir_instr_to_ssa(instr: &MirInstr, signal_map: &HashMap<Symbol, usize>, signals: &[MirSignal]) -> Instruction {
+    match instr {
+        MirInstr::Const { value, .. } => Instruction::Const(*value),
+        MirInstr::Load { signal, .. } => {
+            let symbol = signals[*signal].name;
+            Instruction::Load(Value::Var(symbol))
+        }
+        MirInstr::Store { signal, src } => {
+            let signal_sym = signals[*signal].name;
+            Instruction::Store(Value::Var(signal_sym), Value::Instr(0, *src))
+        }
+        MirInstr::NonBlocking { signal, src, .. } => {
+            let signal_sym = signals[*signal].name;
+            Instruction::Store(Value::Var(signal_sym), Value::Instr(0, *src))
+        }
+        MirInstr::Binary { op, lhs, rhs, .. } => match op {
+            MirBinOp::Add => Instruction::Add(Value::Instr(0, *lhs), Value::Instr(0, *rhs)),
+            MirBinOp::Sub => Instruction::Sub(Value::Instr(0, *lhs), Value::Instr(0, *rhs)),
+            MirBinOp::Mul => Instruction::Mul(Value::Instr(0, *lhs), Value::Instr(0, *rhs)),
+            _ => Instruction::Nop,
+        },
+        MirInstr::Unary { .. } => Instruction::Nop,
+        MirInstr::Branch { cond, then_label, else_label } => {
+            Instruction::Branch {
+                cond: Value::Instr(0, *cond),
+                then: *then_label,
+                r#else: *else_label,
+            }
+        }
+        MirInstr::Jump { label } => Instruction::Jump(*label),
+        MirInstr::Label(_) => Instruction::Nop,
+        MirInstr::Display { .. } => Instruction::Nop,
+        MirInstr::Finish => Instruction::Nop,
+        MirInstr::Nop => Instruction::Nop,
+    }
+}
+
+/// Convert SSA function back to MIR instructions.
+fn ssa_to_mir(f: &SsaFunction, signal_map: &HashMap<Symbol, usize>, signals: &[MirSignal]) -> Vec<MirInstr> {
+    let mut instrs = Vec::new();
+    for block in &f.blocks {
+        for (idx, instr) in block.instrs.iter().enumerate() {
+            instrs.push(ssa_instr_to_mir(instr, idx, signal_map, signals));
+        }
+    }
+    instrs
+}
+
+/// Convert a single SSA instruction back to MIR instruction.
+fn ssa_instr_to_mir(
+    instr: &Instruction,
+    idx: usize,
+    signal_map: &HashMap<Symbol, usize>,
+    signals: &[MirSignal],
+) -> MirInstr {
+    match instr {
+        Instruction::Const(value) => MirInstr::Const {
+            dest: idx,
+            value: *value,
+            width: 8,
+        },
+        Instruction::Load(Value::Var(symbol)) => {
+            let signal = signal_map[symbol];
+            MirInstr::Load { dest: idx, signal }
+        }
+        Instruction::Store(Value::Var(signal), Value::Instr(_, src_idx)) => {
+            MirInstr::Store {
+                signal: signal_map[signal],
+                src: *src_idx,
+            }
+        }
+        Instruction::Store(_, _) => MirInstr::Nop,
+        Instruction::Add(a, b) => MirInstr::Binary {
+            op: MirBinOp::Add,
+            dest: idx,
+            lhs: reg_of(*a),
+            rhs: reg_of(*b),
+            width: 8,
+        },
+        Instruction::Sub(a, b) => MirInstr::Binary {
+            op: MirBinOp::Sub,
+            dest: idx,
+            lhs: reg_of(*a),
+            rhs: reg_of(*b),
+            width: 8,
+        },
+        Instruction::Mul(a, b) => MirInstr::Binary {
+            op: MirBinOp::Mul,
+            dest: idx,
+            lhs: reg_of(*a),
+            rhs: reg_of(*b),
+            width: 8,
+        },
+        Instruction::Jump(label) => MirInstr::Jump { label: *label },
+        Instruction::Branch { cond, then, r#else } => MirInstr::Branch {
+            cond: reg_of(*cond),
+            then_label: *then,
+            else_label: *r#else,
+        },
+        Instruction::Return(_) => MirInstr::Finish,
+        Instruction::Phi(_) => MirInstr::Nop,
+        Instruction::Nop => MirInstr::Nop,
+        Instruction::Const(value) => MirInstr::Const {
+            dest: idx,
+            value: *value,
+            width: 8,
+        },
+        Instruction::Load(Value::Const(v)) => MirInstr::Const {
+            dest: idx,
+            value: *v,
+            width: 8,
+        },
+        Instruction::Store(_, Value::Const(v)) => MirInstr::Const {
+            dest: idx,
+            value: *v,
+            width: 8,
+        },
+        Instruction::Load(Value::Instr(..)) => MirInstr::Nop,
+        Instruction::Store(Value::Instr(..), _) => MirInstr::Nop,
+    }
+}
+
+/// Extract register index from a Value::Instr. Value::Var and Value::Const
+/// should never appear as operands of Binary/Unary in MIR (they are signals
+/// or literals, handled separately).
+fn reg_of(v: Value) -> usize {
+    match v {
+        Value::Instr(_, idx) => idx,
+        _ => panic!("reg_of called on non-instruction value: {:?}", v),
+    }
+}
+
+/// Wire SSA optimisation into the MIR pipeline.
+/// Converts each process to SSA, runs SSA dead-store elimination, converts back.
+fn mir_to_ssa_and_back(module: &mut MirModule) {
+    for process in &mut module.processes {
+        let mut ssa_fn = mir_to_ssa(&process.instrs, &module.signal_map, &module.signals);
+        let eliminated = ssa_fn.eliminate_dead_stores();
+        if eliminated > 0 {
+            process.instrs = ssa_to_mir(&ssa_fn, &module.signal_map, &module.signals);
+        }
+    }
 }
 
 /// Eliminasi sinyal MIR yang tidak pernah dibaca/ditulis oleh instruksi
@@ -2370,6 +2531,70 @@ mod tests {
             ),
             "clock sensitivity harus tetap 0: {:?}",
             module.processes[0].sensitivity
+        );
+    }
+
+    #[test]
+    fn test_ssa_round_trip_preserves_store() {
+        // Proses: Load(sig_a) -> Binary(Add, load, const) -> Store(sig_a, result)
+        // SSA konversi harus tidak hilangkan Store instruction.
+        let mut module = MirModule::new(Symbol::intern("test"));
+        let sig_a = module.add_signal(MirSignal {
+            name: Symbol::intern("a"),
+            width: 8,
+            kind: MirSignalKind::Wire,
+            initial_value: None,
+        });
+
+        module.processes.push(MirProcess {
+            name: Symbol::intern("p"),
+            sensitivity: MirSensitivity::AlwaysComb,
+            instrs: vec![
+                MirInstr::Load { dest: 0, signal: sig_a },
+                MirInstr::Const {
+                    dest: 1,
+                    value: 5,
+                    width: 8,
+                },
+                MirInstr::Binary {
+                    op: MirBinOp::Add,
+                    dest: 2,
+                    lhs: 0,
+                    rhs: 1,
+                    width: 8,
+                },
+                MirInstr::Store { signal: sig_a, src: 2 },
+            ],
+        });
+
+        let store_count_before = module.processes[0]
+            .instrs
+            .iter()
+            .filter(|i| matches!(i, MirInstr::Store { .. }))
+            .count();
+        assert_eq!(store_count_before, 1, "sebelum optimisasi harus ada 1 Store");
+
+        optimize_module(&mut module);
+
+        let store_count_after = module.processes[0]
+            .instrs
+            .iter()
+            .filter(|i| matches!(i, MirInstr::Store { .. }))
+            .count();
+        assert_eq!(
+            store_count_after,
+            1,
+            "Store harus survive SSA round-trip: {:?}",
+            module.processes[0].instrs
+        );
+
+        // Verify store masih targets signal_a
+        assert!(
+            module.processes[0].instrs.iter().any(|i| {
+                matches!(i, MirInstr::Store { signal, .. } if *signal == sig_a)
+            }),
+            "Store harus masih target signal_a: {:?}",
+            module.processes[0].instrs
         );
     }
 }
