@@ -44,6 +44,19 @@ impl DesignDatabase {
         self.designs.insert(entry.top.as_str().to_string(), entry);
     }
 
+    /// Perbarui metadata hanya bila checksum berubah (inkremental: hindari
+    /// tulis ulang bila desain tidak berubah). Kembalikan true bila diupdate.
+    pub fn update(&mut self, entry: DesignEntry) -> bool {
+        let key = entry.top.as_str().to_string();
+        if let Some(existing) = self.designs.get(&key) {
+            if existing.checksum == entry.checksum {
+                return false;
+            }
+        }
+        self.designs.insert(key, entry);
+        true
+    }
+
     /// Ambil metadata desain menurut nama top module.
     pub fn get(&self, top: &Symbol) -> Option<&DesignEntry> {
         self.designs.get(top.as_str())
@@ -237,5 +250,25 @@ mod tests {
         assert_eq!(got.signal_count, 42);
         assert_eq!(got.checksum, "abc123");
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn update_only_when_checksum_changed() {
+        let mut db = DesignDatabase::new();
+        let e1 = DesignEntry::new(
+            Symbol::intern("top"),
+            vec!["top.sv".into()],
+            42,
+            7,
+            "abc123".into(),
+        );
+        assert!(db.update(e1.clone())); // baru -> diupdate
+        assert!(!db.update(e1.clone())); // sama -> tidak diupdate
+        let mut e2 = e1.clone();
+        e2.checksum = "def456".into();
+        assert!(db.update(e2)); // berbeda -> diupdate
+        assert_eq!(db.len(), 1);
+        let got = db.get(&Symbol::intern("top")).unwrap();
+        assert_eq!(got.checksum, "def456");
     }
 }
