@@ -198,10 +198,15 @@ impl Dashboard {
         })
     }
 
+    /// Apakah dashboard mengandung setidaknya satu section data (coverage /
+    /// regression / bugs).
+    pub fn has_any_data(&self) -> bool {
+        self.coverage.is_some() || self.regression.is_some() || self.bugs.is_some()
+    }
+
     /// Render HTML satu file (CSS inline, tanpa JS).
     pub fn render_html(&self) -> String {
         let mut h = String::new();
-        h.push_str("<!DOCTYPE html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">\n");
         h.push_str("<title>Mivon Verification Dashboard</title>\n<style>\n");
         h.push_str(concat!(
             "body{font-family:system-ui,sans-serif;margin:2rem;color:#1f2328;background:#fafafa}\n",
@@ -647,5 +652,29 @@ mod tests {
         assert!(html.contains("&lt;b&gt;tb&lt;/b&gt;"));
         assert!(html.contains("B-1: &lt;img onerror=x&gt;"));
         assert!(!html.contains("<img onerror"));
+    }
+
+    #[test]
+    fn test_dashboard_has_any_data() {
+        let empty = Dashboard {
+            coverage: None,
+            regression: None,
+            bugs: None,
+        };
+        assert!(!empty.has_any_data(), "kosong → tidak ada data");
+
+        let with_cov = Dashboard {
+            coverage: Some(CoverageSection::default()),
+            regression: None,
+            bugs: None,
+        };
+        assert!(with_cov.has_any_data(), "coverage ada → has_any_data true");
+
+        let with_bugs = Dashboard {
+            coverage: None,
+            regression: None,
+            bugs: Some(BugSection::default()),
+        };
+        assert!(with_bugs.has_any_data(), "bugs ada → true");
     }
 }
