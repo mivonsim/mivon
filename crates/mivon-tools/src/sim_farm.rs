@@ -297,6 +297,51 @@ impl SimFarm {
             })
             .collect()
     }
+
+    /// Ambil referensi ke job menurut id.
+    pub fn get_job(&self, job_id: &str) -> Option<&SimJob> {
+        self.jobs.iter().find(|j| j.id == job_id)
+    }
+
+    /// Hapus job menurut id.
+    pub fn remove_job(&mut self, job_id: &str) -> bool {
+        if let Some(pos) = self.jobs.iter().position(|j| j.id == job_id) {
+            self.jobs.remove(pos);
+            return true;
+        }
+        false
+    }
+
+    /// Hapus semua job.
+    pub fn clear_jobs(&mut self) {
+        self.jobs.clear();
+        self.job_queue.clear();
+    }
+
+    /// Jumlah total job.
+    pub fn job_count(&self) -> usize {
+        self.jobs.len()
+    }
+
+    /// Ambil referensi ke worker menurut id.
+    pub fn get_worker(&self, worker_id: &str) -> Option<&Worker> {
+        self.workers.get(worker_id)
+    }
+
+    /// Hapus worker menurut id.
+    pub fn remove_worker(&mut self, worker_id: &str) -> bool {
+        self.workers.remove(worker_id).is_some()
+    }
+
+    /// Hapus semua worker.
+    pub fn clear_workers(&mut self) {
+        self.workers.clear();
+    }
+
+    /// Jumlah total worker.
+    pub fn worker_count(&self) -> usize {
+        self.workers.len()
+    }
 }
 
 fn now_secs() -> u64 {
@@ -378,5 +423,53 @@ mod tests {
         let s = farm.summary();
         assert!(s.contains("SimFarm"));
         assert!(s.contains("1 workers"));
+    }
+
+    #[test]
+    fn get_and_remove_job() {
+        let mut farm = SimFarm::new(FarmConfig::default());
+        let id = farm.submit("test", vec![], 100, Priority::Normal);
+        assert_eq!(farm.job_count(), 1);
+        let job = farm.get_job(&id).unwrap();
+        assert_eq!(job.id, id);
+        assert!(farm.remove_job(&id));
+        assert!(farm.get_job(&id).is_none());
+        assert!(!farm.remove_job(&id));
+        assert_eq!(farm.job_count(), 0);
+    }
+
+    #[test]
+    fn clear_jobs_empties_farm() {
+        let mut farm = SimFarm::new(FarmConfig::default());
+        farm.register_worker("w1", "10.0.0.1:9000", 4);
+        farm.submit("a", vec![], 100, Priority::Normal);
+        farm.submit("b", vec![], 100, Priority::Normal);
+        assert_eq!(farm.job_count(), 2);
+        farm.clear_jobs();
+        assert_eq!(farm.job_count(), 0);
+        assert_eq!(farm.queue_depth(), 0);
+    }
+
+    #[test]
+    fn get_and_remove_worker() {
+        let mut farm = SimFarm::new(FarmConfig::default());
+        farm.register_worker("w1", "10.0.0.1:9000", 4);
+        assert_eq!(farm.worker_count(), 1);
+        let w = farm.get_worker("w1").unwrap();
+        assert_eq!(w.id, "w1");
+        assert!(farm.remove_worker("w1"));
+        assert!(farm.get_worker("w1").is_none());
+        assert!(!farm.remove_worker("w1"));
+        assert_eq!(farm.worker_count(), 0);
+    }
+
+    #[test]
+    fn clear_workers_empties_farm() {
+        let mut farm = SimFarm::new(FarmConfig::default());
+        farm.register_worker("w1", "10.0.0.1:9000", 4);
+        farm.register_worker("w2", "10.0.0.2:9000", 4);
+        assert_eq!(farm.worker_count(), 2);
+        farm.clear_workers();
+        assert_eq!(farm.worker_count(), 0);
     }
 }
