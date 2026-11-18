@@ -1,4 +1,4 @@
-//! LANG-01: VHDL front-end — STUB stage 1-27 (Critical, open).
+//! LANG-01: VHDL front-end — STUB stage 1-28 (Critical, open).
 //!
 //! mivon tidak memiliki dukungan VHDL sama sekali. Stage 1 adalah scanner
 //! terbatas yang mengenali batas `entity` / `architecture` dari source VHDL
@@ -25,7 +25,8 @@
 //! stage 24 mengekstrak generate statement (label + baris),
 //! stage 25 mengekstrak pernyataan `null` (baris),
 //! stage 26 mengekstrak pernyataan `if` (baris),
-//! stage 27 mengekstrak pernyataan `case` (baris).
+//! stage 27 mengekstrak pernyataan `case` (baris),
+//! stage 28 mengekstrak pernyataan `loop` (baris).
 //! Semuanya kasar: nama + mode/tipe. BUKAN parser
 //! lengkap: belum mem-parse concurrent/sequential statement dalam process,
 //! maupun tipe VHDL penuh. Belum di-wire ke pipeline compile (lexer/parser
@@ -334,6 +335,14 @@ pub struct VhdlCaseStmt {
     pub line: usize,
 }
 
+/// Satu pernyataan `loop` VHDL (stage 28: ekstraksi kasar baris).
+/// Bentuk: `[<label> :] loop ... end loop [label];`. Hanya baris dicatat.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VhdlLoopStmt {
+    /// 1-based baris tempat kata kunci `loop` muncul.
+    pub line: usize,
+}
+
 /// Satu arsitektur VHDL yang dikenali.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VhdlArchitecture {
@@ -400,6 +409,8 @@ pub struct VhdlScan {
     pub if_stmts: Vec<VhdlIfStmt>,
     /// Pernyataan `case` (stage 27, kasar: baris).
     pub case_stmts: Vec<VhdlCaseStmt>,
+    /// Pernyataan `loop` (stage 28, kasar: baris).
+    pub loop_stmts: Vec<VhdlLoopStmt>,
 }
 
 /// Kesalahan scan tingkat rendah (stage 1).
@@ -690,6 +701,7 @@ pub fn scan(src: &str) -> Result<VhdlScan, VhdlScanError> {
     res.null_stmts = extract_null_stmt(src);
     res.if_stmts = extract_if_stmt(src);
     res.case_stmts = extract_case_stmt(src);
+    res.loop_stmts = extract_loop_stmt(src);
     Ok(res)
 }
 
@@ -1992,6 +2004,37 @@ pub fn extract_case_stmt(src: &str) -> Vec<VhdlCaseStmt> {
     out
 }
 
+/// Ekstrak pernyataan `loop` VHDL dari seluruh source (stage 28, kasar).
+///
+/// Mendeteksi kata kunci `loop` (lewati `end loop` di mana kata sebelumnya
+/// = `end`). Hanya baris dicatat; kondisi dan badan tidak di-parse dalam
+/// stub ini. Komentar `--` sudah dibuang oleh `tokenize`.
+pub fn extract_loop_stmt(src: &str) -> Vec<VhdlLoopStmt> {
+    let toks = tokenize(src);
+    let n = toks.len();
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i < n {
+        let (ln, _, t) = &toks[i];
+        if let Tok::Word(w) = t {
+            if w.to_ascii_lowercase() == "loop" {
+                // Lewati `end loop`.
+                if i >= 1 {
+                    if let Tok::Word(pw) = &toks[i - 1].2 {
+                        if pw.to_ascii_lowercase() == "end" {
+                            i += 1;
+                            continue;
+                        }
+                    }
+                }
+                out.push(VhdlLoopStmt { line: *ln });
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
 /// Buang komentar baris `--` dari sebuah teks.
 fn strip_comments(s: &str) -> String {
     let ch: Vec<char> = s.chars().collect();
@@ -2978,5 +3021,29 @@ end case;
         // `end case` tidak dihitung sebagai case.
         assert_eq!(extract_case_stmt("end case;").len(), 0);
         assert_eq!(extract_case_stmt("signal a : bit;").len(), 0);
+    }
+
+    #[test]
+    fn scan_extracts_loop_stmts() {
+        // Pernyataan `loop` diekstrak (baris).
+        let src = "\
+loop
+  a <= b;
+end loop;
+loop
+  c <= d;
+end loop;
+";
+        let s = scan(src).unwrap();
+        assert_eq!(s.loop_stmts.len(), 2, "{s:?}");
+        assert_eq!(s.loop_stmts[0].line, 1);
+        assert_eq!(s.loop_stmts[1].line, 4); // baris 3 adalah end loop
+    }
+
+    #[test]
+    fn extract_loop_stmt_end_loop_not_counted() {
+        // `end loop` tidak dihitung sebagai loop.
+        assert_eq!(extract_loop_stmt("end loop;").len(), 0);
+        assert_eq!(extract_loop_stmt("signal a : bit;").len(), 0);
     }
 }
