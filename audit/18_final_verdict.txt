@@ -9575,6 +9575,42 @@ VERIFIKASI ROUND 290:
   - cargo check --workspace -> bersih (tanpa regresi lintas-crate).
   - Review agent: LOLOS.
 
+═══ ROUND 291 — COMP-02 lanjutan: unused-signal elimination di MIR opt ═══
+
+Ruang lingkup: lanjutkan COMP-02 (DCE — dead code elimination) dengan menambahkan
+fungsi `eliminate_unused_signals` di `crates/mivon-compiler/src/mir/opt.rs` yang
+menghapus `MirSignal` yang tidak pernah dibaca/ditulis oleh instruksi
+(Load/Store/NonBlocking), memperbarui `signal_map`, dan menyatukan semua referensi
+`signal` id dalam instruksi agar indeks tetap konsisten. Dipanggil dari
+`optimize_module` setelah pipeline pass fixed-point.
+
+Perubahan (crates/mivon-compiler/src/mir/opt.rs):
+  - Tambah `use std::collections::HashSet;`.
+  - Fungsi publik `eliminate_unused_signals(module: &mut MirModule) -> bool`:
+    kumpulkan semua signal id yang digunakan oleh Load/Store/NonBlocking,
+    bangun mapping indeks lama→baru untuk sinyal yang dipakai, hapus sinyal
+    tidak terpakai dari `Vec<MirSignal>`, bangun ulang `signal_map`, dan
+    perbarui semua referensi signal id dalam instruksi.
+  - Dipanggil di akhir `optimize_module()`.
+  - +3 test diskriminatif:
+    * test_eliminate_unused_signals_removes_unused: 3 sinyal (2 digunakan,
+      1 tidak) → sinyal tidak terpakai hilang, indeks diperbarui,
+      signal_map konsisten.
+    * test_eliminate_unused_signals_all_used_no_change: semua digunakan
+      → tidak ada perubahan.
+    * test_eliminate_unused_signals_all_unused_removed: semua tidak
+      digunakan → semua dihapus, signal_map kosong.
+
+VERIFIKASI ROUND 291:
+  - rustfmt --edition 2021 --check (opt.rs) -> bersih.
+  - cargo nextest run -p mivon-compiler -> 210 passed (207 lama + 3 baru),
+    1 skipped, 0 failed.
+  - cargo check --workspace -> bersih (tanpa regresi lintas-crate).
+  - Review agent: LOLOS.
+
+Status COMP-02: ⚠️ IN PROGRESS — MIR DSE aktif + dead module detect +
+  unused-signal elimination (baru). Sisa: IR-level DCE sinyal/blok.
+
 Status LANG-01: ⚠️ STUB (stage 1-31) — scanner entity/architecture + port/
   generic + signal + component + process + library/use + package +
   subprogram + type/subtype + constant + alias + configuration + variable +

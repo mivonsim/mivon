@@ -10,14 +10,92 @@
 //! 7. sign_ext_eliminate   — eliminate redundant sign-extension patterns (COMP-08)
 //! 8. xz_propagate         — fold operations with known-zero/X operands (COMP-09)
 
-use super::mir::{MirBinOp, MirInstr, MirModule};
-use std::collections::HashMap;
+use super::mir::{MirBinOp, MirInstr, MirModule, MirSignal};
+use std::collections::{HashMap, HashSet};
 
 /// Optimize a MIR module (peephole + dataflow).
 pub fn optimize_module(module: &mut MirModule) {
     for process in &mut module.processes {
         optimize_process(&mut process.instrs);
     }
+    eliminate_unused_signals(module);
+}
+
+/// Eliminasi sinyal MIR yang tidak pernah dibaca/ditulis oleh instruksi
+/// manapun (Load/Store/NonBlocking). Setelah menghapus sinyal tidak terpakai,
+/// perbarui `signal_map` dan semua referensi `signal` id dalam instruksi agar
+/// indeks tetap konsisten.
+fn eliminate_unused_signals(module: &mut MirModule) -> bool {
+    // Kumpulkan semua sinyal yang digunakan oleh instruksi.
+    let mut used: HashSet<usize> = HashSet::new();
+    for process in &module.processes {
+        for instr in &process.instrs {
+            match instr {
+                MirInstr::Load { signal, .. } => {
+                    used.insert(*signal);
+                }
+                MirInstr::Store { signal, .. } => {
+                    used.insert(*signal);
+                }
+                MirInstr::NonBlocking { signal, .. } => {
+                    used.insert(*signal);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // Bangun mapping indeks lama -> indeks baru untuk sinyal yang digunakan,
+    // urutan dipertahankan.
+    let mut old_to_new: HashMap<usize, usize> = HashMap::new();
+    let mut kept: Vec<MirSignal> = Vec::new();
+    for (old_idx, sig) in module.signals.iter().enumerate() {
+        if used.contains(&old_idx) {
+            let new_idx = kept.len();
+            old_to_new.insert(old_idx, new_idx);
+            kept.push(sig.clone());
+        }
+    }
+
+    let removed = module.signals.len() - kept.len();
+    if removed == 0 {
+        return false;
+    }
+
+    // Ganti sinyal dan bangun ulang signal_map.
+    module.signals = kept;
+    module.signal_map = module
+        .signals
+        .iter()
+        .enumerate()
+        .map(|(new_idx, sig)| (sig.name, new_idx))
+        .collect();
+
+    // Perbarui semua referensi signal id dalam instruksi.
+    for process in &mut module.processes {
+        for instr in &mut process.instrs {
+            match instr {
+                MirInstr::Load { signal, .. } => {
+                    if let Some(&new_idx) = old_to_new.get(signal) {
+                        *signal = new_idx;
+                    }
+                }
+                MirInstr::Store { signal, .. } => {
+                    if let Some(&new_idx) = old_to_new.get(signal) {
+                        *signal = new_idx;
+                    }
+                }
+                MirInstr::NonBlocking { signal, .. } => {
+                    if let Some(&new_idx) = old_to_new.get(signal) {
+                        *signal = new_idx;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    true
 }
 
 /// Optimize a list of MIR instructions to fixed point.
@@ -1112,6 +1190,7 @@ fn xz_propagate(instrs: &mut [MirInstr]) -> bool {
 mod tests {
     use super::*;
     use crate::mir::mir::*;
+    use mivon_core::intern::Symbol;
 
     #[test]
     fn test_cse_duplicate_binary() {
@@ -2051,5 +2130,112 @@ mod tests {
             "Store harus membaca lhs: {:?}",
             instrs
         );
+    }
+
+    // ── Tests: eliminate_unused_signals (COMP-02 lanjutan) ──
+
+    #[test]
+    fn test_eliminate_unused_signals_removes_unused() {
+        // Sinyal 0 (digunakan Load), 1 (tidak digunakan), 2 (digunakan Store).
+        let mut module = MirModule::new(Symbol::intern("test"));
+        let s_a = module.add_signal(MirSignal {
+            name: Symbol::intern("a"),
+            width: 8,
+            kind: MirSignalKind::Wire,
+            initial_value: None,
+        });
+        let s_b = module.add_signal(MirSignal {
+            name: Symbol::intern("b"),
+            width: 8,
+            kind: MirSignalKind::Wire,
+            initial_value: None,
+        });
+        let s_c = module.add_signal(MirSignal {
+            name: Symbol::intern("c"),
+            width: 8,
+            kind: MirSignalKind::Wire,
+            initial_value: None,
+        });
+        assert_eq!(s_a, 0);
+        assert_eq!(s_b, 1);
+        assert_eq!(s_c, 2);
+
+        let mut instrs = vec![
+            MirInstr::Load { dest: 10, signal: s_a }, // pakai sinyal 0
+            MirInstr::Store { signal: s_c, src: 10 },  // pakai sinyal 2
+        ];
+        module.processes.push(MirProcess {
+            name: Symbol::intern("p"),
+            sensitivity: MirSensitivity::AlwaysComb,
+            instrs,
+        });
+
+        assert!(eliminate_unused_signals(&mut module));
+
+        // Sinyal "b" (indeks lama 1) harus hilang, sisa 2 sinyal.
+        assert_eq!(module.signals.len(), 2, "sinyal tidak terpakai harus dihapus: {:?}", module.signals);
+        assert_eq!(module.signals[0].name, Symbol::intern("a"));
+        assert_eq!(module.signals[1].name, Symbol::intern("c"));
+
+        // Referensi instruksi harus diperbarui: signal 0 tetap 0, signal 2 -> 1.
+        let instr = &module.processes[0].instrs;
+        assert!(
+            matches!(instr[0], MirInstr::Load { signal: 0, .. }),
+            "Load signal 0 harus tetap 0: {:?}",
+            instr[0]
+        );
+        assert!(
+            matches!(instr[1], MirInstr::Store { signal: 1, .. }),
+            "Store signal 2 harus jadi 1: {:?}",
+            instr[1]
+        );
+
+        // signal_map harus konsisten.
+        assert_eq!(module.signal_map[&Symbol::intern("a")], 0);
+        assert_eq!(module.signal_map[&Symbol::intern("c")], 1);
+        assert!(!module.signal_map.contains_key(&Symbol::intern("b")));
+    }
+
+    #[test]
+    fn test_eliminate_unused_signals_all_used_no_change() {
+        let mut module = MirModule::new(Symbol::intern("test"));
+        let s_a = module.add_signal(MirSignal {
+            name: Symbol::intern("a"),
+            width: 8,
+            kind: MirSignalKind::Wire,
+            initial_value: None,
+        });
+        module.processes.push(MirProcess {
+            name: Symbol::intern("p"),
+            sensitivity: MirSensitivity::AlwaysComb,
+            instrs: vec![MirInstr::Load { dest: 0, signal: s_a }],
+        });
+
+        assert!(!eliminate_unused_signals(&mut module));
+        assert_eq!(module.signals.len(), 1);
+    }
+
+    #[test]
+    fn test_eliminate_unused_signals_all_unused_removed() {
+        let mut module = MirModule::new(Symbol::intern("test"));
+        module.add_signal(MirSignal {
+            name: Symbol::intern("a"),
+            width: 8,
+            kind: MirSignalKind::Wire,
+            initial_value: None,
+        });
+        module.processes.push(MirProcess {
+            name: Symbol::intern("p"),
+            sensitivity: MirSensitivity::AlwaysComb,
+            instrs: vec![MirInstr::Const {
+                dest: 0,
+                value: 5,
+                width: 8,
+            }],
+        });
+
+        assert!(eliminate_unused_signals(&mut module));
+        assert_eq!(module.signals.len(), 0, "semua sinyal tidak terpakai harus dihapus");
+        assert!(module.signal_map.is_empty());
     }
 }
