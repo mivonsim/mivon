@@ -1,4 +1,4 @@
-//! LANG-01: VHDL front-end — STUB stage 1-15 (Critical, open).
+//! LANG-01: VHDL front-end — STUB stage 1-16 (Critical, open).
 //!
 //! mivon tidak memiliki dukungan VHDL sama sekali. Stage 1 adalah scanner
 //! terbatas yang mengenali batas `entity` / `architecture` dari source VHDL
@@ -15,7 +15,8 @@
 //! (nama + tipe + target), stage 13 mengekstrak deklarasi `configuration`
 //! (nama + entitas), stage 14 mengekstrak deklarasi `variable` (nama + tipe +
 //! nilai opsional), stage 15 mengekstrak deklarasi `file` (nama + tipe file +
-//! path opsional). Semuanya kasar: nama + mode/tipe. BUKAN parser
+//! path opsional), stage 16 mengekstrak deklarasi `attribute` (nama + tipe).
+//! Semuanya kasar: nama + mode/tipe. BUKAN parser
 //! lengkap: belum mem-parse concurrent/sequential statement dalam process,
 //! maupun tipe VHDL penuh. Belum di-wire ke pipeline compile (lexer/parser
 //! SystemVerilog di mivon-parser).
@@ -213,6 +214,17 @@ pub struct VhdlFile {
     pub line: usize,
 }
 
+/// Satu deklarasi `attribute` VHDL (stage 16: ekstraksi kasar nama + tipe).
+/// Bentuk: `attribute <nama> : <tipe> [of <objek> is <nilai>];`. Nama =
+/// word pertama setelah `attribute`, tipe = word pertama setelah `:`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VhdlAttribute {
+    pub name: String,
+    pub type_name: String,
+    /// 1-based baris tempat kata kunci `attribute` muncul.
+    pub line: usize,
+}
+
 /// Satu arsitektur VHDL yang dikenali.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VhdlArchitecture {
@@ -255,6 +267,8 @@ pub struct VhdlScan {
     pub variables: Vec<VhdlVariable>,
     /// Deklarasi `file` (stage 15, kasar: nama + tipe file + path opsional).
     pub files: Vec<VhdlFile>,
+    /// Deklarasi `attribute` (stage 16, kasar: nama + tipe).
+    pub attributes: Vec<VhdlAttribute>,
 }
 
 /// Kesalahan scan tingkat rendah (stage 1).
@@ -533,6 +547,7 @@ pub fn scan(src: &str) -> Result<VhdlScan, VhdlScanError> {
     res.configurations = extract_configuration(src);
     res.variables = extract_variable(src);
     res.files = extract_file(src);
+    res.attributes = extract_attribute(src);
     Ok(res)
 }
 
@@ -1410,6 +1425,59 @@ pub fn extract_file(src: &str) -> Vec<VhdlFile> {
     out
 }
 
+/// Ekstrak deklarasi `attribute` dari seluruh source (stage 16, kasar).
+///
+/// Mendeteksi `attribute <nama> : <tipe> [of <objek> is <nilai>];`. Nama =
+/// word pertama setelah `attribute`, tipe = word pertama setelah `:`.
+/// Hentikan di `;` agar tidak menangkap deklarasi berikutnya. Komentar
+/// `--` sudah dibuang oleh `tokenize`.
+pub fn extract_attribute(src: &str) -> Vec<VhdlAttribute> {
+    let toks = tokenize(src);
+    let n = toks.len();
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i < n {
+        let (ln, _, t) = &toks[i];
+        if let Tok::Word(w) = t {
+            if w.to_ascii_lowercase() == "attribute" {
+                let name = match toks.get(i + 1) {
+                    Some((_, _, Tok::Word(nx))) => nx.clone(),
+                    _ => {
+                        i += 1;
+                        continue;
+                    }
+                };
+                let mut type_name = String::new();
+                // Cari ':' pertama setelah nama; word sesudahnya = tipe.
+                let mut j = i + 2;
+                while j + 1 < n {
+                    if matches!(&toks[j].2, Tok::Punct(':')) {
+                        if let Some((_, _, Tok::Word(ty))) = toks.get(j + 1) {
+                            type_name = ty.clone();
+                        }
+                        break;
+                    }
+                    if matches!(&toks[j].2, Tok::Punct(';')) {
+                        break;
+                    }
+                    j += 1;
+                }
+                out.push(VhdlAttribute {
+                    name,
+                    type_name,
+                    line: *ln,
+                });
+                i += 1;
+            } else {
+                i += 1;
+            }
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
 /// Buang komentar baris `--` dari sebuah teks.
 fn strip_comments(s: &str) -> String {
     let ch: Vec<char> = s.chars().collect();
@@ -2096,5 +2164,42 @@ file mem : ram_type is \"mem.dat\";
     fn extract_file_no_file_is_empty() {
         // Source tanpa `file` -> kosong.
         assert!(extract_file("signal a : bit;").is_empty());
+    }
+
+    #[test]
+    fn scan_extracts_attributes() {
+        // Deklarasi `attribute` diekstrak (nama + tipe + baris).
+        let src = "\
+attribute keep : boolean;
+attribute syn_preserve : boolean of ff : register;
+attribute x : integer;
+";
+        let s = scan(src).unwrap();
+        assert_eq!(s.attributes.len(), 3, "{s:?}");
+        assert_eq!(s.attributes[0].name, "keep");
+        assert_eq!(s.attributes[0].type_name, "boolean");
+        assert_eq!(s.attributes[0].line, 1);
+        assert_eq!(s.attributes[1].name, "syn_preserve");
+        assert_eq!(s.attributes[1].type_name, "boolean");
+        assert_eq!(s.attributes[1].line, 2);
+        assert_eq!(s.attributes[2].name, "x");
+        assert_eq!(s.attributes[2].type_name, "integer");
+        assert_eq!(s.attributes[2].line, 3);
+    }
+
+    #[test]
+    fn scan_attribute_case_insensitive() {
+        // VHDL case-insensitive: keyword uppercase tetap dikenali.
+        let src = "ATTRIBUTE Y : STRING;\n";
+        let s = scan(src).unwrap();
+        assert_eq!(s.attributes.len(), 1, "{s:?}");
+        assert_eq!(s.attributes[0].name, "Y");
+        assert_eq!(s.attributes[0].type_name, "STRING");
+    }
+
+    #[test]
+    fn extract_attribute_no_attribute_is_empty() {
+        // Source tanpa `attribute` -> kosong.
+        assert!(extract_attribute("signal a : bit;").is_empty());
     }
 }
