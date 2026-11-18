@@ -51,6 +51,39 @@ impl IncrementalCache {
             }
         }
     }
+
+    /// Hapus entri cache untuk suatu file (mis. file dihapus dari design).
+    pub fn remove(&mut self, path: &PathBuf) {
+        self.hashes.remove(path);
+    }
+
+    /// Cek banyak file sekaligus, mengembalikan vektor boolean (true =
+    /// perlu reparse) dalam urutan input yang sama. Memperbarui state cache
+    /// untuk setiap file.
+    pub fn batch_needs_reparse(
+        &mut self,
+        items: &[(PathBuf, String)],
+    ) -> Vec<bool> {
+        items
+            .iter()
+            .map(|(path, content)| self.needs_reparse(path, content))
+            .collect()
+    }
+
+    /// Jumlah entri file yang sedang di-track.
+    pub fn len(&self) -> usize {
+        self.hashes.len()
+    }
+
+    /// True bila tidak ada file yang di-track.
+    pub fn is_empty(&self) -> bool {
+        self.hashes.is_empty()
+    }
+
+    /// Hapus semua entri cache.
+    pub fn clear(&mut self) {
+        self.hashes.clear();
+    }
 }
 
 #[cfg(test)]
@@ -93,5 +126,57 @@ mod tests {
         let map = cache.into_map();
         let mut cache2 = IncrementalCache::from_map(map);
         assert!(!cache2.needs_reparse(&p, "X"));
+    }
+
+    #[test]
+    fn remove_forgets_file() {
+        let mut cache = IncrementalCache::new();
+        let p = PathBuf::from("a.sv");
+        assert!(cache.needs_reparse(&p, "A"));
+        assert_eq!(cache.len(), 1);
+        cache.remove(&p);
+        assert!(cache.is_empty());
+        // Setelah di-remove, file dianggap baru lagi.
+        assert!(cache.needs_reparse(&p, "A"));
+    }
+
+    #[test]
+    fn batch_needs_reparse_returns_per_item_result() {
+        let mut cache = IncrementalCache::new();
+        let a = PathBuf::from("a.sv");
+        let b = PathBuf::from("b.sv");
+        let res = cache.batch_needs_reparse(&[
+            (a.clone(), "A".into()),
+            (b.clone(), "B".into()),
+        ]);
+        assert_eq!(res, vec![true, true]);
+        // Kedua kali: sama → tidak perlu reparse.
+        let res2 = cache.batch_needs_reparse(&[
+            (a.clone(), "A".into()),
+            (b.clone(), "B".into()),
+        ]);
+        assert_eq!(res2, vec![false, false]);
+    }
+
+    #[test]
+    fn len_and_is_empty_track_count() {
+        let mut cache = IncrementalCache::new();
+        assert!(cache.is_empty());
+        assert_eq!(cache.len(), 0);
+        cache.needs_reparse(&PathBuf::from("a.sv"), "A");
+        assert_eq!(cache.len(), 1);
+        assert!(!cache.is_empty());
+    }
+
+    #[test]
+    fn clear_empties_cache() {
+        let mut cache = IncrementalCache::new();
+        cache.needs_reparse(&PathBuf::from("a.sv"), "A");
+        cache.needs_reparse(&PathBuf::from("b.sv"), "B");
+        assert_eq!(cache.len(), 2);
+        cache.clear();
+        assert!(cache.is_empty());
+        assert_eq!(cache.len(), 0);
+        assert!(cache.needs_reparse(&PathBuf::from("a.sv"), "A"));
     }
 }
