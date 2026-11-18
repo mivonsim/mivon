@@ -152,3 +152,22 @@ fn peak_rss_kb() -> Option<u64> {
     }
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_peak_rss_kb_returns_some_on_linux() {
+        let rss = peak_rss_kb();
+        assert!(rss.is_some(), "peak RSS should be readable on Linux");
+        assert!(rss.unwrap() > 0, "RSS should be > 0 KB");
+    }
+
+    #[test]
+    fn test_peak_rss_kb_is_reasonable() {
+        let rss = peak_rss_kb().unwrap_or(0);
+        assert!(rss > 1024, "RSS should exceed 1 MB");
+        assert!(rss < 1_048_576, "RSS should be under 1 TB");
+    }
+}
