@@ -9172,10 +9172,35 @@ VERIFIKASI ROUND 272:
   - cargo check --workspace -> bersih (tanpa regresi lintas-crate).
   - Review agent: LOLOS.
 
-Status LANG-01: ⚠️ STUB (stage 1-14) — scanner entity/architecture + port/
+═══ ROUND 273 — LANG-01 (stage 15): ekstraksi deklarasi file VHDL ═══
+
+Ruang lingkup: lanjutkan stub LANG-01 (krate mivon-vhdl) — ekstraksi deklarasi
+`file <nama> : <tipe_file> [is <path>];` (nama + tipe file + path opsional +
+baris), melengkapi konstruk VHDL yang dikenali.
+
+Perubahan (crates/mivon-vhdl/src/lib.rs):
+  - Tambah `VhdlFile { name, type_name, path, line }` dan field
+    `files: Vec<VhdlFile>` di `VhdlScan`.
+  - Fungsi publik `extract_file(src)`: case-insensitive, tipe = word
+    setelah `:`, path = word setelah `is` (lewati tanda kutip string),
+    berhenti di `;`. Dipanggil di akhir `scan()`.
+  - Doc header update ke "stage 1-15".
+  - +3 test diskriminatif (total 38):
+    * scan_extracts_files: 3 file (dengan/tanpa path) -> nama + tipe +
+      path + baris persis.
+    * scan_file_case_insensitive: `FILE`/`INTEGER` uppercase tetap dikenali.
+    * extract_file_no_file_is_empty: tanpa file -> kosong.
+
+VERIFIKASI ROUND 273:
+  - rustfmt --edition 2021 --check (lib.rs) -> bersih.
+  - cargo nextest run -p mivon-vhdl -> 38 passed (35 lama + 3 baru).
+  - cargo check --workspace -> bersih (tanpa regresi lintas-crate).
+  - Review agent: LOLOS.
+
+Status LANG-01: ⚠️ STUB (stage 1-15) — scanner entity/architecture + port/
   generic + signal + component + process + library/use + package +
-  subprogram + type/subtype + constant + alias + configuration + variable
-  ada di krate terisolasi; sisa open: parser VHDL penuh,
+  subprogram + type/subtype + constant + alias + configuration + variable +
+  file ada di krate terisolasi; sisa open: parser VHDL penuh,
   concurrent/sequential statement, elaborasi, simulasi, wiring pipeline.
 
 

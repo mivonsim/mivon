@@ -1,4 +1,4 @@
-//! LANG-01: VHDL front-end — STUB stage 1-14 (Critical, open).
+//! LANG-01: VHDL front-end — STUB stage 1-15 (Critical, open).
 //!
 //! mivon tidak memiliki dukungan VHDL sama sekali. Stage 1 adalah scanner
 //! terbatas yang mengenali batas `entity` / `architecture` dari source VHDL
@@ -14,7 +14,8 @@
 //! (nama + tipe + nilai), stage 12 mengekstrak deklarasi `alias`
 //! (nama + tipe + target), stage 13 mengekstrak deklarasi `configuration`
 //! (nama + entitas), stage 14 mengekstrak deklarasi `variable` (nama + tipe +
-//! nilai opsional). Semuanya kasar: nama + mode/tipe. BUKAN parser
+//! nilai opsional), stage 15 mengekstrak deklarasi `file` (nama + tipe file +
+//! path opsional). Semuanya kasar: nama + mode/tipe. BUKAN parser
 //! lengkap: belum mem-parse concurrent/sequential statement dalam process,
 //! maupun tipe VHDL penuh. Belum di-wire ke pipeline compile (lexer/parser
 //! SystemVerilog di mivon-parser).
@@ -197,6 +198,21 @@ pub struct VhdlVariable {
     pub line: usize,
 }
 
+/// Satu deklarasi `file` VHDL (stage 15: ekstraksi kasar nama + tipe file +
+/// path opsional). Bentuk: `file <nama> : <tipe_file> [is <path>];`.
+/// Tipe = word pertama setelah `:`, path = word pertama setelah `is`
+/// bila ada.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VhdlFile {
+    pub name: String,
+    /// Tipe file (mis. `text`, `integer`, tipe akses berkas).
+    pub type_name: String,
+    /// Path berkas opsional (word setelah `is`), kosong bila tidak ada.
+    pub path: String,
+    /// 1-based baris tempat kata kunci `file` muncul.
+    pub line: usize,
+}
+
 /// Satu arsitektur VHDL yang dikenali.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VhdlArchitecture {
@@ -237,6 +253,8 @@ pub struct VhdlScan {
     pub configurations: Vec<VhdlConfiguration>,
     /// Deklarasi `variable` (stage 14, kasar: nama + tipe + nilai opsional).
     pub variables: Vec<VhdlVariable>,
+    /// Deklarasi `file` (stage 15, kasar: nama + tipe file + path opsional).
+    pub files: Vec<VhdlFile>,
 }
 
 /// Kesalahan scan tingkat rendah (stage 1).
@@ -514,6 +532,7 @@ pub fn scan(src: &str) -> Result<VhdlScan, VhdlScanError> {
     res.aliases = extract_aliases(src);
     res.configurations = extract_configuration(src);
     res.variables = extract_variable(src);
+    res.files = extract_file(src);
     Ok(res)
 }
 
@@ -1318,6 +1337,79 @@ pub fn extract_variable(src: &str) -> Vec<VhdlVariable> {
     out
 }
 
+/// Ekstrak deklarasi `file` dari seluruh source (stage 15, kasar).
+///
+/// Mendeteksi `file <nama> : <tipe_file> [is <path>];`. Nama = word pertama
+/// setelah `file`, tipe = word pertama setelah `:`, path = word pertama
+/// setelah `is` bila ada. Hentikan di `;` agar tidak menangkap deklarasi
+/// berikutnya. Komentar `--` sudah dibuang oleh `tokenize`.
+pub fn extract_file(src: &str) -> Vec<VhdlFile> {
+    let toks = tokenize(src);
+    let n = toks.len();
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i < n {
+        let (ln, _, t) = &toks[i];
+        if let Tok::Word(w) = t {
+            if w.to_ascii_lowercase() == "file" {
+                let name = match toks.get(i + 1) {
+                    Some((_, _, Tok::Word(nx))) => nx.clone(),
+                    _ => {
+                        i += 1;
+                        continue;
+                    }
+                };
+                let mut type_name = String::new();
+                let mut path = String::new();
+                let mut j = i + 2;
+                while j + 1 < n {
+                    if matches!(&toks[j].2, Tok::Punct(':')) {
+                        if let Some((_, _, Tok::Word(ty))) = toks.get(j + 1) {
+                            type_name = ty.clone();
+                        }
+                        break;
+                    }
+                    j += 1;
+                }
+                // Path opsional: word setelah 'is', berhenti di ';'.
+                let mut k = i + 2;
+                while k + 1 < n {
+                    if matches!(&toks[k].2, Tok::Punct(';')) {
+                        break;
+                    }
+                    if let Some((_, _, Tok::Word(kw))) = toks.get(k) {
+                        if kw.to_ascii_lowercase() == "is" {
+                            // Path boleh berupa string literal ("x") — lewati
+                            // tanda kutip lalu ambil word isinya.
+                            if let Some((_, _, Tok::Word(pt))) = toks.get(k + 1) {
+                                path = pt.clone();
+                            } else if let Some((_, _, Tok::Punct(_))) = toks.get(k + 1) {
+                                if let Some((_, _, Tok::Word(pt))) = toks.get(k + 2) {
+                                    path = pt.clone();
+                                }
+                            }
+                            break;
+                        }
+                    }
+                    k += 1;
+                }
+                out.push(VhdlFile {
+                    name,
+                    type_name,
+                    path,
+                    line: *ln,
+                });
+                i += 1;
+            } else {
+                i += 1;
+            }
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
 /// Buang komentar baris `--` dari sebuah teks.
 fn strip_comments(s: &str) -> String {
     let ch: Vec<char> = s.chars().collect();
@@ -1962,5 +2054,47 @@ variable idx : natural := 7;
     fn extract_variable_no_variable_is_empty() {
         // Source tanpa `variable` -> kosong.
         assert!(extract_variable("signal a : bit;").is_empty());
+    }
+
+    #[test]
+    fn scan_extracts_files() {
+        // Deklarasi `file` diekstrak (nama + tipe file + path opsional + baris).
+        let src = "\
+file infile : text open read_mode is \"input.txt\";
+file outfile : text;
+file mem : ram_type is \"mem.dat\";
+";
+        let s = scan(src).unwrap();
+        assert_eq!(s.files.len(), 3, "{s:?}");
+        assert_eq!(s.files[0].name, "infile");
+        assert_eq!(s.files[0].type_name, "text");
+        // Path dalam string literal: tokenisasi potong di '.', ambil kata
+        // pertama ("input" dari "input.txt").
+        assert_eq!(s.files[0].path, "input");
+        assert_eq!(s.files[0].line, 1);
+        assert_eq!(s.files[1].name, "outfile");
+        assert_eq!(s.files[1].type_name, "text");
+        assert!(s.files[1].path.is_empty());
+        assert_eq!(s.files[1].line, 2);
+        assert_eq!(s.files[2].name, "mem");
+        assert_eq!(s.files[2].type_name, "ram_type");
+        assert_eq!(s.files[2].path, "mem");
+        assert_eq!(s.files[2].line, 3);
+    }
+
+    #[test]
+    fn scan_file_case_insensitive() {
+        // VHDL case-insensitive: keyword uppercase tetap dikenali.
+        let src = "FILE F : INTEGER;\n";
+        let s = scan(src).unwrap();
+        assert_eq!(s.files.len(), 1, "{s:?}");
+        assert_eq!(s.files[0].name, "F");
+        assert_eq!(s.files[0].type_name, "INTEGER");
+    }
+
+    #[test]
+    fn extract_file_no_file_is_empty() {
+        // Source tanpa `file` -> kosong.
+        assert!(extract_file("signal a : bit;").is_empty());
     }
 }
