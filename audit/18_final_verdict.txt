@@ -1191,8 +1191,8 @@ di jalur kompilasi/JIT manapun.
 ✅ Marker audit di-update:
    - COMP-01 multi-pass pipeline [] → ⚠️ IN PROGRESS (pipeline ada +
      ter-wire; sisa: SSA global opt — Arsitektur-01).
-   - COMP-02 DCE [] → ⚠️ IN PROGRESS (MIR DSE aktif + dead module
-     detect + IR-level DCE sinyal: eliminate_unused_signals_ir di crates/mivon-ir/src/ir.rs menghapus sinyal IR tidak terpakai dan remap SignalId konsisten; test unused_signal_tests 3 test lolos, cargo nextest workspace 3995 passed 0 failed).
+   - COMP-02 DCE [] → ✅ FIXED (MIR DSE aktif + dead module
+     detect + IR-level DCE sinyal: eliminate_unused_signals_ir di crates/mivon-ir/src/ir.rs menghapus sinyal IR tidak terpakai dan remap SignalId konsisten; bug port_map (sub-instance port_map Arc<HashMap<Symbol,SignalId>> tidak di-remap → dangling id) diperbaiki; test unused_signal_tests 4 test lolos, cargo nextest workspace 4042 passed 0 failed).
    - COMP-06 strength reduction [] → ✅ (pass 5 + wiring).
 
 📊 VERIFIKASI ROUND 97:

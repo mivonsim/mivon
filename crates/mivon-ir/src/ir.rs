@@ -1,6 +1,7 @@
 use mivon_core::intern::Symbol;
 use mivon_core::{LogicVal, LogicVec};
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 pub type SignalId = usize;
 pub type ClassId = usize;
@@ -849,6 +850,15 @@ fn eliminate_unused_signals_in_module(module: &mut IrModule) -> bool {
         collect_signal_ids_from_process(process, &mut used);
     }
 
+    // Sinyal yang hanya terhubung ke port sub-instance (port_map) juga
+    // dianggap digunakan — menghapusnya akan membuat port_map menunjuk ke
+    // SignalId yang salah atau out-of-bounds setelah remap (bug ELAB/COMP-02).
+    for inst in &module.sub_instances {
+        for sig_id in inst.port_map.values() {
+            used.insert(*sig_id);
+        }
+    }
+
     // Bangun mapping old -> new untuk sinyal yang digunakan
     let mut old_to_new: HashMap<SignalId, SignalId> = HashMap::new();
     let mut kept: Vec<SignalInfo> = Vec::new();
@@ -888,6 +898,19 @@ fn eliminate_unused_signals_in_module(module: &mut IrModule) -> bool {
         if let Some(&new_id) = old_to_new.get(sig) {
             *sig = new_id;
         }
+    }
+
+    // Remap port_map sub-instance (Arc<HashMap<Symbol, SignalId>>) agar
+    // tetap menunjuk ke sinyal yang sama setelah sinyal di-remap.
+    for inst in &mut module.sub_instances {
+        let remapped: HashMap<Symbol, SignalId> = inst
+            .port_map
+            .iter()
+            .filter_map(|(name, sig_id)| {
+                old_to_new.get(sig_id).map(|new_id| (name.clone(), *new_id))
+            })
+            .collect();
+        inst.port_map = Arc::new(remapped);
     }
 
     true
