@@ -132,6 +132,14 @@ impl BugTracker {
             .count()
     }
 
+    /// Jumlah bug berstatus Fixed.
+    pub fn fixed_count(&self) -> usize {
+        self.bugs
+            .iter()
+            .filter(|b| b.status == BugStatus::Fixed)
+            .count()
+    }
+
     /// Exit code gate CI: 0 = test punya bug Open (kegagalan diketahui),
     /// 1 = tidak ada bug Open (regresi baru / belum dilaporkan).
     pub fn check_exit_code(&self, test: &str) -> i32 {
@@ -323,5 +331,22 @@ mod tests {
         let mut tracker = BugTracker::new();
         assert!(tracker.link("NOPE", "t1").is_err());
         assert!(tracker.set_status("NOPE", BugStatus::Fixed).is_err());
+    }
+
+    #[test]
+    fn fixed_count_tracks_fixed_bugs() {
+        let mut tracker = BugTracker::new();
+        tracker.add("B1", "one").unwrap();
+        tracker.add("B2", "two").unwrap();
+        tracker.add("B3", "three").unwrap();
+        assert_eq!(tracker.open_count(), 3);
+        tracker.set_status("B1", BugStatus::Fixed).unwrap();
+        tracker.set_status("B2", BugStatus::Fixed).unwrap();
+        assert_eq!(tracker.open_count(), 1);
+        assert_eq!(tracker.fixed_count(), 2);
+        tracker.set_status("B3", BugStatus::WontFix).unwrap();
+        assert_eq!(tracker.open_count(), 0);
+        assert_eq!(tracker.fixed_count(), 2);
+        assert_eq!(tracker.summary(), "Bugs: 3 total, 0 open, 2 fixed, 1 wontfix");
     }
 }
