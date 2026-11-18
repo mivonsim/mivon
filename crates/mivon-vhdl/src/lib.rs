@@ -1,4 +1,4 @@
-//! LANG-01: VHDL front-end — STUB stage 1-26 (Critical, open).
+//! LANG-01: VHDL front-end — STUB stage 1-27 (Critical, open).
 //!
 //! mivon tidak memiliki dukungan VHDL sama sekali. Stage 1 adalah scanner
 //! terbatas yang mengenali batas `entity` / `architecture` dari source VHDL
@@ -24,7 +24,8 @@
 //! stage 23 mengekstrak penetapan sinyal konkuren `<=`,
 //! stage 24 mengekstrak generate statement (label + baris),
 //! stage 25 mengekstrak pernyataan `null` (baris),
-//! stage 26 mengekstrak pernyataan `if` (baris).
+//! stage 26 mengekstrak pernyataan `if` (baris),
+//! stage 27 mengekstrak pernyataan `case` (baris).
 //! Semuanya kasar: nama + mode/tipe. BUKAN parser
 //! lengkap: belum mem-parse concurrent/sequential statement dalam process,
 //! maupun tipe VHDL penuh. Belum di-wire ke pipeline compile (lexer/parser
@@ -325,6 +326,14 @@ pub struct VhdlIfStmt {
     pub line: usize,
 }
 
+/// Satu pernyataan `case` VHDL (stage 27: ekstraksi kasar baris).
+/// Bentuk: `case <ekspresi> is ... end case;`. Hanya baris dicatat.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VhdlCaseStmt {
+    /// 1-based baris tempat kata kunci `case` muncul.
+    pub line: usize,
+}
+
 /// Satu arsitektur VHDL yang dikenali.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VhdlArchitecture {
@@ -389,6 +398,8 @@ pub struct VhdlScan {
     pub null_stmts: Vec<VhdlNullStmt>,
     /// Pernyataan `if` (stage 26, kasar: baris).
     pub if_stmts: Vec<VhdlIfStmt>,
+    /// Pernyataan `case` (stage 27, kasar: baris).
+    pub case_stmts: Vec<VhdlCaseStmt>,
 }
 
 /// Kesalahan scan tingkat rendah (stage 1).
@@ -678,6 +689,7 @@ pub fn scan(src: &str) -> Result<VhdlScan, VhdlScanError> {
     res.generates = extract_generate(src);
     res.null_stmts = extract_null_stmt(src);
     res.if_stmts = extract_if_stmt(src);
+    res.case_stmts = extract_case_stmt(src);
     Ok(res)
 }
 
@@ -1949,6 +1961,37 @@ pub fn extract_if_stmt(src: &str) -> Vec<VhdlIfStmt> {
     out
 }
 
+/// Ekstrak pernyataan `case` VHDL dari seluruh source (stage 27, kasar).
+///
+/// Mendeteksi kata kunci `case` (lewati `end case` di mana kata sebelumnya
+/// = `end`). Hanya baris dicatat; ekspresi dan pilihan tidak di-parse dalam
+/// stub ini. Komentar `--` sudah dibuang oleh `tokenize`.
+pub fn extract_case_stmt(src: &str) -> Vec<VhdlCaseStmt> {
+    let toks = tokenize(src);
+    let n = toks.len();
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i < n {
+        let (ln, _, t) = &toks[i];
+        if let Tok::Word(w) = t {
+            if w.to_ascii_lowercase() == "case" {
+                // Lewati `end case`.
+                if i >= 1 {
+                    if let Tok::Word(pw) = &toks[i - 1].2 {
+                        if pw.to_ascii_lowercase() == "end" {
+                            i += 1;
+                            continue;
+                        }
+                    }
+                }
+                out.push(VhdlCaseStmt { line: *ln });
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
 /// Buang komentar baris `--` dari sebuah teks.
 fn strip_comments(s: &str) -> String {
     let ch: Vec<char> = s.chars().collect();
@@ -2911,5 +2954,29 @@ end if;
         // `end if` tidak dihitung sebagai if.
         assert_eq!(extract_if_stmt("end if;").len(), 0);
         assert_eq!(extract_if_stmt("signal a : bit;").len(), 0);
+    }
+
+    #[test]
+    fn scan_extracts_case_stmts() {
+        // Pernyataan `case` diekstrak (baris).
+        let src = "\
+case a is
+  when b => c <= d;
+end case;
+case e is
+  when f => g <= h;
+end case;
+";
+        let s = scan(src).unwrap();
+        assert_eq!(s.case_stmts.len(), 2, "{s:?}");
+        assert_eq!(s.case_stmts[0].line, 1);
+        assert_eq!(s.case_stmts[1].line, 4); // baris 3 adalah end case
+    }
+
+    #[test]
+    fn extract_case_stmt_end_case_not_counted() {
+        // `end case` tidak dihitung sebagai case.
+        assert_eq!(extract_case_stmt("end case;").len(), 0);
+        assert_eq!(extract_case_stmt("signal a : bit;").len(), 0);
     }
 }
