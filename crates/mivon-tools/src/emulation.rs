@@ -103,6 +103,26 @@ impl EmuManager {
             .map(|s| s.bitstream_loaded && s.jtag_connected && s.clock_hz.is_some())
             .unwrap_or(false)
     }
+
+    /// Daftar nama semua target terdaftar.
+    pub fn list_targets(&self) -> Vec<String> {
+        self.targets.lock().unwrap().keys().cloned().collect()
+    }
+
+    /// Ambil klon status target menurut nama.
+    pub fn get_target(&self, name: &str) -> Option<EmuTargetStatus> {
+        self.targets.lock().unwrap().get(name).cloned()
+    }
+
+    /// Hapus target menurut nama.
+    pub fn remove_target(&self, name: &str) -> bool {
+        self.targets.lock().unwrap().remove(name).is_some()
+    }
+
+    /// Hapus semua target.
+    pub fn clear_targets(&self) {
+        self.targets.lock().unwrap().clear();
+    }
 }
 
 #[cfg(test)]
@@ -142,5 +162,45 @@ mod tests {
         let mgr = EmuManager::new();
         assert!(mgr.target_count() == 0);
         assert!(!mgr.is_ready("any"));
+    }
+
+    #[test]
+    fn list_targets_tracks_all() {
+        let mgr = EmuManager::new();
+        assert!(mgr.list_targets().is_empty());
+        mgr.register_target("fpga1", EmuTarget::FpgaXilinx);
+        mgr.register_target("emu1", EmuTarget::EmulatorQemu);
+        let mut list = mgr.list_targets();
+        list.sort();
+        assert_eq!(
+            list,
+            vec!["emu1".to_string(), "fpga1".to_string()]
+        );
+        assert_eq!(mgr.target_count(), 2);
+    }
+
+    #[test]
+    fn get_and_remove_target() {
+        let mgr = EmuManager::new();
+        mgr.register_target("fpga1", EmuTarget::FpgaXilinx);
+        let t = mgr.get_target("fpga1").unwrap();
+        assert!(matches!(t.target, EmuTarget::FpgaXilinx));
+        assert!(!t.bitstream_loaded);
+        assert!(mgr.get_target("nope").is_none());
+        assert!(mgr.remove_target("fpga1"));
+        assert!(mgr.get_target("fpga1").is_none());
+        assert!(!mgr.remove_target("fpga1"));
+        assert_eq!(mgr.target_count(), 0);
+    }
+
+    #[test]
+    fn clear_targets_empties_manager() {
+        let mgr = EmuManager::new();
+        mgr.register_target("fpga1", EmuTarget::FpgaXilinx);
+        mgr.register_target("emu1", EmuTarget::EmulatorQemu);
+        assert_eq!(mgr.target_count(), 2);
+        mgr.clear_targets();
+        assert!(mgr.list_targets().is_empty());
+        assert_eq!(mgr.target_count(), 0);
     }
 }
