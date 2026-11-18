@@ -201,4 +201,37 @@ mod tests {
         assert_eq!(mivon_init(), 0);
         mivon_shutdown();
     }
+
+    #[test]
+    fn test_features_json_valid() {
+        let ptr = unsafe { mivon_features() };
+        assert!(!ptr.is_null());
+        let s = unsafe { CStr::from_ptr(ptr) };
+        let info = s.to_str().unwrap();
+        assert!(info.contains("always_ff"));
+        assert!(info.contains("randomize"));
+        assert!(!info.contains("\"dpi\":true"));
+        unsafe {
+            mivon_free_string(ptr);
+        }
+    }
+
+    #[test]
+    fn test_count_modules_ignores_endmodule() {
+        let src = CString::new("module a; endmodule module b; endmodule").unwrap();
+        let count = unsafe { mivon_count_modules(src.as_ptr()) };
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn test_count_modules_package_keyword() {
+        let src = CString::new("package p; endpackage module m; endmodule").unwrap();
+        let count = unsafe { mivon_count_modules(src.as_ptr()) };
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn test_count_modules_null() {
+        assert_eq!(unsafe { mivon_count_modules(ptr::null()) }, -1);
+    }
 }
