@@ -214,6 +214,14 @@ impl RequirementsReport {
         serde_json::to_string_pretty(self).unwrap_or_default()
     }
 
+    /// Daftar requirement yang belum tercover sama sekali (status Not Covered).
+    pub fn uncovered_requirements(&self) -> Vec<&RequirementDetail> {
+        self.details
+            .iter()
+            .filter(|d| d.status == "Not Covered")
+            .collect()
+    }
+
     /// Save CSV ke file.
     pub fn save_csv(&self, path: &Path) -> Result<(), String> {
         let csv = self.to_csv();
@@ -782,5 +790,9 @@ mod tests {
         let report2 = RequirementsReport::generate(&mappings2, &results2);
         assert!(!report2.is_fully_covered());
         assert_eq!(report2.coverage_percent, 50.0);
+
+        let uncovered: Vec<_> = report2.uncovered_requirements();
+        assert_eq!(uncovered.len(), 1);
+        assert_eq!(uncovered[0].requirement_id, "R2");
     }
 }
