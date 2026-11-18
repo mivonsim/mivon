@@ -624,8 +624,107 @@ pub struct SimulationEngine {
     pub seq_batch_parallel_count: u64,
 }
 
+/// DEBT-01: Engine tidak monolithic — pemisahan trait/impl separation sebagai
+/// langkah pertama menuju testabilitas & paralelisasi.
+///
+/// Trait ini mengekspos hanya kueri murni (bukan mutasi state runtime) agar
+/// engine bisa diuji/mock tanpa membangun seluruh SimulationEngine, dan nantinya
+/// bisa diimplementasi backend alternatif (mis. compiled-code/JIT engine).
+pub trait EngineBackend {
+    /// Jumlah sinyal yang terdaftar di design (top module).
+    fn signal_count(&self) -> usize;
+    /// Jumlah proses di top module.
+    fn process_count(&self) -> usize;
+    /// Nama design (top module).
+    fn design_name(&self) -> Symbol;
+    /// Nama top module (sama dengan design_name).
+    fn top_name(&self) -> Symbol;
+    /// Waktu simulasi saat ini (cycle/time step).
+    fn sim_time(&self) -> u64;
+}
+
+impl EngineBackend for SimulationEngine {
+    fn signal_count(&self) -> usize {
+        self.state.signals.len()
+    }
+
+    fn process_count(&self) -> usize {
+        self.design.top.processes.len()
+    }
+
+    fn design_name(&self) -> Symbol {
+        self.design.top.name
+    }
+
+    fn top_name(&self) -> Symbol {
+        self.design.top.name
+    }
+
+    fn sim_time(&self) -> u64 {
+        self.state.time
+    }
+}
+
 // ============================================================================
 // CATATAN: Fungsi-fungsi helper standalone (evaluate_string_method,
 // sym_char_matches, edge_matches_abbrev) sudah dipindahkan ke
 // src/simulator/engine/engine_utils.rs untuk memisahkan tanggung jawab.
 // ============================================================================
+
+#[cfg(test)]
+mod debt01_tests {
+    use super::*;
+
+    #[test]
+    fn engine_backend_signal_count() {
+        let mut design = IrDesign::default();
+        design.top.signals = vec![
+            SignalInfo::default(),
+            SignalInfo::default(),
+            SignalInfo::default(),
+        ];
+        let engine = SimulationEngine::new(design, 100);
+        assert_eq!(engine.signal_count(), 3);
+    }
+
+    #[test]
+    fn engine_backend_process_count() {
+        let mut design = IrDesign::default();
+        design.top.processes = vec![
+            Process::Combinational {
+                name: Symbol::intern("p0"),
+                sensitivity: Vec::new(),
+                body: Vec::new(),
+            },
+            Process::Initial {
+                name: Symbol::intern("p1"),
+                body: Vec::new(),
+            },
+        ];
+        let engine = SimulationEngine::new(design, 100);
+        assert_eq!(engine.process_count(), 2);
+    }
+
+    #[test]
+    fn engine_backend_design_and_top_name() {
+        let mut design = IrDesign::default();
+        design.top.name = Symbol::intern("my_top");
+        let engine = SimulationEngine::new(design, 100);
+        assert_eq!(engine.design_name(), Symbol::intern("my_top"));
+        assert_eq!(engine.top_name(), Symbol::intern("my_top"));
+    }
+
+    #[test]
+    fn engine_backend_sim_time_starts_zero() {
+        let design = IrDesign::default();
+        let engine = SimulationEngine::new(design, 100);
+        assert_eq!(engine.sim_time(), 0);
+    }
+
+    #[test]
+    fn engine_backend_is_object_safe() {
+        let design = IrDesign::default();
+        let engine = SimulationEngine::new(design, 100);
+        let _backend: Box<dyn EngineBackend> = Box::new(engine);
+    }
+}
