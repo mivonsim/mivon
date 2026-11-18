@@ -597,4 +597,21 @@ mod tests {
         assert_eq!(diff.regressions, 1);
         assert!(diff.results[0].status == "regression");
     }
+
+    #[test]
+    fn test_sarif_add_finding() {
+        let mut log = SarifLog::new();
+        log.add_finding(
+            "RT1006",
+            "NBA write conflict on signal a",
+            "/home/user/dut.sv",
+            42,
+            0,
+        );
+        let json = log.to_json();
+        assert!(json.contains("RT1006"));
+        assert!(json.contains("NBA write conflict"));
+        assert!(json.contains("/home/user/dut.sv"));
+        assert!(json.contains("\"start_line\": 42"));
+    }
 }
