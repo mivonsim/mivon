@@ -28,7 +28,7 @@ P2 — HIGH (Required for 1000-module designs)
 17. ✅ Implement parallel elaboration (#ELAB-01) — ParallelElaborator trait + SerialElaborator baseline; 4 tests pass
 18. ✅ Implement incremental elaboration (#ELAB-04) — IncrementalTracker + session-level cache; 10 incremental tests pass
 19. ✅ Add dynamic/associative/queue arrays (#CRIT-028-030) — is_dynamic/is_associative/is_queue flags + elaborator handling; 5 dynamic + 2 associative + 19 queue tests pass
-20. Implement FSDB waveform (#CRIT-033)
+20. ✅ Implement FSDB waveform (#CRIT-033) — fsdb.rs writer (header, var defs, value changes, close); 2 fsdb tests pass
 21. ✅ Implement coverage database (#CRIT-005) — CoverageDatabase with merge, diff, report, HTML export, threshold; 18 coverage_db tests pass
 22. ✅ Add timing engine full (#CRIT-011) — SDF parser + Min:Typ:Max + TimingMode
 23. ✅ Implement uvm_reg (#CRIT-032) — uvm_reg_field/uvm_reg/uvm_reg_block/uvm_reg_map with set/get/set_desired/get_desired/write/read/update/mirror/reset/randomize; 2 new uvm_reg tests pass
