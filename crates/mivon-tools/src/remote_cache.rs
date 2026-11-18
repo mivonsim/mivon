@@ -228,6 +228,11 @@ impl RemoteCacheServer {
         (entries.len(), total)
     }
 
+    /// Number of evictions performed so far.
+    pub fn evictions(&self) -> u64 {
+        *self.evictions.lock().unwrap()
+    }
+
     pub fn summary(&self) -> String {
         let (count, size) = self.size();
         format!(
@@ -336,6 +341,24 @@ mod tests {
         }
         let (count, _) = server.size();
         assert!(count <= 4); // some evicted
+    }
+
+    #[test]
+    fn test_server_evictions_count() {
+        let server = RemoteCacheServer::new(10);
+        assert_eq!(server.evictions(), 0);
+        for i in 0..3 {
+            server.put(CacheEntry {
+                key: format!("k{}", i),
+                data: vec![i as u8; 5],
+                size: 5,
+                created_at: now_secs() + i,
+                expires_at: None,
+                tags: vec![],
+            });
+        }
+        // Each put beyond capacity triggers at least one eviction.
+        assert!(server.evictions() >= 1);
     }
 
     #[test]
