@@ -281,6 +281,14 @@ mod tests {
     }
 
     #[test]
+    fn test_bottleneck_hint_elaboration_synthesis() {
+        assert_eq!(
+            bottleneck_hint("Optimize"),
+            "constant folding / loop unroll; sesuaikan --opt-level"
+        );
+    }
+
+    #[test]
     fn test_bottleneck_hint_lexer() {
         assert_eq!(
             bottleneck_hint("Lexer"),
