@@ -1,4 +1,4 @@
-//! LANG-01: VHDL front-end — STUB stage 1-18 (Critical, open).
+//! LANG-01: VHDL front-end — STUB stage 1-20 (Critical, open).
 //!
 //! mivon tidak memiliki dukungan VHDL sama sekali. Stage 1 adalah scanner
 //! terbatas yang mengenali batas `entity` / `architecture` dari source VHDL
@@ -17,7 +17,9 @@
 //! nilai opsional), stage 15 mengekstrak deklarasi `file` (nama + tipe file +
 //! path opsional), stage 16 mengekstrak deklarasi `attribute` (nama + tipe),
 //! stage 17 mengekstrak deklarasi `group template` (nama + tipe grup),
-//! stage 18 mengekstrak instansi komponen (label + nama komponen).
+//! stage 18 mengekstrak instansi komponen (label + nama komponen),
+//! stage 19 mengekstrak blok (label), stage 20 mengekstrak pernyataan
+//! `assert` (baris).
 //! Semuanya kasar: nama + mode/tipe. BUKAN parser
 //! lengkap: belum mem-parse concurrent/sequential statement dalam process,
 //! maupun tipe VHDL penuh. Belum di-wire ke pipeline compile (lexer/parser
@@ -250,6 +252,24 @@ pub struct VhdlComponentInst {
     pub line: usize,
 }
 
+/// Satu blok VHDL (stage 19: ekstraksi kasar label). Bentuk:
+/// `<label> : block (...) is ... begin ... end block [label];`. Label =
+/// word pertama sebelum `: block`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VhdlBlock {
+    pub label: String,
+    /// 1-based baris tempat kata kunci `block` muncul.
+    pub line: usize,
+}
+
+/// Satu pernyataan `assert` VHDL (stage 20: ekstraksi kasar baris).
+/// Bentuk: `assert <kondisi> [report <pesan>] [severity <level>];`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VhdlAssert {
+    /// 1-based baris tempat kata kunci `assert` muncul.
+    pub line: usize,
+}
+
 /// Satu arsitektur VHDL yang dikenali.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VhdlArchitecture {
@@ -298,6 +318,10 @@ pub struct VhdlScan {
     pub groups: Vec<VhdlGroup>,
     /// Instanisasi komponen (stage 18, kasar: label + nama komponen).
     pub component_insts: Vec<VhdlComponentInst>,
+    /// Blok (stage 19, kasar: label).
+    pub blocks: Vec<VhdlBlock>,
+    /// Pernyataan `assert` (stage 20, kasar: baris).
+    pub asserts: Vec<VhdlAssert>,
 }
 
 /// Kesalahan scan tingkat rendah (stage 1).
@@ -579,6 +603,8 @@ pub fn scan(src: &str) -> Result<VhdlScan, VhdlScanError> {
     res.attributes = extract_attribute(src);
     res.groups = extract_group(src);
     res.component_insts = extract_component_inst(src);
+    res.blocks = extract_block(src);
+    res.asserts = extract_assert(src);
     Ok(res)
 }
 
@@ -1603,6 +1629,70 @@ pub fn extract_component_inst(src: &str) -> Vec<VhdlComponentInst> {
     out
 }
 
+/// Ekstrak blok VHDL dari seluruh source (stage 19, kasar).
+///
+/// Mendeteksi `<label> : block (...)`. Label = word pertama sebelum
+/// `: block`. Baris = nomor baris kata kunci `block`. Komentar `--`
+/// sudah dibuang oleh `tokenize`.
+pub fn extract_block(src: &str) -> Vec<VhdlBlock> {
+    let toks = tokenize(src);
+    let n = toks.len();
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i + 2 < n {
+        let (ln, _, t) = &toks[i];
+        if let Tok::Word(label) = t {
+            if matches!(&toks[i + 1].2, Tok::Punct(':')) {
+                if let Tok::Word(kw) = &toks[i + 2].2 {
+                    if kw.to_ascii_lowercase() == "block" {
+                        out.push(VhdlBlock {
+                            label: label.clone(),
+                            line: *ln,
+                        });
+                        i += 3;
+                        continue;
+                    }
+                }
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
+/// Ekstrak pernyataan `assert` dari seluruh source (stage 20, kasar).
+///
+/// Mendeteksi `assert <kondisi> ... ;`. Hanya baris dicatat (kondisi dan
+/// pesan tidak di-parse dalam stub ini). Hentikan scan per pernyataan di
+/// `;`. Komentar `--` sudah dibuang oleh `tokenize`.
+pub fn extract_assert(src: &str) -> Vec<VhdlAssert> {
+    let toks = tokenize(src);
+    let n = toks.len();
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i < n {
+        let (ln, _, t) = &toks[i];
+        if let Tok::Word(w) = t {
+            if w.to_ascii_lowercase() == "assert" {
+                out.push(VhdlAssert { line: *ln });
+                let mut j = i + 1;
+                while j < n {
+                    if matches!(&toks[j].2, Tok::Punct(';')) {
+                        break;
+                    }
+                    j += 1;
+                }
+                i = j;
+            } else {
+                i += 1;
+            }
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
 /// Buang komentar baris `--` dari sebuah teks.
 fn strip_comments(s: &str) -> String {
     let ch: Vec<char> = s.chars().collect();
@@ -2391,5 +2481,46 @@ u2 : buf port map (i, o);
         // Source tanpa instansi komponen -> kosong.
         assert!(extract_component_inst("signal a : bit;").is_empty());
         assert!(extract_component_inst("entity e is end e;").is_empty());
+    }
+
+    #[test]
+    fn scan_extracts_blocks() {
+        // Blok diekstrak (label + baris).
+        let src = "\
+b1 : block is begin end block;
+b2 : block (clk = '1') is begin end block b2;
+";
+        let s = scan(src).unwrap();
+        assert_eq!(s.blocks.len(), 2, "{s:?}");
+        assert_eq!(s.blocks[0].label, "b1");
+        assert_eq!(s.blocks[0].line, 1);
+        assert_eq!(s.blocks[1].label, "b2");
+        assert_eq!(s.blocks[1].line, 2);
+    }
+
+    #[test]
+    fn extract_block_no_block_is_empty() {
+        // Source tanpa `block` -> kosong.
+        assert!(extract_block("signal a : bit;").is_empty());
+    }
+
+    #[test]
+    fn scan_extracts_asserts() {
+        // Pernyataan `assert` diekstrak (baris).
+        let src = "\
+assert x > 0 report \"x must be positive\" severity error;
+signal a : bit;
+assert y < 10 severity warning;
+";
+        let s = scan(src).unwrap();
+        assert_eq!(s.asserts.len(), 2, "{s:?}");
+        assert_eq!(s.asserts[0].line, 1);
+        assert_eq!(s.asserts[1].line, 3);
+    }
+
+    #[test]
+    fn extract_assert_no_assert_is_empty() {
+        // Source tanpa `assert` -> kosong.
+        assert!(extract_assert("signal a : bit;").is_empty());
     }
 }

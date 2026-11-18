@@ -9268,12 +9268,55 @@ VERIFIKASI ROUND 276:
   - cargo check --workspace -> bersih (tanpa regresi lintas-crate).
   - Review agent: LOLOS.
 
-Status LANG-01: ⚠️ STUB (stage 1-18) — scanner entity/architecture + port/
+═══ ROUND 277 — LANG-01 (stage 19): ekstraksi blok VHDL ═══
+
+Ruang lingkup: lanjutkan stub LANG-01 (krate mivon-vhdl) — ekstraksi blok
+`<label> : block (...) is ... begin ... end block [label];` (label + baris),
+melengkapi konstruk VHDL yang dikenali.
+
+Perubahan (crates/mivon-vhdl/src/lib.rs):
+  - Tambah `VhdlBlock { label, line }` dan field `blocks: Vec<VhdlBlock>`
+    di `VhdlScan`.
+  - Fungsi publik `extract_block(src)`: case-insensitive, deteksi pola
+    `<label> : block`; berhenti scan per blok. Dipanggil di akhir `scan()`.
+  - Doc header update ke "stage 1-19".
+  - +2 test diskriminatif (total 48):
+    * scan_extracts_blocks: 2 blok -> label + baris persis.
+    * extract_block_no_block_is_empty: tanpa blok -> kosong.
+
+VERIFIKASI ROUND 277:
+  - rustfmt --edition 2021 --check (lib.rs) -> bersih.
+  - cargo nextest run -p mivon-vhdl -> 48 passed (46 lama + 2 baru).
+  - cargo check --workspace -> bersih (tanpa regresi lintas-crate).
+  - Review agent: LOLOS.
+
+═══ ROUND 278 — LANG-01 (stage 20): ekstraksi pernyataan assert VHDL ═══
+
+Ruang lingkup: lanjutkan stub LANG-01 (krate mivon-vhdl) — ekstraksi pernyataan
+`assert <kondisi> ... ;` (baris), melengkapi konstruk VHDL yang dikenali.
+
+Perubahan (crates/mivon-vhdl/src/lib.rs):
+  - Tambah `VhdlAssert { line }` dan field `asserts: Vec<VhdlAssert>` di
+    `VhdlScan`.
+  - Fungsi publik `extract_assert(src)`: case-insensitive, deteksi kata kunci
+    `assert`, lompat ke `;` berikutnya. Dipanggil di akhir `scan()`.
+  - Doc header update ke "stage 1-20".
+  - +2 test diskriminatif (total 50):
+    * scan_extracts_asserts: 2 assert -> baris persis.
+    * extract_assert_no_assert_is_empty: tanpa assert -> kosong.
+
+VERIFIKASI ROUND 278:
+  - rustfmt --edition 2021 --check (lib.rs) -> bersih.
+  - cargo nextest run -p mivon-vhdl -> 50 passed (48 lama + 2 baru).
+  - cargo check --workspace -> bersih (tanpa regresi lintas-crate).
+  - Review agent: LOLOS.
+
+Status LANG-01: ⚠️ STUB (stage 1-20) — scanner entity/architecture + port/
   generic + signal + component + process + library/use + package +
   subprogram + type/subtype + constant + alias + configuration + variable +
-  file + attribute + group + instansi komponen ada di krate terisolasi; sisa
-  open: parser VHDL penuh, concurrent/sequential statement, elaborasi,
-  simulasi, wiring pipeline.
+  file + attribute + group + instansi komponen + blok + assert ada di krate
+  terisolasi; sisa open: parser VHDL penuh, concurrent/sequential statement,
+  elaborasi, simulasi, wiring pipeline.
 
 
 \\=======================================================================//
