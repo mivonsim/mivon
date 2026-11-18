@@ -899,4 +899,43 @@ mod tests {
         });
         assert_eq!(count_params(&module), 2);
     }
+
+    #[test]
+    fn test_count_generates() {
+        let items: Vec<ModuleItem> = Vec::new();
+        assert_eq!(count_generates(&items), 0);
+
+        let items = vec![
+            ModuleItem::Generate(mivon_ast::types::GenerateBlock {
+                items: Vec::new(),
+            }),
+            ModuleItem::Generate(mivon_ast::types::GenerateBlock {
+                items: Vec::new(),
+            }),
+            ModuleItem::Decl(mivon_ast::types::Decl {
+                dtype: mivon_ast::types::DataType::Logic,
+                kind: mivon_ast::types::DeclKind::Logic,
+                names: vec![mivon_ast::types::DeclVar {
+                    name: Symbol::intern("a"),
+                    range: None,
+                    expr_range: None,
+                    array_range: None,
+                    array_size_expr: None,
+                    extra_unpacked_dims: Vec::new(),
+                    extra_packed_dims: Vec::new(),
+                    is_dynamic: false,
+                    is_queue: false,
+                    is_associative: false,
+                    assoc_key_type: None,
+                    is_rand: false,
+                    is_const: false,
+                    is_static: false,
+                    expr: None,
+                    col: 0,
+                    line: 1,
+                }],
+            }),
+        ];
+        assert_eq!(count_generates(&items), 2);
+    }
 }
