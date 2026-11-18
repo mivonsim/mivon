@@ -164,4 +164,18 @@ mod tests {
         assert!(s.contains("top"));
         assert!(s.contains("97%"));
     }
+
+    #[test]
+    fn test_meets_coverage_true() {
+        let report = make_report();
+        assert!(report.meets_coverage(0.95));
+        assert!(report.meets_coverage(0.90));
+    }
+
+    #[test]
+    fn test_meets_coverage_false() {
+        let report = make_report();
+        assert!(!report.meets_coverage(0.98));
+        assert!(!report.meets_coverage(1.0));
+    }
 }
