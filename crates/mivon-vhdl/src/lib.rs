@@ -1,4 +1,4 @@
-//! LANG-01: VHDL front-end — STUB stage 1-20 (Critical, open).
+//! LANG-01: VHDL front-end — STUB stage 1-21 (Critical, open).
 //!
 //! mivon tidak memiliki dukungan VHDL sama sekali. Stage 1 adalah scanner
 //! terbatas yang mengenali batas `entity` / `architecture` dari source VHDL
@@ -19,7 +19,7 @@
 //! stage 17 mengekstrak deklarasi `group template` (nama + tipe grup),
 //! stage 18 mengekstrak instansi komponen (label + nama komponen),
 //! stage 19 mengekstrak blok (label), stage 20 mengekstrak pernyataan
-//! `assert` (baris).
+//! `assert` (baris), stage 21 mengekstrak pernyataan `report` (baris).
 //! Semuanya kasar: nama + mode/tipe. BUKAN parser
 //! lengkap: belum mem-parse concurrent/sequential statement dalam process,
 //! maupun tipe VHDL penuh. Belum di-wire ke pipeline compile (lexer/parser
@@ -270,6 +270,14 @@ pub struct VhdlAssert {
     pub line: usize,
 }
 
+/// Satu pernyataan `report` VHDL (stage 21: ekstraksi kasar baris).
+/// Bentuk: `report <pesan> severity <level>;`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VhdlReport {
+    /// 1-based baris tempat kata kunci `report` muncul.
+    pub line: usize,
+}
+
 /// Satu arsitektur VHDL yang dikenali.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VhdlArchitecture {
@@ -322,6 +330,8 @@ pub struct VhdlScan {
     pub blocks: Vec<VhdlBlock>,
     /// Pernyataan `assert` (stage 20, kasar: baris).
     pub asserts: Vec<VhdlAssert>,
+    /// Pernyataan `report` (stage 21, kasar: baris).
+    pub reports: Vec<VhdlReport>,
 }
 
 /// Kesalahan scan tingkat rendah (stage 1).
@@ -605,6 +615,7 @@ pub fn scan(src: &str) -> Result<VhdlScan, VhdlScanError> {
     res.component_insts = extract_component_inst(src);
     res.blocks = extract_block(src);
     res.asserts = extract_assert(src);
+    res.reports = extract_report(src);
     Ok(res)
 }
 
@@ -1693,6 +1704,39 @@ pub fn extract_assert(src: &str) -> Vec<VhdlAssert> {
     out
 }
 
+/// Ekstrak pernyataan `report` dari seluruh source (stage 21, kasar).
+///
+/// Mendeteksi `report <pesan> severity <level>;`. Hanya baris dicatat.
+/// Hentikan scan per pernyataan di `;`. Komentar `--` sudah dibuang oleh
+/// `tokenize`.
+pub fn extract_report(src: &str) -> Vec<VhdlReport> {
+    let toks = tokenize(src);
+    let n = toks.len();
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i < n {
+        let (ln, _, t) = &toks[i];
+        if let Tok::Word(w) = t {
+            if w.to_ascii_lowercase() == "report" {
+                out.push(VhdlReport { line: *ln });
+                let mut j = i + 1;
+                while j < n {
+                    if matches!(&toks[j].2, Tok::Punct(';')) {
+                        break;
+                    }
+                    j += 1;
+                }
+                i = j;
+            } else {
+                i += 1;
+            }
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
 /// Buang komentar baris `--` dari sebuah teks.
 fn strip_comments(s: &str) -> String {
     let ch: Vec<char> = s.chars().collect();
@@ -2522,5 +2566,25 @@ assert y < 10 severity warning;
     fn extract_assert_no_assert_is_empty() {
         // Source tanpa `assert` -> kosong.
         assert!(extract_assert("signal a : bit;").is_empty());
+    }
+
+    #[test]
+    fn scan_extracts_reports() {
+        // Pernyataan `report` diekstrak (baris).
+        let src = "\
+report \"startup\" severity note;
+signal a : bit;
+report \"done\" severity error;
+";
+        let s = scan(src).unwrap();
+        assert_eq!(s.reports.len(), 2, "{s:?}");
+        assert_eq!(s.reports[0].line, 1);
+        assert_eq!(s.reports[1].line, 3);
+    }
+
+    #[test]
+    fn extract_report_no_report_is_empty() {
+        // Source tanpa `report` -> kosong.
+        assert!(extract_report("signal a : bit;").is_empty());
     }
 }

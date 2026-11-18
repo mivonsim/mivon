@@ -9311,12 +9311,34 @@ VERIFIKASI ROUND 278:
   - cargo check --workspace -> bersih (tanpa regresi lintas-crate).
   - Review agent: LOLOS.
 
-Status LANG-01: ⚠️ STUB (stage 1-20) — scanner entity/architecture + port/
+═══ ROUND 279 — LANG-01 (stage 21): ekstraksi pernyataan report VHDL ═══
+
+Ruang lingkup: lanjutkan stub LANG-01 (krate mivon-vhdl) — ekstraksi pernyataan
+`report <pesan> severity <level>;` (baris), melengkapi konstruk VHDL yang
+dikenali.
+
+Perubahan (crates/mivon-vhdl/src/lib.rs):
+  - Tambah `VhdlReport { line }` dan field `reports: Vec<VhdlReport>` di
+    `VhdlScan`.
+  - Fungsi publik `extract_report(src)`: case-insensitive, deteksi kata kunci
+    `report`, lompat ke `;` berikutnya. Dipanggil di akhir `scan()`.
+  - Doc header update ke "stage 1-21".
+  - +2 test diskriminatif (total 52):
+    * scan_extracts_reports: 2 report -> baris persis.
+    * extract_report_no_report_is_empty: tanpa report -> kosong.
+
+VERIFIKASI ROUND 279:
+  - rustfmt --edition 2021 --check (lib.rs) -> bersih.
+  - cargo nextest run -p mivon-vhdl -> 52 passed (50 lama + 2 baru).
+  - cargo check --workspace -> bersih (tanpa regresi lintas-crate).
+  - Review agent: LOLOS.
+
+Status LANG-01: ⚠️ STUB (stage 1-21) — scanner entity/architecture + port/
   generic + signal + component + process + library/use + package +
   subprogram + type/subtype + constant + alias + configuration + variable +
-  file + attribute + group + instansi komponen + blok + assert ada di krate
-  terisolasi; sisa open: parser VHDL penuh, concurrent/sequential statement,
-  elaborasi, simulasi, wiring pipeline.
+  file + attribute + group + instansi komponen + blok + assert + report ada
+  di krate terisolasi; sisa open: parser VHDL penuh, concurrent/sequential
+  statement, elaborasi, simulasi, wiring pipeline.
 
 
 \\=======================================================================//
