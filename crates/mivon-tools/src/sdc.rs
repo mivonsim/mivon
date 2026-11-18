@@ -481,4 +481,28 @@ create_clock -name clk -period 10.0 -waveform {0 5} [get_ports clk]
         let doc = SdcDocument::parse(sdc).unwrap();
         assert_eq!(doc.constraints.len(), 1);
     }
+
+    #[test]
+    fn test_sdc_clocks_filter_only_create_clock() {
+        let sdc = "create_clock -name clk -period 10 [get_ports clk]\nset_false_path -from [get_ports a] -to [get_ports b]\ncreate_clock -name clk2 -period 20 [get_ports clk2]";
+        let doc = SdcDocument::parse(sdc).unwrap();
+        let clocks = doc.clocks();
+        assert_eq!(clocks.len(), 2);
+        assert!(clocks.iter().all(|c| matches!(c, SdcConstraint::CreateClock { .. })));
+    }
+
+    #[test]
+    fn test_sdc_load_nonexistent_file() {
+        let doc = SdcDocument::load(std::path::Path::new("/tmp/opencode/nonexistent.sdc"));
+        assert!(doc.is_err());
+        assert!(doc.unwrap_err().contains("cannot read"));
+    }
+
+    #[test]
+    fn test_sdc_summary_multiple_types() {
+        let sdc = "create_clock -name clk -period 10 [get_ports clk]\nset_input_delay 2.5 -clock clk [get_ports data]\nset_false_path -from [get_ports a] -to [get_ports b]";
+        let doc = SdcDocument::parse(sdc).unwrap();
+        let s = doc.summary();
+        assert!(s.contains("3 constraints"));
+    }
 }
