@@ -21,7 +21,7 @@ P1 — HIGH (Required for 100-module designs)
 13. Fix NBA ordering (#SCHED-02)
 14. Implement gate-level support (#CRIT-020)
 15. Implement uvm_callback (#CRIT-031)
-16. Add UPF power simulation (#CRIT-012)
+16. ✅ Add UPF power simulation (#CRIT-012) — PowerIntent + UPF parser, power domains, supply nets, power state evaluation; 12 UPF tests pass
 
 P2 — HIGH (Required for 1000-module designs)
 
