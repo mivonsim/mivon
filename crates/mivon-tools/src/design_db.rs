@@ -80,6 +80,14 @@ impl DesignDatabase {
         self.designs.contains_key(top.as_str())
     }
 
+    /// Ambil semua entri desain (top module → metadata) untuk iterasi / ekspor.
+    pub fn get_all(&self) -> Vec<(Symbol, DesignEntry)> {
+        self.designs
+            .iter()
+            .map(|(k, v)| (Symbol::intern(k), v.clone()))
+            .collect()
+    }
+
     /// Hapus entri desain menurut nama top module.
     pub fn remove(&mut self, top: &Symbol) -> bool {
         self.designs.remove(top.as_str()).is_some()
@@ -270,5 +278,30 @@ mod tests {
         assert_eq!(db.len(), 1);
         let got = db.get(&Symbol::intern("top")).unwrap();
         assert_eq!(got.checksum, "def456");
+    }
+
+    #[test]
+    fn get_all_returns_all_entries() {
+        let mut db = DesignDatabase::new();
+        db.record(DesignEntry::new(
+            Symbol::intern("a"),
+            vec!["a.sv".into()],
+            1,
+            1,
+            "x".into(),
+        ));
+        db.record(DesignEntry::new(
+            Symbol::intern("b"),
+            vec!["b.sv".into()],
+            2,
+            2,
+            "y".into(),
+        ));
+        let mut all = db.get_all();
+        all.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()));
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0].0, Symbol::intern("a"));
+        assert_eq!(all[1].0, Symbol::intern("b"));
+        assert_eq!(all[1].1.signal_count, 2);
     }
 }
