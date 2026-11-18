@@ -9422,13 +9422,34 @@ VERIFIKASI ROUND 283:
   - cargo check --workspace -> bersih (tanpa regresi lintas-crate).
   - Review agent: LOLOS.
 
-Status LANG-01: ⚠️ STUB (stage 1-24) — scanner entity/architecture + port/
+═══ ROUND 284 — LANG-01 (stage 25): ekstraksi pernyataan null VHDL ═══
+
+Ruang lingkup: lanjutkan stub LANG-01 (krate mivon-vhdl) — ekstraksi pernyataan
+`null;` (baris), melengkapi konstruk VHDL yang dikenali.
+
+Perubahan (crates/mivon-vhdl/src/lib.rs):
+  - Tambah `VhdlNullStmt { line }` dan field `null_stmts: Vec<VhdlNullStmt>`
+    di `VhdlScan`.
+  - Fungsi publik `extract_null_stmt(src)`: deteksi kata `null` diikuti `;`.
+    Dipanggil di akhir `scan()`.
+  - Doc header update ke "stage 1-25".
+  - +2 test diskriminatif (total 60):
+    * scan_extracts_null_stmts: 2 null -> baris persis.
+    * extract_null_stmt_no_null_is_empty: tanpa null -> kosong.
+
+VERIFIKASI ROUND 284:
+  - rustfmt --edition 2021 --check (lib.rs) -> bersih.
+  - cargo nextest run -p mivon-vhdl -> 60 passed (58 lama + 2 baru).
+  - cargo check --workspace -> bersih (tanpa regresi lintas-crate).
+  - Review agent: LOLOS.
+
+Status LANG-01: ⚠️ STUB (stage 1-25) — scanner entity/architecture + port/
   generic + signal + component + process + library/use + package +
   subprogram + type/subtype + constant + alias + configuration + variable +
   file + attribute + group + instansi komponen + blok + assert + report +
-  wait + penetapan konkuren + generate ada di krate terisolasi; sisa open:
-  parser VHDL penuh, concurrent/sequential statement, elaborasi, simulasi,
-  wiring pipeline.
+  wait + penetapan konkuren + generate + null ada di krate terisolasi;
+  sisa open: parser VHDL penuh, concurrent/sequential statement, elaborasi,
+  simulasi, wiring pipeline.
 
 
 \\=======================================================================//

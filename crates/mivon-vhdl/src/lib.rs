@@ -1,4 +1,4 @@
-//! LANG-01: VHDL front-end — STUB stage 1-24 (Critical, open).
+//! LANG-01: VHDL front-end — STUB stage 1-25 (Critical, open).
 //!
 //! mivon tidak memiliki dukungan VHDL sama sekali. Stage 1 adalah scanner
 //! terbatas yang mengenali batas `entity` / `architecture` dari source VHDL
@@ -22,7 +22,8 @@
 //! `assert` (baris), stage 21 mengekstrak pernyataan `report` (baris),
 //! stage 22 mengekstrak pernyataan `wait` (baris),
 //! stage 23 mengekstrak penetapan sinyal konkuren `<=`,
-//! stage 24 mengekstrak generate statement (label + baris).
+//! stage 24 mengekstrak generate statement (label + baris),
+//! stage 25 mengekstrak pernyataan `null` (baris).
 //! Semuanya kasar: nama + mode/tipe. BUKAN parser
 //! lengkap: belum mem-parse concurrent/sequential statement dalam process,
 //! maupun tipe VHDL penuh. Belum di-wire ke pipeline compile (lexer/parser
@@ -307,6 +308,14 @@ pub struct VhdlGenerate {
     pub line: usize,
 }
 
+/// Satu pernyataan `null` VHDL (stage 25: ekstraksi kasar baris).
+/// Bentuk: `null;`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VhdlNullStmt {
+    /// 1-based baris tempat kata kunci `null` muncul.
+    pub line: usize,
+}
+
 /// Satu arsitektur VHDL yang dikenali.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VhdlArchitecture {
@@ -367,6 +376,8 @@ pub struct VhdlScan {
     pub concurrent_assigns: Vec<VhdlConcurrentAssign>,
     /// Generate statement (stage 24, kasar: label + baris).
     pub generates: Vec<VhdlGenerate>,
+    /// Pernyataan `null` (stage 25, kasar: baris).
+    pub null_stmts: Vec<VhdlNullStmt>,
 }
 
 /// Kesalahan scan tingkat rendah (stage 1).
@@ -654,6 +665,7 @@ pub fn scan(src: &str) -> Result<VhdlScan, VhdlScanError> {
     res.waits = extract_wait(src);
     res.concurrent_assigns = extract_concurrent_assign(src);
     res.generates = extract_generate(src);
+    res.null_stmts = extract_null_stmt(src);
     Ok(res)
 }
 
@@ -1871,6 +1883,29 @@ pub fn extract_generate(src: &str) -> Vec<VhdlGenerate> {
     out
 }
 
+/// Ekstrak pernyataan `null` VHDL dari seluruh source (stage 25, kasar).
+///
+/// Mendeteksi `null;` (kata `null` diikuti `;`). Hanya baris dicatat.
+/// Komentar `--` sudah dibuang oleh `tokenize`.
+pub fn extract_null_stmt(src: &str) -> Vec<VhdlNullStmt> {
+    let toks = tokenize(src);
+    let n = toks.len();
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i + 1 < n {
+        let (ln, _, t) = &toks[i];
+        if let Tok::Word(w) = t {
+            if w.to_ascii_lowercase() == "null" && matches!(&toks[i + 1].2, Tok::Punct(';')) {
+                out.push(VhdlNullStmt { line: *ln });
+                i += 2;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
 /// Buang komentar baris `--` dari sebuah teks.
 fn strip_comments(s: &str) -> String {
     let ch: Vec<char> = s.chars().collect();
@@ -2788,5 +2823,26 @@ end generate;
     fn extract_generate_no_generate_is_empty() {
         // Source tanpa `generate` -> kosong.
         assert!(extract_generate("signal a : bit;").is_empty());
+    }
+
+    #[test]
+    fn scan_extracts_null_stmts() {
+        // Pernyataan `null` diekstrak (baris).
+        let src = "\
+null;
+signal a : bit;
+null;
+";
+        let s = scan(src).unwrap();
+        assert_eq!(s.null_stmts.len(), 2, "{s:?}");
+        assert_eq!(s.null_stmts[0].line, 1);
+        assert_eq!(s.null_stmts[1].line, 3);
+    }
+
+    #[test]
+    fn extract_null_stmt_no_null_is_empty() {
+        // Source tanpa `null;` -> kosong.
+        assert!(extract_null_stmt("signal a : bit;").is_empty());
+        assert!(extract_null_stmt("a <= b;").is_empty());
     }
 }
