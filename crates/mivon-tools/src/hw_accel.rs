@@ -102,6 +102,26 @@ impl HwAccelManager {
             .map(|s| s.bitstream_loaded && s.pcie_connected && s.clock_mhz.is_some())
             .unwrap_or(false)
     }
+
+    /// Daftar nama semua akselerator terdaftar.
+    pub fn list_accelerators(&self) -> Vec<String> {
+        self.accelerators.lock().unwrap().keys().cloned().collect()
+    }
+
+    /// Ambil klon status akselerator menurut nama.
+    pub fn get_accelerator(&self, name: &str) -> Option<HwAccelStatus> {
+        self.accelerators.lock().unwrap().get(name).cloned()
+    }
+
+    /// Hapus akselerator menurut nama.
+    pub fn remove_accelerator(&self, name: &str) -> bool {
+        self.accelerators.lock().unwrap().remove(name).is_some()
+    }
+
+    /// Hapus semua akselerator.
+    pub fn clear_accelerators(&self) {
+        self.accelerators.lock().unwrap().clear();
+    }
 }
 
 #[cfg(test)]
@@ -141,5 +161,45 @@ mod tests {
         let mgr = HwAccelManager::new();
         assert_eq!(mgr.count(), 0);
         assert!(!mgr.is_ready("any"));
+    }
+
+    #[test]
+    fn list_accelerators_tracks_all() {
+        let mgr = HwAccelManager::new();
+        assert!(mgr.list_accelerators().is_empty());
+        mgr.register("fpga1", HwAccelTarget::Fpga);
+        mgr.register("gpu1", HwAccelTarget::Gpu);
+        let mut list = mgr.list_accelerators();
+        list.sort();
+        assert_eq!(
+            list,
+            vec!["fpga1".to_string(), "gpu1".to_string()]
+        );
+        assert_eq!(mgr.count(), 2);
+    }
+
+    #[test]
+    fn get_and_remove_accelerator() {
+        let mgr = HwAccelManager::new();
+        mgr.register("fpga1", HwAccelTarget::Fpga);
+        let a = mgr.get_accelerator("fpga1").unwrap();
+        assert!(matches!(a.target, HwAccelTarget::Fpga));
+        assert!(!a.bitstream_loaded);
+        assert!(mgr.get_accelerator("nope").is_none());
+        assert!(mgr.remove_accelerator("fpga1"));
+        assert!(mgr.get_accelerator("fpga1").is_none());
+        assert!(!mgr.remove_accelerator("fpga1"));
+        assert_eq!(mgr.count(), 0);
+    }
+
+    #[test]
+    fn clear_accelerators_empties_manager() {
+        let mgr = HwAccelManager::new();
+        mgr.register("fpga1", HwAccelTarget::Fpga);
+        mgr.register("gpu1", HwAccelTarget::Gpu);
+        assert_eq!(mgr.count(), 2);
+        mgr.clear_accelerators();
+        assert!(mgr.list_accelerators().is_empty());
+        assert_eq!(mgr.count(), 0);
     }
 }
