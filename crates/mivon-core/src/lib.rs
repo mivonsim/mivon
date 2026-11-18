@@ -12,6 +12,7 @@ pub mod checksum;
 pub mod config;
 pub mod error;
 pub mod logic;
+pub mod platform;
 pub mod template;
 
 // Diagnostics + intern dipindah ke mivon-diag (single owner). Re-export agar

@@ -6,6 +6,7 @@
 pub mod diagnostics;
 pub mod envdiag;
 pub mod intern;
+pub mod ai_debug;
 
 pub use diagnostics::{
     all_codes, cumulative_to_file_line, diag_global, format_diagnostic, format_suggestion,

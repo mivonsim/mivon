@@ -1,3 +1,4 @@
+pub mod ams;
 pub mod arena;
 pub mod checkpoint;
 pub mod cosim;
@@ -51,6 +52,7 @@ pub mod upf;
 pub mod util;
 pub mod value;
 
+pub use ams::*;
 pub use engine::*;
 pub use jit::*;
 #[cfg(feature = "jit")]
