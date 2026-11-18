@@ -15,7 +15,7 @@ P0 — CRITICAL (Immediate, must fix before any production use)
 P1 — HIGH (Required for 100-module designs)
 
 9. ✅ Implement LSP server (#CRIT-007) — tower-lsp 0.20, diagnostics via preprocessor→lexer→parser, --lsp CLI flag; 121 mivon-env tests pass
-10. Implement DPI-C full (#CRIT-009)
+10. ✅ Implement DPI-C full (#CRIT-009) — DPI engine (libloading, scope mgmt, type marshalling, export registry, chandle, svGet/svPut); 417 mivon-simulator tests pass with dpi feature
 11. ✅ Fix event queue efficiency (#PERF-01) — hierarchical timing wheel
 12. ✅ Implement signal history bounds with disk spill (#CRIT-019)
 13. Fix NBA ordering (#SCHED-02)
