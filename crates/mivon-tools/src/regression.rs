@@ -151,6 +151,11 @@ impl RegressionDb {
         }
     }
 
+    /// Jumlah total run yang tercatat.
+    pub fn run_count(&self) -> usize {
+        self.runs.len()
+    }
+
     /// Summary report.
     pub fn summary(&self) -> String {
         let total_runs = self.runs.len();
@@ -391,5 +396,14 @@ mod tests {
         let json = serde_json::to_string(&db).unwrap();
         let restored: RegressionDb = serde_json::from_str(&json).unwrap();
         assert_eq!(restored.runs.len(), 1);
+    }
+
+    #[test]
+    fn run_count_tracks_recorded_runs() {
+        let mut db = RegressionDb::new();
+        assert_eq!(db.run_count(), 0);
+        db.record(make_run(vec![("t1", true)]));
+        db.record(make_run(vec![("t2", false)]));
+        assert_eq!(db.run_count(), 2);
     }
 }
