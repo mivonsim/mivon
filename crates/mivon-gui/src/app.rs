@@ -501,6 +501,31 @@ impl MivonApp {
             _ => {}
         }
 
+        // Input debugger panel (bp/wp/clear/debug on/off) saat tab Debugger aktif.
+        if self.state.bottom_tab == BottomTab::Debugger && !self.state.lsp_completion_show {
+            match key.code {
+                KeyCode::Esc => {
+                    self.state.debug_input.clear();
+                    return;
+                }
+                KeyCode::Enter => {
+                    let cmd = self.state.debug_input.clone();
+                    self.state.debug_input.clear();
+                    app_cmds::trigger_debug_cmd(&mut self.state, cmd);
+                    return;
+                }
+                KeyCode::Backspace => {
+                    self.state.debug_input.pop();
+                    return;
+                }
+                KeyCode::Char(c) => {
+                    self.state.debug_input.push(c);
+                    return;
+                }
+                _ => {}
+            }
+        }
+
         // Editor interaktif: saat file aktif, keyboard mengedit teks nyata.
         if self.state.active_file.is_some() && self.handle_editor_key(key) {
             return;

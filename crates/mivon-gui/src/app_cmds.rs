@@ -201,6 +201,9 @@ pub fn trigger_format(state: &mut GuiState) {
 
 /// Jalankan perintah terminal (input bar).
 pub fn trigger_terminal(state: &mut GuiState, cmd: String) {
+    if trigger_debug_cmd(state, cmd.clone()) {
+        return;
+    }
     if cmd.trim().is_empty() {
         return;
     }
@@ -228,6 +231,36 @@ pub fn trigger_terminal(state: &mut GuiState, cmd: String) {
     state.term_hist_idx = usize::MAX;
     let cwd = state.project_root.clone();
     spawn_term(state.tx.clone(), cmd, cwd);
+}
+
+/// Jalankan perintah debugger dari input panel debugger atau terminal
+/// (`bp`/`break`, `wp`/`watch`, `clear`, `debug on/off`).
+/// Mengembalikan true bila perintah ditangani sebagai debugger (bukan shell).
+pub fn trigger_debug_cmd(state: &mut GuiState, cmd: String) -> bool {
+    if cmd.trim().is_empty() {
+        return true;
+    }
+    let lower = cmd.trim().to_lowercase();
+    if lower == "clear" {
+        state.clear_debug();
+        return true;
+    }
+    if lower == "debug on" || lower == "debug off" {
+        state.debug_mode = lower.ends_with("on");
+        state.log(format!("🐞 debug mode {}", if state.debug_mode { "ON" } else { "OFF" }));
+        return true;
+    }
+    if lower.starts_with("bp ") || lower.starts_with("break ") {
+        let spec = cmd.split_once(' ').map(|(_, r)| r).unwrap_or("").to_string();
+        state.add_breakpoint(&spec);
+        return true;
+    }
+    if lower.starts_with("wp ") || lower.starts_with("watch ") {
+        let name = cmd.split_once(' ').map(|(_, r)| r).unwrap_or("").to_string();
+        state.add_watchpoint(&name);
+        return true;
+    }
+    false
 }
 
 /// Generate .sv/.svh dari file .mv/.mvh aktif.
