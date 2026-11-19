@@ -118,6 +118,7 @@ impl MivonApp {
                 },
                 GuiEvent::SimDone(result) => {
                     self.state.is_running = false;
+                    self.state.is_paused = false;
                     match result {
                         Ok(info) => {
                             if let Some(ci) = self.state.compile_info.as_mut() {
@@ -334,6 +335,15 @@ impl MivonApp {
             }
             KeyCode::F(7) => {
                 app_cmds::trigger_compile(&mut self.state);
+                return;
+            }
+            KeyCode::F(8) => {
+                // Pause / Resume simulasi.
+                if self.state.is_running && !self.state.is_paused {
+                    app_cmds::trigger_pause(&mut self.state);
+                } else if self.state.is_paused {
+                    app_cmds::trigger_run(&mut self.state); // resume
+                }
                 return;
             }
             _ => {}

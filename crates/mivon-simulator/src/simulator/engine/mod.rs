@@ -143,6 +143,12 @@ pub struct SimulationEngine {
     /// Flag pembatalan eksternal (GUI "Stop"). Diperiksa setiap time step di
     /// run loop — jika bernilai true, simulasi berhenti lebih awal.
     pub cancel_flag: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    /// Flag jeda eksternal (GUI "Pause"). Diperiksa setiap time step di run
+    /// loop — jika bernilai true, engine menetukan `paused = true` dan keluar
+    /// dari loop (kembali Ok), sehingga GUI dapat resume dengan memanggil run
+    /// lagi. Bedanya dengan cancel_flag: pause tidak mengakhiri run secara
+    /// permanen, hanya menyederhakan eksekusi sementara.
+    pub pause_flag: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// Event queue per time step. Di-index RELATIF terhadap `events_base`:
     /// slot `i` menyimpan event untuk waktu `events_base + i`. Slot yang sudah
     /// diproses dibuang secara periodik (lihat `retire_events`) sehingga

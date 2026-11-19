@@ -47,14 +47,26 @@ pub fn trigger_compile(state: &mut GuiState) {
 
 /// Jalankan simulasi pada design ter-compile.
 pub fn trigger_run(state: &mut GuiState) {
+    // Resume dari Pause: lepas pause_flag pada engine yang sama yang sedang
+    // menunggu di worker. Jangan spawn worker baru (race dengan yang lama).
+    if state.is_paused {
+        state.pause_flag.store(false, Ordering::Relaxed);
+        state.is_running = true;
+        state.is_paused = false;
+        state.log("▶ Resume simulasi...");
+        return;
+    }
     if state.is_running {
         return;
     }
+    // Pastikan tidak ada sisa flag pause/cancel dari run sebelumnya.
+    state.pause_flag.store(false, Ordering::Relaxed);
+    state.cancel_flag.store(false, Ordering::Relaxed);
+
     let Some(design) = state.design.clone() else {
         state.log("⚠ Compile dulu sebelum run");
         return;
     };
-    state.cancel_flag.store(false, Ordering::Relaxed);
     state.prev_waveform = state.waveform.clone();
     if !state.prev_waveform.is_empty() {
         state.log(format!(
@@ -62,17 +74,31 @@ pub fn trigger_run(state: &mut GuiState) {
             state.prev_waveform.len()
         ));
     }
-    state.log(format!("▶ Simulasi (T={})...", state.max_time));
+    state.log(format!(
+        "▶ Simulasi (T={})...", state.max_time));
     state.is_running = true;
+    state.is_paused = false;
     let max_time = state.max_time;
     let tx = state.tx.clone();
     let cancel = state.cancel_flag.clone();
+    let pause = state.pause_flag.clone();
     let debug = DebugConfig {
         breakpoints: state.breakpoints.clone(),
         watchpoints: state.watchpoints.clone(),
         enabled: state.debug_mode,
     };
-    spawn_sim(tx, design, max_time, cancel, debug);
+    spawn_sim(tx, design, max_time, cancel, pause, debug);
+}
+
+/// Jeda simulasi yang berjalan (Pause). Engine menetukan `paused = true` dan
+/// worker menunggu hingga `pause_flag` false (Resume via F5/F8).
+pub fn trigger_pause(state: &mut GuiState) {
+    if !state.is_running || state.is_paused {
+        return;
+    }
+    state.pause_flag.store(true, Ordering::Relaxed);
+    state.is_paused = true;
+    state.log("⏸ Simulasi dijeda (Pause). Tekan F5/F8 untuk resume.");
 }
 
 /// Hentikan simulasi yang berjalan.
@@ -81,7 +107,9 @@ pub fn trigger_stop(state: &mut GuiState) {
         return;
     }
     state.cancel_flag.store(true, Ordering::Relaxed);
+    state.pause_flag.store(false, Ordering::Relaxed); // lepas blokir Pause bila aktif
     state.is_running = false;
+    state.is_paused = false;
 }
 
 /// Jalankan perintah terminal (input bar). Perintah debugger (`bp`/`wp`/`watch`/

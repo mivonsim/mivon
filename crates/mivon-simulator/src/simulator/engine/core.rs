@@ -63,6 +63,7 @@ impl SimulationEngine {
             sev_error_count: 0,
             sev_fatal_count: 0,
             cancel_flag: None,
+            pause_flag: None,
             events: Vec::new(),
             events_base: 0,
             region_scratch: Vec::new(),
@@ -1824,6 +1825,15 @@ impl SimulationEngine {
             // Events queued by dispatch_* functions are now processed in the
             // appropriate IEEE 1800 region.
             self.process_foreign_events()?;
+
+            // ── Pause external (GUI "Pause") ──
+            if self
+                .pause_flag
+                .as_ref()
+                .is_some_and(|f| f.load(std::sync::atomic::Ordering::Relaxed))
+            {
+                self.paused = true;
+            }
 
             // ── Debug check at start of cycle ──
             if self.debug_mode != DebugMode::Normal {

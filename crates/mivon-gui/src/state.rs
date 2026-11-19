@@ -646,11 +646,16 @@ pub struct GuiState {
 
     // ── Simulasi ──
     pub is_running: bool,
+    pub is_paused: bool,
     pub max_time: u64,
     pub sim_time_ms: f64,
     pub cycles: u64,
     /// Flag pembatalan bersama worker thread simulasi (tombol Stop).
     pub cancel_flag: Arc<AtomicBool>,
+    /// Flag jeda bersama worker thread simulasi (tombol Pause). Worker mengecek
+    /// setiap cycle; bila true engine menetukan `paused` dan worker menunggu
+    /// hingga flag false (Resume) sebelum menjalankan run lagi.
+    pub pause_flag: Arc<AtomicBool>,
 
     // ── Waveform ──
     /// Trace waveform hasil simulasi terakhir.
@@ -860,8 +865,10 @@ impl GuiState {
             console: VecDeque::new(),
             signals: Vec::new(),
             is_running: false,
+            is_paused: false,
             max_time: 1000,
             cancel_flag: Arc::new(AtomicBool::new(false)),
+            pause_flag: Arc::new(AtomicBool::new(false)),
             sim_time_ms: 0.0,
             cycles: 0,
             waveform: Vec::new(),

@@ -10,6 +10,8 @@ use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
+use std::thread::sleep;
+use std::time::Duration;
 
 use mivon_compiler::frontend::compile_session::{CompileSession, SessionConfig};
 use mivon_compiler::frontend::module_index::EntryKind;
@@ -950,15 +952,20 @@ pub fn parse_breakpoint(s: &str) -> Option<Breakpoint> {
 
 /// Jalankan simulasi di worker thread. `cancel` adalah flag bersama dengan GUI:
 /// jika di-set true (tombol Stop), simulasi berhenti lebih awal.
+/// `pause` adalah flag jeda (GUI "Pause"): engine menetukan `paused = true`
+/// dan keluar dari loop (kembali Ok); worker lalu mengirim `SimPaused` dan
+/// menunggu `pause` menjadi false (Resume) sebelum menjalankan `engine.run()`
+/// lagi. State simulasi tidak hilang karena engine sama digunakan ulang.
 pub fn spawn_sim(
     tx: Sender<GuiEvent>,
     design: IrDesign,
     max_time: u64,
     cancel: Arc<AtomicBool>,
+    pause: Arc<AtomicBool>,
     debug: DebugConfig,
 ) {
     spawn_worker(move || {
-        let result = run_simulation(&design, max_time, cancel, &debug);
+        let result = run_simulation(&design, max_time, cancel, &pause, &debug);
         let _ = tx.send(GuiEvent::SimDone(result));
     });
 }
@@ -969,11 +976,13 @@ pub fn run_simulation(
     design: &IrDesign,
     max_time: u64,
     cancel: Arc<AtomicBool>,
+    pause: &Arc<AtomicBool>,
     debug: &DebugConfig,
 ) -> Result<SimInfo, String> {
     let start = std::time::Instant::now();
     let mut engine = SimulationEngine::new(design.clone(), max_time);
     engine.cancel_flag = Some(cancel.clone());
+    engine.pause_flag = Some(pause.clone());
 
     // ── Debugger: terapkan breakpoint/watchpoint dari GUI ke engine nyata ──
     let mut parsed_bp: Vec<Breakpoint> = debug
@@ -1016,26 +1025,42 @@ pub fn run_simulation(
         }
     }
 
-    let run_result = engine.run();
+    // ── Loop pausable ──
+    let mut waveform: Vec<WaveformSignal> = Vec::new();
+    let mut signals: Vec<SignalRow> = Vec::new();
+    loop {
+        engine.paused = false;
+        let run_result = engine.run();
 
-    // ── Baca VCD → trace waveform, lalu bersihkan file temporer. Cleanup
-    // dijalankan di SEMUA jalur (sukses, error sim, maupun Stop) supaya file
-    // .vcd tidak menumpuk di /tmp. ──
-    let waveform = if run_result.is_ok() && !engine.is_cancelled() {
-        std::fs::read_to_string(&vcd_path)
-            .map(|text| parse_vcd(&text))
-            .unwrap_or_default()
-    } else {
-        Vec::new()
-    };
-    let _ = std::fs::remove_file(&vcd_path);
-
-    run_result.map_err(|e| e.to_string())?;
-    if engine.is_cancelled() {
-        return Err("Simulasi dihentikan (Stop)".into());
+        if let Err(e) = run_result {
+            let _ = std::fs::remove_file(&vcd_path);
+            return Err(e.to_string());
+        }
+        if engine.is_cancelled() {
+            let _ = std::fs::remove_file(&vcd_path);
+            return Err("Simulasi dihentikan (Stop)".into());
+        }
+        if engine.paused {
+            // Dijeda oleh pause_flag (Pause). Tunggu Resume (pause_flag false)
+            // dengan poll ringan agar worker tidak spin CPU.
+            while pause.load(std::sync::atomic::Ordering::Relaxed) {
+                sleep(Duration::from_millis(50));
+                if engine.is_cancelled() {
+                    let _ = std::fs::remove_file(&vcd_path);
+                    return Err("Simulasi dihentikan (Stop)".into());
+                }
+            }
+            continue;
+        }
+        break;
     }
 
-    let signals: Vec<SignalRow> = engine
+    // Selesai penuh (max_time / $finish) tanpa pause: baca VCD + kumpulkan sinyal.
+    waveform = std::fs::read_to_string(&vcd_path)
+        .map(|text| parse_vcd(&text))
+        .unwrap_or_default();
+    let _ = std::fs::remove_file(&vcd_path);
+    signals = engine
         .design
         .top
         .signals

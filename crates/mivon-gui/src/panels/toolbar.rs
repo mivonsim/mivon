@@ -50,13 +50,17 @@ pub fn show(f: &mut Frame, area: ratatui::layout::Rect, state: &mut GuiState) {
         Paragraph::new(format!("T={}", state.max_time)).style(Style::default().fg(Color::Cyan));
     f.render_widget(max_time, chunks[1]);
 
-    // Run / Stop indicator.
-    let run_status = if state.is_running {
+    // Run / Stop / Pause indicator.
+    let run_status = if state.is_paused {
+        "⏸ Paused".to_string()
+    } else if state.is_running {
         "⏹ Running".to_string()
     } else {
         "▶ Ready".to_string()
     };
-    let run_color = if state.is_running {
+    let run_color = if state.is_paused {
+        Color::Yellow
+    } else if state.is_running {
         Color::Red
     } else {
         Color::Green
@@ -69,7 +73,7 @@ pub fn show(f: &mut Frame, area: ratatui::layout::Rect, state: &mut GuiState) {
     f.render_widget(compile, chunks[3]);
 
     // Status / hints (kanan).
-    let hints = Paragraph::new("F5 Run  |  Ctrl+O Open  |  Ctrl+S Save  |  Ctrl+G Gen  |  Ctrl+Shift+P Palette  |  Ctrl+Q Exit")
+    let hints = Paragraph::new("F5 Run/Resume  |  F8 Pause  |  F7 Compile  |  Ctrl+O Open  |  Ctrl+S Save  |  Ctrl+G Gen  |  Ctrl+Shift+P Palette  |  Ctrl+Q Exit")
         .style(Style::default().fg(Color::Gray).bg(Color::DarkGray));
     f.render_widget(hints, chunks[4]);
 }
