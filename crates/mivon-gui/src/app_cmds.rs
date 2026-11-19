@@ -75,8 +75,10 @@ pub fn trigger_run(state: &mut GuiState) {
             state.prev_waveform.len()
         ));
     }
+    let top = state.selected_top.as_deref().unwrap_or_else(|| design.top.name.as_str());
     state.log(format!(
-        "▶ Simulasi (T={})...", state.max_time));
+        "▶ Simulasi (T={}, top={})...", state.max_time, top
+    ));
     state.is_running = true;
     state.is_paused = false;
     let max_time = state.max_time;

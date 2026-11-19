@@ -98,8 +98,22 @@ impl MivonApp {
                                 .log(format!("🔍 Lint: {} warning(s)", lint.len()));
                             self.state.diagnostics.extend(lint);
                         }
+                        // Tentukan top module: prioritas pending_top (dari --top),
+                        // lalu selected_top yang sudah ada, lalu module pertama
+                        // hasil compile. Dipakai saat Run bila tidak ada pemilih
+                        // lain.
                         if let Some(top) = pending_top {
+                            self.state.selected_top = Some(top.clone());
                             self.state.log(format!("▶ Top module: {}", top));
+                        } else if self.state.selected_top.is_none() {
+                            if let Some(ci) = &self.state.compile_info {
+                                if let Some(first) = ci.modules.first() {
+                                    self.state.selected_top = Some(first.clone());
+                                    self.state.log(format!(
+                                        "📌 Top module default: {}", first
+                                    ));
+                                }
+                            }
                         }
                         self.state
                             .log(format!("✅ Compile selesai ({} module)", modules_len));

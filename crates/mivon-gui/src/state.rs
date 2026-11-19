@@ -824,6 +824,9 @@ pub struct GuiState {
     pub lsp_bin_noted: bool,
     /// Top module yang tertunda (dari argumen --top), diterapkan setelah compile.
     pub pending_top: Option<String>,
+    /// Top module yang dipilih pengguna di GUI (dari daftar module hasil compile).
+    /// Dipakai saat run bila `pending_top` tidak ada.
+    pub selected_top: Option<String>,
     /// Scroll offset editor (baris awal yang ditampilkan).
     pub editor_scroll: usize,
     /// Baris target goto (diset saat lompat ke definisi/diagnostic).
@@ -959,6 +962,7 @@ impl GuiState {
             lsp_auto_restart_blocked: false,
             lsp_bin_noted: false,
             pending_top: None,
+            selected_top: None,
             editor_scroll: 0,
             editor_goto_line: None,
             editor_mode: EditorMode::Normal,
