@@ -5,7 +5,7 @@
 //! daftar issue + skor sintesizability per modul (estimasi persentase).
 
 use mivon_core::intern::Symbol;
-use mivon_ir::{IrDesign, IrExpr, IrLValue, IrModule, IrStmt, Process, SignalInfo};
+use mivon_ir::{IrDesign, IrExpr, IrLValue, IrModule, IrStmt, LogicVec, Process, SignalInfo};
 
 /// Severity issue SYN.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -809,5 +809,160 @@ mod tests {
         });
         let r = check(&ir);
         assert!(r.issues.iter().any(|i| i.code == "SYN-3"));
+    }
+
+    #[test]
+    fn syscall_is_warning() {
+        // SYN-4: system task ($display) di proses → warning
+        let mut ir = empty_design();
+        ir.top.processes.push(Process::Combinational {
+            name: Symbol::intern("comb"),
+            sensitivity: vec![],
+            body: vec![IrStmt::SysCall {
+                name: Symbol::intern("$display"),
+                args: vec![IrExpr::Const(LogicVec::from_u64(42, 32))],
+                line: 0,
+                col: 0,
+            }],
+        });
+        let r = check(&ir);
+        assert!(
+            r.issues.iter().any(|i| i.code == "SYN-4"),
+            "SYN-4 warning untuk system task"
+        );
+    }
+
+    #[test]
+    fn class_signal_is_error() {
+        // SYN-5: sinyal dengan class_name → error
+        let mut ir = empty_design();
+        let mut sig = SignalInfo::default();
+        sig.name = Symbol::intern("obj");
+        sig.class_name = Some(Symbol::intern("uvm_object"));
+        ir.top.signals.push(sig);
+        let r = check(&ir);
+        assert!(
+            r.issues.iter().any(|i| i.code == "SYN-5"),
+            "SYN-5 error untuk class signal"
+        );
+    }
+
+    #[test]
+    fn real_signal_is_error() {
+        // SYN-6: sinyal real → error
+        let mut ir = empty_design();
+        let mut sig = SignalInfo::default();
+        sig.name = Symbol::intern("r");
+        sig.width = 64;
+        sig.is_real = true;
+        ir.top.signals.push(sig);
+        let r = check(&ir);
+        assert!(
+            r.issues.iter().any(|i| i.code == "SYN-6"),
+            "SYN-6 error untuk real signal"
+        );
+    }
+
+    #[test]
+    fn multidriver_signal_is_warning() {
+        // SYN-7: sinyal multi-driver → warning
+        let mut ir = empty_design();
+        let mut sig = SignalInfo::default();
+        sig.name = Symbol::intern("bus");
+        sig.width = 8;
+        sig.multi_driver = true;
+        ir.top.signals.push(sig);
+        let r = check(&ir);
+        assert!(
+            r.issues.iter().any(|i| i.code == "SYN-7"),
+            "SYN-7 warning untuk multi-driver signal"
+        );
+    }
+
+    #[test]
+    fn nonconst_for_loop_is_error() {
+        // SYN-8: for loop dengan kondisi non-konstan → error
+        let mut ir = empty_design();
+        ir.top.signals.push(SignalInfo {
+            name: Symbol::intern("x"),
+            width: 32,
+            kind: mivon_ir::SignalKind::Reg,
+            ..Default::default()
+        });
+        ir.top.signals.push(SignalInfo {
+            name: Symbol::intern("n"),
+            width: 32,
+            kind: mivon_ir::SignalKind::Reg,
+            ..Default::default()
+        });
+        ir.top.processes.push(Process::Sequential {
+            name: Symbol::intern("ff"),
+            clock: mivon_ir::ClockEdge::PosEdge(0),
+            reset: None,
+            body: vec![IrStmt::LoopFor {
+                init: Some(Box::new(IrStmt::BlockingAssign {
+                    lhs: IrLValue::Signal(0, 32),
+                    rhs: IrExpr::Const(LogicVec::from_u64(0, 32)),
+                    delay: None,
+                })),
+                cond: IrExpr::BinaryOp(
+                    mivon_ir::BinaryIrOp::Lt,
+                    Box::new(IrExpr::Signal(0, 32)),
+                    Box::new(IrExpr::Signal(1, 32)),
+                ),
+                step: Some(Box::new(IrStmt::BlockingAssign {
+                    lhs: IrLValue::Signal(0, 32),
+                    rhs: IrExpr::BinaryOp(
+                        mivon_ir::BinaryIrOp::Add,
+                        Box::new(IrExpr::Signal(0, 32)),
+                        Box::new(IrExpr::Const(LogicVec::from_u64(1, 32))),
+                    ),
+                    delay: None,
+                })),
+                body: vec![IrStmt::Null],
+            }],
+            iff: None,
+        });
+        let r = check(&ir);
+        assert!(
+            r.issues.iter().any(|i| i.code == "SYN-8"),
+            "SYN-8 error untuk non-const for loop"
+        );
+    }
+
+    #[test]
+    fn latch_in_comb_is_warning() {
+        // SYN-9: if tanpa else di proses combinational → warning
+        let mut ir = empty_design();
+        ir.top.signals.push(SignalInfo {
+            name: Symbol::intern("a"),
+            width: 1,
+            kind: mivon_ir::SignalKind::Reg,
+            ..Default::default()
+        });
+        ir.top.signals.push(SignalInfo {
+            name: Symbol::intern("b"),
+            width: 1,
+            kind: mivon_ir::SignalKind::Wire,
+            ..Default::default()
+        });
+        ir.top.processes.push(Process::Combinational {
+            name: Symbol::intern("comb"),
+            sensitivity: vec![],
+            body: vec![IrStmt::If {
+                cond: IrExpr::Signal(0, 1),
+                true_branch: vec![IrStmt::BlockingAssign {
+                    lhs: IrLValue::Signal(1, 1),
+                    rhs: IrExpr::Const(LogicVec::from_u64(1, 1)),
+                    delay: None,
+                }],
+                false_branch: vec![],
+            }],
+        });
+        let r = check(&ir);
+        assert!(
+            r.issues.iter().any(|i| i.code == "SYN-9"),
+            "SYN-9 warning untuk latch inference"
+        );
     }
 }
