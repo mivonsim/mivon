@@ -324,6 +324,50 @@ endmodule
 }
 
 #[test]
+fn test_jit_body_active_by_default() {
+    // Regresi JIT-01: compiled-code simulation (MIR process-body JIT) harus
+    // aktif secara default (use_mir_jit = true) tanpa pemanggilan eksplisit
+    // set_use_mir_jit. Engine mencoba JIT untuk body yang aman dan fallback
+    // ke interpreter untuk body tak aman (delay, case multi-item, loop, dll.).
+    let source = r#"
+module test_jit_default;
+    reg [7:0] out;
+    always_comb begin
+        out = 10 + 20;
+    end
+    initial begin
+        #1;
+        $finish;
+    end
+endmodule
+"#;
+    let design = crate::compile_str(source).unwrap();
+    let mut engine = crate::simulator::SimulationEngine::new(design, 10);
+    // Tidak memanggil set_use_mir_jit — harus sudah aktif secara default.
+    assert!(engine.use_mir_jit, "MIR JIT harus aktif secara default");
+    let result = engine.run();
+    assert!(
+        result.is_ok(),
+        "default-on JIT body sim should succeed: {:?}",
+        result.err()
+    );
+    // Seluruh proses always_comb harus telah dikompilasi via MIR JIT.
+    assert!(
+        engine.mir_jit.as_ref().map_or(0, |j| j.compiled_count()) > 0,
+        "MIR JIT harus telah mengkompilasi minimal 1 proses saat default-on"
+    );
+    let out_sig_idx = engine
+        .design
+        .top
+        .signals
+        .iter()
+        .position(|s| s.name.as_str() == "out")
+        .unwrap();
+    let out_val = engine.state.read_signal(out_sig_idx).to_u64();
+    assert_eq!(out_val, 30, "10 + 20 should be 30 via default-on JIT body");
+}
+
+#[test]
 fn test_jit_falls_back_on_x_input() {
     // Guard tri-state: jika proses membaca sinyal X/Z, jalur mir-jit harus
     // fallback ke interpreter agar propagasi X benar. Tanpa guard, aritmetika

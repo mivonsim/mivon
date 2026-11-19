@@ -240,7 +240,7 @@ impl SimulationEngine {
             cycle_based: false,
             cycle_period: 10,
             mir_jit: mivon_compiler::mir::MirJitCompiler::new(),
-            use_mir_jit: false,
+            use_mir_jit: true,
             diag_sink: mivon_core::diagnostics::DiagSink::new(),
             current_delta: 0,
             current_process_name: None,
