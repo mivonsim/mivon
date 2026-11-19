@@ -927,6 +927,13 @@ impl SimulationEngine {
                     .map(|(i, s)| format!("{}={}", s.name, self.state.read_signal(i)))
                     .collect();
                 parts.sort();
+                // Anti-RSS: batasi jumlah snapshot agar tidak tumbuh tanpa batas
+                // selama simulasi panjang (setiap interval = 1 entry). Ring buffer:
+                // buang entri tertua saat mencapai kapasitas.
+                const MAX_TRACE_SNAPSHOTS: usize = 10_000;
+                if self.trace_snapshots.len() >= MAX_TRACE_SNAPSHOTS {
+                    self.trace_snapshots.remove(0);
+                }
                 self.trace_snapshots
                     .push(format!("t{}:{}", t, parts.join(",")));
             }
