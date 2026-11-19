@@ -15,6 +15,7 @@
 
 use crate::mir::mir::*;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Mutex;
 
 use cranelift::codegen::ir::UserFuncName;
@@ -41,6 +42,7 @@ pub struct MirJitCompiler {
     ctx: FunctionBuilderContext,
     cache: Mutex<HashMap<u64, CompiledMirProcess>>,
     compiled_count: Mutex<usize>,
+    cache_path: Option<PathBuf>,
 }
 
 impl MirJitCompiler {
@@ -53,6 +55,7 @@ impl MirJitCompiler {
             ctx,
             cache: Mutex::new(HashMap::new()),
             compiled_count: Mutex::new(0),
+            cache_path: None,
         })
     }
 
@@ -76,16 +79,25 @@ impl MirJitCompiler {
     ) -> Option<CompiledMirProcess> {
         let hash = Self::process_hash(process);
 
-        // Check cache
+        // Check cache. A disk-loaded placeholder has `code_ptr == null()`
+        // (native code is process-lifetime only); treat it as a cache miss
+        // so the process is recompiled rather than returning a null pointer
+        // that callers would transmute and indirect-call → UB (mirrors
+        // jit_cranelift.rs::cache_get placeholder handling).
         {
             let cache = self.cache.lock().unwrap();
             if let Some(cached) = cache.get(&hash) {
-                return Some(CompiledMirProcess {
-                    name: cached.name.clone(),
-                    code_ptr: cached.code_ptr,
-                    n_regs: cached.n_regs,
-                    n_signals: cached.n_signals,
-                });
+                if !cached.code_ptr.is_null() {
+                    return Some(CompiledMirProcess {
+                        name: cached.name.clone(),
+                        code_ptr: cached.code_ptr,
+                        n_regs: cached.n_regs,
+                        n_signals: cached.n_signals,
+                    });
+                }
+                // Stale placeholder: remove so recompile overwrites it.
+                drop(cache);
+                self.cache.lock().unwrap().remove(&hash);
             }
         }
 
@@ -455,6 +467,114 @@ impl MirJitCompiler {
         self.cache.lock().unwrap().clear();
     }
 
+    /// Set persistent cache file path. The cache saves compiled function
+    /// metadata so that on next startup, functions can be pre-populated.
+    /// Native code pointers are ephemeral (process-lifetime), so we save
+    /// metadata to reconstruct the cache on next startup.
+    pub fn set_cache_path(&mut self, path: &str) {
+        self.cache_path = Some(PathBuf::from(path));
+        self.load_cache();
+    }
+
+    /// Save cache metadata to disk using a simple line-based format.
+    /// Format: each line is "hash|name|n_regs|n_signals"
+    pub fn save_cache(&self) -> bool {
+        let path = match &self.cache_path {
+            Some(p) => p,
+            None => return false,
+        };
+
+        let cache = self.cache.lock().unwrap();
+        let mut output = String::new();
+        for (hash, entry) in cache.iter() {
+            output.push_str(&format!(
+                "{}|{}|{}|{}\n",
+                hash, entry.name, entry.n_regs, entry.n_signals
+            ));
+        }
+        drop(cache);
+
+        match std::fs::write(path, &output) {
+            Ok(_) => {
+                eprintln!(
+                    "MIR JIT cache saved: {} entries to {}",
+                    output.lines().count(),
+                    path.display()
+                );
+                true
+            }
+            Err(e) => {
+                eprintln!("MIR JIT cache write error: {}", e);
+                false
+            }
+        }
+    }
+
+    /// Load cache metadata from disk and pre-populate the in-memory cache.
+    pub fn load_cache(&self) -> bool {
+        let path = match &self.cache_path {
+            Some(p) => p,
+            None => return false,
+        };
+
+        let content = match std::fs::read_to_string(path) {
+            Ok(c) => c,
+            Err(_) => return false, // No cache file yet
+        };
+
+        let mut loaded_count = 0usize;
+        let mut cache = self.cache.lock().unwrap();
+        for line in content.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            let parts: Vec<&str> = line.split('|').collect();
+            if parts.len() < 4 {
+                continue;
+            }
+            let hash: u64 = match parts[0].parse() {
+                Ok(h) => h,
+                Err(_) => continue,
+            };
+            let name = parts[1].to_string();
+            let n_regs: usize = match parts[2].parse() {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+            let n_signals: usize = match parts[3].parse() {
+                Ok(w) => w,
+                Err(_) => continue,
+            };
+
+            if let std::collections::hash_map::Entry::Vacant(e) = cache.entry(hash) {
+                let placeholder = CompiledMirProcess {
+                    name,
+                    code_ptr: std::ptr::null(),
+                    n_regs,
+                    n_signals,
+                };
+                e.insert(placeholder);
+                loaded_count += 1;
+            }
+        }
+        drop(cache);
+
+        if loaded_count > 0 {
+            eprintln!(
+                "MIR JIT cache loaded: {} entries from {}",
+                loaded_count,
+                path.display()
+            );
+        }
+        true
+    }
+
+    /// Get cache path.
+    pub fn cache_path(&self) -> Option<&std::path::Path> {
+        self.cache_path.as_deref()
+    }
+
     /// Statistics
     pub fn compiled_count(&self) -> usize {
         *self.compiled_count.lock().unwrap()
@@ -785,5 +905,124 @@ mod tests {
         };
         let compiled = compiler.compile_process(&process, 1);
         assert!(compiled.is_none(), "empty process should return None");
+    }
+
+    #[test]
+    fn test_mir_jit_cache_save_load_roundtrip() {
+        let tmp = std::env::temp_dir().join(format!("mir_jit_cache_test_{}.bin", std::process::id()));
+        let _ = std::fs::remove_file(&tmp);
+
+        // Compiler A: compile a process, then save cache to disk.
+        {
+            let mut compiler = MirJitCompiler::new().unwrap();
+            let process = MirProcess {
+                name: Symbol::intern("cache_proc"),
+                sensitivity: MirSensitivity::AlwaysComb,
+                instrs: vec![MirInstr::Const {
+                    dest: 0,
+                    value: 42,
+                    width: 32,
+                }],
+            };
+            assert!(compiler.compile_process(&process, 2).is_some());
+            assert_eq!(compiler.cache_size(), 1);
+            compiler.set_cache_path(tmp.to_str().unwrap());
+            assert!(compiler.save_cache(), "save_cache should succeed");
+        }
+
+        // Compiler B: fresh compiler, load cache from disk, entry restored as placeholder.
+        let mut compiler_b = MirJitCompiler::new().unwrap();
+        assert_eq!(compiler_b.cache_size(), 0);
+        compiler_b.set_cache_path(tmp.to_str().unwrap());
+        assert_eq!(
+            compiler_b.cache_size(),
+            1,
+            "loaded cache should have 1 entry"
+        );
+        assert_eq!(
+            compiler_b.cache_path(),
+            Some(tmp.as_path()),
+            "cache_path getter should return the set path"
+        );
+
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn test_mir_jit_set_cache_path_no_file_yet() {
+        let tmp = std::env::temp_dir().join(format!("mir_jit_cache_path_test_{}.bin", std::process::id()));
+        let _ = std::fs::remove_file(&tmp);
+
+        let mut compiler = MirJitCompiler::new().unwrap();
+        assert!(compiler.cache_path().is_none());
+        compiler.set_cache_path(tmp.to_str().unwrap());
+        assert_eq!(compiler.cache_path(), Some(tmp.as_path()));
+        // No file yet -> load_cache is a no-op, cache stays empty.
+        assert_eq!(compiler.cache_size(), 0);
+
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn test_mir_jit_recompile_after_load_avoids_null_ptr() {
+        // Reproduces the HIGH finding: load_cache inserts placeholders with
+        // null code_ptr. Recompiling the same process must not hand back a
+        // null pointer to callers.
+        let tmp = std::env::temp_dir().join(format!("mir_jit_null_test_{}.bin", std::process::id()));
+        let _ = std::fs::remove_file(&tmp);
+
+        // Compiler A: compile + save.
+        {
+            let mut compiler = MirJitCompiler::new().unwrap();
+            let process = MirProcess {
+                name: Symbol::intern("null_proc"),
+                sensitivity: MirSensitivity::AlwaysComb,
+                instrs: vec![MirInstr::Const {
+                    dest: 0,
+                    value: 7,
+                    width: 32,
+                }],
+            };
+            assert!(compiler.compile_process(&process, 2).is_some());
+            assert_eq!(compiler.cache_size(), 1);
+            compiler.set_cache_path(tmp.to_str().unwrap());
+            assert!(compiler.save_cache());
+        }
+
+        // Compiler B: load placeholders from disk (all code_ptr == null).
+        let mut compiler_b = MirJitCompiler::new().unwrap();
+        compiler_b.set_cache_path(tmp.to_str().unwrap());
+        assert_eq!(compiler_b.cache_size(), 1);
+
+        // Recompile the same process — must skip the null placeholder and
+        // produce a real (non-null) function pointer.
+        let process = MirProcess {
+            name: Symbol::intern("null_proc"),
+            sensitivity: MirSensitivity::AlwaysComb,
+            instrs: vec![MirInstr::Const {
+                dest: 0,
+                value: 7,
+                width: 32,
+            }],
+        };
+        let compiled = compiler_b.compile_process(&process, 2);
+        assert!(
+            compiled.is_some(),
+            "recompile after load must return Some"
+        );
+        let compiled = compiled.unwrap();
+        assert!(
+            !compiled.code_ptr.is_null(),
+            "compiled code_ptr must not be null after load+recompile"
+        );
+
+        // Sanity: executing the recompiled process does not crash.
+        let mut signals = [0u64; 2];
+        let mut out = [0u64; 2];
+        unsafe {
+            MirJitCompiler::call_process(compiled.code_ptr, &mut signals, &mut out);
+        }
+
+        let _ = std::fs::remove_file(&tmp);
     }
 }
