@@ -38,6 +38,25 @@ pub fn show(f: &mut Frame, area: ratatui::layout::Rect, state: &mut GuiState) {
         items.push(ListItem::new("(belum ada data)").style(Style::default().fg(Color::Gray)));
     }
 
+    // ── Referensi (reverse dependency): modul yang meng-instansiasi ──
+    if !info.rev_deps.is_empty() {
+        items.push(ListItem::new("").style(Style::default()));
+        items.push(ListItem::new("References (modul yang instantiate):").style(
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        ));
+        for rd in &info.rev_deps {
+            let parents: String = rd
+                .children
+                .iter()
+                .map(|(p, c)| format!("{}×{}", p, c))
+                .collect::<Vec<_>>()
+                .join(", ");
+            items.push(ListItem::new(format!("  {} ← {}", rd.module, parents)).style(
+                Style::default().fg(Color::White),
+            ));
+        }
+    }
+
     let list = List::new(items);
     f.render_widget(list, inner);
 }
