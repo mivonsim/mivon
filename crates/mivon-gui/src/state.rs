@@ -58,6 +58,14 @@ pub enum EditorMode {
     Insert,
 }
 
+/// Arah split editor (Vertical = kolom samping, Horizontal = baris bawah).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SplitDirection {
+    #[default]
+    Vertical,
+    Horizontal,
+}
+
 /// File yang terbuka di editor.
 #[derive(Debug, Clone)]
 pub struct OpenFile {
@@ -695,6 +703,18 @@ pub struct GuiState {
     // ── Editor ──
     pub open_files: Vec<OpenFile>,
     pub active_file: Option<usize>,
+    /// Editor split aktif (dua panel menunjukkan dua file berbeda).
+    pub editor_split: bool,
+    /// Arah split (Vertical = kolom samping, Horizontal = baris bawah).
+    pub split_direction: SplitDirection,
+    /// File aktif di panel split kedua (None = split tidak aktif).
+    pub split_active_file: Option<usize>,
+    /// Kursor baris di panel split kedua.
+    pub split_cursor_line: usize,
+    /// Kursor kolom di panel split kedua.
+    pub split_cursor_col: usize,
+    /// Scroll offset di panel split kedua.
+    pub split_scroll: usize,
 
     // ── Compile/Elaborate ──
     pub design: Option<IrDesign>,
@@ -944,6 +964,12 @@ impl GuiState {
             files: Vec::new(),
             open_files: Vec::new(),
             active_file: None,
+            editor_split: false,
+            split_direction: SplitDirection::default(),
+            split_active_file: None,
+            split_cursor_line: 0,
+            split_cursor_col: 0,
+            split_scroll: 0,
             design: None,
             compile_info: None,
             diagnostics: Vec::new(),

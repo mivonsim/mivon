@@ -30,7 +30,7 @@ use super::panels::{bottom_tabs, editor, sidebar, toolbar};
 use super::syntax::is_ident_char;
 use super::state::{
     BottomTab, DiagEntry, DiagLevel, EditorMode, GuiEvent, GuiState, LspPendingKind, SidebarTab,
-    STAGE_SIMULATOR,
+    SplitDirection, STAGE_SIMULATOR,
 };
 use super::workspace::{restore_workspace, save_workspace};
 
@@ -497,6 +497,39 @@ impl MivonApp {
             }
             KeyCode::F(12) => {
                 app_cmds::trigger_formal(&mut self.state);
+                return;
+            }
+            KeyCode::Char('\\') if ctrl => {
+                // Ctrl+\: toggle split editor (dua panel dengan file berbeda).
+                self.state.editor_split = !self.state.editor_split;
+                if self.state.editor_split {
+                    // Inisialisasi split kedua dengan file aktif yang sama,
+                    // atau file berikutnya bila tersedia.
+                    if self.state.split_active_file.is_none() {
+                        self.state.split_active_file = self.state.active_file;
+                    }
+                    self.state.split_cursor_line = self.state.editor_cursor_line;
+                    self.state.split_cursor_col = self.state.editor_cursor_col;
+                    self.state.split_scroll = self.state.editor_scroll;
+                }
+                self.state.log(format!(
+                    "🪟 Split editor: {}",
+                    if self.state.editor_split { "AKTIF" } else { "MATI" }
+                ));
+                return;
+            }
+            KeyCode::Char('/') if ctrl => {
+                // Ctrl+/: toggle arah split (Vertical <-> Horizontal).
+                if self.state.editor_split {
+                    self.state.split_direction = match self.state.split_direction {
+                        SplitDirection::Vertical => SplitDirection::Horizontal,
+                        SplitDirection::Horizontal => SplitDirection::Vertical,
+                    };
+                    self.state.log(format!(
+                        "🪟 Arah split: {:?}",
+                        self.state.split_direction
+                    ));
+                }
                 return;
             }
             KeyCode::Char(' ') if ctrl => {
