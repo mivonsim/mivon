@@ -1005,6 +1005,54 @@ mod tests {
     }
 
     #[test]
+    fn lower_sequential_sync_reset() {
+        // Register dengan reset SINKRON (r#async = false) — harus dijaga di
+        // ResetSpec, jangan diperlakukan sebagai reset async.
+        let mut ir = base_design();
+        let sig = |name: &str, width: usize, kind: SignalKind| {
+            use mivon_ir::SignalInfo;
+            SignalInfo {
+                name: Symbol::intern(name),
+                width,
+                kind,
+                ..Default::default()
+            }
+        };
+        ir.top.signals.push(sig("clk", 1, SignalKind::Input));
+        ir.top.signals.push(sig("rst", 1, SignalKind::Input));
+        ir.top.signals.push(sig("count", 8, SignalKind::Output));
+        ir.top.inputs = vec![0, 1];
+        ir.top.outputs = vec![2];
+        ir.top.processes.push(Process::Sequential {
+            name: Symbol::intern("ff_count"),
+            clock: ClockEdge::PosEdge(0),
+            reset: Some(ResetInfo {
+                signal: 1,
+                polarity: true,
+                r#async: false,
+                value: LogicVec::from_u64(0, 8),
+            }),
+            body: vec![IrStmt::NonBlockingAssign {
+                lhs: IrLValue::Signal(2, 8),
+                rhs: IrExpr::Const(LogicVec::from_u64(0, 8)),
+                delay: None,
+            }],
+            iff: None,
+        });
+        let out = lower(&ir);
+        assert!(out.skipped.is_empty(), "skip: {:?}", out.skipped);
+        let m = &out.module;
+        assert_eq!(m.register_count(), 1);
+        let reg = &m.registers[0];
+        assert_eq!(reg.name.as_str(), "count");
+        assert!(
+            matches!(reg.reset, Some(ResetSpec { r#async: false, .. })),
+            "reset harus sinkron (r#async=false), dapat {:?}",
+            reg.reset
+        );
+    }
+
+    #[test]
     fn lower_sequential_if_hold_semantics() {
         // count <= 1; if (en) count <= count + 1; — dengan reset.
         // Tanpa en: hold (RegQ). Dengan en: ADD.
