@@ -898,10 +898,27 @@ pub struct DefParamDecl {
 pub struct CheckerDecl {
     /// Nama checker.
     pub name: Symbol,
-    /// Nama port (urut positional).
-    pub ports: Vec<Symbol>,
+    /// Port checker dengan arah (input/output/inout) dan tipe — lengkap
+    /// sesuai IEEE 1800-2017 §17.8 (sebelumnya hanya nama tanpa arah/tipe).
+    pub ports: Vec<CheckerPort>,
     /// Body items — assertion/property/let/dll di dalam checker.
     pub items: Vec<ModuleItem>,
+}
+
+/// Satu port deklarasi checker: nama, arah, dan tipe.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct CheckerPort {
+    /// Nama port.
+    pub name: Symbol,
+    /// Arah port (input/output/inout; default input bila tidak ditulis).
+    pub direction: PortDirection,
+    /// Tipe port (logic/reg/wire/int/dll), None bila tipe implisit.
+    pub dtype_name: Option<Symbol>,
+    /// Packed range `[msb:lsb]` sebelum nama port (mis. `logic [3:0] d`).
+    pub packed_range: Option<Range>,
+    /// Posisi deklarasi (1-based) untuk diagnostik elaborator.
+    pub line: usize,
+    pub col: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]

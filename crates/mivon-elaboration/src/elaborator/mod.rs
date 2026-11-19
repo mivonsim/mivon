@@ -4985,7 +4985,10 @@ impl Elaborator {
                         for (i, conn) in inst.port_conns.iter().enumerate() {
                             let (pname, expr) = match conn {
                                 PortConnection::Positional(e) => {
-                                    (cd.ports.get(i).copied(), Some(e))
+                                    (
+                                        cd.ports.get(i).map(|p| p.name),
+                                        Some(e),
+                                    )
                                 }
                                 PortConnection::Named { port, expr } => (Some(*port), Some(expr)),
                                 PortConnection::Unconnected { .. } => (None, None),

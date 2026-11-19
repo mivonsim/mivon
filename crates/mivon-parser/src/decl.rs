@@ -1529,45 +1529,123 @@ impl Parser {
     }
 
     /// LANG-41: `checker <name> (<ports>); <items> endchecker` (IEEE
-    /// 1800-2017 §17.8). Dipakai di module scope maupun unit scope.
+    /// 1800-2017 §17.8). Dipakai di module scope maupun compilation-unit scope.
+    ///
+    /// Port kini ditangkap lengkap: arah (input/output/inout) dan tipe,
+    /// bukan sekadar nama (LANG-10 penuh).
     pub(crate) fn parse_checker_decl(&mut self) -> Result<CheckerDecl, SimError> {
         self.advance(); // consume 'checker'
         let name = self.expect_ident()?;
-        let mut ports: Vec<Symbol> = Vec::new();
+        let mut ports: Vec<CheckerPort> = Vec::new();
         if self.peek() == &Token::LParen {
             self.advance();
             while self.peek() != &Token::RParen && self.peek() != &Token::Eof {
-                match self.peek() {
-                    Token::Input
-                    | Token::Output
-                    | Token::Inout
-                    | Token::Wire
-                    | Token::Logic
-                    | Token::Reg
-                    | Token::Bit
-                    | Token::Int
-                    | Token::Integer
-                    | Token::Byte
-                    | Token::Shortint
-                    | Token::Longint
-                    | Token::Tri
-                    | Token::Tri0
-                    | Token::Tri1
-                    | Token::Wand
-                    | Token::Wor => {
+                let line = self.peek_line();
+                let col = self.peek_col();
+                // Arah port (default Input bila tidak ditulis).
+                let direction = match self.peek() {
+                    Token::Input => {
                         self.advance();
+                        PortDirection::Input
                     }
-                    Token::Comma => {
+                    Token::Output => {
                         self.advance();
+                        PortDirection::Output
                     }
+                    Token::Inout => {
+                        self.advance();
+                        PortDirection::Inout
+                    }
+                    _ => PortDirection::Input,
+                };
+                // Tipe ekspresi (logic/reg/wire/int/dll/dll parameter).
+                // Lookahead: `input x` → x adalah nama port (tanpa tipe);
+                // `input logic x` / `input T x` → logika/T adalah tipe, x nama port.
+                let mut dtype_name = None;
+                let is_type_keyword = matches!(
+                    self.peek(),
+                    Token::Wire
+                        | Token::Reg
+                        | Token::Logic
+                        | Token::Bit
+                        | Token::Byte
+                        | Token::Shortint
+                        | Token::Longint
+                        | Token::Time
+                        | Token::Int
+                        | Token::Integer
+                );
+                if is_type_keyword {
+                    dtype_name = Some(self.type_keyword_to_symbol()?);
+                } else if let Token::Ident(s) = self.peek() {
+                    // Boleh jadi nama port TANPA tipe (`input x`) ATAU referensi
+                    // tipe parameter diikuti nama port (`T x`). Bedakan via lookahead:
+                    // jika berikutnya `,` atau `)` → ini nama port (dtype None);
+                    // jika berikutnya Ident/[ → ini tipe parameter, ekspektasi nama port setelahnya.
+                    let ahead = self.peek_ahead(1);
+                    if matches!(ahead, Token::Comma | Token::RParen) {
+                        // Nama port langsung (tanpa tipe).
+                        let port_name = *s;
+                        self.advance();
+                        ports.push(CheckerPort {
+                            name: port_name,
+                            direction,
+                            dtype_name: None,
+                            packed_range: None,
+                            line,
+                            col,
+                        });
+                        if self.peek() == &Token::Comma {
+                            self.advance();
+                        }
+                        continue;
+                    }
+                    // Referensi tipe parameter: konsumsi sebagai dtype, lalu nama port.
+                    dtype_name = Some(*s);
+                    self.advance();
+                }
+                // Packed range `[msb:lsb]` sebelum nama port (mis. `logic [3:0] d`).
+                let packed_range = if self.peek() == &Token::LBrack {
+                    self.parse_range()?.map(|er| {
+                        if let (Ok(m), Ok(l)) =
+                            (const_eval_simple(&er.msb), const_eval_simple(&er.lsb))
+                        {
+                            Range { msb: m as usize, lsb: l as usize }
+                        } else {
+                            Range { msb: 0, lsb: 0 }
+                        }
+                    })
+                } else {
+                    None
+                };
+                // Nama port wajib.
+                let port_name = match self.peek() {
                     Token::Ident(s) => {
-                        ports.push(*s);
+                        let n = *s;
                         self.advance();
+                        n
                     }
-                    Token::Semi => break,
                     _ => {
-                        self.advance();
+                        return Err(self.err_with_code(
+                            DiagCode::ExpectedToken,
+                            format!(
+                                "expected port name in checker '{}' declaration, found {:?}",
+                                name.as_str(),
+                                self.peek()
+                            ),
+                        ));
                     }
+                };
+                ports.push(CheckerPort {
+                    name: port_name,
+                    direction,
+                    dtype_name,
+                    packed_range,
+                    line,
+                    col,
+                });
+                if self.peek() == &Token::Comma {
+                    self.advance();
                 }
             }
             if self.peek() == &Token::RParen {
@@ -1586,6 +1664,31 @@ impl Parser {
             }
         }
         Ok(CheckerDecl { name, ports, items })
+    }
+
+    /// Konversi token tipe keyword (unit variant, tanpa data Symbol) menjadi
+    /// `Symbol` nama tipe, digunakan untuk `dtype_name` port checker.
+    fn type_keyword_to_symbol(&mut self) -> Result<Symbol, SimError> {
+        let name = match self.peek().clone() {
+            Token::Wire => "wire",
+            Token::Reg => "reg",
+            Token::Logic => "logic",
+            Token::Bit => "bit",
+            Token::Byte => "byte",
+            Token::Shortint => "shortint",
+            Token::Longint => "longint",
+            Token::Time => "time",
+            Token::Int => "int",
+            Token::Integer => "integer",
+            other => {
+                return Err(self.err_with_code(
+                    DiagCode::ExpectedToken,
+                    format!("expected type keyword, found {:?}", other),
+                ))
+            }
+        };
+        self.advance();
+        Ok(Symbol::intern(name))
     }
 
     pub(crate) fn parse_typedef(&mut self) -> Result<TypedefDecl, SimError> {
@@ -2640,6 +2743,106 @@ mod tmp_decl_tests {
                     v.name.as_str(), it.dtype, v.array_range, v.array_size_expr, v.range, v.expr_range, v.extra_packed_dims
                 );
             }
+        }
+    }
+
+    #[cfg(test)]
+    mod checker_port_tests {
+        use mivon_ast::types::{CheckerDecl, ModuleItem, PortDirection, Range};
+
+        fn parse_checker(src: &str) -> CheckerDecl {
+            let mut lx = crate::lexer::Lexer::new(src);
+            let mut toks = Vec::new();
+            loop {
+                let (t, l, c) = lx.next_token();
+                let done = matches!(t, crate::lexer::Token::Eof);
+                toks.push((t, l, c));
+                if done {
+                    break;
+                }
+            }
+            let mut p = crate::Parser::new(toks, "t.sv");
+            let d = p.parse_design().expect("parse design");
+            let m = d.modules.first().expect("has module");
+            let cd = m
+                .items
+                .iter()
+                .find_map(|it| match it {
+                    ModuleItem::Checker(cd) => Some(cd.clone()),
+                    _ => None,
+                })
+                .expect("expected ModuleItem::Checker in module items");
+            cd
+        }
+
+        #[test]
+        fn test_checker_ports_capture_direction_and_type() {
+            let src = "module m;\n  checker chk(input logic a, output reg b, inout wire c, int d);\n    assert property (@(posedge a) b);\n  endchecker\nendmodule\n";
+            let cd = parse_checker(src);
+            assert_eq!(cd.name.as_str(), "chk");
+            assert_eq!(cd.ports.len(), 4);
+
+            // input logic a
+            let p0 = &cd.ports[0];
+            assert_eq!(p0.name.as_str(), "a");
+            assert_eq!(p0.direction, PortDirection::Input);
+            assert_eq!(p0.dtype_name.as_ref().map(|s| s.as_str()), Some("logic"));
+
+            // output reg b
+            let p1 = &cd.ports[1];
+            assert_eq!(p1.name.as_str(), "b");
+            assert_eq!(p1.direction, PortDirection::Output);
+            assert_eq!(p1.dtype_name.as_ref().map(|s| s.as_str()), Some("reg"));
+
+            // inout wire c
+            let p2 = &cd.ports[2];
+            assert_eq!(p2.name.as_str(), "c");
+            assert_eq!(p2.direction, PortDirection::Inout);
+            assert_eq!(p2.dtype_name.as_ref().map(|s| s.as_str()), Some("wire"));
+
+            // int d (no explicit net type; 'int' is the type keyword itself)
+            let p3 = &cd.ports[3];
+            assert_eq!(p3.name.as_str(), "d");
+            assert_eq!(p3.direction, PortDirection::Input); // default
+            assert_eq!(p3.dtype_name.as_ref().map(|s| s.as_str()), Some("int"));
+        }
+
+        #[test]
+        fn test_checker_ports_default_direction_input() {
+            let src = "module m;\n  checker chk(a, b);\n  endchecker\nendmodule\n";
+            let cd = parse_checker(src);
+            assert_eq!(cd.ports.len(), 2);
+            for p in &cd.ports {
+                assert_eq!(p.direction, PortDirection::Input);
+                assert_eq!(p.dtype_name, None);
+            }
+            assert_eq!(cd.ports[0].name.as_str(), "a");
+            assert_eq!(cd.ports[1].name.as_str(), "b");
+        }
+
+        #[test]
+        fn test_checker_ports_no_ports() {
+            let src = "module m;\n  checker chk;\n    assert property (1'b1);\n  endchecker\nendmodule\n";
+            let cd = parse_checker(src);
+            assert!(cd.ports.is_empty());
+            assert_eq!(cd.name.as_str(), "chk");
+        }
+
+        #[test]
+        fn test_checker_ports_packed_range() {
+            let src = "module m;\n  checker chk(logic [3:0] d, input [7:0] v);\n  endchecker\nendmodule\n";
+            let cd = parse_checker(src);
+            assert_eq!(cd.ports.len(), 2);
+            let p0 = &cd.ports[0];
+            assert_eq!(p0.name.as_str(), "d");
+            assert_eq!(p0.direction, PortDirection::Input);
+            assert_eq!(p0.dtype_name.as_ref().map(|s| s.as_str()), Some("logic"));
+            assert_eq!(p0.packed_range, Some(Range { msb: 3, lsb: 0 }));
+            let p1 = &cd.ports[1];
+            assert_eq!(p1.name.as_str(), "v");
+            assert_eq!(p1.direction, PortDirection::Input);
+            assert_eq!(p1.dtype_name, None);
+            assert_eq!(p1.packed_range, Some(Range { msb: 7, lsb: 0 }));
         }
     }
 }
