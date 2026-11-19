@@ -1448,6 +1448,7 @@ dependencies = [
  "mivon-compiler",
  "mivon-core",
  "mivon-elaboration",
+ "mivon-formal",
  "mivon-ir",
  "mivon-mv",
  "mivon-parser",
