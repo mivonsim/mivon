@@ -27,6 +27,7 @@ use ratatui::{
 use super::app_cmds;
 use super::backend::scan_tree;
 use super::panels::{bottom_tabs, editor, sidebar, toolbar};
+use super::syntax::is_ident_char;
 use super::state::{
     BottomTab, DiagEntry, DiagLevel, EditorMode, GuiEvent, GuiState, LspPendingKind, SidebarTab,
     STAGE_SIMULATOR,
@@ -301,7 +302,34 @@ impl MivonApp {
                             }
                         }
                     }
-                    Some(LspPendingKind::CompletionRequest) => {}
+                    Some(LspPendingKind::CompletionRequest) => {
+                        if let Some(v) = value {
+                            let items: Vec<String> =
+                                super::lsp_client::completion_items(&v);
+                            // Ambil prefix yang disimpan saat request dikirim.
+                            let prefix = &self.state.lsp_completion_prefix;
+                            let filtered: Vec<String> = items
+                                .into_iter()
+                                .filter(|s| {
+                                    prefix.is_empty()
+                                        || s.get(..prefix.len())
+                                            .map(|h| h.eq_ignore_ascii_case(prefix))
+                                            .unwrap_or(false)
+                                })
+                                .collect();
+                            let n_items = filtered.len();
+                            self.state.lsp_completion_items = filtered;
+                            self.state.lsp_completion_selected = 0;
+                            self.state.lsp_completion_show = n_items > 0;
+                            if n_items > 0 {
+                                self.state.log(format!(
+                                    "🔤 Completion: {} kandidat",
+                                    n_items
+                                ));
+                            }
+                        }
+                        self.state.lsp_completion_req.remove(&id);
+                    }
                     None => {}
                 }
             }
@@ -349,6 +377,37 @@ impl MivonApp {
             return;
         }
 
+        // Navigasi / insert popup completion LSP.
+        if self.state.lsp_completion_show {
+            match key.code {
+                KeyCode::Esc => {
+                    self.state.lsp_completion_show = false;
+                    return;
+                }
+                KeyCode::Up => {
+                    self.state.lsp_completion_selected =
+                        self.state.lsp_completion_selected.saturating_sub(1);
+                    return;
+                }
+                KeyCode::Down => {
+                    self.state.lsp_completion_selected = self
+                        .state
+                        .lsp_completion_selected
+                        .saturating_add(1)
+                        .min(self.state.lsp_completion_items.len().saturating_sub(1));
+                    return;
+                }
+                KeyCode::Enter => {
+                    self.insert_completion();
+                    return;
+                }
+                _ => {
+                    // Lainnya: tutup popup, lanjut ke penanganan biasa.
+                    self.state.lsp_completion_show = false;
+                }
+            }
+        }
+
         // F5/F7 berlaku global — termasuk saat editor fokus (fix bug lama).
         match key.code {
             KeyCode::F(5) => {
@@ -378,6 +437,42 @@ impl MivonApp {
             }
             KeyCode::F(10) => {
                 app_cmds::trigger_restart(&mut self.state);
+                return;
+            }
+            KeyCode::Char(' ') if ctrl => {
+                // Ctrl+Space: minta completion LSP pada posisi kursor editor.
+                let Some(idx) = self.state.active_file else {
+                    return;
+                };
+                let Some(f) = self.state.open_files.get(idx) else {
+                    return;
+                };
+                let line_idx = self.state.editor_cursor_line;
+                let col = self.state.editor_cursor_col;
+                let line = f.content.lines().nth(line_idx).unwrap_or("");
+                let f_path = f.path.clone();
+                drop(f);
+                // Prefix = kata identifier sebelum kursor (untuk filter sisi klien).
+                let chars: Vec<char> = line.chars().collect();
+                let n = chars.len().min(col);
+                let mut start = n;
+                while start > 0 && is_ident_char(chars[start - 1]) {
+                    start -= 1;
+                }
+                let prefix: String = chars[start..n].iter().collect();
+                self.state.lsp_completion_prefix = prefix.clone();
+                let id = self.state.lsp_alloc_id(LspPendingKind::CompletionRequest);
+                let _ = self.state.lsp_send(super::lsp_client::LspCmd::Completion {
+                    id,
+                    path: f_path.clone(),
+                    line: line_idx as u32,
+                    character: col as u32,
+                });
+                self.state
+                    .lsp_completion_req
+                    .insert(id, (f_path, prefix.clone()));
+                self.state.lsp_completion_show = false;
+                self.state.log(format!("🔤 Completion (prefix='{}')", prefix));
                 return;
             }
             _ => {}
@@ -618,6 +713,40 @@ impl MivonApp {
             }
             _ => {}
         }
+    }
+
+    /// Insert kandidat completion yang disorot, mengganti prefix sebelum kursor.
+    /// Operasi berbasis char agar aman untuk multibyte (CJK/emoji).
+    fn insert_completion(&mut self) {
+        let item = match self.state.lsp_completion_items.get(self.state.lsp_completion_selected) {
+            Some(i) => i.clone(),
+            None => return,
+        };
+        self.state.lsp_completion_show = false;
+        let Some(idx) = self.state.active_file else {
+            return;
+        };
+        let line_idx = self.state.editor_cursor_line;
+        let col = self.state.editor_cursor_col;
+        let prefix = &self.state.lsp_completion_prefix;
+        let Some(f) = self.state.open_files.get_mut(idx) else {
+            return;
+        };
+        let line = f.content.lines().nth(line_idx).unwrap_or("");
+        let mut chars: Vec<char> = line.chars().collect();
+        let start = col.saturating_sub(prefix.chars().count()).min(chars.len());
+        let end = col.min(chars.len());
+        chars.splice(start..end, item.chars());
+        let new_line: String = chars.into_iter().collect();
+        let mut new_lines: Vec<String> = f.content.lines().map(|l| l.to_string()).collect();
+        if line_idx < new_lines.len() {
+            new_lines[line_idx] = new_line;
+        }
+        f.content = new_lines.join("\n");
+        f.dirty = true;
+        self.state.editor_cursor_col = start + item.chars().count();
+        self.state.editor_cursor_line = line_idx;
+        self.state.log(format!("✅ Insert '{}'", item));
     }
 
     pub fn run(

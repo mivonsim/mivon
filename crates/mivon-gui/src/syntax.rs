@@ -109,7 +109,7 @@ fn preproc_style() -> Style {
 }
 
 /// Apakah karakter boleh menjadi bagian dari identifier.
-fn is_ident_char(c: char) -> bool {
+pub fn is_ident_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_' || c == '$'
 }
 

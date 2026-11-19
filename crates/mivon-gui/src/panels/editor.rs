@@ -165,14 +165,23 @@ pub fn show(f: &mut Frame, area: ratatui::layout::Rect, state: &mut GuiState) {
     f.render_widget(list, inner);
 
     // Footer info file.
-    let info = Paragraph::new(format!(
+    let mut footer = format!(
         "File: {}  |  {} baris  |  scroll={}  |  goto={:?}",
         file.name,
         total,
         scroll_start,
         state.editor_goto_line
-    ))
-    .style(Style::default().fg(Color::DarkGray));
+    );
+    if state.lsp_completion_show && !state.lsp_completion_items.is_empty() {
+        let sel = state.lsp_completion_selected.min(state.lsp_completion_items.len() - 1);
+        footer.push_str(&format!(
+            "  |  Completion: {} ({}/{})",
+            state.lsp_completion_items[sel],
+            sel + 1,
+            state.lsp_completion_items.len()
+        ));
+    }
+    let info = Paragraph::new(footer).style(Style::default().fg(Color::DarkGray));
     f.render_widget(
         info,
         ratatui::layout::Rect {

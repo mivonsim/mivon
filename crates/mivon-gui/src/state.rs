@@ -825,6 +825,14 @@ pub struct GuiState {
     pub lsp_auto_restart_blocked: bool,
     /// Name identifier hover terakhir — one-time note bila binary LSP tak ada.
     pub lsp_bin_noted: bool,
+    /// Popup completion LSP: daftar label kandidat dari server.
+    pub lsp_completion_items: Vec<String>,
+    /// Indeks kandidat yang disorot di popup completion.
+    pub lsp_completion_selected: usize,
+    /// Prefix kata yang sedang di-complete (digunakan saat insert).
+    pub lsp_completion_prefix: String,
+    /// Popup completion sedang ditampilkan di editor.
+    pub lsp_completion_show: bool,
     /// Top module yang tertunda (dari argumen --top), diterapkan setelah compile.
     pub pending_top: Option<String>,
     /// Top module yang dipilih pengguna di GUI (dari daftar module hasil compile).
@@ -964,6 +972,10 @@ impl GuiState {
             lsp_completion_req: std::collections::HashMap::new(),
             lsp_auto_restart_blocked: false,
             lsp_bin_noted: false,
+            lsp_completion_items: Vec::new(),
+            lsp_completion_selected: 0,
+            lsp_completion_prefix: String::new(),
+            lsp_completion_show: false,
             pending_top: None,
             selected_top: None,
             editor_scroll: 0,
