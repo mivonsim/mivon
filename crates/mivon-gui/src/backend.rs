@@ -1115,6 +1115,7 @@ pub fn run_simulation(
                 sensitive_triggers: 0,
                 events_per_delta: 0.0,
                 coverage: CoverageInfo::default(),
+                coverage_line_hits: std::collections::HashMap::new(),
                 assertions: Vec::new(),
                 debug_events: engine
                     .event_log
@@ -1214,6 +1215,18 @@ pub fn run_simulation(
             .then_with(|| a.line.cmp(&b.line).then_with(|| a.col.cmp(&b.col)))
     });
 
+    // ── Coverage per-baris: gabung cover_line (Symbol→hits) dengan
+    // stmt_lines (Symbol→baris sumber) → HashMap<baris, hits> untuk highlight
+    // editor. IrDesign.stmt_lines dipopulate elaborator; engine.stmt_lines
+    // salin dari sana. Bila banyak statement pada baris sama, jumlahkan hits.
+    let mut coverage_line_hits: std::collections::HashMap<usize, u64> =
+        std::collections::HashMap::new();
+    for (sym, hits) in &engine.cover_line {
+        if let Some(&line) = engine.stmt_lines.get(sym) {
+            *coverage_line_hits.entry(line).or_insert(0) += hits;
+        }
+    }
+
     Ok(SimInfo {
         signals,
         cycles: engine.current_time,
@@ -1226,6 +1239,7 @@ pub fn run_simulation(
         sensitive_triggers: counters.sensitive_triggers,
         events_per_delta: engine.sim_perf.events_per_delta(),
         coverage,
+        coverage_line_hits,
         assertions,
         debug_events: engine
             .event_log

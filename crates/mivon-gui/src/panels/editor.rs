@@ -115,6 +115,15 @@ pub fn show(f: &mut Frame, area: ratatui::layout::Rect, state: &mut GuiState) {
 
         let is_cursor = line_no == state.editor_cursor_line + 1;
 
+        // ── Coverage: baris tercover (hits>0) hijau, tidak tercover (hits=0)
+        // merah, tidak ada data abu-abu. Prioritas goto > cursor > coverage.
+        let covered = state
+            .coverage_line_hits
+            .get(&line_no)
+            .map(|&h| h > 0)
+            .unwrap_or(false);
+        let has_cov_data = state.coverage_line_hits.contains_key(&line_no);
+
         // ── Nomor baris + ikon diagnostic ──
         let line_no_style = if is_target {
             Style::default()
@@ -122,6 +131,11 @@ pub fn show(f: &mut Frame, area: ratatui::layout::Rect, state: &mut GuiState) {
                 .add_modifier(Modifier::BOLD | Modifier::REVERSED)
         } else if is_cursor {
             Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+        } else if covered {
+            Style::default().fg(Color::LightGreen).add_modifier(Modifier::BOLD)
+        } else if has_cov_data {
+            // Uncovered (tampil dalam simulasi tapi tidak pernah dieksekusi).
+            Style::default().fg(Color::LightRed)
         } else {
             Style::default().fg(Color::Gray)
         };

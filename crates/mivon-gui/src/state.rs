@@ -447,6 +447,12 @@ pub struct SimInfo {
     pub events_per_delta: f64,
     // ── Coverage (dari engine.coverage_stats) ──
     pub coverage: CoverageInfo,
+    /// Line → jumlah hits (dari engine.cover_line ∩ stmt_lines). Digunakan
+    /// editor untuk highlight baris tercover (hits>0) vs tidak tercover.
+    /// Kunci = nomor baris 1-based dalam file aktif (bisa collide antar file
+    /// dengan nomor baris sama — akurat untuk desain satu file, pendekatan
+    /// pendek untuk multi-file).
+    pub coverage_line_hits: std::collections::HashMap<usize, u64>,
     // ── Assertions (dari engine.assertion_stats) ──
     pub assertions: Vec<AssertionRow>,
     /// Event debugger nyata dari engine (breakpoint/watchpoint hit) — format
@@ -727,6 +733,8 @@ pub struct GuiState {
     pub events_per_delta: f64,
     // ── Coverage (hasil sim terakhir) ──
     pub coverage: CoverageInfo,
+    /// Line → jumlah hits untuk highlight editor (dari SimInfo.coverage_line_hits).
+    pub coverage_line_hits: std::collections::HashMap<usize, u64>,
     // ── Assertions (hasil sim terakhir) ──
     pub assertions: Vec<AssertionRow>,
 
@@ -918,6 +926,7 @@ impl GuiState {
             sensitive_triggers: 0,
             events_per_delta: 0.0,
             coverage: CoverageInfo::default(),
+            coverage_line_hits: std::collections::HashMap::new(),
             assertions: Vec::new(),
             palette_open: false,
             palette_just_opened: false,
