@@ -16,6 +16,7 @@ use mivon_compiler::frontend::module_index::EntryKind;
 use mivon_core::error::SimError;
 use mivon_ir::{IrDesign, LogicVal, LogicVec};
 use mivon_simulator::simulator::SimulationEngine;
+use mivon_simulator::simulator::types::{Breakpoint, DebugMode, Watchpoint};
 
 use super::state::{
     blocking_assign_pos, word_count, AssertionRow, CompileInfo, CoverageInfo, CovergroupRow,
@@ -900,11 +901,64 @@ pub fn spawn_term(tx: Sender<GuiEvent>, cmd: String, cwd: Option<PathBuf>) {
     });
 }
 
+/// Konfigurasi debugger yang dikirim GUI ke worker simulasi.
+#[derive(Debug, Clone, Default)]
+pub struct DebugConfig {
+    /// Breakpoint dalam bentuk teks: "break cycle N", "break change <sig>",
+    /// "break signal <sig> == <hex>", "break module <name>".
+    pub breakpoints: Vec<String>,
+    /// Watchpoint: nama sinyal (perubahan dipantau tiap cycle).
+    pub watchpoints: Vec<String>,
+    /// Aktifkan mode debug engine (wajib agar breakpoint dievaluasi).
+    pub enabled: bool,
+}
+
+/// Parse satu entri breakpoint GUI menjadi `Breakpoint` engine.
+/// Mengembalikan None untuk format yang tidak dikenal (diabaikan, bukan error).
+pub fn parse_breakpoint(s: &str) -> Option<Breakpoint> {
+    let s = s.trim();
+    if let Some(rest) = s.strip_prefix("break cycle ") {
+        return rest.trim().parse::<u64>().ok().map(Breakpoint::Cycle);
+    }
+    if let Some(rest) = s.strip_prefix("break change ") {
+        let name = rest.trim();
+        if !name.is_empty() {
+            return Some(Breakpoint::SignalChange(name.to_string()));
+        }
+    }
+    if let Some(rest) = s.strip_prefix("break module ") {
+        let name = rest.trim();
+        if !name.is_empty() {
+            return Some(Breakpoint::Module(name.to_string()));
+        }
+    }
+    if let Some(rest) = s.strip_prefix("break signal ") {
+        // Format: "break signal <nama> == <hex>" / "!= <hex>"
+        if let Some((name, val)) = rest.split_once("==") {
+            return LogicVec::from_hex(val.trim())
+                .ok()
+                .map(|v| Breakpoint::SignalEq(name.trim().to_string(), v));
+        }
+        if let Some((name, val)) = rest.split_once("!=") {
+            return LogicVec::from_hex(val.trim())
+                .ok()
+                .map(|v| Breakpoint::SignalNeq(name.trim().to_string(), v));
+        }
+    }
+    None
+}
+
 /// Jalankan simulasi di worker thread. `cancel` adalah flag bersama dengan GUI:
 /// jika di-set true (tombol Stop), simulasi berhenti lebih awal.
-pub fn spawn_sim(tx: Sender<GuiEvent>, design: IrDesign, max_time: u64, cancel: Arc<AtomicBool>) {
+pub fn spawn_sim(
+    tx: Sender<GuiEvent>,
+    design: IrDesign,
+    max_time: u64,
+    cancel: Arc<AtomicBool>,
+    debug: DebugConfig,
+) {
     spawn_worker(move || {
-        let result = run_simulation(&design, max_time, cancel);
+        let result = run_simulation(&design, max_time, cancel, &debug);
         let _ = tx.send(GuiEvent::SimDone(result));
     });
 }
@@ -915,10 +969,29 @@ pub fn run_simulation(
     design: &IrDesign,
     max_time: u64,
     cancel: Arc<AtomicBool>,
+    debug: &DebugConfig,
 ) -> Result<SimInfo, String> {
     let start = std::time::Instant::now();
     let mut engine = SimulationEngine::new(design.clone(), max_time);
     engine.cancel_flag = Some(cancel.clone());
+
+    // ── Debugger: terapkan breakpoint/watchpoint dari GUI ke engine nyata ──
+    let mut parsed_bp: Vec<Breakpoint> = debug
+        .breakpoints
+        .iter()
+        .filter_map(|s| parse_breakpoint(s))
+        .collect();
+    let parsed_wp: Vec<Watchpoint> = debug
+        .watchpoints
+        .iter()
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| Watchpoint::Signal(s.trim().to_string()))
+        .collect();
+    if debug.enabled && (!parsed_bp.is_empty() || !parsed_wp.is_empty()) {
+        engine.debug_mode = DebugMode::Debug;
+        engine.breakpoints.append(&mut parsed_bp);
+        engine.watchpoints.extend(parsed_wp);
+    }
 
     // ── Waveform capture: VCD temporer yang ditulis engine per time step,
     // lalu di-parse menjadi trace transisi untuk Waveform viewer. File dihapus
@@ -1048,6 +1121,11 @@ pub fn run_simulation(
         events_per_delta: engine.sim_perf.events_per_delta(),
         coverage,
         assertions,
+        debug_events: engine
+            .event_log
+            .iter()
+            .map(|e| format!("t={} {:?} {}", e.time, e.kind, e.message))
+            .collect(),
     })
 }
 

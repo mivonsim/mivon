@@ -3,7 +3,7 @@
 
 use std::sync::atomic::Ordering;
 
-use super::backend::{spawn_compile, spawn_sim, spawn_term};
+use super::backend::{spawn_compile, spawn_sim, spawn_term, DebugConfig};
 use super::state::GuiState;
 
 /// Buka folder project (paksa direktori kerja saat ini sebagai project).
@@ -67,7 +67,12 @@ pub fn trigger_run(state: &mut GuiState) {
     let max_time = state.max_time;
     let tx = state.tx.clone();
     let cancel = state.cancel_flag.clone();
-    spawn_sim(tx, design, max_time, cancel);
+    let debug = DebugConfig {
+        breakpoints: state.breakpoints.clone(),
+        watchpoints: state.watchpoints.clone(),
+        enabled: state.debug_mode,
+    };
+    spawn_sim(tx, design, max_time, cancel, debug);
 }
 
 /// Hentikan simulasi yang berjalan.
@@ -79,9 +84,30 @@ pub fn trigger_stop(state: &mut GuiState) {
     state.is_running = false;
 }
 
-/// Jalankan perintah terminal (input bar).
+/// Jalankan perintah terminal (input bar). Perintah debugger (`bp`/`wp`/`watch`/
+/// `debug`) dialihkan ke state (tidak spawn shell) agar breakpoint nyata.
 pub fn trigger_terminal(state: &mut GuiState, cmd: String) {
     if cmd.trim().is_empty() {
+        return;
+    }
+    let lower = cmd.trim().to_lowercase();
+    if lower == "clear" {
+        state.clear_debug();
+        return;
+    }
+    if lower == "debug on" || lower == "debug off" {
+        state.debug_mode = lower.ends_with("on");
+        state.log(format!("🐞 debug mode {}", if state.debug_mode { "ON" } else { "OFF" }));
+        return;
+    }
+    if lower.starts_with("bp ") || lower.starts_with("break ") {
+        let spec = cmd.split_once(' ').map(|(_, r)| r).unwrap_or("").to_string();
+        state.add_breakpoint(&spec);
+        return;
+    }
+    if lower.starts_with("wp ") || lower.starts_with("watch ") {
+        let name = cmd.split_once(' ').map(|(_, r)| r).unwrap_or("").to_string();
+        state.add_watchpoint(&name);
         return;
     }
     state.term_history.push(cmd.clone());

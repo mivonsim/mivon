@@ -4,6 +4,7 @@ pub mod assertions;
 pub mod benchmark;
 pub mod bottom_tabs;
 pub mod console;
+pub mod command_palette;
 pub mod coverage;
 pub mod debugger;
 pub mod dependency;

@@ -47,6 +47,9 @@ endmodule
         obj: mivon_api::vhpi::handle::VhpiHandle::NULL,
         time: std::ptr::null_mut(),
     };
+    // Bersihkan registry global di awal supaya tes ini hermetik terhadap
+    // tes lain yang berjalan paralel (registry VHPI dibagi seluruh binary).
+    mivon_api::vhpi::callback::clear_all_callbacks();
     let _h = vhpi_register_cb(&cb);
     // run() memanggil set_vhpi_engine + dispatch_start_of_simulation —
     // callback start-of-sim melihat engine ter-set.
@@ -125,6 +128,10 @@ fn test_vhpi_value_change_callback_e2e() {
     use std::sync::atomic::{AtomicI32, Ordering};
 
     static FIRED: AtomicI32 = AtomicI32::new(0);
+
+    // Bersihkan registry global di awal — hermetik terhadap tes paralel yang
+    // juga mendaftarkan callback VHPI (engine.run() memicu fire ke registry).
+    mivon_api::vhpi::callback::clear_all_callbacks();
 
     extern "C" fn vc_cb(_data: *mut mivon_api::vhpi::callback::t_vhpi_cb_data) -> i32 {
         FIRED.fetch_add(1, Ordering::SeqCst);

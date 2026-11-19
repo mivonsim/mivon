@@ -134,6 +134,13 @@ impl MivonApp {
                             self.state.sim_time_ms = info.sim_time_ms;
                             self.state.coverage = info.coverage;
                             self.state.assertions = info.assertions;
+                            self.state.debug_events = info.debug_events.clone();
+                            if !self.state.debug_events.is_empty() {
+                                self.state.log(format!(
+                                    "🐞 {} debug event (breakpoint/watchpoint)",
+                                    self.state.debug_events.len()
+                                ));
+                            }
                             self.state.delta_cycles = info.delta_cycles;
                             self.state.events_processed = info.events_processed;
                             self.state.log(format!(

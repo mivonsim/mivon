@@ -446,6 +446,9 @@ pub struct SimInfo {
     pub coverage: CoverageInfo,
     // ── Assertions (dari engine.assertion_stats) ──
     pub assertions: Vec<AssertionRow>,
+    /// Event debugger nyata dari engine (breakpoint/watchpoint hit) — format
+    /// "t=N <kind> <message>". Hanya diisi saat mode debug aktif.
+    pub debug_events: Vec<String>,
 }
 
 /// Tab sidebar.
@@ -741,6 +744,9 @@ pub struct GuiState {
     pub debug_events: Vec<String>,
     /// Simulasi dalam mode debug (breakpoint aktif).
     pub debug_mode: bool,
+    /// Buffer input pada panel Debugger: di sini user mengetik breakpoint /
+    /// watchpoint / perintah (Enter mengeksekusi).
+    pub debug_input: String,
 
     // ── Peek Definition ──
     /// Popup Peek Definition aktif (Alt+Click): data pratinjau.
@@ -957,6 +963,7 @@ impl GuiState {
             watchpoints: Vec::new(),
             debug_events: Vec::new(),
             debug_mode: false,
+            debug_input: String::new(),
         }
     }
 
@@ -1281,6 +1288,36 @@ impl GuiState {
         }
     }
 
+    /// Tambah breakpoint dari teks (disimpan mentah; backend yang parse saat run).
+    pub fn add_breakpoint(&mut self, spec: &str) {
+        let spec = spec.trim().to_string();
+        if spec.is_empty() {
+            return;
+        }
+        self.breakpoints.push(spec.clone());
+        self.debug_mode = true;
+        self.log(format!("🐞 breakpoint: {}", spec));
+    }
+
+    /// Tambah watchpoint (nama sinyal).
+    pub fn add_watchpoint(&mut self, name: &str) {
+        let name = name.trim().to_string();
+        if name.is_empty() {
+            return;
+        }
+        self.watchpoints.push(name.clone());
+        self.debug_mode = true;
+        self.log(format!("🐞 watchpoint: {}", name));
+    }
+
+    /// Bersihkan semua breakpoint/watchpoint/event debug.
+    pub fn clear_debug(&mut self) {
+        self.breakpoints.clear();
+        self.watchpoints.clear();
+        self.debug_events.clear();
+        self.log("🐞 breakpoint/watchpoint dibersihkan");
+    }
+
     pub fn close_file(&mut self, idx: usize) {
         if idx >= self.open_files.len() {
             return;
@@ -1595,7 +1632,11 @@ mod tests {
     fn editor_test_state(lines: &[&str]) -> GuiState {
         let (tx, rx) = std::sync::mpsc::channel();
         let mut s = GuiState::new(tx, rx);
-        let dir = std::env::temp_dir().join(format!("mivon_editor_test_{}", std::process::id()));
+        // Counter statis agar tiap pemanggilan (termasuk tes yang berjalan
+        // paralel) berkas unik — tidak ada konten yang bocor antar tes.
+        static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("mivon_editor_test_{}_{}", std::process::id(), n));
         let _ = std::fs::create_dir_all(&dir);
         let path = dir.join("dut.sv");
         let _ = std::fs::write(&path, lines.join("\n"));

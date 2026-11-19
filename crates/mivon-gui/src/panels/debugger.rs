@@ -101,9 +101,11 @@ pub fn show(f: &mut Frame, area: ratatui::layout::Rect, state: &mut GuiState) {
     );
     f.render_widget(ev_list, chunks[2]);
 
-    // Hint.
-    let hint = Paragraph::new("Tambah breakpoint: 'break cycle N' / 'break change <sinyal>'  |  Watch: '<sinyal>'")
-        .style(Style::default().fg(Color::DarkGray));
+    // Hint (input lewat terminal: bp <spec>, wp <sig>, clear, debug on/off).
+    let hint = Paragraph::new(
+        "Input di Terminal: 'bp cycle 100' | 'bp change clk' | 'wp rst_n' | 'clear' | 'debug on'",
+    )
+    .style(Style::default().fg(Color::DarkGray));
     f.render_widget(
         hint,
         ratatui::layout::Rect {
