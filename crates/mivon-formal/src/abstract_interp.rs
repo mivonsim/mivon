@@ -225,6 +225,58 @@ impl AbstractInterpreter {
         results
     }
 
+    /// Analyze a design and return abstract state keyed by signal NAME.
+    ///
+    /// Joins the per-process abstract states for each signal. Signals that
+    /// are never assigned in any process body remain `AbsValue::Top`
+    /// (unknown) — these are typically design inputs or potentially
+    /// uninitialized registers.
+    pub fn analyze_design(&self, design: &IrDesign) -> HashMap<String, AbsValue> {
+        let mut result: HashMap<String, AbsValue> = HashMap::new();
+
+        // Initialize every signal as Top (unknown), then apply init values
+        // and per-process assignments on top.
+        for sig in &design.top.signals {
+            let init = if sig.init_val.bits.iter().all(|b| *b == LogicVal::Zero) {
+                AbsValue::Const(0)
+            } else if sig.init_val.bits.iter().all(|b| *b == LogicVal::One) {
+                AbsValue::Const(sig.init_val.to_u64())
+            } else {
+                AbsValue::Top
+            };
+            result.insert(sig.name.as_str().to_string(), init);
+        }
+
+        for state in self.analyze(design) {
+            for (id, val) in &state.values {
+                if let Some(sig) = design.top.signals.get(*id) {
+                    let name = sig.name.as_str().to_string();
+                    result
+                        .entry(name)
+                        .and_modify(|existing| *existing = existing.join(val))
+                        .or_insert(val.clone());
+                }
+            }
+        }
+
+        result
+    }
+
+    /// Return names of signals whose abstract value is `Top` (unknown)
+    /// after analysis — i.e. signals that are read but never assigned a
+    /// concrete value, or design inputs (which are legitimately unknown).
+    /// Callers can filter by `SignalKind` if they want to exclude inputs.
+    pub fn unknown_signals(&self, design: &IrDesign) -> Vec<String> {
+        let analyzed = self.analyze_design(design);
+        let mut unknown: Vec<String> = analyzed
+            .into_iter()
+            .filter(|(_, val)| matches!(val, AbsValue::Top))
+            .map(|(name, _)| name)
+            .collect();
+        unknown.sort();
+        unknown
+    }
+
     /// Analyze a list of statements abstractly.
     fn analyze_stmts(&self, stmts: &[IrStmt], state: &mut AbsState) {
         for stmt in stmts {
@@ -394,6 +446,7 @@ impl Default for AbstractInterpreter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mivon_ir::{ClockEdge, IrModule, LogicVec};
 
     #[test]
     fn test_abs_value_join_const() {
@@ -515,5 +568,158 @@ mod tests {
         assert_eq!(joined.get(0), &AbsValue::Interval { min: 5, max: 7 });
         assert_eq!(joined.get(1), &AbsValue::Const(10));
         assert_eq!(joined.get(2), &AbsValue::Const(20));
+    }
+
+    #[test]
+    fn test_analyze_design_named_signals() {
+        use mivon_core::intern::Symbol;
+        use mivon_ir::{BinaryIrOp, IrExpr, IrLValue, IrStmt, LogicVal, Process, SignalInfo, SignalKind};
+
+        let clk_init = LogicVec::from_u64(0, 1);
+        let x_init = LogicVec::from_u64(0, 8);
+        let unused_init = LogicVec { bits: vec![LogicVal::X; 8], width: 8 };
+
+        let design = IrDesign {
+            top: IrModule {
+                name: Symbol::from("test"),
+                signals: vec![
+                    SignalInfo {
+                        name: Symbol::from("clk"),
+                        width: 1,
+                        kind: SignalKind::Input,
+                        init_val: clk_init,
+                        ..Default::default()
+                    },
+                    SignalInfo {
+                        name: Symbol::from("x"),
+                        width: 8,
+                        kind: SignalKind::Reg,
+                        init_val: x_init.clone(),
+                        ..Default::default()
+                    },
+                    SignalInfo {
+                        name: Symbol::from("y"),
+                        width: 8,
+                        kind: SignalKind::Wire,
+                        init_val: x_init.clone(),
+                        ..Default::default()
+                    },
+                    SignalInfo {
+                        name: Symbol::from("unused"),
+                        width: 8,
+                        kind: SignalKind::Reg,
+                        init_val: unused_init,
+                        ..Default::default()
+                    },
+                ],
+                inputs: vec![],
+                outputs: vec![],
+                inouts: vec![],
+                processes: vec![
+                    Process::Combinational {
+                        name: Symbol::from("comb"),
+                        sensitivity: vec![],
+                        body: vec![IrStmt::BlockingAssign {
+                            lhs: IrLValue::Signal(2, 8),
+                            rhs: IrExpr::Signal(1, 8),
+                            delay: None,
+                        }],
+                    },
+                    Process::Sequential {
+                        name: Symbol::from("ff"),
+                        clock: ClockEdge::PosEdge(0),
+                        reset: None,
+                        body: vec![IrStmt::NonBlockingAssign {
+                            lhs: IrLValue::Signal(1, 8),
+                            rhs: IrExpr::BinaryOp(
+                                BinaryIrOp::Add,
+                                Box::new(IrExpr::Signal(1, 8)),
+                                Box::new(IrExpr::Const(LogicVec::from_u64(1, 8))),
+                            ),
+                            delay: None,
+                        }],
+                        iff: None,
+                    },
+                ],
+                sub_instances: vec![],
+            },
+            modules: HashMap::new(),
+            classes: HashMap::new(),
+            covergroups: vec![],
+            dpi_imports: vec![],
+            hier_signal_map: HashMap::new(),
+            udp_defs: vec![],
+            specify_items: vec![],
+            timescale: None,
+            source_file: None,
+            source_lines: None,
+            module_functions: HashMap::new(),
+            pkg_scoped_consts: HashMap::new(),
+            coverage_exclusions: Vec::new(),
+            stmt_lines: HashMap::new(),
+            net_aliases: HashMap::new(),
+        };
+
+        let interp = AbstractInterpreter::new();
+        let result = interp.analyze_design(&design);
+
+        // clk: Input, init 0 → Const(0), never assigned
+        assert_eq!(result.get("clk"), Some(&AbsValue::Const(0)));
+
+        // x: Reg, init 0. comb: read as Const(0), not assigned. ff: x <= x+1 → Const(1).
+        // Join(Const(0), Const(1)) = Interval{0, 1}
+        assert_eq!(
+            result.get("x"),
+            Some(&AbsValue::Interval { min: 0, max: 1 })
+        );
+
+        // y: Wire, init 0. comb: y = x → Const(0). ff: not assigned → Const(0). Join: Const(0).
+        assert_eq!(result.get("y"), Some(&AbsValue::Const(0)));
+
+        // unused: Reg, init X → Top, never assigned → Top
+        assert_eq!(result.get("unused"), Some(&AbsValue::Top));
+
+        // unknown_signals: only "unused" (clk has init 0 → Const(0), not Top)
+        let unknown = interp.unknown_signals(&design);
+        assert_eq!(unknown, vec!["unused"]);
+    }
+
+    #[test]
+    fn test_analyze_design_empty_design() {
+        use mivon_core::intern::Symbol;
+
+        let design = IrDesign {
+            top: IrModule {
+                name: Symbol::from("empty"),
+                signals: vec![],
+                inputs: vec![],
+                outputs: vec![],
+                inouts: vec![],
+                processes: vec![],
+                sub_instances: vec![],
+            },
+            modules: HashMap::new(),
+            classes: HashMap::new(),
+            covergroups: vec![],
+            dpi_imports: vec![],
+            hier_signal_map: HashMap::new(),
+            udp_defs: vec![],
+            specify_items: vec![],
+            timescale: None,
+            source_file: None,
+            source_lines: None,
+            module_functions: HashMap::new(),
+            pkg_scoped_consts: HashMap::new(),
+            coverage_exclusions: Vec::new(),
+            stmt_lines: HashMap::new(),
+            net_aliases: HashMap::new(),
+        };
+
+        let interp = AbstractInterpreter::new();
+        let result = interp.analyze_design(&design);
+        assert!(result.is_empty());
+
+        let unknown = interp.unknown_signals(&design);
+        assert!(unknown.is_empty());
     }
 }
