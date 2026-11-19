@@ -39,6 +39,7 @@ fn signal_char(value: &str, width: usize) -> char {
 }
 
 /// Render satu baris waveform: nama signal di kiri, trace di kanan.
+/// `cursor_col`: kolom tempat kursor waktu ditandai '|' (bila dalam rentang).
 fn waveform_row(
     name: &str,
     trace: &[(u64, String)],
@@ -46,6 +47,7 @@ fn waveform_row(
     t_start: u64,
     t_end: u64,
     col_w: usize,
+    cursor_col: usize,
 ) -> ListItem<'static> {
     let trace_w = col_w.saturating_sub(40); // sisa untuk trace
     if trace_w == 0 {
@@ -62,6 +64,11 @@ fn waveform_row(
     let step = step.max(1);
 
     for col in 0..trace_w {
+        // Kursor waktu menimpa karakter sinyal pada kolomnya.
+        if col == cursor_col {
+            chars.push('|');
+            continue;
+        }
         let t = t_start + col as u64 * step;
         // Cari nilai terbaru <= t.
         let mut val = "0";
@@ -152,6 +159,17 @@ pub fn show(f: &mut Frame, area: ratatui::layout::Rect, state: &mut GuiState) {
 
     // ── Trace area ──
     let trace_w = chunks[1].width as usize;
+    // Posisi kursor waktu di kolom (0-based), dipetakan dari wave_cursor.
+    let span = t_end.saturating_sub(t_start).max(1);
+    let cursor_col = if span > 0 {
+        ((state.wave_cursor.saturating_sub(t_start) as u128)
+            .checked_mul(trace_w as u128)
+            .unwrap_or(u128::MAX)
+            / span as u128) as usize
+    } else {
+        0
+    }
+    .min(trace_w.saturating_sub(1));
     let mut items: Vec<ListItem> = Vec::new();
     let max_rows = chunks[1].height as usize;
     for s in state.waveform.iter().take(max_rows) {
@@ -162,15 +180,19 @@ pub fn show(f: &mut Frame, area: ratatui::layout::Rect, state: &mut GuiState) {
             t_start,
             t_end,
             trace_w,
+            cursor_col,
         ));
     }
 
     let list = List::new(items);
     f.render_widget(list, chunks[1]);
 
-    // Hint kontrol.
-    let hint = Paragraph::new("Zoom: state.wave_zoom  |  Filter: trace_filter  |  Compare: wave_compare")
-        .style(Style::default().fg(Color::DarkGray));
+    // Hint kontrol + bacaan waktu kursor.
+    let hint = Paragraph::new(format!(
+        "Zoom: state.wave_zoom  |  Filter: trace_filter  |  Compare: wave_compare  |  Kursor t={} (,/. navigasi)",
+        state.wave_cursor
+    ))
+    .style(Style::default().fg(Color::DarkGray));
     f.render_widget(
         hint,
         ratatui::layout::Rect {

@@ -676,6 +676,9 @@ pub struct GuiState {
     pub wave_compare: bool,
     /// Zoom horizontal (pixel per unit waktu).
     pub wave_zoom: f32,
+    /// Posisi kursor waktu di waveform (unit waktu desain), untuk navigasi
+    /// kursor vertikal dan bacaan waktu.
+    pub wave_cursor: u64,
     /// Nama signal yang DISEMBUNYIKAN dari tampilan waveform (toggle di pemilih
     /// signal panel) — filter visual tanpa mengubah data trace; berguna untuk
     /// desain dengan banyak signal.
@@ -891,6 +894,7 @@ impl GuiState {
             prev_waveform: Vec::new(),
             wave_compare: false,
             wave_zoom: 4.0,
+            wave_cursor: 0,
             wave_hidden: std::collections::HashSet::new(),
             arch_open: std::collections::HashMap::new(),
             dep_graph: None,

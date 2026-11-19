@@ -377,6 +377,29 @@ impl MivonApp {
             return;
         }
 
+        // Navigasi kursor waveform (, = mundur, . = maju) saat tab Waveform aktif.
+        if self.state.bottom_tab == BottomTab::Waveform && !self.state.lsp_completion_show {
+            match key.code {
+                KeyCode::Char(',') => {
+                    self.state.wave_cursor = self.state.wave_cursor.saturating_sub(10);
+                    return;
+                }
+                KeyCode::Char('.') => {
+                    let t_max = self
+                        .state
+                        .waveform
+                        .iter()
+                        .flat_map(|s| s.trace.iter())
+                        .map(|(t, _)| *t)
+                        .max()
+                        .unwrap_or(0);
+                    self.state.wave_cursor = (self.state.wave_cursor + 10).min(t_max);
+                    return;
+                }
+                _ => {}
+            }
+        }
+
         // Navigasi / insert popup completion LSP.
         if self.state.lsp_completion_show {
             match key.code {
@@ -451,7 +474,7 @@ impl MivonApp {
                 let col = self.state.editor_cursor_col;
                 let line = f.content.lines().nth(line_idx).unwrap_or("");
                 let f_path = f.path.clone();
-                drop(f);
+                let _ = f;
                 // Prefix = kata identifier sebelum kursor (untuk filter sisi klien).
                 let chars: Vec<char> = line.chars().collect();
                 let n = chars.len().min(col);
@@ -805,8 +828,8 @@ impl MivonApp {
             self.draw_palette(f);
         }
 
-        if let Some((name, text)) = self.state.lsp_hover.clone() {
-            self.draw_hover(f, &name, &text);
+        if let Some((name, text)) = self.state.lsp_hover.as_ref() {
+            self.draw_hover(f, name, text);
         }
     }
 
