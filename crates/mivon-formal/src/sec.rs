@@ -2667,4 +2667,39 @@ mod tests {
             other => panic!("Not signed yang di-zero-extend harus ditolak, dapat {other:?}"),
         }
     }
+
+    #[test]
+    fn xor_is_commutative() {
+        // Xor(a, b) == Xor(b, a) untuk 8 bit.
+        let a = design(&[("x", 8), ("y", 8)], "y", 1, SecExpr::Xor(Box::new(input("x")), Box::new(input("y"))));
+        let b = design(&[("x", 8), ("y", 8)], "y", 1, SecExpr::Xor(Box::new(input("y")), Box::new(input("x"))));
+        assert_eq!(check_equivalence(&a, &b), SecOutcome::Equivalent);
+    }
+
+    #[test]
+    fn xor_is_not_eq() {
+        // Xor != Eq untuk 8 bit (bedakan operasi).
+        let a = design(&[("x", 8), ("y", 8)], "s", 8, SecExpr::Xor(Box::new(input("x")), Box::new(input("y"))));
+        let b = design(&[("x", 8), ("y", 8)], "s", 8, SecExpr::Eq(Box::new(input("x")), Box::new(input("y"))));
+        assert!(matches!(check_equivalence(&a, &b), SecOutcome::NotEquivalent { .. }));
+    }
+
+    #[test]
+    fn signed_neg_is_not_self_inverse() {
+        // Signed(Neg(x)) != x secara umum (Neg = two's complement, Signed =
+        // sign-extend; tidak membatalkan).
+        let a = design(&[("x", 8)], "s", 8, SecExpr::Signed(Box::new(SecExpr::Neg(Box::new(input("x"))))));
+        let b = design(&[("x", 8)], "s", 8, input("x"));
+        assert!(matches!(check_equivalence(&a, &b), SecOutcome::NotEquivalent { .. }));
+    }
+
+    #[test]
+    fn signed_resize_not_equivalent() {
+        // Signed(Resize(x, 8)) != Resize(Signed(x), 8) secara umum:
+        // sign-extend-then-resize vs resize-then-sign-extend berbeda
+        // saat MSB beda (x = 8 dalam 4 bit = 1000b = -8 signed).
+        let a = design(&[("x", 4)], "s", 8, SecExpr::Signed(Box::new(SecExpr::Resize(Box::new(input("x")), 8))));
+        let b = design(&[("x", 4)], "s", 8, SecExpr::Resize(Box::new(SecExpr::Signed(Box::new(input("x")))), 8));
+        assert!(matches!(check_equivalence(&a, &b), SecOutcome::NotEquivalent { .. }));
+    }
 }
