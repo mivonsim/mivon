@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use super::state::{BottomTab, GuiState, SidebarTab};
+use super::regression;
 
 /// State workspace yang dipulihkan (JSON — `.mivon/workspace.json`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -38,6 +39,9 @@ pub struct WorkspaceState {
     /// Top module yang dipilih di GUI (dari daftar module hasil compile).
     #[serde(default)]
     pub selected_top: Option<String>,
+    /// Database regression (`.mivon/regression.json`, CLI `mregression`).
+    #[serde(default)]
+    pub regression_db: Option<regression::RegressionDb>,
     /// Daftar breakpoint (string representasi, mis. "break cycle 100").
     #[serde(default)]
     pub breakpoints: Vec<String>,
@@ -156,6 +160,7 @@ pub fn save_workspace(state: &GuiState) {
         wave_hidden: state.wave_hidden.iter().cloned().collect(),
         max_time: state.max_time,
         selected_top: state.selected_top.clone(),
+        regression_db: state.regression_db.clone(),
         breakpoints: state.breakpoints.clone(),
         watchpoints: state.watchpoints.clone(),
         bookmarks: state
@@ -280,6 +285,7 @@ fn apply(state: &mut GuiState, root: PathBuf, ws: WorkspaceState) {
     state.wave_hidden = ws.wave_hidden.into_iter().collect();
     state.max_time = ws.max_time.max(1);
     state.selected_top = ws.selected_top;
+    state.regression_db = ws.regression_db;
     state.breakpoints = ws.breakpoints;
     state.watchpoints = ws.watchpoints;
     // Bookmark (path relatif di-resolve terhadap root).
@@ -333,6 +339,7 @@ mod tests {
             selected_top: Some("top_earlgrey".into()),
             breakpoints: vec!["break cycle 100".into(), "break change rst_n".into()],
             watchpoints: vec!["clk".into()],
+            regression_db: Some(regression::RegressionDb::new()),
             bookmarks: vec!["core/cache.sv".into()],
         };
         let json = serde_json::to_string(&ws).expect("serialize");
@@ -351,6 +358,7 @@ mod tests {
             vec!["break cycle 100".to_string(), "break change rst_n".to_string()]
         );
         assert_eq!(back.watchpoints, vec!["clk".to_string()]);
+        assert!(back.regression_db.is_some());
         assert_eq!(back.bookmarks, vec!["core/cache.sv".to_string()]);
     }
 

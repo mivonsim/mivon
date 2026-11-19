@@ -11,6 +11,7 @@ pub mod dependency;
 pub mod editor;
 pub mod pipeline;
 pub mod problems;
+pub mod regression;
 pub mod search;
 pub mod sidebar;
 pub mod signals;

@@ -554,7 +554,8 @@ impl MivonApp {
                 BottomTab::Assertions => BottomTab::Coverage,
                 BottomTab::Terminal => BottomTab::Assertions,
                 BottomTab::Pipeline => BottomTab::Debugger,
-                BottomTab::Debugger => BottomTab::Terminal,
+                BottomTab::Debugger => BottomTab::Regression,
+                BottomTab::Regression => BottomTab::Terminal,
             };
             return;
         }

@@ -9,8 +9,8 @@ use ratatui::{
 
 use super::super::state::{BottomTab, GuiState};
 use super::{
-    assertions, benchmark, console, coverage, debugger, pipeline, problems, signals, terminal,
-    trace, waveform,
+    assertions, benchmark, console, coverage, debugger, pipeline, problems, regression, signals,
+    terminal, trace, waveform,
 };
 pub fn show(f: &mut Frame, area: ratatui::layout::Rect, state: &mut GuiState) {
     let block = Block::default()
@@ -40,6 +40,7 @@ pub fn show(f: &mut Frame, area: ratatui::layout::Rect, state: &mut GuiState) {
         "Terminal",
         "Pipeline",
         "Debugger",
+        "Regression",
     ];
     let tab_items: Vec<ListItem> = tabs
         .iter()
@@ -78,5 +79,6 @@ pub fn show(f: &mut Frame, area: ratatui::layout::Rect, state: &mut GuiState) {
         BottomTab::Terminal => terminal::show(f, content_area, state),
         BottomTab::Pipeline => pipeline::show(f, content_area, state),
         BottomTab::Debugger => debugger::show(f, content_area, state),
+        BottomTab::Regression => regression::show(f, content_area, state),
     }
 }

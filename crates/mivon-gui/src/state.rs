@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 
 use mivon_ir::IrDesign;
 
+use super::regression;
+
 /// Node pohon file (rekursif).
 #[derive(Debug, Clone)]
 pub struct FileNode {
@@ -585,6 +587,8 @@ pub enum BottomTab {
     Pipeline,
     /// Debugger: breakpoint, watchpoint, dan event debug.
     Debugger,
+    /// Regression: database hasil run `mregression` (pass/fail/flaky/trend).
+    Regression,
 }
 
 impl BottomTab {
@@ -601,7 +605,9 @@ impl BottomTab {
             7 => BottomTab::Assertions,
             8 => BottomTab::Terminal,
             9 => BottomTab::Pipeline,
-            _ => BottomTab::Debugger,
+            10 => BottomTab::Debugger,
+            11 => BottomTab::Regression,
+            _ => BottomTab::Regression,
         }
     }
 }
@@ -735,6 +741,8 @@ pub struct GuiState {
     pub coverage: CoverageInfo,
     /// Line → jumlah hits untuk highlight editor (dari SimInfo.coverage_line_hits).
     pub coverage_line_hits: std::collections::HashMap<usize, u64>,
+    /// Database regression (dari `.mivon/regression.json`, CLI `mregression`).
+    pub regression_db: Option<regression::RegressionDb>,
     // ── Assertions (hasil sim terakhir) ──
     pub assertions: Vec<AssertionRow>,
 
@@ -927,6 +935,7 @@ impl GuiState {
             events_per_delta: 0.0,
             coverage: CoverageInfo::default(),
             coverage_line_hits: std::collections::HashMap::new(),
+            regression_db: None,
             assertions: Vec::new(),
             palette_open: false,
             palette_just_opened: false,
