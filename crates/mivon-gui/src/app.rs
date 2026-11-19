@@ -346,6 +346,14 @@ impl MivonApp {
                 }
                 return;
             }
+            KeyCode::F(9) => {
+                app_cmds::trigger_reset(&mut self.state);
+                return;
+            }
+            KeyCode::F(10) => {
+                app_cmds::trigger_restart(&mut self.state);
+                return;
+            }
             _ => {}
         }
 

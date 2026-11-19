@@ -1,7 +1,8 @@
 //! Fungsi trigger aksi GUI (dipindah dari app.rs agar app.rs ringkas).
 //! Semua memutar state GuiState dan memanggil backend via channel.
 
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use super::backend::{spawn_compile, spawn_sim, spawn_term, DebugConfig};
 use super::state::GuiState;
@@ -110,6 +111,56 @@ pub fn trigger_stop(state: &mut GuiState) {
     state.pause_flag.store(false, Ordering::Relaxed); // lepas blokir Pause bila aktif
     state.is_running = false;
     state.is_paused = false;
+}
+
+/// Reset simulasi: hentikan run yang aktif dan siapkan state untuk run baru.
+/// Setiap `spawn_sim` sudah membuat `SimulationEngine::new` segar dari design
+/// yang sama, jadi reset utama adalah memutus worker lama dan menyiapkan flag
+/// baru agar run berikutnya dimulai bersih.
+pub fn trigger_reset(state: &mut GuiState) {
+    if state.is_running || state.is_paused {
+        state.cancel_flag.store(true, Ordering::Relaxed);
+        state.pause_flag.store(false, Ordering::Relaxed);
+        state.is_running = false;
+        state.is_paused = false;
+    }
+    // Pasang flag baru agar worker lama (jika masih menyebar) terputus
+    // sepenuhnya dan run berikutnya mulai dari awal.
+    state.cancel_flag = Arc::new(AtomicBool::new(false));
+    state.pause_flag = Arc::new(AtomicBool::new(false));
+    state.log("⟲ Reset simulasi (siap untuk run baru).");
+}
+
+/// Restart simulasi: hentikan run aktif lalu jalankan lagi dari awal dengan
+/// engine segar (SimulationEngine::new dari design yang sama).
+pub fn trigger_restart(state: &mut GuiState) {
+    // Hentikan run aktif dengan flag baru (lepas worker lama).
+    state.cancel_flag.store(true, Ordering::Relaxed);
+    state.pause_flag.store(false, Ordering::Relaxed);
+    state.is_running = false;
+    state.is_paused = false;
+    state.cancel_flag = Arc::new(AtomicBool::new(false));
+    state.pause_flag = Arc::new(AtomicBool::new(false));
+
+    let Some(design) = state.design.clone() else {
+        state.log("⚠ Tidak ada design ter-elaborasi (F7 Compile dulu)");
+        return;
+    };
+    state.prev_waveform = state.waveform.clone();
+    state.log(format!(
+        "⟲ Restart simulasi (T={})...", state.max_time));
+    state.is_running = true;
+    state.is_paused = false;
+    let max_time = state.max_time;
+    let tx = state.tx.clone();
+    let cancel = state.cancel_flag.clone();
+    let pause = state.pause_flag.clone();
+    let debug = DebugConfig {
+        breakpoints: state.breakpoints.clone(),
+        watchpoints: state.watchpoints.clone(),
+        enabled: state.debug_mode,
+    };
+    spawn_sim(tx, design, max_time, cancel, pause, debug);
 }
 
 /// Jalankan perintah terminal (input bar). Perintah debugger (`bp`/`wp`/`watch`/
@@ -240,5 +291,60 @@ pub fn trigger_generate(state: &mut GuiState) {
         Err(e) => {
             state.log(format!("❌ Generate: {}", e.format()));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::mpsc::channel;
+
+    fn test_state() -> GuiState {
+        let (tx, rx) = channel();
+        GuiState::new(tx, rx)
+    }
+
+    #[test]
+    fn trigger_reset_clears_running_and_paused() {
+        let mut s = test_state();
+        s.is_running = true;
+        s.is_paused = true;
+        s.cancel_flag.store(true, Ordering::Relaxed);
+        s.pause_flag.store(true, Ordering::Relaxed);
+        trigger_reset(&mut s);
+        assert!(!s.is_running, "is_running harus false setelah reset");
+        assert!(!s.is_paused, "is_paused harus false setelah reset");
+        assert!(
+            !s.cancel_flag.load(Ordering::Relaxed),
+            "cancel_flag harus false setelah reset"
+        );
+        assert!(
+            !s.pause_flag.load(Ordering::Relaxed),
+            "pause_flag harus false setelah reset"
+        );
+    }
+
+    #[test]
+    fn trigger_reset_idle_state_stays_idle() {
+        let mut s = test_state();
+        trigger_reset(&mut s);
+        assert!(!s.is_running);
+        assert!(!s.is_paused);
+    }
+
+    #[test]
+    fn trigger_restart_without_design_stops_and_logs() {
+        let mut s = test_state();
+        s.is_running = true;
+        s.is_paused = true;
+        trigger_restart(&mut s);
+        assert!(!s.is_running, "restart tanpa design harus berhenti");
+        assert!(!s.is_paused, "restart tanpa design harus tidak paused");
+        assert!(
+            s.console
+                .iter()
+                .any(|c| c.msg.contains("Tidak ada design ter-elaborasi")),
+            "harus log pesan tanpa design"
+        );
     }
 }
