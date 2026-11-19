@@ -75,7 +75,7 @@ pub fn show(f: &mut Frame, area: ratatui::layout::Rect, state: &mut GuiState) {
     f.render_widget(compile, chunks[3]);
 
     // Status / hints (kanan).
-    let hints = Paragraph::new("F5 Run/Resume  |  F8 Pause  |  F9 Reset  |  F10 Restart  |  F7 Compile  |  Ctrl+O Open  |  Ctrl+S Save  |  Ctrl+G Gen  |  Ctrl+T Tema  |  Ctrl+Shift+P Palette  |  Ctrl+Q Exit")
+    let hints = Paragraph::new("F5 Run/Resume  |  F8 Pause  |  F9 Reset  |  F10 Restart  |  F7 Compile  |  F11 Synth  |  Ctrl+O Open  |  Ctrl+S Save  |  Ctrl+G Gen  |  Ctrl+T Tema  |  Ctrl+Shift+P Palette  |  Ctrl+Q Exit")
         .style(Style::default().fg(theme.fg()).bg(theme.bg()));
     f.render_widget(hints, chunks[4]);
 }

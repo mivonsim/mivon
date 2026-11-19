@@ -13,6 +13,8 @@ mivon-elaboration = { path = "../mivon-elaboration" }
 mivon-compiler = { path = "../mivon-compiler" }
 mivon-simulator = { path = "../mivon-simulator" }
 mivon-mv = { path = "../mivon-mv" }
+mivon-synth = { path = "../mivon-synth" }
+mivon-timing = { path = "../mivon-timing" }
 
 # TUI: ratatui + crossterm (terminal, tanpa GUI grafis / tanpa GPU)
 ratatui = { version = "0.26", default-features = false, features = ["crossterm"] }

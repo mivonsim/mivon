@@ -13,6 +13,7 @@ pub mod pipeline;
 pub mod problems;
 pub mod regression;
 pub mod search;
+pub mod synthesis;
 pub mod sidebar;
 pub mod signals;
 pub mod terminal;

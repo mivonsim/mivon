@@ -4,8 +4,11 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use super::backend::{spawn_compile, spawn_sim, spawn_term, DebugConfig};
+use super::backend::{spawn_compile, spawn_sim, spawn_synth, spawn_term, DebugConfig};
 use super::state::GuiState;
+use mivon_timing::{
+    analyze, estimate_area, render_area_report, render_timing_report, Constraint, TimingOptions,
+};
 
 /// Buka folder project (paksa direktori kerja saat ini sebagai project).
 pub fn trigger_open_project(state: &mut GuiState) {
@@ -197,6 +200,18 @@ pub fn trigger_format(state: &mut GuiState) {
     } else {
         state.log(format!("⚠ Format: gagal membaca ulang {}", path_str));
     }
+}
+
+/// Jalankan sintesis pada design ter-elaborasi dan tampilkan laporan
+/// sintesizability, utilisasi, FSM, static timing, dan area di panel Synthesis.
+pub fn trigger_synth(state: &mut GuiState) {
+    let Some(design) = state.design.clone() else {
+        state.log("⚠ Sintesis: belum ada design ter-elaborasi (F7 Compile dulu)");
+        return;
+    };
+    state.log("⚙️ Sintesis design...");
+    let tx = state.tx.clone();
+    spawn_synth(tx, design);
 }
 
 /// Jalankan perintah terminal (input bar).

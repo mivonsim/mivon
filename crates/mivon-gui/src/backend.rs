@@ -19,12 +19,17 @@ use mivon_core::error::SimError;
 use mivon_ir::{IrDesign, LogicVal, LogicVec};
 use mivon_simulator::simulator::SimulationEngine;
 use mivon_simulator::simulator::types::{Breakpoint, DebugMode, Watchpoint};
+use mivon_synth::{
+    fsm::{extract_fsms, render_fsm_report},
+    report::{render_syn_report, render_util_report, DeviceCapacity},
+    synthesize, SynthOpts,
+};
 
 use super::state::{
     blocking_assign_pos, word_count, AssertionRow, CompileInfo, CoverageInfo, CovergroupRow,
     DepRow, DiagEntry, DiagLevel, FileNode, GuiEvent, InstanceRow, MacroRow, MicdInfo, ParamRow,
-    PipelineStage, QuickFix, QuickFixKind, SignalRow, SimInfo, TextHit, TraceEvent, WaveformSignal,
-    STAGE_SIMULATOR,
+    PipelineStage, QuickFix, QuickFixKind, SignalRow, SimInfo, SynthReport, TextHit,
+    TraceEvent, WaveformSignal, STAGE_SIMULATOR,
 };
 
 /// Scan direktori → pohon file (rekursif, sinkron).
@@ -1009,6 +1014,28 @@ pub fn spawn_sim(
     spawn_worker(move || {
         let result = run_simulation(tx.clone(), &design, max_time, cancel, &pause, &debug);
         let _ = tx.send(GuiEvent::SimDone(result));
+    });
+}
+
+/// Sintesis design ter-elaborasi di worker thread. Menghasilkan laporan
+/// sintesizability, utilisasi, dan FSM — dikirim sebagai GuiEvent::SynthDone.
+/// Tidak merekompilasi (design sudah dielaborasi).
+pub fn spawn_synth(tx: Sender<GuiEvent>, design: IrDesign) {
+    spawn_worker(move || {
+        let result = (|| -> Result<SynthReport, String> {
+            let out = synthesize(&design, &SynthOpts::default());
+            let cap = DeviceCapacity::fpga_x7();
+            let fsms = extract_fsms(&design);
+            Ok(SynthReport {
+                ok: out.check.error_count() == 0,
+                syn_check: render_syn_report(&out.check),
+                util: render_util_report(&out.netlist, &cap),
+                fsm: render_fsm_report(&fsms),
+                timing: String::new(),
+                area: String::new(),
+            })
+        })();
+        let _ = tx.send(GuiEvent::SynthDone(result));
     });
 }
 

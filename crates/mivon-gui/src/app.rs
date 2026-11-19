@@ -194,6 +194,18 @@ impl MivonApp {
                         "⏸ Simulasi dijeda — t={} ({} signal)", info.cycles, n_signal
                     ));
                 }
+                GuiEvent::SynthDone(result) => {
+                    self.state.is_running = false;
+                    match result {
+                        Ok(rep) => {
+                            self.state.synth_report = Some(rep);
+                            self.state.log("✅ Sintesis selesai — lihat panel Synthesis");
+                        }
+                        Err(e) => {
+                            self.state.log(format!("❌ Sintesis gagal: {}", e));
+                        }
+                    }
+                }
                 GuiEvent::TermOutput(text, is_err) => {
                     self.state
                         .term_lines
@@ -462,6 +474,10 @@ impl MivonApp {
                 app_cmds::trigger_restart(&mut self.state);
                 return;
             }
+            KeyCode::F(11) => {
+                app_cmds::trigger_synth(&mut self.state);
+                return;
+            }
             KeyCode::Char(' ') if ctrl => {
                 // Ctrl+Space: minta completion LSP pada posisi kursor editor.
                 let Some(idx) = self.state.active_file else {
@@ -561,7 +577,8 @@ impl MivonApp {
                 BottomTab::Terminal => BottomTab::Assertions,
                 BottomTab::Pipeline => BottomTab::Debugger,
                 BottomTab::Debugger => BottomTab::Regression,
-                BottomTab::Regression => BottomTab::Terminal,
+                BottomTab::Regression => BottomTab::Synthesis,
+                BottomTab::Synthesis => BottomTab::Terminal,
             };
             return;
         }
