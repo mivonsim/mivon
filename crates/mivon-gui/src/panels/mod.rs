@@ -5,6 +5,7 @@ pub mod benchmark;
 pub mod bottom_tabs;
 pub mod console;
 pub mod coverage;
+pub mod debugger;
 pub mod dependency;
 pub mod editor;
 pub mod pipeline;

@@ -349,7 +349,8 @@ impl MivonApp {
                 BottomTab::Coverage => BottomTab::Benchmark,
                 BottomTab::Assertions => BottomTab::Coverage,
                 BottomTab::Terminal => BottomTab::Assertions,
-                BottomTab::Pipeline => BottomTab::Terminal,
+                BottomTab::Pipeline => BottomTab::Debugger,
+                BottomTab::Debugger => BottomTab::Terminal,
             };
             return;
         }

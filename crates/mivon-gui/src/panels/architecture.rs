@@ -7,8 +7,6 @@ use ratatui::{
 };
 
 use super::super::state::GuiState;
-use ratatui::style::Modifier;
-
 pub fn show(f: &mut Frame, area: ratatui::layout::Rect, state: &mut GuiState) {
     let block = Block::default()
         .title("Architecture")

@@ -1,17 +1,93 @@
-//! Tab Waveform: daftar signal hasil simulasi (trace dari VCD).
+//! Tab Waveform: renderer gelombang VCD di terminal.
+//! Tampilkan trace per signal sebagai bar karakter (█ tinggi, ░ rendah,
+//! ▧ x, ▦ z) dengan time ruler di atas dan zoom horizontal.
 
 use ratatui::{
-    style::{Color, Style},
+    layout::{Constraint, Direction, Layout},
+    style::{Color, Modifier, Style},
     widgets::{Block, Borders, List, ListItem, Paragraph},
     Frame,
 };
 
 use super::super::state::GuiState;
-use ratatui::style::Modifier;
+
+/// Karakter untuk nilai sinyal per sel waktu.
+fn signal_char(value: &str, width: usize) -> char {
+    let v = value.trim();
+    if v.is_empty() {
+        return ' ';
+    }
+    let first = v.chars().next().unwrap_or('0');
+    if width == 1 {
+        match first {
+            '1' | 'H' => '█',
+            '0' | 'L' => '░',
+            'x' | 'X' => '▧',
+            'z' | 'Z' => '▦',
+            _ => '░',
+        }
+    } else {
+        // Multi-bit: tampilkan sebagai blok terpadu berdasarkan first bit.
+        match first {
+            '1' => '█',
+            '0' => '░',
+            'x' | 'X' => '▧',
+            'z' | 'Z' => '▦',
+            _ => '░',
+        }
+    }
+}
+
+/// Render satu baris waveform: nama signal di kiri, trace di kanan.
+fn waveform_row(
+    name: &str,
+    trace: &[(u64, String)],
+    width: usize,
+    t_start: u64,
+    t_end: u64,
+    col_w: usize,
+) -> ListItem<'static> {
+    let trace_w = col_w.saturating_sub(40); // sisa untuk trace
+    if trace_w == 0 {
+        return ListItem::new(name.to_string()).style(Style::default().fg(Color::Cyan));
+    }
+
+    // Bangun string trace: tiap sel = satu interval waktu.
+    let mut chars: Vec<char> = Vec::with_capacity(trace_w);
+    let step = if t_end > t_start {
+        (t_end - t_start).max(1) / trace_w as u64
+    } else {
+        1
+    };
+    let step = step.max(1);
+
+    for col in 0..trace_w {
+        let t = t_start + col as u64 * step;
+        // Cari nilai terbaru <= t.
+        let mut val = "0";
+        for (tt, v) in trace {
+            if *tt <= t {
+                val = v;
+            } else {
+                break;
+            }
+        }
+        chars.push(signal_char(val, width));
+    }
+
+    let trace_str: String = chars.into_iter().collect();
+    ListItem::new(format!("{:<36} {}", name, trace_str))
+        .style(Style::default().fg(Color::Cyan))
+}
 
 pub fn show(f: &mut Frame, area: ratatui::layout::Rect, state: &mut GuiState) {
     let block = Block::default()
-        .title(format!("Waveform ({} signal)", state.waveform.len()))
+        .title(format!(
+            "Waveform ({} signal)  zoom={}x  {}",
+            state.waveform.len(),
+            state.wave_zoom as u32,
+            if state.wave_compare { "[COMPARE]" } else { "" }
+        ))
         .borders(Borders::ALL)
         .style(Style::default().bg(Color::Black));
     f.render_widget(block, area);
@@ -20,31 +96,88 @@ pub fn show(f: &mut Frame, area: ratatui::layout::Rect, state: &mut GuiState) {
         vertical: 1u16,
         horizontal: 1u16,
     });
-    if inner.height < 1 {
+    if inner.height < 3 {
         return;
     }
 
     if state.waveform.is_empty() {
-        let p = Paragraph::new("Tidak ada waveform — jalankan simulasi dulu").style(
-            Style::default()
-                .fg(Color::Gray)
-                .add_modifier(Modifier::ITALIC),
-        );
+        let p = Paragraph::new("Tidak ada waveform — jalankan simulasi dulu (F5)")
+            .style(
+                Style::default()
+                    .fg(Color::Gray)
+                    .add_modifier(Modifier::ITALIC),
+            );
         f.render_widget(p, inner);
         return;
     }
 
-    let items: Vec<ListItem> = state
+    // Layout: ruler (1 baris) + trace area.
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(1)])
+        .split(inner);
+
+    // ── Time ruler ──
+    let t_max = state
         .waveform
         .iter()
-        .take(inner.height as usize)
-        .map(|s| {
-            let last = s.trace.last().map(|(_, v)| v.as_str()).unwrap_or("-");
-            ListItem::new(format!("{:<30} width={:<4} last={}", s.name, s.width, last))
-                .style(Style::default().fg(Color::Green))
-        })
-        .collect();
+        .flat_map(|s| s.trace.iter())
+        .map(|(t, _)| *t)
+        .max()
+        .unwrap_or(0);
+    let t_start = 0u64;
+    let t_end = t_max.max(1);
+    let ruler_w = chunks[0].width as usize;
+    let step = (t_end - t_start).max(1) / ruler_w as u64;
+    let step = step.max(1);
+    let mut ruler = String::new();
+    for col in 0..ruler_w {
+        let t = t_start + col as u64 * step;
+        if col % 10 == 0 {
+            ruler.push_str(&format!("{:>width$}", t, width = 1));
+        } else {
+            ruler.push('─');
+        }
+    }
+    // Potong/perpanjang ruler agar pas lebar area.
+    if ruler.len() > ruler_w {
+        ruler.truncate(ruler_w);
+    }
+    while ruler.len() < ruler_w {
+        ruler.push('─');
+    }
+    let ruler_p = Paragraph::new(ruler)
+        .style(Style::default().fg(Color::Gray).add_modifier(Modifier::DIM));
+    f.render_widget(ruler_p, chunks[0]);
+
+    // ── Trace area ──
+    let trace_w = chunks[1].width as usize;
+    let mut items: Vec<ListItem> = Vec::new();
+    let max_rows = chunks[1].height as usize;
+    for s in state.waveform.iter().take(max_rows) {
+        items.push(waveform_row(
+            &s.name,
+            &s.trace,
+            s.width,
+            t_start,
+            t_end,
+            trace_w,
+        ));
+    }
 
     let list = List::new(items);
-    f.render_widget(list, inner);
+    f.render_widget(list, chunks[1]);
+
+    // Hint kontrol.
+    let hint = Paragraph::new("Zoom: state.wave_zoom  |  Filter: trace_filter  |  Compare: wave_compare")
+        .style(Style::default().fg(Color::DarkGray));
+    f.render_widget(
+        hint,
+        ratatui::layout::Rect {
+            x: inner.x,
+            y: inner.y.saturating_add(inner.height.saturating_sub(1)),
+            width: inner.width,
+            height: 1,
+        },
+    );
 }

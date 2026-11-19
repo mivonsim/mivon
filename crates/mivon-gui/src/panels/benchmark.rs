@@ -1,14 +1,12 @@
 //! Tab Benchmark: metrik performa simulasi terakhir.
 
 use ratatui::{
-    style::{Color, Style},
+    style::{Color, Modifier, Style},
     widgets::{Block, Borders, List, ListItem},
     Frame,
 };
 
 use super::super::state::GuiState;
-use ratatui::style::Modifier;
-
 pub fn show(f: &mut Frame, area: ratatui::layout::Rect, state: &mut GuiState) {
     let block = Block::default()
         .title("Benchmark")

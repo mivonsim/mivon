@@ -1,14 +1,12 @@
 //! Tab Problems: diagnostic + LSP diagnostics + Quick Fix.
 
 use ratatui::{
-    style::{Color, Style},
+    style::{Color, Modifier, Style},
     widgets::{Block, Borders, List, ListItem, Paragraph},
     Frame,
 };
 
 use super::super::state::{DiagEntry, DiagLevel, GuiState};
-use ratatui::style::Modifier;
-
 pub fn show(f: &mut Frame, area: ratatui::layout::Rect, state: &mut GuiState) {
     let all: Vec<&DiagEntry> = state
         .diagnostics

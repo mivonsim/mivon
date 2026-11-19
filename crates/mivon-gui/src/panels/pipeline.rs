@@ -1,14 +1,12 @@
 //! Tab Pipeline: timing per tahap compile + MICD stats.
 
 use ratatui::{
-    style::{Color, Style},
+    style::{Color, Modifier, Style},
     widgets::{Block, Borders, List, ListItem},
     Frame,
 };
 
 use super::super::state::GuiState;
-use ratatui::style::Modifier;
-
 pub fn show(f: &mut Frame, area: ratatui::layout::Rect, state: &mut GuiState) {
     let block = Block::default()
         .title("Compile Pipeline")

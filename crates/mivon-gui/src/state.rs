@@ -562,6 +562,8 @@ pub enum BottomTab {
     /// Compile Pipeline + Incremental Cache (MICD) — statistik compile
     /// incremental database & timing per tahap (nilai jual Mivon).
     Pipeline,
+    /// Debugger: breakpoint, watchpoint, dan event debug.
+    Debugger,
 }
 
 impl BottomTab {
@@ -577,7 +579,8 @@ impl BottomTab {
             6 => BottomTab::Coverage,
             7 => BottomTab::Assertions,
             8 => BottomTab::Terminal,
-            _ => BottomTab::Pipeline,
+            9 => BottomTab::Pipeline,
+            _ => BottomTab::Debugger,
         }
     }
 }
@@ -719,6 +722,16 @@ pub struct GuiState {
     pub term_hist_idx: usize,
     /// Ada proses terminal yang sedang berjalan.
     pub term_running: bool,
+
+    // ── Debugger ──
+    /// Daftar breakpoint (string representasi, mis. "break cycle 100", "break change clk").
+    pub breakpoints: Vec<String>,
+    /// Daftar watchpoint (nama sinyal, mis. "clk", "rst_n").
+    pub watchpoints: Vec<String>,
+    /// Event debug terakhir dari engine (breakpoint hit, watchpoint hit, step complete).
+    pub debug_events: Vec<String>,
+    /// Simulasi dalam mode debug (breakpoint aktif).
+    pub debug_mode: bool,
 
     // ── Peek Definition ──
     /// Popup Peek Definition aktif (Alt+Click): data pratinjau.
@@ -915,6 +928,10 @@ impl GuiState {
             pending_top: None,
             editor_scroll: 0,
             editor_goto_line: None,
+            breakpoints: Vec::new(),
+            watchpoints: Vec::new(),
+            debug_events: Vec::new(),
+            debug_mode: false,
         }
     }
 

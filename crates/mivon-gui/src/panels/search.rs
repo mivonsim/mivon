@@ -1,14 +1,12 @@
 //! Tab Search: pencarian simbol / teks di project.
 
 use ratatui::{
-    style::{Color, Style},
+    style::{Color, Modifier, Style},
     widgets::{Block, Borders, List, ListItem},
     Frame,
 };
 
 use super::super::state::GuiState;
-use ratatui::style::Modifier;
-
 pub fn show(f: &mut Frame, area: ratatui::layout::Rect, state: &mut GuiState) {
     let block = Block::default()
         .title("Search")

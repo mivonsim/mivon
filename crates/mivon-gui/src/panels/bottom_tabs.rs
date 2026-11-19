@@ -2,18 +2,16 @@
 //! Coverage, Assertions, Terminal, Pipeline.
 
 use ratatui::{
-    style::{Color, Style},
+    style::{Color, Modifier, Style},
     widgets::{Block, Borders, List, ListItem},
     Frame,
 };
 
 use super::super::state::{BottomTab, GuiState};
 use super::{
-    assertions, benchmark, console, coverage, pipeline, problems, signals, terminal, trace,
-    waveform,
+    assertions, benchmark, console, coverage, debugger, pipeline, problems, signals, terminal,
+    trace, waveform,
 };
-use ratatui::style::Modifier;
-
 pub fn show(f: &mut Frame, area: ratatui::layout::Rect, state: &mut GuiState) {
     let block = Block::default()
         .title("Bottom Panel")
@@ -41,6 +39,7 @@ pub fn show(f: &mut Frame, area: ratatui::layout::Rect, state: &mut GuiState) {
         "Assertions",
         "Terminal",
         "Pipeline",
+        "Debugger",
     ];
     let tab_items: Vec<ListItem> = tabs
         .iter()
@@ -78,5 +77,6 @@ pub fn show(f: &mut Frame, area: ratatui::layout::Rect, state: &mut GuiState) {
         BottomTab::Assertions => assertions::show(f, content_area, state),
         BottomTab::Terminal => terminal::show(f, content_area, state),
         BottomTab::Pipeline => pipeline::show(f, content_area, state),
+        BottomTab::Debugger => debugger::show(f, content_area, state),
     }
 }

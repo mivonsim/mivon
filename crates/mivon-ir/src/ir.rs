@@ -418,7 +418,7 @@ fn collect_signal_ids_from_expr(expr: &IrExpr, used: &mut HashSet<SignalId>) {
                 collect_signal_ids_from_expr(e, used);
             }
         }
-        IrExpr::Dist { expr, items, .. } => {
+        IrExpr::Dist { expr, .. } => {
             collect_signal_ids_from_expr(expr, used);
             // IrDistItem doesn't contain SignalId references (only range/weight values)
         }
@@ -810,7 +810,7 @@ fn remap_signal_ids_in_expr(expr: &mut IrExpr, mapping: &HashMap<SignalId, Signa
                 remap_signal_ids_in_expr(e, mapping);
             }
         }
-        IrExpr::Dist { expr, items, .. } => {
+        IrExpr::Dist { expr, .. } => {
             remap_signal_ids_in_expr(expr, mapping);
             // IrDistItem.range_lo/range_hi are Option<i64>, not SignalId refs
         }

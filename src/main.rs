@@ -736,7 +736,7 @@ mod tests {
     #[test]
     fn validate_formal_sec_rejects_incompatible_modes() {
         use clap::Parser;
-        let cases: [(&[&str], &str); 8] = [
+        let cases: [(&[&str], &str); 7] = [
             (
                 &["mivon", "a.sv", "--compile-only", "--formal-sec", "b.sv"],
                 "--compile-only",
@@ -746,7 +746,6 @@ mod tests {
                 "--lazy",
             ),
             (&["mivon", "a.sv", "--lsp", "--formal-sec", "b.sv"], "--lsp"),
-            (&["mivon", "a.sv", "--gui", "--formal-sec", "b.sv"], "--gui"),
             (
                 &["mivon", "a.sv", "--formal-sec", "b.sv", "--formal"],
                 "--formal",

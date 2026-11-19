@@ -38,7 +38,7 @@ fn mir_to_ssa(instrs: &[MirInstr], signal_map: &HashMap<Symbol, usize>, signals:
 }
 
 /// Convert a single MIR instruction to SSA instruction.
-fn mir_instr_to_ssa(instr: &MirInstr, signal_map: &HashMap<Symbol, usize>, signals: &[MirSignal]) -> Instruction {
+fn mir_instr_to_ssa(instr: &MirInstr, _signal_map: &HashMap<Symbol, usize>, signals: &[MirSignal]) -> Instruction {
     match instr {
         MirInstr::Const { value, .. } => Instruction::Const(*value),
         MirInstr::Load { signal, .. } => {
@@ -91,7 +91,7 @@ fn ssa_instr_to_mir(
     instr: &Instruction,
     idx: usize,
     signal_map: &HashMap<Symbol, usize>,
-    signals: &[MirSignal],
+    _signals: &[MirSignal],
 ) -> MirInstr {
     match instr {
         Instruction::Const(value) => MirInstr::Const {
@@ -140,23 +140,12 @@ fn ssa_instr_to_mir(
         Instruction::Return(_) => MirInstr::Finish,
         Instruction::Phi(_) => MirInstr::Nop,
         Instruction::Nop => MirInstr::Nop,
-        Instruction::Const(value) => MirInstr::Const {
-            dest: idx,
-            value: *value,
-            width: 8,
-        },
         Instruction::Load(Value::Const(v)) => MirInstr::Const {
             dest: idx,
             value: *v,
             width: 8,
         },
-        Instruction::Store(_, Value::Const(v)) => MirInstr::Const {
-            dest: idx,
-            value: *v,
-            width: 8,
-        },
         Instruction::Load(Value::Instr(..)) => MirInstr::Nop,
-        Instruction::Store(Value::Instr(..), _) => MirInstr::Nop,
     }
 }
 

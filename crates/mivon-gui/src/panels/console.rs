@@ -1,14 +1,12 @@
 //! Tab Console: log console.
 
 use ratatui::{
-    style::{Color, Style},
+    style::{Color, Modifier, Style},
     widgets::{Block, Borders, List, ListItem, Paragraph},
     Frame,
 };
 
 use super::super::state::GuiState;
-use ratatui::style::Modifier;
-
 pub fn show(f: &mut Frame, area: ratatui::layout::Rect, state: &mut GuiState) {
     let block = Block::default()
         .title(format!("Console ({})", state.console.len()))
