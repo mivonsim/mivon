@@ -37,11 +37,11 @@ impl VarType {
 
 /// Definisi satu variabel dalam file FSDB.
 #[derive(Debug, Clone)]
-struct VarDef {
-    id: u32,
-    vtype: VarType,
-    width: usize,
-    name: String,
+pub struct VarDef {
+    pub id: u32,
+    pub vtype: VarType,
+    pub width: usize,
+    pub name: String,
 }
 
 /// Penulis file FSDB.
@@ -61,6 +61,7 @@ impl FsdbWriter {
 
         // Header: magic + version + time unit + end-of-header marker.
         out.write_all(FSDB_MAGIC)?;
+        out.write_all(b"\n")?;
         out.write_all(FSDB_VERSION.as_bytes())?;
         out.write_all(b"\n")?;
         out.write_all(format!("{}\n", time_unit).as_bytes())?;
@@ -133,6 +134,86 @@ impl FsdbWriter {
     }
 }
 
+/// Hasil parsing file FSDB yang dihasilkan `FsdbWriter`.
+#[derive(Debug, Clone)]
+pub struct FsdbData {
+    /// Time unit dari header.
+    pub time_unit: u64,
+    /// Definisi variabel.
+    pub vars: Vec<VarDef>,
+    /// Perubahan nilai: (waktu, id variabel, nilai teks).
+    pub changes: Vec<(u64, u32, String)>,
+}
+
+/// Pembaca file FSDB.
+pub struct FsdbReader;
+
+impl FsdbReader {
+    /// Buka dan parse file FSDB yang dihasilkan `FsdbWriter`, lalu kembalikan
+    /// definisi variabel dan daftar perubahan nilai (round-trip).
+    pub fn load(path: &str) -> Result<FsdbData, std::io::Error> {
+        let content = std::fs::read_to_string(path)?;
+        let mut time_unit = 0u64;
+        let mut vars = Vec::new();
+        let mut changes = Vec::new();
+        let mut current_time: Option<u64> = None;
+
+        for line in content.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            if let Some(rest) = line.strip_prefix("$var ") {
+                // Format: $var <tipe_byte> <width> <id> <name> $end
+                let rest = rest.strip_suffix(" $end").unwrap_or(rest);
+                let parts: Vec<&str> = rest.splitn(4, char::is_whitespace).collect();
+                if parts.len() >= 4 {
+                    let vtype = match parts[0] {
+                        "w" => VarType::Wire,
+                        "r" => VarType::Reg,
+                        "i" => VarType::Integer,
+                        "R" => VarType::Real,
+                        "p" => VarType::Parameter,
+                        _ => VarType::Wire,
+                    };
+                    let width: usize = parts[1].parse().unwrap_or(0);
+                    let id: u32 = parts[2].parse().unwrap_or(0);
+                    let name = parts[3].to_string();
+                    vars.push(VarDef {
+                        id,
+                        vtype,
+                        width,
+                        name,
+                    });
+                }
+            } else if let Some(t) = line.strip_prefix('#') {
+                // Format: #<time>
+                current_time = Some(t.parse().unwrap_or(0));
+            } else if let Some(rest) = line.strip_prefix('b') {
+                // Format: b<value> <id>
+                let parts: Vec<&str> = rest.splitn(2, char::is_whitespace).collect();
+                if parts.len() >= 2 {
+                    let value = parts[0].to_string();
+                    let id: u32 = parts[1].parse().unwrap_or(0);
+                    let time = current_time.unwrap_or(0);
+                    changes.push((time, id, value));
+                }
+            } else if let Ok(tu) = line.parse::<u64>() {
+                // Baris angka polos: time unit dari header.
+                time_unit = tu;
+            } else if line.starts_with('$') {
+                // Header / penanda ($enddefinitions, $dumpvars, dst.) — diabaikan.
+            }
+        }
+
+        Ok(FsdbData {
+            time_unit,
+            vars,
+            changes,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -181,5 +262,35 @@ mod tests {
         assert!(content.contains("#10"), "time 10 harus ada");
         assert!(content.contains("b1 1"), "nilai clk=1 harus ada");
         assert!(content.contains("$dumpvars"), "end marker harus ada");
+    }
+
+    #[test]
+    fn test_fsdb_reader_roundtrip() {
+        let path = "/tmp/opencode/test_fsdb_roundtrip.fsdb";
+        let _ = fs::remove_file(path);
+
+        // Tulis data contoh.
+        let mut w = FsdbWriter::create(path, 1).unwrap();
+        let id_clk = w.define_signal("clk", VarType::Wire, 1).unwrap();
+        let id_rst = w.define_signal("rst", VarType::Reg, 1).unwrap();
+        assert!(w.write_value_change(10, "clk", "1").is_ok());
+        assert!(w.write_value_change(20, "clk", "0").is_ok());
+        assert!(w.write_value_change(30, "rst", "1").is_ok());
+        w.close().unwrap();
+
+        // Baca kembali dan verifikasi round-trip.
+        let data = FsdbReader::load(path).unwrap();
+        assert_eq!(data.time_unit, 1, "time unit harus terbaca");
+        assert_eq!(data.vars.len(), 2, "dua variabel harus terbaca");
+        assert_eq!(data.vars[0].name, "clk");
+        assert_eq!(data.vars[0].id, id_clk);
+        assert_eq!(data.vars[1].name, "rst");
+        assert_eq!(data.vars[1].id, id_rst);
+        assert_eq!(data.changes.len(), 3, "tiga perubahan harus terbaca");
+        assert_eq!(data.changes[0], (10, id_clk, "1".to_string()));
+        assert_eq!(data.changes[1], (20, id_clk, "0".to_string()));
+        assert_eq!(data.changes[2], (30, id_rst, "1".to_string()));
+
+        let _ = fs::remove_file(path);
     }
 }
