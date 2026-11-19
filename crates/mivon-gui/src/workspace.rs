@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use super::state::{BottomTab, GuiState, SidebarTab};
 use super::regression;
+use super::theme;
 
 /// State workspace yang dipulihkan (JSON — `.mivon/workspace.json`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -53,6 +54,9 @@ pub struct WorkspaceState {
     /// di-restore; hanya bookmark yang hilang, bukan seluruh state.
     #[serde(default)]
     pub bookmarks: Vec<String>,
+    /// Tema tampilan TUI (string: "dark" | "light" | "high-contrast").
+    #[serde(default)]
+    pub theme: Option<String>,
 }
 
 /// Pointer global ke root proyek terakhir (`<config>/mivon/last_workspace.json`).
@@ -168,6 +172,7 @@ pub fn save_workspace(state: &GuiState) {
             .iter()
             .map(|p| rel_or_abs(root, p))
             .collect(),
+        theme: Some(state.theme.label().to_string()),
     };
     let json = match serde_json::to_string_pretty(&ws) {
         Ok(j) => j,
@@ -296,6 +301,12 @@ fn apply(state: &mut GuiState, root: PathBuf, ws: WorkspaceState) {
             state.bookmarks.insert(abs);
         }
     }
+    // Tema: parse string "dark"/"light"/"high-contrast", default Dark.
+    state.theme = match ws.theme.as_deref() {
+        Some("light") => theme::Theme::Light,
+        Some("high-contrast") => theme::Theme::HighContrast,
+        _ => theme::Theme::Dark,
+    };
 
     state.log(format!(
         "↩ Workspace dipulihkan: {} · {} file terbuka",
@@ -341,6 +352,7 @@ mod tests {
             watchpoints: vec!["clk".into()],
             regression_db: Some(regression::RegressionDb::new()),
             bookmarks: vec!["core/cache.sv".into()],
+            theme: Some("light".to_string()),
         };
         let json = serde_json::to_string(&ws).expect("serialize");
         let back: WorkspaceState = serde_json::from_str(&json).expect("deserialize");
@@ -359,6 +371,7 @@ mod tests {
         );
         assert_eq!(back.watchpoints, vec!["clk".to_string()]);
         assert!(back.regression_db.is_some());
+        assert_eq!(back.theme, Some("light".to_string()));
         assert_eq!(back.bookmarks, vec!["core/cache.sv".to_string()]);
     }
 

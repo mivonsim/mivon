@@ -2,7 +2,7 @@
 //! Coverage, Assertions, Terminal, Pipeline.
 
 use ratatui::{
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     widgets::{Block, Borders, List, ListItem},
     Frame,
 };
@@ -12,11 +12,13 @@ use super::{
     assertions, benchmark, console, coverage, debugger, pipeline, problems, regression, signals,
     terminal, trace, waveform,
 };
+use crate::theme::Theme;
 pub fn show(f: &mut Frame, area: ratatui::layout::Rect, state: &mut GuiState) {
+    let theme: Theme = state.theme;
     let block = Block::default()
         .title("Bottom Panel")
         .borders(Borders::ALL)
-        .style(Style::default().bg(Color::DarkGray));
+        .style(Style::default().bg(theme.bg()).fg(theme.fg()));
     f.render_widget(block, area);
 
     let inner = area.inner(&ratatui::layout::Margin {
@@ -49,11 +51,11 @@ pub fn show(f: &mut Frame, area: ratatui::layout::Rect, state: &mut GuiState) {
             let active = state.bottom_tab == BottomTab::from_index(i);
             ListItem::new(format!("  {}", t)).style(if active {
                 Style::default()
-                    .bg(Color::Blue)
-                    .fg(Color::White)
+                    .bg(theme.active_bg())
+                    .fg(theme.active_fg())
                     .add_modifier(Modifier::BOLD)
             } else {
-                Style::default()
+                Style::default().fg(theme.fg())
             })
         })
         .collect();

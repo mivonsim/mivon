@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use mivon_ir::IrDesign;
 
 use super::regression;
+use super::theme;
 
 /// Node pohon file (rekursif).
 #[derive(Debug, Clone)]
@@ -741,6 +742,8 @@ pub struct GuiState {
     pub coverage: CoverageInfo,
     /// Line → jumlah hits untuk highlight editor (dari SimInfo.coverage_line_hits).
     pub coverage_line_hits: std::collections::HashMap<usize, u64>,
+    /// Tema tampilan TUI (Dark / Light / HighContrast).
+    pub theme: theme::Theme,
     /// Database regression (dari `.mivon/regression.json`, CLI `mregression`).
     pub regression_db: Option<regression::RegressionDb>,
     // ── Assertions (hasil sim terakhir) ──
@@ -936,6 +939,7 @@ impl GuiState {
             coverage: CoverageInfo::default(),
             coverage_line_hits: std::collections::HashMap::new(),
             regression_db: None,
+            theme: theme::Theme::default(),
             assertions: Vec::new(),
             palette_open: false,
             palette_just_opened: false,

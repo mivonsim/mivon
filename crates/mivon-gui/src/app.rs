@@ -498,6 +498,12 @@ impl MivonApp {
                 self.state.log(format!("🔤 Completion (prefix='{}')", prefix));
                 return;
             }
+            KeyCode::Char('t') if ctrl => {
+                // Ctrl+T: ganti tema tampilan (Dark → Light → HighContrast).
+                self.state.theme = self.state.theme.next();
+                self.state.log(format!("🎨 Tema: {}", self.state.theme.label()));
+                return;
+            }
             _ => {}
         }
 

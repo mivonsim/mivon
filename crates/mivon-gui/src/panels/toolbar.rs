@@ -8,12 +8,14 @@ use ratatui::{
 };
 
 use crate::state::GuiState;
+use crate::theme::Theme;
 
 pub fn show(f: &mut Frame, area: ratatui::layout::Rect, state: &mut GuiState) {
+    let theme = state.theme;
     let block = Block::default()
         .title("Mivon — RTL Engineering Control Center (TUI)")
         .borders(Borders::ALL)
-        .style(Style::default().bg(Color::DarkGray));
+        .style(Style::default().bg(theme.bg()).fg(theme.fg()));
     f.render_widget(block, area);
 
     let inner = area.inner(&ratatui::layout::Margin {
@@ -42,12 +44,12 @@ pub fn show(f: &mut Frame, area: ratatui::layout::Rect, state: &mut GuiState) {
         format!("Project: {}", state.project_name)
     };
     let brand = Paragraph::new(format!("Mivon  |  {}", project_text))
-        .style(Style::default().fg(Color::White).bg(Color::DarkGray));
+        .style(Style::default().fg(theme.highlight()).bg(theme.bg()));
     f.render_widget(brand, chunks[0]);
 
     // Max time.
     let max_time =
-        Paragraph::new(format!("T={}", state.max_time)).style(Style::default().fg(Color::Cyan));
+        Paragraph::new(format!("T={}", state.max_time)).style(Style::default().fg(theme.highlight()));
     f.render_widget(max_time, chunks[1]);
 
     // Run / Stop / Pause indicator.
@@ -73,7 +75,7 @@ pub fn show(f: &mut Frame, area: ratatui::layout::Rect, state: &mut GuiState) {
     f.render_widget(compile, chunks[3]);
 
     // Status / hints (kanan).
-    let hints = Paragraph::new("F5 Run/Resume  |  F8 Pause  |  F9 Reset  |  F10 Restart  |  F7 Compile  |  Ctrl+O Open  |  Ctrl+S Save  |  Ctrl+G Gen  |  Ctrl+Shift+P Palette  |  Ctrl+Q Exit")
-        .style(Style::default().fg(Color::Gray).bg(Color::DarkGray));
+    let hints = Paragraph::new("F5 Run/Resume  |  F8 Pause  |  F9 Reset  |  F10 Restart  |  F7 Compile  |  Ctrl+O Open  |  Ctrl+S Save  |  Ctrl+G Gen  |  Ctrl+T Tema  |  Ctrl+Shift+P Palette  |  Ctrl+Q Exit")
+        .style(Style::default().fg(theme.fg()).bg(theme.bg()));
     f.render_widget(hints, chunks[4]);
 }

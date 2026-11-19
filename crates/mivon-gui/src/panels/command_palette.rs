@@ -28,6 +28,7 @@ pub enum PaletteAction {
     Format,
     Generate,
     ToggleSidebar,
+    ToggleTheme,
     ToggleBottom,
     ShowProblems,
     ShowConsole,
@@ -58,6 +59,7 @@ pub const ACTIONS: &[PaletteEntry] = &[
     ("Save File", "Ctrl+S", PaletteAction::Save),
     ("Format File Aktif (mfmt)", "Ctrl+Shift+F", PaletteAction::Format),
     ("Generate .sv dari .mv", "Ctrl+G", PaletteAction::Generate),
+    ("Tema (gelap/terang/tinggi)", "Ctrl+T", PaletteAction::ToggleTheme),
     ("Toggle Sidebar", "Ctrl+B", PaletteAction::ToggleSidebar),
     ("Toggle Bottom Panel", "Ctrl+`", PaletteAction::ToggleBottom),
     ("Open Problems", "", PaletteAction::ShowProblems),
@@ -101,6 +103,7 @@ pub fn execute(state: &mut GuiState, action: PaletteAction) -> bool {
         }
         PaletteAction::Format => app_cmds::trigger_format(state),
         PaletteAction::Generate => app_cmds::trigger_generate(state),
+        PaletteAction::ToggleTheme => state.theme = state.theme.next(),
         PaletteAction::ToggleSidebar => state.show_sidebar = !state.show_sidebar,
         PaletteAction::ToggleBottom => state.show_bottom = !state.show_bottom,
         PaletteAction::ShowProblems => show_bottom(state, BottomTab::Problems),

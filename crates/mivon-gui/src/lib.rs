@@ -16,6 +16,7 @@ pub mod panels;
 pub mod regression;
 pub mod syntax;
 pub mod state;
+pub mod theme;
 pub mod workspace;
 
 pub use app::MivonApp;
