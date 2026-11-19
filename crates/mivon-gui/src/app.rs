@@ -206,6 +206,23 @@ impl MivonApp {
                         }
                     }
                 }
+                GuiEvent::FormalDone(result) => {
+                    self.state.is_running = false;
+                    match result {
+                        Ok(rep) => {
+                            let passed = rep.passed;
+                            let total = rep.total;
+                            self.state.formal_report = Some(rep);
+                            self.state.log(format!(
+                                "✅ Formal selesai — {}/{} assertion lulus",
+                                passed, total
+                            ));
+                        }
+                        Err(e) => {
+                            self.state.log(format!("❌ Formal gagal: {}", e));
+                        }
+                    }
+                }
                 GuiEvent::TermOutput(text, is_err) => {
                     self.state
                         .term_lines
@@ -478,6 +495,10 @@ impl MivonApp {
                 app_cmds::trigger_synth(&mut self.state);
                 return;
             }
+            KeyCode::F(12) => {
+                app_cmds::trigger_formal(&mut self.state);
+                return;
+            }
             KeyCode::Char(' ') if ctrl => {
                 // Ctrl+Space: minta completion LSP pada posisi kursor editor.
                 let Some(idx) = self.state.active_file else {
@@ -578,7 +599,8 @@ impl MivonApp {
                 BottomTab::Pipeline => BottomTab::Debugger,
                 BottomTab::Debugger => BottomTab::Regression,
                 BottomTab::Regression => BottomTab::Synthesis,
-                BottomTab::Synthesis => BottomTab::Terminal,
+                BottomTab::Synthesis => BottomTab::Formal,
+                BottomTab::Formal => BottomTab::Terminal,
             };
             return;
         }

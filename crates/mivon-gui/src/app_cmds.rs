@@ -4,7 +4,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use super::backend::{spawn_compile, spawn_sim, spawn_synth, spawn_term, DebugConfig};
+use super::backend::{spawn_compile, spawn_sim, spawn_synth, spawn_formal, spawn_term, DebugConfig};
 use super::state::GuiState;
 use mivon_timing::{
     analyze, estimate_area, render_area_report, render_timing_report, Constraint, TimingOptions,
@@ -212,6 +212,18 @@ pub fn trigger_synth(state: &mut GuiState) {
     state.log("⚙️ Sintesis design...");
     let tx = state.tx.clone();
     spawn_synth(tx, design);
+}
+
+/// Jalankan formal verification (BMC) pada design ter-elaborasi dan tampilkan
+/// laporan assertion + konektivitas di panel Formal.
+pub fn trigger_formal(state: &mut GuiState) {
+    let Some(design) = state.design.clone() else {
+        state.log("⚠ Formal: belum ada design ter-elaborasi (F7 Compile dulu)");
+        return;
+    };
+    state.log("🔍 Formal verification (BMC)...");
+    let tx = state.tx.clone();
+    spawn_formal(tx, design);
 }
 
 /// Jalankan perintah terminal (input bar).

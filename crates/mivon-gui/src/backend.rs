@@ -24,12 +24,13 @@ use mivon_synth::{
     report::{render_syn_report, render_util_report, DeviceCapacity},
     synthesize, SynthOpts,
 };
+use mivon_formal::{FormalConfig, FormalResult};
 
 use super::state::{
     blocking_assign_pos, word_count, AssertionRow, CompileInfo, CoverageInfo, CovergroupRow,
     DepRow, DiagEntry, DiagLevel, FileNode, GuiEvent, InstanceRow, MacroRow, MicdInfo, ParamRow,
-    PipelineStage, QuickFix, QuickFixKind, SignalRow, SimInfo, SynthReport, TextHit,
-    TraceEvent, WaveformSignal, STAGE_SIMULATOR,
+    PipelineStage, QuickFix, QuickFixKind, SignalRow, SimInfo, SynthReport, FormalReport,
+    TextHit, TraceEvent, WaveformSignal, STAGE_SIMULATOR,
 };
 
 /// Scan direktori → pohon file (rekursif, sinkron).
@@ -1036,6 +1037,48 @@ pub fn spawn_synth(tx: Sender<GuiEvent>, design: IrDesign) {
             })
         })();
         let _ = tx.send(GuiEvent::SynthDone(result));
+    });
+}
+
+/// Formal verification (BMC) design ter-elaborasi di worker thread.
+/// Dikirim sebagai GuiEvent::FormalDone. Tidak merekompilasi.
+pub fn spawn_formal(tx: Sender<GuiEvent>, design: IrDesign) {
+    spawn_worker(move || {
+        let result = (|| -> Result<FormalReport, String> {
+            let mut engine = mivon_formal::FormalEngine::new(mivon_formal::FormalConfig {
+                bound: 20,
+                induction: false,
+                ..Default::default()
+            });
+            engine.init();
+            let results = engine.check_assertions_bmc(&design);
+
+            let total = results.len();
+            let mut passed = 0usize;
+            let mut details: Vec<(String, String)> = Vec::new();
+            for (name, result) in &results {
+                let status = match result {
+                    FormalResult::Pass => { passed += 1; "PASS".to_string() }
+                    FormalResult::Counterexample(d) => format!("FAIL (depth {})", d),
+                    FormalResult::InductiveProof(k) => { passed += 1; format!("INDUCTIVE (k={})", k) }
+                    FormalResult::Unknown => "UNKNOWN".to_string(),
+                    FormalResult::Error(e) => format!("ERROR: {}", e),
+                };
+                details.push((name.clone(), status));
+            }
+
+            // Konektivitas (opsional: skip bila kosong)
+            let connectivity: Vec<(String, String, String)> = Vec::new();
+
+            Ok(FormalReport {
+                ok: total == passed,
+                total,
+                passed,
+                results: details,
+                connectivity,
+            })
+        })();
+        let _ = tx.send(GuiEvent::FormalDone(result));
     });
 }
 

@@ -592,6 +592,8 @@ pub enum BottomTab {
     Regression,
     /// Synthesis: laporan sintesis & static timing (mivon synth).
     Synthesis,
+    /// Formal Verification: laporan BMC assertion + konektivitas (mivon --formal).
+    Formal,
 }
 
 impl BottomTab {
@@ -611,7 +613,8 @@ impl BottomTab {
             10 => BottomTab::Debugger,
             11 => BottomTab::Regression,
             12 => BottomTab::Synthesis,
-            _ => BottomTab::Synthesis,
+            13 => BottomTab::Formal,
+            _ => BottomTab::Formal,
         }
     }
 }
@@ -629,6 +632,8 @@ pub enum GuiEvent {
     SimPaused(SimInfo),
     /// Sintesis selesai — dikirim worker bersama laporan sintesis.
     SynthDone(Result<SynthReport, String>),
+    /// Formal verification selesai — dikirim worker bersama laporan formal.
+    FormalDone(Result<FormalReport, String>),
     /// Satu baris output terminal (text, is_err).
     TermOutput(String, bool),
     /// Proses terminal selesai → exit code.
@@ -663,6 +668,21 @@ pub struct SynthReport {
     pub timing: String,
     /// Laporan estimasi area.
     pub area: String,
+}
+
+/// Laporan formal verification (BMC) yang dihasilkan dalam GUI.
+#[derive(Debug, Clone)]
+pub struct FormalReport {
+    /// Apakah semua assertion lulus (tanpa counterexample/error).
+    pub ok: bool,
+    /// Jumlah assertion yang dicek.
+    pub total: usize,
+    /// Jumlah assertion yang lulus (Pass + InductiveProof).
+    pub passed: usize,
+    /// Detail per assertion: (nama, hasil).
+    pub results: Vec<(String, String)>,
+    /// Hasil konektivitas (src → dst → status).
+    pub connectivity: Vec<(String, String, String)>,
 }
 
 /// State utama GUI.
@@ -770,6 +790,8 @@ pub struct GuiState {
     pub regression_db: Option<regression::RegressionDb>,
     /// Laporan sintesis (hasil `mivon synth` dijalankan dalam GUI).
     pub synth_report: Option<SynthReport>,
+    /// Laporan formal verification (hasil `mivon --formal` dijalankan dalam GUI).
+    pub formal_report: Option<FormalReport>,
     // ── Assertions (hasil sim terakhir) ──
     pub assertions: Vec<AssertionRow>,
 
@@ -964,6 +986,7 @@ impl GuiState {
             coverage_line_hits: std::collections::HashMap::new(),
             regression_db: None,
             synth_report: None,
+            formal_report: None,
             theme: theme::Theme::default(),
             assertions: Vec::new(),
             palette_open: false,
