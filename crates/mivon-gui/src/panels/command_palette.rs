@@ -47,6 +47,7 @@ pub enum PaletteAction {
     ShowSearch,
     ClearConsole,
     ExportVcd,
+    Plugin,
     Exit,
 }
 
@@ -64,6 +65,7 @@ pub const ACTIONS: &[PaletteEntry] = &[
     ("Tema (gelap/terang/tinggi)", "Ctrl+T", PaletteAction::ToggleTheme),
     ("Sintesis (SYN/timing/area)", "F11", PaletteAction::Synth),
     ("Formal Verification (BMC)", "F12", PaletteAction::Formal),
+    ("Plugin (hello/stats)", "", PaletteAction::Plugin),
     ("Toggle Sidebar", "Ctrl+B", PaletteAction::ToggleSidebar),
     ("Toggle Bottom Panel", "Ctrl+`", PaletteAction::ToggleBottom),
     ("Open Problems", "", PaletteAction::ShowProblems),
@@ -110,6 +112,35 @@ pub fn execute(state: &mut GuiState, action: PaletteAction) -> bool {
         PaletteAction::ToggleTheme => state.theme = state.theme.next(),
         PaletteAction::Synth => app_cmds::trigger_synth(state),
         PaletteAction::Formal => app_cmds::trigger_formal(state),
+        PaletteAction::Plugin => {
+            // Tampilkan daftar plugin di console dan jalankan plugin pertama
+            // bila ada. Plugin panel belum diimplementasi di bottom tab.
+            if state.plugin_registry.is_empty() {
+                state.log("⚠ Plugin: tidak ada plugin terdaftar");
+            } else {
+                let first_name: Option<String> = state
+                    .plugin_registry
+                    .plugins
+                    .first()
+                    .map(|p| p.name.clone());
+                let names: Vec<_> = state
+                    .plugin_registry
+                    .plugins
+                    .iter()
+                    .map(|p| p.name.as_str())
+                    .collect();
+                state.log(format!(
+                    "🔌 Plugin terdaftar: {}",
+                    names.join(", ")
+                ));
+                // Jalankan plugin pertama sebagai demo.
+                if let Some(name) = first_name {
+                    if let Some(msg) = state.plugin_registry.exec(&name, "hello") {
+                        state.log(&msg);
+                    }
+                }
+            }
+        }
         PaletteAction::ToggleSidebar => state.show_sidebar = !state.show_sidebar,
         PaletteAction::ToggleBottom => state.show_bottom = !state.show_bottom,
         PaletteAction::ShowProblems => show_bottom(state, BottomTab::Problems),

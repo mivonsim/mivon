@@ -14,6 +14,7 @@ pub mod diagnostics;
 pub mod lsp_client;
 pub mod panels;
 pub mod regression;
+pub mod plugin;
 pub mod syntax;
 pub mod state;
 pub mod theme;

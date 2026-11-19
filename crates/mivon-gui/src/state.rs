@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use mivon_ir::IrDesign;
 
+use super::plugin::{BoxedPlugin, HelloPlugin, PluginRegistry, StatsPlugin};
 use super::regression;
 use super::theme;
 
@@ -812,6 +813,8 @@ pub struct GuiState {
     pub synth_report: Option<SynthReport>,
     /// Laporan formal verification (hasil `mivon --formal` dijalankan dalam GUI).
     pub formal_report: Option<FormalReport>,
+    /// Registry plugin/extension: plugin bawaan (hello, stats) terdaftar otomatis.
+    pub plugin_registry: PluginRegistry,
     // ── Assertions (hasil sim terakhir) ──
     pub assertions: Vec<AssertionRow>,
 
@@ -1013,6 +1016,12 @@ impl GuiState {
             regression_db: None,
             synth_report: None,
             formal_report: None,
+            plugin_registry: {
+                let mut reg = PluginRegistry::new();
+                reg.register(BoxedPlugin::new(HelloPlugin));
+                reg.register(BoxedPlugin::new(StatsPlugin));
+                reg
+            },
             theme: theme::Theme::default(),
             assertions: Vec::new(),
             palette_open: false,
