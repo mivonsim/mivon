@@ -3,11 +3,13 @@
 
 use ratatui::{
     style::{Color, Modifier, Style},
+    text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, Paragraph},
     Frame,
 };
 
 use super::super::state::{DiagEntry, DiagLevel, GuiState};
+use super::super::syntax::highlight_line;
 pub fn show(f: &mut Frame, area: ratatui::layout::Rect, state: &mut GuiState) {
     let mode = match state.editor_mode {
         super::super::state::EditorMode::Insert => "INSERT",
@@ -84,7 +86,7 @@ pub fn show(f: &mut Frame, area: ratatui::layout::Rect, state: &mut GuiState) {
             let is_target = state.editor_goto_line.map(|l| l == line_no).unwrap_or(false);
             let diag = diag_by_line.iter().find(|(l, _)| *l == line_no).map(|(_, d)| *d);
 
-            let (icon, color) = match diag {
+            let (icon, _color) = match diag {
                 Some(d) => match d.level {
                     DiagLevel::Error | DiagLevel::Bug | DiagLevel::Fatal => {
                         ("✖", Color::Red)
@@ -108,32 +110,54 @@ pub fn show(f: &mut Frame, area: ratatui::layout::Rect, state: &mut GuiState) {
                 chars.truncate(max_w.saturating_sub(1));
                 chars.push('…');
             }
-
-            // Tandai posisi kursor pada baris aktif dengan '▏'.
-            let is_cursor = i == state.editor_cursor_line;
-            if is_cursor {
-                let col = state.editor_cursor_col.min(chars.len());
-                chars.insert(col, '▏');
-            }
             let line_text: String = chars.into_iter().collect();
 
-            ListItem::new(format!("{:4} {} {}", line_no, icon, line_text)).style(
+            let is_cursor = i == state.editor_cursor_line;
+
+            // ── Nomor baris + ikon diagnostic ──
+            let line_no_style = if is_target {
                 Style::default()
-                    .fg(if is_target {
-                        Color::Green
-                    } else if is_cursor {
-                        Color::White
-                    } else {
-                        color
-                    })
-                    .add_modifier(if is_target {
-                        Modifier::BOLD | Modifier::REVERSED
-                    } else if is_cursor {
-                        Modifier::BOLD
-                    } else {
-                        Modifier::empty()
-                    }),
-            )
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD | Modifier::REVERSED)
+            } else if is_cursor {
+                Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Gray)
+            };
+            let mut spans: Vec<Span> = Vec::new();
+            spans.push(Span::styled(format!("{:4} ", line_no), line_no_style));
+
+            let icon_style = match diag {
+                Some(d) => match d.level {
+                    DiagLevel::Error | DiagLevel::Bug | DiagLevel::Fatal => {
+                        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+                    }
+                    DiagLevel::Warning => Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                    _ => Style::default().fg(Color::Blue),
+                },
+                None => Style::default().fg(Color::Gray),
+            };
+            spans.push(Span::styled(format!("{} ", icon), icon_style));
+
+            // ── Syntax highlight isi baris ──
+            for seg in &highlight_line(&line_text) {
+                spans.push(Span::styled(seg.text.clone(), seg.style));
+            }
+
+            // Tandai kursor dengan span '▏' di awal isi (bila baris aktif).
+            if is_cursor {
+                spans.insert(
+                    2,
+                    Span::styled(
+                        "▏",
+                        Style::default()
+                            .fg(Color::White)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                );
+            }
+
+            ListItem::new(Line::from(spans))
         })
         .collect();
 

@@ -13,6 +13,7 @@ pub mod backend;
 pub mod diagnostics;
 pub mod lsp_client;
 pub mod panels;
+pub mod syntax;
 pub mod state;
 pub mod workspace;
 
