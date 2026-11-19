@@ -25,6 +25,29 @@ pub fn show(f: &mut Frame, area: ratatui::layout::Rect, state: &mut GuiState) {
         return;
     }
 
+    // ── Ringkasan hierarki design (call-stack equivalen HDL) ──
+    if let Some(d) = &state.design {
+        let n_mod = 1usize + d.modules.len();
+        let n_inst: usize = d.top.sub_instances.len()
+            + d.modules.values().map(|m| m.sub_instances.len()).sum::<usize>();
+        let info = Paragraph::new(format!(
+            "Top: {}  |  Modul: {}  |  Instance: {}",
+            d.top.name.as_str(),
+            n_mod,
+            n_inst
+        ))
+        .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD));
+        f.render_widget(
+            info,
+            ratatui::layout::Rect {
+                x: inner.x,
+                y: inner.y,
+                width: inner.width,
+                height: 1,
+            },
+        );
+    }
+
     // Layout: breakpoints (atas), watchpoints (tengah), events (bawah).
     let chunks = ratatui::layout::Layout::default()
         .direction(ratatui::layout::Direction::Vertical)
