@@ -1452,6 +1452,8 @@ dependencies = [
  "mivon-mv",
  "mivon-parser",
  "mivon-simulator",
+ "mivon-synth",
+ "mivon-timing",
  "ratatui",
  "rayon",
  "serde",
