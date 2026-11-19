@@ -7,7 +7,9 @@ use crate::simulator::parallel::ParallelConfig;
 use crate::simulator::sdf::SdfData;
 use crate::simulator::state::SimulationState;
 use crate::simulator::types::*;
-use crate::waveform::{CsvWaveWriter, FstWaveWriter, SignalStats, VcdWriter};
+use crate::waveform::{
+    CsvWaveWriter, FsdbWriter, FstWaveWriter, SignalStats, VcdWriter,
+};
 use mivon_core::diagnostics::diagnostic::{
     DiagCode, DiagLevel, Diagnostic, RuntimeContext, SourceSnippet,
 };
@@ -70,6 +72,7 @@ impl SimulationEngine {
             auto_checkpoint: None,
             vcd: None,
             fst: None,
+            fsdb: None,
             csv: None,
             signal_stats: None,
             current_this: None,
@@ -512,6 +515,10 @@ impl SimulationEngine {
 
     pub fn set_fst(&mut self, fst: FstWaveWriter) {
         self.fst = Some(fst);
+    }
+
+    pub fn set_fsdb(&mut self, fsdb: FsdbWriter) {
+        self.fsdb = Some(fsdb);
     }
 
     pub fn set_csv(&mut self, csv: CsvWaveWriter) {
@@ -1196,6 +1203,7 @@ impl SimulationEngine {
 
             self.dump_vcd_time()?;
             self.dump_fst_time()?;
+            self.dump_fsdb_time()?;
 
             // ── IEEE 1800 stratified event loop ──
             self.sim_perf.counters.time_steps += 1;
@@ -1785,6 +1793,7 @@ impl SimulationEngine {
             self.process_strobe()?;
             self.dump_vcd_state()?;
             self.dump_fst_state()?;
+            self.dump_fsdb_state()?;
             self.dump_csv_state()?;
             self.record_signal_stats();
             self.check_monitor()?;

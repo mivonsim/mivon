@@ -103,6 +103,26 @@ impl SimulationEngine {
         Ok(())
     }
 
+    /// Write FSDB time header (no-op: FSDB writes time header inline dalam
+    /// dump_state).
+    pub(crate) fn dump_fsdb_time(&mut self) -> Result<(), SimError> {
+        Ok(())
+    }
+
+    /// Dump current signal states to FSDB.
+    pub(crate) fn dump_fsdb_state(&mut self) -> Result<(), SimError> {
+        if let Some(ref mut fsdb) = self.fsdb {
+            fsdb.dump_state(self.state.time, &self.design, &self.state.signals)
+                .map_err(|e| {
+                    SimError::with_diag(
+                        DiagCode::WaveformError,
+                        format!("FSDB dump error: {}", e),
+                    )
+                })?;
+        }
+        Ok(())
+    }
+
     /// Dump current signal states to CSV.
     pub(crate) fn dump_csv_state(&mut self) -> Result<(), SimError> {
         if let Some(ref mut csv) = self.csv {

@@ -437,6 +437,7 @@ pub(crate) fn run_cycle_based(engine: &mut SimulationEngine) -> Result<bool, Sim
         refresh_snapshot(engine);
         engine.dump_vcd_time()?;
         engine.dump_fst_time()?;
+        engine.dump_fsdb_time()?;
 
         // ── Fase: drive clk ke nilai berikutnya ──
         let old_clk = engine.state.read_signal(plan.clock).clone();

@@ -21,7 +21,9 @@ use mivon_ir::*;
 use crate::simulator::sdf::TimingCheck;
 use crate::simulator::state::SimulationState;
 use crate::simulator::types::*;
-use crate::waveform::{CsvWaveWriter, FstWaveWriter, SignalStats, VcdWriter};
+use crate::waveform::{
+    CsvWaveWriter, FsdbWriter, FstWaveWriter, SignalStats, VcdWriter,
+};
 use mivon_core::Symbol;
 use rand::rngs::StdRng;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -163,6 +165,7 @@ pub struct SimulationEngine {
     pub auto_checkpoint: Option<(String, u64)>,
     pub vcd: Option<VcdWriter>,
     pub fst: Option<FstWaveWriter>,
+    pub fsdb: Option<FsdbWriter>,
     /// CSV waveform writer (signal values as comma-separated values)
     pub csv: Option<CsvWaveWriter>,
     /// Signal statistics collector (toggle counts, transitions)

@@ -6907,3 +6907,40 @@ endmodule
         "write_count should be 1 after analysis_port write"
     );
 }
+
+#[test]
+fn test_fsdb_engine_wiring() {
+    // WAV-01: FsdbWriter harus ter-wire ke engine run loop (set_fsdb +
+    // dump_fsdb_state per time step), sehingga file FSDB berisi magic +
+    // definisi variabel + time header setelah simulasi.
+    use std::fs;
+    use mivon_simulator::waveform::FsdbWriter;
+
+    let source = r#"
+module tb;
+    reg clk = 0;
+    reg [7:0] cnt = 0;
+    always #5 clk = ~clk;
+    always @(posedge clk) cnt <= cnt + 1;
+    initial #50 $finish;
+endmodule
+"#;
+    let design = crate::compile_str(source).unwrap();
+    let path = "/tmp/opencode/test_fsdb_engine.fsdb";
+    let _ = fs::remove_file(path);
+    {
+        let mut engine =
+            crate::simulator::SimulationEngine::new(design, 60);
+        let fsdb = FsdbWriter::create(path, 1).unwrap();
+        engine.set_fsdb(fsdb);
+        let _ = engine.run();
+    } // engine → FsdbWriter → BufWriter flush ke file saat di-drop
+
+    let data = fs::read(path).unwrap();
+    assert!(&data[0..4] == b"FSDB", "FSDB magic harus tertulis oleh engine");
+    let content = String::from_utf8_lossy(&data);
+    assert!(content.contains("FSDB 2.0"), "harus ada versi FSDB");
+    assert!(content.contains("$var"), "harus ada definisi variabel");
+    assert!(content.contains("#"), "harus ada time header");
+    let _ = fs::remove_file(path);
+}
