@@ -25,6 +25,7 @@ pub enum PaletteAction {
     Run,
     Stop,
     Save,
+    Format,
     Generate,
     ToggleSidebar,
     ToggleBottom,
@@ -55,6 +56,7 @@ pub const ACTIONS: &[PaletteEntry] = &[
     ("Stop Simulation", "F5", PaletteAction::Stop),
     ("Open Project…", "Ctrl+O", PaletteAction::OpenProject),
     ("Save File", "Ctrl+S", PaletteAction::Save),
+    ("Format File Aktif (mfmt)", "Ctrl+Shift+F", PaletteAction::Format),
     ("Generate .sv dari .mv", "Ctrl+G", PaletteAction::Generate),
     ("Toggle Sidebar", "Ctrl+B", PaletteAction::ToggleSidebar),
     ("Toggle Bottom Panel", "Ctrl+`", PaletteAction::ToggleBottom),
@@ -97,6 +99,7 @@ pub fn execute(state: &mut GuiState, action: PaletteAction) -> bool {
                 state.log("💾 File disimpan");
             }
         }
+        PaletteAction::Format => app_cmds::trigger_format(state),
         PaletteAction::Generate => app_cmds::trigger_generate(state),
         PaletteAction::ToggleSidebar => state.show_sidebar = !state.show_sidebar,
         PaletteAction::ToggleBottom => state.show_bottom = !state.show_bottom,

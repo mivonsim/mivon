@@ -165,8 +165,41 @@ pub fn trigger_restart(state: &mut GuiState) {
     spawn_sim(tx, design, max_time, cancel, pause, debug);
 }
 
-/// Jalankan perintah terminal (input bar). Perintah debugger (`bp`/`wp`/`watch`/
-/// `debug`) dialihkan ke state (tidak spawn shell) agar breakpoint nyata.
+/// Format file aktif menggunakan `mivon mfmt --inplace`. Simpan berkas
+/// ke disk dulu, format, lalu muat ulang isi ke editor agar tampilan
+/// ikut terformat.
+pub fn trigger_format(state: &mut GuiState) {
+    let Some(idx) = state.active_file else {
+        state.log("⚠ Format: tidak ada file aktif");
+        return;
+    };
+    let path = match state.open_files.get(idx) {
+        Some(f) => f.path.clone(),
+        None => return,
+    };
+    // Simpan konten editor ke disk agar mfmt menformat versi terbaru.
+    if !state.save_active_file() {
+        state.log("⚠ Format: gagal menyimpan sebelum format");
+        return;
+    }
+    let path_str = path.to_string_lossy().to_string();
+    state.log(format!("🎨 Format {} ...", path_str));
+    let cmd = format!("mivon mfmt --inplace '{}'", path_str);
+    let cwd = state.project_root.clone();
+    spawn_term(state.tx.clone(), cmd, cwd);
+    // Muat ulang isi berkas setelah format agar editor menampilkan hasil.
+    if let Ok(content) = std::fs::read_to_string(&path) {
+        if let Some(f) = state.open_files.get_mut(idx) {
+            f.content = content;
+            f.dirty = false;
+        }
+        state.log(format!("✅ Format selesai: {}", path_str));
+    } else {
+        state.log(format!("⚠ Format: gagal membaca ulang {}", path_str));
+    }
+}
+
+/// Jalankan perintah terminal (input bar).
 pub fn trigger_terminal(state: &mut GuiState, cmd: String) {
     if cmd.trim().is_empty() {
         return;
