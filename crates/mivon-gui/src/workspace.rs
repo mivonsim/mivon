@@ -35,6 +35,15 @@ pub struct WorkspaceState {
     /// Signal yang disembunyikan di waveform.
     pub wave_hidden: Vec<String>,
     pub max_time: u64,
+    /// Top module yang dipilih di GUI (dari daftar module hasil compile).
+    #[serde(default)]
+    pub selected_top: Option<String>,
+    /// Daftar breakpoint (string representasi, mis. "break cycle 100").
+    #[serde(default)]
+    pub breakpoints: Vec<String>,
+    /// Daftar watchpoint (nama sinyal, mis. "clk").
+    #[serde(default)]
+    pub watchpoints: Vec<String>,
     /// Path file yang di-bookmark (relatif terhadap root — portabel).
     /// `#[serde(default)]` — workspace lama (tanpa field ini) tetap bisa
     /// di-restore; hanya bookmark yang hilang, bukan seluruh state.
@@ -146,6 +155,9 @@ pub fn save_workspace(state: &GuiState) {
         wave_zoom: state.wave_zoom,
         wave_hidden: state.wave_hidden.iter().cloned().collect(),
         max_time: state.max_time,
+        selected_top: state.selected_top.clone(),
+        breakpoints: state.breakpoints.clone(),
+        watchpoints: state.watchpoints.clone(),
         bookmarks: state
             .bookmarks
             .iter()
@@ -267,6 +279,9 @@ fn apply(state: &mut GuiState, root: PathBuf, ws: WorkspaceState) {
     state.wave_zoom = ws.wave_zoom.max(0.5);
     state.wave_hidden = ws.wave_hidden.into_iter().collect();
     state.max_time = ws.max_time.max(1);
+    state.selected_top = ws.selected_top;
+    state.breakpoints = ws.breakpoints;
+    state.watchpoints = ws.watchpoints;
     // Bookmark (path relatif di-resolve terhadap root).
     for rel in ws.bookmarks {
         let p = PathBuf::from(rel);
@@ -315,6 +330,9 @@ mod tests {
             wave_zoom: 8.0,
             wave_hidden: vec!["clk".into()],
             max_time: 5000,
+            selected_top: Some("top_earlgrey".into()),
+            breakpoints: vec!["break cycle 100".into(), "break change rst_n".into()],
+            watchpoints: vec!["clk".into()],
             bookmarks: vec!["core/cache.sv".into()],
         };
         let json = serde_json::to_string(&ws).expect("serialize");
@@ -327,6 +345,12 @@ mod tests {
         assert_eq!(back.bottom_height, 320.0);
         assert_eq!(back.wave_zoom, 8.0);
         assert_eq!(back.max_time, 5000);
+        assert_eq!(back.selected_top, Some("top_earlgrey".to_string()));
+        assert_eq!(
+            back.breakpoints,
+            vec!["break cycle 100".to_string(), "break change rst_n".to_string()]
+        );
+        assert_eq!(back.watchpoints, vec!["clk".to_string()]);
         assert_eq!(back.bookmarks, vec!["core/cache.sv".to_string()]);
     }
 
