@@ -3772,6 +3772,72 @@ endmodule
 }
 
 #[test]
+fn test_signedness_mismatch_warning() {
+    // signed LHS assigned from unsigned RHS const → SignedMismatchWarning;
+    // signed RHS into signed LHS → no warning.
+    let source = r#"
+module tb;
+    reg signed [7:0] a;
+    reg signed [7:0] b;
+    initial begin
+        a = 8'hFF;      // unsigned Const into signed → warn
+        b = -1;         // -1 parses as UnaryOp(Minus, Const): outside the
+                        // compile-time-determinable set → no warn
+        #1 $finish;
+    end
+endmodule
+"#;
+
+    let mut pp = mivon_parser::preprocessor::Preprocessor::new();
+    let preprocessed = pp.preprocess(source, None).unwrap();
+    let mut lexer = mivon_parser::lexer::Lexer::new(&preprocessed);
+    let mut tokens = Vec::new();
+    loop {
+        let (tok, line, col) = lexer.next_token();
+        if tok == mivon_parser::lexer::Token::Eof {
+            break;
+        }
+        tokens.push((tok, line, col));
+    }
+    let mut parser = mivon_parser::Parser::new(tokens, "<string>").with_source_lines(&preprocessed);
+    let design = parser.parse_design().unwrap();
+    let source_lines: Vec<String> = preprocessed.lines().map(|s| s.to_string()).collect();
+    let mut elaborator =
+        mivon_elaboration::Elaborator::with_source(design, source_lines, "<string>".to_string());
+    elaborator
+        .elaborate(
+            None,
+            mivon_elaboration::elaborator::ElaborateMode::StrictSimulation,
+        )
+        .unwrap();
+
+    let diags = elaborator.flush_diagnostics();
+    let signed_warn_msgs: Vec<String> = diags
+        .iter()
+        .filter(|d| {
+            matches!(
+                d.code,
+                mivon_core::diagnostics::DiagCode::SignedMismatchWarning
+            )
+        })
+        .map(|d| d.message.to_string())
+        .collect();
+
+    // a = 8'hFF (unsigned into signed) → harus warning
+    assert!(
+        signed_warn_msgs.iter().any(|m| m.contains("assignment to 'a'")),
+        "a = 8'hFF into signed should warn, got: {:?}",
+        signed_warn_msgs
+    );
+    // b = -1 (UnaryOp(Minus,Const), outside determinable set) → tidak boleh warning
+    assert!(
+        !signed_warn_msgs.iter().any(|m| m.contains("assignment to 'b'")),
+        "b = -1 into signed should not warn, got: {:?}",
+        signed_warn_msgs
+    );
+}
+
+#[test]
 fn test_auto_top_resolution_picks_largest_cone() {
     // Design dengan BANYAK candidate top (SoC chip + testbench kecil + bind
     // assertion). Mode AnalysisRecovery dulu menyerah (recovered=true, top

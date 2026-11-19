@@ -175,6 +175,7 @@ pub const OTHER_CODES: &[(DiagCode, &str)] = &[
 pub const WARNING_CODES: &[(DiagCode, &str)] = &[
     (DiagCode::UninitializedRegister, "uninitialized register"),
     (DiagCode::WidthMismatchWarning, "width mismatch"),
+    (DiagCode::SignedMismatchWarning, "signedness mismatch"),
     (DiagCode::UnusedSignal, "unused signal"),
     (DiagCode::ClockNeverToggles, "clock never toggles"),
     (
@@ -239,8 +240,8 @@ mod tests {
         let codes = all_codes();
         // Parse: 7, Formal: 1, Semantic: 4, Elab: 11, Memory: 5, Signal: 5, Scheduler: 5,
         // Event: 3, Module: 2, Interface: 2, Clock: 2, Assertion: 4, DPI: 3,
-        // Internal: 3, Infrastructure: 4, Legacy: 3, Other: 2, Warnings: 9 = 75 total
-        assert_eq!(codes.len(), 75);
+        // Internal: 3, Infrastructure: 4, Legacy: 3, Other: 2, Warnings: 10 = 76 total
+        assert_eq!(codes.len(), 76);
     }
 
     #[test]
@@ -278,6 +279,6 @@ mod tests {
         assert_eq!(signal_codes.len(), 5);
 
         let warning_codes = codes_by_category("Warning");
-        assert_eq!(warning_codes.len(), 9);
+        assert_eq!(warning_codes.len(), 10);
     }
 }

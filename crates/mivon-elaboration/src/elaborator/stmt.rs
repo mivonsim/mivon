@@ -797,18 +797,46 @@ pub(crate) fn apply_case_context_width(
 }
 
 /// Check signedness mismatch between LHS and RHS at elaboration.
-fn check_signed_mismatch(lhs_signal_id: Option<SignalId>, rhs: &IrExpr, signals: &[SignalInfo]) {
-    let Some(sid) = lhs_signal_id else { return };
-    let Some(lhs_sig) = signals.get(sid) else {
-        return;
-    };
-    let is_rhs_signed = matches!(rhs, IrExpr::Signed(_));
-    if lhs_sig.is_signed && !is_rhs_signed {
-        // Only warn when RHS could be determined at compile time
-    }
-}
-
 impl Elaborator {
+    /// Periksa ketidakcocokan signedness antara LHS signal (signed) dan RHS
+    /// expression (unsigned/non-signed) saat elaborasi. Emits
+    /// `SignedMismatchWarning` bila RHS dapat ditentukan waktu kompilasi.
+    fn check_signed_mismatch(
+        &self,
+        lhs_signal_id: Option<SignalId>,
+        rhs: &IrExpr,
+        signals: &[SignalInfo],
+        line: usize,
+        col: usize,
+    ) {
+        let Some(sid) = lhs_signal_id else { return };
+        let Some(lhs_sig) = signals.get(sid) else {
+            return;
+        };
+        let is_rhs_signed = matches!(rhs, IrExpr::Signed(_));
+        if lhs_sig.is_signed && !is_rhs_signed {
+            // LHS signed but RHS not a signed expression → implicit sign
+            // extension/truncation may produce unexpected results. Only warn
+            // when RHS is determinable at compile time (a Const or FillLit;
+            // note `-1` parses as UnaryOp(Minus, Const), not Signed, so it is
+            // intentionally NOT warned here). Variable RHS can't be judged
+            // statically.
+            let rhs_compile_time_determinable =
+                matches!(rhs, IrExpr::Const(_) | IrExpr::FillLit(_));
+            if rhs_compile_time_determinable {
+                self.elab_warn_at(
+                    DiagCode::SignedMismatchWarning,
+                    format!(
+                        "signedness mismatch in assignment to '{}' (signed LHS assigned from unsigned RHS)",
+                        lhs_sig.name
+                    ),
+                    line,
+                    col,
+                );
+            }
+        }
+    }
+
     /// Terapkan lebar konteks LHS ke RHS assignment (LRM §11.8.1):
     /// whole-RHS konstanta di-fold langsung pada lebar LHS; sisanya dapat
     /// propagasi konteks untuk operand context-determined.
@@ -1190,7 +1218,7 @@ impl Elaborator {
                 self.dbg_apply_n.set(self.dbg_apply_n.get() + 1);
                 let (lhs_line, lhs_col) = expr_location(lhs);
                 self.check_width_mismatch(&ir_lhs, &ir_rhs, signals, lhs_line, lhs_col);
-                check_signed_mismatch(lhs_sid, &ir_rhs, signals);
+                self.check_signed_mismatch(lhs_sid, &ir_rhs, signals, lhs_line, lhs_col);
                 // FIX: Unpacked array literal init — `arr = '{e0, e1, ...}`.
                 // Concat membangun value MSB-first `{e0, e1, e2, e3}` tapi
                 // unpacked array storage punya element 0 di bit terendah.
@@ -1285,7 +1313,7 @@ impl Elaborator {
                 self.dbg_apply_n.set(self.dbg_apply_n.get() + 1);
                 let (lhs_line, lhs_col) = expr_location(lhs);
                 self.check_width_mismatch(&ir_lhs, &ir_rhs, signals, lhs_line, lhs_col);
-                check_signed_mismatch(lhs_sid, &ir_rhs, signals);
+                self.check_signed_mismatch(lhs_sid, &ir_rhs, signals, lhs_line, lhs_col);
                 Ok(IrStmt::NonBlockingAssign {
                     lhs: ir_lhs,
                     rhs: ir_rhs,

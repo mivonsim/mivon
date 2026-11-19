@@ -237,6 +237,9 @@ pub enum DiagCode {
     UninitializedRegister,
     /// Width mismatch warning (WR0102)
     WidthMismatchWarning,
+    /// Signedness mismatch warning (WR0103): signed LHS assigned from an
+    /// unsigned/non-signed RHS expression at elaboration.
+    SignedMismatchWarning,
     /// Unused signal (WR0104)
     UnusedSignal,
     /// Clock never toggles (WR0202)
@@ -346,6 +349,7 @@ impl DiagCode {
             // Warnings
             DiagCode::UninitializedRegister => "WR0014",
             DiagCode::WidthMismatchWarning => "WR0102",
+            DiagCode::SignedMismatchWarning => "WR0103",
             DiagCode::UnusedSignal => "WR0104",
             DiagCode::ClockNeverToggles => "WR0202",
             DiagCode::ResetPermanentlyAsserted => "WR0203",
@@ -448,6 +452,7 @@ impl DiagCode {
             // Warnings
             DiagCode::UninitializedRegister => "uninitialized register",
             DiagCode::WidthMismatchWarning => "width mismatch",
+            DiagCode::SignedMismatchWarning => "signedness mismatch",
             DiagCode::UnusedSignal => "unused signal",
             DiagCode::ClockNeverToggles => "clock never toggles",
             DiagCode::ResetPermanentlyAsserted => "reset permanently asserted",
@@ -603,6 +608,8 @@ impl DiagCode {
                 "A register was read before being assigned a value (retains the default X).",
             DiagCode::WidthMismatchWarning =>
                 "A signal or expression width does not match the expected width.",
+            DiagCode::SignedMismatchWarning =>
+                "A signed signal is assigned from a non-signed (unsigned) expression — sign extension or truncation may produce unexpected results.",
             DiagCode::UnusedSignal =>
                 "A signal never changed during the simulated time window — it is either unused, held at a constant value, or the run ended before any transition.",
             DiagCode::ClockNeverToggles =>
@@ -767,6 +774,8 @@ impl DiagCode {
                 "Assign a reset value to the register, or ignore this warning if X-initialization is intentional (e.g. X-propagation checks).",
             DiagCode::WidthMismatchWarning =>
                 "Adjust the bit width to match or use explicit width conversion.",
+            DiagCode::SignedMismatchWarning =>
+                "Cast the RHS to a signed type or declare the LHS unsigned to avoid implicit sign extension/truncation.",
             DiagCode::UnusedSignal =>
                 "If the signal is genuinely unused, remove it; otherwise it simply never changed (constant value) or the simulation ended before any transition.",
             DiagCode::ClockNeverToggles =>
@@ -855,6 +864,7 @@ impl DiagCode {
             }
             DiagCode::UninitializedRegister
             | DiagCode::WidthMismatchWarning
+            | DiagCode::SignedMismatchWarning
             | DiagCode::UnusedSignal
             | DiagCode::ClockNeverToggles
             | DiagCode::ResetPermanentlyAsserted
