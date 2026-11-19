@@ -336,6 +336,9 @@ pub struct CompileInfo {
     pub module_files: std::collections::HashMap<String, PathBuf>,
     /// Graf dependency module → module yang diinstansiasi (untuk tab Dependency).
     pub deps: Vec<DepRow>,
+    /// Graf balik: module → daftar modul yang meng-instansiasikannya
+    /// (parent, count), untuk "find references" ke sebuah modul.
+    pub rev_deps: Vec<DepRow>,
     /// Module → jumlah instansiasi di seluruh design (precompute sekali saat
     /// compile; dipakai Code Lens di editor — hindari iterasi design per frame).
     pub ref_counts: std::collections::HashMap<String, usize>,

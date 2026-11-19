@@ -453,6 +453,7 @@ pub fn compile_project(
             total_time_ms: start.elapsed().as_secs_f64() * 1000.0,
             module_files,
             deps,
+            rev_deps: build_rev_deps(&ir_design),
             ref_counts,
             signal_info,
             symbol_files,
@@ -843,6 +844,47 @@ pub fn build_dep_graph(design: &IrDesign) -> Vec<DepRow> {
             children,
         });
     }
+    rows
+}
+
+/// Graf balik: module → daftar modul yang meng-instansiasikannya
+/// (parent, count). Dibangun dengan membalik setiap edge sub_instances.
+/// Digunakan "find references" ke sebuah modul.
+pub fn build_rev_deps(design: &IrDesign) -> Vec<DepRow> {
+    let mut rev: std::collections::HashMap<
+        String,
+        std::collections::HashMap<String, usize>,
+    > = std::collections::HashMap::new();
+    let mut add_edge = |rev: &mut std::collections::HashMap<
+        String,
+        std::collections::HashMap<String, usize>,
+    >,
+                        parent: &str,
+                        child: &str| {
+        rev.entry(child.to_string())
+            .or_default()
+            .entry(parent.to_string())
+            .or_insert(0);
+        *rev.get_mut(child).unwrap().get_mut(parent).unwrap() += 1;
+    };
+    let top_name = design.top.name.as_str();
+    for inst in &design.top.sub_instances {
+        add_edge(&mut rev, top_name, &inst.module_name.to_string());
+    }
+    for m in design.modules.values() {
+        for inst in &m.sub_instances {
+            add_edge(&mut rev, &m.name.as_str(), &inst.module_name.to_string());
+        }
+    }
+    let mut rows: Vec<DepRow> = rev
+        .into_iter()
+        .map(|(module, parents)| {
+            let mut parents: Vec<(String, usize)> = parents.into_iter().collect();
+            parents.sort_by(|a, b| a.0.cmp(&b.0));
+            DepRow { module, children: parents }
+        })
+        .collect();
+    rows.sort_by(|a, b| a.module.cmp(&b.module));
     rows
 }
 
