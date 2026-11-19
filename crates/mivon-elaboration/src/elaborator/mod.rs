@@ -6146,3 +6146,88 @@ mod elab_parallel_tests {
         assert_eq!(r[0].name, Symbol::intern("top"));
     }
 }
+
+// ─── ELAB-04: type-2 incremental elaboration cache ───
+// `module_cache` (signature → IrModule), `cache_hits`/`cache_misses` stats, and
+// `set_cache()`/`take_cache()` round-trip. Verifies the incremental-elab cache
+// infrastructure can store, retrieve, and hand off cached elaborated modules
+// without re-running the full AST→IR pass.
+#[cfg(test)]
+mod elab_incremental_cache_tests {
+    use super::*;
+    use mivon_ir::Process;
+
+    fn dummy_ir_module(name: &str) -> IrModule {
+        IrModule {
+            name: Symbol::intern(name),
+            signals: vec![],
+            inputs: vec![],
+            outputs: vec![],
+            inouts: vec![],
+            processes: vec![],
+            sub_instances: vec![],
+        }
+    }
+
+    #[test]
+    fn incremental_cache_insert_and_lookup() {
+        let mut elab = Elaborator::new(Design::default());
+        assert_eq!(elab.module_cache.len(), 0);
+        assert_eq!(elab.cache_hits, 0);
+        assert_eq!(elab.cache_misses, 0);
+
+        let sig = 0x1234_5678u64;
+        elab.module_cache.insert(sig, dummy_ir_module("top"));
+        assert_eq!(elab.module_cache.len(), 1);
+        assert!(elab.module_cache.contains_key(&sig));
+        assert_eq!(
+            elab.module_cache.get(&sig).unwrap().name.as_str(),
+            "top"
+        );
+    }
+
+    #[test]
+    fn incremental_cache_set_take_roundtrip() {
+        let mut elab = Elaborator::new(Design::default());
+        let mut map = std::collections::HashMap::new();
+        map.insert(1u64, dummy_ir_module("a"));
+        map.insert(2u64, dummy_ir_module("b"));
+
+        elab.set_cache(map); // consumed
+        assert_eq!(elab.module_cache.len(), 2);
+
+        let taken = elab.take_cache();
+        assert_eq!(taken.len(), 2);
+        assert!(taken.contains_key(&1));
+        assert!(taken.contains_key(&2));
+        assert_eq!(elab.module_cache.len(), 0); // taken → empty
+    }
+
+    #[test]
+    fn incremental_cache_default_empty() {
+        let mut elab = Elaborator::new(Design::default());
+        assert!(elab.module_cache.is_empty());
+        assert_eq!(elab.cache_hits, 0);
+        assert_eq!(elab.cache_misses, 0);
+        // take_cache on fresh elaborator returns empty
+        assert!(elab.take_cache().is_empty());
+    }
+
+    #[test]
+    fn incremental_process_default() {
+        // IrModule carries `processes: Vec<Process>`; confirm Process type is
+        // constructible/empty-friendly for cache payloads.
+        let _p: Vec<Process> = vec![];
+        let m = IrModule {
+            name: Symbol::intern("m"),
+            signals: vec![],
+            inputs: vec![],
+            outputs: vec![],
+            inouts: vec![],
+            processes: _p,
+            sub_instances: vec![],
+        };
+        assert_eq!(m.processes.len(), 0);
+        assert_eq!(m.name.as_str(), "m");
+    }
+}
