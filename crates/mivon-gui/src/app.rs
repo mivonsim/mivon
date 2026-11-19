@@ -633,7 +633,8 @@ impl MivonApp {
                 BottomTab::Debugger => BottomTab::Regression,
                 BottomTab::Regression => BottomTab::Synthesis,
                 BottomTab::Synthesis => BottomTab::Formal,
-                BottomTab::Formal => BottomTab::Terminal,
+                BottomTab::Formal => BottomTab::Ci,
+                BottomTab::Ci => BottomTab::Terminal,
             };
             return;
         }

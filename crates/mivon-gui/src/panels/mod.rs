@@ -15,6 +15,7 @@ pub mod regression;
 pub mod search;
 pub mod synthesis;
 pub mod formal;
+pub mod ci;
 pub mod sidebar;
 pub mod signals;
 pub mod terminal;

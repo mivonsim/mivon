@@ -9,7 +9,7 @@ use ratatui::{
 
 use super::super::state::{BottomTab, GuiState};
 use super::{
-    assertions, benchmark, console, coverage, debugger, pipeline, problems, regression, formal,
+    assertions, benchmark, ci, console, coverage, debugger, pipeline, problems, regression, formal,
     signals, synthesis, terminal, trace, waveform,
 };
 use crate::theme::Theme;
@@ -45,6 +45,7 @@ pub fn show(f: &mut Frame, area: ratatui::layout::Rect, state: &mut GuiState) {
         "Regression",
         "Synthesis",
         "Formal",
+        "CI",
     ];
     let tab_items: Vec<ListItem> = tabs
         .iter()
@@ -86,5 +87,6 @@ pub fn show(f: &mut Frame, area: ratatui::layout::Rect, state: &mut GuiState) {
         BottomTab::Regression => regression::show(f, content_area, state),
         BottomTab::Synthesis => synthesis::show(f, content_area, state),
         BottomTab::Formal => formal::show(f, content_area, state),
+        BottomTab::Ci => ci::show(f, content_area, state),
     }
 }

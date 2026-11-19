@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use mivon_ir::IrDesign;
 
+use super::ci;
 use super::plugin::{BoxedPlugin, HelloPlugin, PluginRegistry, StatsPlugin};
 use super::regression;
 use super::theme;
@@ -603,6 +604,8 @@ pub enum BottomTab {
     Synthesis,
     /// Formal Verification: laporan BMC assertion + konektivitas (mivon --formal).
     Formal,
+    /// CI/CD: status CI dari file JSON lokal (`.mivon/ci-status.json`).
+    Ci,
 }
 
 impl BottomTab {
@@ -623,7 +626,8 @@ impl BottomTab {
             11 => BottomTab::Regression,
             12 => BottomTab::Synthesis,
             13 => BottomTab::Formal,
-            _ => BottomTab::Formal,
+            14 => BottomTab::Ci,
+            _ => BottomTab::Ci,
         }
     }
 }
@@ -815,6 +819,8 @@ pub struct GuiState {
     pub formal_report: Option<FormalReport>,
     /// Registry plugin/extension: plugin bawaan (hello, stats) terdaftar otomatis.
     pub plugin_registry: PluginRegistry,
+    /// Database CI/CD (hasil CI eksternal, disalin ke `.mivon/ci-status.json`).
+    pub ci_database: Option<ci::CiDatabase>,
     // ── Assertions (hasil sim terakhir) ──
     pub assertions: Vec<AssertionRow>,
 
@@ -1022,6 +1028,7 @@ impl GuiState {
                 reg.register(BoxedPlugin::new(StatsPlugin));
                 reg
             },
+            ci_database: None,
             theme: theme::Theme::default(),
             assertions: Vec::new(),
             palette_open: false,
