@@ -181,6 +181,18 @@ impl MivonApp {
                         }
                     }
                 }
+                GuiEvent::SimPaused(info) => {
+                    self.state.is_running = true;
+                    self.state.is_paused = true;
+                    let n_signal = info.signals.len();
+                    self.state.signals = info.signals;
+                    self.state.cycles = info.cycles;
+                    self.state.sim_time_ms = info.sim_time_ms;
+                    self.state.debug_events = info.debug_events.clone();
+                    self.state.log(format!(
+                        "⏸ Simulasi dijeda — t={} ({} signal)", info.cycles, n_signal
+                    ));
+                }
                 GuiEvent::TermOutput(text, is_err) => {
                     self.state
                         .term_lines

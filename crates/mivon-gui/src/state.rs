@@ -605,6 +605,9 @@ pub enum GuiEvent {
     CompileDone(Result<(CompileInfo, IrDesign), Vec<DiagEntry>>),
     /// Simulasi selesai.
     SimDone(Result<SimInfo, String>),
+    /// Simulasi dijeda (Pause) — dikirim worker bersama nilai signal saat ini
+    /// agar variable inspector / Signals tetap menampilkan nilai saat dijeda.
+    SimPaused(SimInfo),
     /// Satu baris output terminal (text, is_err).
     TermOutput(String, bool),
     /// Proses terminal selesai → exit code.

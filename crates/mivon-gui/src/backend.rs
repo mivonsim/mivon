@@ -965,7 +965,7 @@ pub fn spawn_sim(
     debug: DebugConfig,
 ) {
     spawn_worker(move || {
-        let result = run_simulation(&design, max_time, cancel, &pause, &debug);
+        let result = run_simulation(tx.clone(), &design, max_time, cancel, &pause, &debug);
         let _ = tx.send(GuiEvent::SimDone(result));
     });
 }
@@ -973,6 +973,7 @@ pub fn spawn_sim(
 /// Jalankan simulasi pada design ter-elaborasi. Mengembalikan nilai akhir signal
 /// plus trace waveform (ditangkap via VCD temporer → di-parse).
 pub fn run_simulation(
+    tx: Sender<GuiEvent>,
     design: &IrDesign,
     max_time: u64,
     cancel: Arc<AtomicBool>,
@@ -1041,8 +1042,46 @@ pub fn run_simulation(
             return Err("Simulasi dihentikan (Stop)".into());
         }
         if engine.paused {
-            // Dijeda oleh pause_flag (Pause). Tunggu Resume (pause_flag false)
-            // dengan poll ringan agar worker tidak spin CPU.
+            // Dijeda oleh pause_flag (Pause). Kirim nilai signal saat ini ke
+            // GUI lewat SimPaused agar variable inspector / Signals tetap
+            // menampilkan nilai saat dijeda, lalu tunggu Resume.
+            let paused_signals: Vec<SignalRow> = engine
+                .design
+                .top
+                .signals
+                .iter()
+                .enumerate()
+                .map(|(id, sig)| {
+                    let lv = engine.state.read_signal(id);
+                    SignalRow {
+                        name: sig.name.to_string(),
+                        width: lv.width,
+                        value: logicvec_to_hex(lv),
+                        kind: format!("{:?}", sig.kind),
+                    }
+                })
+                .collect();
+            let paused_info = SimInfo {
+                signals: paused_signals,
+                cycles: engine.current_time,
+                sim_time_ms: start.elapsed().as_secs_f64() * 1000.0,
+                waveform: Vec::new(),
+                delta_cycles: 0,
+                events_processed: 0,
+                processes_evaluated: 0,
+                nba_commits: 0,
+                sensitive_triggers: 0,
+                events_per_delta: 0.0,
+                coverage: CoverageInfo::default(),
+                assertions: Vec::new(),
+                debug_events: engine
+                    .event_log
+                    .iter()
+                    .map(|e| format!("t={} {:?} {}", e.time, e.kind, e.message))
+                    .collect(),
+            };
+            let _ = tx.send(GuiEvent::SimPaused(paused_info));
+            // Tunggu Resume (pause_flag false) dengan poll ringan.
             while pause.load(std::sync::atomic::Ordering::Relaxed) {
                 sleep(Duration::from_millis(50));
                 if engine.is_cancelled() {
