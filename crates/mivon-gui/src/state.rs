@@ -46,6 +46,15 @@ pub struct GenPort {
     pub range: String,
 }
 
+/// Mode pengeditan editor RTL.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditorMode {
+    /// Navigasi: arrow/PgUp/PgDn, `i`/`a`/`o` masuk Insert, `x` hapus, `u` undo.
+    Normal,
+    /// Ketik teks langsung; Esc kembali ke Normal.
+    Insert,
+}
+
 /// File yang terbuka di editor.
 #[derive(Debug, Clone)]
 pub struct OpenFile {
@@ -808,6 +817,17 @@ pub struct GuiState {
     pub editor_scroll: usize,
     /// Baris target goto (diset saat lompat ke definisi/diagnostic).
     pub editor_goto_line: Option<usize>,
+    // ── Editor interaktif (Tahap 1: fake -> real) ──
+    /// Mode edit aktif: Normal (navigasi) atau Insert (ketik teks).
+    pub editor_mode: EditorMode,
+    /// Baris kursor 0-based.
+    pub editor_cursor_line: usize,
+    /// Kolom kursor 0-based (dalam char, bukan byte).
+    pub editor_cursor_col: usize,
+    /// Tumpukan undo: snapshot konten sebelum setiap edit (cap 100).
+    pub editor_undo: Vec<String>,
+    /// Tumpukan redo: snapshot konten yang dibatalkan (cap 100).
+    pub editor_redo: Vec<String>,
 }
 
 /// Jenis request LSP yang menunggu jawaban (untuk memetakan `LspReply`).
@@ -928,6 +948,11 @@ impl GuiState {
             pending_top: None,
             editor_scroll: 0,
             editor_goto_line: None,
+            editor_mode: EditorMode::Normal,
+            editor_cursor_line: 0,
+            editor_cursor_col: 0,
+            editor_undo: Vec::new(),
+            editor_redo: Vec::new(),
             breakpoints: Vec::new(),
             watchpoints: Vec::new(),
             debug_events: Vec::new(),
@@ -1021,6 +1046,238 @@ impl GuiState {
                 self.log(format!("❌ Gagal menyimpan {}: {}", name, e));
                 false
             }
+        }
+    }
+
+    /// Ambil baris file aktif sebagai `Vec<String>` (dipisah pada `\n`).
+    pub fn editor_lines(&self) -> Vec<String> {
+        let Some(idx) = self.active_file else {
+            return Vec::new();
+        };
+        self.open_files
+            .get(idx)
+            .map(|f| f.content.split('\n').map(|s| s.to_string()).collect())
+            .unwrap_or_default()
+    }
+
+    /// Tulis baris kembali ke file aktif, tandai dirty, dan sinkron ke LSP
+    /// lewat `didChange` (full-text sinkron — server memakai konten terbaru).
+    fn editor_write_lines(&mut self, lines: Vec<String>) {
+        let Some(idx) = self.active_file else {
+            return;
+        };
+        let text = lines.join("\n");
+        self.open_files[idx].content = text;
+        self.open_files[idx].dirty = true;
+        self.editor_sync_lsp();
+    }
+
+    /// Sinkronkan konten file aktif ke LSP (best-effort).
+    fn editor_sync_lsp(&self) {
+        let Some(idx) = self.active_file else {
+            return;
+        };
+        let Some(f) = self.open_files.get(idx) else {
+            return;
+        };
+        if self.lsp_ready && self.lsp_opened.contains(&f.path) {
+            let _ = self.lsp_send(crate::lsp_client::LspCmd::DidChange {
+                path: f.path.clone(),
+                text: f.content.clone(),
+            });
+        }
+    }
+
+    /// Simpan snapshot konten sebelum edit ke tumpukan undo (cap 100),
+    /// sekaligus kosongkan redo (edit baru membatalkan redo lama).
+    fn editor_push_undo(&mut self) {
+        let Some(idx) = self.active_file else {
+            return;
+        };
+        let snap = self.open_files[idx].content.clone();
+        if self.editor_undo.len() >= 100 {
+            self.editor_undo.remove(0);
+        }
+        self.editor_undo.push(snap);
+        self.editor_redo.clear();
+    }
+
+    /// Batalkan edit terakhir.
+    pub fn editor_undo(&mut self) -> bool {
+        let Some(idx) = self.active_file else {
+            return false;
+        };
+        let Some(prev) = self.editor_undo.pop() else {
+            return false;
+        };
+        let cur = self.open_files[idx].content.clone();
+        if self.editor_redo.len() >= 100 {
+            self.editor_redo.remove(0);
+        }
+        self.editor_redo.push(cur);
+        self.open_files[idx].content = prev;
+        self.open_files[idx].dirty = true;
+        self.editor_clamp_cursor();
+        self.editor_sync_lsp();
+        self.log("↶ Undo");
+        true
+    }
+
+    /// Ulangi edit yang dibatalkan.
+    pub fn editor_redo(&mut self) -> bool {
+        let Some(idx) = self.active_file else {
+            return false;
+        };
+        let Some(next) = self.editor_redo.pop() else {
+            return false;
+        };
+        let cur = self.open_files[idx].content.clone();
+        self.editor_undo.push(cur);
+        self.open_files[idx].content = next;
+        self.open_files[idx].dirty = true;
+        self.editor_clamp_cursor();
+        self.editor_sync_lsp();
+        self.log("↷ Redo");
+        true
+    }
+
+    /// Pastikan kursor masih berada di dalam file aktif setelah edit/undo.
+    pub fn editor_clamp_cursor(&mut self) {
+        let lines = self.editor_lines();
+        if lines.is_empty() {
+            self.editor_cursor_line = 0;
+            self.editor_cursor_col = 0;
+            return;
+        }
+        self.editor_cursor_line = self.editor_cursor_line.min(lines.len() - 1);
+        let max_col = lines[self.editor_cursor_line].chars().count();
+        self.editor_cursor_col = self.editor_cursor_col.min(max_col);
+    }
+
+    /// Sisipkan satu karakter pada posisi kursor (mode Insert).
+    pub fn editor_insert_char(&mut self, ch: char) {
+        let mut lines = self.editor_lines();
+        if lines.is_empty() {
+            return;
+        }
+        self.editor_push_undo();
+        let line = self.editor_cursor_line.min(lines.len() - 1);
+        let col = self.editor_cursor_col.min(lines[line].chars().count());
+        let mut chars: Vec<char> = lines[line].chars().collect();
+        chars.insert(col, ch);
+        lines[line] = chars.into_iter().collect();
+        self.editor_cursor_col = col + 1;
+        self.editor_write_lines(lines);
+    }
+
+    /// Sisipkan baris baru pada posisi kursor (Enter).
+    pub fn editor_insert_newline(&mut self) {
+        let mut lines = self.editor_lines();
+        if lines.is_empty() {
+            return;
+        }
+        self.editor_push_undo();
+        let line = self.editor_cursor_line.min(lines.len() - 1);
+        let col = self.editor_cursor_col.min(lines[line].chars().count());
+        let chars: Vec<char> = lines[line].chars().collect();
+        let (before, after) = {
+            let mut b = String::new();
+            let mut a = String::new();
+            for (i, c) in chars.iter().enumerate() {
+                if i < col {
+                    b.push(*c);
+                } else {
+                    a.push(*c);
+                }
+            }
+            (b, a)
+        };
+        lines[line] = before;
+        lines.insert(line + 1, after);
+        self.editor_cursor_line = line + 1;
+        self.editor_cursor_col = 0;
+        self.editor_write_lines(lines);
+    }
+
+    /// Hapus karakter sebelum kursor (Backspace). Di awal baris: gabung baris.
+    pub fn editor_backspace(&mut self) -> bool {
+        let mut lines = self.editor_lines();
+        if lines.is_empty() {
+            return false;
+        }
+        let line = self.editor_cursor_line.min(lines.len() - 1);
+        let col = self.editor_cursor_col.min(lines[line].chars().count());
+        if line == 0 && col == 0 {
+            return false;
+        }
+        self.editor_push_undo();
+        if col > 0 {
+            let mut chars: Vec<char> = lines[line].chars().collect();
+            chars.remove(col - 1);
+            lines[line] = chars.into_iter().collect();
+            self.editor_cursor_col = col - 1;
+        } else {
+            let cur = lines.remove(line);
+            self.editor_cursor_line = line - 1;
+            self.editor_cursor_col = lines[line - 1].chars().count();
+            lines[line - 1].push_str(&cur);
+        }
+        self.editor_write_lines(lines);
+        true
+    }
+
+    /// Hapus karakter pada kursor (Delete).
+    pub fn editor_delete_char(&mut self) -> bool {
+        let mut lines = self.editor_lines();
+        if lines.is_empty() {
+            return false;
+        }
+        let line = self.editor_cursor_line.min(lines.len() - 1);
+        let col = self.editor_cursor_col.min(lines[line].chars().count());
+        let len = lines[line].chars().count();
+        if line + 1 >= lines.len() && col >= len {
+            return false;
+        }
+        self.editor_push_undo();
+        if col < len {
+            let mut chars: Vec<char> = lines[line].chars().collect();
+            chars.remove(col);
+            lines[line] = chars.into_iter().collect();
+        } else {
+            let next = lines.remove(line + 1);
+            lines[line].push_str(&next);
+        }
+        self.editor_write_lines(lines);
+        true
+    }
+
+    /// Gerakkan kursor relatif (dl = delta baris, dc = delta kolom).
+    pub fn editor_move_cursor(&mut self, dl: i64, dc: i64) {
+        let lines = self.editor_lines();
+        if lines.is_empty() {
+            return;
+        }
+        let line = (self.editor_cursor_line as i64 + dl).max(0).min(lines.len().saturating_sub(1) as i64) as usize;
+        self.editor_cursor_line = line;
+        let max_col = lines[line].chars().count();
+        self.editor_cursor_col = (self.editor_cursor_col as i64 + dc).max(0).min(max_col as i64) as usize;
+    }
+
+    /// Set kursor absolut (dipakai goto definition / diagnostic).
+    pub fn editor_set_cursor(&mut self, line0: usize, col0: usize) {
+        self.editor_cursor_line = line0;
+        self.editor_cursor_col = col0;
+        self.editor_clamp_cursor();
+        self.editor_ensure_visible(1);
+    }
+
+    /// Geser scroll agar kursor terlihat (view_height = tinggi area baris).
+    pub fn editor_ensure_visible(&mut self, view_height: usize) {
+        let vh = view_height.max(1);
+        if self.editor_cursor_line < self.editor_scroll {
+            self.editor_scroll = self.editor_cursor_line;
+        } else if self.editor_cursor_line + 1 > self.editor_scroll + vh {
+            self.editor_scroll = self.editor_cursor_line + 1 - vh;
         }
     }
 
@@ -1333,6 +1590,73 @@ mod tests {
 
     fn c(p: &str) -> FileCat {
         classify_file(Path::new(p))
+    }
+
+    fn editor_test_state(lines: &[&str]) -> GuiState {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut s = GuiState::new(tx, rx);
+        let dir = std::env::temp_dir().join(format!("mivon_editor_test_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("dut.sv");
+        let _ = std::fs::write(&path, lines.join("\n"));
+        s.open_file(path);
+        s
+    }
+
+    #[test]
+    fn editor_insert_char_changes_content_and_marks_dirty() {
+        let mut s = editor_test_state(&["module dut;", "endmodule"]);
+        s.editor_cursor_line = 0;
+        s.editor_cursor_col = 0;
+        s.editor_insert_char('X');
+        assert_eq!(s.open_files[0].content, "Xmodule dut;\nendmodule");
+        assert_eq!(s.editor_cursor_col, 1);
+        assert!(s.open_files[0].dirty);
+        assert_eq!(s.editor_undo.len(), 1);
+    }
+
+    #[test]
+    fn editor_backspace_and_undo_are_real() {
+        let mut s = editor_test_state(&["abc"]);
+        s.editor_cursor_line = 0;
+        s.editor_cursor_col = 3;
+        assert!(s.editor_backspace());
+        assert_eq!(s.open_files[0].content, "ab");
+        assert!(s.editor_undo());
+        assert_eq!(s.open_files[0].content, "abc");
+        assert!(s.editor_redo());
+        assert_eq!(s.open_files[0].content, "ab");
+    }
+
+    #[test]
+    fn editor_newline_splits_line() {
+        let mut s = editor_test_state(&["abcdef"]);
+        s.editor_cursor_line = 0;
+        s.editor_cursor_col = 3;
+        s.editor_insert_newline();
+        assert_eq!(s.open_files[0].content, "abc\ndef");
+        assert_eq!(s.editor_cursor_line, 1);
+        assert_eq!(s.editor_cursor_col, 0);
+    }
+
+    #[test]
+    fn editor_move_cursor_clamps_to_lines() {
+        let mut s = editor_test_state(&["ab", "c"]);
+        s.editor_cursor_line = 0;
+        s.editor_cursor_col = 2;
+        s.editor_move_cursor(1, 0);
+        assert_eq!(s.editor_cursor_line, 1);
+        assert_eq!(s.editor_cursor_col, 1); // clamp ke panjang "c"
+        s.editor_move_cursor(1, 0);
+        assert_eq!(s.editor_cursor_line, 1); // tidak overflow
+    }
+
+    #[test]
+    fn editor_set_cursor_triggers_auto_scroll() {
+        let mut s = editor_test_state(&(1..=50).map(|_| "x").collect::<Vec<_>>().as_slice());
+        s.editor_set_cursor(49, 0);
+        assert_eq!(s.editor_cursor_line, 49);
+        assert!(s.editor_scroll > 0, "kursor bawah harus menggeser scroll");
     }
 
     #[test]

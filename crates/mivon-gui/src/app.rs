@@ -28,7 +28,7 @@ use super::app_cmds;
 use super::backend::scan_tree;
 use super::panels::{bottom_tabs, editor, sidebar, toolbar};
 use super::state::{
-    BottomTab, DiagEntry, DiagLevel, GuiEvent, GuiState, LspPendingKind, SidebarTab,
+    BottomTab, DiagEntry, DiagLevel, EditorMode, GuiEvent, GuiState, LspPendingKind, SidebarTab,
     STAGE_SIMULATOR,
 };
 use super::workspace::{restore_workspace, save_workspace};
@@ -253,6 +253,9 @@ impl MivonApp {
                                 {
                                     self.state.active_file = Some(idx);
                                     self.state.open_files[idx].pending_goto = Some(line);
+                                    // Set kursor nyata + auto-scroll (fix: goto dulu hanya
+                                    // menyimpan pending_goto, editor_scroll tetap 0).
+                                    self.state.editor_set_cursor(line.saturating_sub(1), 0);
                                     self.state.log(format!(
                                         "⌗ LSP definition: {}:{}",
                                         path.display(),
@@ -312,19 +315,26 @@ impl MivonApp {
             return;
         }
 
-        let editor_focused = self.state.active_file.is_some();
-        if !editor_focused {
-            match key.code {
-                KeyCode::F(5) => {
-                    if self.state.is_running {
-                        app_cmds::trigger_stop(&mut self.state);
-                    } else {
-                        app_cmds::trigger_run(&mut self.state);
-                    }
+        // F5/F7 berlaku global — termasuk saat editor fokus (fix bug lama).
+        match key.code {
+            KeyCode::F(5) => {
+                if self.state.is_running {
+                    app_cmds::trigger_stop(&mut self.state);
+                } else {
+                    app_cmds::trigger_run(&mut self.state);
                 }
-                KeyCode::F(7) => app_cmds::trigger_compile(&mut self.state),
-                _ => {}
+                return;
             }
+            KeyCode::F(7) => {
+                app_cmds::trigger_compile(&mut self.state);
+                return;
+            }
+            _ => {}
+        }
+
+        // Editor interaktif: saat file aktif, keyboard mengedit teks nyata.
+        if self.state.active_file.is_some() && self.handle_editor_key(key) {
+            return;
         }
 
         if key.code == KeyCode::Tab {
@@ -381,6 +391,142 @@ impl MivonApp {
                     self.state.log(format!("→ {}:{}", p, l));
                 }
             }
+        }
+    }
+
+    /// Tangani keyboard saat editor fokus. Mengembalikan true bila key
+    /// dikonsumsi editor (UI tidak boleh memproses lebih lanjut).
+    fn handle_editor_key(&mut self, key: KeyEvent) -> bool {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let view_h = 20usize; // perkiraan tinggi area editor; clamp di render
+
+        // Ctrl+Z / Ctrl+Y: undo/redo (berlaku di dua mode).
+        if ctrl && key.code == KeyCode::Char('z') {
+            self.state.editor_undo();
+            return true;
+        }
+        if ctrl && key.code == KeyCode::Char('y') {
+            self.state.editor_redo();
+            return true;
+        }
+
+        match self.state.editor_mode {
+            EditorMode::Normal => match key.code {
+                KeyCode::Char('i') => {
+                    self.state.editor_mode = EditorMode::Insert;
+                    true
+                }
+                KeyCode::Char('a') => {
+                    self.state.editor_move_cursor(0, 1);
+                    self.state.editor_mode = EditorMode::Insert;
+                    true
+                }
+                KeyCode::Char('o') => {
+                    self.state.editor_insert_newline();
+                    self.state.editor_mode = EditorMode::Insert;
+                    true
+                }
+                KeyCode::Char('x') => {
+                    self.state.editor_delete_char();
+                    true
+                }
+                KeyCode::Char('u') => {
+                    self.state.editor_undo();
+                    true
+                }
+                KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                    self.state.editor_redo();
+                    true
+                }
+                KeyCode::Char('h') | KeyCode::Left => {
+                    self.state.editor_move_cursor(0, -1);
+                    true
+                }
+                KeyCode::Char('j') | KeyCode::Down => {
+                    self.state.editor_move_cursor(1, 0);
+                    self.state.editor_ensure_visible(view_h);
+                    true
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    self.state.editor_move_cursor(-1, 0);
+                    self.state.editor_ensure_visible(view_h);
+                    true
+                }
+                KeyCode::Char('l') | KeyCode::Right => {
+                    self.state.editor_move_cursor(0, 1);
+                    true
+                }
+                KeyCode::Home => {
+                    self.state.editor_cursor_col = 0;
+                    true
+                }
+                KeyCode::End => {
+                    self.state.editor_clamp_cursor();
+                    let lines = self.state.editor_lines();
+                    if let Some(l) = lines.get(self.state.editor_cursor_line) {
+                        self.state.editor_cursor_col = l.chars().count();
+                    }
+                    true
+                }
+                KeyCode::PageUp => {
+                    self.state.editor_move_cursor(-(view_h as i64), 0);
+                    self.state.editor_ensure_visible(view_h);
+                    true
+                }
+                KeyCode::PageDown => {
+                    self.state.editor_move_cursor(view_h as i64, 0);
+                    self.state.editor_ensure_visible(view_h);
+                    true
+                }
+                _ => false,
+            },
+            EditorMode::Insert => match key.code {
+                KeyCode::Esc => {
+                    self.state.editor_mode = EditorMode::Normal;
+                    true
+                }
+                KeyCode::Char(c) if !ctrl => {
+                    self.state.editor_insert_char(c);
+                    true
+                }
+                KeyCode::Backspace => {
+                    self.state.editor_backspace();
+                    true
+                }
+                KeyCode::Delete => {
+                    self.state.editor_delete_char();
+                    true
+                }
+                KeyCode::Enter => {
+                    self.state.editor_insert_newline();
+                    true
+                }
+                KeyCode::Tab => {
+                    for _ in 0..4 {
+                        self.state.editor_insert_char(' ');
+                    }
+                    true
+                }
+                KeyCode::Left => {
+                    self.state.editor_move_cursor(0, -1);
+                    true
+                }
+                KeyCode::Right => {
+                    self.state.editor_move_cursor(0, 1);
+                    true
+                }
+                KeyCode::Up => {
+                    self.state.editor_move_cursor(-1, 0);
+                    self.state.editor_ensure_visible(view_h);
+                    true
+                }
+                KeyCode::Down => {
+                    self.state.editor_move_cursor(1, 0);
+                    self.state.editor_ensure_visible(view_h);
+                    true
+                }
+                _ => false,
+            },
         }
     }
 

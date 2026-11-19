@@ -9,8 +9,17 @@ use ratatui::{
 
 use super::super::state::{DiagEntry, DiagLevel, GuiState};
 pub fn show(f: &mut Frame, area: ratatui::layout::Rect, state: &mut GuiState) {
+    let mode = match state.editor_mode {
+        super::super::state::EditorMode::Insert => "INSERT",
+        super::super::state::EditorMode::Normal => "NORMAL",
+    };
     let block = Block::default()
-        .title("Editor")
+        .title(format!(
+            "Editor [{}]  L{}:C{}  (i=insert, Esc=normal)",
+            mode,
+            state.editor_cursor_line + 1,
+            state.editor_cursor_col + 1
+        ))
         .borders(Borders::ALL)
         .style(Style::default().bg(Color::Black));
     f.render_widget(block, area);
@@ -92,19 +101,35 @@ pub fn show(f: &mut Frame, area: ratatui::layout::Rect, state: &mut GuiState) {
                 line.to_string()
             };
 
-            // Batasi lebar line sesuai area.
+            // Batasi lebar line sesuai area (aman untuk karakter multibyte).
             let max_w = inner.width.saturating_sub(7) as usize;
-            let line_text = if line_text.len() > max_w {
-                format!("{}…", &line_text[..max_w.saturating_sub(1)])
-            } else {
-                line_text
-            };
+            let mut chars: Vec<char> = line_text.chars().collect();
+            if chars.len() > max_w && max_w > 0 {
+                chars.truncate(max_w.saturating_sub(1));
+                chars.push('…');
+            }
+
+            // Tandai posisi kursor pada baris aktif dengan '▏'.
+            let is_cursor = i == state.editor_cursor_line;
+            if is_cursor {
+                let col = state.editor_cursor_col.min(chars.len());
+                chars.insert(col, '▏');
+            }
+            let line_text: String = chars.into_iter().collect();
 
             ListItem::new(format!("{:4} {} {}", line_no, icon, line_text)).style(
                 Style::default()
-                    .fg(if is_target { Color::Green } else { color })
+                    .fg(if is_target {
+                        Color::Green
+                    } else if is_cursor {
+                        Color::White
+                    } else {
+                        color
+                    })
                     .add_modifier(if is_target {
                         Modifier::BOLD | Modifier::REVERSED
+                    } else if is_cursor {
+                        Modifier::BOLD
                     } else {
                         Modifier::empty()
                     }),
