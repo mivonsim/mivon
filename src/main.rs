@@ -20,11 +20,11 @@ use cli::Cli;
 use dispatch::{
     dispatch_batch, dispatch_bench, dispatch_bugtrack, dispatch_check, dispatch_cov,
     dispatch_cov_closure, dispatch_design_repo, dispatch_eco, dispatch_elab, dispatch_emu,
-    dispatch_equiv_check, dispatch_fmt, dispatch_gen, dispatch_inspect, dispatch_ipxact,
-    dispatch_license, dispatch_lint, dispatch_memcheck, dispatch_prof, dispatch_project,
-    dispatch_regression, dispatch_requirements, dispatch_sdc, dispatch_sim, dispatch_synth,
-    dispatch_tbgen, dispatch_tcl, dispatch_update, dispatch_vault, dispatch_verif_dashboard,
-    dispatch_waiver, dispatch_wave, dispatch_web_dashboard,
+    dispatch_equiv_check, dispatch_fmt, dispatch_gen, dispatch_gui, dispatch_inspect,
+    dispatch_ipxact, dispatch_license, dispatch_lint, dispatch_memcheck, dispatch_prof,
+    dispatch_project, dispatch_regression, dispatch_requirements, dispatch_sdc, dispatch_sim,
+    dispatch_synth, dispatch_tbgen, dispatch_tcl, dispatch_update, dispatch_vault,
+    dispatch_verif_dashboard, dispatch_waiver, dispatch_wave, dispatch_web_dashboard,
 };
 use run_legacy::run;
 use std::process;
@@ -546,22 +546,8 @@ fn real_main() {
             crate::cli::MivonCmd::VerifDashboard(a) => dispatch_verif_dashboard(a),
             crate::cli::MivonCmd::License(a) => dispatch_license(a),
             crate::cli::MivonCmd::WebDashboard(a) => dispatch_web_dashboard(a),
+            crate::cli::MivonCmd::Gui(a) => dispatch_gui(a),
         }
-    }
-
-    // ── GUI mode: launch the native egui application ──
-    #[cfg(feature = "gui")]
-    if cli.gui {
-        if let Err(e) = mivon_api::gui::run() {
-            eprintln!("GUI error: {}", e);
-            process::exit(1);
-        }
-        return;
-    }
-    #[cfg(not(feature = "gui"))]
-    if cli.gui {
-        eprintln!("GUI tidak tersedia: compile dengan --features gui");
-        process::exit(1);
     }
 
     // ── LSP mode: start language server (stdio transport) ──
@@ -677,8 +663,6 @@ fn validate_formal_sec(cli: &Cli) -> Result<(), SimError> {
         // Dua mode formal sekaligus: blok SEC return lebih dulu sehingga
         // --formal/--formal-connect akan diabaikan diam-diam.
         "--formal/--formal-connect"
-    } else if cli.gui {
-        "--gui"
     } else if cli.lsp {
         "--lsp"
     } else if cli.compile_only {

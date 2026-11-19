@@ -17,12 +17,14 @@
 
 mod emu;
 mod extra;
+mod gui;
 mod manage;
 mod tcl;
 mod tools;
 
 pub(crate) use emu::*;
 pub(crate) use extra::*;
+pub(crate) use gui::*;
 pub(crate) use manage::*;
 pub(crate) use tcl::*;
 pub(crate) use tools::*;

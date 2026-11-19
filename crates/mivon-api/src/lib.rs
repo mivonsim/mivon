@@ -58,9 +58,8 @@ pub use mivon_env::plugin;
 // mbench) kini di crate mivon-tools; `mivon::tools::*` di main.rs tetap valid.
 pub use mivon_tools as tools;
 
-// ── Native GUI (egui) — pindah ke mivon-gui (crates/) ──
-// `mivon::gui::run()` di main.rs + bin/mivon_gui.rs tetap valid via re-export.
-#[cfg(feature = "gui")]
+// ── Native GUI (ratatui TUI) — pindah ke mivon-gui (crates/) ──
+// `mivon::gui::run()` di main.rs via `mivon gui` subcommand, selalu tersedia.
 pub use mivon_gui as gui;
 
 pub use mivon_compiler::frontend::compile_session::{CompileSession, SessionConfig};

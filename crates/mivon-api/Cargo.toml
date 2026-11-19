@@ -16,14 +16,12 @@ mivon-env = { path = "../mivon-env" }
 mivon-tools = { path = "../mivon-tools" }
 mivon-emu = { path = "../mivon-emu" }
 mivon-formal = { path = "../mivon-formal", optional = true }
-mivon-gui = { path = "../mivon-gui", optional = true }
+mivon-gui = { path = "../mivon-gui" }
 
 [features]
 # LSP server — tower-lsp/lsp-types di mivon-env
 lsp = ["mivon-env/lsp"]
 # Formal verification (Z3 SMT solver + BMC engine)
 formal = ["dep:mivon-formal", "mivon-formal/formal"]
-# Native GUI (egui)
-gui = ["dep:mivon-gui"]
 # Window display emulator (minifb framebuffer) — mivon emu --window
 window = ["mivon-emu/window"]

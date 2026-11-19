@@ -118,6 +118,10 @@ pub enum MivonCmd {
     /// mweb — web dashboard kontrol simulasi (HTML + REST JSON)
     #[command(alias = "mweb")]
     WebDashboard(MwebArgs),
+
+    /// gui — GUI terminal (ratatui TUI) — Engineering Control Center untuk RTL.
+    #[command(alias = "mgui")]
+    Gui(GuiArgs),
 }
 
 /// minspect — Mivon Inspect.
@@ -920,10 +924,6 @@ pub struct Cli {
     #[arg(long = "waveform-gzip")]
     pub waveform_gzip: bool,
 
-    /// Launch the native GUI (egui) — requires --features gui
-    #[arg(long = "gui")]
-    pub gui: bool,
-
     /// Add include search path
     #[arg(short = 'I', long = "incdir", num_args = 1)]
     pub incdirs: Vec<String>,
@@ -1412,6 +1412,22 @@ pub struct MwebArgs {
     /// Batas total sesi aktif (sisanya masuk antrean)
     #[arg(long = "max-sessions", default_value_t = 32)]
     pub max_sessions: usize,
+}
+
+/// gui — GUI terminal (ratatui TUI).
+#[derive(clap::Args, Clone)]
+pub struct GuiArgs {
+    /// File .sv / direktori / file list (.f) yang ingin dibuka di GUI
+    #[arg(required = false)]
+    pub targets: Vec<String>,
+
+    /// Batas waktu simulasi maksimum (ns)
+    #[arg(short = 'T', long = "max-time", alias = "time", value_name = "NS")]
+    pub max_time: Option<u64>,
+
+    /// Top module name
+    #[arg(short = 't', long = "top")]
+    pub top: Option<String>,
 }
 
 /// mlicense — floating license server.

@@ -147,7 +147,7 @@ pub(crate) fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), S
         );
     }
 
-    if sources.is_empty() && !cli.gui {
+    if sources.is_empty() {
         return Err(SimError::with_diag(
             mivon_core::diagnostics::DiagCode::InvalidSyntax,
             "no input files: berikan file .sv atau gunakan `--filelist <file>` (bantuan: `mivon --help`)",
@@ -322,7 +322,10 @@ pub(crate) fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), S
         &cli.define_pairs(),
     );
     let mut node_cache = mivon_compiler::node_cache::ProjectCache::open_project_with_context(
-        &cache_root, &pid, &proot, &src_paths,
+        &cache_root,
+        &pid,
+        &proot,
+        &src_paths,
     );
     // `--cache-clear` atau `--recompile`: hapus node_cache SEBELUM reuse, agar run
     // ini benar-benar full-rebuild (lihat juga blok attach_cache untuk jalur

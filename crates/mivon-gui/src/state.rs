@@ -9,7 +9,6 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use crate::resource::ResourceState;
 use mivon_ir::IrDesign;
 
 /// Node pohon file (rekursif).
@@ -19,23 +18,6 @@ pub struct FileNode {
     pub path: PathBuf,
     pub is_dir: bool,
     pub children: Vec<FileNode>,
-}
-
-/// Satu deklarasi scope untuk Sticky Header (module/interface/package/
-/// function/task/always/initial/begin). Disusun urut kemunculan di file;
-/// scope terdalam (yang terakhir dengan `line <=` baris teratas terlihat)
-/// ditampilkan menempel di atas editor saat scroll — deklarasi tetap terlihat.
-#[derive(Debug, Clone)]
-pub struct StickyScope {
-    /// Baris deklarasi (1-based).
-    pub line: usize,
-    /// Kedalaman blok begin/end — menentukan indentasi di strip sticky.
-    pub depth: usize,
-    /// Jenis scope: "module" | "interface" | "package" | "function" |
-    /// "task" | "always" | "initial" | "begin" (untuk ikon & warna).
-    pub kind: String,
-    /// Teks deklarasi (tanpa komentar `//`, dipotong ~64 karakter).
-    pub text: String,
 }
 
 /// Jenis entitas yang digenerate wizard (Generate Module / Create Interface).
@@ -71,39 +53,9 @@ pub struct OpenFile {
     pub name: String,
     pub content: String,
     pub dirty: bool,
-    /// Offset scroll vertikal editor (pixel, positif = scroll ke bawah) —
-    /// di-update dari ScrollAreaOutput tiap frame, dipakai Sticky Header.
-    pub scroll_top: f32,
-    /// Cache scope deklarasi (Sticky Header) — di-rebuild saat konten berubah
-    /// (dideteksi via fingerprint FNV-1a), bukan tiap frame.
-    pub sticky: Vec<StickyScope>,
-    /// Fingerprint konten saat `sticky` terakhir dibangun (0 = belum pernah).
-    pub sticky_fp: u64,
     /// Baris tujuan lompat berikutnya (Go To Definition) — 1-based, dikonsumsi
-    /// (`take`) oleh ScrollArea editor pada frame berikutnya.
+    /// oleh editor pada frame berikutnya.
     pub pending_goto: Option<usize>,
-    /// Sedang proses Rename Symbol (popup input terbuka).
-    pub renaming: bool,
-    /// Nama lama (identifier di bawah kursor/hover saat F2 ditekan).
-    pub rename_old: String,
-    /// Nama baru (diisi pengguna di popup rename).
-    pub rename_new: String,
-    /// Autocomplete: popup kandidat sedang terbuka (otomatis saat mengetik
-    /// identifier, atau Ctrl+Space eksplisit).
-    pub completing: bool,
-    /// Kandidat yang sudah difilter & di-sort (urutan tampil di popup).
-    pub completion_items: Vec<String>,
-    /// Item yang sedang dipilih (navigasi ↑/↓).
-    pub completion_selected: usize,
-    /// Prefix yang dipakai saat kandidat terakhir dibangun — deteksi rebuild
-    /// hanya saat prefix berubah (bukan setiap frame).
-    pub completion_prefix: String,
-    /// Byte offset awal kata yang sedang dilengkapi (batas kiri region
-    /// penggantian saat accept).
-    pub completion_insert: usize,
-    /// Byte offset akhir kata — bertumbuh saat mengetik; membeku saat caret
-    /// keluar dari kata (mis. navigasi ↑/↓).
-    pub completion_end: usize,
 }
 
 /// Level diagnostic — **bukan definisi sendiri**: `pub use` tipe pusat dari
@@ -612,6 +564,24 @@ pub enum BottomTab {
     Pipeline,
 }
 
+impl BottomTab {
+    /// Dari indeks (0-based) urutan tab di UI.
+    pub fn from_index(i: usize) -> Self {
+        match i {
+            0 => BottomTab::Problems,
+            1 => BottomTab::Console,
+            2 => BottomTab::Signals,
+            3 => BottomTab::Waveform,
+            4 => BottomTab::Trace,
+            5 => BottomTab::Benchmark,
+            6 => BottomTab::Coverage,
+            7 => BottomTab::Assertions,
+            8 => BottomTab::Terminal,
+            _ => BottomTab::Pipeline,
+        }
+    }
+}
+
 /// Event yang dikirim dari worker thread ke UI thread.
 #[allow(clippy::large_enum_variant)]
 pub enum GuiEvent {
@@ -750,11 +720,6 @@ pub struct GuiState {
     /// Ada proses terminal yang sedang berjalan.
     pub term_running: bool,
 
-    // ── Resource monitor (CPU/RAM realtime) ──
-    pub resource: ResourceState,
-    /// Riwayat sampel resource — grafik history di panel Benchmark.
-    pub resource_hist: ResourceHistory,
-
     // ── Peek Definition ──
     /// Popup Peek Definition aktif (Alt+Click): data pratinjau.
     pub peek: Option<PeekInfo>,
@@ -765,6 +730,8 @@ pub struct GuiState {
     pub sidebar_tab: SidebarTab,
     pub bottom_tab: BottomTab,
     pub show_sidebar: bool,
+    /// Index item yang sedang dipilih di file tree sidebar (navigasi ↑/↓).
+    pub sidebar_selected: usize,
     pub show_bottom: bool,
     /// Tinggi Bottom Panel (px) — diubah via splitter handle di border atas
     /// panel (lihat `splitter::show_resizer`); di-clamp ke min/max tiap frame
@@ -822,6 +789,12 @@ pub struct GuiState {
     pub lsp_auto_restart_blocked: bool,
     /// Name identifier hover terakhir — one-time note bila binary LSP tak ada.
     pub lsp_bin_noted: bool,
+    /// Top module yang tertunda (dari argumen --top), diterapkan setelah compile.
+    pub pending_top: Option<String>,
+    /// Scroll offset editor (baris awal yang ditampilkan).
+    pub editor_scroll: usize,
+    /// Baris target goto (diset saat lompat ke definisi/diagnostic).
+    pub editor_goto_line: Option<usize>,
 }
 
 /// Jenis request LSP yang menunggu jawaban (untuk memetakan `LspReply`).
@@ -888,13 +861,12 @@ impl GuiState {
             term_history: Vec::new(),
             term_hist_idx: usize::MAX,
             term_running: false,
-            resource: ResourceState::default(),
-            resource_hist: ResourceHistory::default(),
             peek: None,
             peek_anchor: None,
             sidebar_tab: SidebarTab::Project,
             bottom_tab: BottomTab::Console,
             show_sidebar: true,
+            sidebar_selected: 0,
             show_bottom: true,
             bottom_height: 220.0,
             gen_open: false,
@@ -940,6 +912,9 @@ impl GuiState {
             lsp_completion_req: std::collections::HashMap::new(),
             lsp_auto_restart_blocked: false,
             lsp_bin_noted: false,
+            pending_top: None,
+            editor_scroll: 0,
+            editor_goto_line: None,
         }
     }
 
@@ -997,19 +972,7 @@ impl GuiState {
             name,
             content,
             dirty: false,
-            scroll_top: 0.0,
-            sticky: Vec::new(),
-            sticky_fp: 0,
             pending_goto: None,
-            renaming: false,
-            rename_old: String::new(),
-            rename_new: String::new(),
-            completing: false,
-            completion_items: Vec::new(),
-            completion_selected: 0,
-            completion_prefix: String::new(),
-            completion_insert: 0,
-            completion_end: 0,
         });
         self.active_file = Some(self.open_files.len() - 1);
     }

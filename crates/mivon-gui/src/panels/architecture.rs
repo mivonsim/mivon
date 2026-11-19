@@ -1,154 +1,45 @@
-//! Architecture viewer — pohon hierarki instansiasi (CPU → Cache → AXI → …).
-//!
-//! Dibangun dari `IrDesign`: root = modul top, lalu `sub_instances` di-resolve
-//! rekursif lewat `design.modules`. Klik nama instance → buka file RTL module
-//! (via `CompileInfo.module_files` dari module_index); panah ▾/▸ untuk
-//! expand/collapse. Guard siklus mencegah loop tak hingga untuk modul rekursif.
+//! Tab Architecture: hierarki modul dari hasil compile.
 
-use eframe::egui;
-
-use mivon_core::Symbol;
-use mivon_ir::IrDesign;
+use ratatui::{
+    style::{Color, Style},
+    widgets::{Block, Borders, List, ListItem, Paragraph},
+    Frame,
+};
 
 use super::super::state::GuiState;
+use ratatui::style::Modifier;
 
-/// Satu node pohon arsitektur.
-#[derive(Debug, Clone)]
-pub struct ArchNode {
-    pub instance_name: String,
-    pub module_name: String,
-    pub line: usize,
-    pub children: Vec<ArchNode>,
-}
+pub fn show(f: &mut Frame, area: ratatui::layout::Rect, state: &mut GuiState) {
+    let block = Block::default()
+        .title("Architecture")
+        .borders(Borders::ALL)
+        .style(Style::default().bg(Color::Black));
+    f.render_widget(block, area);
 
-/// Bangun pohon hierarki dari design ter-elaborasi.
-pub fn build_tree(design: &IrDesign) -> ArchNode {
-    let top_name = design.top.name.to_string();
-    let mut root = ArchNode {
-        instance_name: top_name.clone(),
-        module_name: top_name.clone(),
-        line: 0,
-        children: Vec::new(),
-    };
-    // ancestors: jumlah kemunculan modul pada path saat ini (guard siklus).
-    let mut ancestors: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-    ancestors.insert(top_name.clone(), 1);
-    build_children(design, &design.top, &mut root, &mut ancestors, 0);
-    root
-}
-
-fn build_children(
-    design: &IrDesign,
-    module: &mivon_ir::IrModule,
-    parent: &mut ArchNode,
-    ancestors: &mut std::collections::HashMap<String, usize>,
-    depth: usize,
-) {
-    if depth >= 64 {
-        return; // cap kedalaman — desain monster sekalipun tetap aman
+    let inner = area.inner(ratatui::layout::Margin {
+        vertical: 1u16,
+        horizontal: 1u16,
+    });
+    if inner.height < 1 {
+        return;
     }
-    for inst in &module.sub_instances {
-        let child_mod = inst.module_name.to_string();
-        let mut node = ArchNode {
-            instance_name: inst.instance_name.to_string(),
-            module_name: child_mod.clone(),
-            line: inst.line,
-            children: Vec::new(),
-        };
-        // Hitung count dalam scope pendek agar borrow `ancestors` dilepas
-        // sebelum rekursi (E0499) — decrement dilakukan via get_mut terpisah.
-        let cnt_val = {
-            let cnt = ancestors.entry(child_mod.clone()).or_insert(0);
-            *cnt += 1;
-            *cnt
-        };
-        if cnt_val < 2 {
-            if let Some(cm) = design.modules.get(&Symbol::intern(&child_mod)) {
-                build_children(design, cm, &mut node, ancestors, depth + 1);
-            }
-        }
-        if let Some(e) = ancestors.get_mut(&child_mod) {
-            *e = e.saturating_sub(1);
-        }
-        parent.children.push(node);
-    }
-}
 
-/// Render tab Architecture di sidebar.
-pub fn show(ui: &mut egui::Ui, state: &mut GuiState) {
-    let Some(design) = &state.design else {
-        ui.add_space(8.0);
-        ui.label(
-            egui::RichText::new("Compile dulu untuk melihat arsitektur")
-                .weak()
-                .italics(),
-        );
+    let Some(info) = &state.compile_info else {
+        let p = Paragraph::new("Compile dulu untuk melihat architecture")
+            .style(Style::default().fg(Color::Gray).add_modifier(Modifier::ITALIC));
+        f.render_widget(p, inner);
         return;
     };
-    let tree = build_tree(design);
-    let module_files = state
-        .compile_info
-        .as_ref()
-        .map(|i| i.module_files.clone())
-        .unwrap_or_default();
 
-    let mut to_open: Option<std::path::PathBuf> = None;
-    egui::ScrollArea::vertical()
-        .id_salt("arch_scroll")
-        .show(ui, |ui| {
-            render_node(ui, &tree, "", 0, state, &module_files, &mut to_open);
-        });
-
-    if let Some(path) = to_open {
-        state.open_file(path);
+    let mut items: Vec<ListItem> = Vec::new();
+    items.push(ListItem::new("Modules").style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)));
+    for m in &info.modules {
+        items.push(ListItem::new(format!("  {}", m)).style(Style::default().fg(Color::White)));
     }
-}
-
-fn render_node(
-    ui: &mut egui::Ui,
-    node: &ArchNode,
-    parent_key: &str,
-    depth: usize,
-    state: &mut GuiState,
-    module_files: &std::collections::HashMap<String, std::path::PathBuf>,
-    to_open: &mut Option<std::path::PathBuf>,
-) {
-    let has_children = !node.children.is_empty();
-    let key = format!("{}::{}", parent_key, node.instance_name);
-    let is_open = state.arch_open.get(&key).copied().unwrap_or(depth < 2);
-
-    ui.horizontal(|ui| {
-        ui.add_space(depth as f32 * 16.0);
-
-        // Panah expand/collapse (atau titik untuk leaf)
-        if has_children {
-            let arrow = if is_open { "▾" } else { "▸" };
-            if ui.button(egui::RichText::new(arrow).size(10.0)).clicked() {
-                state.arch_open.insert(key.clone(), !is_open);
-            }
-        } else {
-            ui.label(egui::RichText::new("·").weak().size(10.0));
-        }
-
-        // Nama instance — klik membuka file RTL module (aksi utama per desain)
-        let label = format!("{}  ({})", node.instance_name, node.module_name);
-        if ui
-            .selectable_label(false, egui::RichText::new(label).monospace().size(12.0))
-            .on_hover_text(format!(
-                "{} · line {}\nKlik untuk membuka file",
-                node.module_name, node.line
-            ))
-            .clicked()
-        {
-            if let Some(file) = module_files.get(&node.module_name) {
-                *to_open = Some(file.clone());
-            }
-        }
-    });
-
-    if is_open {
-        for c in &node.children {
-            render_node(ui, c, &key, depth + 1, state, module_files, to_open);
-        }
+    if items.len() <= 1 {
+        items.push(ListItem::new("(belum ada data)").style(Style::default().fg(Color::Gray)));
     }
+
+    let list = List::new(items);
+    f.render_widget(list, inner);
 }

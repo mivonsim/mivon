@@ -1,360 +1,323 @@
-//! Sidebar kiri: tab Project (file tree), Symbols, Architecture, dan Search.
+//! Sidebar kiri: tab Project (file tree navigabel), Symbols, Architecture,
+//! Dependency, Search.
 
-use eframe::egui;
+use ratatui::{
+    style::{Color, Modifier, Style},
+    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
+    Frame,
+};
 
 use super::super::state::{classify_file, FileCat, GuiState, SidebarTab};
-use super::architecture;
-use super::dependency;
-use super::search;
 
-pub fn show(ui: &mut egui::Ui, state: &mut GuiState) {
-    // ── Tab selector ──
-    ui.horizontal(|ui| {
-        if ui
-            .selectable_label(state.sidebar_tab == SidebarTab::Project, "Project")
-            .clicked()
-        {
-            state.sidebar_tab = SidebarTab::Project;
-        }
-        if ui
-            .selectable_label(state.sidebar_tab == SidebarTab::Symbols, "Symbols")
-            .clicked()
-        {
-            state.sidebar_tab = SidebarTab::Symbols;
-        }
-        if ui
-            .selectable_label(
-                state.sidebar_tab == SidebarTab::Architecture,
-                "Architecture",
-            )
-            .clicked()
-        {
-            state.sidebar_tab = SidebarTab::Architecture;
-        }
-        if ui
-            .selectable_label(state.sidebar_tab == SidebarTab::Dependency, "Dependency")
-            .clicked()
-        {
-            state.sidebar_tab = SidebarTab::Dependency;
-        }
-        if ui
-            .selectable_label(state.sidebar_tab == SidebarTab::Search, "Search")
-            .clicked()
-        {
-            state.sidebar_tab = SidebarTab::Search;
-        }
+pub fn show(f: &mut Frame, area: ratatui::layout::Rect, state: &mut GuiState) {
+    let block = Block::default()
+        .title("Sidebar")
+        .borders(Borders::ALL)
+        .style(Style::default().bg(Color::DarkGray));
+    f.render_widget(block, area);
+
+    let inner = area.inner(&ratatui::layout::Margin {
+        vertical: 1u16,
+        horizontal: 1u16,
     });
-    ui.separator();
-
-    match state.sidebar_tab {
-        SidebarTab::Project => project_tab(ui, state),
-        SidebarTab::Symbols => symbols_tab(ui, state),
-        SidebarTab::Architecture => architecture::show(ui, state),
-        SidebarTab::Dependency => dependency::show(ui, state),
-        SidebarTab::Search => search::show(ui, state),
-    }
-}
-
-// ── Project: file tree + bookmark ──
-fn project_tab(ui: &mut egui::Ui, state: &mut GuiState) {
-    if state.project_name.is_empty() {
-        ui.add_space(8.0);
-        ui.label(
-            egui::RichText::new("Buka proyek untuk melihat file")
-                .weak()
-                .italics(),
-        );
-        ui.add_space(4.0);
-        if ui.button("📂 Open Project").clicked() {
-            super::super::app::trigger_open_project(state);
-        }
+    if inner.height < 3 {
         return;
     }
 
-    let mut to_open: Option<std::path::PathBuf> = None;
-    let mut to_toggle: Option<std::path::PathBuf> = None;
+    // Tab selector.
+    let tabs = ["Project", "Symbols", "Architecture", "Dependency", "Search"];
+    let tab_items: Vec<ListItem> = tabs
+        .iter()
+        .map(|t| {
+            let active = match *t {
+                "Project" => state.sidebar_tab == SidebarTab::Project,
+                "Symbols" => state.sidebar_tab == SidebarTab::Symbols,
+                "Architecture" => state.sidebar_tab == SidebarTab::Architecture,
+                "Dependency" => state.sidebar_tab == SidebarTab::Dependency,
+                "Search" => state.sidebar_tab == SidebarTab::Search,
+                _ => false,
+            };
+            ListItem::new(format!("  {}", t)).style(if active {
+                Style::default()
+                    .bg(Color::Blue)
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            })
+        })
+        .collect();
+    let tabs_list =
+        List::new(tab_items).block(Block::default().borders(Borders::BOTTOM).title("Tabs"));
+    f.render_widget(tabs_list, inner);
 
-    // ── Toolbar kecil: filter kategori + bookmark ──
-    ui.horizontal_wrapped(|ui| {
-        let mut cat_click: Option<FileCat> = None;
-        for (cat, label) in [
-            (FileCat::All, "Semua"),
-            (FileCat::Rtl, "RTL"),
-            (FileCat::Testbench, "TB"),
-            (FileCat::Library, "Lib"),
-            (FileCat::Include, "Inc"),
-        ] {
-            if ui
-                .selectable_label(state.explorer_cat == cat, label)
-                .on_hover_text(match cat {
-                    FileCat::All => "Semua file",
-                    FileCat::Rtl => "RTL (default)",
-                    FileCat::Testbench => "Testbench & UVM",
-                    FileCat::Library => "Library / IP / cell",
-                    FileCat::Include => "Header .svh",
-                })
-                .clicked()
-            {
-                cat_click = Some(cat);
-            }
-        }
-        if let Some(c) = cat_click {
-            state.explorer_cat = c;
-        }
-        // Pemisah visual + filter bookmark.
-        ui.separator();
-        let label = if state.bookmarks_only { "★" } else { "☆" };
-        if ui
-            .selectable_label(
-                state.bookmarks_only,
-                egui::RichText::new(format!("{} {}", label, state.bookmarks.len())),
-            )
-            .on_hover_text("Tampilkan hanya file yang di-bookmark")
-            .clicked()
-        {
-            state.bookmarks_only = !state.bookmarks_only;
-        }
-    });
-    ui.separator();
-
-    egui::ScrollArea::vertical()
-        .id_salt("file_tree_scroll")
-        .show(ui, |ui| {
-            // ── Section Bookmarks (akses cepat) — tampil saat ada bookmark ──
-            if !state.bookmarks.is_empty() {
-                ui.label(egui::RichText::new("Bookmarks").strong().size(11.0));
-                let mut bm: Vec<&std::path::PathBuf> = state.bookmarks.iter().collect();
-                bm.sort();
-                for p in bm {
-                    let name = p
-                        .file_name()
-                        .map(|s| s.to_string_lossy().to_string())
-                        .unwrap_or_else(|| p.display().to_string());
-                    let rel = state
-                        .project_root
-                        .as_ref()
-                        .and_then(|r| p.strip_prefix(r).ok())
-                        .map(|r| r.display().to_string())
-                        .unwrap_or_else(|| p.display().to_string());
-                    // `file_row` menangani klik bintang (toggle) & klik nama (buka).
-                    let cat = classify_file(p);
-                    file_row(ui, &name, &rel, p, true, cat, &mut to_open, &mut to_toggle);
-                }
-                ui.add_space(6.0);
-            }
-
-            // ── File tree (filter kategori + bookmark bila aktif) ──
-            if !state.bookmarks_only {
-                tree_nodes(
-                    ui,
-                    &state.files,
-                    0,
-                    &state.bookmarks,
-                    state.bookmarks_only,
-                    state.explorer_cat,
-                    &mut to_open,
-                    &mut to_toggle,
-                );
-            }
-        });
-
-    if let Some(path) = to_toggle {
-        state.toggle_bookmark(&path);
-    }
-    if let Some(path) = to_open {
-        state.open_file(path);
-    }
-}
-
-/// Warna nama file per kategori (desain: sedikit warna, banyak informasi).
-fn file_cat_color(cat: FileCat) -> egui::Color32 {
-    match cat {
-        FileCat::Rtl => egui::Color32::from_rgb(79, 193, 255), // biru — RTL
-        FileCat::Testbench => egui::Color32::from_rgb(34, 197, 94), // hijau — TB
-        FileCat::Library => egui::Color32::from_rgb(168, 85, 247), // ungu — lib/IP
-        FileCat::Include => egui::Color32::from_rgb(6, 182, 212), // cyan — header
-        FileCat::All => egui::Color32::GRAY,
-    }
-}
-
-/// Satu baris file: [★/☆] nama — klik bintang toggle bookmark, klik baris buka.
-/// Aksi diterapkan via `to_toggle`/`to_open` (diproses setelah ScrollArea).
-/// `cat` dipakai mewarnai nama sesuai kategori file.
-#[allow(clippy::too_many_arguments)]
-fn file_row(
-    ui: &mut egui::Ui,
-    name: &str,
-    rel: &str,
-    path: &std::path::Path,
-    is_bookmarked: bool,
-    cat: FileCat,
-    to_open: &mut Option<std::path::PathBuf>,
-    to_toggle: &mut Option<std::path::PathBuf>,
-) {
-    let star = if is_bookmarked { "★" } else { "☆" };
-    let star_color = if is_bookmarked {
-        egui::Color32::from_rgb(234, 179, 8)
-    } else {
-        egui::Color32::from_rgb(110, 118, 129)
+    // Konten tab (di bawah tab selector).
+    let content_area = ratatui::layout::Rect {
+        x: inner.x,
+        y: inner.y.saturating_add(tabs.len() as u16 + 1),
+        width: inner.width,
+        height: inner.height.saturating_sub(tabs.len() as u16 + 1),
     };
-    ui.horizontal(|ui| {
-        // Ikon bintang — toggle bookmark.
-        let s = ui.add(
-            egui::Button::new(egui::RichText::new(star).size(11.0).color(star_color))
-                .frame(false)
-                .small(),
-        );
-        if s.on_hover_text("Bookmark file").clicked() {
-            *to_toggle = Some(path.to_path_buf());
-        }
-        // Nama file — klik buka; diwarnai sesuai kategori.
-        let text = egui::RichText::new(name)
-            .monospace()
-            .size(12.0)
-            .color(file_cat_color(cat));
-        if ui
-            .selectable_label(false, text)
-            .on_hover_text(rel)
-            .clicked()
-        {
-            *to_open = Some(path.to_path_buf());
-        }
-    });
+
+    match state.sidebar_tab {
+        SidebarTab::Project => project_tab(f, content_area, state),
+        SidebarTab::Symbols => symbols_tab(f, content_area, state),
+        SidebarTab::Architecture => architecture_tab(f, content_area, state),
+        SidebarTab::Dependency => dependency_tab(f, content_area, state),
+        SidebarTab::Search => search_tab(f, content_area, state),
+    }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn tree_nodes(
-    ui: &mut egui::Ui,
-    nodes: &[super::super::state::FileNode],
-    depth: usize,
-    bookmarks: &std::collections::HashSet<std::path::PathBuf>,
-    bookmarks_only: bool,
-    cat: FileCat,
-    to_open: &mut Option<std::path::PathBuf>,
-    to_toggle: &mut Option<std::path::PathBuf>,
-) {
+/// Navigasi sidebar: pindah seleksi atas/bawah.
+pub fn sidebar_select_next(state: &mut GuiState) {
+    state.sidebar_selected = state.sidebar_selected.saturating_add(1);
+}
+
+pub fn sidebar_select_prev(state: &mut GuiState) {
+    state.sidebar_selected = state.sidebar_selected.saturating_sub(1);
+}
+
+/// Buka file yang sedang terpilih di sidebar project tab.
+pub fn sidebar_open_selected(state: &mut GuiState) {
+    if let Some(path) = collect_sv_paths(state).get(state.sidebar_selected) {
+        state.open_file(path.clone());
+    }
+}
+
+/// Kumpulkan semua path file .sv/.svh dari pohon project (flat, urut tree).
+fn collect_sv_paths(state: &GuiState) -> Vec<std::path::PathBuf> {
+    let mut out: Vec<std::path::PathBuf> = Vec::new();
+    collect_sv_paths_rec(&state.files, &mut out);
+    out
+}
+
+fn collect_sv_paths_rec(nodes: &[crate::state::FileNode], out: &mut Vec<std::path::PathBuf>) {
     for node in nodes {
         if node.is_dir {
-            // Filter aktif (bookmark &/atau kategori): folder hanya tampil bila
-            // berisi minimal satu file yang memenuhi SEMUA filter aktif — satu
-            // predikat tunggal agar tidak muncul folder kosong (dua guard
-            // terpisah bisa cocok terhadap file yang berbeda).
-            if (bookmarks_only || cat != FileCat::All)
-                && !dir_has(node, bookmarks, bookmarks_only, cat)
-            {
-                continue;
-            }
-            let id = egui::Id::new(&node.path).with("dir");
-            egui::CollapsingHeader::new(egui::RichText::new(format!("📁 {}", node.name)).weak())
-                .id_salt(id)
-                .default_open(depth < 1)
-                .show(ui, |ui| {
-                    tree_nodes(
-                        ui,
-                        &node.children,
-                        depth + 1,
-                        bookmarks,
-                        bookmarks_only,
-                        cat,
-                        to_open,
-                        to_toggle,
-                    );
-                });
+            collect_sv_paths_rec(&node.children, out);
         } else {
-            // Filter bookmark: hanya file yang di-bookmark yang tampil.
-            if bookmarks_only && !bookmarks.contains(&node.path) {
-                continue;
+            let ext = node.path.extension().and_then(|e| e.to_str()).unwrap_or("");
+            if ext == "sv" || ext == "svh" {
+                out.push(node.path.clone());
             }
-            // Filter kategori: lewati file yang tidak cocok.
-            let fcat = classify_file(&node.path);
-            if cat != FileCat::All && fcat != cat {
-                continue;
-            }
-            let is_bm = bookmarks.contains(&node.path);
-            file_row(
-                ui,
-                &node.name,
-                &node.path.display().to_string(),
-                &node.path,
-                is_bm,
-                fcat,
-                to_open,
-                to_toggle,
+        }
+    }
+}
+
+fn project_tab(f: &mut Frame, area: ratatui::layout::Rect, state: &mut GuiState) {
+    if state.project_name.is_empty() {
+        let p = Paragraph::new("Buka project (Ctrl+O) untuk melihat file").style(
+            Style::default()
+                .fg(Color::Gray)
+                .add_modifier(Modifier::ITALIC),
+        );
+        f.render_widget(p, area);
+        return;
+    }
+
+    let paths = collect_sv_paths(state);
+    if paths.is_empty() {
+        let p = Paragraph::new("Tidak ada file .sv/.svh").style(Style::default().fg(Color::Gray));
+        f.render_widget(p, area);
+        return;
+    }
+
+    // Clamp seleksi ke jumlah item.
+    if state.sidebar_selected >= paths.len() {
+        state.sidebar_selected = paths.len().saturating_sub(1);
+    }
+
+    let items: Vec<ListItem> = paths
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            let cat = classify_file(p);
+            let color = match cat {
+                FileCat::Rtl => Color::Blue,
+                FileCat::Testbench => Color::Green,
+                FileCat::Library => Color::Magenta,
+                FileCat::Include => Color::Cyan,
+                FileCat::All => Color::Gray,
+            };
+            let is_bm = state.bookmarks.contains(p);
+            let star = if is_bm { "★" } else { "☆" };
+            let name = p
+                .file_name()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_else(|| p.display().to_string());
+            let selected = i == state.sidebar_selected;
+            ListItem::new(format!(" {} {}", star, name)).style(
+                Style::default().fg(color).add_modifier(if selected {
+                    Modifier::REVERSED
+                } else {
+                    Modifier::empty()
+                }),
+            )
+        })
+        .collect();
+
+    let mut list_state = ListState::default();
+    list_state.select(Some(state.sidebar_selected));
+    let list = List::new(items);
+    f.render_stateful_widget(list, area, &mut list_state);
+}
+
+fn symbols_tab(f: &mut Frame, area: ratatui::layout::Rect, state: &mut GuiState) {
+    let Some(info) = &state.compile_info else {
+        let p = Paragraph::new("Compile dulu untuk melihat symbols").style(
+            Style::default()
+                .fg(Color::Gray)
+                .add_modifier(Modifier::ITALIC),
+        );
+        f.render_widget(p, area);
+        return;
+    };
+
+    let mut items: Vec<ListItem> = Vec::new();
+    if !info.modules.is_empty() {
+        items.push(
+            ListItem::new(" Modules").style(
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        );
+        for m in &info.modules {
+            items
+                .push(ListItem::new(format!("  ▸ {}", m)).style(Style::default().fg(Color::White)));
+        }
+        items.push(ListItem::new(""));
+    }
+    if !info.packages.is_empty() {
+        items.push(
+            ListItem::new(" Packages").style(
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        );
+        for m in &info.packages {
+            items
+                .push(ListItem::new(format!("  ◈ {}", m)).style(Style::default().fg(Color::White)));
+        }
+        items.push(ListItem::new(""));
+    }
+    if !info.interfaces.is_empty() {
+        items.push(
+            ListItem::new(" Interfaces").style(
+                Style::default()
+                    .fg(Color::Magenta)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        );
+        for m in &info.interfaces {
+            items
+                .push(ListItem::new(format!("  ◇ {}", m)).style(Style::default().fg(Color::White)));
+        }
+    }
+
+    if items.is_empty() {
+        items.push(ListItem::new("(kosong)").style(Style::default().fg(Color::Gray)));
+    }
+
+    let list = List::new(items);
+    f.render_widget(list, area);
+}
+
+fn architecture_tab(f: &mut Frame, area: ratatui::layout::Rect, state: &mut GuiState) {
+    let Some(info) = &state.compile_info else {
+        let p = Paragraph::new("Compile dulu untuk melihat architecture").style(
+            Style::default()
+                .fg(Color::Gray)
+                .add_modifier(Modifier::ITALIC),
+        );
+        f.render_widget(p, area);
+        return;
+    };
+
+    let mut items: Vec<ListItem> = Vec::new();
+    items.push(
+        ListItem::new("Modules & instances").style(
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
+    );
+    for m in &info.modules {
+        items.push(ListItem::new(format!("  {}", m)).style(Style::default().fg(Color::White)));
+    }
+    if items.len() <= 1 {
+        items.push(ListItem::new("(belum ada data)").style(Style::default().fg(Color::Gray)));
+    }
+
+    let list = List::new(items);
+    f.render_widget(list, area);
+}
+
+fn dependency_tab(f: &mut Frame, area: ratatui::layout::Rect, state: &mut GuiState) {
+    let Some(info) = &state.compile_info else {
+        let p = Paragraph::new("Compile dulu untuk melihat dependency").style(
+            Style::default()
+                .fg(Color::Gray)
+                .add_modifier(Modifier::ITALIC),
+        );
+        f.render_widget(p, area);
+        return;
+    };
+
+    let mut items: Vec<ListItem> = Vec::new();
+    items.push(
+        ListItem::new("Dependency graph").style(
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
+    );
+    for dep in &info.deps {
+        items.push(
+            ListItem::new(format!("  {}", dep.module)).style(Style::default().fg(Color::White)),
+        );
+        for (child, count) in &dep.children {
+            items.push(
+                ListItem::new(format!("    → {} (x{})", child, count))
+                    .style(Style::default().fg(Color::Cyan)),
             );
         }
     }
-}
-
-/// Apakah subtree berisi file yang memenuhi SEMUA filter aktif: bookmark
-/// (bila `bookmark_filter`) DAN kategori (bila `cat != All`). Satu predikat
-/// tunggal — folder tidak tampil bila filter gabungan tidak punya file yang
-/// memenuhi keduanya sekaligus (cegah folder kosong).
-fn dir_has(
-    node: &super::super::state::FileNode,
-    bookmarks: &std::collections::HashSet<std::path::PathBuf>,
-    bookmark_filter: bool,
-    cat: FileCat,
-) -> bool {
-    if !node.is_dir {
-        if bookmark_filter && !bookmarks.contains(&node.path) {
-            return false;
-        }
-        if cat != FileCat::All && classify_file(&node.path) != cat {
-            return false;
-        }
-        return true;
+    if items.len() <= 1 {
+        items.push(ListItem::new("(belum ada data)").style(Style::default().fg(Color::Gray)));
     }
-    node.children
-        .iter()
-        .any(|c| dir_has(c, bookmarks, bookmark_filter, cat))
+
+    let list = List::new(items);
+    f.render_widget(list, area);
 }
 
-// ── Symbols: modules/packages/interfaces dari hasil compile ──
-fn symbols_tab(ui: &mut egui::Ui, state: &mut GuiState) {
-    let Some(info) = &state.compile_info else {
-        ui.add_space(8.0);
-        ui.label(
-            egui::RichText::new("Compile dulu untuk melihat symbols")
-                .weak()
-                .italics(),
-        );
-        return;
-    };
+fn search_tab(f: &mut Frame, area: ratatui::layout::Rect, state: &mut GuiState) {
+    let mut items: Vec<ListItem> = Vec::new();
+    items.push(
+        ListItem::new("Search categories").style(
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
+    );
+    items.push(
+        ListItem::new("  Module / Signal / Parameter / Package / Macro / Instance / Text")
+            .style(Style::default().fg(Color::White)),
+    );
+    items.push(ListItem::new(""));
+    items.push(
+        ListItem::new(format!("Filter: {}", state.search_filter))
+            .style(Style::default().fg(Color::Cyan)),
+    );
+    items.push(
+        ListItem::new(format!("Text hits: {}", state.text_hits.len()))
+            .style(Style::default().fg(Color::White)),
+    );
+    if items.len() <= 2 {
+        items.push(ListItem::new("(kosong)").style(Style::default().fg(Color::Gray)));
+    }
 
-    egui::ScrollArea::vertical()
-        .id_salt("symbols_scroll")
-        .show(ui, |ui| {
-            if !info.modules.is_empty() {
-                ui.label(egui::RichText::new("Modules").strong().size(11.0));
-                for m in &info.modules {
-                    ui.label(
-                        egui::RichText::new(format!("▸ {}", m))
-                            .monospace()
-                            .size(12.0),
-                    );
-                }
-                ui.add_space(6.0);
-            }
-            if !info.packages.is_empty() {
-                ui.label(egui::RichText::new("Packages").strong().size(11.0));
-                for m in &info.packages {
-                    ui.label(
-                        egui::RichText::new(format!("◈ {}", m))
-                            .monospace()
-                            .size(12.0),
-                    );
-                }
-                ui.add_space(6.0);
-            }
-            if !info.interfaces.is_empty() {
-                ui.label(egui::RichText::new("Interfaces").strong().size(11.0));
-                for m in &info.interfaces {
-                    ui.label(
-                        egui::RichText::new(format!("◇ {}", m))
-                            .monospace()
-                            .size(12.0),
-                    );
-                }
-            }
-        });
+    let list = List::new(items);
+    f.render_widget(list, area);
 }

@@ -1,121 +1,75 @@
-//! Toolbar atas: brand, project name, tombol open/compile/run/stop.
+//! Toolbar atas: brand, project name, status, tombol cepat.
 
-use eframe::egui;
+use ratatui::{
+    layout::{Constraint, Direction, Layout},
+    style::{Color, Style},
+    widgets::{Block, Borders, Paragraph},
+    Frame,
+};
 
-use super::super::state::GuiState;
+use crate::state::GuiState;
 
-pub fn show(ui: &mut egui::Ui, state: &mut GuiState) {
-    ui.horizontal(|ui| {
-        // ── Brand ──
-        ui.label(
-            egui::RichText::new("Mivon")
-                .strong()
-                .size(15.0)
-                .color(ui.visuals().selection.bg_fill),
-        );
-        ui.separator();
+pub fn show(f: &mut Frame, area: ratatui::layout::Rect, state: &mut GuiState) {
+    let block = Block::default()
+        .title("Mivon — RTL Engineering Control Center (TUI)")
+        .borders(Borders::ALL)
+        .style(Style::default().bg(Color::DarkGray));
+    f.render_widget(block, area);
 
-        // ── Nama proyek ──
-        if state.project_name.is_empty() {
-            ui.label(egui::RichText::new("No project").weak().italics());
-        } else {
-            ui.label(egui::RichText::new(&state.project_name).strong());
-        }
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            // ── Max time ──
-            ui.label("T=");
-            ui.add(
-                egui::DragValue::new(&mut state.max_time)
-                    .range(1..=100_000_000)
-                    .speed(100),
-            );
-
-            // ── Run / Stop ──
-            if state.is_running {
-                if ui
-                    .button(
-                        egui::RichText::new("⏹ Stop").color(egui::Color32::from_rgb(239, 68, 68)),
-                    )
-                    .on_hover_text("Stop (F5)")
-                    .clicked()
-                {
-                    super::super::app::trigger_stop(state);
-                }
-            } else {
-                if ui
-                    .button(
-                        egui::RichText::new("▶ Run").color(egui::Color32::from_rgb(34, 197, 94)),
-                    )
-                    .on_hover_text("Run simulation (F5)")
-                    .clicked()
-                {
-                    // Aksi di-handle di app.rs via state flag
-                    super::super::app::trigger_run(state);
-                }
-            }
-
-            // ── Compile ──
-            if ui
-                .button("Compile")
-                .on_hover_text("Compile + elaborate (F7)")
-                .clicked()
-            {
-                super::super::app::trigger_compile(state);
-            }
-
-            // ── F25: Generate (.mv/.mvh → .sv/.svh) ──
-            // Aktif hanya saat file aktif ber-ekstensi .mv/.mvh (Mivon HDL).
-            let active_is_mv = state
-                .active_file
-                .and_then(|i| state.open_files.get(i))
-                .map(|f| {
-                    matches!(
-                        f.path.extension().and_then(|e| e.to_str()),
-                        Some("mv" | "mvh")
-                    )
-                })
-                .unwrap_or(false);
-            if ui
-                .add_enabled(active_is_mv, egui::Button::new("⚙ Generate"))
-                .on_hover_text("Generate SV/SVH dari Mivon HDL (.mv/.mvh) — file aktif (Ctrl+G)")
-                .clicked()
-            {
-                super::super::app::trigger_generate(state);
-            }
-            // Generate All: transpile semua .mv/.mvh proyek (konteks gabungan).
-            let mv_count = state.collect_mv_files().len();
-            if ui
-                .add_enabled(
-                    mv_count > 0,
-                    egui::Button::new(egui::RichText::new("⚙ All").weak()),
-                )
-                .on_hover_text(format!(
-                    "Generate semua .mv/.mvh proyek ({} file, konteks gabungan)",
-                    mv_count
-                ))
-                .clicked()
-            {
-                super::super::app::trigger_generate_all(state);
-            }
-
-            // ── Export waveform (VCD) — trace hasil sim terakhir ──
-            let has_wave = !state.waveform.is_empty();
-            if ui
-                .add_enabled(has_wave, egui::Button::new("⇓ VCD"))
-                .on_hover_text("Export waveform hasil simulasi ke file VCD")
-                .clicked()
-            {
-                super::super::app::trigger_export_vcd(state);
-            }
-
-            // ── Open project ──
-            if ui
-                .button("Open Project")
-                .on_hover_text("Buka folder proyek (Ctrl+O)")
-                .clicked()
-            {
-                super::super::app::trigger_open_project(state);
-            }
-        });
+    let inner = area.inner(&ratatui::layout::Margin {
+        vertical: 0,
+        horizontal: 1,
     });
+    if inner.height < 1 {
+        return;
+    }
+
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(20), // brand + project
+            Constraint::Length(20), // max time
+            Constraint::Length(20), // run/stop
+            Constraint::Length(12), // compile
+            Constraint::Min(0),     // status / fill
+        ])
+        .split(inner);
+
+    // Brand + project name.
+    let project_text = if state.project_name.is_empty() {
+        "No project".to_string()
+    } else {
+        format!("Project: {}", state.project_name)
+    };
+    let brand = Paragraph::new(format!("Mivon  |  {}", project_text))
+        .style(Style::default().fg(Color::White).bg(Color::DarkGray));
+    f.render_widget(brand, chunks[0]);
+
+    // Max time.
+    let max_time =
+        Paragraph::new(format!("T={}", state.max_time)).style(Style::default().fg(Color::Cyan));
+    f.render_widget(max_time, chunks[1]);
+
+    // Run / Stop indicator.
+    let run_status = if state.is_running {
+        "⏹ Running".to_string()
+    } else {
+        "▶ Ready".to_string()
+    };
+    let run_color = if state.is_running {
+        Color::Red
+    } else {
+        Color::Green
+    };
+    let run_p = Paragraph::new(run_status).style(Style::default().fg(run_color));
+    f.render_widget(run_p, chunks[2]);
+
+    // Compile hint.
+    let compile = Paragraph::new("F7 Compile").style(Style::default().fg(Color::Yellow));
+    f.render_widget(compile, chunks[3]);
+
+    // Status / hints (kanan).
+    let hints = Paragraph::new("F5 Run  |  Ctrl+O Open  |  Ctrl+S Save  |  Ctrl+G Gen  |  Ctrl+Shift+P Palette  |  Ctrl+Q Exit")
+        .style(Style::default().fg(Color::Gray).bg(Color::DarkGray));
+    f.render_widget(hints, chunks[4]);
 }

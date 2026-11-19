@@ -2,7 +2,7 @@
 name = "mivon-gui"
 version = "0.3.0"
 edition = "2021"
-description = "Mivon GUI — RTL Engineering Control Center (egui native, pengganti Tauri)"
+description = "Mivon GUI — RTL Engineering Control Center (ratatui TUI, dipanggil via `mivon gui`)"
 
 [dependencies]
 mivon-core = { path = "../mivon-core" }
@@ -14,15 +14,11 @@ mivon-compiler = { path = "../mivon-compiler" }
 mivon-simulator = { path = "../mivon-simulator" }
 mivon-mv = { path = "../mivon-mv" }
 
-# Native GUI: egui via eframe (wgpu utama + glow fallback)
-eframe = { version = "0.35", default-features = false, features = ["default_fonts", "glow", "wgpu", "wayland", "x11"] }
-egui = { version = "0.35", default-features = false }
-# Dialog file native (buka folder / simpan coverage)
-rfd = "0.17"
+# TUI: ratatui + crossterm (terminal, tanpa GUI grafis / tanpa GPU)
+ratatui = { version = "0.26", default-features = false, features = ["crossterm"] }
+crossterm = "0.28"
+
 # Rayon: pool global dengan stack BESAR untuk worker parse — sama seperti CLI
-# (src/main.rs: ThreadPoolBuilder 16MB). Tanpa ini rayon worker default ~2MB,
-# parser recursion guard (1024) kalah cepat oleh stack kecil → stack overflow
-# saat compile file dengan nesting dalam (mis. proyek AetherX).
 rayon = "1"
 # LSP client: GUI spawn server `mivon --lsp` (mivon-env::lsp, tower-lsp) sebagai
 # subprocess; tipe pesan JSON-RPC dari lsp-types (versi sama dengan mivon-env).
@@ -31,6 +27,5 @@ lsp-types = "0.94"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
-[[bin]]
-name = "mivon-gui"
-path = "src/bin/mivon_gui.rs"
+[lib]
+path = "src/lib.rs"

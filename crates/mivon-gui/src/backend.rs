@@ -185,8 +185,8 @@ pub fn compile_project(
     // (ProjectID dari root + sources): OpenTitan dan test/counter.sv tidak
     // pernah berbagi cache. Artefak content-addressed di objects/ dan
     // manifest node di nodes/; graph snapshot + reference di graphs/refs/.
-    let cache_root = project_root
-        .map(|r| mivon_compiler::node_cache::ProjectCache::default_root_for(r));
+    let cache_root =
+        project_root.map(|r| mivon_compiler::node_cache::ProjectCache::default_root_for(r));
     if let Some(cache_root) = cache_root.as_deref() {
         let proot = project_root.expect("cache_root hanya ada bila project_root ada");
         let pid = mivon_compiler::node_cache::ProjectCache::project_id(proot, paths, &[], &[]);

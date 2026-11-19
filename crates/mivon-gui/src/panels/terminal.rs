@@ -1,138 +1,67 @@
-//! Terminal tab — jalankan perintah shell (mis. CLI mivon) langsung dari GUI.
-//!
-//! Perintah dieksekusi di worker thread (`backend::spawn_term`); stdout/stderr
-//! di-stream baris per baris dan ditampilkan dengan warna berbeda (stderr
-//! merah). Dukungan: Enter jalankan, ↑/↓ navigasi riwayat, tombol ✕ hapus.
+//! Tab Terminal: output terminal perintah terakhir.
 
-use eframe::egui;
+use ratatui::{
+    style::{Color, Style},
+    widgets::{Block, Borders, List, ListItem, Paragraph},
+    Frame,
+};
 
-use super::super::backend::spawn_term;
-use super::super::state::{GuiState, TermLine, MAX_TERM_LINES};
+use super::super::state::GuiState;
+use ratatui::style::Modifier;
 
-/// Maksimal entri riwayat perintah.
-const MAX_HISTORY: usize = 100;
+pub fn show(f: &mut Frame, area: ratatui::layout::Rect, state: &mut GuiState) {
+    let block = Block::default()
+        .title(format!("Terminal ({} lines)", state.term_lines.len()))
+        .borders(Borders::ALL)
+        .style(Style::default().bg(Color::Black));
+    f.render_widget(block, area);
 
-/// Jalankan perintah: catat ke riwayat (dedupe, ujung = terbaru), tampilkan
-/// `$ cmd`, lalu spawn worker thread. Dipakai oleh Enter dan tombol ▶ — satu
-/// jalur saja agar tidak drift.
-fn run_cmd(state: &mut GuiState, cmd: String) {
-    state.term_history.retain(|h| *h != cmd);
-    state.term_history.push(cmd.clone());
-    if state.term_history.len() > MAX_HISTORY {
-        let overflow = state.term_history.len() - MAX_HISTORY;
-        state.term_history.drain(0..overflow);
-    }
-    state.term_hist_idx = usize::MAX;
-    state.term_lines.push(TermLine {
-        text: format!("$ {}", cmd),
-        is_err: false,
+    let inner = area.inner(&ratatui::layout::Margin {
+        vertical: 1u16,
+        horizontal: 1u16,
     });
-    let cwd = state.project_root.clone();
-    let tx = state.tx.clone();
-    state.term_running = true;
-    state.term_input.clear();
-    spawn_term(tx, cmd, cwd);
-}
+    if inner.height < 2 {
+        return;
+    }
 
-pub fn show(ui: &mut egui::Ui, state: &mut GuiState) {
-    let height = ui.available_height().max(80.0);
-
-    // ── Output (auto-scroll ke bawah, stderr merah) ──
-    egui::ScrollArea::vertical()
-        .id_salt("term_scroll")
-        .auto_shrink([false, false])
-        .max_height(height - 30.0)
-        .stick_to_bottom(true)
-        .show(ui, |ui| {
-            if state.term_lines.is_empty() {
-                ui.label(
-                    egui::RichText::new(
-                        "Terminal — ketik perintah lalu Enter (mis. mivon test/counter.sv)",
-                    )
-                    .weak()
-                    .italics(),
-                );
-            }
-            for line in &state.term_lines {
-                if line.is_err {
-                    ui.label(
-                        egui::RichText::new(&line.text)
-                            .monospace()
-                            .size(11.0)
-                            .color(egui::Color32::from_rgb(239, 68, 68)),
-                    );
-                } else {
-                    ui.label(egui::RichText::new(&line.text).monospace().size(11.0));
-                }
-            }
-        });
-
-    // ── Input baris + tombol ──
-    ui.horizontal(|ui| {
-        let running = state.term_running;
-        let resp = ui.add(
-            egui::TextEdit::singleline(&mut state.term_input)
-                .id_source("term_input")
-                .hint_text(if running {
-                    "▶ proses berjalan…"
-                } else {
-                    "$ perintah"
-                })
-                .desired_width((ui.available_width() - 70.0).max(50.0)),
+    if state.term_lines.is_empty() {
+        let p = Paragraph::new("Terminal kosong").style(
+            Style::default()
+                .fg(Color::Gray)
+                .add_modifier(Modifier::ITALIC),
         );
-
-        // Enter → jalankan; ↑/↓ → riwayat (hanya jika input fokus)
-        let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
-        let up = ui.input(|i| i.key_pressed(egui::Key::ArrowUp));
-        let down = ui.input(|i| i.key_pressed(egui::Key::ArrowDown));
-
-        if resp.has_focus() {
-            if enter {
-                let cmd = state.term_input.trim().to_string();
-                if !cmd.is_empty() {
-                    run_cmd(state, cmd);
-                }
-            } else if up {
-                if !state.term_history.is_empty() {
-                    let idx = if state.term_hist_idx == usize::MAX {
-                        state.term_history.len() - 1
-                    } else {
-                        state.term_hist_idx.saturating_sub(1)
-                    };
-                    state.term_hist_idx = idx;
-                    state.term_input = state.term_history[idx].clone();
-                }
-            } else if down {
-                if state.term_hist_idx == usize::MAX {
-                    // sudah di ujung
-                } else if state.term_hist_idx + 1 >= state.term_history.len() {
-                    state.term_hist_idx = usize::MAX;
-                    state.term_input.clear();
-                } else {
-                    state.term_hist_idx += 1;
-                    state.term_input = state.term_history[state.term_hist_idx].clone();
-                }
-            }
-        }
-
-        if ui.button("▶").on_hover_text("Jalankan perintah").clicked() {
-            let cmd = state.term_input.trim().to_string();
-            if !cmd.is_empty() {
-                run_cmd(state, cmd);
-            }
-        }
-        if ui.button("✕").on_hover_text("Bersihkan output").clicked() {
-            state.term_lines.clear();
-            state.term_running = false;
-        }
-        if running {
-            ui.label(egui::RichText::new("●").color(egui::Color32::from_rgb(34, 197, 94)));
-        }
-    });
-
-    // Batasi panjang buffer
-    if state.term_lines.len() > MAX_TERM_LINES {
-        let overflow = state.term_lines.len() - MAX_TERM_LINES;
-        state.term_lines.drain(0..overflow);
+        f.render_widget(p, inner);
+        return;
     }
+
+    let items: Vec<ListItem> = state
+        .term_lines
+        .iter()
+        .rev()
+        .take(inner.height.saturating_sub(1) as usize)
+        .map(|line| {
+            let color = if line.is_err {
+                Color::Red
+            } else {
+                Color::White
+            };
+            ListItem::new(line.text.as_str()).style(Style::default().fg(color))
+        })
+        .collect();
+
+    let list = List::new(items);
+    f.render_widget(list, inner);
+
+    // Input bar di bawah.
+    let input =
+        Paragraph::new(format!("> {}", state.term_input)).style(Style::default().fg(Color::Cyan));
+    f.render_widget(
+        input,
+        ratatui::layout::Rect {
+            x: inner.x,
+            y: inner.y.saturating_add(inner.height.saturating_sub(1)),
+            width: inner.width,
+            height: 1,
+        },
+    );
 }

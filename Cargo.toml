@@ -84,6 +84,7 @@ mivon-env = { path = "crates/mivon-env" }
 mivon-emu = { path = "crates/mivon-emu" }
 mivon-tools = { path = "crates/mivon-tools" }
 mivon-api = { path = "crates/mivon-api" }
+mivon-gui = { path = "crates/mivon-gui" }
 
 # ── Opsional: JIT Compilation (cranelift) ──
 cranelift = { version = "0.110", optional = true }
@@ -100,9 +101,7 @@ tokio = { version = "1", features = ["full"], optional = true }
 
 # ── Opsional: Formal Verification (Z3 SMT) — z3 kini di mivon-formal ──
 
-# ── Opsional: GUI native (egui) — eframe/egui/rfd kini di mivon-gui ──
-# Backend rendering: wgpu (GPU/Vulkan) utama + glow (OpenGL) fallback.
-# Crate mivon-gui mengelola deps GUI; root hanya wiring feature gui.
+# GUI (ratatui TUI) selalu tersedia via mivon-gui, tidak perlu feature terpisah.
 
 [features]
 # Semua fitur diaktifkan secara default
@@ -120,9 +119,6 @@ formal = ["mivon-api/formal"]
 
 # DPI-C foreign language interface
 dpi = ["libloading", "mivon-simulator/dpi", "mivon-env/dpi"]
-
-# Native GUI (egui) — re-export di mivon-api; binary `mivon-gui` di crate mivon-gui
-gui = ["mivon-api/gui"]
 
 # Window display emulator (minifb framebuffer) — mivon emu --window
 window = ["mivon-api/window"]

@@ -1,20 +1,17 @@
-//! Panel-panel GUI: toolbar, sidebar, editor, bottom, statusbar,
-//! waveform viewer, architecture viewer, benchmark, dan command palette.
+//! Panel-panel TUI: toolbar, sidebar, editor, bottom tabs, dan setiap tab isi.
 
-pub mod architecture;
 pub mod assertions;
 pub mod benchmark;
-pub mod bottom;
-pub mod command_palette;
+pub mod bottom_tabs;
+pub mod console;
 pub mod coverage;
 pub mod dependency;
 pub mod editor;
-pub mod genwizard;
-pub mod outline;
 pub mod pipeline;
+pub mod problems;
 pub mod search;
 pub mod sidebar;
-pub mod statusbar;
+pub mod signals;
 pub mod terminal;
 pub mod toolbar;
 pub mod trace;
