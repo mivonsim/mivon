@@ -683,3 +683,344 @@ impl std::fmt::Display for PackedLogicVec {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mivon_ir::{BinaryIrOp, LogicVal, LogicVec};
+
+    fn lv(bits: Vec<LogicVal>) -> LogicVec {
+        let width = bits.len();
+        LogicVec { bits, width }
+    }
+
+    // ─── Construction ───
+
+    #[test]
+    fn test_new_all_x() {
+        let p = PackedLogicVec::new(8);
+        assert_eq!(p.width(), 8);
+        assert_eq!(p.num_chunks(), 1);
+        assert!(p.all_x());
+        assert_eq!(p.to_u64(), 0);
+    }
+
+    #[test]
+    fn test_fill_states() {
+        let w = 8;
+        let zero = PackedLogicVec::fill(LogicVal::Zero, w);
+        assert!(zero.to_bool() == Some(false));
+        assert_eq!(zero.to_u64(), 0);
+        assert!(!zero.all_x());
+        assert!(!zero.all_z());
+
+        let one = PackedLogicVec::fill(LogicVal::One, w);
+        assert!(one.to_bool() == Some(true));
+        assert_eq!(one.to_u64(), 0xFF);
+        assert!(!one.all_x());
+        assert!(!one.all_z());
+
+        let x = PackedLogicVec::fill(LogicVal::X, w);
+        assert!(x.to_bool().is_none());
+        assert_eq!(x.to_u64(), 0);
+        assert!(x.all_x());
+        assert!(!x.all_z());
+
+        let z = PackedLogicVec::fill(LogicVal::Z, w);
+        assert!(z.to_bool().is_none());
+        assert_eq!(z.to_u64(), 0);
+        assert!(!z.all_x()); // Z is not X
+        assert!(z.all_z());
+    }
+
+    #[test]
+    fn test_from_u64_roundtrip() {
+        let p = PackedLogicVec::from_u64(0xAB, 8);
+        assert_eq!(p.to_u64(), 0xAB);
+        assert_eq!(format!("{}", p), "10101011");
+
+        // width > 64: lower 64 bits filled, rest known=0 (not X)
+        let wide = PackedLogicVec::from_u64(0xFF, 128);
+        assert_eq!(wide.to_u64(), 0xFF);
+        assert_eq!(wide.width(), 128);
+        assert_eq!(wide.num_chunks(), 2);
+        // upper chunk is all known-zero: (known=mask, value=0)
+        assert_eq!(wide.chunks()[1], (!0u64, 0u64));
+    }
+
+    #[test]
+    fn test_logicvec_roundtrip() {
+        let lv = lv(vec![LogicVal::One, LogicVal::Zero, LogicVal::X, LogicVal::Z]);
+        let p = PackedLogicVec::from_logicvec(&lv);
+        assert_eq!(p.width(), 4);
+        let back = p.to_logicvec();
+        assert_eq!(back.bits, lv.bits);
+        assert_eq!(back.width, 4);
+    }
+
+    // ─── Accessors ───
+
+    #[test]
+    fn test_width_num_chunks() {
+        let p = PackedLogicVec::new(1);
+        assert_eq!(p.num_chunks(), 1);
+        let p = PackedLogicVec::new(64);
+        assert_eq!(p.num_chunks(), 1);
+        let p = PackedLogicVec::new(65);
+        assert_eq!(p.num_chunks(), 2);
+        let p = PackedLogicVec::new(128);
+        assert_eq!(p.num_chunks(), 2);
+    }
+
+    #[test]
+    fn test_to_bool() {
+        assert_eq!(
+            PackedLogicVec::fill(LogicVal::One, 8).to_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            PackedLogicVec::fill(LogicVal::Zero, 8).to_bool(),
+            Some(false)
+        );
+        assert_eq!(PackedLogicVec::fill(LogicVal::X, 8).to_bool(), None);
+        assert_eq!(PackedLogicVec::fill(LogicVal::Z, 8).to_bool(), None);
+        // single 1 bit among zeros → true
+        let p = PackedLogicVec::from_u64(0x01, 8);
+        assert_eq!(p.to_bool(), Some(true));
+    }
+
+    // ─── Resize ───
+
+    #[test]
+    fn test_resize_truncate() {
+        let p = PackedLogicVec::from_u64(0xFF, 8);
+        let t = p.resize(4);
+        assert_eq!(t.width(), 4);
+        assert_eq!(t.to_u64(), 0x0F); // low 4 bits kept
+    }
+
+    #[test]
+    fn test_resize_extend() {
+        let p = PackedLogicVec::from_u64(0x0F, 4);
+        let e = p.resize(8);
+        assert_eq!(e.width(), 8);
+        // zero-extend: low bits kept, high bits known 0
+        assert_eq!(e.to_u64(), 0x0F);
+        assert_eq!(format!("{}", e), "00001111");
+    }
+
+    // ─── Bitwise ───
+
+    #[test]
+    fn test_bitwise_and_or_not() {
+        let a = PackedLogicVec::from_u64(0x0F, 8); // 00001111
+        let b = PackedLogicVec::from_u64(0xCC, 8); // 11001100
+        let and = a.bitwise_and(&b); // 00001100 = 0x0C
+        assert_eq!(and.to_u64(), 0x0C);
+        let or = a.bitwise_or(&b); // 11001111 = 0xCF
+        assert_eq!(or.to_u64(), 0xCF);
+        let not_a = a.bitwise_not(); // 11110000 = 0xF0
+        assert_eq!(not_a.to_u64(), 0xF0);
+    }
+
+    #[test]
+    fn test_bitwise_xor_xnor() {
+        let a = PackedLogicVec::from_u64(0x0F, 8);
+        let b = PackedLogicVec::from_u64(0xCC, 8);
+        let xor = a.bitwise_xor(&b); // 11000011 = 0xC3
+        assert_eq!(xor.to_u64(), 0xC3);
+        let xnor = a.bitwise_xnor(&b); // 00111100 = 0x3C
+        assert_eq!(xnor.to_u64(), 0x3C);
+    }
+
+    #[test]
+    fn test_bitwise_with_x_propagates() {
+        // X in either operand → X in result (4-state)
+        let lv = lv(vec![LogicVal::X, LogicVal::One]);
+        let a = PackedLogicVec::from_logicvec(&lv); // x1
+        let b = PackedLogicVec::from_u64(0x01, 2); // 01
+        // a & b: bit0: X&1 = X, bit1: 1&0 = 0 → x0
+        let r = a.bitwise_and(&b);
+        let back = r.to_logicvec();
+        assert_eq!(back.bits[0], LogicVal::X);
+        assert_eq!(back.bits[1], LogicVal::Zero);
+    }
+
+    // ─── Reduction ───
+
+    #[test]
+    fn test_red_and() {
+        assert_eq!(
+            PackedLogicVec::fill(LogicVal::One, 8).red_and().to_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            PackedLogicVec::fill(LogicVal::Zero, 8).red_and().to_bool(),
+            Some(false)
+        );
+        assert!(PackedLogicVec::fill(LogicVal::X, 8).red_and().to_bool().is_none());
+        // mixed 1 and 0 → 0
+        let p = PackedLogicVec::from_u64(0x01, 8); // 00000001
+        assert_eq!(p.red_and().to_bool(), Some(false));
+    }
+
+    #[test]
+    fn test_red_or() {
+        assert_eq!(
+            PackedLogicVec::fill(LogicVal::Zero, 8).red_or().to_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            PackedLogicVec::fill(LogicVal::One, 8).red_or().to_bool(),
+            Some(true)
+        );
+        assert!(PackedLogicVec::fill(LogicVal::X, 8).red_or().to_bool().is_none());
+        // only zeros → 0
+        let p = PackedLogicVec::from_u64(0x00, 8);
+        assert_eq!(p.red_or().to_bool(), Some(false));
+        // any one → 1
+        let p = PackedLogicVec::from_u64(0x01, 8);
+        assert_eq!(p.red_or().to_bool(), Some(true));
+    }
+
+    #[test]
+    fn test_red_xor() {
+        // even number of 1s → 0, odd → 1
+        let p = PackedLogicVec::from_u64(0x03, 8); // 00000011 (two 1s)
+        assert_eq!(p.red_xor().to_bool(), Some(false));
+        let p = PackedLogicVec::from_u64(0x01, 8); // one 1
+        assert_eq!(p.red_xor().to_bool(), Some(true));
+        // X present → X
+        let lv = lv(vec![LogicVal::One, LogicVal::X]);
+        assert!(PackedLogicVec::from_logicvec(&lv).red_xor().to_bool().is_none());
+    }
+
+    #[test]
+    fn test_red_nand_nor_xnor() {
+        let all_one = PackedLogicVec::fill(LogicVal::One, 4);
+        assert_eq!(all_one.red_nand().to_bool(), Some(false)); // not(1) = 0
+        assert_eq!(all_one.red_nor().to_bool(), Some(false));  // not(1) = 0
+        assert_eq!(all_one.red_xnor().to_bool(), Some(true));  // not(xor of all 1s even→0) = 1
+
+        let all_zero = PackedLogicVec::fill(LogicVal::Zero, 4);
+        assert_eq!(all_zero.red_nand().to_bool(), Some(true)); // not(0) = 1
+        assert_eq!(all_zero.red_nor().to_bool(), Some(true));  // not(0) = 1
+    }
+
+    // ─── Shift ───
+
+    #[test]
+    fn test_shl_shr() {
+        let p = PackedLogicVec::from_u64(0x01, 8); // 00000001
+        assert_eq!(p.shl(1).to_u64(), 0x02);
+        assert_eq!(p.shr(1).to_u64(), 0x00);
+        let p = PackedLogicVec::from_u64(0x80, 8); // 10000000
+        assert_eq!(p.shr(1).to_u64(), 0x40);
+        // shift >= width → zero
+        assert_eq!(p.shl(8).to_u64(), 0);
+        assert_eq!(p.shr(8).to_u64(), 0);
+    }
+
+    #[test]
+    fn test_sshr_sign_extend() {
+        // MSB = 1 → arithmetic shift right fills with 1
+        let p = PackedLogicVec::from_u64(0x80, 8); // 10000000, MSB=1
+        let r = p.sshr(1);
+        assert_eq!(r.to_u64(), 0xC0); // 11000000
+        // MSB = 0 → fills with 0
+        let p = PackedLogicVec::from_u64(0x40, 8); // 01000000, MSB=0
+        let r = p.sshr(1);
+        assert_eq!(r.to_u64(), 0x20); // 00100000
+    }
+
+    // ─── Comparison ───
+
+    #[test]
+    fn test_eq_neq() {
+        let a = PackedLogicVec::from_u64(0xAB, 8);
+        let b = PackedLogicVec::from_u64(0xAB, 8);
+        let c = PackedLogicVec::from_u64(0xCD, 8);
+        assert_eq!(a.eq(&b).to_bool(), Some(true));
+        assert_eq!(a.eq(&c).to_bool(), Some(false));
+        assert_eq!(a.neq(&c).to_bool(), Some(true));
+        assert_eq!(a.neq(&b).to_bool(), Some(false));
+    }
+
+    #[test]
+    fn test_casex_casez() {
+        // casex: pattern X is don't-care.
+        // val = [X, Zero, One, Zero], pat = [X, Zero, One, X]
+        //   pattern bit0=X (don't-care), bit1=Zero matches, bit2=One matches,
+        //   bit3=X (don't-care) → all match → true
+        let val = PackedLogicVec::from_logicvec(&lv(vec![
+            LogicVal::X, LogicVal::Zero, LogicVal::One, LogicVal::Zero,
+        ]));
+        let pat = PackedLogicVec::from_logicvec(&lv(vec![
+            LogicVal::X, LogicVal::Zero, LogicVal::One, LogicVal::X,
+        ]));
+        assert_eq!(val.casex_eq(&pat).to_bool(), Some(true));
+        // casex false when a non-X pattern bit differs
+        let pat2 = PackedLogicVec::from_logicvec(&lv(vec![
+            LogicVal::X, LogicVal::One, LogicVal::One, LogicVal::X,
+        ])); // bit1=One vs val Zero → differ
+        assert_eq!(val.casex_eq(&pat2).to_bool(), Some(false));
+
+        // casez: pattern Z is don't-care.
+        // vz = [One, Z], patz = [One, Z] → bit0 matches, bit1 pattern Z don't-care → true
+        let vz = PackedLogicVec::from_logicvec(&lv(vec![LogicVal::One, LogicVal::Z]));
+        let patz = PackedLogicVec::from_logicvec(&lv(vec![LogicVal::One, LogicVal::Z]));
+        assert_eq!(vz.casez_eq(&patz).to_bool(), Some(true));
+    }
+
+    // ─── Arithmetic ───
+
+    #[test]
+    fn test_add_sub() {
+        let a = PackedLogicVec::from_u64(10, 8);
+        let b = PackedLogicVec::from_u64(20, 8);
+        assert_eq!(a.add(&b).to_u64(), 30);
+        assert_eq!(b.sub(&a).to_u64(), 10);
+    }
+
+    // ─── Multi-chunk (>64 bit) ───
+
+    #[test]
+    fn test_multi_chunk_resize_and_ops() {
+        let p = PackedLogicVec::from_u64(u64::MAX, 128);
+        assert_eq!(p.width(), 128);
+        assert_eq!(p.num_chunks(), 2);
+        // lower chunk all ones, upper chunk known-zero (from_u64 fills known=mask)
+        assert_eq!(p.chunks()[0], (!0u64, !0u64));
+        assert_eq!(p.chunks()[1], (!0u64, 0u64)); // upper: all known 0
+
+        // bitwise_not flips lower chunk to all zeros (known), upper stays known-zero → NOT → all ones
+        let not = p.bitwise_not();
+        assert_eq!(not.chunks()[0].1, 0u64); // value flipped to 0
+        assert_eq!(not.chunks()[0].0, !0u64); // all known
+        assert_eq!(not.chunks()[1], (!0u64, !0u64)); // upper: NOT of zeros = all ones
+    }
+
+    #[test]
+    fn test_extend_concat() {
+        let a = PackedLogicVec::from_u64(0xAB, 8);
+        let b = PackedLogicVec::from_u64(0xCD, 8);
+        let c = a.extend(&b);
+        assert_eq!(c.width(), 16);
+        // extend: self (a) in LOW bits, other (b) in HIGH bits → low byte = a
+        let back = c.to_logicvec();
+        assert_eq!(back.bits[0..8], a.to_logicvec().bits);
+        assert_eq!(back.bits[8..16], b.to_logicvec().bits);
+    }
+
+    // ─── Display ───
+
+    #[test]
+    fn test_display() {
+        let p = PackedLogicVec::from_u64(0x0A, 8); // 00001010
+        let s = format!("{}", p);
+        assert_eq!(s, "00001010");
+
+        let pz = PackedLogicVec::fill(LogicVal::Z, 4);
+        assert_eq!(format!("{}", pz), "zzzz");
+    }
+}
