@@ -121,6 +121,10 @@ pub struct ParallelConfig {
     pub parallel_snapshot: bool,
     /// Enable ParallelDeltaScheduler as event queue (stage 2 ARSITEKTUR-03)
     pub parallel_delta: bool,
+    /// Enable per-signal SignalCell fine-grained locking (stage 2 ARSITEKTUR-04).
+    /// Saat true, signal_cell_read/signal_cell_write diutamakan (baca/tulis tanpa
+    /// &mut self pada state — aman untuk concurrent access ke sinyal berbeda).
+    pub use_signal_cells: bool,
     /// Minimum number of processes before parallelizing
     pub min_processes_parallel: usize,
     /// Minimum number of signals before parallelizing
@@ -137,6 +141,7 @@ impl Default for ParallelConfig {
             parallel_processes: true,
             parallel_snapshot: true,
             parallel_delta: false,
+            use_signal_cells: false,
             min_processes_parallel: 4,
             min_signals_parallel: 64,
         }

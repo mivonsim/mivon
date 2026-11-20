@@ -543,6 +543,10 @@ impl SimulationEngine {
         self.parallel_config.parallel_delta = enabled;
     }
 
+    pub fn set_use_signal_cells(&mut self, enabled: bool) {
+        self.parallel_config.use_signal_cells = enabled;
+    }
+
     pub fn set_use_packed_eval(&mut self, enabled: bool) {
         self.use_packed_eval = enabled;
     }
