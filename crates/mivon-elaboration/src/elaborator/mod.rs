@@ -2125,6 +2125,46 @@ impl Elaborator {
         Ok(handle)
     }
 
+    /// ELAB-03 Stage 2: Async per-module elaboration via tokio.
+    ///
+    /// Mirip `elaborate_module_by_name_nonblocking` tetapi menggunakan
+    /// `tokio::task::spawn_blocking` sehingga hasilnya adalah `JoinHandle` dari tokio
+    /// (bisa di-await di async context). Berguna untuk LSP server yang berjalan
+    /// di tokio runtime.
+    ///
+    /// Hanya tersedia bila fitur `async-elab` diaktifkan (atau melalui root
+    /// fitur `lsp` yang enable tokio).
+    #[cfg(feature = "async-elab")]
+    pub async fn elaborate_module_by_name_async(
+        &mut self,
+        name: &str,
+    ) -> Result<Result<IrModule, SimError>, SimError> {
+        let target = Symbol::intern(name);
+        let module = self
+            .design
+            .modules
+            .iter()
+            .find(|m| m.name == target)
+            .cloned()
+            .ok_or_else(|| {
+                SimError::elaborate(format!(
+                    "module '{name}' not found for async elaboration"
+                ))
+            })?;
+        let known_modules: Vec<Symbol> =
+            self.design.modules.iter().map(|m| m.name).collect();
+        let design_clone = self.design.clone();
+
+        let handle = tokio::task::spawn_blocking(move || {
+            let mut elab = Elaborator::new(design_clone);
+            elab.elaborate_module(&module, &known_modules)
+        });
+
+        handle.await.map_err(|e| {
+            SimError::elaborate(format!("async elaboration task joined with error: {e}"))
+        })
+    }
+
     fn elaborate_module_with_params(
         &mut self,
         module: &Module,
@@ -6368,6 +6408,62 @@ mod elab_on_demand_tests {
         let mut elab = Elaborator::new(design);
         let err = elab
             .elaborate_module_by_name_nonblocking("nope")
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("nope"), "pesan error harus menyebut nama module: {msg}");
+    }
+}
+
+// ─── ELAB-03 Stage 2: Async elaboration via tokio ───
+// Hanya aktif bila fitur `async-elab` diaktifkan.
+#[cfg(test)]
+#[cfg(feature = "async-elab")]
+mod elab_async_tests {
+    use super::*;
+    use mivon_ast::types::{Design, Module};
+
+    fn mk_module(name: &str) -> Module {
+        Module {
+            name: Symbol::intern(name),
+            line: 0,
+            col: 0,
+            ports: vec![],
+            params: vec![],
+            decls: vec![],
+            items: vec![],
+            timescale: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn elaborate_module_by_name_async_found() {
+        let design = Design {
+            modules: vec![mk_module("top"), mk_module("sub")],
+            ..Design::default()
+        };
+        let mut elab = Elaborator::new(design);
+        let result = elab
+            .elaborate_module_by_name_async("top")
+            .await
+            .expect("async elaborate harus sukses");
+        assert!(
+            result.is_ok(),
+            "hasil elaborate harus Ok, dapat {:?}",
+            result.err()
+        );
+        assert_eq!(result.unwrap().name.as_str(), "top");
+    }
+
+    #[tokio::test]
+    async fn elaborate_module_by_name_async_not_found() {
+        let design = Design {
+            modules: vec![mk_module("top")],
+            ..Design::default()
+        };
+        let mut elab = Elaborator::new(design);
+        let err = elab
+            .elaborate_module_by_name_async("nope")
+            .await
             .unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("nope"), "pesan error harus menyebut nama module: {msg}");

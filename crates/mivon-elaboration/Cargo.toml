@@ -9,3 +9,11 @@ mivon-core = { path = "../mivon-core" }
 mivon-ast = { path = "../mivon-ast" }
 mivon-ir = { path = "../mivon-ir" }
 rayon = "1"
+tokio = { version = "1", features = ["full"], optional = true }
+
+# ── Fitur async elaboration (ELAB-03 Stage 2) ──
+# Diaktifkan melalui fitur root `lsp` (yang sudah enable tokio) atau
+# secara eksplisit dengan `--features mivon-elaboration/async-elab`.
+[features]
+default = []
+async-elab = ["dep:tokio"]
