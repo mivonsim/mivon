@@ -2177,3 +2177,33 @@ pub struct MdbArgs {
     #[arg(long)]
     pub json: bool,
 }
+
+/// mcdb — Collaborative debug session management.
+#[derive(clap::Args, Clone)]
+pub struct McdbArgs {
+    /// Subcommand: create, get, list, add-participant, add-breakpoint, remove-breakpoint, remove-session, clear-sessions
+    pub command: Option<String>,
+    /// Session ID
+    #[arg(long = "mcdb-session")]
+    pub session_id: Option<String>,
+    /// Owner/user name
+    #[arg(long = "mcdb-owner")]
+    pub owner: Option<String>,
+    /// Participant user name to add
+    #[arg(long = "mcdb-user")]
+    pub user: Option<String>,
+    /// Breakpoint ID
+    #[arg(long = "mcdb-bp-id")]
+    pub bp_id: Option<String>,
+    /// Breakpoint signal name
+    #[arg(long = "mcdb-bp-signal")]
+    pub bp_signal: Option<String>,
+    /// Breakpoint condition expression
+    #[arg(long = "mcdb-bp-cond")]
+    pub bp_cond: Option<String>,
+    /// Path database JSON (default .mivon/collab_debug.json)
+    #[arg(long = "mcdb-db", default_value = ".mivon/collab_debug.json")]
+    pub db: String,
+}
+
+

@@ -179,12 +179,12 @@ pub(crate) fn dispatch_vault(a: &crate::cli::MvaultArgs) -> ! {
                 println!("Verified: {}", file);
             }
             crate::cli::MvaultCmd::List => {
-                for (name, entry) in vault.list() {
-                    println!("{} ({})", name, entry.permissions.owner);
+                for entry in vault.list() {
+                    println!("{} ({})", entry.path, entry.permissions.owner);
                 }
             }
             crate::cli::MvaultCmd::Summary => {
-                println!("Vault: {} files", vault.len());
+                println!("Vault: {} files", vault.list().len());
             }
         }
         Ok(())
@@ -199,7 +199,7 @@ pub(crate) fn dispatch_ipxact(a: &crate::cli::MipxactArgs) -> ! {
 
         match &a.cmd {
             crate::cli::MipxactCmd::Generate {
-                name,
+                module,
                 vendor,
                 library,
                 version,
@@ -216,11 +216,15 @@ pub(crate) fn dispatch_ipxact(a: &crate::cli::MipxactArgs) -> ! {
                         let mut parts = s.splitn(2, '=');
                         let name = parts.next().unwrap_or("").to_string();
                         let width = parts.next().and_then(|w| w.parse::<u32>().ok());
-                        (name, width.map(|w| format!("{}", w)), width.map(|w| w - 1))
+                        (
+                            name,
+                            width.map(|w| format!("{}", w)).unwrap_or_default(),
+                            width.map(|w| w - 1),
+                        )
                     })
                     .collect();
                 let _ = outputs;
-                let component = IpxactComponent::from_module(&name, &ports);
+                let component = IpxactComponent::from_module(&module, &ports);
                 let xml = component.to_xml();
                 if let Some(path) = output {
                     component.save_xml(Path::new(&path)).map_err(|e| {
@@ -557,6 +561,41 @@ pub(crate) fn dispatch_mfarm(a: &crate::cli::MfarmArgs) -> ! {
                 for job in jobs {
                     println!("Job '{}': status={:?}", job.id, job.status);
                 }
+            }
+        }
+        Ok(())
+    })();
+    exit_tool(result);
+}
+
+/// mcdb — Collaborative debug session management.
+pub(crate) fn dispatch_mcdb(a: &crate::cli::MdbArgs) -> ! {
+    let result: Result<(), SimError> = (|| {
+        use mivon_api::tools::collab_debug::{CollabDebugManager, DebugSession};
+        use std::path::Path;
+
+        let cmd = a.command.as_deref().unwrap_or("");
+        match cmd {
+            "create" => {
+                let session_id = a.top.as_deref().ok_or_else(|| {
+                    SimError::with_diag(DiagCode::IoError, "--mcdb-session required")
+                })?;
+                let owner = a.source_files.as_deref().unwrap_or("").to_string();
+                let mut manager = CollabDebugManager::load(Path::new(&a.db));
+                if manager.create_session(session_id, &owner) {
+                    manager.save(Path::new(&a.db)).map_err(|e| {
+                        SimError::with_diag(DiagCode::IoError, format!("save db: {e}"))
+                    })?;
+                    println!("Created debug session '{}' (owner={})", session_id, owner);
+                } else {
+                    println!("Session '{}' already exists", session_id);
+                }
+            }
+            _ => {
+                return Err(SimError::with_diag(
+                    DiagCode::IoError,
+                    format!("unknown mcdb subcommand: {}", cmd),
+                ))
             }
         }
         Ok(())

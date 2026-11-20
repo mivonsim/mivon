@@ -25,7 +25,7 @@ use dispatch::{
     dispatch_project, dispatch_regression, dispatch_requirements, dispatch_sdc, dispatch_sim,
     dispatch_synth, dispatch_tbgen, dispatch_tcl, dispatch_update, dispatch_vault,
     dispatch_verif_dashboard, dispatch_waiver, dispatch_wave, dispatch_web_dashboard,
-    dispatch_mdb, dispatch_mfarm,
+    dispatch_mdb, dispatch_mfarm, dispatch_mcdb,
 };
 use run_legacy::run;
 use std::process;

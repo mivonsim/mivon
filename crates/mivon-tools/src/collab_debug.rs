@@ -93,6 +93,23 @@ impl CollabDebugManager {
         Self::default()
     }
 
+    pub fn load(path: &std::path::Path) -> Self {
+        if let Ok(data) = std::fs::read_to_string(path) {
+            if let Ok(sessions) = serde_json::from_str::<std::collections::HashMap<String, DebugSession>>(&data) {
+                return CollabDebugManager {
+                    sessions: std::sync::Arc::new(std::sync::Mutex::new(sessions)),
+                };
+            }
+        }
+        CollabDebugManager::new()
+    }
+
+    pub fn save(&self, path: &std::path::Path) -> std::io::Result<()> {
+        let sessions = self.sessions.lock().unwrap();
+        let json = serde_json::to_string_pretty(&*sessions).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        std::fs::write(path, json)
+    }
+
     pub fn create_session(&self, session_id: &str, owner: &str) -> bool {
         let mut sessions = self.sessions.lock().unwrap();
         if sessions.contains_key(session_id) {
