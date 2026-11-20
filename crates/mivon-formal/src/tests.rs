@@ -7,6 +7,7 @@
 #[allow(clippy::module_inception)]
 mod tests {
     use crate::bmc::{collect_assertions, collect_combinational_assignments};
+    use crate::sec::*;
     use crate::*;
     use mivon_core::Symbol;
     use mivon_ir::*;
@@ -1441,5 +1442,140 @@ mod tests {
         let mut engine = test_engine();
         let results = engine.detect_unreachable_assertions(&design);
         assert!(results.is_empty(), "No assertions → no unreachable results");
+    }
+
+    // ── Equivalence checking (FORMAL-12 / COMP-16 tahap 1) ──
+    #[test]
+    fn test_sec_equivalent_identical_designs() {
+        // Dua desain identik harus Ekuivalen.
+        let a = SecDesign {
+            inputs: vec![("a".to_string(), 1)],
+            outputs: vec![("y".to_string(), 1, SecExpr::Input("a".to_string()))],
+        };
+        let b = SecDesign {
+            inputs: vec![("a".to_string(), 1)],
+            outputs: vec![("y".to_string(), 1, SecExpr::Input("a".to_string()))],
+        };
+        assert_eq!(
+            check_equivalence(&a, &b),
+            SecOutcome::Equivalent,
+            "desain identik harus ekuivalen"
+        );
+    }
+
+    #[test]
+    fn test_sec_equivalent_and_commutative() {
+        // a & b == b & a → Ekuivalen.
+        let a = SecDesign {
+            inputs: vec![("a".to_string(), 1), ("b".to_string(), 1)],
+            outputs: vec![(
+                "y".to_string(),
+                1,
+                SecExpr::And(Box::new(SecExpr::Input("a".to_string())), Box::new(SecExpr::Input("b".to_string()))),
+            )],
+        };
+        let b = SecDesign {
+            inputs: vec![("a".to_string(), 1), ("b".to_string(), 1)],
+            outputs: vec![(
+                "y".to_string(),
+                1,
+                SecExpr::And(Box::new(SecExpr::Input("b".to_string())), Box::new(SecExpr::Input("a".to_string()))),
+            )],
+        };
+        assert_eq!(
+            check_equivalence(&a, &b),
+            SecOutcome::Equivalent,
+            "AND komutatif harus ekuivalen"
+        );
+    }
+
+    #[test]
+    fn test_sec_equivalent_xor_self() {
+        // x ^ x == 0 → Ekuivalen dengan Const(0,1).
+        let a = SecDesign {
+            inputs: vec![("x".to_string(), 1)],
+            outputs: vec![(
+                "y".to_string(),
+                1,
+                SecExpr::Xor(Box::new(SecExpr::Input("x".to_string())), Box::new(SecExpr::Input("x".to_string()))),
+            )],
+        };
+        let b = SecDesign {
+            inputs: vec![("x".to_string(), 1)],
+            outputs: vec![("y".to_string(), 1, SecExpr::Const(0, 1))],
+        };
+        assert_eq!(
+            check_equivalence(&a, &b),
+            SecOutcome::Equivalent,
+            "x ^ x == 0 harus ekuivalen"
+        );
+    }
+
+    #[test]
+    fn test_sec_not_equivalent_and_vs_or() {
+        // a & b != a | b → NotEquivalent.
+        let a = SecDesign {
+            inputs: vec![("a".to_string(), 1), ("b".to_string(), 1)],
+            outputs: vec![(
+                "y".to_string(),
+                1,
+                SecExpr::And(Box::new(SecExpr::Input("a".to_string())), Box::new(SecExpr::Input("b".to_string()))),
+            )],
+        };
+        let b = SecDesign {
+            inputs: vec![("a".to_string(), 1), ("b".to_string(), 1)],
+            outputs: vec![(
+                "y".to_string(),
+                1,
+                SecExpr::Or(Box::new(SecExpr::Input("a".to_string())), Box::new(SecExpr::Input("b".to_string()))),
+            )],
+        };
+        assert!(
+            matches!(
+                check_equivalence(&a, &b),
+                SecOutcome::NotEquivalent { .. }
+            ),
+            "AND vs OR harus NotEquivalent"
+        );
+    }
+
+    #[test]
+    fn test_sec_width_mismatch_is_unsupported() {
+        // Lebar input berbeda → Unsupported.
+        let a = SecDesign {
+            inputs: vec![("x".to_string(), 1)],
+            outputs: vec![("y".to_string(), 1, SecExpr::Input("a".to_string()))],
+        };
+        let b = SecDesign {
+            inputs: vec![("x".to_string(), 8)],
+            outputs: vec![("y".to_string(), 8, SecExpr::Input("x".to_string()))],
+        };
+        assert!(
+            matches!(
+                check_equivalence(&a, &b),
+                SecOutcome::Unsupported(_)
+            ),
+            "lebar input berbeda harus Unsupported"
+        );
+    }
+
+    #[test]
+    fn test_sec_unknown_output_symbol_is_unsupported() {
+        // Output merujuk simbol tak dikenal → Unsupported.
+        let a = SecDesign {
+            inputs: vec![("a".to_string(), 1)],
+            outputs: vec![("y".to_string(), 1, SecExpr::Input("tidak_diketahui".to_string()))],
+        };
+        let b = SecDesign {
+            inputs: vec![("a".to_string(), 1)],
+            outputs: vec![("y".to_string(), 1, SecExpr::Input("a".to_string()))],
+        };
+        assert!(
+            matches!(
+                check_equivalence(&a, &b),
+                SecOutcome::Unsupported(_)
+            ),
+            "simbol output tak dikenal harus Unsupported"
+        );
     }
 }
