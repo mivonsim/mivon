@@ -21,6 +21,7 @@ pub fn is_sync_token(token_name: &str) -> bool {
             | "endgenerate"
             | "endpackage"
             | "endinterface"
+            | "endprogram"
             | "}"
             | ")"
             | "]"
@@ -125,6 +126,76 @@ mod tests {
         let d = recovery.recover(DiagCode::UnexpectedToken, "bad token".to_string(), 10, 5);
         assert_eq!(d.level, crate::diagnostics::DiagLevel::Error);
         assert_eq!(d.code, DiagCode::UnexpectedToken);
+
+        let diags = sink.diagnostics();
+        assert_eq!(diags.len(), 1);
+    }
+
+    #[test]
+    fn test_sync_token_edge_cases() {
+        // Keywords that should NOT be sync tokens
+        assert!(!is_sync_token("always"));
+        assert!(!is_sync_token("initial"));
+        assert!(!is_sync_token("module"));
+        assert!(!is_sync_token("identifier"));
+        assert!(!is_sync_token("clk"));
+        // Known sync tokens should still be recognized
+        assert!(is_sync_token("endmodule"));
+        assert!(is_sync_token("endpackage"));
+        assert!(is_sync_token("endfunction"));
+        assert!(is_sync_token("endtask"));
+        assert!(is_sync_token("endclass"));
+        assert!(is_sync_token("endinterface"));
+        assert!(is_sync_token("endprogram"));
+    }
+
+    #[test]
+    fn test_recover_with_hint() {
+        let sink = DiagSink::new();
+        let recovery = ParserRecovery::new(&sink, Symbol::intern("test.sv"));
+
+        let d = recovery.recover_with_hint(
+            DiagCode::ExpectedToken,
+            "expected semicolon".to_string(),
+            "add ';'".to_string(),
+            5,
+            10,
+        );
+        assert_eq!(d.level, crate::diagnostics::DiagLevel::Error);
+        assert_eq!(d.code, DiagCode::ExpectedToken);
+        assert_eq!(d.hints.len(), 1);
+        assert_eq!(d.hints[0], "add ';'");
+
+        let diags = sink.diagnostics();
+        assert_eq!(diags.len(), 1);
+    }
+
+    #[test]
+    fn test_expected_token() {
+        let sink = DiagSink::new();
+        let recovery = ParserRecovery::new(&sink, Symbol::intern("test.sv"));
+
+        let d = recovery.expected_token(";", ",", 5, 10);
+        assert_eq!(d.level, crate::diagnostics::DiagLevel::Error);
+        assert_eq!(d.code, DiagCode::ExpectedToken);
+        assert_eq!(d.message, "expected ';', found ','");
+        assert_eq!(d.hints.len(), 1);
+        assert_eq!(d.hints[0], "try adding ';' here");
+
+        let diags = sink.diagnostics();
+        assert_eq!(diags.len(), 1);
+    }
+
+    #[test]
+    fn test_parser_recovery_warn() {
+        let sink = DiagSink::new();
+        let recovery = ParserRecovery::new(&sink, Symbol::intern("test.sv"));
+
+        let d = recovery.warn(DiagCode::WidthMismatch, "width mismatch".to_string(), 5, 10);
+        assert_eq!(d.level, crate::diagnostics::DiagLevel::Warning);
+        assert_eq!(d.code, DiagCode::WidthMismatch);
+        assert_eq!(d.message, "width mismatch");
+        assert!(!d.is_error());
 
         let diags = sink.diagnostics();
         assert_eq!(diags.len(), 1);
