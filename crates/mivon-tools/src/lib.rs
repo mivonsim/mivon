@@ -10,6 +10,7 @@
 pub mod batch;
 pub mod bench;
 pub mod bpf_monitor;
+pub mod bus_assertions;
 pub mod check;
 pub mod ci;
 pub mod collab;
