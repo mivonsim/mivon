@@ -57,17 +57,26 @@ fn pattern_specificity(pattern: &str) -> (usize, usize, usize) {
 
 impl SimulationEngine {
     /// Cari nilai config db: exact match dulu, lalu wildcard paling spesifik.
-    pub(crate) fn config_db_find(&self, inst_name: &str, field_name: &str) -> Option<LogicVec> {
+    /// Key sekarang (inst_name, field_name, type_param) — type_param
+    /// memungkinkan `uvm_config_db#(T1)::set` dan `uvm_config_db#(T2)::set`
+    /// menyimpan nilai yang berbeda untuk inst/field yang sama.
+    pub(crate) fn config_db_find(
+        &self,
+        inst_name: &str,
+        field_name: &str,
+        type_param: &str,
+    ) -> Option<LogicVec> {
         // 1) Exact match — kemenangan penuh.
         if let Some(v) = self
             .uvm_config_db_data
-            .get(&(inst_name.to_string(), field_name.to_string()))
+            .get(&(inst_name.to_string(), field_name.to_string(), type_param.to_string()))
         {
             return Some(v.clone());
         }
-        // 2) Wildcard — pilih pattern paling spesifik yang match.
+        // 2) Wildcard — pilih pattern paling spesifik yang match (abaikan type_param
+        //    saat wildcard matching; type_param hanya untuk exact match).
         let mut best: Option<((usize, usize, usize), LogicVec)> = None;
-        for ((pat, f), v) in &self.uvm_config_db_data {
+        for ((pat, f, _tp), v) in &self.uvm_config_db_data {
             if f != field_name {
                 continue;
             }
@@ -85,10 +94,15 @@ impl SimulationEngine {
         best.map(|(_, v)| v)
     }
 
-    /// VERIF-06: `uvm_config_db::exists` — 1 bila key (inst, field) punya
-    /// nilai (exact atau wildcard paling spesifik), 0 bila tidak ada.
-    pub(crate) fn config_db_exists(&self, inst_name: &str, field_name: &str) -> bool {
-        self.config_db_find(inst_name, field_name).is_some()
+    /// VERIF-06: `uvm_config_db::exists` — 1 bila key (inst, field, type_param)
+    /// punya nilai (exact atau wildcard paling spesifik), 0 bila tidak ada.
+    pub(crate) fn config_db_exists(
+        &self,
+        inst_name: &str,
+        field_name: &str,
+        type_param: &str,
+    ) -> bool {
+        self.config_db_find(inst_name, field_name, type_param).is_some()
     }
 
     /// VERIF-07: cari nilai uvm_resource_db — exact match dulu, lalu
@@ -150,15 +164,17 @@ impl SimulationEngine {
                 let inst = arg_vals.get(1).map(logicvec_to_string).unwrap_or_default();
                 let field = arg_vals.get(2).map(logicvec_to_string).unwrap_or_default();
                 let value = arg_vals.get(3).cloned().unwrap_or_else(|| LogicVec::new(1));
+                let type_param = arg_vals.get(4).map(logicvec_to_string).unwrap_or_default();
                 self.uvm_config_db_data
-                    .insert((inst.clone(), field.clone()), value);
+                    .insert((inst.clone(), field.clone(), type_param.clone()), value);
                 // VERIF-06: bangunkan waiter wait_modified utk key ini.
                 self.config_db_release_waiters(&inst, &field)?;
             }
             "uvm_config_db::get" => {
                 let inst = arg_vals.get(1).map(logicvec_to_string).unwrap_or_default();
                 let field = arg_vals.get(2).map(logicvec_to_string).unwrap_or_default();
-                if let Some(v) = self.config_db_find(&inst, &field) {
+                let type_param = arg_vals.get(4).map(logicvec_to_string).unwrap_or_default();
+                if let Some(v) = self.config_db_find(&inst, &field, &type_param) {
                     if let Some(IrExpr::Signal(sid, _)) = ir_args.get(3) {
                         self.state.write_signal(*sid, v);
                     }

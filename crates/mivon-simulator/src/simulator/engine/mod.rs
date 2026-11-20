@@ -309,7 +309,7 @@ pub struct SimulationEngine {
     pub uvm_driver_data: HashMap<ObjId, UvmDriverData>,
     pub uvm_analysis_port_data: HashMap<ObjId, UvmAnalysisPortData>,
     pub uvm_analysis_imp_data: HashMap<ObjId, UvmAnalysisImpData>,
-    pub uvm_config_db_data: HashMap<(String, String), LogicVec>,
+    pub uvm_config_db_data: HashMap<(String, String, String), LogicVec>,
     /// VERIF-06: waiter blocking `uvm_config_db::wait_modified(inst, field)`
     /// — keyed by (inst, field); release saat `set` dipanggil utk key tsb.
     pub uvm_config_db_waiters:

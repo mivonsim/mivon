@@ -151,6 +151,27 @@ fn write_tuple_hashmap<
     Ok(())
 }
 
+fn write_tuple_hashmap3<
+    K1: std::fmt::Display + std::hash::Hash + Eq,
+    K2: std::fmt::Display + std::hash::Hash + Eq,
+    K3: std::fmt::Display + std::hash::Hash + Eq,
+    V,
+    W: Write,
+>(
+    w: &mut W,
+    map: &HashMap<(K1, K2, K3), V>,
+    write_val: &impl Fn(&mut W, &V) -> io::Result<()>,
+) -> io::Result<()> {
+    write_usize(w, map.len())?;
+    for ((k1, k2, k3), v) in map {
+        write_str(w, &k1.to_string())?;
+        write_str(w, &k2.to_string())?;
+        write_str(w, &k3.to_string())?;
+        write_val(w, v)?;
+    }
+    Ok(())
+}
+
 fn read_tuple_hashmap<
     K1: std::str::FromStr + std::hash::Hash + Eq,
     K2: std::str::FromStr + std::hash::Hash + Eq,
@@ -173,6 +194,37 @@ fn read_tuple_hashmap<
             .parse()
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "parse error"))?;
         map.insert((k1, k2), v);
+    }
+    Ok(map)
+}
+
+fn read_tuple_hashmap3<
+    K1: std::str::FromStr + std::hash::Hash + Eq,
+    K2: std::str::FromStr + std::hash::Hash + Eq,
+    K3: std::str::FromStr + std::hash::Hash + Eq,
+    V,
+    R: Read,
+>(
+    r: &mut R,
+    read_val: &impl Fn(&mut R) -> io::Result<V>,
+) -> io::Result<HashMap<(K1, K2, K3), V>> {
+    let len = read_usize(r)?;
+    let mut map = HashMap::with_capacity(len);
+    for _ in 0..len {
+        let k1_str = read_str(r)?;
+        let k2_str = read_str(r)?;
+        let k3_str = read_str(r)?;
+        let v = read_val(r)?;
+        let k1: K1 = k1_str
+            .parse()
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "parse error"))?;
+        let k2: K2 = k2_str
+            .parse()
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "parse error"))?;
+        let k3: K3 = k3_str
+            .parse()
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "parse error"))?;
+        map.insert((k1, k2, k3), v);
     }
     Ok(map)
 }
@@ -303,7 +355,7 @@ pub struct SimCheckpoint {
     /// UVM data
     pub uvm_object_data: HashMap<ObjId, UvmObjectData>,
     pub uvm_component_data: HashMap<ObjId, UvmComponentData>,
-    pub uvm_config_db_data: HashMap<(String, String), LogicVec>,
+    pub uvm_config_db_data: HashMap<(String, String, String), LogicVec>,
     pub uvm_resource_db_data: HashMap<(String, String), LogicVec>,
     pub mailbox_queues: HashMap<usize, VecDeque<LogicVec>>,
     pub semaphore_counts: HashMap<usize, u32>,
@@ -365,7 +417,7 @@ impl SimCheckpoint {
         })?;
 
         // UVM config/resource DB
-        write_tuple_hashmap(w, &self.uvm_config_db_data, &|w, val| {
+        write_tuple_hashmap3(w, &self.uvm_config_db_data, &|w, val| {
             write_logic_vec(w, val)
         })?;
         write_tuple_hashmap(w, &self.uvm_resource_db_data, &|w, val| {
@@ -473,7 +525,7 @@ impl SimCheckpoint {
         })?;
 
         // UVM config/resource DB
-        let uvm_config_db_data = read_tuple_hashmap(r, &|r| read_logic_vec(r))?;
+        let uvm_config_db_data = read_tuple_hashmap3(r, &|r| read_logic_vec(r))?;
         let uvm_resource_db_data = read_tuple_hashmap(r, &|r| read_logic_vec(r))?;
 
         // Mailbox queues
@@ -830,7 +882,11 @@ mod tests {
 
         let mut config_db = HashMap::new();
         config_db.insert(
-            ("uvm_test_top".to_string(), "count".to_string()),
+            (
+                "uvm_test_top".to_string(),
+                "count".to_string(),
+                String::new(),
+            ),
             LogicVec::from_u64(100, 32),
         );
 

@@ -1364,8 +1364,16 @@ impl SimulationEngine {
                 } else {
                     LogicVec::new(1)
                 };
-                self.uvm_config_db_data
-                    .insert((inst_name.clone(), field_name.clone()), value);
+                let type_param = if arg_vals.len() > 4 {
+                    logicvec_to_string(&arg_vals[4])
+                } else {
+                    String::new()
+                };
+                self.uvm_config_db_data.insert((
+                    inst_name.clone(),
+                    field_name.clone(),
+                    type_param.clone(),
+                ), value);
                 // VERIF-06: wait_modified ter-blokir menunggu key ini.
                 self.config_db_release_waiters(&inst_name, &field_name)?;
                 Ok(LogicVec::from_u64(1, 1))
@@ -1392,7 +1400,7 @@ impl SimulationEngine {
                     }
                 }
                 Ok(LogicVec::from_u64(
-                    if self.config_db_exists(&inst_name, &field_name) {
+                    if self.config_db_exists(&inst_name, &field_name, "") {
                         1
                     } else {
                         0
@@ -1418,7 +1426,7 @@ impl SimulationEngine {
                     String::new()
                 };
                 Ok(LogicVec::from_u64(
-                    if self.config_db_exists(&inst_name, &field_name) {
+                    if self.config_db_exists(&inst_name, &field_name, "") {
                         1
                     } else {
                         0
@@ -1448,8 +1456,13 @@ impl SimulationEngine {
                         inst_name = self.uvm_object_full_path(oid);
                     }
                 }
+                let type_param = if arg_vals.len() > 4 {
+                    logicvec_to_string(&arg_vals[4])
+                } else {
+                    String::new()
+                };
                 // F19: exact match menang, lalu wildcard paling spesifik.
-                let stored = self.config_db_find(&inst_name, &field_name);
+                let stored = self.config_db_find(&inst_name, &field_name, &type_param);
                 if let Some(val) = stored {
                     if let Some(IrExpr::Signal(sig_id, _)) = args.get(3) {
                         self.state.write_signal(*sig_id, val);

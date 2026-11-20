@@ -1960,7 +1960,7 @@ impl SimulationEngine {
                                 String::new()
                             };
                             // Sudah ada nilai → kondisi terpenuhi seketika.
-                            if self.config_db_exists(&inst_name, &field_name) {
+                            if self.config_db_exists(&inst_name, &field_name, "") {
                                 continue;
                             }
                             let mut wait_stmts: Vec<mivon_ast::Stmt> =
