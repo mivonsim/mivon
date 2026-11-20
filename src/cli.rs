@@ -80,7 +80,6 @@ pub enum MivonCmd {
     #[command(alias = "mipxact")]
     Ipxact(MipxactArgs),
     /// mfarm — simulation farm orchestration (distributed job scheduler)
-    #[command(alias = "mfarm")]
     Mfarm(MfarmArgs),
     /// mdesign-repo — versioned design storage repository
     #[command(alias = "mdesign-repo")]
