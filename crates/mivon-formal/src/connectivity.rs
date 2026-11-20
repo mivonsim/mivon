@@ -241,3 +241,211 @@ fn check_connectivity_inner(
     }
     results
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mivon_core::intern::Symbol;
+    use mivon_ir::{IrDesign, IrExpr, IrLValue, IrStmt, Process, SignalKind};
+    use std::collections::HashMap;
+
+    fn test_design() -> IrDesign {
+        IrDesign {
+            top: IrModule {
+                name: Symbol::from("top"),
+                signals: vec![
+                    SignalInfo {
+                        name: Symbol::from("a"),
+                        width: 1,
+                        kind: SignalKind::Input,
+                        ..Default::default()
+                    },
+                    SignalInfo {
+                        name: Symbol::from("b"),
+                        width: 1,
+                        kind: SignalKind::Wire,
+                        ..Default::default()
+                    },
+                    SignalInfo {
+                        name: Symbol::from("c"),
+                        width: 1,
+                        kind: SignalKind::Wire,
+                        ..Default::default()
+                    },
+                    SignalInfo {
+                        name: Symbol::from("d"),
+                        width: 1,
+                        kind: SignalKind::Output,
+                        ..Default::default()
+                    },
+                ],
+                inputs: vec![],
+                outputs: vec![],
+                inouts: vec![],
+                processes: vec![
+                    Process::Combinational {
+                        name: Symbol::from("comb1"),
+                        sensitivity: vec![],
+                        body: vec![IrStmt::BlockingAssign {
+                            lhs: IrLValue::Signal(1, 1),
+                            rhs: IrExpr::Signal(0, 0),
+                            delay: None,
+                        }],
+                    },
+                    Process::Combinational {
+                        name: Symbol::from("comb2"),
+                        sensitivity: vec![],
+                        body: vec![IrStmt::BlockingAssign {
+                            lhs: IrLValue::Signal(2, 1),
+                            rhs: IrExpr::BinaryOp(
+                                BinaryIrOp::BitOr,
+                                Box::new(IrExpr::Signal(1, 0)),
+                                Box::new(IrExpr::Signal(0, 0)),
+                            ),
+                            delay: None,
+                        }],
+                    },
+                    Process::Combinational {
+                        name: Symbol::from("comb3"),
+                        sensitivity: vec![],
+                        body: vec![IrStmt::BlockingAssign {
+                            lhs: IrLValue::Signal(3, 1),
+                            rhs: IrExpr::Signal(2, 0),
+                            delay: None,
+                        }],
+                    },
+                ],
+                sub_instances: vec![],
+            },
+            modules: HashMap::new(),
+            classes: HashMap::new(),
+            covergroups: vec![],
+            dpi_imports: vec![],
+            hier_signal_map: HashMap::new(),
+            udp_defs: vec![],
+            specify_items: vec![],
+            timescale: None,
+            source_file: None,
+            source_lines: None,
+            module_functions: HashMap::new(),
+            pkg_scoped_consts: HashMap::new(),
+            coverage_exclusions: Vec::new(),
+            stmt_lines: HashMap::new(),
+            net_aliases: HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn test_connectivity_chain() {
+        let design = test_design();
+        let results = check_connectivity(&design, &[
+            ("a".to_string(), "b".to_string()),
+            ("a".to_string(), "c".to_string()),
+            ("a".to_string(), "d".to_string()),
+            ("b".to_string(), "a".to_string()),
+        ]);
+        assert_eq!(results.len(), 4);
+
+        // a -> b: connected, 1 hop
+        assert!(results[0].connected);
+        assert_eq!(results[0].path_len, Some(1));
+        assert_eq!(results[0].path, vec!["a", "b"]);
+
+        // a -> c: connected directly via a -> c edge (c = b | a depends on both b and a)
+        assert!(results[1].connected);
+        assert_eq!(results[1].path_len, Some(1));
+        assert_eq!(results[1].path, vec!["a", "c"]);
+
+        // a -> d: connected, 2 hops via a -> c -> d (shortest path)
+        assert!(results[2].connected);
+        assert_eq!(results[2].path_len, Some(2));
+        assert_eq!(results[2].path, vec!["a", "c", "d"]);
+
+        // b -> a: not connected (no reverse path)
+        assert!(!results[3].connected);
+        assert_eq!(results[3].path_len, None);
+    }
+
+    #[test]
+    fn test_connectivity_unknown_signal() {
+        let design = test_design();
+        let results = check_connectivity(&design, &[
+            ("nonexistent".to_string(), "a".to_string()),
+            ("a".to_string(), "nonexistent".to_string()),
+        ]);
+        assert_eq!(results.len(), 2);
+
+        assert!(!results[0].connected);
+        assert!(results[0].error.is_some());
+        assert!(results[0].error.as_ref().unwrap().contains("sinyal 'nonexistent' tidak ditemukan"));
+
+        assert!(!results[1].connected);
+        assert!(results[1].error.is_some());
+        assert!(results[1].error.as_ref().unwrap().contains("sinyal 'nonexistent' tidak ditemukan"));
+    }
+
+    #[test]
+    fn test_connectivity_including_seq() {
+        let ir = IrDesign {
+            top: IrModule {
+                name: Symbol::from("t"),
+                signals: vec![
+                    SignalInfo {
+                        name: Symbol::from("d"),
+                        width: 1,
+                        kind: SignalKind::Input,
+                        ..Default::default()
+                    },
+                    SignalInfo {
+                        name: Symbol::from("q"),
+                        width: 1,
+                        kind: SignalKind::Output,
+                        ..Default::default()
+                    },
+                ],
+                inputs: vec![],
+                outputs: vec![],
+                inouts: vec![],
+                processes: vec![Process::Sequential {
+                    name: Symbol::from("ff"),
+                    clock: ClockEdge::PosEdge(0),
+                    reset: None,
+                    body: vec![IrStmt::NonBlockingAssign {
+                        lhs: IrLValue::Signal(1, 1),
+                        rhs: IrExpr::Signal(0, 0),
+                        delay: None,
+                    }],
+                    iff: None,
+                }],
+                sub_instances: vec![],
+            },
+            modules: HashMap::new(),
+            classes: HashMap::new(),
+            covergroups: vec![],
+            dpi_imports: vec![],
+            hier_signal_map: HashMap::new(),
+            udp_defs: vec![],
+            specify_items: vec![],
+            timescale: None,
+            source_file: None,
+            source_lines: None,
+            module_functions: HashMap::new(),
+            pkg_scoped_consts: HashMap::new(),
+            coverage_exclusions: Vec::new(),
+            stmt_lines: HashMap::new(),
+            net_aliases: HashMap::new(),
+        };
+
+        // Kombinational (tanpa include_seq): NBA write tidak terdeteksi sebagai edge
+        let no_seq = check_connectivity(&ir, &[("d".to_string(), "q".to_string())]);
+        assert_eq!(no_seq.len(), 1);
+        assert!(!no_seq[0].connected);
+
+        // Include_seq: NBA write d -> q detected as edge
+        let with_seq = check_connectivity_including_seq(&ir, &[("d".to_string(), "q".to_string())]);
+        assert_eq!(with_seq.len(), 1);
+        assert!(with_seq[0].connected);
+        assert_eq!(with_seq[0].path_len, Some(1));
+        assert_eq!(with_seq[0].path, vec!["d", "q"]);
+    }
+}
