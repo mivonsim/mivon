@@ -227,3 +227,214 @@ impl fmt::Display for Diagnostic {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::diagnostics::{DiagCode, DiagLevel};
+    use crate::diagnostics::span::TextSpan;
+    use crate::intern::Symbol;
+    use std::borrow::Cow;
+
+    #[test]
+    fn test_diagnostic_new() {
+        let d = Diagnostic::new(DiagLevel::Error, DiagCode::UndefinedSignal, "test error");
+        assert_eq!(d.level, DiagLevel::Error);
+        assert_eq!(d.code, DiagCode::UndefinedSignal);
+        assert_eq!(d.message, "test error");
+        assert_eq!(d.spans.len(), 0);
+        assert!(d.notes.is_empty());
+        assert!(d.hints.is_empty());
+        assert!(d.explanation.is_none());
+        assert!(d.suggestion.is_none());
+        assert!(d.runtime_context.is_none());
+        assert!(d.source_snippet.is_none());
+        assert!(d.example.is_none());
+        assert!(d.fix_its.is_empty());
+    }
+
+    #[test]
+    fn test_diagnostic_error() {
+        let d = Diagnostic::error(DiagCode::UndefinedSignal, "signal not found");
+        assert_eq!(d.level, DiagLevel::Error);
+        assert_eq!(d.code, DiagCode::UndefinedSignal);
+        assert_eq!(d.message, "signal not found");
+        assert!(d.is_error());
+    }
+
+    #[test]
+    fn test_diagnostic_warning() {
+        let d = Diagnostic::warning(DiagCode::WidthMismatch, "width mismatch");
+        assert_eq!(d.level, DiagLevel::Warning);
+        assert_eq!(d.code, DiagCode::WidthMismatch);
+        assert_eq!(d.message, "width mismatch");
+        assert!(!d.is_error());
+    }
+
+    #[test]
+    fn test_diagnostic_note() {
+        let d = Diagnostic::note("informational message");
+        assert_eq!(d.level, DiagLevel::Note);
+        assert_eq!(d.code, DiagCode::SimulationError);
+        assert_eq!(d.message, "informational message");
+    }
+
+    #[test]
+    fn test_diagnostic_info() {
+        let d = Diagnostic::info("info message");
+        assert_eq!(d.level, DiagLevel::Info);
+        assert_eq!(d.code, DiagCode::SimulationError);
+        assert_eq!(d.message, "info message");
+    }
+
+    #[test]
+    fn test_diagnostic_bug() {
+        let d = Diagnostic::bug("internal error");
+        assert_eq!(d.level, DiagLevel::Bug);
+        assert_eq!(d.code, DiagCode::InternalError);
+        assert_eq!(d.message, "internal error");
+        assert!(d.is_error());
+        assert!(d.is_fatal());
+    }
+
+    #[test]
+    fn test_diagnostic_fatal() {
+        let d = Diagnostic::fatal(DiagCode::SimulationError, "fatal error");
+        assert_eq!(d.level, DiagLevel::Fatal);
+        assert_eq!(d.code, DiagCode::SimulationError);
+        assert_eq!(d.message, "fatal error");
+        assert!(d.is_error());
+        assert!(d.is_fatal());
+    }
+
+    #[test]
+    fn test_diagnostic_help() {
+        let d = Diagnostic::help("consider using X instead");
+        assert_eq!(d.level, DiagLevel::Help);
+        assert_eq!(d.code, DiagCode::SimulationError);
+        assert_eq!(d.message, "consider using X instead");
+    }
+
+    #[test]
+    fn test_with_span() {
+        let span = DiagSpan::new(Symbol::from("test.sv"), 10, 20);
+        let d = Diagnostic::error(DiagCode::UndefinedSignal, "err").with_span(span);
+        assert_eq!(d.spans.len(), 1);
+        assert_eq!(d.spans[0].file, Symbol::from("test.sv"));
+        assert_eq!(d.spans[0].start, 10);
+        assert_eq!(d.spans[0].end, 20);
+    }
+
+    #[test]
+    fn test_with_note() {
+        let d = Diagnostic::error(DiagCode::UndefinedSignal, "err")
+            .with_note("note message");
+        assert_eq!(d.notes.len(), 1);
+        assert_eq!(d.notes[0].message, "note message");
+    }
+
+    #[test]
+    fn test_with_hint() {
+        let d = Diagnostic::error(DiagCode::UndefinedSignal, "err")
+            .with_hint("try this");
+        assert_eq!(d.hints.len(), 1);
+        assert_eq!(d.hints[0], "try this");
+    }
+
+    #[test]
+    fn test_with_explanation() {
+        let d = Diagnostic::error(DiagCode::UndefinedSignal, "err")
+            .with_explanation("explanation text");
+        assert_eq!(d.explanation, Some(Cow::Borrowed("explanation text")));
+    }
+
+    #[test]
+    fn test_with_suggestion() {
+        let d = Diagnostic::error(DiagCode::UndefinedSignal, "err")
+            .with_suggestion("suggestion text");
+        assert_eq!(d.suggestion, Some(Cow::Borrowed("suggestion text")));
+    }
+
+    #[test]
+    fn test_with_runtime_context() {
+        let ctx = RuntimeContext {
+            time: Some("100ns".to_string()),
+            delta: Some(5),
+            thread: Some("sim_thread".to_string()),
+            module: Some("top".to_string()),
+            instance: Some("uut".to_string()),
+            seed: Some(42),
+            process: Some("always_ff".to_string()),
+        };
+        let d = Diagnostic::error(DiagCode::UndefinedSignal, "err")
+            .with_runtime_context(ctx.clone());
+        let rc = d.runtime_context.expect("runtime context should be set");
+        assert_eq!(rc.time, Some("100ns".to_string()));
+        assert_eq!(rc.delta, Some(5));
+        assert_eq!(rc.thread, Some("sim_thread".to_string()));
+        assert_eq!(rc.module, Some("top".to_string()));
+        assert_eq!(rc.instance, Some("uut".to_string()));
+        assert_eq!(rc.seed, Some(42));
+        assert_eq!(rc.process, Some("always_ff".to_string()));
+    }
+
+    #[test]
+    fn test_with_source_snippet() {
+        let snippet = SourceSnippet::new("foo.sv", 5, 10, "line content");
+        let d = Diagnostic::error(DiagCode::UndefinedSignal, "err")
+            .with_source_snippet(snippet.clone());
+        let s = d.source_snippet.expect("source snippet should be set");
+        assert_eq!(s.file, "foo.sv");
+        assert_eq!(s.line, 5);
+        assert_eq!(s.col, 10);
+        assert_eq!(s.source_line, "line content");
+    }
+
+    #[test]
+    fn test_with_example() {
+        let d = Diagnostic::error(DiagCode::UndefinedSignal, "err")
+            .with_example("example code");
+        assert_eq!(d.example, Some(Cow::Borrowed("example code")));
+    }
+
+    #[test]
+    fn test_with_fix_it() {
+        let fix_it = FixItHint::insert("foo.sv", 1, 1, "import std;".to_string(), "add import".to_string());
+        let d = Diagnostic::error(DiagCode::UndefinedSignal, "err").with_fix_it(fix_it.clone());
+        assert_eq!(d.fix_its.len(), 1);
+        assert_eq!(d.fix_its[0].file, fix_it.file);
+        assert_eq!(d.fix_its[0].start_line, fix_it.start_line);
+        assert_eq!(d.fix_its[0].start_col, fix_it.start_col);
+        assert_eq!(d.fix_its[0].end_line, fix_it.end_line);
+        assert_eq!(d.fix_its[0].end_col, fix_it.end_col);
+        assert_eq!(d.fix_its[0].replacement, fix_it.replacement);
+        assert_eq!(d.fix_its[0].description, fix_it.description);
+    }
+
+    #[test]
+    fn test_is_error() {
+        assert!(Diagnostic::error(DiagCode::UndefinedSignal, "err").is_error());
+        assert!(Diagnostic::bug("internal error").is_error());
+        assert!(!Diagnostic::warning(DiagCode::WidthMismatch, "warn").is_error());
+        assert!(!Diagnostic::note("info").is_error());
+        assert!(!Diagnostic::info("info").is_error());
+        assert!(!Diagnostic::help("hint").is_error());
+    }
+
+    #[test]
+    fn test_is_fatal() {
+        assert!(Diagnostic::fatal(DiagCode::SimulationError, "fatal").is_fatal());
+        assert!(Diagnostic::bug("internal error").is_fatal());
+        assert!(!Diagnostic::error(DiagCode::UndefinedSignal, "err").is_fatal());
+        assert!(!Diagnostic::warning(DiagCode::WidthMismatch, "warn").is_fatal());
+    }
+
+    #[test]
+    fn test_diagnostic_display() {
+        let d = Diagnostic::error(DiagCode::UndefinedSignal, "undefined signal")
+            .with_span(DiagSpan::new(Symbol::from("test.sv"), 5, 10));
+        let formatted = format!("{}", d);
+        assert!(formatted.contains("error: E2001: undefined signal"));
+        assert!(formatted.contains("test.sv:5:10"));
+    }
+}
