@@ -79,6 +79,9 @@ pub enum MivonCmd {
     /// mipxact — IP-XACT (IEEE 1685) XML component packaging
     #[command(alias = "mipxact")]
     Ipxact(MipxactArgs),
+    /// mfarm — simulation farm orchestration (distributed job scheduler)
+    #[command(alias = "mfarm")]
+    Mfarm(MfarmArgs),
     /// mdesign-repo — versioned design storage repository
     #[command(alias = "mdesign-repo")]
     DesignRepo(MdesignRepoArgs),
@@ -1629,6 +1632,103 @@ pub enum MipxactCmd {
     },
     /// Tampilkan ringkasan IP-XACT
     Summary,
+}
+
+/// mfarm — Simulation farm orchestration (distributed job scheduler).
+#[derive(clap::Args, Clone)]
+pub struct MfarmArgs {
+    /// Subcommand: submit, list, register-worker, complete, fail, cancel, remove-job, remove-worker, clear-jobs, clear-workers, summary, get-job, get-worker
+    #[command(subcommand)]
+    pub cmd: MfarmCmd,
+}
+
+/// mfarm subcommand.
+#[derive(Subcommand, Clone)]
+pub enum MfarmCmd {
+    /// Submit a new simulation job to the farm.
+    Submit {
+        /// Job name
+        #[arg(short = 'n', long = "name")]
+        name: String,
+        /// Source files (comma-separated)
+        #[arg(long = "files", value_delimiter = ',')]
+        files: Vec<String>,
+        /// Max simulation time (ns)
+        #[arg(short = 't', long = "max-time", default_value = "1000")]
+        max_time: u64,
+        /// Job priority (critical, high, normal, low, background)
+        #[arg(long = "priority", default_value = "normal")]
+        priority: String,
+    },
+    /// Register a worker node.
+    RegisterWorker {
+        /// Worker ID
+        #[arg(short = 'i', long = "id")]
+        id: String,
+        /// Worker address (host:port)
+        #[arg(short = 'a', long = "addr")]
+        addr: String,
+        /// Worker capacity (max concurrent jobs)
+        #[arg(short = 'c', long = "capacity", default_value = "4")]
+        capacity: u32,
+    },
+    /// Mark a job as completed.
+    CompleteJob {
+        /// Job ID
+        #[arg(short = 'i', long = "id")]
+        id: String,
+    },
+    /// Mark a job as failed (may trigger retry).
+    FailJob {
+        /// Job ID
+        #[arg(short = 'i', long = "id")]
+        id: String,
+        /// Failure reason
+        #[arg(short = 'r', long = "reason")]
+        reason: String,
+    },
+    /// Cancel a job.
+    CancelJob {
+        /// Job ID
+        #[arg(short = 'i', long = "id")]
+        id: String,
+    },
+    /// Remove a job from the farm.
+    RemoveJob {
+        /// Job ID
+        #[arg(short = 'i', long = "id")]
+        id: String,
+    },
+    /// Remove a worker from the farm.
+    RemoveWorker {
+        /// Worker ID
+        #[arg(short = 'i', long = "id")]
+        id: String,
+    },
+    /// Clear all jobs.
+    ClearJobs,
+    /// Clear all workers.
+    ClearWorkers,
+    /// Show farm summary.
+    Summary,
+    /// Get a job by ID.
+    GetJob {
+        /// Job ID
+        #[arg(short = 'i', long = "id")]
+        id: String,
+    },
+    /// Get a worker by ID.
+    GetWorker {
+        /// Worker ID
+        #[arg(short = 'i', long = "id")]
+        id: String,
+    },
+    /// List jobs by status (optional status filter).
+    ListJobs {
+        /// Job status filter (pending, queued, running, completed, failed, cancelled, retry)
+        #[arg(short = 's', long = "status")]
+        status: Option<String>,
+    },
 }
 
 /// mdesign-repo — Design repository.

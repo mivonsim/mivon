@@ -25,7 +25,7 @@ use dispatch::{
     dispatch_project, dispatch_regression, dispatch_requirements, dispatch_sdc, dispatch_sim,
     dispatch_synth, dispatch_tbgen, dispatch_tcl, dispatch_update, dispatch_vault,
     dispatch_verif_dashboard, dispatch_waiver, dispatch_wave, dispatch_web_dashboard,
-    dispatch_mdb,
+    dispatch_mdb, dispatch_mfarm,
 };
 use run_legacy::run;
 use std::process;
@@ -548,6 +548,7 @@ fn real_main() {
             crate::cli::MivonCmd::License(a) => dispatch_license(a),
             crate::cli::MivonCmd::WebDashboard(a) => dispatch_web_dashboard(a),
             crate::cli::MivonCmd::Mdb(args) => dispatch_mdb(args),
+            crate::cli::MivonCmd::Mfarm(args) => dispatch_mfarm(args),
             crate::cli::MivonCmd::Gui(a) => dispatch_gui(a),
         }
     }
