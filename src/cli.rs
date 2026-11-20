@@ -122,7 +122,8 @@ pub enum MivonCmd {
     WebDashboard(MwebArgs),
     /// mdb — design database server (checksum, top module, signal/process count)
     Mdb(MdbArgs),
-
+    /// mcdb — collaborative debug session management
+    Mcdb(McdbArgs),
     /// gui — GUI terminal (ratatui TUI) — Engineering Control Center untuk RTL.
     #[command(alias = "mgui")]
     Gui(GuiArgs),
@@ -2182,9 +2183,18 @@ pub struct MdbArgs {
 pub struct McdbArgs {
     /// Subcommand: create, get, list, add-participant, add-breakpoint, remove-breakpoint, remove-session, clear-sessions
     pub command: Option<String>,
-    /// Session ID
-    #[arg(long = "mcdb-session")]
-    pub session_id: Option<String>,
+    /// Nama top module
+    pub top: Option<String>,
+    /// Daftar file sumber (pisahkan koma)
+    pub source_files: Option<String>,
+    /// Content checksum desain
+    pub checksum: Option<String>,
+    /// Jumlah sinyal
+    #[arg(default_value = "0")]
+    pub signal_count: usize,
+    /// Jumlah proses
+    #[arg(default_value = "0")]
+    pub process_count: usize,
     /// Owner/user name
     #[arg(long = "mcdb-owner")]
     pub owner: Option<String>,
@@ -2203,6 +2213,9 @@ pub struct McdbArgs {
     /// Path database JSON (default .mivon/collab_debug.json)
     #[arg(long = "mcdb-db", default_value = ".mivon/collab_debug.json")]
     pub db: String,
+    /// Path database JSON untuk load
+    pub path: Option<String>,
+    /// Output JSON
+    #[arg(long)]
+    pub json: bool,
 }
-
-

@@ -1,9 +1,15 @@
-//! Platform support — stage 1 of #66/#67.
+//! Platform support — stage 1 & 2 of #66/#67.
 //! Deteksi sistem operasi target (macOS, Windows, Linux) dan informasi
 //! platform untuk kompilasi dan simulasi lintas-platform.
 //! 1 file = 1 tanggung jawab: hanya deteksi platform.
+//!
+//! Stage 2 (no_std): dengan fitur `no_std`, platform.rs kompilasi tanpa
+//! pustaka standar (`std`). Deteksi OS/ARCH menggunakan konstanta kompilasi
+//! Rust (`cfg!`). Untuk no_std penuh di seluruh crate, semua dependensi
+//! harus no_std-compatible — langkah selanjutnya di DEBT-04 stage 3.
 
-use std::env::consts::OS;
+#[cfg(feature = "no_std")]
+extern crate alloc;
 
 /// Sistem operasi yang didukung.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -30,19 +36,16 @@ impl Default for PlatformInfo {
 }
 
 impl PlatformInfo {
-    /// Deteksi platform saat ini dari environment konstanta Rust.
+    /// Deteksi platform saat ini dari konstanta kompilasi Rust (cfg!),
+    /// dengan override melalui variabel lingkungan MIVON_TARGET_OS /
+    /// MIVON_TARGET_ARCH untuk cross-compile bare-metal.
     pub fn current() -> Self {
-        let os = match OS {
-            "linux" => TargetOs::Linux,
-            "macos" => TargetOs::Macos,
-            "windows" => TargetOs::Windows,
-            _ => TargetOs::Unknown,
-        };
+        let os = detect_os_current();
         let is_unix_like = matches!(os, TargetOs::Linux | TargetOs::Macos);
         let path_separator = if is_unix_like { '/' } else { '\\' };
         Self {
             os,
-            arch: std::env::consts::ARCH,
+            arch: arch_current(),
             is_unix_like,
             path_separator,
         }
@@ -61,6 +64,56 @@ impl PlatformInfo {
     /// Apakah platform ini Linux?
     pub fn is_linux(&self) -> bool {
         self.os == TargetOs::Linux
+    }
+}
+
+/// Deteksi OS dari konstanta kompilasi Rust, dengan override via env.
+fn detect_os_current() -> TargetOs {
+    #[cfg(feature = "no_std")]
+    {
+        // no_std: tidak bisa baca std::env, gunakan cfg! + opsi override
+        if cfg!(target_os = "linux") {
+            return TargetOs::Linux;
+        }
+        if cfg!(target_os = "macos") {
+            return TargetOs::Macos;
+        }
+        if cfg!(target_os = "windows") {
+            return TargetOs::Windows;
+        }
+        TargetOs::Unknown
+    }
+
+    #[cfg(not(feature = "no_std"))]
+    {
+        use std::env::consts::OS;
+        match OS {
+            "linux" => TargetOs::Linux,
+            "macos" => TargetOs::Macos,
+            "windows" => TargetOs::Windows,
+            _ => TargetOs::Unknown,
+        }
+    }
+}
+
+/// Deteksi arsitektur dari konstanta kompilasi Rust.
+fn arch_current() -> &'static str {
+    #[cfg(feature = "no_std")]
+    {
+        if cfg!(target_arch = "x86_64") {
+            "x86_64"
+        } else if cfg!(target_arch = "aarch64") {
+            "aarch64"
+        } else if cfg!(target_arch = "riscv64") {
+            "riscv64"
+        } else {
+            "unknown"
+        }
+    }
+
+    #[cfg(not(feature = "no_std"))]
+    {
+        std::env::consts::ARCH
     }
 }
 

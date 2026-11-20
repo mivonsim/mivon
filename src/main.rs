@@ -549,6 +549,7 @@ fn real_main() {
             crate::cli::MivonCmd::WebDashboard(a) => dispatch_web_dashboard(a),
             crate::cli::MivonCmd::Mdb(args) => dispatch_mdb(args),
             crate::cli::MivonCmd::Mfarm(args) => dispatch_mfarm(args),
+            crate::cli::MivonCmd::Mcdb(args) => dispatch_mcdb(args),
             crate::cli::MivonCmd::Gui(a) => dispatch_gui(a),
         }
     }

@@ -569,9 +569,9 @@ pub(crate) fn dispatch_mfarm(a: &crate::cli::MfarmArgs) -> ! {
 }
 
 /// mcdb — Collaborative debug session management.
-pub(crate) fn dispatch_mcdb(a: &crate::cli::MdbArgs) -> ! {
+pub(crate) fn dispatch_mcdb(a: &crate::cli::McdbArgs) -> ! {
     let result: Result<(), SimError> = (|| {
-        use mivon_api::tools::collab_debug::{CollabDebugManager, DebugSession};
+        use mivon_api::tools::collab_debug::{CollabDebugManager, DebugSession, SharedBreakpoint};
         use std::path::Path;
 
         let cmd = a.command.as_deref().unwrap_or("");
@@ -590,6 +590,120 @@ pub(crate) fn dispatch_mcdb(a: &crate::cli::MdbArgs) -> ! {
                 } else {
                     println!("Session '{}' already exists", session_id);
                 }
+            }
+            "get" => {
+                let session_id = a.top.as_deref().ok_or_else(|| {
+                    SimError::with_diag(DiagCode::IoError, "--mcdb-session required")
+                })?;
+                let manager = CollabDebugManager::load(Path::new(&a.db));
+                if let Some(session) = manager.get_session(session_id) {
+                    println!(
+                        "Session '{}': owner={}, status={:?}, participants={:?}",
+                        session.session_id, session.owner, session.status, session.participants
+                    );
+                    println!("  Breakpoints: {:?}", session.breakpoints.keys().collect::<Vec<_>>());
+                } else {
+                    println!("Session '{}' not found", session_id);
+                }
+            }
+            "list" => {
+                let manager = CollabDebugManager::load(Path::new(&a.db));
+                let sessions = manager.list_sessions();
+                if sessions.is_empty() {
+                    println!("No sessions");
+                } else {
+                    for sid in sessions {
+                        if let Some(s) = manager.get_session(&sid) {
+                            println!("{} (owner={}, status={:?})", sid, s.owner, s.status);
+                        }
+                    }
+                }
+            }
+            "add-participant" => {
+                let session_id = a.top.as_deref().ok_or_else(|| {
+                    SimError::with_diag(DiagCode::IoError, "--mcdb-session required")
+                })?;
+                let user = a.user.as_deref().ok_or_else(|| {
+                    SimError::with_diag(DiagCode::IoError, "--mcdb-user required")
+                })?;
+                let mut manager = CollabDebugManager::load(Path::new(&a.db));
+                if manager.join_session(session_id, user) {
+                    manager.save(Path::new(&a.db)).map_err(|e| {
+                        SimError::with_diag(DiagCode::IoError, format!("save db: {e}"))
+                    })?;
+                    println!("Added user '{}' to session '{}'", user, session_id);
+                } else {
+                    println!("Session '{}' not found", session_id);
+                }
+            }
+            "add-breakpoint" => {
+                let session_id = a.top.as_deref().ok_or_else(|| {
+                    SimError::with_diag(DiagCode::IoError, "--mcdb-session required")
+                })?;
+                let bp_id = a.bp_id.as_deref().ok_or_else(|| {
+                    SimError::with_diag(DiagCode::IoError, "--mcdb-bp-id required")
+                })?;
+                let bp_signal = a.bp_signal.as_deref().ok_or_else(|| {
+                    SimError::with_diag(DiagCode::IoError, "--mcdb-bp-signal required")
+                })?;
+                let bp_cond = a.bp_cond.as_deref().unwrap_or("").to_string();
+                let mut manager = CollabDebugManager::load(Path::new(&a.db));
+                if manager.with_session_mut(session_id, |session| {
+                    session.set_breakpoint(SharedBreakpoint {
+                        id: bp_id.to_string(),
+                        signal: bp_signal.to_string(),
+                        condition: if bp_cond.is_empty() { None } else { Some(bp_cond.clone()) },
+                        hit_count: 0,
+                    });
+                }) {
+                    manager.save(Path::new(&a.db)).map_err(|e| {
+                        SimError::with_diag(DiagCode::IoError, format!("save db: {e}"))
+                    })?;
+                    println!("Added breakpoint '{}' to session '{}'", bp_id, session_id);
+                } else {
+                    println!("Session '{}' not found", session_id);
+                }
+            }
+            "remove-breakpoint" => {
+                let session_id = a.top.as_deref().ok_or_else(|| {
+                    SimError::with_diag(DiagCode::IoError, "--mcdb-session required")
+                })?;
+                let bp_id = a.bp_id.as_deref().ok_or_else(|| {
+                    SimError::with_diag(DiagCode::IoError, "--mcdb-bp-id required")
+                })?;
+                let mut manager = CollabDebugManager::load(Path::new(&a.db));
+                if manager.with_session_mut(session_id, |session| {
+                    session.remove_breakpoint(bp_id);
+                }) {
+                    manager.save(Path::new(&a.db)).map_err(|e| {
+                        SimError::with_diag(DiagCode::IoError, format!("save db: {e}"))
+                    })?;
+                    println!("Removed breakpoint '{}' from session '{}'", bp_id, session_id);
+                } else {
+                    println!("Session '{}' not found", session_id);
+                }
+            }
+            "remove-session" => {
+                let session_id = a.top.as_deref().ok_or_else(|| {
+                    SimError::with_diag(DiagCode::IoError, "--mcdb-session required")
+                })?;
+                let mut manager = CollabDebugManager::load(Path::new(&a.db));
+                if manager.remove_session(session_id) {
+                    manager.save(Path::new(&a.db)).map_err(|e| {
+                        SimError::with_diag(DiagCode::IoError, format!("save db: {e}"))
+                    })?;
+                    println!("Removed session '{}'", session_id);
+                } else {
+                    println!("Session '{}' not found", session_id);
+                }
+            }
+            "clear-sessions" => {
+                let mut manager = CollabDebugManager::load(Path::new(&a.db));
+                manager.clear_sessions();
+                manager.save(Path::new(&a.db)).map_err(|e| {
+                    SimError::with_diag(DiagCode::IoError, format!("save db: {e}"))
+                })?;
+                println!("Cleared all sessions");
             }
             _ => {
                 return Err(SimError::with_diag(

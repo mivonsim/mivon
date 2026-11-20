@@ -149,6 +149,29 @@ impl CollabDebugManager {
         self.sessions.lock().unwrap().get(session_id).cloned()
     }
 
+    /// Ambil referensi mutabel sesi menurut ID via closure.
+    ///
+    /// # Reentrancy
+    ///
+    /// The closure `f` holds `&mut DebugSession` while the `self.sessions`
+    /// mutex is locked. If `f` calls any `CollabDebugManager` method that
+    /// locks `self.sessions` (e.g. `save()`, `get_session()`, `create_session()`),
+    /// it will deadlock. The closure should only mutate the `DebugSession`
+    /// argument directly.
+    pub fn with_session_mut<F>(&self, session_id: &str, f: F) -> bool
+    where
+        F: FnOnce(&mut DebugSession),
+    {
+        let mut sessions = self.sessions.lock().unwrap();
+        match sessions.get_mut(session_id) {
+            Some(s) => {
+                f(s);
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Hapus sesi menurut ID.
     pub fn remove_session(&self, session_id: &str) -> bool {
         self.sessions.lock().unwrap().remove(session_id).is_some()
