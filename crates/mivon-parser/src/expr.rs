@@ -515,6 +515,12 @@ impl Parser {
                     continue;
                 }
                 Token::LBrack => {
+                    // SVA repetition `[*N]` / `[*]` / `[+]` — `[*` bukan awalan
+                    // indeks array yang valid di SV. Jangan konsumsi `[`, biarkan
+                    // parser sequence (parse_sequence_repetition) menangani.
+                    if self.peek_ahead(1) == &Token::Star {
+                        return Ok(lhs);
+                    }
                     self.advance();
                     if self.peek() == &Token::RBrack {
                         self.advance();

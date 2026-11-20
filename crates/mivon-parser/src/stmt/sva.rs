@@ -103,6 +103,48 @@ impl Parser {
         }
     }
 
+    /// LANG-06 (SVA temporal): parse repetition `[*N]` setelah sequence elemen.
+    ///
+    /// Hanya `[*N]` (konsecutif dengan hitungan N) yang diimplementasi Stage 1.
+    /// `[*]` (goto, 0 atau lebih) dan `[+]` (goto, 1 atau lebih) masih di-skip
+    /// dengan E1007. Binding: `a[*2]` → `Sequence::Repeat(Expr(a), 2)`;
+    /// `a[*2] |-> b` → `(a[*2]) |-> b` (repetition mengikat lebih erat dari
+    /// implication).
+    pub(super) fn parse_sequence_repetition(
+        &mut self,
+        seq: super::types::Sequence,
+    ) -> Result<super::types::Sequence, SimError> {
+        if self.peek() != &Token::LBrack {
+            return Ok(seq);
+        }
+        // Cek pola `[*N]` tanpa mengkonsumsi: LBrack Star Number RBrack
+        if self.peek_ahead(1) != &Token::Star {
+            return Ok(seq); // bukan repetition, biarkan caller lain yang tangani
+        }
+        let count_tok = self.peek_ahead(2);
+        let n = match count_tok {
+            Token::Number { value, base, .. } => {
+                let s = value.as_str().to_string();
+                match base {
+                    None | Some(10) => s
+                        .parse::<u64>()
+                        .map_err(|_| self.err("invalid repetition count"))?,
+                    Some(b) => u64::from_str_radix(&s, *b as u32)
+                        .map_err(|_| self.err("invalid repetition count"))?,
+                }
+            }
+            Token::Star => return Err(self.err("unsupported: goto repetition '[*]'")),
+            Token::Plus => return Err(self.err("unsupported: goto repetition '[+]'")),
+            _ => return Err(self.err("expected number after '[*' in sequence repetition")),
+        };
+        // Konsumsi: '[' '*' N ']'
+        self.advance(); // '['
+        self.advance(); // '*'
+        self.advance(); // N
+        self.expect(Token::RBrack)?;
+        Ok(super::types::Sequence::Repeat(Box::new(seq), n))
+    }
+
     /// Parse consequent sequence setelah |->: [##N] expr (##N expr)*.
     pub(super) fn parse_sequence_after_consequent(
         &mut self,
@@ -111,9 +153,10 @@ impl Parser {
             self.advance(); // consume ##
             let delay = self.parse_sequence_delay()?;
             let expr = self.parse_expr(0)?;
+            let expr = self.parse_sequence_repetition(super::types::Sequence::Expr(expr))?;
             super::types::Sequence::Concat(
                 Box::new(delay),
-                Box::new(super::types::Sequence::Expr(expr)),
+                Box::new(expr),
             )
         } else if self.paren_starts_sequence() {
             self.advance(); // '('
@@ -121,21 +164,23 @@ impl Parser {
             self.expect(Token::RParen)?;
             inner
         } else {
-            super::types::Sequence::Expr(self.parse_expr(0)?)
+            let e = self.parse_expr(0)?;
+            self.parse_sequence_repetition(super::types::Sequence::Expr(e))?
         };
         while self.peek() == &Token::HashHash {
             self.advance();
             let delay = self.parse_sequence_delay()?;
             let next = self.parse_expr(0)?;
+            let next = self.parse_sequence_repetition(super::types::Sequence::Expr(next))?;
             seq = super::types::Sequence::Concat(
                 Box::new(seq),
                 Box::new(super::types::Sequence::Concat(
                     Box::new(delay),
-                    Box::new(super::types::Sequence::Expr(next)),
+                    Box::new(next),
                 )),
             );
         }
-        Ok(seq)
+        Ok(self.parse_sequence_repetition(seq)?)
     }
 
     /// LANG-42: parse body sequence/property SVA (IEEE 1800-2017 §16.9):
@@ -145,9 +190,10 @@ impl Parser {
             self.advance();
             let delay = self.parse_sequence_delay()?;
             let first = self.parse_expr(0)?;
+            let first = self.parse_sequence_repetition(super::types::Sequence::Expr(first))?;
             super::types::Sequence::Concat(
                 Box::new(delay),
-                Box::new(super::types::Sequence::Expr(first)),
+                Box::new(first),
             )
         } else if self.paren_starts_sequence() {
             self.advance(); // '('
@@ -155,21 +201,25 @@ impl Parser {
             self.expect(Token::RParen)?;
             inner
         } else {
-            super::types::Sequence::Expr(self.parse_expr(0)?)
+            let e = self.parse_expr(0)?;
+            self.parse_sequence_repetition(super::types::Sequence::Expr(e))?
         };
         while self.peek() == &Token::HashHash {
             self.advance();
             let delay = self.parse_sequence_delay()?;
             let next = self.parse_expr(0)?;
+            let next = self.parse_sequence_repetition(super::types::Sequence::Expr(next))?;
             seq = super::types::Sequence::Concat(
                 Box::new(seq),
                 Box::new(super::types::Sequence::Concat(
                     Box::new(delay),
-                    Box::new(super::types::Sequence::Expr(next)),
+                    Box::new(next),
                 )),
             );
         }
         // LANG-42b: implication setelah sequence lengkap (a ##1 b |-> c).
+        // Repetition mengikat lebih erat dari implication: (a ##1 b)[*2] |-> c.
+        let seq = self.parse_sequence_repetition(seq)?;
         self.wrap_implication(seq)
     }
 
@@ -822,11 +872,120 @@ endmodule
         (design, diags)
     }
 
-    /// Assertion dengan konstruksi tak didukung (repetition `[*2]`) harus
+    /// PARSER-09: repetition `[*N]` sekarang DIDUKUNG — `a[*2] |-> b` harus
+    /// ter-parse sebagai `Sequence::Repeat(Expr(a), 2) |-> Expr(b)`, bukan E1007.
+    #[test]
+    fn parses_sequence_repetition_consecutive() {
+        let src = "module m(input logic clk, a, b);\n  assert property (@(posedge clk) a[*2] |-> b);\nendmodule\n";
+        let (design, diags) = parse_with_diags(src);
+        assert_eq!(design.modules.len(), 1);
+        // Tidak boleh ada E1007 (repetition kini didukung).
+        assert!(
+            diags.iter().all(|d| d.code != DiagCode::UnsupportedAssertion),
+            "repetition [*2] tidak boleh di-warn E1007: {:?}",
+            diags
+        );
+        // Assertion harus ter-parse sebagai PropertyAssert.
+        assert!(
+            design.modules[0]
+                .items
+                .iter()
+                .any(|i| matches!(i, crate::types::ModuleItem::PropertyAssert(_))),
+            "assertion [*2] harus jadi PropertyAssert"
+        );
+        // Antecedent harus Sequence::Repeat(Expr(a), 2).
+        let mut ante = None;
+        for item in &design.modules[0].items {
+            if let crate::types::ModuleItem::PropertyAssert(s) = item {
+                if let crate::Stmt::PropertySeq {
+                    sequence: crate::types::Sequence::Implication(a, _),
+                    ..
+                } = &**s
+                {
+                    ante = Some((**a).clone());
+                }
+            }
+        }
+        let ante = ante.expect("harus ada Implication sebagai antecedent");
+        assert!(
+            matches!(ante, crate::types::Sequence::Repeat(_, n) if n == 2),
+            "antecedent harus Sequence::Repeat(_, 2), dapat {:?}",
+            ante
+        );
+        // Konsequent harus Expr(b).
+        let mut cons = None;
+        for item in &design.modules[0].items {
+            if let crate::types::ModuleItem::PropertyAssert(s) = item {
+                if let crate::Stmt::PropertySeq {
+                    sequence: crate::types::Sequence::Implication(_, c),
+                    ..
+                } = &**s
+                {
+                    cons = Some((**c).clone());
+                }
+            }
+        }
+        let cons = cons.expect("harus ada Expr sebagai consequent");
+        assert!(
+            matches!(cons, crate::types::Sequence::Expr(_)),
+            "consequent harus Sequence::Expr, dapat {:?}",
+            cons
+        );
+    }
+
+    /// Repetition `[*N]` tanpa implication: `a[*3]` harus jadi Repeat(Expr(a), 3).
+    #[test]
+    fn parses_sequence_repetition_without_implication() {
+        let src = "module m(input logic clk, a);\n  assert property (@(posedge clk) a[*3]);\nendmodule\n";
+        let (design, diags) = parse_with_diags(src);
+        assert_eq!(design.modules.len(), 1);
+        assert!(
+            diags.iter().all(|d| d.code != DiagCode::UnsupportedAssertion),
+            "repetition [*3] tidak boleh di-warn E1007: {:?}",
+            diags
+        );
+        let mut seq = None;
+        for item in &design.modules[0].items {
+            if let crate::types::ModuleItem::PropertyAssert(s) = item {
+                if let crate::Stmt::PropertySeq { sequence, .. } = &**s {
+                    seq = Some(sequence.clone());
+                }
+            }
+        }
+        let seq = seq.expect("harus ada PropertySeq");
+        assert!(
+            matches!(seq, crate::types::Sequence::Repeat(_, n) if n == 3),
+            "sequence harus Sequence::Repeat(_, 3), dapat {:?}",
+            seq
+        );
+    }
+
+    /// Goto repetition `[*]` dan `[+]` masih di-skip dengan E1007 (belum diimplementasi Stage 1).
+    #[test]
+    fn goto_repetition_still_unsupported() {
+        let src = "module m(input logic clk, a, b);\n  assert property (@(posedge clk) a[*] |-> b);\nendmodule\n";
+        let (design, diags) = parse_with_diags(src);
+        assert_eq!(design.modules.len(), 1);
+        let warn = diags
+            .iter()
+            .find(|d| d.code == DiagCode::UnsupportedAssertion)
+            .unwrap_or_else(|| panic!("E1007 harus muncul untuk [*]: {:?}", diags));
+        assert_eq!(warn.code.as_str(), "E1007");
+        // Assertion tidak boleh muncul sebagai PropertyAssert.
+        assert!(
+            !design.modules[0]
+                .items
+                .iter()
+                .any(|i| matches!(i, crate::types::ModuleItem::PropertyAssert(_))),
+            "assertion [*] harus di-skip, bukan di-elaborasi"
+        );
+    }
+
+    /// Assertion dengan konstruksi tak didukung (repetition goto `[*]`) harus
     /// DILAPORKAN (E1007) dan di-skip — bukan hilang diam-diam.
     #[test]
     fn unsupported_assertion_is_reported_not_silently_dropped() {
-        let src = "module m(input logic clk, a, b);\n  assert property (@(posedge clk) a[*2] |-> b);\n  logic x;\nendmodule\n";
+        let src = "module m(input logic clk, a, b);\n  assert property (@(posedge clk) a[*] |-> b);\n  logic x;\nendmodule\n";
         let (design, diags) = parse_with_diags(src);
         assert_eq!(design.modules.len(), 1);
         // Assertion tidak boleh muncul sebagai PropertyAssert setengah jadi.
@@ -976,7 +1135,7 @@ endmodule
     /// Assertion BERLABEL yang tak didukung harus tetap di-warn E1007.
     #[test]
     fn labeled_unsupported_assertion_is_reported() {
-        let src = "module m(input logic clk, a, b);\n  chk: assert property (@(posedge clk) a[*2] |-> b);\n  logic x;\nendmodule\n";
+        let src = "module m(input logic clk, a, b);\n  chk: assert property (@(posedge clk) a[*] |-> b);\n  logic x;\nendmodule\n";
         let (design, diags) = parse_with_diags(src);
         let warn = diags
             .iter()
@@ -997,7 +1156,7 @@ endmodule
     /// skip_until_semi_or_end tanpa diagnostik sama sekali.
     #[test]
     fn labeled_unsupported_assertion_in_generate_block_is_reported() {
-        let src = "module m(input logic clk, a, b);\n  if (1) begin : g\n    chk: assert property (@(posedge clk) a[*2] |-> b);\n  end\n  logic x;\nendmodule\n";
+        let src = "module m(input logic clk, a, b);\n  if (1) begin : g\n    chk: assert property (@(posedge clk) a[*] |-> b);\n  end\n  logic x;\nendmodule\n";
         let (design, diags) = parse_with_diags(src);
         let n = diags
             .iter()
@@ -1046,7 +1205,7 @@ endmodule
     /// gate jalur berlabel tidak memuat Token::Restrict.
     #[test]
     fn labeled_restrict_property_is_reported() {
-        let src = "module m(input logic clk, a);\n  chk: restrict property (@(posedge clk) a[*2]);\nendmodule\n";
+        let src = "module m(input logic clk, a);\n  chk: restrict property (@(posedge clk) a[*]);\nendmodule\n";
         let (design, diags) = parse_with_diags(src);
         assert!(
             diags

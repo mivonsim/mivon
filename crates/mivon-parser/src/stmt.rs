@@ -341,7 +341,30 @@ impl Parser {
                     });
                 } else {
                     let expr = self.parse_expr(0)?;
-                    if self.peek() == &Token::PipeArrow {
+                    // SVA repetition `[*N]` setelah ekspresi: `a[*2] |-> b`
+                    // → `Repeat(Expr(a), 2) |-> Expr(b)`.
+                    if self.peek() == &Token::LBrack && self.peek_ahead(1) == &Token::Star {
+                        let mut seq = self.parse_sequence_repetition(
+                            super::types::Sequence::Expr(expr),
+                        )?;
+                        while self.peek() == &Token::HashHash {
+                            self.advance();
+                            let delay = self.parse_sequence_delay()?;
+                            let next = self.parse_expr(0)?;
+                            let next = self.parse_sequence_repetition(
+                                super::types::Sequence::Expr(next),
+                            )?;
+                            seq = super::types::Sequence::Concat(
+                                Box::new(seq),
+                                Box::new(super::types::Sequence::Concat(
+                                    Box::new(delay),
+                                    Box::new(next),
+                                )),
+                            );
+                        }
+                        let seq = self.parse_sequence_repetition(seq)?;
+                        sequence = Some(self.wrap_implication(seq)?);
+                    } else if self.peek() == &Token::PipeArrow {
                         // `expr |-> consequent` — overlap implication (SVA §16.9.2)
                         self.advance(); // consume |->
                         let cons = self.parse_sequence_after_consequent()?;
