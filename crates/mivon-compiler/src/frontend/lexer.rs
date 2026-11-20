@@ -894,9 +894,25 @@ impl<'a> FastLexer<'a> {
                     self.skip_byte();
                     Token::PipePipe
                 } else if self.peek() == b'=' {
-                    // |=
-                    self.skip_byte();
-                    Token::OrAssign
+                    if self.peek_next() == b'>' {
+                        // |=> (fat arrow / non-overlap implication SVA)
+                        self.skip_byte(); // consume =
+                        self.skip_byte(); // consume >
+                        Token::PipeFatArrow
+                    } else {
+                        // |=
+                        self.skip_byte();
+                        Token::OrAssign
+                    }
+                } else if self.peek() == b'-' {
+                    if self.peek_next() == b'>' {
+                        // |-> (overlap implication SVA)
+                        self.skip_byte(); // consume -
+                        self.skip_byte(); // consume >
+                        Token::PipeArrow
+                    } else {
+                        Token::Pipe
+                    }
                 } else {
                     Token::Pipe
                 }
@@ -1210,6 +1226,40 @@ mod tests {
         let input = "a <= b;";
         let tokens = fast_tokenize(input);
         assert_eq!(tokens[1].0, Token::NonBlockingAssign);
+    }
+
+    #[test]
+    fn test_fast_lexer_pipe_arrow() {
+        // |-> (overlap implication SVA) harus Token::PipeArrow, bukan Pipe + Minus + Gt
+        let tokens = fast_tokenize("a |-> b");
+        let pipe_pos = tokens.iter().position(|t| t.0 == Token::PipeArrow);
+        assert!(
+            pipe_pos.is_some(),
+            "`|->` harus Token::PipeArrow, dapat: {:?}",
+            tokens
+        );
+        // Pastikan tidak ada Pipe + Minus terpisah
+        assert!(
+            !tokens.iter().any(|t| t.0 == Token::Pipe),
+            "`|->` tidak boleh di-split menjadi Pipe"
+        );
+    }
+
+    #[test]
+    fn test_fast_lexer_pipe_fat_arrow() {
+        // |=> (non-overlap implication SVA) harus Token::PipeFatArrow
+        let tokens = fast_tokenize("a |=> b");
+        let pfat_pos = tokens.iter().position(|t| t.0 == Token::PipeFatArrow);
+        assert!(
+            pfat_pos.is_some(),
+            "`|=>` harus Token::PipeFatArrow, dapat: {:?}",
+            tokens
+        );
+        // Pastikan tidak ada Pipe terpisah
+        assert!(
+            !tokens.iter().any(|t| t.0 == Token::Pipe),
+            "`|=>` tidak boleh di-split menjadi Pipe"
+        );
     }
 
     #[test]
