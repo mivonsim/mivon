@@ -364,4 +364,105 @@ mod tests {
         run_one(&mut m, 1);
         assert_eq!(m.values[out], SirValue::Const(LogicVec::from_u64(0, 4)));
     }
+
+    #[test]
+    fn eq_same_operand_folds_one() {
+        // Eq(x, x) → 1.
+        let mut m = SirModule::new(Symbol::intern("top"));
+        m.add_value(SirValue::Const(LogicVec::from_u64(7, 4))); // 0
+        let nid = m.add_node(SirNodeKind::Eq, vec![0, 0], 1);
+        let out = m.nodes[nid].output;
+        m.add_value(SirValue::Node(nid));
+        run_one(&mut m, 1);
+        assert_eq!(m.values[out], SirValue::Const(LogicVec::from_u64(1, 1)));
+    }
+
+    #[test]
+    fn neq_same_operand_folds_zero() {
+        // Neq(x, x) → 0.
+        let mut m = SirModule::new(Symbol::intern("top"));
+        m.add_value(SirValue::Const(LogicVec::from_u64(7, 4))); // 0
+        let nid = m.add_node(SirNodeKind::Ne, vec![0, 0], 1);
+        let out = m.nodes[nid].output;
+        m.add_value(SirValue::Node(nid));
+        run_one(&mut m, 1);
+        assert_eq!(m.values[out], SirValue::Const(LogicVec::from_u64(0, 1)));
+    }
+
+    #[test]
+    fn eq_different_operands_folds_zero() {
+        // Eq(1, 2) → 0.
+        let mut m = SirModule::new(Symbol::intern("top"));
+        m.add_value(SirValue::Const(LogicVec::from_u64(1, 1))); // 0
+        m.add_value(SirValue::Const(LogicVec::from_u64(2, 1))); // 1
+        let nid = m.add_node(SirNodeKind::Eq, vec![0, 1], 1);
+        let out = m.nodes[nid].output;
+        m.add_value(SirValue::Node(nid));
+        run_one(&mut m, 1);
+        assert_eq!(m.values[out], SirValue::Const(LogicVec::from_u64(0, 1)));
+    }
+
+    #[test]
+    fn shl_non_zero_shift_folds() {
+        // 0x01 << 2 → 0x04.
+        let mut m = SirModule::new(Symbol::intern("top"));
+        m.add_value(SirValue::Const(LogicVec::from_u64(0x01, 8))); // 0
+        m.add_value(SirValue::Const(LogicVec::from_u64(2, 8))); // 1
+        let nid = m.add_node(SirNodeKind::Shl, vec![0, 1], 8);
+        let out = m.nodes[nid].output;
+        m.add_value(SirValue::Node(nid));
+        run_one(&mut m, 1);
+        assert_eq!(m.values[out], SirValue::Const(LogicVec::from_u64(0x04, 8)));
+    }
+
+    #[test]
+    fn shl_shift_zero_identity() {
+        // 0x0F << 0 → 0x0F.
+        let mut m = SirModule::new(Symbol::intern("top"));
+        m.add_value(SirValue::Const(LogicVec::from_u64(0x0F, 8))); // 0
+        m.add_value(SirValue::Const(LogicVec::from_u64(0, 8))); // 1
+        let nid = m.add_node(SirNodeKind::Shl, vec![0, 1], 8);
+        let out = m.nodes[nid].output;
+        m.add_value(SirValue::Node(nid));
+        run_one(&mut m, 1);
+        assert_eq!(m.values[out], SirValue::Const(LogicVec::from_u64(0x0F, 8)));
+    }
+
+    #[test]
+    fn or_with_zero_aliases() {
+        // Or(x, 0) → x (operand non-konstan).
+        let mut m = SirModule::new(Symbol::intern("top"));
+        m.add_value(SirValue::Port(0)); // x
+        m.add_value(SirValue::Const(LogicVec::from_u64(0, 8))); // 0
+        let nid = m.add_node(SirNodeKind::Or, vec![0, 1], 8);
+        let out = m.nodes[nid].output;
+        m.add_value(SirValue::Node(nid));
+        run_one(&mut m, 1);
+        assert_eq!(m.values[out], m.values[0], "Or(x, 0) harus alias x");
+    }
+
+    #[test]
+    fn and_with_all_ones_aliases() {
+        // And(x, all_ones) → x.
+        let mut m = SirModule::new(Symbol::intern("top"));
+        m.add_value(SirValue::Port(0)); // x
+        m.add_value(SirValue::Const(LogicVec::from_u64(0xFF, 8))); // all ones
+        let nid = m.add_node(SirNodeKind::And, vec![0, 1], 8);
+        let out = m.nodes[nid].output;
+        m.add_value(SirValue::Node(nid));
+        run_one(&mut m, 1);
+        assert_eq!(m.values[out], m.values[0], "And(x, all_ones) harus alias x");
+    }
+
+    #[test]
+    fn xor_same_operand_folds_zero_8bit() {
+        // Xor(x, x) → 0 pada lebar 8.
+        let mut m = SirModule::new(Symbol::intern("top"));
+        m.add_value(SirValue::Const(LogicVec::from_u64(0xAB, 8))); // 0
+        let nid = m.add_node(SirNodeKind::Xor, vec![0, 0], 8);
+        let out = m.nodes[nid].output;
+        m.add_value(SirValue::Node(nid));
+        run_one(&mut m, 1);
+        assert_eq!(m.values[out], SirValue::Const(LogicVec::from_u64(0, 8)));
+    }
 }
