@@ -40,7 +40,7 @@
 //! berikutnya.
 
 /// Satu sinyal port VHDL (stage 2: ekstraksi kasar dari klausa `port`).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct VhdlPort {
     pub name: String,
     /// Mode: `in`/`out`/`inout`/`buffer`/`linkage` (teks asli, lower-cased).
@@ -50,7 +50,7 @@ pub struct VhdlPort {
 }
 
 /// Satu generic VHDL (stage 3: ekstraksi kasar dari klausa `generic`).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct VhdlGeneric {
     pub name: String,
     /// Nama tipe (mis. `integer`, `positive`, `std_logic_vector`).
@@ -58,7 +58,7 @@ pub struct VhdlGeneric {
 }
 
 /// Satu entitas VHDL yang dikenali.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct VhdlEntity {
     pub name: String,
     /// 1-based baris tempat kata kunci `entity` muncul.
@@ -70,7 +70,7 @@ pub struct VhdlEntity {
 }
 
 /// Satu sinyal VHDL (stage 4: ekstraksi kasar dari body arsitektur).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct VhdlSignal {
     pub name: String,
     /// Nama tipe (mis. `bit`, `std_logic_vector`). Tipe dengan kurung
@@ -82,7 +82,7 @@ pub struct VhdlSignal {
 /// Satu komponen VHDL (stage 5: ekstraksi kasar dari `component ... end
 /// component`). Port di dalamnya diekstrak dengan `extract_ports` (sama
 /// seperti port entitas).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct VhdlComponent {
     pub name: String,
     /// 1-based baris tempat kata kunci `component` muncul.
@@ -93,7 +93,7 @@ pub struct VhdlComponent {
 
 /// Satu process VHDL (stage 6: ekstraksi kasar dari `label : process (...)`
 /// ... `end process`).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct VhdlProcess {
     /// Label process (mis. `foo` dalam `foo : process`), atau `None` bila
     /// tak berlabel.
@@ -106,7 +106,7 @@ pub struct VhdlProcess {
 }
 
 /// Jenis deklarasi package VHDL (stage 8).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub enum VhdlPackageKind {
     /// `package <nama> is ... end package;`
     Decl,
@@ -115,7 +115,7 @@ pub enum VhdlPackageKind {
 }
 
 /// Satu deklarasi package VHDL (stage 8: ekstraksi kasar nama + jenis).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct VhdlPackage {
     pub name: String,
     pub kind: VhdlPackageKind,
@@ -126,7 +126,7 @@ pub struct VhdlPackage {
 /// Satu deklarasi `configuration` VHDL (stage 13: ekstraksi kasar nama +
 /// entitas). Bentuk: `configuration <nama> of <entity> is ... end
 /// configuration [nama];`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct VhdlConfiguration {
     pub name: String,
     /// Nama entitas yang dikonfigurasi (word setelah `of`).
@@ -136,7 +136,7 @@ pub struct VhdlConfiguration {
 }
 
 /// Jenis subprogram VHDL (stage 9).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub enum VhdlSubprogramKind {
     /// `function`.
     Function,
@@ -145,7 +145,7 @@ pub enum VhdlSubprogramKind {
 }
 
 /// Satu deklarasi subprogram VHDL (stage 9: ekstraksi kasar nama + jenis).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct VhdlSubprogram {
     pub name: String,
     pub kind: VhdlSubprogramKind,
@@ -154,7 +154,7 @@ pub struct VhdlSubprogram {
 }
 
 /// Jenis deklarasi tipe VHDL (stage 10).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub enum VhdlTypeKind {
     /// `type <nama> is (...);` (enumerasi).
     Enum,
@@ -167,7 +167,7 @@ pub enum VhdlTypeKind {
 }
 
 /// Satu deklarasi tipe VHDL (stage 10: ekstraksi kasar nama + jenis).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct VhdlTypeDecl {
     pub name: String,
     pub kind: VhdlTypeKind,
@@ -178,7 +178,7 @@ pub struct VhdlTypeDecl {
 /// Satu deklarasi `constant` VHDL (stage 11: ekstraksi kasar nama + tipe +
 /// nilai). Tipe = word pertama setelah `:`, nilai = word pertama setelah
 /// `:=` (literal seperti `'0'` atau `"teks"` diambil isinya secara kasar).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct VhdlConstant {
     pub name: String,
     pub type_name: String,
@@ -190,7 +190,7 @@ pub struct VhdlConstant {
 /// Satu deklarasi `alias` VHDL (stage 12: ekstraksi kasar nama + tipe +
 /// target). Bentuk: `alias <nama> : <tipe> is <target>;`. Tipe = word pertama
 /// setelah `:`, target = word pertama setelah `is`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct VhdlAlias {
     pub name: String,
     pub type_name: String,
@@ -203,7 +203,7 @@ pub struct VhdlAlias {
 /// nilai opsional). Bentuk: `variable <nama> : <tipe> [:= <nilai>];`.
 /// Tipe = word pertama setelah `:`, nilai = word pertama setelah `:=`
 /// bila ada.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct VhdlVariable {
     pub name: String,
     pub type_name: String,
@@ -217,7 +217,7 @@ pub struct VhdlVariable {
 /// path opsional). Bentuk: `file <nama> : <tipe_file> [is <path>];`.
 /// Tipe = word pertama setelah `:`, path = word pertama setelah `is`
 /// bila ada.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct VhdlFile {
     pub name: String,
     /// Tipe file (mis. `text`, `integer`, tipe akses berkas).
@@ -231,7 +231,7 @@ pub struct VhdlFile {
 /// Satu deklarasi `attribute` VHDL (stage 16: ekstraksi kasar nama + tipe).
 /// Bentuk: `attribute <nama> : <tipe> [of <objek> is <nilai>];`. Nama =
 /// word pertama setelah `attribute`, tipe = word pertama setelah `:`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct VhdlAttribute {
     pub name: String,
     pub type_name: String,
@@ -242,7 +242,7 @@ pub struct VhdlAttribute {
 /// Satu deklarasi `group template` VHDL (stage 17: ekstraksi kasar nama +
 /// tipe grup). Bentuk: `group <nama> : <tipe_grup> is (daftar);`. Nama =
 /// word pertama setelah `group`, tipe = word pertama setelah `:`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct VhdlGroup {
     pub name: String,
     /// Tipe grup (mis. `clock`, `signal`).
@@ -254,7 +254,7 @@ pub struct VhdlGroup {
 /// Satu instansi komponen VHDL (stage 18: ekstraksi kasar label + nama
 /// komponen). Bentuk: `<label> : <nama_komponen> port map (...);`. Label =
 /// word pertama, nama komponen = word pertama setelah `:`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct VhdlComponentInst {
     pub label: String,
     pub name: String,
@@ -265,7 +265,7 @@ pub struct VhdlComponentInst {
 /// Satu blok VHDL (stage 19: ekstraksi kasar label). Bentuk:
 /// `<label> : block (...) is ... begin ... end block [label];`. Label =
 /// word pertama sebelum `: block`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct VhdlBlock {
     pub label: String,
     /// 1-based baris tempat kata kunci `block` muncul.
@@ -274,7 +274,7 @@ pub struct VhdlBlock {
 
 /// Satu pernyataan `assert` VHDL (stage 20: ekstraksi kasar baris).
 /// Bentuk: `assert <kondisi> [report <pesan>] [severity <level>];`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct VhdlAssert {
     /// 1-based baris tempat kata kunci `assert` muncul.
     pub line: usize,
@@ -282,7 +282,7 @@ pub struct VhdlAssert {
 
 /// Satu pernyataan `report` VHDL (stage 21: ekstraksi kasar baris).
 /// Bentuk: `report <pesan> severity <level>;`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct VhdlReport {
     /// 1-based baris tempat kata kunci `report` muncul.
     pub line: usize,
@@ -290,7 +290,7 @@ pub struct VhdlReport {
 
 /// Satu pernyataan `wait` VHDL (stage 22: ekstraksi kasar baris).
 /// Bentuk: `wait;` / `wait on <sinyal>;` / `wait until <kondisi>;`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct VhdlWait {
     /// 1-based baris tempat kata kunci `wait` muncul.
     pub line: usize,
@@ -298,7 +298,7 @@ pub struct VhdlWait {
 
 /// Satu penetapan sinyal konkuren VHDL (stage 23: ekstraksi kasar baris).
 /// Bentuk: `<sinyal> <= <ekspresi>;`. Hanya baris dicatat.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct VhdlConcurrentAssign {
     /// 1-based baris tempat operator `<=` muncul.
     pub line: usize,
@@ -306,7 +306,7 @@ pub struct VhdlConcurrentAssign {
 
 /// Satu generate statement VHDL (stage 24: ekstraksi kasar label + baris).
 /// Bentuk: `[<label> :] generate ... end generate [label];`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct VhdlGenerate {
     /// Label generate (opsional), atau None bila tak berlabel.
     pub label: Option<String>,
@@ -316,7 +316,7 @@ pub struct VhdlGenerate {
 
 /// Satu pernyataan `null` VHDL (stage 25: ekstraksi kasar baris).
 /// Bentuk: `null;`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct VhdlNullStmt {
     /// 1-based baris tempat kata kunci `null` muncul.
     pub line: usize,
@@ -324,7 +324,7 @@ pub struct VhdlNullStmt {
 
 /// Satu pernyataan `if` VHDL (stage 26: ekstraksi kasar baris).
 /// Bentuk: `if <kondisi> then ... end if;`. Hanya baris dicatat.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct VhdlIfStmt {
     /// 1-based baris tempat kata kunci `if` muncul.
     pub line: usize,
@@ -332,7 +332,7 @@ pub struct VhdlIfStmt {
 
 /// Satu pernyataan `case` VHDL (stage 27: ekstraksi kasar baris).
 /// Bentuk: `case <ekspresi> is ... end case;`. Hanya baris dicatat.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct VhdlCaseStmt {
     /// 1-based baris tempat kata kunci `case` muncul.
     pub line: usize,
@@ -340,7 +340,7 @@ pub struct VhdlCaseStmt {
 
 /// Satu pernyataan `loop` VHDL (stage 28: ekstraksi kasar baris).
 /// Bentuk: `[<label> :] loop ... end loop [label];`. Hanya baris dicatat.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct VhdlLoopStmt {
     /// 1-based baris tempat kata kunci `loop` muncul.
     pub line: usize,
@@ -349,7 +349,7 @@ pub struct VhdlLoopStmt {
 /// Satu pernyataan `exit`/`next` VHDL (stage 29: ekstraksi kasar baris).
 /// Bentuk: `exit [label] [when condition];` atau `next [label] [when condition];`.
 /// Hanya baris dicatat; label dan kondisi tidak di-parse dalam stub ini.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct VhdlExitStmt {
     /// 1-based baris tempat kata kunci `exit` atau `next` muncul.
     pub line: usize,
@@ -357,7 +357,7 @@ pub struct VhdlExitStmt {
 
 /// Satu pernyataan `return` VHDL (stage 30: ekstraksi kasar baris).
 /// Bentuk: `return [ekspresi];`. Hanya baris dicatat.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct VhdlReturnStmt {
     /// 1-based baris tempat kata kunci `return` muncul.
     pub line: usize,
@@ -365,14 +365,14 @@ pub struct VhdlReturnStmt {
 
 /// Satu penetapan variabel VHDL (stage 31: ekstraksi kasar baris).
 /// Bentuk: `<nama> := <ekspresi];`. Hanya baris dicatat.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct VhdlVariableAssign {
     /// 1-based baris tempat operator `:=` muncul.
     pub line: usize,
 }
 
 /// Satu arsitektur VHDL yang dikenali.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct VhdlArchitecture {
     pub name: String,
     pub entity: String,
@@ -389,7 +389,7 @@ pub struct VhdlArchitecture {
 }
 
 /// Hasil scan VHDL.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
 pub struct VhdlScan {
     pub entities: Vec<VhdlEntity>,
     pub architectures: Vec<VhdlArchitecture>,
@@ -448,14 +448,14 @@ pub struct VhdlScan {
 }
 
 /// Kesalahan scan tingkat rendah (stage 1).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub enum VhdlScanError {
     /// Entitas/arsitektur tak ditutup oleh `end ... ;`.
     Unterminated(String),
 }
 
 /// Token kasar hasil tokenisasi (komentar `--` sudah dibuang).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 enum Tok {
     Word(String),
     Punct(char),

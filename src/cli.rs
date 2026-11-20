@@ -124,6 +124,10 @@ pub enum MivonCmd {
     Mdb(MdbArgs),
     /// mcdb — collaborative debug session management
     Mcdb(McdbArgs),
+    /// mvhdl — VHDL front-end scanner (LANG-01): entitas, arsitektur, port, generic
+    Mvhdl(MvhdlArgs),
+    /// msc — SystemC front-end scanner (LANG-02): modul, process, port, clock
+    Msc(MscArgs),
     /// gui — GUI terminal (ratatui TUI) — Engineering Control Center untuk RTL.
     #[command(alias = "mgui")]
     Gui(GuiArgs),
@@ -2215,6 +2219,26 @@ pub struct McdbArgs {
     pub db: String,
     /// Path database JSON untuk load
     pub path: Option<String>,
+    /// Output JSON
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// mvhdl — VHDL front-end scanner (LANG-01): entitas, arsitektur, port, generic.
+#[derive(clap::Args, Clone)]
+pub struct MvhdlArgs {
+    /// File sumber VHDL (.vhd / .vhdl)
+    pub input: String,
+    /// Output JSON
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// msc — SystemC front-end scanner (LANG-02): modul, process, port, clock.
+#[derive(clap::Args, Clone)]
+pub struct MscArgs {
+    /// File sumber SystemC (.cpp / .h / .hpp)
+    pub input: String,
     /// Output JSON
     #[arg(long)]
     pub json: bool,

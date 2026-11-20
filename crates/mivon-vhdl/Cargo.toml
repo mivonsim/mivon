@@ -5,3 +5,4 @@ edition = "2021"
 description = "VHDL front-end stub (LANG-01): entity/architecture scanner"
 
 [dependencies]
+serde = { version = "1", features = ["derive"] }

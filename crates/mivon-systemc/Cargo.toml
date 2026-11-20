@@ -5,3 +5,4 @@ edition = "2021"
 description = "SystemC front-end stub (LANG-02): SC_MODULE/SC_CTOR scanner"
 
 [dependencies]
+serde = { version = "1", features = ["derive"] }

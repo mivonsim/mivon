@@ -716,3 +716,94 @@ pub(crate) fn dispatch_mcdb(a: &crate::cli::McdbArgs) -> ! {
     })();
     exit_tool(result);
 }
+
+/// mvhdl — VHDL front-end scanner (LANG-01): scan file VHDL, cetak entitas/arsitektur/port/generic.
+pub(crate) fn dispatch_mvhdl(a: &crate::cli::MvhdlArgs) -> ! {
+    let result: Result<(), SimError> = (|| {
+        use mivon_vhdl::scan;
+        use std::fs::read_to_string;
+        use std::path::Path;
+
+        let src = read_to_string(Path::new(&a.input)).map_err(|e| {
+            SimError::with_diag(DiagCode::IoError, format!("read {input}: {e}", input = &a.input))
+        })?;
+        let scanned = scan(&src).map_err(|e| {
+            SimError::with_diag(DiagCode::IoError, format!("vhdl scan: {e:?}"))
+        })?;
+
+        if a.json {
+            println!("{}", serde_json::to_string_pretty(&scanned).unwrap());
+        } else {
+            println!("VHDL scan: {}", &a.input);
+            println!("  Entities: {}", scanned.entities.len());
+            for e in &scanned.entities {
+                println!("    - {} (line {})", e.name, e.line);
+                for g in &e.generics {
+                    println!("      generic {}: {}", g.name, g.type_name);
+                }
+                for p in &e.ports {
+                    println!("      port {}: {} {}", p.name, p.mode, p.type_name);
+                }
+            }
+            println!("  Architectures: {}", scanned.architectures.len());
+            for a_ in &scanned.architectures {
+                println!("    - {} of {} (line {})", a_.name, a_.entity, a_.line);
+                for s in &a_.signals {
+                    println!("      signal {}: {}", s.name, s.type_name);
+                }
+                for c in &a_.components {
+                    println!("      component {} (line {})", c.name, c.line);
+                }
+                for p in &a_.processes {
+                    println!("      process {:?} (line {})", p.label, p.line);
+                }
+            }
+        }
+        Ok(())
+    })();
+    exit_tool(result);
+}
+
+/// msc — SystemC front-end scanner (LANG-02): scan file SystemC, cetak modul/process/port/clock.
+pub(crate) fn dispatch_msc(a: &crate::cli::MscArgs) -> ! {
+    let result: Result<(), SimError> = (|| {
+        use mivon_systemc::scan;
+        use std::fs::read_to_string;
+        use std::path::Path;
+
+        let src = read_to_string(Path::new(&a.input)).map_err(|e| {
+            SimError::with_diag(DiagCode::IoError, format!("read {input}: {e}", input = &a.input))
+        })?;
+        let scanned = scan(&src).map_err(|e| {
+            SimError::with_diag(DiagCode::IoError, format!("systemc scan: {e:?}"))
+        })?;
+
+        if a.json {
+            println!("{}", serde_json::to_string_pretty(&scanned).unwrap());
+        } else {
+            println!("SystemC scan: {}", &a.input);
+            println!("  Modules: {}", scanned.modules.len());
+            for m in &scanned.modules {
+                println!("    - {} (line {})", m.name, m.line);
+            }
+            println!("  Ctors: {}", scanned.ctors.len());
+            for c in &scanned.ctors {
+                println!("    - {} (line {})", c.name, c.line);
+            }
+            println!("  Ports: {}", scanned.ports.len());
+            for p in &scanned.ports {
+                println!("    - {}: {} {} (line {})", p.name, p.direction, p.type_name, p.line);
+            }
+            println!("  Processes: {}", scanned.processes.len());
+            for p in &scanned.processes {
+                println!("    - {:?} {} (line {})", p.kind, p.name, p.line);
+            }
+            println!("  Clocks: {}", scanned.clocks.len());
+            for c in &scanned.clocks {
+                println!("    - {} (line {})", c.name, c.line);
+            }
+        }
+        Ok(())
+    })();
+    exit_tool(result);
+}

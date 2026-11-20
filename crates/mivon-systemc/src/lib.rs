@@ -24,7 +24,7 @@
 //! berikutnya.
 
 /// Satu modul SystemC yang dikenali (`SC_MODULE`).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct SystemCModule {
     pub name: String,
     /// 1-based baris tempat makro `SC_MODULE` muncul.
@@ -32,7 +32,7 @@ pub struct SystemCModule {
 }
 
 /// Satu konstruktor SystemC yang dikenali (`SC_CTOR`).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct SystemCCtor {
     pub name: String,
     /// 1-based baris tempat makro `SC_CTOR` muncul.
@@ -40,7 +40,7 @@ pub struct SystemCCtor {
 }
 
 /// Hasil scan SystemC.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
 pub struct SystemCScan {
     pub modules: Vec<SystemCModule>,
     pub ctors: Vec<SystemCCtor>,
@@ -69,7 +69,7 @@ pub struct SystemCScan {
 }
 
 /// Jenis process SystemC.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub enum SystemCProcessKind {
     /// `SC_METHOD`.
     Method,
@@ -80,7 +80,7 @@ pub enum SystemCProcessKind {
 }
 
 /// Satu deklarasi process SystemC (`SC_METHOD`/`SC_THREAD`/`SC_CTHREAD`).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct SystemCProcess {
     pub kind: SystemCProcessKind,
     /// Nama metode/thread yang dijadikan process (identifier tepat setelah
@@ -91,7 +91,7 @@ pub struct SystemCProcess {
 }
 
 /// Satu deklarasi clock SystemC (`sc_clock`, stage 4).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct SystemCClock {
     /// Nama sinyal clock (identifier tepat setelah keyword `sc_clock`).
     pub name: String,
@@ -100,7 +100,7 @@ pub struct SystemCClock {
 }
 
 /// Jenis kontrol simulasi SystemC (`sc_start`/`sc_stop`, stage 5).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub enum SystemCSimControlKind {
     /// `sc_start(<durasi>)` — memulai simulasi.
     Start,
@@ -109,7 +109,7 @@ pub enum SystemCSimControlKind {
 }
 
 /// Satu pemanggilan kontrol simulasi SystemC (`sc_start`/`sc_stop`, stage 5).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct SystemCSimControl {
     pub kind: SystemCSimControlKind,
     /// 1-based baris tempat keyword muncul.
@@ -117,7 +117,7 @@ pub struct SystemCSimControl {
 }
 
 /// Jenis channel/sinkronisasi SystemC (stage 7).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub enum SystemCChannelKind {
     /// `sc_fifo<T>` — channel FIFO (template tipe).
     Fifo,
@@ -132,7 +132,7 @@ pub enum SystemCChannelKind {
 /// Satu deklarasi channel/sinkronisasi SystemC (stage 7: ekstraksi kasar
 /// nama + jenis). Nama = identifier setelah keyword (untuk `sc_fifo`,
 /// setelah `>` penutup template).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct SystemCChannel {
     pub name: String,
     pub kind: SystemCChannelKind,
@@ -141,7 +141,7 @@ pub struct SystemCChannel {
 }
 
 /// Edge sensitivity SystemC (stage 8).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub enum SystemCEdge {
     /// `.pos()` — edge naik.
     Pos,
@@ -153,7 +153,7 @@ pub enum SystemCEdge {
 
 /// Satu entri sensitivity list SystemC
 /// (`sensitive << clk.pos() << rst.neg();`, stage 8).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct SystemCSensitivity {
     /// Nama sinyal setelah `<<`.
     pub signal: String,
@@ -165,7 +165,7 @@ pub struct SystemCSensitivity {
 
 /// Satu pemanggilan `wait()` SystemC (stage 9: deteksi kasar durasi +
 /// satuan). `wait()` tanpa argumen menyimpan `None` untuk keduanya.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct SystemCWait {
     /// Word pertama di dalam `wait(...)` (mis. `"10"`), `None` bila `wait()`.
     pub amount: Option<String>,
@@ -176,7 +176,7 @@ pub struct SystemCWait {
 }
 
 /// Jenis makro pelaporan SystemC (stage 10).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub enum SystemCReportKind {
     /// `SC_REPORT_INFO`.
     Info,
@@ -189,7 +189,7 @@ pub enum SystemCReportKind {
 }
 
 /// Satu pemanggilan makro pelaporan SystemC (stage 10: jenis + baris).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct SystemCReport {
     pub kind: SystemCReportKind,
     /// 1-based baris tempat makro muncul.
@@ -198,14 +198,14 @@ pub struct SystemCReport {
 
 /// Satu pemanggilan `sc_trace` SystemC (stage 11: baris).
 /// Bentuk: `sc_trace(tf, sinyal, "nama");`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct SystemCTrace {
     /// 1-based baris tempat `sc_trace` muncul.
     pub line: usize,
 }
 
 /// Arah deklarasi port/signal SystemC.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub enum SystemCPortDirection {
     /// `sc_in<T>` — port masukan.
     In,
@@ -217,8 +217,19 @@ pub enum SystemCPortDirection {
     Signal,
 }
 
+impl std::fmt::Display for SystemCPortDirection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SystemCPortDirection::In => write!(f, "sc_in"),
+            SystemCPortDirection::Out => write!(f, "sc_out"),
+            SystemCPortDirection::InOut => write!(f, "sc_inout"),
+            SystemCPortDirection::Signal => write!(f, "sc_signal"),
+        }
+    }
+}
+
 /// Satu deklarasi port/signal SystemC (`sc_in`/`sc_out`/`sc_inout`/`sc_signal`).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct SystemCPort {
     pub name: String,
     pub direction: SystemCPortDirection,
@@ -231,7 +242,7 @@ pub struct SystemCPort {
 }
 
 /// Kesalahan scan tingkat rendah (stage 1).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub enum SystemCScanError {
     /// Makro tak ditutup kurung `)`.
     Unterminated(String),
@@ -292,7 +303,7 @@ fn tokenize(src: &str) -> Vec<(usize, Tok)> {
 }
 
 /// Token kasar.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 enum Tok {
     Word(String),
     Punct(char),

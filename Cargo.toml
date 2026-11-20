@@ -86,6 +86,9 @@ mivon-tools = { path = "crates/mivon-tools" }
 mivon-api = { path = "crates/mivon-api" }
 mivon-gui = { path = "crates/mivon-gui" }
 
+mivon-vhdl = { path = "crates/mivon-vhdl" }
+mivon-systemc = { path = "crates/mivon-systemc" }
+
 # ── Opsional: JIT Compilation (cranelift) ──
 cranelift = { version = "0.110", optional = true }
 cranelift-jit = { version = "0.110", optional = true }
