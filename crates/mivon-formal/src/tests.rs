@@ -8,6 +8,7 @@
 mod tests {
     use crate::bmc::{collect_assertions, collect_combinational_assignments};
     use crate::sec::*;
+    use crate::connectivity::*;
     use crate::*;
     use mivon_core::Symbol;
     use mivon_ir::*;
@@ -1577,5 +1578,197 @@ mod tests {
             ),
             "simbol output tak dikenal harus Unsupported"
         );
+    }
+
+    // ── Connectivity tests (FORMAL-13) ──
+    #[test]
+    fn test_connectivity_chain_and_isolated_v2() {
+        // b = a; c = b | a; d = c
+        // check(a, c) → connected, 1 hop [a, c]
+        // check(c, a) → NOT connected
+        // check(a, d) → connected, 2 hop [a, c, d]
+        // check(zz, a) → error sinyal tidak dikenal
+        let ir = IrDesign {
+            top: IrModule {
+                name: Symbol::from("t"),
+                signals: vec![
+                    SignalInfo { name: Symbol::from("a"), width: 1, ..Default::default() },
+                    SignalInfo { name: Symbol::from("b"), width: 1, ..Default::default() },
+                    SignalInfo { name: Symbol::from("c"), width: 1, ..Default::default() },
+                    SignalInfo { name: Symbol::from("d"), width: 1, ..Default::default() },
+                ],
+                inputs: vec![],
+                outputs: vec![],
+                inouts: vec![],
+                processes: vec![
+                    Process::Combinational {
+                        name: Symbol::from("comb"),
+                        sensitivity: vec![],
+                        body: vec![
+                            IrStmt::BlockingAssign {
+                                lhs: IrLValue::Signal(1, 1),
+                                rhs: IrExpr::Signal(0, 0),
+                                delay: None,
+                            },
+                            IrStmt::BlockingAssign {
+                                lhs: IrLValue::Signal(2, 1),
+                                rhs: IrExpr::BinaryOp(
+                                    BinaryIrOp::BitOr,
+                                    Box::new(IrExpr::Signal(1, 0)),
+                                    Box::new(IrExpr::Signal(0, 0)),
+                                ),
+                                delay: None,
+                            },
+                            IrStmt::BlockingAssign {
+                                lhs: IrLValue::Signal(3, 1),
+                                rhs: IrExpr::Signal(2, 0),
+                                delay: None,
+                            },
+                        ],
+                    },
+                ],
+                sub_instances: vec![],
+            },
+            modules: HashMap::new(),
+            classes: HashMap::new(),
+            covergroups: vec![],
+            dpi_imports: vec![],
+            hier_signal_map: HashMap::new(),
+            udp_defs: vec![],
+            specify_items: vec![],
+            timescale: None,
+            source_file: None,
+            source_lines: None,
+            module_functions: HashMap::new(),
+            pkg_scoped_consts: HashMap::new(),
+            coverage_exclusions: Vec::new(),
+            stmt_lines: HashMap::new(),
+            net_aliases: HashMap::new(),
+        };
+
+        let pairs = vec![
+            ("a".to_string(), "c".to_string()),
+            ("c".to_string(), "a".to_string()),
+            ("a".to_string(), "d".to_string()),
+            ("zz".to_string(), "a".to_string()),
+        ];
+        let results = check_connectivity(&ir, &pairs);
+        assert_eq!(results.len(), 4);
+
+        // a → c: connected langsung 1 hop (c = b|a memuat edge a→c)
+        assert!(results[0].connected);
+        assert_eq!(results[0].path_len, Some(1));
+        assert_eq!(results[0].path, vec!["a", "c"]);
+
+        // c → a: tidak ada jalur mundur.
+        assert!(!results[1].connected);
+        assert_eq!(results[1].error, None);
+
+        // a → d: jalur 2 hop [a, c, d]
+        assert!(results[2].connected);
+        assert_eq!(results[2].path_len, Some(2));
+        assert_eq!(results[2].path, vec!["a", "c", "d"]);
+
+        // Sinyal tidak dikenal → error
+        assert!(results[3].error.is_some());
+        assert!(!results[3].connected);
+    }
+
+    #[test]
+    fn test_connectivity_no_path() {
+        // a dan b tidak saling terkait (tidak ada assign yang membuat edge)
+        let design = IrDesign {
+            top: IrModule {
+                name: Symbol::from("t"),
+                signals: vec![
+                    SignalInfo { name: Symbol::from("a"), width: 1, ..Default::default() },
+                    SignalInfo { name: Symbol::from("b"), width: 1, ..Default::default() },
+                ],
+                inputs: vec![],
+                outputs: vec![],
+                inouts: vec![],
+                processes: vec![],
+                sub_instances: vec![],
+            },
+            modules: HashMap::new(),
+            classes: HashMap::new(),
+            covergroups: vec![],
+            dpi_imports: vec![],
+            hier_signal_map: HashMap::new(),
+            udp_defs: vec![],
+            specify_items: vec![],
+            timescale: None,
+            source_file: None,
+            source_lines: None,
+            module_functions: HashMap::new(),
+            pkg_scoped_consts: HashMap::new(),
+            coverage_exclusions: Vec::new(),
+            stmt_lines: HashMap::new(),
+            net_aliases: HashMap::new(),
+        };
+        let results = check_connectivity(&design, &[("a".to_string(), "b".to_string())]);
+        assert_eq!(results.len(), 1);
+        assert!(!results[0].connected);
+        assert_eq!(results[0].path_len, None);
+        assert_eq!(results[0].path, Vec::<String>::new());
+        assert!(results[0].error.is_none());
+    }
+
+    #[test]
+    fn test_connectivity_include_seq() {
+        // NBA Sequential: q <= d (pemetaan 1 hop lintas cycle saat include_seq=true)
+        let ir = IrDesign {
+            top: IrModule {
+                name: Symbol::from("t"),
+                signals: vec![
+                    SignalInfo { name: Symbol::from("d"), width: 1, ..Default::default() },
+                    SignalInfo { name: Symbol::from("q"), width: 1, ..Default::default() },
+                ],
+                inputs: vec![],
+                outputs: vec![],
+                inouts: vec![],
+                processes: vec![Process::Sequential {
+                    name: Symbol::from("ff"),
+                    clock: ClockEdge::PosEdge(0),
+                    reset: None,
+                    body: vec![IrStmt::NonBlockingAssign {
+                        lhs: IrLValue::Signal(1, 1),
+                        rhs: IrExpr::Signal(0, 0),
+                        delay: None,
+                    }],
+                    iff: None,
+                }],
+                sub_instances: vec![],
+            },
+            modules: HashMap::new(),
+            classes: HashMap::new(),
+            covergroups: vec![],
+            dpi_imports: vec![],
+            hier_signal_map: HashMap::new(),
+            udp_defs: vec![],
+            specify_items: vec![],
+            timescale: None,
+            source_file: None,
+            source_lines: None,
+            module_functions: HashMap::new(),
+            pkg_scoped_consts: HashMap::new(),
+            coverage_exclusions: Vec::new(),
+            stmt_lines: HashMap::new(),
+            net_aliases: HashMap::new(),
+        };
+
+        // Kombinational (tanpa include_seq): q tak terlihat sebagai target NBA,
+        // jadi tidak ada edge.
+        let no_seq = check_connectivity(&ir, &[("d".to_string(), "q".to_string())]);
+        assert_eq!(no_seq.len(), 1);
+        assert!(!no_seq[0].connected);
+        assert_eq!(no_seq[0].path_len, None);
+
+        // Include_seq: NBA menulis q dari d → edge d→q ada.
+        let with_seq = check_connectivity_including_seq(&ir, &[("d".to_string(), "q".to_string())]);
+        assert_eq!(with_seq.len(), 1);
+        assert!(with_seq[0].connected);
+        assert_eq!(with_seq[0].path_len, Some(1));
+        assert_eq!(with_seq[0].path, vec!["d", "q"]);
     }
 }
