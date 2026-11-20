@@ -539,6 +539,10 @@ impl SimulationEngine {
         self.parallel_config = config;
     }
 
+    pub fn set_parallel_delta(&mut self, enabled: bool) {
+        self.parallel_config.parallel_delta = enabled;
+    }
+
     pub fn set_use_packed_eval(&mut self, enabled: bool) {
         self.use_packed_eval = enabled;
     }

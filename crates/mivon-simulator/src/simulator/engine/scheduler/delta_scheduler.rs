@@ -305,4 +305,46 @@ mod tests {
             assert_eq!(s.pending(), 0);
         }
     }
+
+    // ─── ARSITEKTUR-03 stage 2: cross-scheduler equivalence ───
+    // ParallelDeltaScheduler harus menghasilkan hasil identik dengan
+    // SequentialDeltaScheduler untuk same sequence push/deliver.
+
+    #[test]
+    fn parallel_delta_matches_sequential_equivalence() {
+        let times = [0, 5, 3, 10, 7, 1, 5, 100, 42];
+        let mut seq = SequentialDeltaScheduler::new();
+        let mut par = ParallelDeltaScheduler::new();
+        for (i, &t) in times.iter().enumerate() {
+            seq.push_event(t, ev(t, i));
+            par.push_event(t, ev(t, i));
+        }
+        // Deliver all from both
+        let max_t = times.iter().max().unwrap();
+        let seq_all = seq.advance_to(*max_t + 10);
+        let par_all = par.advance_to(*max_t + 10);
+        assert_eq!(
+            seq_all, par_all,
+            "parallel and sequential delta schedulers must deliver identical event sequences"
+        );
+        assert_eq!(seq.pending(), 0);
+        assert_eq!(par.pending(), 0);
+    }
+
+    #[test]
+    fn parallel_delta_deliver_at_matches_sequential() {
+        let mut seq = SequentialDeltaScheduler::new();
+        let mut par = ParallelDeltaScheduler::new();
+        seq.push_event(10, ev(10, 1));
+        seq.push_event(10, ev(10, 2));
+        seq.push_event(20, ev(20, 3));
+        par.push_event(10, ev(10, 1));
+        par.push_event(10, ev(10, 2));
+        par.push_event(20, ev(20, 3));
+
+        assert_eq!(seq.deliver_at(10), par.deliver_at(10));
+        assert_eq!(seq.deliver_at(20), par.deliver_at(20));
+        assert_eq!(seq.pending(), 0);
+        assert_eq!(par.pending(), 0);
+    }
 }

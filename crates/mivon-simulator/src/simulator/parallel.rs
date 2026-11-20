@@ -119,6 +119,8 @@ pub struct ParallelConfig {
     pub parallel_processes: bool,
     /// Enable parallel signal snapshot
     pub parallel_snapshot: bool,
+    /// Enable ParallelDeltaScheduler as event queue (stage 2 ARSITEKTUR-03)
+    pub parallel_delta: bool,
     /// Minimum number of processes before parallelizing
     pub min_processes_parallel: usize,
     /// Minimum number of signals before parallelizing
@@ -134,6 +136,7 @@ impl Default for ParallelConfig {
             num_threads,
             parallel_processes: true,
             parallel_snapshot: true,
+            parallel_delta: false,
             min_processes_parallel: 4,
             min_signals_parallel: 64,
         }
