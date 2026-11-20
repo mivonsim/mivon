@@ -7,7 +7,8 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 
-/// Magic number SHM file (4 byte ASCII).
+use mivon_core::LogicVec;
+use mivon_ir::{IrDesign, SignalKind};
 const SHM_MAGIC: &[u8; 4] = b"SHM1";
 
 /// Versi file SHM yang dihasilkan.
@@ -123,6 +124,37 @@ impl ShmWriter {
         self.out.write_all(format!("#{}\n", time).as_bytes())?;
         self.out
             .write_all(format!("b{} {}\n", value, vd.id).as_bytes())?;
+        Ok(())
+    }
+
+    /// Dump current signal states to SHM.
+    pub fn dump_state(
+        &mut self,
+        time: u64,
+        design: &IrDesign,
+        state: &[LogicVec],
+    ) -> Result<(), std::io::Error> {
+        // Daftarkan semua sinyal (idempotent via define_signal).
+        for sig in &design.top.signals {
+            let vtype = if sig.kind == SignalKind::Reg {
+                VarType::Reg
+            } else {
+                VarType::Wire
+            };
+            self.define_signal(&sig.name.as_str(), vtype, sig.width)?;
+        }
+        // Time header.
+        self.out.write_all(format!("#{}\n", time).as_bytes())?;
+        // Nilai setiap sinyal (indeks sinyal == indeks state).
+        for (i, sig) in design.top.signals.iter().enumerate() {
+            let id = match self.vars.get(sig.name.as_str()) {
+                Some(vd) => vd.id,
+                None => continue,
+            };
+            let val_str = format!("{}", state[i]);
+            self.out
+                .write_all(format!("b{} {}\n", val_str, id).as_bytes())?;
+        }
         Ok(())
     }
 

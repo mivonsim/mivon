@@ -22,7 +22,7 @@ use crate::simulator::sdf::TimingCheck;
 use crate::simulator::state::SimulationState;
 use crate::simulator::types::*;
 use crate::waveform::{
-    CsvWaveWriter, FsdbWriter, FstWaveWriter, SignalStats, VcdWriter,
+    CsvWaveWriter, FsdbWriter, FstWaveWriter, ShmWriter, SignalStats, VcdWriter,
 };
 use mivon_core::Symbol;
 use rand::rngs::StdRng;
@@ -172,6 +172,7 @@ pub struct SimulationEngine {
     pub vcd: Option<VcdWriter>,
     pub fst: Option<FstWaveWriter>,
     pub fsdb: Option<FsdbWriter>,
+    pub shm: Option<ShmWriter>,
     /// CSV waveform writer (signal values as comma-separated values)
     pub csv: Option<CsvWaveWriter>,
     /// Signal statistics collector (toggle counts, transitions)

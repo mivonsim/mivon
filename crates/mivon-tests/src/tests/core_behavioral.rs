@@ -6944,3 +6944,40 @@ endmodule
     assert!(content.contains("#"), "harus ada time header");
     let _ = fs::remove_file(path);
 }
+
+#[test]
+fn test_shm_engine_wiring() {
+    // WAV-03: ShmWriter harus ter-wire ke engine run loop (set_shm +
+    // dump_shm_state per time step), sehingga file SHM berisi magic +
+    // definisi variabel + time header setelah simulasi.
+    use std::fs;
+    use mivon_simulator::waveform::ShmWriter;
+
+    let source = r#"
+module tb;
+    reg clk = 0;
+    reg [7:0] cnt = 0;
+    always #5 clk = ~clk;
+    always @(posedge clk) cnt <= cnt + 1;
+    initial #50 $finish;
+endmodule
+"#;
+    let design = crate::compile_str(source).unwrap();
+    let path = "/tmp/opencode/test_shm_engine.shm";
+    let _ = fs::remove_file(path);
+    {
+        let mut engine =
+            crate::simulator::SimulationEngine::new(design, 60);
+        let shm = ShmWriter::create(path, 1).unwrap();
+        engine.set_shm(shm);
+        let _ = engine.run();
+    } // engine → ShmWriter → BufWriter flush ke file saat di-drop
+
+    let data = fs::read(path).unwrap();
+    assert!(&data[0..4] == b"SHM1", "SHM magic harus tertulis oleh engine");
+    let content = String::from_utf8_lossy(&data);
+    assert!(content.contains("SHM 1.0"), "harus ada versi SHM");
+    assert!(content.contains("$var"), "harus ada definisi variabel");
+    assert!(content.contains("#"), "harus ada time header");
+    let _ = fs::remove_file(path);
+}

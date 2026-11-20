@@ -123,6 +123,26 @@ impl SimulationEngine {
         Ok(())
     }
 
+    /// Write SHM time header (no-op: SHM writes time header inline dalam
+    /// dump_state).
+    pub(crate) fn dump_shm_time(&mut self) -> Result<(), SimError> {
+        Ok(())
+    }
+
+    /// Dump current signal states to SHM.
+    pub(crate) fn dump_shm_state(&mut self) -> Result<(), SimError> {
+        if let Some(ref mut shm) = self.shm {
+            shm.dump_state(self.state.time, &self.design, &self.state.signals)
+                .map_err(|e| {
+                    SimError::with_diag(
+                        DiagCode::WaveformError,
+                        format!("SHM dump error: {}", e),
+                    )
+                })?;
+        }
+        Ok(())
+    }
+
     /// Dump current signal states to CSV.
     pub(crate) fn dump_csv_state(&mut self) -> Result<(), SimError> {
         if let Some(ref mut csv) = self.csv {
