@@ -2088,6 +2088,30 @@ impl Elaborator {
         Ok(ir)
     }
 
+    /// ELAB-02 Stage 4: On-demand per-signal elaboration.
+    ///
+    /// Elaborasi SATU sinyal menurut nama module + nama sinyal tanpa
+    /// mengelaborasi seluruh design. Berguna untuk LSP & partial simulation
+    /// di mana hanya satu sinyal yang dibutuhkan. Mengembalikan `SignalInfo`
+    /// yang sudah di-resolve (width, kind, range, dll). Mengembalikan error
+    /// bila module atau sinyal dengan nama tsb tidak ditemukan.
+    pub fn elaborate_signal_by_name(
+        &mut self,
+        module_name: &str,
+        signal_name: &str,
+    ) -> Result<mivon_ir::SignalInfo, SimError> {
+        let ir = self.elaborate_module_by_name(module_name)?;
+        ir.signals
+            .iter()
+            .find(|s| s.name.as_str() == signal_name)
+            .cloned()
+            .ok_or_else(|| {
+                SimError::elaborate(format!(
+                    "signal '{signal_name}' not found in module '{module_name}' for on-demand elaboration"
+                ))
+            })
+    }
+
     /// ELAB-03 Stage 1: Non-blocking (async) per-module elaboration.
     ///
     /// Menjalankan `elaborate_module_by_name` di latar belakang melalui
@@ -6382,6 +6406,77 @@ mod elab_on_demand_tests {
         let err = elab.elaborate_module_by_name("nope").unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("nope"), "pesan error harus menyebut nama module: {msg}");
+    }
+
+    #[test]
+    fn elaborate_signal_by_name_not_found() {
+        let design = Design {
+            modules: vec![mk_module("top")],
+            ..Design::default()
+        };
+        let mut elab = Elaborator::new(design);
+        // module "top" tanpa decls → tidak ada sinyal
+        let err = elab.elaborate_signal_by_name("top", "sig_a").unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("sig_a"), "harus error sinyal tidak ditemukan: {msg}");
+    }
+
+    #[test]
+    fn elaborate_signal_by_name_module_not_found() {
+        let design = Design {
+            modules: vec![mk_module("top")],
+            ..Design::default()
+        };
+        let mut elab = Elaborator::new(design);
+        let err = elab.elaborate_signal_by_name("nope", "sig_a").unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("nope"), "harus error module tidak ditemukan: {msg}");
+    }
+
+    #[test]
+    fn elaborate_signal_by_name_success() {
+        use mivon_ast::types::{Decl, DeclKind, DeclVar, DataType, Range};
+        use mivon_ir::SignalKind;
+        let design = Design {
+            modules: vec![Module {
+                name: Symbol::intern("top"),
+                line: 0,
+                col: 0,
+                ports: vec![],
+                params: vec![],
+                decls: vec![Decl {
+                    dtype: DataType::Logic,
+                    kind: DeclKind::Logic,
+                    names: vec![DeclVar {
+                        name: Symbol::intern("sig_a"),
+                        range: Some(Range { msb: 7, lsb: 0 }),
+                        expr_range: None,
+                        array_range: None,
+                        array_size_expr: None,
+                        extra_unpacked_dims: vec![],
+                        extra_packed_dims: vec![],
+                        is_dynamic: false,
+                        is_queue: false,
+                        is_associative: false,
+                        assoc_key_type: None,
+                        is_rand: false,
+                        is_const: false,
+                        is_static: false,
+                        expr: None,
+                        line: 1,
+                        col: 1,
+                    }],
+                }],
+                items: vec![],
+                timescale: None,
+            }],
+            ..Design::default()
+        };
+        let mut elab = Elaborator::new(design);
+        let sig = elab.elaborate_signal_by_name("top", "sig_a").unwrap();
+        assert_eq!(sig.name.as_str(), "sig_a");
+        assert_eq!(sig.width, 8);
+        assert!(matches!(sig.kind, SignalKind::Reg));
     }
 
     #[test]
