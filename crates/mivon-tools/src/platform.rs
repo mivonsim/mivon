@@ -1,12 +1,15 @@
-//! DEBT-04: no_std Compatibility — feature gate marker + platform detection.
+//! DEBT-04: no_std Kompatibilitas — fitur gate + deteksi platform.
 //!
-//! Provides compile-time platform detection and conditional compilation
-//! helpers for future no_std and cross-platform support.
+//! Menyediakan deteksi platform waktu kompilasi dan helper kompilasi bersyarat
+//! untuk dukungan no_std dan lintas-platform di masa depan.
 //!
-//! Note: Full no_std is not yet supported — this module provides the
-//! foundation markers and platform abstraction layer for future work.
+//! Stage 1: fitur gate `no_std` + fallback `alloc`. Saat fitur `std`
+//! dinonaktifkan, pakai koleksi `alloc` bukan `std` collections dan hindari
+//! API `std::thread`. no_std penuh di seluruh crate adalah pekerjaan masa depan.
 
-/// Platform type detected at compile time.
+#![cfg_attr(not(feature = "std"), no_std)]
+
+/// Tipe platform yang terdeteksi waktu kompilasi.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Platform {
     Linux,
@@ -89,9 +92,17 @@ impl ThreadPool {
             return 1;
         }
         // Simple heuristic: use available parallelism or fallback to 4
-        std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(4)
+        #[cfg(feature = "std")]
+        {
+            std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(4)
+        }
+        #[cfg(not(feature = "std"))]
+        {
+            // no_std: no std::thread, use fixed fallback
+            4
+        }
     }
 
     pub fn platform(&self) -> Platform {
@@ -155,7 +166,7 @@ macro_rules! platform_dispatch {
     };
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "std"))]
 mod tests {
     use super::*;
 
