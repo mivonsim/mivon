@@ -231,8 +231,7 @@ impl fmt::Display for Diagnostic {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::diagnostics::{DiagCode, DiagLevel};
-    use crate::diagnostics::span::TextSpan;
+    use crate::diagnostics::{DiagCode, DiagLevel, DiagSpan};
     use crate::intern::Symbol;
     use std::borrow::Cow;
 
