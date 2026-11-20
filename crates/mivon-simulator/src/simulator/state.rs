@@ -1,6 +1,7 @@
 use mivon_ir::{IrDesign, IrModule, LogicVec, ObjId, ObjectData, SignalId};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 
 /// Per-signal delay information from SDF annotation.
 #[derive(Debug, Clone)]
@@ -92,10 +93,78 @@ impl WideMem {
     }
 }
 
+/// ARSITEKTUR-04 Stage 1: Per-signal fine-grained locking cell.
+///
+/// `SignalCell` membungkus `Mutex<LogicVec>` sehingga tiap sinyal punya
+/// kunci sendiri. Baca menulis melalui guard sehingga concurrent access
+/// (DAG parallel, multi-thread engine) tidak perlu clone seluruh snapshot
+/// `Vec<LogicVec>` per cycle. Read mengembalikan `LogicVec` (clone di dalam
+/// guard) karena `MutexGuard` tidak dapat dilepaskan sebagai referensi.
+///
+/// Stage 1 (stub): infrastructure saja — `signal_cells` disimpan paralel
+/// dengan `signals`/`next_signals` lama, call site lama belum di-migrasi.
+// Stage 2+: `signals`/`next_signals` akan diganti oleh `signal_cells`
+/// penuh, lalu RCU snapshot ditambahkan.
+#[derive(Debug)]
+pub struct SignalCell {
+    inner: Mutex<LogicVec>,
+}
+
+impl SignalCell {
+    pub fn new(val: LogicVec) -> Self {
+        Self {
+            inner: Mutex::new(val),
+        }
+    }
+
+    /// Baca nilai sinyal (clone di dalam guard, lalu guard dilepaskan).
+    pub fn read(&self) -> LogicVec {
+        self.inner.lock().unwrap().clone()
+    }
+
+    /// Tulis nilai sinyal ke dalam cell.
+    pub fn write(&self, val: LogicVec) {
+        *self.inner.lock().unwrap() = val;
+    }
+
+    /// Bandingkan dan tulis hanya bila berbeda (seperti write_signal).
+    pub fn write_if_changed(&self, val: LogicVec) -> bool {
+        let mut g = self.inner.lock().unwrap();
+        if *g != val {
+            *g = val;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Ambil lebar sinyal.
+    pub fn width(&self) -> usize {
+        self.inner.lock().unwrap().width
+    }
+}
+
+impl Clone for SignalCell {
+    fn clone(&self) -> Self {
+        Self {
+            inner: Mutex::new(self.inner.lock().unwrap().clone()),
+        }
+    }
+}
+
+impl Default for SignalCell {
+    fn default() -> Self {
+        Self::new(LogicVec::new(1))
+    }
+}
+
 pub struct SimulationState {
     pub signals: Vec<LogicVec>,
     pub next_signals: Vec<LogicVec>,
     pub changed: Vec<bool>,
+    /// ARSITEKTUR-04 Stage 1: per-signal fine-grained locking cell, paralel
+    /// dengan `signals`/`next_signals` lama (call site lama belum di-migrasi).
+    pub signal_cells: Vec<SignalCell>,
     /// Sinyal besar (width ≥ `LogicVec::LAZY_ZERO_THRESHOLD`) yang SUDAH
     /// pernah ditulis nyata (bukan default X). Sinyal besar yang belum
     /// ter-tulis di-snapshot LAZY (tanpa materialisasi) selama evaluasi —
@@ -152,6 +221,12 @@ impl SimulationState {
             next_signals.push(state_init_signal(&sig.init_val));
         }
 
+        // ARSITEKTUR-04 Stage 1: inisialisasi signal_cells paralel dengan signals.
+        let signal_cells_vec: Vec<SignalCell> = signals
+            .iter()
+            .map(|s| SignalCell::new(s.clone()))
+            .collect();
+
         let changed = vec![true; signals.len()];
         let large_dirty = vec![false; signals.len()];
         // LANG-08: net alias redirect — canonical utk tiap member (identity
@@ -182,6 +257,7 @@ impl SimulationState {
             signals,
             next_signals,
             changed,
+            signal_cells: signal_cells_vec,
             large_dirty,
             wide_mem: HashMap::new(),
             alias_redirect,
@@ -301,6 +377,26 @@ impl SimulationState {
         }
     }
 
+    /// ARSITEKTUR-04 Stage 1: baca sinyal lewat per-signal `SignalCell` lock.
+    /// Mengembalikan `LogicVec` (clone di dalam guard). Tidak memerlukan
+    /// `&mut self` — aman untuk concurrent read.
+    pub fn signal_cell_read(&self, id: SignalId) -> LogicVec {
+        if id >= self.signal_cells.len() {
+            return LogicVec::new(1);
+        }
+        self.signal_cells[id].read()
+    }
+
+    /// ARSITEKTUR-04 Stage 1: tulis sinyal lewat per-signal `SignalCell` lock.
+    /// Tidak memerlukan `&mut self` pada `SimulationState` (hanya `&self`),
+    /// sehingga banyak thread dapat menulis sinyal berbeda secara paralel.
+    pub fn signal_cell_write(&self, id: SignalId, val: LogicVec) {
+        if id >= self.signal_cells.len() {
+            return;
+        }
+        self.signal_cells[id].write(val);
+    }
+
     /// Slot scratch sekali-pakai untuk hasil method array bertaut
     /// (`q.unique().size()`, `q.find(...).sum()`): nilai hasil method DALAM
     /// disimpan di sini agar `evaluate_array_method` (yang membaca receiver via
@@ -309,11 +405,13 @@ impl SimulationState {
     /// id di luar `design.top.signals` (state-only) sehingga tak muncul di VCD.
     pub fn push_scratch_signal(&mut self, val: LogicVec) -> SignalId {
         let id = self.signals.len();
-        self.signals.push(val.clone());
+        let cell_val = val.clone();
+        self.signals.push(cell_val.clone());
         self.next_signals.push(val);
         self.changed.push(false);
         self.large_dirty.push(false);
         self.alias_redirect.push(id);
+        self.signal_cells.push(SignalCell::new(cell_val));
         id
     }
 
@@ -327,6 +425,7 @@ impl SimulationState {
         self.changed.pop();
         self.large_dirty.pop();
         self.alias_redirect.pop();
+        self.signal_cells.pop();
     }
 
     /// Snapshot nilai sinyal utk evaluasi/preponed/history. Sinyal ultra-lebar
@@ -531,6 +630,7 @@ mod tests {
             next_signals: vec![LogicVec::new(w)],
             changed: vec![false],
             large_dirty: vec![false],
+            signal_cells: vec![SignalCell::new(LogicVec::new(w))],
             wide_mem: HashMap::new(),
             alias_redirect: vec![0],
             time: 0,
@@ -560,5 +660,98 @@ mod tests {
             st.read_signal_bit(0, WIDE_CHUNK_BITS),
             mivon_core::LogicVal::X
         );
+    }
+
+    // ─── ARSITEKTUR-04 Stage 1: SignalCell per-signal locking ───
+
+    #[test]
+    fn signal_cell_read_write_basic() {
+        let cell = SignalCell::new(LogicVec::from_u64(42, 8));
+        assert_eq!(cell.width(), 8);
+        assert_eq!(cell.read(), LogicVec::from_u64(42, 8));
+
+        cell.write(LogicVec::from_u64(255, 8));
+        assert_eq!(cell.read(), LogicVec::from_u64(255, 8));
+    }
+
+    #[test]
+    fn signal_cell_write_if_changed() {
+        let cell = SignalCell::new(LogicVec::from_u64(10, 8));
+        assert!(cell.write_if_changed(LogicVec::from_u64(20, 8)));
+        assert_eq!(cell.read(), LogicVec::from_u64(20, 8));
+        // Tulis nilai sama → tidak berubah, false.
+        assert!(!cell.write_if_changed(LogicVec::from_u64(20, 8)));
+        assert_eq!(cell.read(), LogicVec::from_u64(20, 8));
+    }
+
+    #[test]
+    fn signal_cell_clone_is_independent() {
+        let a = SignalCell::new(LogicVec::from_u64(7, 8));
+        let b = a.clone();
+        a.write(LogicVec::from_u64(99, 8));
+        assert_eq!(a.read(), LogicVec::from_u64(99, 8));
+        assert_eq!(b.read(), LogicVec::from_u64(7, 8)); // clone tidak ikut berubah
+    }
+
+    #[test]
+    fn simulation_state_signal_cell_read_write() {
+        let design = mivon_ir::IrDesign {
+            top: mivon_ir::IrModule {
+                name: mivon_core::intern::Symbol::intern("t"),
+                signals: vec![mivon_ir::SignalInfo {
+                    name: mivon_core::intern::Symbol::intern("a"),
+                    width: 8,
+                    kind: mivon_ir::SignalKind::Logic,
+                    init_val: LogicVec::new(8),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let st = SimulationState::new(&design);
+        // Sinyal index 0 masih X (default init): width 8, semua bit X.
+        let default = st.signal_cell_read(0);
+        assert_eq!(default.width, 8);
+
+        // Tulis via signal_cell_write (tidak butuh &mut self).
+        st.signal_cell_write(0, LogicVec::from_u64(0xAB, 8));
+        assert_eq!(st.signal_cell_read(0), LogicVec::from_u64(0xAB, 8));
+    }
+
+    #[test]
+    fn signal_cell_concurrent_access() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let cell = Arc::new(SignalCell::new(LogicVec::from_u64(0, 8)));
+        let mut handles = vec![];
+
+        for i in 0..8u64 {
+            let c = cell.clone();
+            handles.push(thread::spawn(move || {
+                c.write(LogicVec::from_u64(i, 8));
+                c.read()
+            }));
+        }
+
+        let mut results = vec![];
+        for h in handles {
+            results.push(h.join().unwrap());
+        }
+
+        // Setiap tulis tersimpan; read terakhir harus salah satu nilai yang ditulis.
+        let last = results.last().unwrap();
+        assert!(last.width == 8);
+        // Semua hasil read harus 0..8 (salah satu dari tulisan thread).
+        for r in &results {
+            let v: u64 = r.bits.iter().rev().fold(0u64, |acc, b| {
+                (acc << 1) | match b {
+                    mivon_core::LogicVal::One => 1,
+                    _ => 0,
+                }
+            });
+            assert!(v < 8, "read value {v} di luar range 0..8");
+        }
     }
 }
