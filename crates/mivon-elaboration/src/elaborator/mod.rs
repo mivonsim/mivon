@@ -2088,6 +2088,43 @@ impl Elaborator {
         Ok(ir)
     }
 
+    /// ELAB-03 Stage 1: Non-blocking (async) per-module elaboration.
+    ///
+    /// Menjalankan `elaborate_module_by_name` di latar belakang melalui
+    /// `std::thread::spawn` sehingga caller tidak diblokir. Berguna untuk
+    /// LSP & UI yang perlu tetap responsif saat elaborasi berlangsung.
+    ///
+    /// Mengembalikan `JoinHandle` yang bisa di-join untuk mendapatkan hasil.
+    /// Stage 1 (stub): `std::thread::spawn`, tanpa tokio/async-await.
+    /// Stage 2+: integrasi tokio + future/promise.
+    pub fn elaborate_module_by_name_nonblocking(
+        &mut self,
+        name: &str,
+    ) -> Result<std::thread::JoinHandle<Result<IrModule, SimError>>, SimError> {
+        let target = Symbol::intern(name);
+        let module = self
+            .design
+            .modules
+            .iter()
+            .find(|m| m.name == target)
+            .cloned()
+            .ok_or_else(|| {
+                SimError::elaborate(format!(
+                    "module '{name}' not found for non-blocking elaboration"
+                ))
+            })?;
+        let known_modules: Vec<Symbol> =
+            self.design.modules.iter().map(|m| m.name).collect();
+        let design_clone = self.design.clone();
+
+        let handle = std::thread::spawn(move || {
+            let mut elab = Elaborator::new(design_clone);
+            elab.elaborate_module(&module, &known_modules)
+        });
+
+        Ok(handle)
+    }
+
     fn elaborate_module_with_params(
         &mut self,
         module: &Module,
@@ -6303,6 +6340,35 @@ mod elab_on_demand_tests {
         };
         let mut elab = Elaborator::new(design);
         let err = elab.elaborate_module_by_name("nope").unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("nope"), "pesan error harus menyebut nama module: {msg}");
+    }
+
+    #[test]
+    fn elaborate_module_by_name_nonblocking_found() {
+        let design = Design {
+            modules: vec![mk_module("top"), mk_module("sub")],
+            ..Design::default()
+        };
+        let mut elab = Elaborator::new(design);
+        let handle = elab
+            .elaborate_module_by_name_nonblocking("top")
+            .expect("non-blocking elaborate harus sukses");
+        let ir = handle.join().expect("thread harus tidak panic");
+        assert!(ir.is_ok(), "hasil elaborate harus Ok, dapat {:?}", ir.err());
+        assert_eq!(ir.unwrap().name.as_str(), "top");
+    }
+
+    #[test]
+    fn elaborate_module_by_name_nonblocking_not_found() {
+        let design = Design {
+            modules: vec![mk_module("top")],
+            ..Design::default()
+        };
+        let mut elab = Elaborator::new(design);
+        let err = elab
+            .elaborate_module_by_name_nonblocking("nope")
+            .unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("nope"), "pesan error harus menyebut nama module: {msg}");
     }
