@@ -25,6 +25,7 @@ use dispatch::{
     dispatch_project, dispatch_regression, dispatch_requirements, dispatch_sdc, dispatch_sim,
     dispatch_synth, dispatch_tbgen, dispatch_tcl, dispatch_update, dispatch_vault,
     dispatch_verif_dashboard, dispatch_waiver, dispatch_wave, dispatch_web_dashboard,
+    dispatch_mdb,
 };
 use run_legacy::run;
 use std::process;
@@ -546,6 +547,7 @@ fn real_main() {
             crate::cli::MivonCmd::VerifDashboard(a) => dispatch_verif_dashboard(a),
             crate::cli::MivonCmd::License(a) => dispatch_license(a),
             crate::cli::MivonCmd::WebDashboard(a) => dispatch_web_dashboard(a),
+            crate::cli::MivonCmd::Mdb(args) => dispatch_mdb(args),
             crate::cli::MivonCmd::Gui(a) => dispatch_gui(a),
         }
     }
@@ -819,6 +821,53 @@ mod tests {
                 cmd: crate::cli::MwaiverCmd::Add { rule, .. },
             })) => assert_eq!(rule, "W1001"),
             _ => panic!("bukan Waiver::Add"),
+        }
+    }
+
+    /// FEAT-01 Stage 5: mdb CLI parsing.
+    #[test]
+    fn mdb_subcommand_parses() {
+        use clap::Parser;
+        // record with positional args: command top source_files checksum signal_count process_count
+        let cli = crate::cli::Cli::try_parse_from([
+            "mivon", "mdb", "record", "top", "top.sv,sub.sv", "abc123", "42", "7",
+        ])
+        .expect("mdb record harus parse");
+        match cli.cmd {
+            Some(crate::cli::MivonCmd::Mdb(args)) => {
+                assert_eq!(args.command.as_deref(), Some("record"));
+                assert_eq!(args.top.as_deref(), Some("top"));
+                assert_eq!(args.source_files.as_deref(), Some("top.sv,sub.sv"));
+                assert_eq!(args.signal_count, 42);
+                assert_eq!(args.process_count, 7);
+                assert_eq!(args.checksum.as_deref(), Some("abc123"));
+                assert_eq!(args.db, ".mivon/design_db.json");
+                assert_eq!(args.path, None);
+                assert_eq!(args.json, false);
+            }
+            _ => panic!("bukan Mdb"),
+        }
+        // get
+        let cli = crate::cli::Cli::try_parse_from(["mivon", "mdb", "get", "top"])
+            .expect("mdb get harus parse");
+        match cli.cmd {
+            Some(crate::cli::MivonCmd::Mdb(args)) => {
+                assert_eq!(args.command.as_deref(), Some("get"));
+                assert_eq!(args.top.as_deref(), Some("top"));
+                assert_eq!(args.db, ".mivon/design_db.json");
+            }
+            _ => panic!("bukan Mdb"),
+        }
+        // list
+        let cli = crate::cli::Cli::try_parse_from(["mivon", "mdb", "list"])
+            .expect("mdb list harus parse");
+        match cli.cmd {
+            Some(crate::cli::MivonCmd::Mdb(args)) => {
+                assert_eq!(args.command.as_deref(), Some("list"));
+                assert_eq!(args.db, ".mivon/design_db.json");
+                assert_eq!(args.json, false);
+            }
+            _ => panic!("bukan Mdb"),
         }
     }
 

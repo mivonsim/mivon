@@ -118,6 +118,8 @@ pub enum MivonCmd {
     /// mweb — web dashboard kontrol simulasi (HTML + REST JSON)
     #[command(alias = "mweb")]
     WebDashboard(MwebArgs),
+    /// mdb — design database server (checksum, top module, signal/process count)
+    Mdb(MdbArgs),
 
     /// gui — GUI terminal (ratatui TUI) — Engineering Control Center untuk RTL.
     #[command(alias = "mgui")]
@@ -2047,4 +2049,31 @@ impl Cli {
             })
             .collect()
     }
+}
+
+/// mdb — Design database server (checksum, top module, signal/process count).
+#[derive(clap::Args, Clone)]
+pub struct MdbArgs {
+    /// Subcommand: record, get, list, update, remove, clear, save, load, get-all
+    pub command: Option<String>,
+    /// Nama top module
+    pub top: Option<String>,
+    /// Daftar file sumber (pisahkan koma)
+    pub source_files: Option<String>,
+    /// Content checksum desain
+    pub checksum: Option<String>,
+    /// Jumlah sinyal
+    #[arg(default_value = "0")]
+    pub signal_count: usize,
+    /// Jumlah proses
+    #[arg(default_value = "0")]
+    pub process_count: usize,
+    /// Path database JSON (default .mivon/design_db.json)
+    #[arg(default_value = ".mivon/design_db.json")]
+    pub db: String,
+    /// Path database JSON untuk load
+    pub path: Option<String>,
+    /// Output JSON
+    #[arg(long)]
+    pub json: bool,
 }

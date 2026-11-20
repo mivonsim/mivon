@@ -548,3 +548,173 @@ fn run_sim_session(files: &[String], max_time: u64) -> Result<u64, String> {
     engine.run().map_err(|e| e.to_string())?;
     Ok(engine.state.time)
 }
+
+pub(crate) fn dispatch_mdb(a: &crate::cli::MdbArgs) -> ! {
+    let result: Result<(), SimError> = (|| {
+        use mivon_api::tools::design_db::DesignDatabase;
+        use mivon_core::intern::Symbol;
+        use std::path::Path;
+
+        let cmd = a.command.as_deref().unwrap_or("");
+        match cmd {
+            "record" => {
+                let top = a.top.as_deref().ok_or_else(|| {
+                    SimError::with_diag(DiagCode::IoError, "--mdb-top required")
+                })?;
+                let entry = mivon_api::tools::design_db::DesignEntry::new(
+                    Symbol::intern(top),
+                    a.source_files.as_deref().unwrap_or("").split(',').map(|s| s.to_string()).collect(),
+                    a.signal_count,
+                    a.process_count,
+                    a.checksum.clone().unwrap_or_default(),
+                );
+                let mut db_store = DesignDatabase::load(Path::new(&a.db))
+                    .unwrap_or_else(|_| DesignDatabase::new());
+                db_store.record(entry.clone());
+                db_store.save(Path::new(&a.db)).map_err(|e| {
+                    SimError::with_diag(DiagCode::IoError, format!("save db: {e}"))
+                })?;
+                println!(
+                    "Recorded design '{}': {} signals, {} processes, checksum={}",
+                    a.top.as_deref().unwrap_or(""), a.signal_count, a.process_count,
+                    a.checksum.as_deref().unwrap_or("")
+                );
+            }
+            "get" => {
+                let top = a.top.as_deref().ok_or_else(|| {
+                    SimError::with_diag(DiagCode::IoError, "--mdb-top required")
+                })?;
+                let db_store = DesignDatabase::load(Path::new(&a.db)).map_err(|e| {
+                    SimError::with_diag(DiagCode::IoError, format!("load db: {e}"))
+                })?;
+                let got = db_store
+                    .get(&Symbol::intern(top))
+                    .ok_or_else(|| SimError::with_diag(DiagCode::IoError, format!("design '{}' not found", top)))?;
+                println!(
+                    "top={} signals={} processes={} checksum={} compiled_at={}",
+                    got.top, got.signal_count, got.process_count, got.checksum, got.compiled_at
+                );
+            }
+            "list" => {
+                let db_store = DesignDatabase::load(Path::new(&a.db)).map_err(|e| {
+                    SimError::with_diag(DiagCode::IoError, format!("load db: {e}"))
+                })?;
+                let all = db_store.get_all();
+                if a.json {
+                    let json_str =
+                        serde_json::to_string_pretty(&all)
+                            .map_err(|e| SimError::with_diag(DiagCode::IoError, e.to_string()))?;
+                    println!("{json_str}");
+                } else {
+                    for (top, entry) in &all {
+                        println!(
+                            "{}: {} signals, {} processes",
+                            top, entry.signal_count, entry.process_count
+                        );
+                    }
+                }
+            }
+            "update" => {
+                let top = a.top.as_deref().ok_or_else(|| {
+                    SimError::with_diag(DiagCode::IoError, "--mdb-top required")
+                })?;
+                let entry = mivon_api::tools::design_db::DesignEntry::new(
+                    Symbol::intern(top),
+                    a.source_files.as_deref().unwrap_or("").split(',').map(|s| s.to_string()).collect(),
+                    a.signal_count,
+                    a.process_count,
+                    a.checksum.clone().unwrap_or_default(),
+                );
+                let mut db_store = DesignDatabase::load(Path::new(&a.db))
+                    .unwrap_or_else(|_| DesignDatabase::new());
+                let changed = db_store.update(entry.clone());
+                if changed {
+                    db_store.save(Path::new(&a.db)).map_err(|e| {
+                        SimError::with_diag(DiagCode::IoError, format!("save db: {e}"))
+                    })?;
+                    println!("Updated design '{}': checksum={}", a.top.as_deref().unwrap_or(""), a.checksum.as_deref().unwrap_or(""));
+                } else {
+                    println!("Design '{}' unchanged (checksum identical)", a.top.as_deref().unwrap_or(""));
+                }
+            }
+            "remove" => {
+                let top = a.top.as_deref().ok_or_else(|| {
+                    SimError::with_diag(DiagCode::IoError, "--mdb-top required")
+                })?;
+                let mut db_store = DesignDatabase::load(Path::new(&a.db)).map_err(|e| {
+                    SimError::with_diag(DiagCode::IoError, format!("load db: {e}"))
+                })?;
+                let removed = db_store.remove(&Symbol::intern(top));
+                if removed {
+                    db_store.save(Path::new(&a.db)).map_err(|e| {
+                        SimError::with_diag(DiagCode::IoError, format!("save db: {e}"))
+                    })?;
+                    println!("Removed design '{}'", a.top.as_deref().unwrap_or(""));
+                } else {
+                    println!("Design '{}' not found", a.top.as_deref().unwrap_or(""));
+                }
+            }
+            "clear" => {
+                let mut db_store = DesignDatabase::load(Path::new(&a.db))
+                    .unwrap_or_else(|_| DesignDatabase::new());
+                db_store.clear();
+                db_store.save(Path::new(&a.db)).map_err(|e| {
+                    SimError::with_diag(DiagCode::IoError, format!("save db: {e}"))
+                })?;
+                println!("Cleared all design entries");
+            }
+            "save" => {
+                let db_store = DesignDatabase::load(Path::new(&a.db)).map_err(|e| {
+                    SimError::with_diag(DiagCode::IoError, format!("load db: {e}"))
+                })?;
+                db_store.save(Path::new(&a.db)).map_err(|e| {
+                    SimError::with_diag(DiagCode::IoError, format!("save db: {e}"))
+                })?;
+                println!("Saved design database to {}", a.db);
+            }
+            "load" => {
+                let path = a.path.clone().ok_or_else(|| {
+                    SimError::with_diag(DiagCode::IoError, "--mdb-path required for load")
+                })?;
+                let loaded = DesignDatabase::load(Path::new(&path)).map_err(|e| {
+                    SimError::with_diag(DiagCode::IoError, format!("load db: {e}"))
+                })?;
+                let all = loaded.get_all();
+                println!("Loaded {} design entries from {}", all.len(), path);
+                for (top, entry) in &all {
+                    println!(
+                        "  {}: {} signals, {} processes, checksum={}",
+                        top, entry.signal_count, entry.process_count, entry.checksum
+                    );
+                }
+            }
+            "get-all" => {
+                let db_store = DesignDatabase::load(Path::new(&a.db)).map_err(|e| {
+                    SimError::with_diag(DiagCode::IoError, format!("load db: {e}"))
+                })?;
+                let all = db_store.get_all();
+                if a.json {
+                    let json_str =
+                        serde_json::to_string_pretty(&all)
+                            .map_err(|e| SimError::with_diag(DiagCode::IoError, e.to_string()))?;
+                    println!("{json_str}");
+                } else {
+                    for (top, entry) in &all {
+                        println!(
+                            "{}: {} signals, {} processes, checksum={}",
+                            top, entry.signal_count, entry.process_count, entry.checksum
+                        );
+                    }
+                }
+            }
+            _ => {
+                return Err(SimError::with_diag(
+                    DiagCode::IoError,
+                    format!("unknown mdb subcommand: {}", cmd),
+                ))
+            }
+        }
+        Ok(())
+    })();
+    exit_tool(result);
+}
