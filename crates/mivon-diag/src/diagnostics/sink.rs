@@ -103,6 +103,103 @@ impl DiagSink {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::diagnostics::{DiagCode, DiagLevel};
+    use crate::diagnostics::record::Diagnostic;
+
+    fn error_diag() -> Diagnostic {
+        Diagnostic::error(DiagCode::UndefinedSignal, "undefined signal")
+    }
+
+    #[test]
+    fn test_new_creates_empty_sink() {
+        let sink = DiagSink::new();
+        assert_eq!(sink.total_pushed.load(Ordering::Relaxed), 0);
+        assert_eq!(sink.dropped.load(Ordering::Relaxed), 0);
+        assert!(sink.collected.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_default_creates_empty_sink() {
+        let sink = DiagSink::default();
+        assert_eq!(sink.total_pushed.load(Ordering::Relaxed), 0);
+        assert!(sink.diagnostics().is_empty());
+    }
+
+    #[test]
+    fn test_push_increments_counter() {
+        let sink = DiagSink::new();
+        sink.push(error_diag());
+        assert_eq!(sink.total_pushed.load(Ordering::Relaxed), 1);
+        assert_eq!(sink.dropped.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn test_push_collects_via_flush() {
+        let sink = DiagSink::new();
+        sink.push(error_diag());
+        // diagnostics() calls flush() internally.
+        sink.flush();
+        let diags = sink.diagnostics();
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].message, "undefined signal");
+    }
+
+    #[test]
+    fn test_diagnostics_returns_collected() {
+        let sink = DiagSink::new();
+        sink.push(Diagnostic::warning(DiagCode::WidthMismatch, "warn msg"));
+        sink.push(Diagnostic::error(DiagCode::UndefinedSignal, "err msg"));
+        sink.flush();
+        let diags = sink.diagnostics();
+        assert_eq!(diags.len(), 2);
+        assert_eq!(diags[0].message, "warn msg");
+        assert_eq!(diags[1].message, "err msg");
+    }
+
+    #[test]
+    fn test_error_count_counts_only_errors() {
+        let sink = DiagSink::new();
+        sink.push(Diagnostic::warning(DiagCode::WidthMismatch, "warn"));
+        sink.push(Diagnostic::error(DiagCode::UndefinedSignal, "err1"));
+        sink.push(Diagnostic::error(DiagCode::TypeMismatch, "err2"));
+        sink.flush();
+        assert_eq!(sink.error_count(), 2);
+    }
+
+    #[test]
+    fn test_has_errors() {
+        let sink = DiagSink::new();
+        assert!(!sink.has_errors());
+        sink.push(Diagnostic::warning(DiagCode::WidthMismatch, "warn"));
+        assert!(!sink.has_errors(), "warning alone is not an error");
+        sink.push(Diagnostic::error(DiagCode::UndefinedSignal, "err"));
+        assert!(sink.has_errors(), "any error makes has_errors true");
+    }
+
+    #[test]
+    fn test_clear_clears_collected() {
+        let sink = DiagSink::new();
+        sink.push(error_diag());
+        sink.flush();
+        assert_eq!(sink.diagnostics().len(), 1);
+        sink.clear();
+        assert!(sink.diagnostics().is_empty());
+    }
+
+    #[test]
+    fn test_flush_clears_channel() {
+        let sink = DiagSink::new();
+        sink.push(error_diag());
+        sink.flush();
+        assert_eq!(sink.diagnostics().len(), 1);
+        // diagnostics() clones collected, doesn't clear it → still 1.
+        assert_eq!(sink.diagnostics().len(), 1);
+    }
+}
+
 impl Default for DiagSink {
     fn default() -> Self {
         Self::new()
