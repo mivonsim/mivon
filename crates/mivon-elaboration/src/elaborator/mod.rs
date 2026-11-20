@@ -2061,6 +2061,33 @@ impl Elaborator {
         Ok(ir)
     }
 
+    /// ELAB-02 Stage 3: On-demand per-module elaboration.
+    ///
+    /// Elaborasi SATU module menurut nama tanpa mengelaborasi seluruh design.
+    /// Berguna untuk LSP & partial simulation di mana hanya satu module yang
+    /// dibutuhkan. Tidak elaborate dependensi (child module) — caller
+    /// bertanggung jawab memastikan dependensi sudah elaborate bila diperlukan.
+    /// Mengembalikan error bila module dengan nama tsb tidak ditemukan.
+    pub fn elaborate_module_by_name(
+        &mut self,
+        name: &str,
+    ) -> Result<IrModule, SimError> {
+        let target = Symbol::intern(name);
+        let module = self
+            .design
+            .modules
+            .iter()
+            .find(|m| m.name == target)
+            .cloned()
+            .ok_or_else(|| {
+                SimError::elaborate(format!("module '{name}' not found for on-demand elaboration"))
+            })?;
+        let known_modules: Vec<Symbol> =
+            self.design.modules.iter().map(|m| m.name).collect();
+        let ir = self.elaborate_module(&module, &known_modules)?;
+        Ok(ir)
+    }
+
     fn elaborate_module_with_params(
         &mut self,
         module: &Module,
@@ -6232,5 +6259,51 @@ mod elab_incremental_cache_tests {
         };
         assert_eq!(m.processes.len(), 0);
         assert_eq!(m.name.as_str(), "m");
+    }
+}
+
+// ─── ELAB-02 Stage 3: On-demand per-module elaboration ───
+// Verifikasi `elaborate_module_by_name` dapat elaborate satu module menurut
+// nama tanpa menjalankan seluruh pipeline elaborate(), berguna untuk LSP &
+// partial simulation.
+#[cfg(test)]
+mod elab_on_demand_tests {
+    use super::*;
+    use mivon_ast::types::{Design, Module};
+
+    fn mk_module(name: &str) -> Module {
+        Module {
+            name: Symbol::intern(name),
+            line: 0,
+            col: 0,
+            ports: vec![],
+            params: vec![],
+            decls: vec![],
+            items: vec![],
+            timescale: None,
+        }
+    }
+
+    #[test]
+    fn elaborate_module_by_name_found() {
+        let design = Design {
+            modules: vec![mk_module("top"), mk_module("sub")],
+            ..Design::default()
+        };
+        let mut elab = Elaborator::new(design);
+        let ir = elab.elaborate_module_by_name("top").unwrap();
+        assert_eq!(ir.name.as_str(), "top");
+    }
+
+    #[test]
+    fn elaborate_module_by_name_not_found() {
+        let design = Design {
+            modules: vec![mk_module("top")],
+            ..Design::default()
+        };
+        let mut elab = Elaborator::new(design);
+        let err = elab.elaborate_module_by_name("nope").unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("nope"), "pesan error harus menyebut nama module: {msg}");
     }
 }

@@ -436,6 +436,8 @@ fn walk_case_exprs(stmts: &[IrStmt], n: &mut usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mivon_ir::{BinaryIrOp, IrModule, SignalInfo, SignalKind, SignalSensitivity};
+    use std::collections::HashMap;
 
     fn counter_ir() -> IrDesign {
         // counter 8-bit sederhana: clk, rst_n, enable in; count out.
@@ -532,5 +534,248 @@ mod tests {
     fn logicvec_bits_roundtrip() {
         let v = LogicVec::from_u64(0b1010, 4);
         assert_eq!(logicvec_bits(&v), 0b1010);
+    }
+
+    #[test]
+    fn infer_empty_design() {
+        let ir = IrDesign {
+            top: mivon_ir::IrModule {
+                name: Symbol::intern("empty"),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let opts = SynthOpts::default();
+        let nl = infer_netlist(&ir, &opts);
+        assert_eq!(nl.ports.len(), 0);
+        assert_eq!(nl.nets.len(), 0);
+        assert_eq!(nl.stats.io_count, 0);
+        assert_eq!(nl.stats.ff_count, 0);
+        assert_eq!(nl.stats.lut_count, 0);
+    }
+
+    #[test]
+    fn infer_combinational_process() {
+        let mut ir = IrDesign {
+            top: mivon_ir::IrModule {
+                name: Symbol::intern("comb_only"),
+                signals: vec![
+                    SignalInfo {
+                        name: Symbol::from("a"),
+                        width: 8,
+                        kind: SignalKind::Input,
+                        ..Default::default()
+                    },
+                    SignalInfo {
+                        name: Symbol::from("y"),
+                        width: 8,
+                        kind: SignalKind::Output,
+                        ..Default::default()
+                    },
+                ],
+                inputs: vec![0],
+                outputs: vec![1],
+                inouts: vec![],
+                processes: vec![Process::CombReactive {
+                    name: Symbol::from("comb"),
+                    sensitivity: vec![SignalSensitivity::whole(0)],
+                    body: vec![IrStmt::BlockingAssign {
+                        lhs: IrLValue::Signal(1, 8),
+                        rhs: IrExpr::BinaryOp(
+                            BinaryIrOp::Add,
+                            Box::new(IrExpr::Signal(0, 8)),
+                            Box::new(IrExpr::Const(LogicVec::from_u64(1, 8))),
+                        ),
+                        delay: None,
+                    }],
+                }],
+                sub_instances: vec![],
+            },
+            modules: HashMap::new(),
+            classes: HashMap::new(),
+            covergroups: vec![],
+            dpi_imports: vec![],
+            hier_signal_map: HashMap::new(),
+            udp_defs: vec![],
+            specify_items: vec![],
+            timescale: None,
+            source_file: None,
+            source_lines: None,
+            module_functions: HashMap::new(),
+            pkg_scoped_consts: HashMap::new(),
+            coverage_exclusions: Vec::new(),
+            stmt_lines: HashMap::new(),
+            net_aliases: HashMap::new(),
+        };
+        let opts = SynthOpts::default();
+        let nl = infer_netlist(&ir, &opts);
+        assert_eq!(nl.ports.len(), 2);
+        assert_eq!(nl.stats.io_count, 2);
+        assert!(nl.stats.lut_count > 0);
+        assert_eq!(nl.stats.ff_count, 0);
+    }
+
+    #[test]
+    fn infer_multiple_ff() {
+        let mut ir = IrDesign {
+            top: IrModule {
+                name: Symbol::intern("multi_ff"),
+                signals: vec![
+                    SignalInfo {
+                        name: Symbol::from("clk"),
+                        width: 1,
+                        kind: SignalKind::Input,
+                        ..Default::default()
+                    },
+                    SignalInfo {
+                        name: Symbol::from("rst"),
+                        width: 1,
+                        kind: SignalKind::Input,
+                        ..Default::default()
+                    },
+                    SignalInfo {
+                        name: Symbol::from("q1"),
+                        width: 8,
+                        kind: SignalKind::Output,
+                        ..Default::default()
+                    },
+                    SignalInfo {
+                        name: Symbol::from("q2"),
+                        width: 8,
+                        kind: SignalKind::Output,
+                        ..Default::default()
+                    },
+                ],
+                inputs: vec![0, 1],
+                outputs: vec![2, 3],
+                inouts: vec![],
+                processes: vec![
+                    Process::Sequential {
+                        name: Symbol::from("ff1"),
+                        clock: ClockEdge::PosEdge(0),
+                        reset: None,
+                        body: vec![IrStmt::NonBlockingAssign {
+                            lhs: IrLValue::Signal(2, 8),
+                            rhs: IrExpr::Const(LogicVec::from_u64(1, 8)),
+                            delay: None,
+                        }],
+                        iff: None,
+                    },
+                    Process::Sequential {
+                        name: Symbol::from("ff2"),
+                        clock: ClockEdge::PosEdge(0),
+                        reset: None,
+                        body: vec![IrStmt::NonBlockingAssign {
+                            lhs: IrLValue::Signal(3, 8),
+                            rhs: IrExpr::Const(LogicVec::from_u64(2, 8)),
+                            delay: None,
+                        }],
+                        iff: None,
+                    },
+                ],
+                sub_instances: vec![],
+            },
+            modules: HashMap::new(),
+            classes: HashMap::new(),
+            covergroups: vec![],
+            dpi_imports: vec![],
+            hier_signal_map: HashMap::new(),
+            udp_defs: vec![],
+            specify_items: vec![],
+            timescale: None,
+            source_file: None,
+            source_lines: None,
+            module_functions: HashMap::new(),
+            pkg_scoped_consts: HashMap::new(),
+            coverage_exclusions: Vec::new(),
+            stmt_lines: HashMap::new(),
+            net_aliases: HashMap::new(),
+        };
+        let opts = SynthOpts::default();
+        let nl = infer_netlist(&ir, &opts);
+        assert_eq!(nl.stats.ff_count, 2);
+        assert_eq!(nl.stats.io_count, 4);
+    }
+
+    #[test]
+    fn infer_multiple_clocks() {
+        let mut ir = IrDesign {
+            top: IrModule {
+                name: Symbol::intern("multi_clk"),
+                signals: vec![
+                    SignalInfo {
+                        name: Symbol::from("clk1"),
+                        width: 1,
+                        kind: SignalKind::Input,
+                        ..Default::default()
+                    },
+                    SignalInfo {
+                        name: Symbol::from("clk2"),
+                        width: 1,
+                        kind: SignalKind::Input,
+                        ..Default::default()
+                    },
+                    SignalInfo {
+                        name: Symbol::from("q"),
+                        width: 8,
+                        kind: SignalKind::Output,
+                        ..Default::default()
+                    },
+                    SignalInfo {
+                        name: Symbol::from("q2"),
+                        width: 8,
+                        kind: SignalKind::Output,
+                        ..Default::default()
+                    },
+                ],
+                inputs: vec![0, 1],
+                outputs: vec![2, 3],
+                inouts: vec![],
+                processes: vec![
+                    Process::Sequential {
+                        name: Symbol::from("ff1"),
+                        clock: ClockEdge::PosEdge(0),
+                        reset: None,
+                        body: vec![IrStmt::NonBlockingAssign {
+                            lhs: IrLValue::Signal(2, 8),
+                            rhs: IrExpr::Const(LogicVec::from_u64(1, 8)),
+                            delay: None,
+                        }],
+                        iff: None,
+                    },
+                    Process::Sequential {
+                        name: Symbol::from("ff2"),
+                        clock: ClockEdge::PosEdge(1),
+                        reset: None,
+                        body: vec![IrStmt::NonBlockingAssign {
+                            lhs: IrLValue::Signal(3, 8),
+                            rhs: IrExpr::Const(LogicVec::from_u64(2, 8)),
+                            delay: None,
+                        }],
+                        iff: None,
+                    },
+                ],
+                sub_instances: vec![],
+            },
+            modules: HashMap::new(),
+            classes: HashMap::new(),
+            covergroups: vec![],
+            dpi_imports: vec![],
+            hier_signal_map: HashMap::new(),
+            udp_defs: vec![],
+            specify_items: vec![],
+            timescale: None,
+            source_file: None,
+            source_lines: None,
+            module_functions: HashMap::new(),
+            pkg_scoped_consts: HashMap::new(),
+            coverage_exclusions: Vec::new(),
+            stmt_lines: HashMap::new(),
+            net_aliases: HashMap::new(),
+        };
+        let opts = SynthOpts::default();
+        let nl = infer_netlist(&ir, &opts);
+        assert_eq!(nl.stats.ff_count, 2);
+        assert_eq!(nl.nets.iter().filter(|n| n.is_clock).count(), 2);
     }
 }
