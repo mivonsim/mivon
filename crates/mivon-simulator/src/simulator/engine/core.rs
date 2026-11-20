@@ -1386,6 +1386,31 @@ impl SimulationEngine {
                                             eval_pids.len() as u64;
                                         self.evaluate_eval_processes_parallel(&eval_pids)?;
                                     }
+                                } else if self.use_dag_parallel {
+                                    // ARSITEKTUR-03 Stage 1: parallel write-disjoint
+                                    // EvalProcess events via rayon (tanpa DAG layers).
+                                    let mut eval_pids: Vec<usize> = Vec::new();
+                                    let mut other_events: Vec<RegionEvent> = Vec::new();
+                                    for re in events.drain(..) {
+                                        match re.event {
+                                            EventKind::EvalProcess(pid) => {
+                                                eval_pids.push(pid);
+                                            }
+                                            _ => {
+                                                other_events.push(re);
+                                            }
+                                        }
+                                    }
+                                    // Non-EvalProcess events: serial (urutan insertion bermakna)
+                                    for re in other_events {
+                                        self.process_event(re.event, t)?;
+                                    }
+                                    // EvalProcess events: parallel write-disjoint via rayon
+                                    if !eval_pids.is_empty() {
+                                        self.sim_perf.counters.events_processed +=
+                                            eval_pids.len() as u64;
+                                        self.run_eval_processes_write_parallel(&eval_pids)?;
+                                    }
                                 } else {
                                     // Sequential: process all events one by one
                                     for re in events.drain(..) {
@@ -2346,6 +2371,168 @@ impl SimulationEngine {
         Ok(())
     }
 
+    // ─── ARSITEKTUR-03 Stage 1: Parallel event processing within a region ───
+    // Kumpulan sinyal yang ditulis oleh body proses (rekursif melalui block,
+    // if, case, loop). Dipakai untuk partisi paralel: proses yang menulis ke
+    // sinyal yang DISJOINT dapat dievaluasi secara paralel dalam satu region.
+
+    /// Ekstrak semua SignalId yang ditulis oleh `body` (BlockingAssign +
+    /// NonBlockingAssign, termasuk nested block/if/case/loop).
+    fn collect_process_write_signals(body: &[IrStmt]) -> HashSet<usize> {
+        let mut targets = HashSet::new();
+        for stmt in body {
+            match stmt {
+                IrStmt::BlockingAssign { lhs: IrLValue::Signal(id, ..), .. }
+                | IrStmt::NonBlockingAssign { lhs: IrLValue::Signal(id, ..), .. } => {
+                    targets.insert(*id);
+                }
+                IrStmt::BlockingAssign { .. } | IrStmt::NonBlockingAssign { .. } => {}
+                IrStmt::Block { stmts: inner }
+                | IrStmt::NamedBlock { stmts: inner, .. } => {
+                    targets.extend(Self::collect_process_write_signals(inner));
+                }
+                IrStmt::If {
+                    true_branch,
+                    false_branch,
+                    ..
+                } => {
+                    targets.extend(Self::collect_process_write_signals(true_branch));
+                    targets.extend(Self::collect_process_write_signals(false_branch));
+                }
+                IrStmt::Case { items, default, .. } => {
+                    for item in items {
+                        targets.extend(Self::collect_process_write_signals(&item.body));
+                    }
+                    targets.extend(Self::collect_process_write_signals(default));
+                }
+                IrStmt::LoopWhile { body, .. }
+                | IrStmt::LoopDoWhile { body, .. }
+                | IrStmt::LoopFor { body, .. }
+                | IrStmt::Repeat { body, .. } => {
+                    targets.extend(Self::collect_process_write_signals(body));
+                }
+                _ => {}
+            }
+        }
+        targets
+    }
+
+    /// ARSITEKTUR-03 Stage 1: Jalankan EvalProcess dalam paralel untuk proses
+    /// yang menulis ke sinyal yang DISJOINT (tidak overlap).
+    ///
+    /// Partisi greedy: urutkan pids, tiap pid dipasang ke grup pertama yang
+    // tidak konflik (write set disjoint), atau grup baru. Setiap grup
+    /// diproses secara paralel via rayon `par_iter` melalui
+    /// `evaluate_bodies_parallel`, lalu write-back serial via
+    /// `apply_parallel_writes`. Fallback serial bila hanya satu grup atau
+    /// semua proses konflik.
+    fn run_eval_processes_write_parallel(
+        &mut self,
+        pids: &[usize],
+    ) -> Result<(), SimError> {
+        if pids.is_empty() {
+            return Ok(());
+        }
+        if pids.len() == 1 {
+            return self.process_event(
+                EventKind::EvalProcess(pids[0]),
+                self.current_time as usize,
+            );
+        }
+
+        // ── Bangun body_map dari process_body_cache ──
+        let body_map: HashMap<usize, Arc<Vec<IrStmt>>> = pids
+            .iter()
+            .filter_map(|&pid| {
+                self.process_body_cache
+                    .get(&pid)
+                    .map(|arc| (pid, arc.clone()))
+            })
+            .collect();
+        if body_map.is_empty() {
+            return Ok(());
+        }
+
+        // ── Ekstrak write set per pid ──
+        let mut pid_writes: Vec<(usize, HashSet<usize>)> = Vec::with_capacity(body_map.len());
+        for (&pid, body_arc) in &body_map {
+            let writes = Self::collect_process_write_signals(body_arc.as_slice());
+            pid_writes.push((pid, writes));
+        }
+
+        // ── Urutkan pid ascending untuk group order deterministik ──
+        pid_writes.sort_by_key(|(pid, _)| *pid);
+
+        // ── Partisi greedy: tiap pid ke grup pertama yang tidak konflik ──
+        // Urutkan paling banyak-write dulu untuk packing yang lebih baik.
+        pid_writes.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
+
+        let mut groups: Vec<Vec<usize>> = Vec::new();
+        let mut group_writes: Vec<HashSet<usize>> = Vec::new();
+
+        for (pid, writes) in &pid_writes {
+            let mut placed = false;
+            for gi in 0..groups.len() {
+                let gw = &group_writes[gi];
+                if writes.iter().all(|w| !gw.contains(w)) {
+                    groups[gi].push(*pid);
+                    group_writes[gi].extend(writes.iter().copied());
+                    placed = true;
+                    break;
+                }
+            }
+            if !placed {
+                groups.push(vec![*pid]);
+                group_writes.push(writes.clone());
+            }
+        }
+
+        // Jika satu grup → semua proses write-disjoint → evaluasi paralel
+        // via rayon di dalam `evaluate_bodies_parallel`.
+        // Jika banyak grup → antar grup ada conflict, proses serially
+        // untuk determinisme (last-write-wins urutan pid).
+        let signal_snapshot: Vec<Arc<LogicVec>> = (0..self.state.signals.len())
+            .map(|i| Arc::new(self.state.snapshot_signal(i)))
+            .collect();
+
+        let sig_info: &[mivon_ir::SignalInfo] = &self.design.top.signals;
+
+        if groups.len() == 1 {
+            let layer_pids: Vec<&usize> = groups[0].iter().collect();
+            let writes = crate::scheduler::sim_dag::evaluate_bodies_parallel(
+                &layer_pids,
+                &body_map,
+                &signal_snapshot,
+                sig_info,
+            )?;
+            self.apply_parallel_writes(&writes);
+            self.sim_perf.counters.processes_evaluated += pids.len() as u64;
+            return Ok(());
+        }
+
+        // ── Proses setiap grup secara serial (untuk determinisme) ──
+        // Antara grup ada conflict (write ke sinyal sama), jadi urutan
+        // apply menentukan hasil akhir (last-write-wins, urutan pid).
+        // Dalam satu grup, proses-proses write-disjoint dievaluasi secara
+        // paralel via `evaluate_bodies_parallel` (rayon di dalam).
+        let mut all_writes: Vec<crate::simulator::parallel::ParallelWrite> = Vec::new();
+        for group in &groups {
+            let layer_pids: Vec<&usize> = group.iter().collect();
+            let writes =
+                crate::scheduler::sim_dag::evaluate_bodies_parallel(
+                    &layer_pids,
+                    &body_map,
+                    &signal_snapshot,
+                    sig_info,
+                )?;
+            all_writes.extend(writes);
+        }
+        self.apply_parallel_writes(&all_writes);
+
+        self.sim_perf.counters.processes_evaluated += pids.len() as u64;
+        Ok(())
+    }
+
     pub(crate) fn evaluate_clock_domain(&mut self, domain: &ClockDomain) -> Result<(), SimError> {
         // Clone process bodies upfront untuk hindari borrow conflicts
         let num_sigs = self.state.signals.len();
@@ -3160,3 +3347,217 @@ mod region_scratch_tests {
         assert!(taken.is_empty(), "slot waktu di luar range → kosong");
     }
 }
+
+// ─── ARSITEKTUR-03 Stage 1: Parallel event processing within a region ───
+// Verifikasi `collect_process_write_signals` dan
+// `run_eval_processes_write_parallel` (rayon, write-disjoint partisi).
+#[cfg(test)]
+mod arsitektur_03_stage1_tests {
+    use super::*;
+    use mivon_ir::{IrExpr, IrLValue, IrStmt, LogicVec, Process};
+
+    fn sig(id: usize, width: usize) -> SignalInfo {
+        SignalInfo {
+            name: Symbol::intern(&format!("s{id}")),
+            width,
+            kind: SignalKind::Logic,
+            init_val: LogicVec::new(width),
+            ..Default::default()
+        }
+    }
+
+    fn mk_design() -> IrDesign {
+        IrDesign {
+            top: IrModule {
+                name: Symbol::intern("top"),
+                signals: vec![sig(0, 8), sig(1, 8), sig(2, 8)],
+                inputs: vec![],
+                outputs: vec![],
+                inouts: vec![],
+                processes: vec![
+                    // Proses 0: menulis s0 (disjoint dengan proses 1)
+                    Process::Combinational {
+                        name: Symbol::intern("p0"),
+                        sensitivity: vec![SignalSensitivity::whole(0)],
+                        body: vec![IrStmt::BlockingAssign {
+                            lhs: IrLValue::Signal(0, 8),
+                            rhs: IrExpr::Const(LogicVec::from_u64(1, 8)),
+                            delay: None,
+                        }],
+                    },
+                    // Proses 1: menulis s1 (disjoint dengan proses 0)
+                    Process::Combinational {
+                        name: Symbol::intern("p1"),
+                        sensitivity: vec![SignalSensitivity::whole(1)],
+                        body: vec![IrStmt::BlockingAssign {
+                            lhs: IrLValue::Signal(1, 8),
+                            rhs: IrExpr::Const(LogicVec::from_u64(2, 8)),
+                            delay: None,
+                        }],
+                    },
+                    // Proses 2: menulis s0 (konflik dengan proses 0)
+                    Process::Combinational {
+                        name: Symbol::intern("p2"),
+                        sensitivity: vec![SignalSensitivity::whole(2)],
+                        body: vec![IrStmt::BlockingAssign {
+                            lhs: IrLValue::Signal(0, 8),
+                            rhs: IrExpr::Const(LogicVec::from_u64(3, 8)),
+                            delay: None,
+                        }],
+                    },
+                ],
+                sub_instances: vec![],
+            },
+            modules: HashMap::new(),
+            classes: HashMap::new(),
+            covergroups: vec![],
+            dpi_imports: vec![],
+            hier_signal_map: HashMap::new(),
+            udp_defs: vec![],
+            specify_items: vec![],
+            timescale: None,
+            source_file: None,
+            source_lines: None,
+            module_functions: HashMap::new(),
+            pkg_scoped_consts: HashMap::new(),
+            coverage_exclusions: Vec::new(),
+            stmt_lines: HashMap::new(),
+            net_aliases: HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn collect_process_write_signals_basic() {
+        let body = vec![
+            IrStmt::BlockingAssign {
+                lhs: IrLValue::Signal(0, 8),
+                rhs: IrExpr::Const(LogicVec::from_u64(1, 8)),
+                delay: None,
+            },
+            IrStmt::If {
+                cond: IrExpr::Const(LogicVec::from_u64(1, 1)),
+                true_branch: vec![IrStmt::BlockingAssign {
+                    lhs: IrLValue::Signal(1, 8),
+                    rhs: IrExpr::Const(LogicVec::from_u64(2, 8)),
+                    delay: None,
+                }],
+                false_branch: vec![],
+            },
+        ];
+        let writes = SimulationEngine::collect_process_write_signals(&body);
+        assert!(writes.contains(&0), "s0 harus ditulis: {:?}", writes);
+        assert!(writes.contains(&1), "s1 harus ditulis: {:?}", writes);
+        assert!(!writes.contains(&2), "s2 tidak boleh ditulis: {:?}", writes);
+        assert_eq!(writes.len(), 2, "tepat 2 sinyal: {:?}", writes);
+    }
+
+    #[test]
+    fn collect_process_write_signals_nested_block() {
+        let body = vec![IrStmt::Block {
+            stmts: vec![
+                IrStmt::BlockingAssign {
+                    lhs: IrLValue::Signal(0, 8),
+                    rhs: IrExpr::Const(LogicVec::from_u64(1, 8)),
+                    delay: None,
+                },
+                IrStmt::NamedBlock {
+                    name: Symbol::intern("nb"),
+                    stmts: vec![IrStmt::BlockingAssign {
+                        lhs: IrLValue::Signal(2, 8),
+                        rhs: IrExpr::Const(LogicVec::from_u64(3, 8)),
+                        delay: None,
+                    }],
+                    decls: vec![],
+                },
+            ],
+        }];
+        let writes = SimulationEngine::collect_process_write_signals(&body);
+        assert!(writes.contains(&0), "s0 harus ditulis: {:?}", writes);
+        assert!(writes.contains(&2), "s2 harus ditulis: {:?}", writes);
+        assert_eq!(writes.len(), 2, "tepat 2 sinyal: {:?}", writes);
+    }
+
+    #[test]
+    fn run_eval_processes_write_parallel_disjoint() {
+        let design = mk_design();
+        let mut e = SimulationEngine::new(design, 100);
+        // Populasi process_body_cache (sama seperti run() di line 1036-1054)
+        for (pid, process) in e.design.top.processes.iter().enumerate() {
+            let arc = Arc::new(match process {
+                Process::Combinational { body, .. }
+                | Process::CombReactive { body, .. }
+                | Process::Sequential { body, .. }
+                | Process::Initial { body, .. }
+                | Process::Final { body, .. }
+                | Process::AlwaysWithDelay { body, .. } => body.clone(),
+            });
+            e.process_body_arcs.insert(pid, arc.clone());
+            e.process_body_cache.insert(pid, arc);
+        }
+        // Proses 0 (tulis s0) dan proses 1 (tulis s1) adalah disjoint → paralel.
+        let result = e.run_eval_processes_write_parallel(&[0, 1]);
+        assert!(result.is_ok(), "disjoint write harus sukses: {:?}", result.err());
+        // s0 dan s1 harus ter-write ke nilai baru
+        assert_eq!(e.state.read_signal(0), &LogicVec::from_u64(1, 8));
+        assert_eq!(e.state.read_signal(1), &LogicVec::from_u64(2, 8));
+        // s2 tidak ditulis → masih X (init_val default)
+        let s2 = e.state.read_signal(2);
+        assert_eq!(s2.width, 8);
+        assert!(s2.bits.iter().all(|b| *b == mivon_core::LogicVal::X));
+    }
+
+    #[test]
+    fn run_eval_processes_write_parallel_conflict_serial_fallback() {
+        let design = mk_design();
+        let mut e = SimulationEngine::new(design, 100);
+        // Populasi process_body_cache
+        for (pid, process) in e.design.top.processes.iter().enumerate() {
+            let arc = Arc::new(match process {
+                Process::Combinational { body, .. }
+                | Process::CombReactive { body, .. }
+                | Process::Sequential { body, .. }
+                | Process::Initial { body, .. }
+                | Process::Final { body, .. }
+                | Process::AlwaysWithDelay { body, .. } => body.clone(),
+            });
+            e.process_body_arcs.insert(pid, arc.clone());
+            e.process_body_cache.insert(pid, arc);
+        }
+        // Proses 0 (tulis s0) dan proses 2 (tulis s0) konflik → fallback serial.
+        // Proses 2 dievaluasi setelah proses 0 → s0 = 3 (last-write-wins serial).
+        let result = e.run_eval_processes_write_parallel(&[0, 2]);
+        assert!(result.is_ok(), "conflict fallback harus sukses: {:?}", result.err());
+        assert_eq!(e.state.read_signal(0), &LogicVec::from_u64(3, 8));
+    }
+
+    #[test]
+    fn run_eval_processes_write_parallel_single() {
+        let design = mk_design();
+        let mut e = SimulationEngine::new(design, 100);
+        // Populasi process_body_cache
+        for (pid, process) in e.design.top.processes.iter().enumerate() {
+            let arc = Arc::new(match process {
+                Process::Combinational { body, .. }
+                | Process::CombReactive { body, .. }
+                | Process::Sequential { body, .. }
+                | Process::Initial { body, .. }
+                | Process::Final { body, .. }
+                | Process::AlwaysWithDelay { body, .. } => body.clone(),
+            });
+            e.process_body_arcs.insert(pid, arc.clone());
+            e.process_body_cache.insert(pid, arc);
+        }
+        let result = e.run_eval_processes_write_parallel(&[1]);
+        assert!(result.is_ok(), "single process harus sukses: {:?}", result.err());
+        assert_eq!(e.state.read_signal(1), &LogicVec::from_u64(2, 8));
+    }
+
+    #[test]
+    fn run_eval_processes_write_parallel_empty() {
+        let design = mk_design();
+        let mut e = SimulationEngine::new(design, 100);
+        let result = e.run_eval_processes_write_parallel(&[]);
+        assert!(result.is_ok(), "empty harus sukses");
+    }
+}
+
