@@ -28,6 +28,11 @@ bincode = "1"
 # mupdate: verifikasi SHA-256 artefak rilis sebelum pemasangan
 sha2 = "0.10"
 
+# FEAT-13 Stage 2: IEEE 1735 AES-GCM enkripsi (optional, feature-gated)
+aes-gcm = { version = "0.11", optional = true }
+aead = { version = "0.6", optional = true }
+rand = { version = "0.8", optional = true }
+
 [dev-dependencies]
 tempfile = "3"
 
@@ -35,3 +40,4 @@ tempfile = "3"
 default = ["std"]
 std = []
 no_std = []
+crypto = ["aes-gcm", "aead", "rand"]
