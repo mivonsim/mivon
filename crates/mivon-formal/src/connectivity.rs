@@ -244,39 +244,77 @@ fn check_connectivity_inner(
 }
 
 // ═══ FORMAL-13 tahap 2b: konektivitas lintas instance/hierarki ═══
-// Mendukung nama hierarki "inst.sig" (satu level: top → child langsung melalui
-// sub_instances[].port_map) dan BFS lintas instance sehingga suatu sinyal di
-// top dapat ditelusuri ke dalam sinyal internal child modul.
+// Mendukung nama hierarki "a.b.c.sig" (multi-level: top → child bertingkat
+// melalui sub_instances[].port_map) dan BFS lintas instance hingga seluruh
+// hierarki desain. Batasi kedalaman rekursi untuk mencegah infinite loop
+// pada instansi bersirkul (jarang terjadi pada IR yang valid).
+
+const MAX_HIER_DEPTH: usize = 32;
 
 /// Node dalam graf konektivitas hierarki.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum HierNode {
     Top(usize),
-    Child { instance: usize, signal: usize },
+    Child { instances: Vec<usize>, signal: usize },
 }
 
-/// Resolve nama hierarki "sig" (top) atau "inst.sig" (child langsung ke top)
-/// ke HierNode. Hanya mendukung satu level instance.
-fn resolve_hier_name(design: &IrDesign, name: &str) -> Option<HierNode> {
-    if let Some((inst_name, sig_name)) = name.split_once('.') {
-        let instance = design
-            .top
-            .sub_instances
-            .iter()
-            .position(|i| i.instance_name.as_str() == inst_name)?;
-        let child_module = design.modules.get(&design.top.sub_instances[instance].module_name)?;
-        let signal = child_module
-            .signals
-            .iter()
-            .position(|s| s.name.as_str() == sig_name)?;
-        Some(HierNode::Child { instance, signal })
+/// Bangun HierNode dari path instansi + id sinyal.
+/// Path kosong -> sinyal top; path non-kosong -> sinyal di child bertingkat.
+fn node_from_path_signal(inst_path: &[usize], signal: usize) -> HierNode {
+    if inst_path.is_empty() {
+        HierNode::Top(signal)
     } else {
+        HierNode::Child {
+            instances: inst_path.to_vec(),
+            signal,
+        }
+    }
+}
+
+/// Resolve nama hierarki "sig" (top) atau "a.b.c.sig" (child bertingkat) ke
+/// HierNode. Mengwalk instance hierarchy secara rekursif hingga satu level
+/// sebelum sinyal akhir.
+fn resolve_hier_name(design: &IrDesign, name: &str) -> Option<HierNode> {
+    let parts: Vec<&str> = name.split('.').collect();
+    if parts.is_empty() {
+        return None;
+    }
+    if parts.len() == 1 {
+        // Sinyal top-level.
         let signal = design
             .top
             .signals
             .iter()
-            .position(|s| s.name.as_str() == name)?;
+            .position(|s| s.name.as_str() == parts[0])?;
         Some(HierNode::Top(signal))
+    } else {
+        // Multi-level: parts[0..n-2] adalah instansi, parts[n-1] adalah sinyal.
+        let signal_name = *parts.last()?;
+        let inst_parts = &parts[..parts.len() - 1];
+
+        let mut inst_path: Vec<usize> = Vec::new();
+        let mut current_module: &IrModule = &design.top;
+
+        for (i, inst_name) in inst_parts.iter().enumerate() {
+            let inst_idx = current_module
+                .sub_instances
+                .iter()
+                .position(|inst| inst.instance_name.as_str() == *inst_name)?;
+            inst_path.push(inst_idx);
+
+            let module_name = current_module.sub_instances[inst_idx].module_name.clone();
+            current_module = design.modules.get(&module_name)?;
+
+            // Pada instansi terakhir, sinyar berada di current_module.
+            if i == inst_parts.len() - 1 {
+                let signal = current_module
+                    .signals
+                    .iter()
+                    .position(|s| s.name.as_str() == signal_name)?;
+                return Some(HierNode::Child { instances: inst_path, signal });
+            }
+        }
+        None
     }
 }
 
@@ -284,43 +322,68 @@ fn resolve_hier_name(design: &IrDesign, name: &str) -> Option<HierNode> {
 /// jaringan, jadi konektivitas bersifat simetris).
 fn add_hier_edge(
     adj: &mut HashMap<HierNode, Vec<HierNode>>,
-    a: HierNode,
-    b: HierNode,
+    a: &HierNode,
+    b: &HierNode,
 ) {
     if a == b {
         return;
     }
-    adj.entry(a).or_default().push(b);
-    adj.entry(b).or_default().push(a);
+    adj.entry(a.clone()).or_default().push(b.clone());
+    adj.entry(b.clone()).or_default().push(a.clone());
 }
 
 /// Bangun adjacency hierarki: edge internal modul + edge lintas port antar
 /// top dan child langsung. Hanya kombinational (deterministik untuk MVP).
 fn build_hier_adj(design: &IrDesign) -> HashMap<HierNode, Vec<HierNode>> {
     let mut adj: HashMap<HierNode, Vec<HierNode>> = HashMap::new();
+    build_hier_adj_recursive(&mut adj, design, &design.top, &[], 0);
+    adj
+}
 
-    // Edge internal top.
-    let assigns = collect_assignments(&design.top.processes, false);
-    for (lhs, rhs) in assigns.iter() {
+fn build_hier_adj_recursive(
+    adj: &mut HashMap<HierNode, Vec<HierNode>>,
+    design: &IrDesign,
+    module: &IrModule,
+    inst_path: &[usize],
+    depth: usize,
+) {
+    if depth > MAX_HIER_DEPTH {
+        return;
+    }
+
+    // Edge internal ke modul ini (lhs <- rhs sources dari assignment kombinational).
+    let assigns = collect_assignments(&module.processes, false);
+    for (_ai, (lhs, rhs)) in assigns.iter().enumerate() {
         let mut sources = Vec::new();
         collect_expr_signals(rhs, &mut sources);
         sources.sort_unstable();
         sources.dedup();
         for s in sources {
             if s != *lhs {
-                add_hier_edge(&mut adj, HierNode::Top(*lhs), HierNode::Top(s));
+                let lhs_node = node_from_path_signal(inst_path, *lhs);
+                let rhs_node = node_from_path_signal(inst_path, s);
+                // Edge internal bersifat arah (rhs → lhs), konsisten dengan
+                // check_connectivity (stage 1). Port edge (di luar loop ini)
+                // tetap bidirectional via add_hier_edge.
+                adj.entry(rhs_node).or_default().push(lhs_node);
             }
         }
     }
 
-    // Edge lintas port: top signal <-> child signal via port_map,
-    // plus edge internal setiap child modul.
-    for (inst_idx, inst) in design.top.sub_instances.iter().enumerate() {
+    // Edge lintas port + rekursi ke setiap child instance.
+    for (inst_idx, inst) in module.sub_instances.iter().enumerate() {
         let child_module = match design.modules.get(&inst.module_name) {
             Some(m) => m,
             None => continue,
         };
+        let mut child_path = inst_path.to_vec();
+        child_path.push(inst_idx);
+
+        // Port edge: sinyal parent <-> sinyal port child (bidirectional, satu jaringan).
         for (port_name, parent_sig_id) in inst.port_map.iter() {
+            if *parent_sig_id >= module.signals.len() {
+                continue;
+            }
             let child_signal = child_module
                 .signals
                 .iter()
@@ -328,44 +391,17 @@ fn build_hier_adj(design: &IrDesign) -> HashMap<HierNode, Vec<HierNode>> {
             let Some(child_signal) = child_signal else {
                 continue;
             };
-            if *parent_sig_id < design.top.signals.len() {
-                add_hier_edge(
-                    &mut adj,
-                    HierNode::Top(*parent_sig_id),
-                    HierNode::Child {
-                        instance: inst_idx,
-                        signal: child_signal,
-                    },
-                );
-            }
+            let parent_node = node_from_path_signal(inst_path, *parent_sig_id);
+            let child_node = HierNode::Child {
+                instances: child_path.clone(),
+                signal: child_signal,
+            };
+            add_hier_edge(adj, &parent_node, &child_node);
         }
 
-        // Edge internal child modul.
-        let child_assigns = collect_assignments(&child_module.processes, false);
-        for (lhs, rhs) in child_assigns.iter() {
-            let mut sources = Vec::new();
-            collect_expr_signals(rhs, &mut sources);
-            sources.sort_unstable();
-            sources.dedup();
-            for s in sources {
-                if s != *lhs {
-                    add_hier_edge(
-                        &mut adj,
-                        HierNode::Child {
-                            instance: inst_idx,
-                            signal: *lhs,
-                        },
-                        HierNode::Child {
-                            instance: inst_idx,
-                            signal: s,
-                        },
-                    );
-                }
-            }
-        }
+        // Rekursi ke modul child.
+        build_hier_adj_recursive(adj, design, child_module, &child_path, depth + 1);
     }
-
-    adj
 }
 
 /// Cek konektivitas hierarki untuk pasangan nama ("sig" atau "inst.sig").
@@ -406,18 +442,18 @@ pub fn check_connectivity_hierarchical(
         let mut visited = HashSet::new();
         let mut prev: HashMap<HierNode, HierNode> = HashMap::new();
         let mut queue = std::collections::VecDeque::new();
-        visited.insert(src);
-        queue.push_back(src);
+        visited.insert(src.clone());
+        queue.push_back(src.clone());
         let mut found = false;
         while let Some(cur) = queue.pop_front() {
             if cur == dst {
                 found = true;
                 break;
             }
-            for &next in adj.get(&cur).into_iter().flat_map(|v| v.iter()) {
+            for next in adj.get(&cur).into_iter().flat_map(|v| v.iter()).cloned() {
                 if !visited.contains(&next) {
-                    visited.insert(next);
-                    prev.insert(next, cur);
+                    visited.insert(next.clone());
+                    prev.insert(next.clone(), cur.clone());
                     queue.push_back(next);
                 }
             }
@@ -425,40 +461,50 @@ pub fn check_connectivity_hierarchical(
 
         if found {
             let mut path_nodes = Vec::new();
-            let mut cur = dst;
+            let mut cur = dst.clone();
             loop {
-                path_nodes.push(cur);
+                path_nodes.push(cur.clone());
                 if cur == src {
                     break;
                 }
-                cur = *prev.get(&cur).expect("path harus ada");
+                cur = prev.get(&cur).expect("path harus ada").clone();
             }
             path_nodes.reverse();
             res.connected = true;
             res.path_len = Some(path_nodes.len() - 1);
-            res.path = path_nodes.iter().map(|n| node_name(design, *n)).collect();
+            res.path = path_nodes.iter().map(|n| node_name(design, n)).collect();
         }
         results.push(res);
     }
     results
 }
 
-/// Nama string dari HierNode untuk laporan jalur (child diformat "inst.sig").
-fn node_name(design: &IrDesign, node: HierNode) -> String {
+/// Nama string dari HierNode untuk laporan jalur (child diformat "a.b.c.sig").
+fn node_name(design: &IrDesign, node: &HierNode) -> String {
     match node {
         HierNode::Top(id) => design
             .top
             .signals
-            .get(id)
+            .get(*id)
             .map(|s| s.name.to_string())
             .unwrap_or_else(|| format!("sig_{}", id)),
-        HierNode::Child { instance, signal } => {
-            let inst = &design.top.sub_instances[instance];
-            let child = design.modules.get(&inst.module_name);
-            let sig_name = child
-                .and_then(|c| c.signals.get(signal).map(|s| s.name.to_string()))
+        HierNode::Child { instances, signal } => {
+            let mut names: Vec<String> = Vec::new();
+            let mut current_module: &IrModule = &design.top;
+            for &inst_idx in instances {
+                let inst = &current_module.sub_instances[inst_idx];
+                names.push(inst.instance_name.to_string());
+                let module_name = inst.module_name.clone();
+                if let Some(child) = design.modules.get(&module_name) {
+                    current_module = child;
+                }
+            }
+            let sig_name = current_module
+                .signals
+                .get(*signal)
+                .map(|s| s.name.to_string())
                 .unwrap_or_default();
-            format!("{}.{}", inst.instance_name, sig_name)
+            format!("{}.{}", names.join("."), sig_name)
         }
     }
 }
@@ -786,5 +832,221 @@ mod tests {
         assert_eq!(r4.len(), 1);
         assert!(!r4[0].connected);
         assert!(r4[0].error.is_some());
+    }
+
+    #[test]
+    fn test_connectivity_hierarchical_multi_level() {
+        use std::sync::Arc;
+        use mivon_ir::IrInstance;
+
+        // Hierarki 3 level: top → u0 (mod "mid") → u00 (mod "leaf").
+        // top: sinyal "a" (id 0).
+        // mid: port "b" (id 0, dihubungkan ke top.a), sinyal internal "c" (id 1).
+        //   proses mid: c = b.
+        //   mid punya instance u00 dari modul "leaf".
+        // leaf: port "d" (id 0, dihubungkan ke mid.c), sinyal internal "e" (id 1).
+        //   proses leaf: e = d.
+        // Jalur terduga: a -> u0.b -> u0.c -> u0.u00.d -> u0.u00.e (4 hop).
+
+        let leaf_signals = vec![
+            SignalInfo {
+                name: Symbol::from("d"),
+                width: 1,
+                kind: SignalKind::Input,
+                ..Default::default()
+            },
+            SignalInfo {
+                name: Symbol::from("e"),
+                width: 1,
+                kind: SignalKind::Wire,
+                ..Default::default()
+            },
+        ];
+        let leaf_module = IrModule {
+            name: Symbol::from("leaf"),
+            signals: leaf_signals,
+            inputs: vec![],
+            outputs: vec![],
+            inouts: vec![],
+            processes: vec![Process::Combinational {
+                name: Symbol::from("comb"),
+                sensitivity: vec![],
+                body: vec![IrStmt::BlockingAssign {
+                    lhs: IrLValue::Signal(1, 1),
+                    rhs: IrExpr::Signal(0, 0),
+                    delay: None,
+                }],
+            }],
+            sub_instances: vec![],
+        };
+
+        let mid_signals = vec![
+            SignalInfo {
+                name: Symbol::from("b"),
+                width: 1,
+                kind: SignalKind::Input,
+                ..Default::default()
+            },
+            SignalInfo {
+                name: Symbol::from("c"),
+                width: 1,
+                kind: SignalKind::Wire,
+                ..Default::default()
+            },
+        ];
+        let mid_module = IrModule {
+            name: Symbol::from("mid"),
+            signals: mid_signals,
+            inputs: vec![],
+            outputs: vec![],
+            inouts: vec![],
+            processes: vec![Process::Combinational {
+                name: Symbol::from("comb"),
+                sensitivity: vec![],
+                body: vec![IrStmt::BlockingAssign {
+                    lhs: IrLValue::Signal(1, 1),
+                    rhs: IrExpr::Signal(0, 0),
+                    delay: None,
+                }],
+            }],
+            sub_instances: vec![IrInstance {
+                module_name: Symbol::from("leaf"),
+                instance_name: Symbol::from("u00"),
+                port_map: Arc::new(HashMap::from([(Symbol::from("d"), 1)])),
+                param_map: Arc::new(HashMap::new()),
+                type_param_map: Arc::new(HashMap::new()),
+                line: 1,
+                col: 1,
+                attrs: Vec::new(),
+                param_width_map: Arc::new(HashMap::new()),
+            }],
+        };
+
+        let top_signals = vec![SignalInfo {
+            name: Symbol::from("a"),
+            width: 1,
+            kind: SignalKind::Wire,
+            ..Default::default()
+        }];
+
+        let design = IrDesign {
+            top: IrModule {
+                name: Symbol::from("top"),
+                signals: top_signals,
+                inputs: vec![],
+                outputs: vec![],
+                inouts: vec![],
+                processes: vec![],
+                sub_instances: vec![IrInstance {
+                    module_name: Symbol::from("mid"),
+                    instance_name: Symbol::from("u0"),
+                    port_map: Arc::new(HashMap::from([(Symbol::from("b"), 0)])),
+                    param_map: Arc::new(HashMap::new()),
+                    type_param_map: Arc::new(HashMap::new()),
+                    line: 1,
+                    col: 1,
+                    attrs: Vec::new(),
+                    param_width_map: Arc::new(HashMap::new()),
+                }],
+            },
+            modules: HashMap::from([
+                (Symbol::from("mid"), mid_module.clone()),
+                (Symbol::from("leaf"), leaf_module.clone()),
+            ]),
+            classes: HashMap::new(),
+            covergroups: vec![],
+            dpi_imports: vec![],
+            hier_signal_map: HashMap::new(),
+            udp_defs: vec![],
+            specify_items: vec![],
+            timescale: None,
+            source_file: None,
+            source_lines: None,
+            module_functions: HashMap::new(),
+            pkg_scoped_consts: HashMap::new(),
+            coverage_exclusions: Vec::new(),
+            stmt_lines: HashMap::new(),
+            net_aliases: HashMap::new(),
+        };
+
+        // a (top) → u0.b (mid port) → u0.c (mid internal) → u0.u00.d (leaf port) → u0.u00.e
+        let r = check_connectivity_hierarchical(&design, &[
+            ("a".to_string(), "u0.u00.e".to_string()),
+        ]);
+        assert_eq!(r.len(), 1);
+        assert!(r[0].connected, "a harus terhubung ke u0.u00.e lewat 3 level hierarki");
+        assert_eq!(r[0].path_len, Some(4));
+        assert_eq!(
+            r[0].path,
+            vec!["a", "u0.b", "u0.c", "u0.u00.d", "u0.u00.e"]
+        );
+
+        // Tidak ada jalur dari a ke sinyal yang tidak ada di leaf
+        let r2 = check_connectivity_hierarchical(&design, &[
+            ("a".to_string(), "u0.u00.zzz".to_string()),
+        ]);
+        assert_eq!(r2.len(), 1);
+        assert!(!r2[0].connected);
+        assert!(r2[0].error.is_some());
+
+        // Sinyal top yang tidak terhubung ke u0.u00.e
+        let top_x_signals = vec![
+            SignalInfo {
+                name: Symbol::from("a"),
+                width: 1,
+                kind: SignalKind::Wire,
+                ..Default::default()
+            },
+            SignalInfo {
+                name: Symbol::from("x"),
+                width: 1,
+                kind: SignalKind::Wire,
+                ..Default::default()
+            },
+        ];
+        let design2 = IrDesign {
+            top: IrModule {
+                name: Symbol::from("top"),
+                signals: top_x_signals,
+                inputs: vec![],
+                outputs: vec![],
+                inouts: vec![],
+                processes: vec![],
+                sub_instances: vec![IrInstance {
+                    module_name: Symbol::from("mid"),
+                    instance_name: Symbol::from("u0"),
+                    port_map: Arc::new(HashMap::from([(Symbol::from("b"), 0)])),
+                    param_map: Arc::new(HashMap::new()),
+                    type_param_map: Arc::new(HashMap::new()),
+                    line: 1,
+                    col: 1,
+                    attrs: Vec::new(),
+                    param_width_map: Arc::new(HashMap::new()),
+                }],
+            },
+            modules: HashMap::from([
+                (Symbol::from("mid"), mid_module.clone()),
+                (Symbol::from("leaf"), leaf_module.clone()),
+            ]),
+            classes: HashMap::new(),
+            covergroups: vec![],
+            dpi_imports: vec![],
+            hier_signal_map: HashMap::new(),
+            udp_defs: vec![],
+            specify_items: vec![],
+            timescale: None,
+            source_file: None,
+            source_lines: None,
+            module_functions: HashMap::new(),
+            pkg_scoped_consts: HashMap::new(),
+            coverage_exclusions: Vec::new(),
+            stmt_lines: HashMap::new(),
+            net_aliases: HashMap::new(),
+        };
+        let r3 = check_connectivity_hierarchical(&design2, &[
+            ("x".to_string(), "u0.u00.e".to_string()),
+        ]);
+        assert_eq!(r3.len(), 1);
+        assert!(!r3[0].connected);
     }
 }

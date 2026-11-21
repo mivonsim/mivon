@@ -9732,12 +9732,14 @@ Perubahan:
     sinyal top tak dikenal → error).
 
 Verifikasi:
-- cargo test -p mivon-formal --features formal connectivity: 9 passed, 0 failed.
-- cargo nextest run --workspace --features dev: 4433 passed, 24 skipped, 0 failed.
-- Review agent (general): sound, ready to commit (tidak ada blocker).
+- cargo test -p mivon-formal --features formal connectivity: 10 passed, 0 failed (9 lama + 1 multi-level baru).
+- cargo nextest run --workspace --features dev: 4434 passed, 24 skipped, 0 failed.
+- Review agent (general): sound, ready to commit (catatan: edge internal diperbaiki jadi arah rhs→lhs, konsisten dengan check_connectivity stage 1; hanya port edge yang bidirectional).
 
-Status FORMAL-13: ✅ TAHAP 1+2a DONE, ✅ TAHAP 2b STUB (satu level instance)
-  diimplementasi. Sisa: rekursi multi-level instance, wiring CLI
-  --formal-connect untuk nama hierarki.
+Status FORMAL-13: ✅ TAHAP 1+2a DONE, ✅ TAHAP 2b FULL (multi-level instance
+  rekursi hingga N level, nama hierarki "a.b.c.sig", BFS lintas instance,
+  MAX_HIER_DEPTH=32 guard, edge internal arah + port edge bidirectional).
+  CLI --formal-connect diwiring ke check_connectivity_hierarchical di
+  formal_run.rs:37. Tidak ada sisa terbuka untuk FORMAL-13.
 
 \\=======================================================================//

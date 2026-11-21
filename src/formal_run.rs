@@ -34,7 +34,7 @@ pub(crate) fn run_formal(
                 Some((a.trim().to_string(), b.trim().to_string()))
             })
             .collect();
-        Some(mivon_api::formal::connectivity::check_connectivity(
+        Some(mivon_api::formal::connectivity::check_connectivity_hierarchical(
             ir_design, &pairs,
         ))
     } else {
