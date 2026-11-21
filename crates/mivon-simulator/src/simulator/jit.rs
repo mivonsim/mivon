@@ -314,6 +314,200 @@ impl Default for JITCompiler {
     }
 }
 
+// ─── JIT-01 Stage 1: Statement-level JIT infrastructure ───
+// CompiledStmt + JITStmtCache + JITStmtCompiler mengizinkan kompilasi
+// statement (blocking assign tanpa delay) ke native function dengan
+// side-effect (tulis signal). Stage 1: infrastructure + simple blocking assign.
+// Stage 2+: if/case/loop/delay statement compilation.
+
+/// Hasil kompilasi sebuah statement.
+#[derive(Clone)]
+pub struct CompiledStmt {
+    /// Nama statement (debugging)
+    pub name: String,
+    /// Fungsi eksekusi: baca input signal values, tulis output signal values,
+    /// kembalikan true bila ada perubahan.
+    pub exec_fn: std::sync::Arc<
+        dyn Fn(&[u64], &mut [u64]) -> bool + Send + Sync,
+    >,
+    /// Signal ID yang dibaca (input)
+    pub read_ids: Vec<usize>,
+    /// Signal ID yang ditulis (output)
+    pub write_ids: Vec<usize>,
+    /// Hit counter
+    pub hit_count: u64,
+}
+
+impl std::fmt::Debug for CompiledStmt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CompiledStmt")
+            .field("name", &self.name)
+            .field("read_ids", &self.read_ids)
+            .field("write_ids", &self.write_ids)
+            .field("hit_count", &self.hit_count)
+            .finish()
+    }
+}
+
+/// Cache statement yang sudah dikompilasi.
+pub struct JITStmtCache {
+    compiled: std::sync::Mutex<std::collections::HashMap<u64, CompiledStmt>>,
+    hits: std::sync::Mutex<u64>,
+    misses: std::sync::Mutex<u64>,
+}
+
+impl JITStmtCache {
+    pub fn new() -> Self {
+        JITStmtCache {
+            compiled: std::sync::Mutex::new(std::collections::HashMap::new()),
+            hits: std::sync::Mutex::new(0),
+            misses: std::sync::Mutex::new(0),
+        }
+    }
+
+    pub fn lookup(&self, hash: u64) -> Option<CompiledStmt> {
+        let cache = self.compiled.lock().unwrap();
+        if let Some(stmt) = cache.get(&hash) {
+            let mut stmt = stmt.clone();
+            stmt.hit_count += 1;
+            let mut hits = self.hits.lock().unwrap();
+            *hits += 1;
+            drop(cache);
+            let mut cache = self.compiled.lock().unwrap();
+            cache.insert(hash, stmt.clone());
+            Some(stmt)
+        } else {
+            let mut misses = self.misses.lock().unwrap();
+            *misses += 1;
+            None
+        }
+    }
+
+    pub fn insert(&self, hash: u64, stmt: CompiledStmt) {
+        let mut cache = self.compiled.lock().unwrap();
+        cache.insert(hash, stmt);
+    }
+
+    pub fn len(&self) -> usize {
+        self.compiled.lock().unwrap().len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn clear(&self) {
+        self.compiled.lock().unwrap().clear();
+    }
+
+    /// Hit rate.
+    pub fn hit_rate(&self) -> f64 {
+        let hits = *self.hits.lock().unwrap();
+        let misses = *self.misses.lock().unwrap();
+        let total = hits + misses;
+        if total == 0 {
+            0.0
+        } else {
+            hits as f64 / total as f64
+        }
+    }
+}
+
+impl Default for JITStmtCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Compiler untuk statement-level JIT.
+pub struct JITStmtCompiler {
+    compiled_count: usize,
+    cache: JITStmtCache,
+}
+
+impl JITStmtCompiler {
+    pub fn new() -> Self {
+        JITStmtCompiler {
+            compiled_count: 0,
+            cache: JITStmtCache::new(),
+        }
+    }
+
+    /// Compile blocking assignment `signal[write_id] = expr` (tanpa delay).
+    /// `read_expr` adalah CompiledExpr untuk RHS yang menerima input signal
+    /// values dan mengembalikan u64 hasil.
+    pub fn compile_blocking_assign(
+        &mut self,
+        read_ids: Vec<usize>,
+        write_id: usize,
+        read_expr: &CompiledExpr,
+    ) -> CompiledStmt {
+        let hash = self.compute_stmt_hash(&read_ids, write_id, read_expr);
+
+        if let Some(cached) = self.cache.lookup(hash) {
+            return cached;
+        }
+
+        let eval_fn = read_expr.eval_fn.clone();
+        let write_id_c = write_id;
+
+        let exec_fn: std::sync::Arc<
+            dyn Fn(&[u64], &mut [u64]) -> bool + Send + Sync,
+        > = std::sync::Arc::new(move |inputs, outputs| {
+            let result = (eval_fn)(inputs, &[]);
+            if outputs.len() > write_id_c {
+                outputs[write_id_c] = result;
+                true
+            } else {
+                false
+            }
+        });
+
+        let stmt = CompiledStmt {
+            name: format!("blocking_assign_{}", write_id),
+            exec_fn,
+            read_ids,
+            write_ids: vec![write_id],
+            hit_count: 0,
+        };
+
+        self.compiled_count += 1;
+        self.cache.insert(hash, stmt.clone());
+        stmt
+    }
+
+    fn compute_stmt_hash(
+        &self,
+        read_ids: &[usize],
+        write_id: usize,
+        read_expr: &CompiledExpr,
+    ) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        write_id.hash(&mut hasher);
+        for &id in read_ids {
+            id.hash(&mut hasher);
+        }
+        read_expr.name.hash(&mut hasher);
+        read_expr.width.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    pub fn compiled_count(&self) -> usize {
+        self.compiled_count
+    }
+
+    pub fn cache_stats(&self) -> (usize, f64) {
+        (self.cache.len(), self.cache.hit_rate())
+    }
+}
+
+impl Default for JITStmtCompiler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 // ─── Tests ───
 #[cfg(test)]
 mod tests {
@@ -403,5 +597,75 @@ mod tests {
         let _ = compiler.compile_binary("+", &lhs, &rhs, 32);
         let (_, hit_rate) = compiler.cache_stats();
         assert!(hit_rate > 0.0, "cache hit rate should be > 0");
+    }
+
+    // ─── JIT-01 Stage 1 tests ───
+
+    #[test]
+    fn test_jit_stmt_compiler_create() {
+        let compiler = JITStmtCompiler::new();
+        assert_eq!(compiler.compiled_count(), 0);
+    }
+
+    #[test]
+    fn test_jit_stmt_blocking_assign_exec() {
+        let mut stmt_compiler = JITStmtCompiler::new();
+        let mut expr_compiler = JITCompiler::new().unwrap();
+
+        let c = expr_compiler.compile_const(42, 32);
+        let stmt = stmt_compiler.compile_blocking_assign(vec![], 0, &c);
+
+        let inputs = vec![];
+        let mut outputs = vec![0u64; 1];
+        let changed = (stmt.exec_fn)(&inputs, &mut outputs);
+        assert!(changed, "blocking assign should report change");
+        assert_eq!(outputs[0], 42, "signal 0 should be 42");
+    }
+
+    #[test]
+    fn test_jit_stmt_blocking_assign_with_input() {
+        let mut stmt_compiler = JITStmtCompiler::new();
+        let mut expr_compiler = JITCompiler::new().unwrap();
+
+        let lhs = expr_compiler.compile_const(10, 32);
+        let rhs = expr_compiler.compile_const(20, 32);
+        let add_expr = expr_compiler.compile_binary("+", &lhs, &rhs, 32);
+
+        // read_ids = [0, 1] (two input signals), write_id = 0
+        let stmt = stmt_compiler.compile_blocking_assign(vec![0, 1], 0, &add_expr);
+
+        let inputs = vec![10u64, 20u64];
+        let mut outputs = vec![0u64; 1];
+        let changed = (stmt.exec_fn)(&inputs, &mut outputs);
+        assert!(changed);
+        assert_eq!(outputs[0], 30, "10 + 20 should be 30");
+    }
+
+    #[test]
+    fn test_jit_stmt_cache() {
+        let mut stmt_compiler = JITStmtCompiler::new();
+        let mut expr_compiler = JITCompiler::new().unwrap();
+
+        let c = expr_compiler.compile_const(5, 32);
+        let _ = stmt_compiler.compile_blocking_assign(vec![], 0, &c);
+        let _ = stmt_compiler.compile_blocking_assign(vec![], 0, &c); // cache hit
+
+        let (cached, hit_rate) = stmt_compiler.cache_stats();
+        assert!(cached >= 1);
+        assert!(hit_rate > 0.0);
+    }
+
+    #[test]
+    fn test_jit_stmt_no_change_when_output_too_small() {
+        let mut stmt_compiler = JITStmtCompiler::new();
+        let mut expr_compiler = JITCompiler::new().unwrap();
+
+        let c = expr_compiler.compile_const(99, 32);
+        let stmt = stmt_compiler.compile_blocking_assign(vec![], 5, &c);
+
+        let inputs = vec![];
+        let mut outputs = vec![0u64; 1]; // only 1 slot, write_id=5 is OOB
+        let changed = (stmt.exec_fn)(&inputs, &mut outputs);
+        assert!(!changed, "should not change when output too small");
     }
 }
