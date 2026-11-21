@@ -450,6 +450,10 @@ pub struct SimulationEngine {
     pub assert_off_all: bool,
     pub assert_kill_all: bool,
     pub assert_modules_off: HashSet<Symbol>,
+    /// FEAT-23 / ENT-24: Runtime VIP protocol checkers (APB / AXI4-Lite / AHB),
+    /// diaktifkan via CLI `--vip-check <proto>`. Setiap checker memantau sinyal
+    /// protokol cycle-by-cycle selama simulasi dan melaporkan pelanggaran.
+    pub vip_checkers: Vec<crate::simulator::vip_checker::VipChecker>,
     pub coverage_options: HashMap<String, String>,
     pub coverage_enabled: bool,
     /// Selectively enable specific coverage types (empty = all enabled)

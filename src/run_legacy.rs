@@ -29,6 +29,7 @@ use mivon_api::read_project_file;
 use mivon_api::simulator::Breakpoint;
 use mivon_api::simulator::DebugMode;
 use mivon_api::simulator::SimulationEngine;
+use mivon_api::simulator::vip_checker::VipProtocol;
 use mivon_api::simulator::Watchpoint;
 use mivon_api::waveform::VcdWriter;
 use mivon_core::animasi::{Phase, PipelineAnimator};
@@ -1669,6 +1670,30 @@ pub(crate) fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), S
             "Glitch detection enabled (window = {} time units)",
             cli.glitch_window
         );
+    }
+
+    // ── FEAT-23 / ENT-24: runtime VIP protocol checkers ──
+    for proto in &cli.vip_check {
+        let p = proto.to_ascii_lowercase();
+        let protocol = match p.as_str() {
+            "apb" => Some(VipProtocol::Apb),
+            "axi4lite" | "axi-lite" | "axi4-lite" | "axilite" => Some(VipProtocol::Axi4Lite),
+            "ahb" | "ahblite" | "ahb-lite" => Some(VipProtocol::Ahb),
+            _ => None,
+        };
+        match protocol {
+            Some(protocol) => {
+                engine.add_vip_checker(protocol);
+                if !cli.quiet {
+                    println!("VIP runtime checker enabled: {}", protocol);
+                }
+            }
+            None => {
+                if !cli.quiet {
+                    eprintln!("VIP checker: protokol tidak dikenal '{}' (lewati)", proto);
+                }
+            }
+        }
     }
     if cli.use_timing_wheel && !cli.quiet {
         println!("Timing wheel enabled (O(1) event scheduling)");

@@ -51,6 +51,7 @@ pub mod types;
 pub mod upf;
 pub mod util;
 pub mod value;
+pub mod vip_checker;
 
 pub use ams::*;
 pub use engine::*;

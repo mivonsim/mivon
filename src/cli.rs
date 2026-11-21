@@ -1289,6 +1289,13 @@ pub struct Cli {
     #[arg(long = "glitch-window", default_value = "0")]
     pub glitch_window: u64,
 
+    /// Aktifkan runtime VIP protocol checker untuk protokol bus tertentu
+    /// (apb | axi4lite | ahb). Bisa diulang untuk beberapa protokol. Checker
+    /// memantau sinyal protokol cycle-by-cycle selama simulasi dan melaporkan
+    /// pelanggaran sebagai diagnostic W0002 (FEAT-23 / ENT-24).
+    #[arg(long = "vip-check")]
+    pub vip_check: Vec<String>,
+
     /// (Internal) Mode elaborasi dari config TOML (`[elaborate] mode`).
     /// Tidak di-parse dari CLI — diisi oleh `apply_config_to_cli` di main.rs.
     #[arg(skip)]

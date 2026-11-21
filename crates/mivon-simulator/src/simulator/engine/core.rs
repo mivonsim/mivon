@@ -7,6 +7,7 @@ use crate::simulator::parallel::ParallelConfig;
 use crate::simulator::sdf::SdfData;
 use crate::simulator::state::SimulationState;
 use crate::simulator::types::*;
+use crate::simulator::vip_checker::{VipChecker, VipProtocol};
 use crate::waveform::{
     CsvWaveWriter, FsdbWriter, FstWaveWriter, ShmWriter, SignalStats, VcdWriter,
 };
@@ -23,6 +24,12 @@ use std::sync::Arc;
 impl SimulationEngine {
     pub fn new(design: IrDesign, max_time: u64) -> Self {
         Self::new_with_limit(design, SimulationLimit::Finite(max_time))
+    }
+
+    /// FEAT-23 / ENT-24: daftarkan checker runtime untuk protokol bus yang
+    /// akan dipantau cycle-by-cycle selama simulasi.
+    pub fn add_vip_checker(&mut self, protocol: VipProtocol) {
+        self.vip_checkers.push(VipChecker::new(protocol));
     }
 
     /// Konstruktor dengan batas eksplisit (`Unlimited` atau `Finite(n)`).
@@ -210,6 +217,7 @@ impl SimulationEngine {
             assert_off_all: false,
             assert_kill_all: false,
             assert_modules_off: HashSet::new(),
+            vip_checkers: Vec::new(),
             coverage_options: HashMap::new(),
             coverage_enabled: true,
             coverage_enabled_types: std::collections::HashSet::new(),
@@ -1842,6 +1850,21 @@ impl SimulationEngine {
             // SIM-06/07/08/10: timing checks dari SDF TIMINGCHECK (di-parse
             // annotate_sdf, dievaluasi di sini — sebelumnya tidak pernah dipakai).
             self.check_sdf_timing_constraints()?;
+
+            // ── FEAT-23 / ENT-24: runtime VIP protocol checking (postponed
+            // region) — setiap checker memantau sinyal protokol cycle-by-cycle
+            // dan melaporkan pelanggaran sebagai diagnostic. swap dipakai untuk
+            // menghindari borrow conflict antara &mut vip_checkers dan &self.
+            let time = self.state.time;
+            let mut checkers = Vec::new();
+            std::mem::swap(&mut self.vip_checkers, &mut checkers);
+            for chk in &mut checkers {
+                let _ = chk.check_time_step(time, self);
+            }
+            for chk in &mut checkers {
+                chk.flush_diagnostics(self);
+            }
+            self.vip_checkers = checkers;
 
             // ── SIM-18: auto-checkpoint (crash recovery) — simpan tiap
             // interval cycle ke file. File ditimpa (bukan append) sehingga
