@@ -438,6 +438,9 @@ impl SimulationState {
     /// Klon penuh 1e9 bit per delta = OOM mesin kecil.
     #[inline]
     pub fn snapshot_signal(&self, id: SignalId) -> LogicVec {
+        if !self.check_signal_bounds(id) {
+            return LogicVec::new(1);
+        }
         let lv = if self.changed[id] {
             &self.next_signals[id]
         } else {
@@ -458,6 +461,9 @@ impl SimulationState {
     #[inline]
     pub fn write_signal_slice(&mut self, id: SignalId, start: usize, end: usize, val: &LogicVec) {
         let id = self.alias_redirect.get(id).copied().unwrap_or(id);
+        if !self.check_signal_bounds(id) {
+            return;
+        }
         if id >= self.next_signals.len() {
             return;
         }
@@ -494,6 +500,9 @@ impl SimulationState {
     #[inline]
     pub fn read_signal_bit(&self, id: SignalId, bit: usize) -> mivon_core::LogicVal {
         let id = self.alias_redirect.get(id).copied().unwrap_or(id);
+        if !self.check_signal_bounds(id) {
+            return mivon_core::LogicVal::X;
+        }
         if let Some(wm) = self.wide_mem.get(&id) {
             return wm.get(bit);
         }
@@ -510,6 +519,9 @@ impl SimulationState {
     #[inline]
     pub fn read_signal_slice(&self, id: SignalId, start: usize, width: usize) -> LogicVec {
         let id = self.alias_redirect.get(id).copied().unwrap_or(id);
+        if !self.check_signal_bounds(id) {
+            return LogicVec::new(width);
+        }
         if let Some(wm) = self.wide_mem.get(&id) {
             // Array raksasa: baca blok (per-chunk — jauh lebih cepat utk
             // slot 512-bit seperti cache data line).

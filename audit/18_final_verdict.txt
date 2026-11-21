@@ -197,14 +197,15 @@ Detail perbaikan per round:
 ✅ PARSER-12: Stack overflow protection (DepthGuard 4096)
    - Files: src/parser/mod.rs, expr.rs, stmt.rs
 
-⚠️ DEBT-07: Bounds checking (partial)
+✅ DEBT-07: Bounds checking — FULLY FIXED
    - process_event bounds check, parser DepthGuard
-   - read_signal/write_signal via valid id
+   - read_signal/write_signal via valid id (check_signal_bounds → dummy signal / silent drop)
    - ✅ Enhanced: RangeSelect/ArrayRangeSelect bounds check di lvalue.rs
-     (emit_warning + clamp jika out-of-bounds)
    - ✅ Enhanced: ArrayIndex bounds warning untuk fixed-size arrays
-     (hanya warning, tidak auto-resize tanpa peringatan)
-     Status: ⚠️ Partial — signal ID validation di expression path masih via panic di state.rs
+   - ✅ Enhanced: snapshot_signal, read_signal_bit, read_signal_slice,
+     write_signal_slice di state.rs pakai check_signal_bounds setelah
+     alias_redirect — expression path tidak lagi panic pada sinyal id OOB.
+   Status: ✅ Fixed (tidak lagi partial).
 
 ✅ PERF-18: StringTable.get() — audit outdated, already O(1) &str
 ✅ DEBT-05: Parser depth — fixed via PARSER-12
