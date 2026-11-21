@@ -160,12 +160,14 @@ fn reg_of(v: Value) -> usize {
 }
 
 /// Wire SSA optimisation into the MIR pipeline.
-/// Converts each process to SSA, runs SSA dead-store elimination, converts back.
+/// Converts each process to SSA, runs SSA dead-store elimination + CSE,
+/// converts back.
 fn mir_to_ssa_and_back(module: &mut MirModule) {
     for process in &mut module.processes {
         let mut ssa_fn = mir_to_ssa(&process.instrs, &module.signal_map, &module.signals);
         let eliminated = ssa_fn.eliminate_dead_stores();
-        if eliminated > 0 {
+        let cse_eliminated = ssa_fn.common_subexpr_eliminate();
+        if eliminated > 0 || cse_eliminated > 0 {
             process.instrs = ssa_to_mir(&ssa_fn, &module.signal_map, &module.signals);
         }
     }

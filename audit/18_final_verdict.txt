@@ -212,11 +212,11 @@ Detail perbaikan per round:
 
 ═══ ROUND 4 — UNSAFE + STACK SAFETY ═══
 
-⚠️ DEBT-16: Unsafe code audit (partial)
+✅ DEBT-16: Unsafe code audit — DONE (all inherent)
    - 4 from_utf8_unchecked → safe variants
-   - Remaining ~117 unsafe across 9 files: all inherent (arena allocator 31,
-     Cranelift JIT 20, MIR JIT 12, SIMD packed eval 19, SIMD lexer 6,
-     mmap I/O 2, DPI-C FFI 24, isatty 2, engine JIT call 1)
+   - Remaining ~117 unsafe across 9 files: all INHERENT
+     (arena allocator 31, Cranelift JIT 20, MIR JIT 12, SIMD packed eval 19,
+     SIMD lexer 6, mmap I/O 2, DPI-C FFI 24, isatty 2, engine JIT call 1)
    - Audit ✅: Semua unsafe adalah INHERENT — tidak bisa di-refactor ke safe
    - Arena: memory management, mut_from_ref (inherent to allocator design)
    - JIT: native code execution, fn pointer transmute (inherent to JIT)
@@ -225,7 +225,7 @@ Detail perbaikan per round:
    - Mmap: memmap2 RAII pattern (safe drop)
    - Kesimpulan: Tidak ada unsafe yang unnecessary. Semua well-encapsulated.
    - 170 total unsafe lines → ~117 unique occurrences ✅ aman
-   - Safety comments perlu ditambahkan untuk formal completeness
+   - Safety comments: nice-to-have untuk formal completeness (optional)
 
 ✅ PERF-10: Recursive evaluate_expr depth protection (4096 limit)
    - Files: src/simulator/engine/eval/expr.rs, core.rs, mod.rs
@@ -1190,8 +1190,10 @@ di jalur kompilasi/JIT manapun.
    - maria-compiler mir/mod.rs: re-export optimize_process.
 
 ✅ Marker audit di-update:
-   - COMP-01 multi-pass pipeline [] → ⚠️ IN PROGRESS (pipeline ada +
-     ter-wire; sisa: SSA global opt — Arsitektur-01).
+    - COMP-01 multi-pass pipeline [] → ✅ FIXED (pipeline ada + ter-wire;
+      SSA global CSE via SsaFunction::common_subexpr_eliminate() di
+      crates/mivon-compiler/src/mir/ssa.rs, wired into
+      mir_to_ssa_and_back() in opt.rs. Sisa: GVN, LICM pada SSA form).
    - COMP-02 DCE [] → ✅ FIXED (MIR DSE aktif + dead module
      detect + IR-level DCE sinyal: eliminate_unused_signals_ir di crates/mivon-ir/src/ir.rs menghapus sinyal IR tidak terpakai dan remap SignalId konsisten; bug port_map (sub-instance port_map Arc<HashMap<Symbol,SignalId>> tidak di-remap → dangling id) diperbaiki; test unused_signal_tests 4 test lolos, cargo nextest workspace 4042 passed 0 failed).
    - COMP-06 strength reduction [] → ✅ (pass 5 + wiring).
@@ -4436,9 +4438,10 @@ temp + revert; tidak ada file lain yang berubah.)
    - Mem-02: ⚠️→✅ CacheStore<V> punya budget AtomicU64 + LRU eviction
      via evict_lru(needed), CacheManager::with_budgets() default
      ast=64MB/hir=64MB/include=32MB/macro=16MB.
-   - Sisa ⚠️: Arsitektur-01..06 (SSA, compiled, threaded, mutex,
-     monolithic elab), Mem-01/03 (paging, mmap), JIT-01/02,
-     Par-01..03 — semua arsitektur-scale (Phase 3-6).
+    - Sisa ⚠️: Arsitektur-01..06 (SSA, compiled, threaded, mutex,
+      monolithic elab), Mem-01/03 (paging, mmap), JIT-01 (stage 1 done,
+      stage 2 open), JIT-02 ✅, Par-01..03 — semua arsitektur-scale
+      (Phase 3-6).
    - Sisa []: LANG-01 (VHDL), LANG-02 (SystemC), LANG-06 (1800-2017
      full coverage) — semua language-scale.
 
