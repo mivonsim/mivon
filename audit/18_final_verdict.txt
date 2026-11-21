@@ -9707,3 +9707,37 @@ Status ENT-24: ✅ IMPLEMENTED — runtime VIP checker (post-sim VCD checker
   sudah ada sejak ROUND 207).
 
 \\=======================================================================//
+
+═══ ROUND 294 — FORMAL-13 tahap 2b: Konektivitas lintas instance/hierarki ═══
+
+Ruang lingkup: perluas FORMAL-13 connectivity checking (tahap 1 kombinational +
+tahap 2a sequential NBA yang sudah ada) ke lintas instance/hierarki, sehingga
+sinyal di top module dapat ditelusuri ke sinyal internal child modul melalui
+sub_instances[].port_map. STAGE 1 stub: satu level instance (top → child
+langsung), nama hierarki "inst.sig", BFS lintas instance, edge port
+bidirectional.
+
+Perubahan:
+- crates/mivon-formal/src/connectivity.rs:
+  - HierNode enum (Top / Child) sebagai node graf hierarki.
+  - resolve_hier_name(): pecah "inst.sig" via split_once('.'), resolve
+    sub_instances by instance_name, lalu child-module signal by name.
+  - build_hier_adj(): edge internal top + edge internal child + edge lintas
+    port (bidirectional, satu jaringan) via port_map.
+  - check_connectivity_hierarchical(): BFS hierarki, rekonstruksi jalur,
+    path diformat "a -> u0.b -> u0.c".
+  - node_name(): format node untuk laporan jalur.
+  - Test baru: test_connectivity_hierarchical_cross_instance (terhubung
+    lintas instance, tidak terhubung, sinyal child tak dikenal → error,
+    sinyal top tak dikenal → error).
+
+Verifikasi:
+- cargo test -p mivon-formal --features formal connectivity: 9 passed, 0 failed.
+- cargo nextest run --workspace --features dev: 4433 passed, 24 skipped, 0 failed.
+- Review agent (general): sound, ready to commit (tidak ada blocker).
+
+Status FORMAL-13: ✅ TAHAP 1+2a DONE, ✅ TAHAP 2b STUB (satu level instance)
+  diimplementasi. Sisa: rekursi multi-level instance, wiring CLI
+  --formal-connect untuk nama hierarki.
+
+\\=======================================================================//
