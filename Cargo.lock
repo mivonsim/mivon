@@ -1393,9 +1393,11 @@ dependencies = [
  "mivon-simulator",
  "mivon-sir",
  "mivon-synth",
+ "mivon-systemc",
  "mivon-tech",
  "mivon-timing",
  "mivon-tools",
+ "mivon-vhdl",
  "num_cpus",
  "parking_lot",
  "rand",
@@ -1675,6 +1677,9 @@ dependencies = [
 [[package]]
 name = "mivon-systemc"
 version = "0.1.0"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "mivon-tech"
@@ -1741,6 +1746,9 @@ dependencies = [
 [[package]]
 name = "mivon-vhdl"
 version = "0.1.0"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "nix"
