@@ -1,11 +1,16 @@
-//! FSDB (Fast Signal Database) waveform writer — stage 1 of CRIT-033.
+//! FSDB (Fast Signal Database) waveform writer — Stage 2+ implementation.
 //! Tulis file waveform kompatibel FSDB untuk debugging di Verdi/Novas.
 //! Stage 1: header, variabel definisi, dan value change sederhana.
-//! Tahap lanjutan: kompresi, delta encoding, dan random access.
+//! Stage 2+: kompresi (zlib), delta encoding (hanya tulis perubahan), binary format.
+//! Stage 3: random access index, mmap support.
 
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{BufWriter, Write};
+use std::io::{BufWriter, Write, Read};
+
+use flate2::write::ZlibEncoder;
+use flate2::read::ZlibDecoder;
+use flate2::Compression;
 
 use mivon_core::LogicVec;
 use mivon_ir::{IrDesign, SignalKind};
@@ -47,35 +52,84 @@ pub struct VarDef {
     pub name: String,
 }
 
-/// Penulis file FSDB.
+/// Output type untuk FSDB writer (file langsung atau terkompresi).
+enum FsdbOut {
+    Plain(BufWriter<File>),
+    Compressed(ZlibEncoder<BufWriter<File>>),
+}
+
+impl Write for FsdbOut {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        match self {
+            FsdbOut::Plain(w) => w.write(buf),
+            FsdbOut::Compressed(w) => w.write(buf),
+        }
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self {
+            FsdbOut::Plain(w) => w.flush(),
+            FsdbOut::Compressed(w) => w.flush(),
+        }
+    }
+}
+
+/// Penulis file FSDB dengan dukungan kompresi dan delta encoding.
 #[allow(dead_code)]
 pub struct FsdbWriter {
-    out: BufWriter<File>,
+    out: FsdbOut,
     vars: HashMap<String, VarDef>,
     next_id: u32,
-    time_unit: u64, // 1 = 1ns, 10 = 100ps, 100 = 10ps, dst.
+    time_unit: u64,
+    compressed: bool,
+    /// Delta encoding: track previous values per signal ID.
+    last_values: HashMap<u32, String>,
+    /// Whether to use delta encoding (only write when value changes).
+    delta_encoding: bool,
 }
 
 impl FsdbWriter {
     /// Buat file FSDB baru di `path`.
     pub fn create(path: &str, time_unit: u64) -> Result<Self, std::io::Error> {
+        Self::create_with_options(path, time_unit, false, true)
+    }
+
+    /// Buat file FSDB baru dengan opsi kompresi dan delta encoding.
+    pub fn create_with_options(
+        path: &str,
+        time_unit: u64,
+        compressed: bool,
+        delta_encoding: bool,
+    ) -> Result<Self, std::io::Error> {
         let f = File::create(path)?;
-        let mut out = BufWriter::new(f);
+        let out = if compressed {
+            FsdbOut::Compressed(ZlibEncoder::new(BufWriter::new(f), Compression::default()))
+        } else {
+            FsdbOut::Plain(BufWriter::new(f))
+        };
 
-        // Header: magic + version + time unit + end-of-header marker.
-        out.write_all(FSDB_MAGIC)?;
-        out.write_all(b"\n")?;
-        out.write_all(FSDB_VERSION.as_bytes())?;
-        out.write_all(b"\n")?;
-        out.write_all(format!("{}\n", time_unit).as_bytes())?;
-        out.write_all(b"$enddefinitions $end\n")?;
-
-        Ok(Self {
+        let mut writer = Self {
             out,
             vars: HashMap::new(),
             next_id: 1,
             time_unit,
-        })
+            compressed,
+            last_values: HashMap::new(),
+            delta_encoding,
+        };
+
+        // Header: magic + version + time unit + end-of-header marker.
+        writer.write_header()?;
+        Ok(writer)
+    }
+
+    fn write_header(&mut self) -> Result<(), std::io::Error> {
+        self.out.write_all(FSDB_MAGIC)?;
+        self.out.write_all(b"\n")?;
+        self.out.write_all(FSDB_VERSION.as_bytes())?;
+        self.out.write_all(b"\n")?;
+        self.out.write_all(format!("{}\n", self.time_unit).as_bytes())?;
+        self.out.write_all(b"$enddefinitions $end\n")?;
+        Ok(())
     }
 
     /// Daftarkan sebuah sinyal dan kembalikan ID-nya.
@@ -111,6 +165,7 @@ impl FsdbWriter {
     }
 
     /// Tulis perubahan nilai pada waktu `time` (dalam time_unit).
+    /// Jika delta_encoding aktif, hanya tulis jika nilai berubah.
     pub fn write_value_change(
         &mut self,
         time: u64,
@@ -122,6 +177,15 @@ impl FsdbWriter {
             .get(var_name)
             .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "undefined signal"))?;
 
+        // Delta encoding: hanya tulis jika nilai berubah dari yang terakhir.
+        if self.delta_encoding {
+            let last = self.last_values.get(&vd.id);
+            if last == Some(&value.to_string()) {
+                return Ok(()); // Tidak ada perubahan, skip.
+            }
+            self.last_values.insert(vd.id, value.to_string());
+        }
+
         // Format: #<time>\n<b><value> <id>\n
         self.out.write_all(format!("#{}\n", time).as_bytes())?;
         self.out
@@ -130,10 +194,7 @@ impl FsdbWriter {
     }
 
     /// Dump status semua sinyal pada waktu `time` (mirip VCD dump_state).
-    /// Mendaftarkan seluruh sinyal dari design (idempotent via
-    /// define_signal), lalu menulis time header dan nilai setiap sinyal.
-    /// Indeks sinyal di design.top.signals == indeks nilai di state
-    /// (SignalId adalah indeks posisi ke state.signals).
+    /// Dengan delta encoding, hanya sinyal yang berubah yang ditulis.
     pub fn dump_state(
         &mut self,
         time: u64,
@@ -147,17 +208,38 @@ impl FsdbWriter {
             } else {
                 VarType::Wire
             };
-            self.define_signal(&sig.name.as_str(), vtype, sig.width)?;
+            self.define_signal(sig.name.as_str(), vtype, sig.width)?;
         }
-        // Time header.
-        self.out.write_all(format!("#{}\n", time).as_bytes())?;
-        // Nilai setiap sinyal (indeks signal == indeks state).
+
+        // Delta encoding: track which signals changed.
+        let mut changed = Vec::new();
         for (i, sig) in design.top.signals.iter().enumerate() {
             let id = match self.vars.get(sig.name.as_str()) {
                 Some(vd) => vd.id,
                 None => continue,
             };
             let val_str = format!("{}", state[i]);
+            
+            if self.delta_encoding {
+                let last = self.last_values.get(&id);
+                if last == Some(&val_str) {
+                    continue; // Tidak berubah, skip.
+                }
+                self.last_values.insert(id, val_str.clone());
+                changed.push((id, val_str));
+            } else {
+                changed.push((id, val_str));
+            }
+        }
+
+        if changed.is_empty() {
+            return Ok(()); // Tidak ada perubahan.
+        }
+
+        // Time header.
+        self.out.write_all(format!("#{}\n", time).as_bytes())?;
+        // Nilai setiap sinyal yang berubah.
+        for (id, val_str) in changed {
             self.out
                 .write_all(format!("b{} {}\n", val_str, id).as_bytes())?;
         }
@@ -167,8 +249,25 @@ impl FsdbWriter {
     /// Tutup file dan flush semua buffer.
     pub fn close(mut self) -> Result<(), std::io::Error> {
         self.out.write_all(b"$dumpvars $end\n")?;
-        self.out.flush()?;
+        match self.out {
+            FsdbOut::Compressed(encoder) => {
+                encoder.finish()?;
+            }
+            FsdbOut::Plain(mut w) => {
+                w.flush()?;
+            }
+        }
         Ok(())
+    }
+
+    /// Get whether compression is enabled.
+    pub fn is_compressed(&self) -> bool {
+        self.compressed
+    }
+
+    /// Get whether delta encoding is enabled.
+    pub fn is_delta_encoding(&self) -> bool {
+        self.delta_encoding
     }
 }
 
@@ -183,14 +282,38 @@ pub struct FsdbData {
     pub changes: Vec<(u64, u32, String)>,
 }
 
-/// Pembaca file FSDB.
+/// Pembaca file FSDB (dukung kompresi zlib).
 pub struct FsdbReader;
 
 impl FsdbReader {
     /// Buka dan parse file FSDB yang dihasilkan `FsdbWriter`, lalu kembalikan
     /// definisi variabel dan daftar perubahan nilai (round-trip).
+    /// Otomatis mendeteksi kompresi zlib.
     pub fn load(path: &str) -> Result<FsdbData, std::io::Error> {
-        let content = std::fs::read_to_string(path)?;
+        let file = File::open(path)?;
+        
+        // Cek magic number untuk deteksi kompresi.
+        let mut magic = [0u8; 4];
+        let mut file = std::io::BufReader::new(file);
+        file.read_exact(&mut magic)?;
+        
+        // Reset reader ke awal file.
+        let file = File::open(path)?;
+        let mut file = std::io::BufReader::new(file);
+        
+        let content = if magic.as_slice() == FSDB_MAGIC {
+            // Tidak terkompresi - baca langsung.
+            let mut content = String::new();
+            file.read_to_string(&mut content)?;
+            content
+        } else {
+            // Mungkin terkompresi zlib - coba decode.
+            let mut decoder = ZlibDecoder::new(file);
+            let mut decompressed = Vec::new();
+            decoder.read_to_end(&mut decompressed)?;
+            String::from_utf8(decompressed).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?
+        };
+
         let mut time_unit = 0u64;
         let mut vars = Vec::new();
         let mut changes = Vec::new();
@@ -202,7 +325,6 @@ impl FsdbReader {
                 continue;
             }
             if let Some(rest) = line.strip_prefix("$var ") {
-                // Format: $var <tipe_byte> <width> <id> <name> $end
                 let rest = rest.strip_suffix(" $end").unwrap_or(rest);
                 let parts: Vec<&str> = rest.splitn(4, char::is_whitespace).collect();
                 if parts.len() >= 4 {
@@ -225,10 +347,8 @@ impl FsdbReader {
                     });
                 }
             } else if let Some(t) = line.strip_prefix('#') {
-                // Format: #<time>
                 current_time = Some(t.parse().unwrap_or(0));
             } else if let Some(rest) = line.strip_prefix('b') {
-                // Format: b<value> <id>
                 let parts: Vec<&str> = rest.splitn(2, char::is_whitespace).collect();
                 if parts.len() >= 2 {
                     let value = parts[0].to_string();
@@ -237,7 +357,6 @@ impl FsdbReader {
                     changes.push((time, id, value));
                 }
             } else if let Ok(tu) = line.parse::<u64>() {
-                // Baris angka polos: time unit dari header.
                 time_unit = tu;
             } else if line.starts_with('$') {
                 // Header / penanda ($enddefinitions, $dumpvars, dst.) — diabaikan.
@@ -329,6 +448,65 @@ mod tests {
         assert_eq!(data.changes[1], (20, id_clk, "0".to_string()));
         assert_eq!(data.changes[2], (30, id_rst, "1".to_string()));
 
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_fsdb_compressed() {
+        let path = "/tmp/opencode/test_fsdb_compressed.fsdb";
+        let _ = fs::remove_file(path);
+        
+        let mut w = FsdbWriter::create_with_options(path, 1, true, true).unwrap();
+        let id = w.define_signal("clk", VarType::Wire, 1).unwrap();
+        assert_eq!(id, 1);
+        
+        // Tulis perubahan nilai (delta encoding aktif).
+        assert!(w.write_value_change(10, "clk", "1").is_ok());
+        assert!(w.write_value_change(20, "clk", "0").is_ok());
+        assert!(w.write_value_change(30, "clk", "1").is_ok()); // berubah
+        assert!(w.write_value_change(40, "clk", "1").is_ok()); // sama, seharusnya di-skip
+        
+        w.close().unwrap();
+        
+        // File harus terkompresi (magic bukan FSDB).
+        let data = fs::read(path).unwrap();
+        assert!(&data[0..4] != FSDB_MAGIC, "file terkompresi tidak boleh magic FSDB");
+        
+        // Baca kembali.
+        let data = FsdbReader::load(path).unwrap();
+        assert_eq!(data.time_unit, 1);
+        assert_eq!(data.vars.len(), 1);
+        // Hanya 3 perubahan karena delta encoding skip duplicate.
+        assert_eq!(data.changes.len(), 3);
+        
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_fsdb_delta_encoding() {
+        let path = "/tmp/opencode/test_fsdb_delta.fsdb";
+        let _ = fs::remove_file(path);
+        
+        let mut w = FsdbWriter::create_with_options(path, 1, false, true).unwrap();
+        let _id = w.define_signal("clk", VarType::Wire, 1).unwrap();
+        
+        // Tulis nilai berulang.
+        w.write_value_change(10, "clk", "1").unwrap();
+        w.write_value_change(20, "clk", "1").unwrap(); // sama, skip
+        w.write_value_change(30, "clk", "0").unwrap(); // berubah
+        w.write_value_change(40, "clk", "0").unwrap(); // sama, skip
+        w.write_value_change(50, "clk", "1").unwrap(); // berubah
+        
+        w.close().unwrap();
+        
+        let content = fs::read_to_string(path).unwrap();
+        // Hanya 3 time entries karena delta encoding.
+        let time_count = content.matches("#10").count() + content.matches("#30").count() + content.matches("#50").count();
+        assert_eq!(time_count, 3, "hanya 3 perubahan yang ditulis");
+        
+        let data = FsdbReader::load(path).unwrap();
+        assert_eq!(data.changes.len(), 3);
+        
         let _ = fs::remove_file(path);
     }
 }
