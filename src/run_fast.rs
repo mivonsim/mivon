@@ -949,6 +949,9 @@ pub(crate) fn run_fast(
     engine.snapshot_interval = cli.snap_interval;
     engine.use_packed_eval = cli.packed;
     engine.use_dag_parallel = cli.parallel;
+    engine.set_parallel_delta(cli.parallel_delta);
+    engine.set_parallel_regions(cli.parallel_regions);
+    engine.set_use_jit_stmt(cli.jit_stmt);
     apply_engine_flags(&mut engine, &cli);
     // SIM-20: cycle-based mode (--cycle / --cycle-period)
     engine.set_cycle_based(cli.cycle_mode);

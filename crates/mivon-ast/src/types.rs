@@ -1057,6 +1057,10 @@ pub enum Sequence {
     And(Box<Sequence>, Box<Sequence>),
     /// seq[*N] — ulangi seq N kali berturut-turut
     Repeat(Box<Sequence>, u64),
+    /// seq[*] — goto repetition: 0 or more repetitions (unbounded)
+    GotoRepeat(Box<Sequence>),
+    /// seq[+] — goto repetition: 1 or more repetitions (unbounded)
+    GotoRepeatPlus(Box<Sequence>),
     /// ante |-> cons — overlap implication (IEEE 1800-2017 §16.9.2):
     /// saat antecedent match, consequent dievaluasi mulai cycle YANG SAMA.
     Implication(Box<Sequence>, Box<Sequence>),

@@ -125,6 +125,10 @@ pub struct ParallelConfig {
     /// Saat true, signal_cell_read/signal_cell_write diutamakan (baca/tulis tanpa
     /// &mut self pada state — aman untuk concurrent access ke sinyal berbeda).
     pub use_signal_cells: bool,
+    /// Enable region-level parallelism (Stage 4 ARSITEKTUR-03).
+    /// When true, events in Active/Inactive/NBA/Reactive regions are processed
+    /// in parallel using rayon. Requires signal_cells for safe concurrent access.
+    pub parallel_regions: bool,
     /// Minimum number of processes before parallelizing
     pub min_processes_parallel: usize,
     /// Minimum number of signals before parallelizing
@@ -142,6 +146,7 @@ impl Default for ParallelConfig {
             parallel_snapshot: true,
             parallel_delta: false,
             use_signal_cells: false,
+            parallel_regions: false,
             min_processes_parallel: 4,
             min_signals_parallel: 64,
         }

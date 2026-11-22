@@ -1759,6 +1759,10 @@ pub enum IrSequence {
     And(Box<IrSequence>, Box<IrSequence>),
     /// seq[*N] — repeat seq N times consecutively
     Repeat(Box<IrSequence>, u64),
+    /// seq[*] — goto repetition: 0 or more repetitions (unbounded)
+    GotoRepeat(Box<IrSequence>),
+    /// seq[+] — goto repetition: 1 or more repetitions (unbounded)
+    GotoRepeatPlus(Box<IrSequence>),
     /// ante |-> cons — overlap implication: when ante matches on a cycle,
     /// cons is checked starting from the SAME cycle.
     Implication(Box<IrSequence>, Box<IrSequence>),
@@ -1775,6 +1779,8 @@ impl IrSequence {
             IrSequence::Or(a, b) => a.min_cycles().min(b.min_cycles()),
             IrSequence::And(a, b) => a.min_cycles().max(b.min_cycles()),
             IrSequence::Repeat(seq, n) => seq.min_cycles() * n,
+            IrSequence::GotoRepeat(seq) => 0, // 0 or more: can match immediately
+            IrSequence::GotoRepeatPlus(seq) => seq.min_cycles(), // 1 or more: at least one repetition
             IrSequence::Implication(ante, cons) => ante.min_cycles() + cons.min_cycles(),
         }
     }
@@ -1794,6 +1800,8 @@ impl IrSequence {
                 .max_cycles()
                 .and_then(|am| b.max_cycles().map(|bm| am.max(bm))),
             IrSequence::Repeat(seq, n) => seq.max_cycles().map(|m| m * n),
+            IrSequence::GotoRepeat(_) => None, // unbounded
+            IrSequence::GotoRepeatPlus(_) => None, // unbounded
             IrSequence::Implication(ante, cons) => ante
                 .max_cycles()
                 .and_then(|am| cons.max_cycles().map(|cm| am + cm)),

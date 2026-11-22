@@ -73,6 +73,40 @@ impl SimulationEngine {
                 }
                 Ok(false)
             }
+            IrSequence::GotoRepeat(seq) => {
+                // [*] — 0 or more repetitions
+                // Try 0 repetitions (match immediately)
+                if elapsed == 0 {
+                    return Ok(true);
+                }
+                // Try 1, 2, 3... repetitions up to what fits in elapsed
+                let min_cycles = seq.min_cycles();
+                if min_cycles == 0 {
+                    // If inner can match in 0 cycles, it always matches
+                    return Ok(true);
+                }
+                let max_reps = elapsed / min_cycles;
+                for n in 1..=max_reps {
+                    if self.eval_goto_repeat(seq, elapsed, depth, n)? {
+                        return Ok(true);
+                    }
+                }
+                Ok(false)
+            }
+            IrSequence::GotoRepeatPlus(seq) => {
+                // [+] — 1 or more repetitions
+                let min_cycles = seq.min_cycles();
+                if min_cycles == 0 {
+                    return Ok(true);
+                }
+                let max_reps = elapsed / min_cycles;
+                for n in 1..=max_reps {
+                    if self.eval_goto_repeat(seq, elapsed, depth, n)? {
+                        return Ok(true);
+                    }
+                }
+                Ok(false)
+            }
             IrSequence::Implication(ante, cons) => {
                 // |-> (overlap) dan |=> (non-overlap, di-encode sebagai
                 // Concat(Delay(1), cons)) sama-sama berarti: cari cycle k saat
@@ -89,6 +123,36 @@ impl SimulationEngine {
                 Ok(false)
             }
         }
+    }
+
+    /// Helper untuk evaluasi goto repetition (seq[*] atau seq[+]) dengan N repetisi tetap.
+    /// Sama dengan Repeat(seq, n) tapi di-inlining untuk performa.
+    fn eval_goto_repeat(
+        &mut self,
+        seq: &IrSequence,
+        elapsed: u64,
+        depth: u64,
+        n: u64,
+    ) -> Result<bool, SimError> {
+        if n == 0 {
+            return Ok(true);
+        }
+        if n == 1 {
+            return self.eval_sequence_depth(seq, elapsed, depth);
+        }
+        for k in 0..=elapsed {
+            if self.eval_sequence_depth(seq, k, depth)? {
+                let remaining = IrSequence::Repeat(Box::new(seq.clone()), n - 1);
+                if self.eval_sequence_depth(
+                    &remaining,
+                    elapsed - k,
+                    depth.saturating_sub(k),
+                )? {
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
     }
 
     /// Evaluator lama — wrapper untuk backward compatibility.

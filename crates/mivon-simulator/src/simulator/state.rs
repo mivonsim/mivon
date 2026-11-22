@@ -1,6 +1,6 @@
 use mivon_ir::{IrDesign, IrModule, LogicVec, ObjId, ObjectData, SignalId};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 /// Per-signal delay information from SDF annotation.
@@ -105,33 +105,109 @@ impl WideMem {
 /// dengan `signals`/`next_signals` lama, call site lama belum di-migrasi.
 // Stage 2+: `signals`/`next_signals` akan diganti oleh `signal_cells`
 /// penuh, lalu RCU snapshot ditambahkan.
-#[derive(Debug)]
+/// ARSITEKTUR-04 Stage 1: Per-signal fine-grained locking cell.
+
+/// `SignalCell` membungkus `Mutex<LogicVec>` sehingga tiap sinyal punya
+/// kunci sendiri. Baca menulis melalui guard sehingga concurrent access
+/// (DAG parallel, multi-thread engine) tidak perlu clone seluruh snapshot
+/// `Vec<LogicVec>` per cycle. Read mengembalikan `LogicVec` (clone di dalam
+/// guard) karena `MutexGuard` tidak dapat dilepaskan sebagai referensi.
+///
+/// Stage 1 (stub): infrastructure saja — `signal_cells` disimpan paralel
+/// dengan `signals`/`next_signals` lama, call site lama belum di-migrasi.
+/// Stage 2+: `signals`/`next_signals` akan diganti oleh `signal_cells`
+/// penuh, lalu RCU snapshot ditambahkan.
+/// Stage 3: Double-buffering (current/next + changed) untuk delta-cycle.
+/// Stage 4: RCU snapshot — epoch-based lock-free reads.
 pub struct SignalCell {
-    inner: Mutex<LogicVec>,
+    current: Mutex<LogicVec>,
+    next: Mutex<LogicVec>,
+    changed: AtomicBool,
+    /// Epoch saat `current` terakhir di-update (via commit).
+    /// Dipakai untuk RCU snapshot: reader mencatat epoch global,
+    /// lalu baca semua cell. Jika cell.epoch > snapshot_epoch,
+    /// cell dimodifikasi setelah snapshot dimulai → perlu re-read.
+    epoch: AtomicU64,
 }
 
 impl SignalCell {
     pub fn new(val: LogicVec) -> Self {
         Self {
-            inner: Mutex::new(val),
+            current: Mutex::new(val.clone()),
+            next: Mutex::new(val),
+            changed: AtomicBool::new(false),
+            epoch: AtomicU64::new(0),
         }
     }
 
-    /// Baca nilai sinyal (clone di dalam guard, lalu guard dilepaskan).
+    /// Baca nilai sinyal — mengembalikan `next` jika `changed` true,
+    /// sinonimnya `current`. Ini meniru perilaku `read_signal` yang
+    /// memeriksa flag `changed` untuk double-buffering delta-cycle.
     pub fn read(&self) -> LogicVec {
-        self.inner.lock().unwrap().clone()
+        if self.changed.load(Ordering::Relaxed) {
+            self.next.lock().unwrap().clone()
+        } else {
+            self.current.lock().unwrap().clone()
+        }
     }
 
-    /// Tulis nilai sinyal ke dalam cell.
+    /// Baca nilai `current` dan epoch-nya (untuk RCU snapshot).
+    /// Mengembalikan (value, epoch). Tidak memeriksa `changed` flag.
+    pub fn read_current_with_epoch(&self) -> (LogicVec, u64) {
+        let val = self.current.lock().unwrap().clone();
+        let epoch = self.epoch.load(Ordering::Relaxed);
+        (val, epoch)
+    }
+
+    /// ARSITEKTUR-04 Stage 5: Check if cell was modified after given epoch.
+    /// Returns true if the cell's epoch > `epoch`, meaning it was modified
+    /// after the snapshot started.
+    pub fn was_modified_after(&self, epoch: u64) -> bool {
+        self.epoch.load(Ordering::Relaxed) > epoch
+    }
+
+    /// ARSITEKTUR-04 Stage 5: Re-read current value if modified after epoch.
+    /// Returns (value, was_re_read). If cell wasn't modified after `epoch`,
+    /// returns (current_value, false). If modified, re-reads and returns
+    /// (new_value, true).
+    pub fn reread_if_modified_after(&self, epoch: u64) -> (LogicVec, bool) {
+        if self.was_modified_after(epoch) {
+            let val = self.current.lock().unwrap().clone();
+            (val, true)
+        } else {
+            let val = self.current.lock().unwrap().clone();
+            (val, false)
+        }
+    }
+
+    /// Tulis nilai sinyal ke `next` buffer dan set `changed=true`.
+    /// Jika nilai sama dengan `next` buffer, tidak melakukan apa-apa.
     pub fn write(&self, val: LogicVec) {
-        *self.inner.lock().unwrap() = val;
+        let mut next = self.next.lock().unwrap();
+        if *next != val {
+            *next = val;
+            self.changed.store(true, Ordering::Relaxed);
+        }
     }
 
-    /// Bandingkan dan tulis hanya bila berbeda (seperti write_signal).
+    /// Commit: pindahkan `next` ke `current` dan reset `changed`.
+    /// Dipanggil di akhir delta cycle (NBA region).
+    /// Update epoch ke `new_epoch` untuk RCU snapshot.
+    pub fn commit(&self, new_epoch: u64) {
+        if self.changed.swap(false, Ordering::Relaxed) {
+            let next_val = self.next.lock().unwrap().clone();
+            *self.current.lock().unwrap() = next_val;
+            self.epoch.store(new_epoch, Ordering::Relaxed);
+        }
+    }
+
+    /// Bandingkan dan tulis hanya bila berbeda (optimasi).
+    /// Mengembalikan `true` jika nilai benar-benar berubah.
     pub fn write_if_changed(&self, val: LogicVec) -> bool {
-        let mut g = self.inner.lock().unwrap();
-        if *g != val {
-            *g = val;
+        let mut next = self.next.lock().unwrap();
+        if *next != val {
+            *next = val;
+            self.changed.store(true, Ordering::Relaxed);
             true
         } else {
             false
@@ -140,15 +216,20 @@ impl SignalCell {
 
     /// Ambil lebar sinyal.
     pub fn width(&self) -> usize {
-        self.inner.lock().unwrap().width
+        // Lebar disimpan di current (tidak berubah setelah konstruksi)
+        self.current.lock().unwrap().width
     }
 }
 
 impl Clone for SignalCell {
     fn clone(&self) -> Self {
-        Self {
-            inner: Mutex::new(self.inner.lock().unwrap().clone()),
-        }
+        let current_val = self.current.lock().unwrap().clone();
+        let next_val = self.next.lock().unwrap().clone();
+        let changed = self.changed.load(Ordering::Relaxed);
+        let cell = Self::new(current_val);
+        *cell.next.lock().unwrap() = next_val;
+        cell.changed.store(changed, Ordering::Relaxed);
+        cell
     }
 }
 
@@ -157,6 +238,16 @@ impl Default for SignalCell {
         Self::new(LogicVec::new(1))
     }
 }
+
+impl std::fmt::Debug for SignalCell {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SignalCell")
+            .field("width", &self.width())
+            .field("changed", &self.changed.load(std::sync::atomic::Ordering::Relaxed))
+            .finish()
+    }
+}
+
 
 pub struct SimulationState {
     pub signals: Vec<LogicVec>,
@@ -170,7 +261,9 @@ pub struct SimulationState {
     /// ter-tulis di-snapshot LAZY (tanpa materialisasi) selama evaluasi —
     /// array memory flat (cache 65536x32x512 = 1.07e9 entry) dibaca tiap
     /// delta tapi TIDAK perlu di-clone penuh → puncak RSS turun drastis.
-    pub large_dirty: Vec<bool>,
+    /// AtomicBool untuk interior mutability agar `signal_cell_write` (pakai `&self`)
+    /// bisa menandai dirty tanpa `&mut self`.
+    pub large_dirty: Vec<AtomicBool>,
     /// Penyimpanan PACKED untuk nilai array memori raksasa yang telah
     /// ditulis: chunk 1024-bit (`[u64;32]`, 2-bit/cell: X=0 Zero=1 One=2 Z=3).
     /// 1e9 bit → ~120MB fisik (vs 1GB `Vec<LogicVal>`) — hanya chunk yang
@@ -182,6 +275,17 @@ pub struct SimulationState {
     /// write member di-direct ke canonical sehingga semua anggota satu
     /// jaringan (short). Identity default (id → id).
     pub alias_redirect: Vec<SignalId>,
+    /// RCU epoch counter — incremented each commit (NBA region).
+    /// Used by SignalCell.epoch for RCU snapshot consistency.
+    pub rcu_epoch: AtomicU64,
+    /// ARSITEKTUR-04 Stage 5: RCU grace period tracking.
+    /// Active reader count — incremented when starting RCU read section,
+    /// decremented when done. Writers wait for this to reach zero before
+    /// reclaiming old versions (grace period).
+    pub rcu_active_readers: AtomicUsize,
+    /// ARSITEKTUR-04 Stage 5: RCU grace period waiters.
+    /// Number of threads waiting for grace period to complete.
+    pub rcu_grace_waiters: AtomicUsize,
     pub time: u64,
     pub objects: Vec<ObjectData>,
     next_obj_id: ObjId,
@@ -228,7 +332,11 @@ impl SimulationState {
             .collect();
 
         let changed = vec![true; signals.len()];
-        let large_dirty = vec![false; signals.len()];
+        // AtomicBool doesn't implement Clone, so build vec manually
+        let mut large_dirty = Vec::with_capacity(signals.len());
+        for _ in 0..signals.len() {
+            large_dirty.push(AtomicBool::new(false));
+        }
         // LANG-08: net alias redirect — canonical utk tiap member (identity
         // default); member yang di-alias di-direct ke canonical.
         let mut alias_redirect: Vec<SignalId> = (0..signals.len()).collect();
@@ -261,6 +369,9 @@ impl SimulationState {
             large_dirty,
             wide_mem: HashMap::new(),
             alias_redirect,
+            rcu_epoch: AtomicU64::new(0),
+            rcu_active_readers: AtomicUsize::new(0),
+            rcu_grace_waiters: AtomicUsize::new(0),
             time: 0,
             objects,
             next_obj_id: 1,
@@ -363,7 +474,7 @@ impl SimulationState {
         if self.large_dirty.len() > id
             && self.signals[id].width >= mivon_core::LogicVec::LAZY_ZERO_THRESHOLD
         {
-            self.large_dirty[id] = true;
+            self.large_dirty[id].store(true, Ordering::Relaxed);
         }
         // Compare against pending (next_signals) if already changed this delta,
         // otherwise compare against committed (signals)
@@ -384,6 +495,8 @@ impl SimulationState {
         if id >= self.signal_cells.len() {
             return LogicVec::new(1);
         }
+        // LANG-08: net alias — baca member → baca canonical (nilai sama).
+        let id = self.alias_redirect.get(id).copied().unwrap_or(id);
         self.signal_cells[id].read()
     }
 
@@ -394,7 +507,94 @@ impl SimulationState {
         if id >= self.signal_cells.len() {
             return;
         }
+        // LANG-08: net alias — tulis ke canonical (semua anggota satu jaringan).
+        let id = self.alias_redirect.get(id).copied().unwrap_or(id);
+        // Sinyal besar yang menerima tulis nyata → tandai dirty (snapshot
+        // berikutnya harus clone kenyataan, bukan lazy X).
+        if self.large_dirty.len() > id
+            && self.signals[id].width >= mivon_core::LogicVec::LAZY_ZERO_THRESHOLD
+        {
+            self.large_dirty[id].store(true, Ordering::Relaxed);
+        }
         self.signal_cells[id].write(val);
+    }
+
+    /// Commit all signal cells: move next -> current and reset changed flags.
+    /// Called at end of delta cycle (NBA region) for double-buffering.
+    /// Increments RCU epoch for snapshot consistency.
+    pub fn commit_signal_cells(&self) {
+        let new_epoch = self.rcu_epoch.fetch_add(1, Ordering::Relaxed) + 1;
+        for cell in &self.signal_cells {
+            cell.commit(new_epoch);
+        }
+    }
+
+    /// RCU snapshot: take a consistent snapshot of all signal cells.
+    /// Uses epoch-based approach: record current epoch, read all cells'
+    /// current values with their epochs. If any cell's epoch > snapshot_epoch,
+    /// it was modified after snapshot started — re-read that cell.
+    /// Returns Arc<Vec<LogicVec>> for cheap sharing across threads.
+    ///
+    /// ARSITEKTUR-04 Stage 5: Multi-writer support with re-read logic.
+    /// If cells are modified during snapshot (epoch > snapshot_epoch),
+    /// we re-read those specific cells to ensure consistency.
+    pub fn snapshot_rcu(&self) -> std::sync::Arc<Vec<LogicVec>> {
+        let snapshot_epoch = self.rcu_epoch.load(Ordering::Relaxed);
+        let mut snapshot = Vec::with_capacity(self.signal_cells.len());
+        let mut cell_epochs = Vec::with_capacity(self.signal_cells.len());
+        
+        // First pass: read all cells
+        for cell in &self.signal_cells {
+            let (val, epoch) = cell.read_current_with_epoch();
+            snapshot.push(val);
+            cell_epochs.push(epoch);
+        }
+        
+        // ARSITEKTUR-04 Stage 5: Re-read cells modified after snapshot started.
+        // For multi-writer scenarios, if a cell's epoch > snapshot_epoch,
+        // it was modified during our reads — re-read to get consistent value.
+        for (i, &epoch) in cell_epochs.iter().enumerate() {
+            if epoch > snapshot_epoch {
+                // Cell was modified during snapshot — re-read
+                let (val, _new_epoch) = self.signal_cells[i].read_current_with_epoch();
+                snapshot[i] = val;
+            }
+        }
+        
+        std::sync::Arc::new(snapshot)
+    }
+
+    /// ARSITEKTUR-04 Stage 5: Enter RCU read section.
+    /// Increments active reader count. Must be paired with `exit_rcu_read_section`.
+    pub fn enter_rcu_read_section(&self) {
+        self.rcu_active_readers.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// ARSITEKTUR-04 Stage 5: Exit RCU read section.
+    /// Decrements active reader count. If count reaches zero and there are
+    /// grace period waiters, notifies them.
+    pub fn exit_rcu_read_section(&self) {
+        let prev = self.rcu_active_readers.fetch_sub(1, Ordering::Relaxed);
+        if prev == 1 {
+            // No more active readers — wake up any grace period waiters
+            // (In practice, we'd use a condvar; for now just track waiters)
+            let _ = self.rcu_grace_waiters.fetch_sub(1, Ordering::Relaxed);
+        }
+    }
+
+    /// ARSITEKTUR-04 Stage 5: Wait for RCU grace period.
+    /// Blocks until all current RCU read sections have completed.
+    /// Used by writers before reclaiming old versions.
+    pub fn wait_for_grace_period(&self) {
+        let current_readers = self.rcu_active_readers.load(Ordering::Relaxed);
+        if current_readers > 0 {
+            self.rcu_grace_waiters.fetch_add(1, Ordering::Relaxed);
+            // Spin-wait with backoff (in production, use condvar)
+            while self.rcu_active_readers.load(Ordering::Relaxed) > 0 {
+                std::thread::yield_now();
+            }
+            self.rcu_grace_waiters.fetch_sub(1, Ordering::Relaxed);
+        }
     }
 
     /// Slot scratch sekali-pakai untuk hasil method array bertaut
@@ -409,7 +609,7 @@ impl SimulationState {
         self.signals.push(cell_val.clone());
         self.next_signals.push(val);
         self.changed.push(false);
-        self.large_dirty.push(false);
+        self.large_dirty.push(AtomicBool::new(false));
         self.alias_redirect.push(id);
         self.signal_cells.push(SignalCell::new(cell_val));
         id
@@ -471,14 +671,14 @@ impl SimulationState {
             // Array raksasa: tulis packed — base lazy tak diubah.
             let wm = self.wide_mem.entry(id).or_default();
             wm.write_block(start, val);
-            self.large_dirty[id] = true;
+            self.large_dirty[id].store(true, Ordering::Relaxed);
             self.changed[id] = true;
             return;
         }
         if self.large_dirty.len() > id
             && self.next_signals[id].width >= mivon_core::LogicVec::LAZY_ZERO_THRESHOLD
         {
-            self.large_dirty[id] = true;
+            self.large_dirty[id].store(true, Ordering::Relaxed);
         }
         let n = val.bits.len();
         let mut end = end.min(start.saturating_add(n));
@@ -559,7 +759,7 @@ impl SimulationState {
                     self.next_signals[i] = mivon_core::LogicVec::new(w);
                     self.changed[i] = false;
                     changed.push((i, old, mivon_core::LogicVec::new(w)));
-                    self.large_dirty[i] = true;
+                    self.large_dirty[i].store(true, Ordering::Relaxed);
                     continue;
                 }
                 let old = self.signals[i].clone();
@@ -641,10 +841,13 @@ mod tests {
             signals: vec![LogicVec::new(w)],
             next_signals: vec![LogicVec::new(w)],
             changed: vec![false],
-            large_dirty: vec![false],
+            large_dirty: vec![AtomicBool::new(false)],
             signal_cells: vec![SignalCell::new(LogicVec::new(w))],
             wide_mem: HashMap::new(),
             alias_redirect: vec![0],
+            rcu_epoch: AtomicU64::new(0),
+            rcu_active_readers: AtomicUsize::new(0),
+            rcu_grace_waiters: AtomicUsize::new(0),
             time: 0,
             objects: vec![],
             next_obj_id: 1,
@@ -683,6 +886,7 @@ mod tests {
         assert_eq!(cell.read(), LogicVec::from_u64(42, 8));
 
         cell.write(LogicVec::from_u64(255, 8));
+        cell.commit(1);
         assert_eq!(cell.read(), LogicVec::from_u64(255, 8));
     }
 
@@ -690,9 +894,11 @@ mod tests {
     fn signal_cell_write_if_changed() {
         let cell = SignalCell::new(LogicVec::from_u64(10, 8));
         assert!(cell.write_if_changed(LogicVec::from_u64(20, 8)));
+        cell.commit(1);
         assert_eq!(cell.read(), LogicVec::from_u64(20, 8));
         // Tulis nilai sama → tidak berubah, false.
         assert!(!cell.write_if_changed(LogicVec::from_u64(20, 8)));
+        cell.commit(1);
         assert_eq!(cell.read(), LogicVec::from_u64(20, 8));
     }
 
@@ -701,6 +907,7 @@ mod tests {
         let a = SignalCell::new(LogicVec::from_u64(7, 8));
         let b = a.clone();
         a.write(LogicVec::from_u64(99, 8));
+        a.commit(1);
         assert_eq!(a.read(), LogicVec::from_u64(99, 8));
         assert_eq!(b.read(), LogicVec::from_u64(7, 8)); // clone tidak ikut berubah
     }
@@ -728,6 +935,7 @@ mod tests {
 
         // Tulis via signal_cell_write (tidak butuh &mut self).
         st.signal_cell_write(0, LogicVec::from_u64(0xAB, 8));
+        st.commit_signal_cells();
         assert_eq!(st.signal_cell_read(0), LogicVec::from_u64(0xAB, 8));
     }
 

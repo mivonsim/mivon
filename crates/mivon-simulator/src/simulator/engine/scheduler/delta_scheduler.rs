@@ -8,11 +8,12 @@
 //! ascending time order. Later stages will wire a lock-free / region-parallel
 //! multi-threaded scheduler into the engine run loop.
 //!
-//! Not yet wired into the simulation engine run loop — stage 1 is the
-//! trait + sequential baseline with a regression test for delta ordering.
+//! Stage 3: Generic over event type to support RegionEvent wiring.
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;
+
+use crate::simulator::types::{EventKind, EventRegion, RegionEvent};
 
 /// An event scheduled at a given simulation time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -22,42 +23,53 @@ pub struct DeltaEvent {
 }
 
 /// A scheduler that delivers events grouped by simulation time (delta cycle).
-pub trait DeltaScheduler {
+///
+/// Generic over the event type `E` to support different event representations
+/// (e.g., `DeltaEvent` for minimal scheduling, `RegionEvent` for full engine integration).
+pub trait DeltaScheduler<E> {
     /// Push an event to be delivered at `time`.
-    fn push_event(&mut self, time: u64, event: DeltaEvent);
+    fn push_event(&mut self, time: u64, event: E);
     /// Deliver all events at `time` (in insertion order), returning them.
     /// Returns empty if no events at `time`.
-    fn deliver_at(&mut self, time: u64) -> Vec<DeltaEvent>;
+    fn deliver_at(&mut self, time: u64) -> Vec<E>;
     /// Advance to `time`, delivering all events at times `<= time` in
     /// ascending order. Returns all delivered events.
-    fn advance_to(&mut self, time: u64) -> Vec<DeltaEvent>;
+    fn advance_to(&mut self, time: u64) -> Vec<E>;
     /// Number of pending (undelivered) events.
     fn pending(&self) -> usize;
 }
 
 /// Single-threaded delta scheduler: events stored in a `BTreeMap` keyed by
 /// time, delivered in ascending time order.
-#[derive(Debug, Clone, Default)]
-pub struct SequentialDeltaScheduler {
-    events: BTreeMap<u64, Vec<DeltaEvent>>,
+#[derive(Debug, Clone)]
+pub struct SequentialDeltaScheduler<E> {
+    events: BTreeMap<u64, Vec<E>>,
 }
 
-impl SequentialDeltaScheduler {
+impl<E> Default for SequentialDeltaScheduler<E> {
+    fn default() -> Self {
+        Self {
+            events: BTreeMap::new(),
+        }
+    }
+}
+
+impl<E> SequentialDeltaScheduler<E> {
     pub fn new() -> Self {
         Self::default()
     }
 }
 
-impl DeltaScheduler for SequentialDeltaScheduler {
-    fn push_event(&mut self, time: u64, event: DeltaEvent) {
+impl<E> DeltaScheduler<E> for SequentialDeltaScheduler<E> {
+    fn push_event(&mut self, time: u64, event: E) {
         self.events.entry(time).or_default().push(event);
     }
 
-    fn deliver_at(&mut self, time: u64) -> Vec<DeltaEvent> {
+    fn deliver_at(&mut self, time: u64) -> Vec<E> {
         self.events.remove(&time).unwrap_or_default()
     }
 
-    fn advance_to(&mut self, time: u64) -> Vec<DeltaEvent> {
+    fn advance_to(&mut self, time: u64) -> Vec<E> {
         let mut out = Vec::new();
         let keys: Vec<u64> = self
             .events
@@ -89,19 +101,27 @@ impl DeltaScheduler for SequentialDeltaScheduler {
 /// This is additive and NOT wired into the simulation engine run loop yet —
 /// it exists as a correct, tested multi-threaded delta scheduler behind the
 /// `DeltaScheduler` trait for later stages to adopt.
-#[derive(Debug, Default)]
-pub struct ParallelDeltaScheduler {
-    inner: Mutex<BTreeMap<u64, Vec<DeltaEvent>>>,
+#[derive(Debug)]
+pub struct ParallelDeltaScheduler<E> {
+    inner: Mutex<BTreeMap<u64, Vec<E>>>,
 }
 
-impl ParallelDeltaScheduler {
+impl<E> Default for ParallelDeltaScheduler<E> {
+    fn default() -> Self {
+        Self {
+            inner: Mutex::new(BTreeMap::new()),
+        }
+    }
+}
+
+impl<E> ParallelDeltaScheduler<E> {
     pub fn new() -> Self {
         Self::default()
     }
 }
 
-impl DeltaScheduler for ParallelDeltaScheduler {
-    fn push_event(&mut self, time: u64, event: DeltaEvent) {
+impl<E> DeltaScheduler<E> for ParallelDeltaScheduler<E> {
+    fn push_event(&mut self, time: u64, event: E) {
         self.inner
             .lock()
             .unwrap()
@@ -110,11 +130,11 @@ impl DeltaScheduler for ParallelDeltaScheduler {
             .push(event);
     }
 
-    fn deliver_at(&mut self, time: u64) -> Vec<DeltaEvent> {
+    fn deliver_at(&mut self, time: u64) -> Vec<E> {
         self.inner.lock().unwrap().remove(&time).unwrap_or_default()
     }
 
-    fn advance_to(&mut self, time: u64) -> Vec<DeltaEvent> {
+    fn advance_to(&mut self, time: u64) -> Vec<E> {
         let mut out = Vec::new();
         let mut guard = self.inner.lock().unwrap();
         let keys: Vec<u64> = guard
@@ -150,7 +170,7 @@ mod tests {
 
     #[test]
     fn delivers_in_ascending_time_order_regardless_of_insertion_order() {
-        let mut s = SequentialDeltaScheduler::new();
+        let mut s = SequentialDeltaScheduler::<DeltaEvent>::new();
         s.push_event(50, ev(50, 3));
         s.push_event(10, ev(10, 1));
         s.push_event(30, ev(30, 2));
@@ -165,7 +185,7 @@ mod tests {
 
     #[test]
     fn deliver_at_returns_only_that_time() {
-        let mut s = SequentialDeltaScheduler::new();
+        let mut s = SequentialDeltaScheduler::<DeltaEvent>::new();
         s.push_event(5, ev(5, 1));
         s.push_event(5, ev(5, 2));
         s.push_event(7, ev(7, 3));
@@ -177,7 +197,7 @@ mod tests {
 
     #[test]
     fn advance_to_removes_delivered_events() {
-        let mut s = SequentialDeltaScheduler::new();
+        let mut s = SequentialDeltaScheduler::<DeltaEvent>::new();
         s.push_event(1, ev(1, 1));
         s.push_event(2, ev(2, 2));
         s.push_event(3, ev(3, 3));
@@ -191,7 +211,7 @@ mod tests {
 
     #[test]
     fn events_inserted_after_advance_are_not_retroactively_delivered() {
-        let mut s = SequentialDeltaScheduler::new();
+        let mut s = SequentialDeltaScheduler::<DeltaEvent>::new();
         s.push_event(10, ev(10, 1));
         s.advance_to(5);
         assert_eq!(s.pending(), 1);
@@ -202,7 +222,7 @@ mod tests {
 
     #[test]
     fn pending_count_matches_undelivered_events() {
-        let mut s = SequentialDeltaScheduler::new();
+        let mut s = SequentialDeltaScheduler::<DeltaEvent>::new();
         assert_eq!(s.pending(), 0);
         s.push_event(1, ev(1, 1));
         s.push_event(2, ev(2, 2));
@@ -215,7 +235,7 @@ mod tests {
 
     #[test]
     fn parallel_delivers_in_ascending_time_order() {
-        let mut s = ParallelDeltaScheduler::new();
+        let mut s = ParallelDeltaScheduler::<DeltaEvent>::new();
         s.push_event(50, ev(50, 3));
         s.push_event(10, ev(10, 1));
         s.push_event(30, ev(30, 2));
@@ -230,7 +250,7 @@ mod tests {
 
     #[test]
     fn parallel_deliver_at_returns_only_that_time() {
-        let mut s = ParallelDeltaScheduler::new();
+        let mut s = ParallelDeltaScheduler::<DeltaEvent>::new();
         s.push_event(5, ev(5, 1));
         s.push_event(5, ev(5, 2));
         s.push_event(7, ev(7, 3));
@@ -244,10 +264,10 @@ mod tests {
     fn parallel_concurrent_push_and_deliver_preserves_all_events() {
         use std::thread;
 
-        let handles: Vec<thread::JoinHandle<ParallelDeltaScheduler>> = (0..4)
+        let handles: Vec<thread::JoinHandle<ParallelDeltaScheduler<DeltaEvent>>> = (0..4)
             .map(|idx| {
                 thread::spawn(move || {
-                    let mut s = ParallelDeltaScheduler::new();
+                    let mut s = ParallelDeltaScheduler::<DeltaEvent>::new();
                     // Each thread pushes 200 events across distinct times.
                     for k in 0..200 {
                         let time: u64 = (idx as u64 * 1000) + (k as u64 % 50); // bucket: 0..49 per thread
@@ -259,7 +279,7 @@ mod tests {
             .collect();
 
         // Merge all per-thread schedulers into one by draining each.
-        let mut merged = ParallelDeltaScheduler::new();
+        let mut merged = ParallelDeltaScheduler::<DeltaEvent>::new();
         for h in handles {
             let mut s = h.join().unwrap();
             let evs = s.advance_to(100_000);
@@ -285,10 +305,10 @@ mod tests {
     fn parallel_concurrent_multi_thread_drain_is_consistent() {
         use std::thread;
 
-        let handles: Vec<thread::JoinHandle<ParallelDeltaScheduler>> = (0..8)
+        let handles: Vec<thread::JoinHandle<ParallelDeltaScheduler<DeltaEvent>>> = (0..8)
             .map(|idx| {
                 thread::spawn(move || {
-                    let mut s = ParallelDeltaScheduler::new();
+                    let mut s = ParallelDeltaScheduler::<DeltaEvent>::new();
                     for k in 0..100 {
                         s.push_event((k % 10) as u64, ev((k % 10) as u64, idx * 100 + k));
                     }
@@ -313,8 +333,8 @@ mod tests {
     #[test]
     fn parallel_delta_matches_sequential_equivalence() {
         let times = [0, 5, 3, 10, 7, 1, 5, 100, 42];
-        let mut seq = SequentialDeltaScheduler::new();
-        let mut par = ParallelDeltaScheduler::new();
+        let mut seq = SequentialDeltaScheduler::<DeltaEvent>::new();
+        let mut par = ParallelDeltaScheduler::<DeltaEvent>::new();
         for (i, &t) in times.iter().enumerate() {
             seq.push_event(t, ev(t, i));
             par.push_event(t, ev(t, i));
@@ -333,8 +353,8 @@ mod tests {
 
     #[test]
     fn parallel_delta_deliver_at_matches_sequential() {
-        let mut seq = SequentialDeltaScheduler::new();
-        let mut par = ParallelDeltaScheduler::new();
+        let mut seq = SequentialDeltaScheduler::<DeltaEvent>::new();
+        let mut par = ParallelDeltaScheduler::<DeltaEvent>::new();
         seq.push_event(10, ev(10, 1));
         seq.push_event(10, ev(10, 2));
         seq.push_event(20, ev(20, 3));
@@ -346,5 +366,119 @@ mod tests {
         assert_eq!(seq.deliver_at(20), par.deliver_at(20));
         assert_eq!(seq.pending(), 0);
         assert_eq!(par.pending(), 0);
+    }
+}
+
+// ─── RegionEvent-based scheduler type aliases (Stage 3 wiring) ───
+
+/// Sequential delta scheduler for RegionEvent — drop-in replacement for
+/// `Vec<Vec<RegionEvent>>` event queue in the engine.
+pub type SequentialRegionScheduler = SequentialDeltaScheduler<RegionEvent>;
+
+/// Parallel delta scheduler for RegionEvent — multi-threaded event queue
+/// for the engine run loop (stage 3 of ARSITEKTUR-03).
+pub type ParallelRegionScheduler = ParallelDeltaScheduler<RegionEvent>;
+
+#[cfg(test)]
+mod region_scheduler_tests {
+    use super::*;
+    use crate::simulator::types::{EventKind, EventRegion, RegionEvent};
+
+    fn re(region: EventRegion, kind: EventKind) -> RegionEvent {
+        RegionEvent { region, event: kind }
+    }
+
+    #[test]
+    fn sequential_region_scheduler_basic() {
+        let mut s = SequentialRegionScheduler::new();
+        s.push_event(10, re(EventRegion::Active, EventKind::EvalProcess(1)));
+        s.push_event(10, re(EventRegion::Active, EventKind::EvalProcess(2)));
+        s.push_event(20, re(EventRegion::Nba, EventKind::EvalProcess(3)));
+
+        let delivered = s.deliver_at(10);
+        assert_eq!(delivered.len(), 2);
+        assert_eq!(delivered[0].region, EventRegion::Active);
+        assert_eq!(delivered[1].region, EventRegion::Active);
+
+        let delivered2 = s.deliver_at(20);
+        assert_eq!(delivered2.len(), 1);
+        assert_eq!(delivered2[0].region, EventRegion::Nba);
+
+        assert_eq!(s.pending(), 0);
+    }
+
+    #[test]
+    fn parallel_region_scheduler_basic() {
+        let mut s = ParallelRegionScheduler::new();
+        s.push_event(10, re(EventRegion::Active, EventKind::EvalProcess(1)));
+        s.push_event(10, re(EventRegion::Active, EventKind::EvalProcess(2)));
+        s.push_event(20, re(EventRegion::Nba, EventKind::EvalProcess(3)));
+
+        let delivered = s.deliver_at(10);
+        assert_eq!(delivered.len(), 2);
+
+        let delivered2 = s.deliver_at(20);
+        assert_eq!(delivered2.len(), 1);
+
+        assert_eq!(s.pending(), 0);
+    }
+
+    #[test]
+    fn parallel_region_scheduler_concurrent() {
+        use std::sync::Arc;
+        use std::thread;
+
+        // Test concurrent pushes to a SHARED scheduler (like real usage)
+        let shared = Arc::new(std::sync::Mutex::new(ParallelRegionScheduler::new()));
+        let handles: Vec<thread::JoinHandle<()>> = (0..4)
+            .map(|idx| {
+                let s = Arc::clone(&shared);
+                thread::spawn(move || {
+                    let mut s = s.lock().unwrap();
+                    for k in 0..50 {
+                        let time = (idx * 100 + k) as u64;
+                        s.push_event(time, re(EventRegion::Active, EventKind::EvalProcess(k)));
+                    }
+                })
+            })
+            .collect();
+
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        // Drain all events
+        let mut s = Arc::try_unwrap(shared).unwrap().into_inner().unwrap();
+        let all = s.advance_to(100_000);
+        assert_eq!(all.len(), 200); // 4 threads × 50 events
+        assert_eq!(s.pending(), 0);
+    }
+
+    #[test]
+    fn region_scheduler_equivalence() {
+        let mut seq = SequentialRegionScheduler::new();
+        let mut par = ParallelRegionScheduler::new();
+
+        let events = [
+            (10, EventRegion::Active, EventKind::EvalProcess(1)),
+            (10, EventRegion::Nba, EventKind::EvalProcess(2)),
+            (20, EventRegion::Active, EventKind::EvalProcess(3)),
+            (20, EventRegion::Reactive, EventKind::EvalProcess(4)),
+        ];
+
+        for (t, r, k) in events {
+            seq.push_event(t, re(r, k.clone()));
+            par.push_event(t, re(r, k));
+        }
+
+        let seq_all = seq.advance_to(100);
+        let par_all = par.advance_to(100);
+
+        assert_eq!(seq_all.len(), par_all.len());
+        for (s, p) in seq_all.iter().zip(par_all.iter()) {
+            assert_eq!(s.region, p.region);
+            // EventKind doesn't implement PartialEq, compare via Debug
+            assert_eq!(format!("{:?}", s.event), format!("{:?}", p.event));
+        }
     }
 }

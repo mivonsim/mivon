@@ -826,6 +826,8 @@ pub(crate) fn rename_in_sequence(
             Box::new(rename_in_sequence(*r, rename_map)),
         ),
         Sequence::Repeat(s, n) => Sequence::Repeat(Box::new(rename_in_sequence(*s, rename_map)), n),
+        Sequence::GotoRepeat(s) => Sequence::GotoRepeat(Box::new(rename_in_sequence(*s, rename_map))),
+        Sequence::GotoRepeatPlus(s) => Sequence::GotoRepeatPlus(Box::new(rename_in_sequence(*s, rename_map))),
         Sequence::Implication(ante, cons) => Sequence::Implication(
             Box::new(rename_in_sequence(*ante, rename_map)),
             Box::new(rename_in_sequence(*cons, rename_map)),

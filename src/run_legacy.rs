@@ -1659,6 +1659,9 @@ pub(crate) fn run(cli: Cli, env: &mut mivon_api::env::GlobalEnv) -> Result<(), S
     engine.snapshot_interval = cli.snap_interval;
     engine.use_packed_eval = cli.packed;
     engine.use_dag_parallel = cli.parallel;
+    engine.set_parallel_delta(cli.parallel_delta);
+    engine.set_parallel_regions(cli.parallel_regions);
+    engine.set_use_jit_stmt(cli.jit_stmt);
     apply_engine_flags(&mut engine, &cli);
     engine.use_timing_wheel = cli.use_timing_wheel;
     // SIM-20: cycle-based mode (--cycle / --cycle-period)

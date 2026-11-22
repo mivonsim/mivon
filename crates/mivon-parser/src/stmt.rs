@@ -341,9 +341,12 @@ impl Parser {
                     });
                 } else {
                     let expr = self.parse_expr(0)?;
-                    // SVA repetition `[*N]` setelah ekspresi: `a[*2] |-> b`
-                    // → `Repeat(Expr(a), 2) |-> Expr(b)`.
-                    if self.peek() == &Token::LBrack && self.peek_ahead(1) == &Token::Star {
+                    // SVA repetition `[*N]` / `[*]` / `[+]` setelah ekspresi:
+                    // `a[*2] |-> b` → `Repeat(Expr(a), 2) |-> Expr(b)`
+                    // `a[*] |-> b` → `GotoRepeat(Expr(a)) |-> Expr(b)`
+                    // `a[+] |-> b` → `GotoRepeatPlus(Expr(a)) |-> Expr(b)`
+                    let first_after_lbrack = self.peek_ahead(1);
+                    if self.peek() == &Token::LBrack && (first_after_lbrack == &Token::Star || first_after_lbrack == &Token::Plus) {
                         let mut seq = self.parse_sequence_repetition(
                             super::types::Sequence::Expr(expr),
                         )?;

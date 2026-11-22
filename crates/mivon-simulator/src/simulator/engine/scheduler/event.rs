@@ -1622,6 +1622,78 @@ impl SimulationEngine {
                 let _ = self.write_lvalue(&lvalue, val, false);
             }
         }
+        // ARSITEKTUR-04 Stage 3: commit signal cells for double-buffering
+        self.state.commit_signal_cells();
+    }
+
+    /// SIM-03: Parallel NBA commit using rayon.
+    ///
+    /// Partitions NBA pending writes by signal. Writes to different signals
+    /// can be applied in parallel. Writes to the same signal are processed
+    /// sequentially with last-write-wins semantics (by pid order).
+    pub(crate) fn commit_nba_parallel(&mut self) -> Result<(), SimError> {
+        let pending = std::mem::take(&mut self.nba_pending);
+        self.nba_signal_map.clear();
+
+        if pending.is_empty() {
+            return Ok(());
+        }
+
+        // Partition by signal id: group writes to the same signal together.
+        let mut signal_groups: std::collections::HashMap<usize, Vec<(IrLValue, LogicVec)>> =
+            std::collections::HashMap::new();
+
+        for (lvalue, val) in pending {
+            if let Some(sig_id) = self.signal_id_from_lvalue(&lvalue) {
+                signal_groups.entry(sig_id).or_default().push((lvalue, val));
+            } else {
+                // Concat or other complex lvalue - process sequentially for safety
+                signal_groups.entry(usize::MAX).or_default().push((lvalue, val));
+            }
+        }
+
+        // Separate into conflict-free (single write per signal) and conflicting groups
+        let mut conflict_free: Vec<(IrLValue, LogicVec)> = Vec::new();
+        let mut conflicting_groups: Vec<Vec<(IrLValue, LogicVec)>> = Vec::new();
+
+        for (sig_id, writes) in signal_groups {
+            if writes.len() == 1 && sig_id != usize::MAX {
+                // Single write to this signal - can be parallelized
+                conflict_free.push(writes[0].clone());
+            } else {
+                // Multiple writes to same signal, or complex lvalue - process sequentially
+                conflicting_groups.push(writes);
+            }
+        }
+
+        // Apply conflict-free writes in parallel
+        if !conflict_free.is_empty() {
+            // Convert to ParallelWrite format for apply_parallel_writes
+            let parallel_writes: Vec<ParallelWrite> = conflict_free
+                .into_iter()
+                .filter_map(|(lvalue, val)| {
+                    self.signal_id_from_lvalue(&lvalue).map(|id| (id, 0usize, val))
+                })
+                .collect();
+
+            if !parallel_writes.is_empty() {
+                // apply_parallel_writes handles parallelization internally
+                self.apply_parallel_writes(&parallel_writes);
+            }
+        }
+
+        // Apply conflicting groups sequentially (last-write-wins by original order)
+        for group in conflicting_groups {
+            for (lvalue, val) in group {
+                if !self.is_forced(&lvalue) {
+                    let _ = self.write_lvalue(&lvalue, val, false);
+                }
+            }
+        }
+
+        // ARSITEKTUR-04 Stage 3: commit signal cells for double-buffering
+        self.state.commit_signal_cells();
+        Ok(())
     }
 
     /// SIM-14: Push NBA write ke pending list dengan deteksi write conflict.

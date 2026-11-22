@@ -2801,6 +2801,12 @@ impl Elaborator {
                 Box::new(self.elaborate_sequence(s, signal_map, signals)?),
                 *n,
             ),
+            Sequence::GotoRepeat(s) => IrSequence::GotoRepeat(
+                Box::new(self.elaborate_sequence(s, signal_map, signals)?),
+            ),
+            Sequence::GotoRepeatPlus(s) => IrSequence::GotoRepeatPlus(
+                Box::new(self.elaborate_sequence(s, signal_map, signals)?),
+            ),
             Sequence::Implication(ante, cons) => IrSequence::Implication(
                 Box::new(self.elaborate_sequence(ante, signal_map, signals)?),
                 Box::new(self.elaborate_sequence(cons, signal_map, signals)?),
@@ -2818,6 +2824,8 @@ fn sequence_first_loc(seq: &mivon_ast::types::Sequence) -> (usize, usize) {
         Sequence::Delay(_) | Sequence::DelayRange(_, _) => (0, 0),
         Sequence::Concat(l, _) | Sequence::Or(l, _) | Sequence::And(l, _) => sequence_first_loc(l),
         Sequence::Repeat(s, _) => sequence_first_loc(s),
+        Sequence::GotoRepeat(s) => sequence_first_loc(s),
+        Sequence::GotoRepeatPlus(s) => sequence_first_loc(s),
         Sequence::Implication(ante, _) => sequence_first_loc(ante),
     }
 }

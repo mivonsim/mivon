@@ -32,6 +32,8 @@ pub(crate) fn scan_sequence_reads(
             scan_sequence_reads(r, reads, writes);
         }
         Sequence::Repeat(s, _) => scan_sequence_reads(s, reads, writes),
+        Sequence::GotoRepeat(s) => scan_sequence_reads(s, reads, writes),
+        Sequence::GotoRepeatPlus(s) => scan_sequence_reads(s, reads, writes),
         Sequence::Implication(ante, cons) => {
             scan_sequence_reads(ante, reads, writes);
             scan_sequence_reads(cons, reads, writes);

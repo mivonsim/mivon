@@ -525,6 +525,26 @@ fn inline_funcs_in_sequence(
             )),
             n,
         ),
+        Sequence::GotoRepeat(s) => Sequence::GotoRepeat(
+            Box::new(inline_funcs_in_sequence(
+                *s,
+                funcs,
+                prefix,
+                counter,
+                temp_signals,
+                recursive_funcs,
+            )),
+        ),
+        Sequence::GotoRepeatPlus(s) => Sequence::GotoRepeatPlus(
+            Box::new(inline_funcs_in_sequence(
+                *s,
+                funcs,
+                prefix,
+                counter,
+                temp_signals,
+                recursive_funcs,
+            )),
+        ),
         Sequence::Implication(ante, cons) => Sequence::Implication(
             Box::new(inline_funcs_in_sequence(
                 *ante,

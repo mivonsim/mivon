@@ -1097,6 +1097,14 @@ pub struct Cli {
     #[arg(long = "parallel", short = 'L')]
     pub parallel: bool,
 
+    /// Use parallel delta scheduler (multi-threaded event queue via ParallelDeltaScheduler)
+    #[arg(long = "parallel-delta")]
+    pub parallel_delta: bool,
+
+    /// Use region-level parallelism (Active/Inactive/NBA/Reactive parallel via rayon)
+    #[arg(long = "parallel-regions")]
+    pub parallel_regions: bool,
+
     /// Use cycle-based simulation fusion (clock-gated domain fusion)
     #[arg(long = "cycle-fusion")]
     pub cycle_fusion: bool,
@@ -1104,6 +1112,10 @@ pub struct Cli {
     /// Enable body-level MIR JIT (compiled-code simulation for combinational processes)
     #[arg(long = "jit-body")]
     pub jit_body: bool,
+
+    /// Enable statement-level JIT (JIT-01 Stage 2: compile blocking assigns to native code)
+    #[arg(long = "jit-stmt")]
+    pub jit_stmt: bool,
 
     /// Enable formal verification with Z3 (Bounded Model Checking)
     #[arg(long = "formal")]

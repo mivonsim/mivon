@@ -117,6 +117,13 @@ pub struct VipChecker {
     ahb_saw_nonseq: bool,
     ahb_hwrite_start: Option<bool>,
     ahb_hwrite_reported: bool,
+    // AHB extended state
+    ahb_hresp_start: Option<u8>,
+    ahb_hresp_reported: bool,
+    ahb_burst_len: Option<u8>,
+    ahb_burst_count: u8,
+    ahb_hmastlock_start: Option<bool>,
+    ahb_hmastlock_reported: bool,
 }
 
 impl VipChecker {
@@ -148,6 +155,12 @@ impl VipChecker {
             ahb_saw_nonseq: false,
             ahb_hwrite_start: None,
             ahb_hwrite_reported: false,
+            ahb_hresp_start: None,
+            ahb_hresp_reported: false,
+            ahb_burst_len: None,
+            ahb_burst_count: 0,
+            ahb_hmastlock_start: None,
+            ahb_hmastlock_reported: false,
         }
     }
 
@@ -409,7 +422,9 @@ impl VipChecker {
 
         // Aturan 2: SEQ tanpa NONSEQ pendahulu sejak IDLE terakhir (termasuk
         // BUSY->SEQ tanpa NONSEQ). Lapor sekali saat SEQ muncul.
-        if is_seq_or_nonseq && !self.ahb_saw_nonseq {
+        // Hanya cek untuk SEQ (htrans=3), bukan NONSEQ (htrans=2).
+        let is_seq = htrans_val == 3;
+        if is_seq && !self.ahb_saw_nonseq {
             self.violations.push(VipViolation::new(
                 time,
                 "AHB-SEQ-WITHOUT-NONSEQ",
@@ -462,6 +477,112 @@ impl VipChecker {
                     }
                 }
             }
+        }
+
+        // Aturan 4: HRESP checking (OKAY=00, ERROR=01, RETRY=10, SPLIT=11).
+        // Lapor ERROR/RETRY/SPLIT saat transfer selesai (HREADY=1 DAN ada transfer aktif).
+        let hresp = Self::read_u64(engine, "hresp");
+        if let Some(hresp_val) = hresp {
+            let hresp_code = (hresp_val & 0b11) as u8;
+            // Hanya cek HRESP saat transfer aktif (NONSEQ/SEQ) DAN hready=1
+            if is_seq_or_nonseq && hready {
+                if hresp_code != 0b00 && !self.ahb_hresp_reported {
+                    let (rule, detail) = match hresp_code {
+                        0b01 => ("AHB-HRESP-ERROR", "Slave mengembalikan ERROR response"),
+                        0b10 => ("AHB-HRESP-RETRY", "Slave meminta RETRY (ulangi transfer)"),
+                        0b11 => ("AHB-HRESP-SPLIT", "Slave meminta SPLIT (deferred transfer)"),
+                        _ => ("AHB-HRESP-UNKNOWN", "Kode HRESP tidak dikenal"),
+                    };
+                    self.violations.push(VipViolation::new(time, rule, detail));
+                    self.ahb_hresp_reported = true;
+                } else if hresp_code == 0b00 {
+                    self.ahb_hresp_reported = false;
+                }
+            }
+            self.ahb_hresp_start = Some(hresp_code);
+        }
+
+        // Aturan 5: HBURST checking (burst length validation).
+        // HBURST: SINGLE=000, INCR=001, WRAP4=010, INCR4=011, WRAP8=100, INCR8=101, WRAP16=110, INCR16=111.
+        // Validasi panjang burst: hitung SEQ dalam burst dan bandingkan dengan HBURST.
+        let hburst = Self::read_u64(engine, "hburst");
+        if let Some(hburst_val) = hburst {
+            let burst_type = (hburst_val & 0b111) as u8;
+            let is_nonseq = htrans_val == 2; // NONSEQ = 10b = 2
+            let is_seq = htrans_val == 3;     // SEQ = 11b = 3
+            
+            if is_nonseq {
+                // NONSEQ memulai burst baru
+                self.ahb_burst_len = match burst_type {
+                    0b000 => Some(1), // SINGLE
+                    0b001 => None,    // INCR (undefined length)
+                    0b010 => Some(4), // WRAP4
+                    0b011 => Some(4), // INCR4
+                    0b100 => Some(8), // WRAP8
+                    0b101 => Some(8), // INCR8
+                    0b110 => Some(16), // WRAP16
+                    0b111 => Some(16), // INCR16
+                    _ => None,
+                };
+                self.ahb_burst_count = 1;
+            } else if is_seq && self.ahb_span_active && hready {
+                // SEQ dalam burst aktif
+                if self.ahb_burst_count > 0 {
+                    self.ahb_burst_count += 1;
+                }
+                // Validasi: jika burst_len didefinisikan, count tidak boleh melebihi
+                if let Some(len) = self.ahb_burst_len {
+                    if self.ahb_burst_count > len {
+                        self.violations.push(VipViolation::new(
+                            time,
+                            "AHB-BURST-LENGTH-EXCEEDED",
+                            format!("Burst melebihi panjang didefinisikan HBURST: {} > {}", self.ahb_burst_count, len),
+                        ));
+                    }
+                }
+            } else if !htrans_high.is_high() {
+                // Burst berakhir (IDLE/BUSY)
+                if let Some(len) = self.ahb_burst_len {
+                    if self.ahb_burst_count != len && self.ahb_burst_count > 0 {
+                        self.violations.push(VipViolation::new(
+                            time,
+                            "AHB-BURST-LENGTH-MISMATCH",
+                            format!("Burst berakhir dengan panjang {} ≠ HBURST {}", self.ahb_burst_count, len),
+                        ));
+                    }
+                }
+                self.ahb_burst_len = None;
+                self.ahb_burst_count = 0;
+            }
+        }
+
+        // Aturan 6: HMASTLOCK checking (lock stabil selama burst).
+        let hmastlock = Self::read_bool(engine, "hmastlock");
+        if let Some(lock) = hmastlock {
+            let is_nonseq = htrans_val == 2; // NONSEQ = 10b = 2
+            if is_nonseq && starts_span {
+                // NONSEQ memulai burst baru
+                self.ahb_hmastlock_start = Some(lock);
+                self.ahb_hmastlock_reported = false;
+            } else if self.ahb_span_active && hready {
+                if let Some(start_lock) = self.ahb_hmastlock_start {
+                    if start_lock != lock && !self.ahb_hmastlock_reported {
+                        self.violations.push(VipViolation::new(
+                            time,
+                            "AHB-HMASTLOCK-UNSTABLE",
+                            "HMASTLOCK berubah selama burst (harus stabil sejak NONSEQ awal)",
+                        ));
+                        self.ahb_hmastlock_reported = true;
+                    }
+                }
+            } else if !htrans_high.is_high() {
+                self.ahb_hmastlock_start = None;
+                self.ahb_hmastlock_reported = false;
+            }
+        } else if !htrans_high.is_high() {
+            // hmastlock tidak ada, reset state saat burst berakhir
+            self.ahb_hmastlock_start = None;
+            self.ahb_hmastlock_reported = false;
         }
 
         self.last_htrans = htrans_high;
@@ -755,6 +876,164 @@ mod tests {
         assert!(rep.contains("APB-PENABLE-NO-SEL"));
         assert_eq!(chk.violations.len(), 1);
         chk.flush_diagnostics(&mut engine);
+        assert!(chk.violations.is_empty());
+    }
+
+    /// AHB HRESP ERROR response dilaporkan saat HREADY=1.
+    #[test]
+    fn ahb_hresp_error_reported() {
+        let mut engine = test_engine_with_signals(&["htrans", "hready", "hresp"]);
+        let mut chk = VipChecker::new(VipProtocol::Ahb);
+        // t=0: NONSEQ, hready=0, hresp=OKAY
+        set_signal_u64(&mut engine, "htrans", 2);
+        set_signal(&mut engine, "hready", false);
+        set_signal_u64(&mut engine, "hresp", 0); // OKAY
+        chk.check_time_step(0, &engine).unwrap();
+        assert!(chk.violations.is_empty());
+        // t=1: hready=1, hresp=ERROR (01)
+        set_signal(&mut engine, "hready", true);
+        set_signal_u64(&mut engine, "hresp", 1); // ERROR
+        chk.check_time_step(1, &engine).unwrap();
+        assert!(chk
+            .violations
+            .iter()
+            .any(|v| v.rule == "AHB-HRESP-ERROR"));
+    }
+
+    /// AHB HRESP RETRY response dilaporkan saat HREADY=1.
+    #[test]
+    fn ahb_hresp_retry_reported() {
+        let mut engine = test_engine_with_signals(&["htrans", "hready", "hresp"]);
+        let mut chk = VipChecker::new(VipProtocol::Ahb);
+        set_signal_u64(&mut engine, "htrans", 2);
+        set_signal(&mut engine, "hready", false);
+        set_signal_u64(&mut engine, "hresp", 0);
+        chk.check_time_step(0, &engine).unwrap();
+        // t=1: hready=1, hresp=RETRY (10)
+        set_signal(&mut engine, "hready", true);
+        set_signal_u64(&mut engine, "hresp", 2); // RETRY
+        chk.check_time_step(1, &engine).unwrap();
+        assert!(chk
+            .violations
+            .iter()
+            .any(|v| v.rule == "AHB-HRESP-RETRY"));
+    }
+
+    /// AHB HRESP SPLIT response dilaporkan saat HREADY=1.
+    #[test]
+    fn ahb_hresp_split_reported() {
+        let mut engine = test_engine_with_signals(&["htrans", "hready", "hresp"]);
+        let mut chk = VipChecker::new(VipProtocol::Ahb);
+        set_signal_u64(&mut engine, "htrans", 2);
+        set_signal(&mut engine, "hready", false);
+        set_signal_u64(&mut engine, "hresp", 0);
+        chk.check_time_step(0, &engine).unwrap();
+        // t=1: hready=1, hresp=SPLIT (11)
+        set_signal(&mut engine, "hready", true);
+        set_signal_u64(&mut engine, "hresp", 3); // SPLIT
+        chk.check_time_step(1, &engine).unwrap();
+        assert!(chk
+            .violations
+            .iter()
+            .any(|v| v.rule == "AHB-HRESP-SPLIT"));
+    }
+
+    /// AHB HRESP OKAY tidak melaporkan pelanggaran.
+    #[test]
+    fn ahb_hresp_okay_no_violation() {
+        let mut engine = test_engine_with_signals(&["htrans", "hready", "hresp"]);
+        let mut chk = VipChecker::new(VipProtocol::Ahb);
+        set_signal_u64(&mut engine, "htrans", 2);
+        set_signal(&mut engine, "hready", false);
+        set_signal_u64(&mut engine, "hresp", 0);
+        chk.check_time_step(0, &engine).unwrap();
+        // t=1: hready=1, hresp=OKAY
+        set_signal(&mut engine, "hready", true);
+        set_signal_u64(&mut engine, "hresp", 0);
+        chk.check_time_step(1, &engine).unwrap();
+        assert!(chk.violations.is_empty());
+    }
+
+    /// AHB burst length melebihi HBURST INCR4 dilaporkan.
+    #[test]
+    fn ahb_burst_length_exceeded_reported() {
+        let mut engine = test_engine_with_signals(&["htrans", "hready", "hburst"]);
+        let mut chk = VipChecker::new(VipProtocol::Ahb);
+        // t=0: NONSEQ, HBURST=INCR4 (011), hready=1
+        set_signal_u64(&mut engine, "htrans", 2);
+        set_signal(&mut engine, "hready", true);
+        set_signal_u64(&mut engine, "hburst", 3); // INCR4
+        chk.check_time_step(0, &engine).unwrap();
+        // t=1: SEQ, hready=1 (burst count=2)
+        set_signal_u64(&mut engine, "htrans", 3);
+        chk.check_time_step(1, &engine).unwrap();
+        // t=2: SEQ, hready=1 (burst count=3)
+        chk.check_time_step(2, &engine).unwrap();
+        // t=3: SEQ, hready=1 (burst count=4)
+        chk.check_time_step(3, &engine).unwrap();
+        // t=4: SEQ, hready=1 (burst count=5 > 4) -> pelanggaran
+        chk.check_time_step(4, &engine).unwrap();
+        assert!(chk
+            .violations
+            .iter()
+            .any(|v| v.rule == "AHB-BURST-LENGTH-EXCEEDED"));
+    }
+
+    /// AHB burst length mismatch (berakhir sebelum HBURST) dilaporkan.
+    #[test]
+    fn ahb_burst_length_mismatch_reported() {
+        let mut engine = test_engine_with_signals(&["htrans", "hready", "hburst"]);
+        let mut chk = VipChecker::new(VipProtocol::Ahb);
+        // t=0: NONSEQ, HBURST=INCR4 (011), hready=1
+        set_signal_u64(&mut engine, "htrans", 2);
+        set_signal(&mut engine, "hready", true);
+        set_signal_u64(&mut engine, "hburst", 3); // INCR4
+        chk.check_time_step(0, &engine).unwrap();
+        // t=1: SEQ
+        set_signal_u64(&mut engine, "htrans", 3);
+        chk.check_time_step(1, &engine).unwrap();
+        // t=2: IDLE (burst berakhir dengan count=2 < 4) -> pelanggaran
+        set_signal_u64(&mut engine, "htrans", 0);
+        chk.check_time_step(2, &engine).unwrap();
+        assert!(chk
+            .violations
+            .iter()
+            .any(|v| v.rule == "AHB-BURST-LENGTH-MISMATCH"));
+    }
+
+    /// AHB HMASTLOCK berubah selama burst dilaporkan.
+    #[test]
+    fn ahb_hmastlock_unstable_reported() {
+        let mut engine = test_engine_with_signals(&["htrans", "hready", "hmastlock"]);
+        let mut chk = VipChecker::new(VipProtocol::Ahb);
+        // t=0: NONSEQ, HMASTLOCK=0, hready=1
+        set_signal_u64(&mut engine, "htrans", 2);
+        set_signal(&mut engine, "hready", true);
+        set_signal(&mut engine, "hmastlock", false);
+        chk.check_time_step(0, &engine).unwrap();
+        // t=1: SEQ, HMASTLOCK=1 (berubah!) -> pelanggaran
+        set_signal_u64(&mut engine, "htrans", 3);
+        set_signal(&mut engine, "hmastlock", true);
+        chk.check_time_step(1, &engine).unwrap();
+        assert!(chk
+            .violations
+            .iter()
+            .any(|v| v.rule == "AHB-HMASTLOCK-UNSTABLE"));
+    }
+
+    /// AHB HMASTLOCK stabil selama burst tidak melaporkan pelanggaran.
+    #[test]
+    fn ahb_hmastlock_stable_no_violation() {
+        let mut engine = test_engine_with_signals(&["htrans", "hready", "hmastlock"]);
+        let mut chk = VipChecker::new(VipProtocol::Ahb);
+        set_signal_u64(&mut engine, "htrans", 2);
+        set_signal(&mut engine, "hready", true);
+        set_signal(&mut engine, "hmastlock", true);
+        chk.check_time_step(0, &engine).unwrap();
+        set_signal_u64(&mut engine, "htrans", 3);
+        chk.check_time_step(1, &engine).unwrap();
+        set_signal_u64(&mut engine, "htrans", 0); // IDLE
+        chk.check_time_step(2, &engine).unwrap();
         assert!(chk.violations.is_empty());
     }
 }

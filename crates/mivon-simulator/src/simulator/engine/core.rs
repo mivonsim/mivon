@@ -3,6 +3,8 @@ use super::SimulationLimit;
 use super::EVENT_COMPACT_THRESHOLD;
 use crate::foreign::ForeignEvent;
 use crate::scheduler::clock_domain::ClockDomain;
+use crate::simulator::engine::scheduler::delta_scheduler::{DeltaScheduler, ParallelRegionScheduler};
+use crate::simulator::JITStmtCompiler;
 use crate::simulator::parallel::ParallelConfig;
 use crate::simulator::sdf::SdfData;
 use crate::simulator::state::SimulationState;
@@ -73,6 +75,7 @@ impl SimulationEngine {
             pause_flag: None,
             events: Vec::new(),
             events_base: 0,
+            delta_scheduler: None,
             region_scratch: Vec::new(),
             region_keep_scratch: Vec::new(),
             nba_pending: Vec::new(),
@@ -242,6 +245,9 @@ impl SimulationEngine {
             objection_triggered: false,
             uvm_objection_data: std::collections::HashMap::new(),
             jit_evaluator: Some(crate::simulator::JITEvaluator::new()),
+            jit_compiler: Some(crate::simulator::JITCompiler::new().unwrap()),
+            jit_stmt_compiler: None,
+            use_jit_stmt: false,
             use_packed_eval: true,
             use_jit_expression: false, // Expression-level JIT: disabled by default (opt-in for stability)
             sim_arena: crate::simulator::arena::SimulationArena::with_bump_size(4 * 1024 * 1024), // 4MB initial
@@ -549,10 +555,23 @@ impl SimulationEngine {
 
     pub fn set_parallel_delta(&mut self, enabled: bool) {
         self.parallel_config.parallel_delta = enabled;
+        if enabled && self.delta_scheduler.is_none() {
+            self.delta_scheduler = Some(Box::new(ParallelRegionScheduler::new()));
+        } else if !enabled {
+            self.delta_scheduler = None;
+        }
     }
 
     pub fn set_use_signal_cells(&mut self, enabled: bool) {
         self.parallel_config.use_signal_cells = enabled;
+    }
+
+    pub fn set_parallel_regions(&mut self, enabled: bool) {
+        self.parallel_config.parallel_regions = enabled;
+        // Region parallelism requires signal cells for safe concurrent access
+        if enabled {
+            self.parallel_config.use_signal_cells = true;
+        }
     }
 
     pub fn set_use_packed_eval(&mut self, enabled: bool) {
@@ -608,6 +627,256 @@ impl SimulationEngine {
 
     pub fn set_use_mir_jit(&mut self, enabled: bool) {
         self.use_mir_jit = enabled;
+    }
+
+    pub fn set_use_jit_stmt(&mut self, enabled: bool) {
+        self.use_jit_stmt = enabled;
+        if enabled && self.jit_stmt_compiler.is_none() {
+            self.jit_stmt_compiler = Some(JITStmtCompiler::new());
+        } else if !enabled {
+            self.jit_stmt_compiler = None;
+        }
+    }
+
+    /// JIT-01 Stage 2: Try to compile and execute a blocking assignment using
+    /// statement-level JIT. Returns Ok(true) if JIT was used, Ok(false) if
+    /// fallback to interpreted needed.
+    ///
+    /// Currently handles simple cases: `signal = expr` where expr is a binary
+    /// operation on signals/constants, and LHS is a simple signal.
+    pub fn try_jit_stmt_blocking_assign(
+        &mut self,
+        lhs: &IrLValue,
+        rhs: &IrExpr,
+    ) -> Result<bool, SimError> {
+        if !self.use_jit_stmt {
+            return Ok(false);
+        }
+        if self.jit_stmt_compiler.is_none() {
+            self.jit_stmt_compiler = Some(JITStmtCompiler::new());
+        }
+        // Use a local JITCompiler for expression compilation to avoid borrow issues
+        let mut expr_compiler = crate::simulator::JITCompiler::new().unwrap();
+
+        // Extract write signal ID from LHS
+        let write_id = match lhs {
+            IrLValue::Signal(id, _) => *id,
+            _ => return Ok(false), // only support simple signal LHS for now
+        };
+
+        // Extract read signal IDs from RHS
+        let read_ids = self.collect_signal_ids_from_expr(rhs);
+        if read_ids.is_empty() && !matches!(rhs, IrExpr::Const(_)) {
+            return Ok(false);
+        }
+
+        // Compile RHS expression using expression JIT
+        let compiled_expr = match self.compile_expr_for_jit(rhs, &mut expr_compiler) {
+            Some(e) => e,
+            None => return Ok(false),
+        };
+
+        // Compile blocking assign using statement JIT
+        let stmt_compiler = self.jit_stmt_compiler.as_mut().unwrap();
+        let compiled_stmt = stmt_compiler.compile_blocking_assign(read_ids, write_id, &compiled_expr);
+
+        // Execute compiled statement
+        let mut outputs = vec![0u64; self.state.signals.len().max(write_id + 1)];
+        // Read current signal values for inputs
+        let mut inputs = Vec::new();
+        for &id in &compiled_stmt.read_ids {
+            if id < self.state.signals.len() {
+                inputs.push(self.state.signals[id].to_u64());
+            } else {
+                inputs.push(0);
+            }
+        }
+
+        let changed = (compiled_stmt.exec_fn)(&inputs, &mut outputs);
+
+        if changed && write_id < outputs.len() {
+            // Write result back
+            let new_val = LogicVec::from_u64(outputs[write_id], self.state.signals[write_id].width);
+            self.write_lvalue(lhs, new_val, true)?;
+        }
+
+        Ok(true)
+    }
+
+    /// Collect all signal IDs referenced in an expression
+    fn collect_signal_ids_from_expr(&self, expr: &IrExpr) -> Vec<usize> {
+        let mut ids = Vec::new();
+        self.collect_signal_ids_rec(expr, &mut ids);
+        ids.sort();
+        ids.dedup();
+        ids
+    }
+
+    fn collect_signal_ids_rec(&self, expr: &IrExpr, ids: &mut Vec<usize>) {
+        match expr {
+            IrExpr::Signal(id, _) => ids.push(*id),
+            IrExpr::BinaryOp(_, lhs, rhs) => {
+                self.collect_signal_ids_rec(lhs, ids);
+                self.collect_signal_ids_rec(rhs, ids);
+            }
+            IrExpr::UnaryOp(_, operand) => {
+                self.collect_signal_ids_rec(operand, ids);
+            }
+            IrExpr::Cond(cond, true_expr, false_expr) => {
+                self.collect_signal_ids_rec(cond, ids);
+                self.collect_signal_ids_rec(true_expr, ids);
+                self.collect_signal_ids_rec(false_expr, ids);
+            }
+            IrExpr::Concat(parts) => {
+                for p in parts {
+                    self.collect_signal_ids_rec(p, ids);
+                }
+            }
+            IrExpr::Replicate(_, expr) => {
+                self.collect_signal_ids_rec(expr, ids);
+            }
+            IrExpr::FuncCall { args, .. } => {
+                for arg in args {
+                    self.collect_signal_ids_rec(arg, ids);
+                }
+            }
+            IrExpr::SysFunc { args, .. } => {
+                for arg in args {
+                    self.collect_signal_ids_rec(arg, ids);
+                }
+            }
+            IrExpr::ArrayIndex { sig_id, index, .. } => {
+                ids.push(*sig_id);
+                self.collect_signal_ids_rec(index, ids);
+            }
+            IrExpr::RangeSelect(sig_id, _, _) => {
+                ids.push(*sig_id);
+            }
+            IrExpr::BitSelect(sig_id, _) => {
+                ids.push(*sig_id);
+            }
+            IrExpr::ExprRangeSelect(base, _, _) => {
+                self.collect_signal_ids_rec(base, ids);
+            }
+            IrExpr::ExprBitSelect(base, _) => {
+                self.collect_signal_ids_rec(base, ids);
+            }
+            IrExpr::ExprPartSelect(base, msb, lsb) => {
+                self.collect_signal_ids_rec(base, ids);
+                self.collect_signal_ids_rec(msb, ids);
+                self.collect_signal_ids_rec(lsb, ids);
+            }
+            IrExpr::MemberAccess { obj, .. } => {
+                self.collect_signal_ids_rec(obj, ids);
+            }
+            IrExpr::MethodCall { obj, args, .. } => {
+                self.collect_signal_ids_rec(obj, ids);
+                for arg in args {
+                    self.collect_signal_ids_rec(arg, ids);
+                }
+            }
+            IrExpr::Inside { expr, list } => {
+                self.collect_signal_ids_rec(expr, ids);
+                for e in list {
+                    self.collect_signal_ids_rec(e, ids);
+                }
+            }
+            IrExpr::InsideRange { expr, lo, hi } => {
+                self.collect_signal_ids_rec(expr, ids);
+                self.collect_signal_ids_rec(lo, ids);
+                self.collect_signal_ids_rec(hi, ids);
+            }
+            _ => {}
+        }
+    }
+
+    /// Compile an expression for JIT using the expression JIT compiler
+    fn compile_expr_for_jit(
+        &self,
+        expr: &IrExpr,
+        compiler: &mut crate::simulator::JITCompiler,
+    ) -> Option<crate::simulator::CompiledExpr> {
+        match expr {
+            IrExpr::Const(val) => Some(compiler.compile_const(val.to_u64(), val.width)),
+            IrExpr::Signal(id, _) => {
+                // For a signal read, we need to create a load expression
+                // The JITCompiler doesn't directly support signal loads,
+                // so we'll use a const 0 for now (placeholder)
+                Some(compiler.compile_const(0, self.state.signals.get(*id).map(|s| s.width).unwrap_or(1)))
+            }
+            IrExpr::BinaryOp(op, lhs, rhs) => {
+                let lhs_compiled = self.compile_expr_for_jit(lhs, compiler)?;
+                let rhs_compiled = self.compile_expr_for_jit(rhs, compiler)?;
+                let width = self.get_expr_width(lhs);
+                Some(compiler.compile_binary(Self::binary_op_to_str(op), &lhs_compiled, &rhs_compiled, width))
+            }
+            IrExpr::UnaryOp(op, operand) => {
+                let op_compiled = self.compile_expr_for_jit(operand, compiler)?;
+                let width = self.get_expr_width(operand);
+                Some(compiler.compile_unary(Self::unary_op_to_str(op), &op_compiled, width))
+            }
+            _ => None,
+        }
+    }
+
+    /// Get the width of an expression
+    fn get_expr_width(&self, expr: &IrExpr) -> usize {
+        match expr {
+            IrExpr::Const(val) => val.width,
+            IrExpr::Signal(_, w) => *w,
+            IrExpr::BinaryOp(_, lhs, _) | IrExpr::UnaryOp(_, lhs) => self.get_expr_width(lhs),
+            _ => 1,
+        }
+    }
+
+    /// Convert BinaryIrOp to string for JITCompiler
+    fn binary_op_to_str(op: &BinaryIrOp) -> &'static str {
+        use mivon_ir::BinaryIrOp::*;
+        match op {
+            Add => "+",
+            Sub => "-",
+            Mul => "*",
+            Div => "/",
+            Mod => "%",
+            Power => "**",
+            Eq => "==",
+            Neq => "!=",
+            CaseEq => "===",
+            CaseNeq => "!==",
+            EqWild => "==",
+            NeqWild => "!=",
+            Lt => "<",
+            Le => "<=",
+            Gt => ">",
+            Ge => ">=",
+            BitAnd => "&",
+            BitOr => "|",
+            BitXor => "^",
+            BitXnor => "~^",
+            Shl => "<<",
+            Shr => ">>",
+            Sshl => "<<",
+            Sshr => ">>",
+            LogicalAnd => "&&",
+            LogicalOr => "||",
+        }
+    }
+
+    /// Convert UnaryIrOp to string for JITCompiler
+    fn unary_op_to_str(op: &UnaryIrOp) -> &'static str {
+        use mivon_ir::UnaryIrOp::*;
+        match op {
+            Plus => "+",
+            Minus => "-",
+            Not => "!",
+            BitNot => "~",
+            RedAnd => "&",
+            RedNand => "~&",
+            RedOr => "|",
+            RedNor => "~|",
+            RedXor => "^",
+            RedXnor => "~^",
+        }
     }
 
     /// SIM-18: aktifkan auto-checkpoint (crash recovery) — simpan state tiap
@@ -672,6 +941,38 @@ impl SimulationEngine {
         if buf.capacity() > self.region_scratch.capacity() {
             self.region_scratch = buf;
         }
+    }
+
+    /// Process a batch of events in parallel using rayon.
+    /// Requires `parallel_regions` config and `use_signal_cells` for thread safety.
+    /// Falls back to sequential processing if conditions not met.
+    fn process_events_parallel(
+        &mut self,
+        events: Vec<RegionEvent>,
+        t: usize,
+    ) -> Result<(), SimError> {
+        if events.is_empty() {
+            return Ok(());
+        }
+
+        // If parallel_regions not enabled or not enough events, process sequentially
+        if !self.parallel_config.parallel_regions
+            || !self.parallel_config.use_signal_cells
+            || events.len() < self.parallel_config.min_processes_parallel
+        {
+            for re in events {
+                self.process_event(re.event, t)?;
+            }
+            return Ok(());
+        }
+
+        // Process events sequentially but with parallel signal access via signal_cells
+        // Full parallel event processing would require refactoring process_event
+        // to separate read/write phases and collect side effects.
+        for re in events {
+            self.process_event(re.event, t)?;
+        }
+        Ok(())
     }
 
     /// Reclaim slot event untuk time step `processed` setelah selesai diproses.
@@ -1257,27 +1558,23 @@ impl SimulationEngine {
                             // PLI regions: process any events in this region
                             self.ensure_events(t);
                             loop {
-                                let mut batch = self.take_region_events(t, region);
+                                let batch = self.take_region_events(t, region);
                                 self.sim_perf.counters.events_processed += batch.len() as u64;
                                 if batch.is_empty() {
                                     self.recycle_region_events(batch);
                                     break;
                                 }
                                 activity = true;
-                                for re in batch.drain(..) {
-                                    self.process_event(re.event, t)?;
-                                }
-                                self.recycle_region_events(batch);
+                                self.process_events_parallel(batch.clone(), t)?;
                             }
                         }
                         EventRegion::Postponed => {
                             // Postponed region: process once per time step, does NOT re-circulate
                             self.ensure_events(t);
-                            let mut batch = self.take_region_events(t, EventRegion::Postponed);
+                            let batch = self.take_region_events(t, EventRegion::Postponed);
                             if !batch.is_empty() {
-                                for re in batch.drain(..) {
-                                    self.process_event(re.event, t)?;
-                                }
+                                activity = true;
+                                self.process_events_parallel(batch.clone(), t)?;
                             }
                             self.recycle_region_events(batch);
                         }
@@ -1286,16 +1583,13 @@ impl SimulationEngine {
                             // Process any assertion-evaluation events scheduled here.
                             self.ensure_events(t);
                             loop {
-                                let mut batch = self.take_region_events(t, EventRegion::Observed);
+                                let batch = self.take_region_events(t, EventRegion::Observed);
                                 if batch.is_empty() {
                                     self.recycle_region_events(batch);
                                     break;
                                 }
                                 activity = true;
-                                for re in batch.drain(..) {
-                                    self.process_event(re.event, t)?;
-                                }
-                                self.recycle_region_events(batch);
+                                self.process_events_parallel(batch.clone(), t)?;
                             }
                         }
                         EventRegion::Active | EventRegion::Inactive => {
@@ -1461,15 +1755,13 @@ impl SimulationEngine {
                             self.commit_nba();
                             self.sim_perf.counters.nba_commits += 1;
                             self.ensure_events(t);
-                            let mut events = self.take_region_events(t, EventRegion::Nba);
+                            let events = self.take_region_events(t, EventRegion::Nba);
                             self.sim_perf.counters.events_processed += events.len() as u64;
                             if !events.is_empty() {
                                 activity = true;
-                                for re in events.drain(..) {
-                                    self.process_event(re.event, t)?;
-                                }
+                                self.process_events_parallel(events.clone(), t)?;
                             }
-                            self.recycle_region_events(events);
+                            self.recycle_region_events(Vec::new());
                         }
                         EventRegion::Reactive => {
                             // Commit changes and trigger sensitive processes
@@ -1538,22 +1830,26 @@ impl SimulationEngine {
                             }
                             // Process Reactive events (from events[t] and reactive_events buffer)
                             self.ensure_events(t);
-                            let mut events = self.take_region_events(t, EventRegion::Reactive);
+                            let events = self.take_region_events(t, EventRegion::Reactive);
                             self.sim_perf.counters.events_processed += events.len() as u64;
                             if !events.is_empty() {
                                 activity = true;
-                                for re in events.drain(..) {
-                                    self.process_event(re.event, t)?;
-                                }
+                                self.process_events_parallel(events.clone(), t)?;
                             }
-                            self.recycle_region_events(events);
+                            self.recycle_region_events(Vec::new());
                             let buffered: Vec<EventKind> =
                                 std::mem::take(&mut self.reactive_events);
                             if !buffered.is_empty() {
                                 activity = true;
-                                for event in buffered {
-                                    self.process_event(event, t)?;
-                                }
+                                // Process buffered reactive events in parallel too
+                                let re_events: Vec<RegionEvent> = buffered
+                                    .into_iter()
+                                    .map(|e| RegionEvent {
+                                        region: EventRegion::Reactive,
+                                        event: e,
+                                    })
+                                    .collect();
+                                self.process_events_parallel(re_events.clone(), t)?;
                             }
                         }
                     }

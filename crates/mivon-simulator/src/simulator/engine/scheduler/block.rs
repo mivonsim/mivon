@@ -1,6 +1,7 @@
 use super::super::SequenceAttempt;
 use super::super::SimulationEngine;
 use crate::simulator::engine::engine_utils::{evaluate_string_method, is_mutating_string_method};
+use crate::simulator::JITStmtCompiler;
 use crate::simulator::types::*;
 use crate::simulator::util::*;
 use mivon_core::diagnostics::DiagCode;
@@ -2503,6 +2504,14 @@ impl SimulationEngine {
                         // task body non-suspend) tidak bisa di-suspend — apply
                         // segera (konstruk ilegal di fungsi; fallback aman).
                         let _ = delay;
+                        // JIT-01 Stage 2: try statement-level JIT for blocking assign
+                        if self.use_jit_stmt {
+                            if let Ok(used) = self.try_jit_stmt_blocking_assign(lhs, rhs) {
+                                if used {
+                                    continue; // JIT executed, skip interpreted path
+                                }
+                            }
+                        }
                         let val = self.eval_assign_rhs(rhs, lhs)?;
                         self.write_lvalue(lhs, val, true)?;
                     }

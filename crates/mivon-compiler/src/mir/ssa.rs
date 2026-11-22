@@ -10,7 +10,7 @@
 
 
 use mivon_core::intern::Symbol;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// A value in SSA form. A value is defined exactly once: either a constant,
 /// a signal variable, or the result of an instruction identified by (block
@@ -407,6 +407,14 @@ enum CseSig {
     Mul(Value, Value),
 }
 
+/// Signature of a binary instruction for GVN matching.
+#[derive(Hash, PartialEq, Eq, Clone, Debug)]
+enum GvnSig {
+    Add(usize, usize),
+    Sub(usize, usize),
+    Mul(usize, usize),
+}
+
 impl Instruction {
     /// CSE signature of an instruction that defines a value.
     fn cse_signature(&self) -> Option<CseSig> {
@@ -597,6 +605,304 @@ impl SsaFunction {
         }
 
         eliminated
+    }
+
+    /// Global Value Numbering on SSA form.
+    ///
+    /// Assigns a value number to each unique computation. Instructions whose
+    /// (opcode, vnum(operand1), vnum(operand2)) signature was already seen get
+    /// replaced with the first definition (provided it dominates all uses).
+    ///
+    /// Returns the number of instructions eliminated.
+    pub fn global_value_numbering(&mut self) -> usize {
+        use std::collections::HashMap;
+
+        let dom = self.dominators();
+        let uses = self.collect_uses();
+
+        // Map: GvnSig → value number assigned to the first definition.
+        let mut sig_table: HashMap<GvnSig, usize> = HashMap::new();
+        // Map: Value → its assigned value number.
+        let mut vnum: HashMap<Value, usize> = HashMap::new();
+        // Map: value number → defining Value::Instr.
+        let mut def_for_num: HashMap<usize, Value> = HashMap::new();
+        let mut next_num = 0;
+
+        // Assign value numbers to ALL values: Const, Var, and Instr results.
+        // Every instruction result (Value::Instr(bi, ii)) gets a vnum so that
+        // later instructions can reference it as an operand.
+        for (bi, block) in self.blocks.iter().enumerate() {
+            for (ii, instr) in block.instrs.iter().enumerate() {
+                // Assign vnum to this instruction's result.
+                let result = Value::Instr(bi, ii);
+                ensure_vnum(&mut vnum, &mut def_for_num, &mut next_num, result);
+
+                // Assign vnums to all operands.
+                match instr {
+                    Instruction::Add(a, b) | Instruction::Sub(a, b) | Instruction::Mul(a, b) => {
+                        ensure_vnum(&mut vnum, &mut def_for_num, &mut next_num, *a);
+                        ensure_vnum(&mut vnum, &mut def_for_num, &mut next_num, *b);
+                    }
+                    Instruction::Phi(pairs) => {
+                        for (v, _) in pairs {
+                            ensure_vnum(&mut vnum, &mut def_for_num, &mut next_num, *v);
+                        }
+                    }
+                    Instruction::Branch { cond, .. } => {
+                        ensure_vnum(&mut vnum, &mut def_for_num, &mut next_num, *cond);
+                    }
+                    Instruction::Return(v) => {
+                        ensure_vnum(&mut vnum, &mut def_for_num, &mut next_num, *v);
+                    }
+                    Instruction::Store(_, v) => {
+                        ensure_vnum(&mut vnum, &mut def_for_num, &mut next_num, *v);
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        struct Replacement {
+            bi: usize,
+            ii: usize,
+            from: Value,
+            to: Value,
+        }
+        let mut replacements: Vec<Replacement> = Vec::new();
+        let mut nop_positions: Vec<(usize, usize)> = Vec::new();
+        let mut eliminated = 0;
+
+        for (bi, block) in self.blocks.iter().enumerate() {
+            for (ii, instr) in block.instrs.iter().enumerate() {
+                let Some((sig, _vnum_a, _vnum_b)) = instr_gvn_signature(instr, &vnum) else {
+                    continue;
+                };
+
+                let current = Value::Instr(bi, ii);
+
+                if let Some(&first_num) = sig_table.get(&sig) {
+                    let first_def = def_for_num[&first_num];
+
+                    // Check if first_def dominates all uses of current.
+                    let use_sites = uses.get(&current);
+                    let all_dominated = match use_sites {
+                        Some(sites) => sites.iter().all(|&(ub, ui)| {
+                            self.dominates_instr(&dom, first_bi(first_def), first_ii(first_def), ub, ui)
+                        }),
+                        None => true,
+                    };
+
+                    if all_dominated {
+                        // Assign current the same value number as first_def.
+                        vnum.insert(current, first_num);
+                        if let Some(sites) = uses.get(&current) {
+                            for &(ub, ui) in sites {
+                                replacements.push(Replacement {
+                                    bi: ub,
+                                    ii: ui,
+                                    from: current,
+                                    to: first_def,
+                                });
+                            }
+                        }
+                        nop_positions.push((bi, ii));
+                        eliminated += 1;
+                    } else {
+                        // first_def doesn't dominate all uses; current keeps its
+                        // pre-assigned vnum. sig_table already maps sig -> first_num;
+                        // leave it unchanged so future lookups still find first_def.
+                    }
+                } else {
+                    // New signature; current keeps its pre-assigned vnum.
+                    sig_table.insert(sig, vnum[&current]);
+                }
+            }
+        }
+
+        // Apply replacements.
+        for r in replacements {
+            self.replace_use_at(r.bi, r.ii, r.from, r.to);
+        }
+        // Nop out eliminated instructions.
+        for (bi, ii) in nop_positions {
+            self.blocks[bi].instrs[ii] = Instruction::Nop;
+        }
+
+        eliminated
+    }
+
+    /// Loop Invariant Code Motion on SSA form.
+    ///
+    /// Finds loop headers via back-edges (edge D → B where B dominates D),
+    /// identifies loop-invariant Add/Sub/Mul instructions whose operands are
+    /// all defined outside the loop, and hoists them to the loop header block.
+    ///
+    /// Returns the number of instructions hoisted.
+    pub fn loop_invariant_code_motion(&mut self) -> usize {
+        let dom = self.dominators();
+        let n = self.blocks.len();
+
+        // Find loop headers: blocks B with a back-edge D → B where B dominates D.
+        // dom[b][d] means "d dominates b" (per dominators() doc), so B dominates D
+        // is checked as dom[D][B].
+        let mut loop_headers: Vec<usize> = Vec::new();
+        for d in 0..n {
+            for b in self.successors(d) {
+                if b != d && dom[d][b] && !loop_headers.contains(&b) {
+                    loop_headers.push(b);
+                }
+            }
+        }
+
+        let mut hoisted = 0;
+
+        for header in loop_headers {
+            // Find loop body: walk backwards from back-edge sources to header,
+            // collecting all blocks that can reach the back-edge without going
+            // through the header.
+            let mut loop_body: HashSet<usize> = HashSet::new();
+            loop_body.insert(header);
+
+            for d in 0..n {
+                // header dominates d iff dom[d][header] (d is dominated by header).
+                if !dom[d][header] {
+                    continue;
+                }
+                for b in self.successors(d) {
+                    if b != header {
+                        continue;
+                    }
+                    // d → header is a back-edge; walk backwards from d.
+                    let mut stack = vec![d];
+                    while let Some(node) = stack.pop() {
+                        if loop_body.insert(node) {
+                            for p in self.predecessors(node) {
+                                if p != header {
+                                    stack.push(p);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Collect loop-invariant candidates: Add/Sub/Mul where all operands
+            // are defined outside the loop (Const/Var or Instr from outside loop).
+            // An Instr(obi, _) operand is outside the loop if obi's block dominates
+            // the header (dom[header][obi]) or is not in the loop body.
+            let mut candidates: Vec<(usize, usize, Instruction)> = Vec::new();
+
+            for b in 0..n {
+                if !loop_body.contains(&b) {
+                    continue;
+                }
+                if b == header {
+                    continue; // already at loop entry, nothing to hoist
+                }
+                for (ii, instr) in self.blocks[b].instrs.iter().enumerate() {
+                    let operands = match instr {
+                        Instruction::Add(a, b) => vec![*a, *b],
+                        Instruction::Sub(a, b) => vec![*a, *b],
+                        Instruction::Mul(a, b) => vec![*a, *b],
+                        _ => continue,
+                    };
+                    let all_outside = operands.iter().all(|v| match v {
+                        Value::Const(_) | Value::Var(_) => true,
+                        // Defined outside the loop body = loop-invariant.
+                        Value::Instr(obi, _) => !loop_body.contains(obi),
+                    });
+
+                    if all_outside {
+                        candidates.push((b, ii, instr.clone()));
+                    }
+                }
+            }
+
+            // Hoist candidates to header block.
+            for (bi, ii, instr) in candidates {
+                // Remove from original position.
+                self.blocks[bi].instrs[ii] = Instruction::Nop;
+
+                // Insert at beginning of header block (before any terminator).
+                let insert_pos = self.blocks[header]
+                    .instrs
+                    .iter()
+                    .position(|i| matches!(i, Instruction::Branch { .. } | Instruction::Jump(_)))
+                    .unwrap_or(self.blocks[header].instrs.len());
+                self.blocks[header].instrs.insert(insert_pos, instr);
+                let new_ii = insert_pos;
+                let new_val = Value::Instr(header, new_ii);
+
+                // Replace all uses of the original value with the new value.
+                let defined_val = Value::Instr(bi, ii);
+                let uses = self.collect_uses();
+                if let Some(sites) = uses.get(&defined_val) {
+                    let sites_copy: Vec<(usize, usize)> = sites.clone();
+                    for &(ub, ui) in &sites_copy {
+                        self.replace_use_at(ub, ui, defined_val, new_val);
+                    }
+                }
+
+                hoisted += 1;
+            }
+        }
+
+        hoisted
+    }
+}
+
+/// Helper: compute GVN signature using value numbers of operands.
+fn instr_gvn_signature(
+    instr: &Instruction,
+    vnum: &HashMap<Value, usize>,
+) -> Option<(GvnSig, usize, usize)> {
+    match instr {
+        Instruction::Add(a, b) => Some((
+            GvnSig::Add(vnum[a], vnum[b]),
+            vnum[a],
+            vnum[b],
+        )),
+        Instruction::Sub(a, b) => Some((
+            GvnSig::Sub(vnum[a], vnum[b]),
+            vnum[a],
+            vnum[b],
+        )),
+        Instruction::Mul(a, b) => Some((
+            GvnSig::Mul(vnum[a], vnum[b]),
+            vnum[a],
+            vnum[b],
+        )),
+        _ => None,
+    }
+}
+
+/// Helper: extract block index from a Value::Instr.
+fn first_bi(v: Value) -> usize {
+    match v {
+        Value::Instr(b, _) => b,
+        _ => 0,
+    }
+}
+
+/// Helper: extract instr index from a Value::Instr.
+fn first_ii(v: Value) -> usize {
+    match v {
+        Value::Instr(_, i) => i,
+        _ => 0,
+    }
+}
+
+/// Helper: assign a value number to `v` if it doesn't have one yet (all Value types).
+fn ensure_vnum(
+    vnum: &mut HashMap<Value, usize>,
+    def_for_num: &mut HashMap<usize, Value>,
+    next_num: &mut usize,
+    v: Value,
+) {
+    if !vnum.contains_key(&v) {
+        vnum.insert(v, *next_num);
+        def_for_num.insert(*next_num, v);
+        *next_num += 1;
     }
 }
 
@@ -1034,5 +1340,168 @@ mod tests {
         ]));
         let removed = f.common_subexpr_eliminate();
         assert_eq!(removed, 0);
+    }
+
+    // ─── SSA-based GVN tests ───
+
+    #[test]
+    fn gvn_eliminates_duplicate_add_in_same_block() {
+        // t1 = 1 + 2; t2 = 1 + 2; return t2
+        let mut f = SsaFunction::new();
+        f.push_block(block(vec![
+            Instruction::Add(Value::Const(1), Value::Const(2)), // Instr(0,0)
+            Instruction::Add(Value::Const(1), Value::Const(2)), // Instr(0,1) dup
+            Instruction::Return(Value::Instr(0, 1)),
+        ]));
+        let removed = f.global_value_numbering();
+        assert_eq!(removed, 1);
+        assert!(matches!(f.blocks[0].instrs[0], Instruction::Add(..)));
+        assert!(matches!(f.blocks[0].instrs[1], Instruction::Nop));
+        assert!(matches!(f.blocks[0].instrs[2], Instruction::Return(Value::Instr(0, 0))));
+    }
+
+    #[test]
+    fn gvn_eliminates_duplicate_across_blocks() {
+        // block0 (entry): t1 = 1 + 2; if cond goto block1 else block2
+        // block1: goto block3
+        // block2: goto block3
+        // block3: t2 = 1 + 2; return t2
+        // block0 dominates block3 → t1 dominates uses of t2 → t2 eliminated.
+        let mut f = SsaFunction::new();
+        f.push_block(block(vec![
+            Instruction::Add(Value::Const(1), Value::Const(2)), // Instr(0,0) = t1
+            Instruction::Branch {
+                cond: Value::Const(1),
+                then: 1,
+                r#else: 2,
+            },
+        ]));
+        f.push_block(block(vec![
+            Instruction::Jump(3),
+        ]));
+        f.push_block(block(vec![
+            Instruction::Jump(3),
+        ]));
+        f.push_block(block(vec![
+            Instruction::Add(Value::Const(1), Value::Const(2)), // Instr(3,0) = t2 (dup)
+            Instruction::Return(Value::Instr(3, 0)),
+        ]));
+        let removed = f.global_value_numbering();
+        assert_eq!(removed, 1);
+        assert!(matches!(f.blocks[3].instrs[0], Instruction::Nop));
+        assert!(matches!(f.blocks[3].instrs[1], Instruction::Return(Value::Instr(0, 0))));
+    }
+
+    #[test]
+    fn gvn_different_ops_not_confused() {
+        // t1 = 1 + 2; t2 = 1 - 2; return t2
+        let mut f = SsaFunction::new();
+        f.push_block(block(vec![
+            Instruction::Add(Value::Const(1), Value::Const(2)), // Instr(0,0)
+            Instruction::Sub(Value::Const(1), Value::Const(2)), // Instr(0,1)
+            Instruction::Return(Value::Instr(0, 1)),
+        ]));
+        let removed = f.global_value_numbering();
+        assert_eq!(removed, 0);
+        assert!(matches!(f.blocks[0].instrs[0], Instruction::Add(..)));
+        assert!(matches!(f.blocks[0].instrs[1], Instruction::Sub(..)));
+    }
+
+    #[test]
+    fn gvn_empty_function() {
+        let mut f = SsaFunction::new();
+        let removed = f.global_value_numbering();
+        assert_eq!(removed, 0);
+    }
+
+    // ─── SSA-based LICM tests ───
+
+    #[test]
+    fn licm_hoists_loop_invariant_add() {
+        // block0 (entry): t1 = 1 + 2; goto block1
+        // block1 (header): goto block2 or block3   (back-edge from block2)
+        // block2 (body):  t2 = 1 + 2; goto block1   (loop-invariant, hoist to block1)
+        // block3 (exit):  return t1
+        let mut f = SsaFunction::new();
+        f.push_block(block(vec![
+            Instruction::Add(Value::Const(1), Value::Const(2)), // Instr(0,0)
+            Instruction::Jump(1),
+        ]));
+        f.push_block(block(vec![
+            Instruction::Branch {
+                cond: Value::Const(1),
+                then: 2,
+                r#else: 3,
+            },
+        ]));
+        f.push_block(block(vec![
+            Instruction::Add(Value::Const(1), Value::Const(2)), // Instr(2,0) loop-invariant
+            Instruction::Jump(1),
+        ]));
+        f.push_block(block(vec![
+            Instruction::Return(Value::Instr(0, 0)),
+        ]));
+
+        let hoisted = f.loop_invariant_code_motion();
+        assert_eq!(hoisted, 1);
+        assert!(matches!(f.blocks[2].instrs[0], Instruction::Nop));
+        assert!(matches!(f.blocks[1].instrs[0], Instruction::Add(..))); // hoisted before terminator
+        assert!(matches!(f.blocks[1].instrs[1], Instruction::Branch { .. }));
+        // Return should still reference t1 (Instr(0,0)), not t2.
+        assert!(matches!(f.blocks[3].instrs[0], Instruction::Return(Value::Instr(0, 0))));
+    }
+
+    #[test]
+    fn licm_no_hoist_when_operand_inside_loop() {
+        // block0 (entry): goto block1
+        // block1 (header): t1 = 1 + 2; goto block2 or block3
+        // block2 (body):  t3 = t1 + 3; goto block1  (t1 inside loop → NOT invariant)
+        // block3 (exit):  return t3
+        let mut f = SsaFunction::new();
+        f.push_block(block(vec![
+            Instruction::Jump(1),
+        ]));
+        f.push_block(block(vec![
+            Instruction::Add(Value::Const(1), Value::Const(2)), // Instr(1,0) = t1 (inside loop)
+            Instruction::Branch {
+                cond: Value::Const(1),
+                then: 2,
+                r#else: 3,
+            },
+        ]));
+        f.push_block(block(vec![
+            Instruction::Add(Value::Instr(1, 0), Value::Const(3)), // Instr(2,0) depends on t1
+            Instruction::Jump(1),
+        ]));
+        f.push_block(block(vec![
+            Instruction::Return(Value::Instr(2, 0)),
+        ]));
+
+        let hoisted = f.loop_invariant_code_motion();
+        assert_eq!(hoisted, 0);
+        assert!(matches!(f.blocks[2].instrs[0], Instruction::Add(..)));
+    }
+
+    #[test]
+    fn licm_no_loop_no_hoist() {
+        // No back-edges → no loops → nothing to hoist.
+        let mut f = SsaFunction::new();
+        f.push_block(block(vec![
+            Instruction::Add(Value::Const(1), Value::Const(2)), // Instr(0,0)
+            Instruction::Add(Value::Instr(0, 0), Value::Const(3)), // Instr(0,1)
+            Instruction::Return(Value::Instr(0, 1)),
+        ]));
+
+        let hoisted = f.loop_invariant_code_motion();
+        assert_eq!(hoisted, 0);
+        assert!(matches!(f.blocks[0].instrs[0], Instruction::Add(..)));
+        assert!(matches!(f.blocks[0].instrs[1], Instruction::Add(..)));
+    }
+
+    #[test]
+    fn licm_empty_function() {
+        let mut f = SsaFunction::new();
+        let hoisted = f.loop_invariant_code_motion();
+        assert_eq!(hoisted, 0);
     }
 }

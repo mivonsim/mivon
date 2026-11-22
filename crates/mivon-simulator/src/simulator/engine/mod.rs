@@ -14,6 +14,8 @@ use crate::foreign::ForeignEvent;
 use crate::scheduler::clock_domain::ClockDomainAnalysis;
 use crate::scheduler::SimulationDag;
 use crate::simulator::arena::SimulationArena;
+use crate::simulator::engine::scheduler::delta_scheduler::DeltaScheduler;
+use crate::simulator::JITStmtCompiler;
 use crate::simulator::parallel::ParallelConfig;
 use mivon_core::diagnostics::DiagSink;
 use mivon_ir::*;
@@ -156,6 +158,11 @@ pub struct SimulationEngine {
     pub events: Vec<Vec<RegionEvent>>,
     /// Waktu absolut yang direpresentasikan oleh `events[0]`.
     pub events_base: usize,
+    /// Optional multi-threaded delta scheduler (stage 3 ARSITEKTUR-03).
+    /// When `parallel_config.parallel_delta` is enabled, this scheduler is used
+    /// for concurrent event push/deliver across threads, replacing the
+    /// `Vec<Vec<RegionEvent>>` queue for current-time events.
+    pub delta_scheduler: Option<Box<dyn DeltaScheduler<RegionEvent>>>,
     /// PERF-05: buffer daur-ulang untuk mengambil event per region per delta.
     /// Kapasitasnya dipakai ulang sehingga delta loop tidak mengalokasikan
     /// Vec baru tiap region.
@@ -505,6 +512,8 @@ pub struct SimulationEngine {
     pub uvm_objection_data: HashMap<ObjId, u64>,
     /// JIT evaluator (native code compilation for fast expression eval)
     pub jit_evaluator: Option<crate::simulator::JITEvaluator>,
+    /// Expression-level JIT compiler (compiles IrExpr to closures)
+    pub jit_compiler: Option<crate::simulator::JITCompiler>,
     /// Use packed 4-state bitmask eval (SIMD-ready) for bitwise operations
     pub use_packed_eval: bool,
     /// Use expression-level JIT compilation (compiles entire IrExpr tree at once)
@@ -531,6 +540,11 @@ pub struct SimulationEngine {
     pub mir_jit: Option<mivon_compiler::mir::MirJitCompiler>,
     /// Enable MIR JIT for combinational process evaluation
     pub use_mir_jit: bool,
+    /// Statement-level JIT compiler (JIT-01 Stage 2) — compiles blocking assigns,
+    /// if/case/loop/delay statements to native code via Cranelift.
+    pub jit_stmt_compiler: Option<JITStmtCompiler>,
+    /// Enable statement-level JIT compilation
+    pub use_jit_stmt: bool,
     /// Diagnostic collector for structured runtime diagnostics
     pub diag_sink: DiagSink,
     /// Current delta cycle count (for runtime context)
