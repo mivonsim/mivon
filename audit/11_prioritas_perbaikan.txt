@@ -36,7 +36,7 @@ P2 — HIGH (Required for 1000-module designs)
 
 P3 — HIGH (Required for 10000-module designs)
 
-25. ✅ Implement distributed simulation (#CRIT-015) — distributed/ module (master, slave, partitioner, protocol); 12 tests pass
+25. ✅ Implement distributed simulation (#CRIT-015) — distributed/ module (master, slave, partitioner, protocol); **sub-design extraction with signal ID remapping**; 13 tests pass
 26. ✅ Implement remote/distributed cache (#CRIT-035) — cache/remote.rs + cache_manager.rs; 11 remote cache tests pass
 27. ✅ Implement CDC analysis (#CRIT-013) — scheduler/cdc.rs (clock domain crossing detection, synchronizer check, report); 10 CDC tests pass
 28. ✅ Implement cell library parsing (#CRIT-020) — liberty.rs (.lib parser, cell/pin/timing); 8 liberty tests pass

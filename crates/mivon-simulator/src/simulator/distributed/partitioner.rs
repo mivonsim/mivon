@@ -198,6 +198,18 @@ impl DesignPartitioner {
             }
         }
 
+        // Populate partition signal_ids and process_ids from the mappings
+        for (sid, &pid) in &signal_to_partition {
+            if let Some(p) = partitions.get_mut(pid) {
+                p.signal_ids.push(*sid);
+            }
+        }
+        for (pid, &part_id) in &process_to_partition {
+            if let Some(p) = partitions.get_mut(part_id) {
+                p.process_ids.push(*pid);
+            }
+        }
+
         // Populate partition info
         for p in &mut partitions {
             p.instance_names = instances
@@ -291,7 +303,10 @@ impl DesignPartitioner {
         // 3. Add partition-local processes
         for &pid in &partition_info.process_ids {
             if let Some(process) = top.processes.get(pid) {
-                sub_processes.push(process.clone());
+                let mut sub_process = process.clone();
+                // Remap signal IDs in process body to match the new signal indices
+                remap_signal_ids_in_process(&mut sub_process, &old_to_new);
+                sub_processes.push(sub_process);
             }
         }
 
@@ -310,9 +325,8 @@ impl DesignPartitioner {
             sub_instances: Vec::new(), // flattened
         };
 
-        // Note: Process body IR expressions still reference original signal IDs.
-        // In a full implementation, these would be remapped via the old_to_new map.
-        // For Phase 9 MVP, cross-partition signal exchange handles the actual data flow.
+        // Note: Process body IR expressions are now remapped via old_to_new map.
+        // Cross-partition signal exchange handles the actual data flow at runtime.
 
         IrDesign {
             top: sub_module,
@@ -548,5 +562,438 @@ mod tests {
         // Partitions 1, 2: instances 1,4 and 2 respectively
         assert_eq!(p.partitions[1].instance_names.len(), 2);
         assert_eq!(p.partitions[2].instance_names.len(), 1);
+    }
+
+    #[test]
+    fn test_extract_partition_design_remaps_signal_ids() {
+        // Create a design with processes that reference signals
+        // Signal 0: clk, Signal 1: rst, Signal 2: data_in, Signal 3: data_out
+        let design = IrDesign {
+            top: IrModule {
+                name: Symbol::intern("top"),
+                signals: vec![
+                    make_signal("clk", 1),      // id 0
+                    make_signal("rst", 1),      // id 1
+                    make_signal("data_in", 8),  // id 2
+                    make_signal("data_out", 8), // id 3
+                ],
+                inputs: vec![0, 1, 2],
+                outputs: vec![3],
+                processes: vec![
+                    // Combinational process: data_out = data_in + 1 (references signal 2 and 3)
+                    Process::Combinational {
+                        name: Symbol::intern("proc1"),
+                        sensitivity: vec![SignalSensitivity {
+                            sig_id: 2,
+                            msb: None,
+                            lsb: None,
+                        }],
+                        body: vec![IrStmt::BlockingAssign {
+                            lhs: IrLValue::Signal(3, 8), // data_out
+                            rhs: IrExpr::BinaryOp(
+                                BinaryIrOp::Add,
+                                Box::new(IrExpr::Signal(2, 8)), // data_in
+                                Box::new(IrExpr::Const(LogicVec::from_u64(1, 8))),
+                            ),
+                            delay: None,
+                        }],
+                    },
+                ],
+                sub_instances: vec![
+                    IrInstance {
+                        module_name: Symbol::intern("sub_a"),
+                        instance_name: Symbol::intern("u_a"),
+                        port_map: std::sync::Arc::new({
+                            let mut m = HashMap::new();
+                            m.insert(Symbol::intern("clk"), 0);
+                            m.insert(Symbol::intern("data"), 2);
+                            m.insert(Symbol::intern("out"), 3);
+                            m
+                        }),
+                        param_map: std::sync::Arc::new(HashMap::new()),
+                        type_param_map: std::sync::Arc::new(HashMap::new()),
+                        line: 0,
+                        col: 0,
+                        attrs: Vec::new(),
+                        param_width_map: std::sync::Arc::new(HashMap::new()),
+                    },
+                    IrInstance {
+                        module_name: Symbol::intern("sub_b"),
+                        instance_name: Symbol::intern("u_b"),
+                        port_map: std::sync::Arc::new({
+                            let mut m = HashMap::new();
+                            m.insert(Symbol::intern("clk"), 0);
+                            m.insert(Symbol::intern("data_in"), 3);
+                            m.insert(Symbol::intern("out"), 2);
+                            m
+                        }),
+                        param_map: std::sync::Arc::new(HashMap::new()),
+                        type_param_map: std::sync::Arc::new(HashMap::new()),
+                        line: 0,
+                        col: 0,
+                        attrs: Vec::new(),
+                        param_width_map: std::sync::Arc::new(HashMap::new()),
+                    },
+                ],
+                inouts: vec![],
+            },
+            ..IrDesign::default()
+        };
+
+        // Partition into 2
+        let partition = DesignPartitioner::partition(&design, 2);
+
+        // Extract partition 0 design
+        let sub_design = DesignPartitioner::extract_partition_design(&design, 0, &partition);
+
+        // Verify signal IDs in process body are remapped
+        // Original signals: 0(clk), 1(rst), 2(data_in), 3(data_out)
+        // Partition 0 gets instance u_a (instance 0), which connects to signals 0, 2, 3
+        // So partition 0 should have signals mapped to new IDs
+
+        let sub_top = &sub_design.top;
+        assert!(!sub_top.processes.is_empty(), "partition should have processes");
+
+        // Check that process body references valid signal IDs (0..num_signals-1)
+        for process in &sub_top.processes {
+            match process {
+                Process::Combinational { body, sensitivity, .. } => {
+                    // Check sensitivity references valid signal ID
+                    for sens in sensitivity {
+                        assert!(
+                            sens.sig_id < sub_top.signals.len(),
+                            "sensitivity signal ID {} out of bounds (num_signals={})",
+                            sens.sig_id,
+                            sub_top.signals.len()
+                        );
+                    }
+                    // Check body statements reference valid signal IDs
+                    for stmt in body {
+                        collect_and_verify_signal_ids(stmt, sub_top.signals.len());
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // Verify inputs/outputs reference valid signal IDs
+        for &sig_id in &sub_top.inputs {
+            assert!(sig_id < sub_top.signals.len(), "input signal ID {} out of bounds", sig_id);
+        }
+        for &sig_id in &sub_top.outputs {
+            assert!(sig_id < sub_top.signals.len(), "output signal ID {} out of bounds", sig_id);
+        }
+    }
+}
+
+// Helper function to collect and verify signal IDs in statements
+fn collect_and_verify_signal_ids(stmt: &IrStmt, max_sig_id: usize) {
+    match stmt {
+        IrStmt::BlockingAssign { lhs, rhs, .. } => {
+            verify_lvalue_signal_ids(lhs, max_sig_id);
+            verify_expr_signal_ids(rhs, max_sig_id);
+        }
+        IrStmt::NonBlockingAssign { lhs, rhs, .. } => {
+            verify_lvalue_signal_ids(lhs, max_sig_id);
+            verify_expr_signal_ids(rhs, max_sig_id);
+        }
+        IrStmt::If { cond, true_branch, false_branch, .. } => {
+            verify_expr_signal_ids(cond, max_sig_id);
+            for s in true_branch {
+                collect_and_verify_signal_ids(s, max_sig_id);
+            }
+            for s in false_branch {
+                collect_and_verify_signal_ids(s, max_sig_id);
+            }
+        }
+        IrStmt::Case { expr, items, default, .. } => {
+            verify_expr_signal_ids(expr, max_sig_id);
+            for item in items {
+                for label_expr in &item.labels {
+                    verify_expr_signal_ids(label_expr, max_sig_id);
+                }
+                for s in &item.body {
+                    collect_and_verify_signal_ids(s, max_sig_id);
+                }
+            }
+            for s in default {
+                collect_and_verify_signal_ids(s, max_sig_id);
+            }
+        }
+        IrStmt::LoopFor { cond, init, step, body, .. } => {
+            verify_expr_signal_ids(cond, max_sig_id);
+            if let Some(init) = init {
+                collect_and_verify_signal_ids(init, max_sig_id);
+            }
+            if let Some(step) = step {
+                collect_and_verify_signal_ids(step, max_sig_id);
+            }
+            for s in body {
+                collect_and_verify_signal_ids(s, max_sig_id);
+            }
+        }
+        IrStmt::LoopWhile { cond, body, .. } => {
+            verify_expr_signal_ids(cond, max_sig_id);
+            for s in body {
+                collect_and_verify_signal_ids(s, max_sig_id);
+            }
+        }
+        IrStmt::LoopDoWhile { cond, body, .. } => {
+            verify_expr_signal_ids(cond, max_sig_id);
+            for s in body {
+                collect_and_verify_signal_ids(s, max_sig_id);
+            }
+        }
+        IrStmt::Repeat { count, body, .. } => {
+            verify_expr_signal_ids(count, max_sig_id);
+            for s in body {
+                collect_and_verify_signal_ids(s, max_sig_id);
+            }
+        }
+        IrStmt::Foreach { array_var, body, .. } => {
+            verify_expr_signal_ids(array_var, max_sig_id);
+            for s in body {
+                collect_and_verify_signal_ids(s, max_sig_id);
+            }
+        }
+        IrStmt::Delay { body, .. } => {
+            for s in body {
+                collect_and_verify_signal_ids(s, max_sig_id);
+            }
+        }
+        IrStmt::Force { lvalue, rhs, .. } => {
+            verify_lvalue_signal_ids(lvalue, max_sig_id);
+            verify_expr_signal_ids(rhs, max_sig_id);
+        }
+        IrStmt::Wait { cond, body, .. } => {
+            verify_expr_signal_ids(cond, max_sig_id);
+            for s in body {
+                collect_and_verify_signal_ids(s, max_sig_id);
+            }
+        }
+        IrStmt::SysCall { args, .. } => {
+            for arg in args {
+                verify_expr_signal_ids(arg, max_sig_id);
+            }
+        }
+        IrStmt::EventControl { sigs, body, iff, .. } => {
+            for (sig_id, _) in sigs {
+                assert!(*sig_id < max_sig_id, "EventControl signal ID {} out of bounds", sig_id);
+            }
+            for s in body {
+                collect_and_verify_signal_ids(s, max_sig_id);
+            }
+            if let Some(iff_expr) = iff {
+                verify_expr_signal_ids(iff_expr, max_sig_id);
+            }
+        }
+        IrStmt::EventTrigger { sig_id, .. } => {
+            assert!(*sig_id < max_sig_id, "EventTrigger signal ID {} out of bounds", sig_id);
+        }
+        IrStmt::MethodCallStmt { obj, args, .. } => {
+            verify_expr_signal_ids(obj, max_sig_id);
+            for arg in args {
+                verify_expr_signal_ids(arg, max_sig_id);
+            }
+        }
+        IrStmt::Fork { processes, .. } => {
+            for branch in processes {
+                for s in branch {
+                    collect_and_verify_signal_ids(s, max_sig_id);
+                }
+            }
+        }
+        IrStmt::Assert { cond, pass_stmt, fail_stmt, .. } => {
+            verify_expr_signal_ids(cond, max_sig_id);
+            for s in pass_stmt {
+                collect_and_verify_signal_ids(s, max_sig_id);
+            }
+            for s in fail_stmt {
+                collect_and_verify_signal_ids(s, max_sig_id);
+            }
+        }
+        IrStmt::Assume { cond, pass_stmt, fail_stmt, .. } => {
+            verify_expr_signal_ids(cond, max_sig_id);
+            for s in pass_stmt {
+                collect_and_verify_signal_ids(s, max_sig_id);
+            }
+            for s in fail_stmt {
+                collect_and_verify_signal_ids(s, max_sig_id);
+            }
+        }
+        IrStmt::WaitOrder { events, failure_stmts } => {
+            for ev in events {
+                assert!(*ev < max_sig_id, "WaitOrder event signal ID {} out of bounds", ev);
+            }
+            for s in failure_stmts {
+                collect_and_verify_signal_ids(s, max_sig_id);
+            }
+        }
+        IrStmt::RandCase { items } => {
+            for (cond, body) in items {
+                verify_expr_signal_ids(cond, max_sig_id);
+                for s in body {
+                    collect_and_verify_signal_ids(s, max_sig_id);
+                }
+            }
+        }
+        IrStmt::RandSequence { productions } => {
+            for (_name, items) in productions {
+                for (cond, body) in items {
+                    verify_expr_signal_ids(cond, max_sig_id);
+                    for s in body {
+                        collect_and_verify_signal_ids(s, max_sig_id);
+                    }
+                }
+            }
+        }
+        IrStmt::Block { stmts } | IrStmt::NamedBlock { stmts, .. } => {
+            for s in stmts {
+                collect_and_verify_signal_ids(s, max_sig_id);
+            }
+        }
+        IrStmt::Release { lvalue, .. } | IrStmt::Deassign { lvalue, .. } => {
+            verify_lvalue_signal_ids(lvalue, max_sig_id);
+        }
+        IrStmt::SysFinish | IrStmt::Null | IrStmt::Break | IrStmt::Continue
+        | IrStmt::Disable { .. } | IrStmt::WaitFork | IrStmt::Cover { .. }
+        | IrStmt::Expect { .. } => {}
+    }
+}
+
+fn verify_lvalue_signal_ids(lvalue: &IrLValue, max_sig_id: usize) {
+    match lvalue {
+        IrLValue::Signal(sig_id, ..) => {
+            assert!(*sig_id < max_sig_id, "LValue::Signal ID {} out of bounds", sig_id);
+        }
+        IrLValue::RangeSelect(sig_id, ..) => {
+            assert!(*sig_id < max_sig_id, "LValue::RangeSelect ID {} out of bounds", sig_id);
+        }
+        IrLValue::BitSelect(sig_id, ..) => {
+            assert!(*sig_id < max_sig_id, "LValue::BitSelect ID {} out of bounds", sig_id);
+        }
+        IrLValue::ArrayIndex { sig_id, index, .. } => {
+            assert!(*sig_id < max_sig_id, "LValue::ArrayIndex ID {} out of bounds", sig_id);
+            verify_expr_signal_ids(index, max_sig_id);
+        }
+        IrLValue::ArrayRangeSelect { sig_id, .. } => {
+            assert!(*sig_id < max_sig_id, "LValue::ArrayRangeSelect ID {} out of bounds", sig_id);
+        }
+        IrLValue::ArrayBitSelect { sig_id, .. } => {
+            assert!(*sig_id < max_sig_id, "LValue::ArrayBitSelect ID {} out of bounds", sig_id);
+        }
+        IrLValue::ExprPartSelect { sig_id, .. } => {
+            assert!(*sig_id < max_sig_id, "LValue::ExprPartSelect ID {} out of bounds", sig_id);
+        }
+        IrLValue::ObjectField { sig_id, .. } => {
+            assert!(*sig_id < max_sig_id, "LValue::ObjectField ID {} out of bounds", sig_id);
+        }
+        IrLValue::Concat(lvalues) => {
+            for lv in lvalues {
+                verify_lvalue_signal_ids(lv, max_sig_id);
+            }
+        }
+        IrLValue::HierRef(_) | IrLValue::HierRefIndex { .. } | IrLValue::VifField { .. } => {}
+    }
+}
+
+fn verify_expr_signal_ids(expr: &IrExpr, max_sig_id: usize) {
+    match expr {
+        IrExpr::Signal(sig_id, ..) => {
+            assert!(*sig_id < max_sig_id, "Expr::Signal ID {} out of bounds", sig_id);
+        }
+        IrExpr::RangeSelect(sig_id, ..) => {
+            assert!(*sig_id < max_sig_id, "Expr::RangeSelect ID {} out of bounds", sig_id);
+        }
+        IrExpr::BitSelect(sig_id, ..) => {
+            assert!(*sig_id < max_sig_id, "Expr::BitSelect ID {} out of bounds", sig_id);
+        }
+        IrExpr::ExprRangeSelect(inner, ..)
+        | IrExpr::ExprBitSelect(inner, ..)
+        | IrExpr::ExprPartSelect(inner, ..) => {
+            verify_expr_signal_ids(inner, max_sig_id);
+        }
+        IrExpr::ArrayIndex { sig_id, index, .. } => {
+            assert!(*sig_id < max_sig_id, "Expr::ArrayIndex ID {} out of bounds", sig_id);
+            verify_expr_signal_ids(index, max_sig_id);
+        }
+        IrExpr::Concat(slices) => {
+            for e in slices {
+                verify_expr_signal_ids(e, max_sig_id);
+            }
+        }
+        IrExpr::Replicate(_, inner) => {
+            verify_expr_signal_ids(inner, max_sig_id);
+        }
+        IrExpr::UnaryOp(_, inner) => {
+            verify_expr_signal_ids(inner, max_sig_id);
+        }
+        IrExpr::BinaryOp(_, lhs, rhs) => {
+            verify_expr_signal_ids(lhs, max_sig_id);
+            verify_expr_signal_ids(rhs, max_sig_id);
+        }
+        IrExpr::Cond(cond, true_branch, false_branch) => {
+            verify_expr_signal_ids(cond, max_sig_id);
+            verify_expr_signal_ids(true_branch, max_sig_id);
+            verify_expr_signal_ids(false_branch, max_sig_id);
+        }
+        IrExpr::Signed(inner) => {
+            verify_expr_signal_ids(inner, max_sig_id);
+        }
+        IrExpr::String(_) | IrExpr::FillLit(_) | IrExpr::This => {}
+        IrExpr::SysFunc { args, .. } => {
+            for arg in args {
+                verify_expr_signal_ids(arg, max_sig_id);
+            }
+        }
+        IrExpr::NewCall { .. } | IrExpr::UdpLookup { .. } => {}
+        IrExpr::MethodCall { obj, args, .. } => {
+            verify_expr_signal_ids(obj, max_sig_id);
+            for arg in args {
+                verify_expr_signal_ids(arg, max_sig_id);
+            }
+        }
+        IrExpr::MemberAccess { obj, .. } => {
+            verify_expr_signal_ids(obj, max_sig_id);
+        }
+        IrExpr::DpiCall { args, .. } => {
+            for arg in args {
+                verify_expr_signal_ids(arg, max_sig_id);
+            }
+        }
+        IrExpr::HierRef(_) => {}
+        IrExpr::Inside { expr, list } => {
+            verify_expr_signal_ids(expr, max_sig_id);
+            for e in list {
+                verify_expr_signal_ids(e, max_sig_id);
+            }
+        }
+        IrExpr::InsideRange { expr, lo, hi } => {
+            verify_expr_signal_ids(expr, max_sig_id);
+            verify_expr_signal_ids(lo, max_sig_id);
+            verify_expr_signal_ids(hi, max_sig_id);
+        }
+        IrExpr::Cast { expr, .. } => {
+            verify_expr_signal_ids(expr, max_sig_id);
+        }
+        IrExpr::StreamingConcat { slices, .. } => {
+            for e in slices {
+                verify_expr_signal_ids(e, max_sig_id);
+            }
+        }
+        IrExpr::Dist { expr, .. } => {
+            verify_expr_signal_ids(expr, max_sig_id);
+        }
+        IrExpr::FuncCall { args, .. } => {
+            for arg in args {
+                verify_expr_signal_ids(arg, max_sig_id);
+            }
+        }
+        IrExpr::Const(_) | IrExpr::VifBinding { .. } | IrExpr::VirtualIfaceAccess { .. } => {}
+        IrExpr::RealConst(_) => {}
+        IrExpr::IncDec { read, lv, .. } => {
+            verify_expr_signal_ids(read, max_sig_id);
+            verify_lvalue_signal_ids(lv, max_sig_id);
+        }
     }
 }

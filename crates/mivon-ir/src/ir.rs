@@ -437,7 +437,7 @@ fn collect_signal_ids_from_expr(expr: &IrExpr, used: &mut HashSet<SignalId>) {
 }
 
 /// Remap semua SignalId dalam sebuah IrStmt menggunakan peta old->new.
-fn remap_signal_ids_in_stmt(stmt: &mut IrStmt, mapping: &HashMap<SignalId, SignalId>) {
+pub fn remap_signal_ids_in_stmt(stmt: &mut IrStmt, mapping: &HashMap<SignalId, SignalId>) {
     match stmt {
         IrStmt::Block { stmts } => {
             for s in stmts {
@@ -664,7 +664,7 @@ fn remap_signal_ids_in_stmt(stmt: &mut IrStmt, mapping: &HashMap<SignalId, Signa
 }
 
 /// Remap semua SignalId dalam sebuah IrLValue.
-fn remap_signal_ids_in_lvalue(lvalue: &mut IrLValue, mapping: &HashMap<SignalId, SignalId>) {
+pub fn remap_signal_ids_in_lvalue(lvalue: &mut IrLValue, mapping: &HashMap<SignalId, SignalId>) {
     match lvalue {
         IrLValue::Signal(sig_id, ..) => {
             if let Some(&new_id) = mapping.get(sig_id) {
@@ -718,7 +718,7 @@ fn remap_signal_ids_in_lvalue(lvalue: &mut IrLValue, mapping: &HashMap<SignalId,
 }
 
 /// Remap semua SignalId dalam sebuah IrExpr.
-fn remap_signal_ids_in_expr(expr: &mut IrExpr, mapping: &HashMap<SignalId, SignalId>) {
+pub fn remap_signal_ids_in_expr(expr: &mut IrExpr, mapping: &HashMap<SignalId, SignalId>) {
     match expr {
         IrExpr::Signal(sig_id, ..) => {
             if let Some(&new_id) = mapping.get(sig_id) {
@@ -969,7 +969,7 @@ fn collect_signal_ids_from_process(process: &Process, used: &mut HashSet<SignalI
 }
 
 /// Remap semua SignalId dalam sebuah Proses.
-fn remap_signal_ids_in_process(process: &mut Process, mapping: &HashMap<SignalId, SignalId>) {
+pub fn remap_signal_ids_in_process(process: &mut Process, mapping: &HashMap<SignalId, SignalId>) {
     match process {
         Process::Combinational { body, .. }
         | Process::CombReactive { body, .. }
