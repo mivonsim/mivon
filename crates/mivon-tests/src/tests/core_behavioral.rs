@@ -6976,7 +6976,7 @@ endmodule
     let data = fs::read(path).unwrap();
     assert!(&data[0..4] == b"SHM1", "SHM magic harus tertulis oleh engine");
     let content = String::from_utf8_lossy(&data);
-    assert!(content.contains("SHM 1.0"), "harus ada versi SHM");
+    assert!(content.contains("SHM 2.0"), "harus ada versi SHM");
     assert!(content.contains("$var"), "harus ada definisi variabel");
     assert!(content.contains("#"), "harus ada time header");
     let _ = fs::remove_file(path);
