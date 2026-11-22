@@ -1,27 +1,10 @@
-//! LANG-02: SystemC front-end — STUB stage 1-11 (Critical, open).
+//! LANG-02: SystemC front-end — Stage 3+: Parser implementation.
 //!
-//! mivon tidak memiliki dukungan SystemC sama sekali. Stage 1 adalah scanner
-//! terbatas yang mengenali makro `SC_MODULE(<nama>)` dan `SC_CTOR(<nama>)`
-//! dari source SystemC (C++). Stage 2 menambah ekstraksi deklarasi
-//! port/signal `sc_in`/`sc_out`/`sc_inout`/`sc_signal` (nama + arah + tipe).
-//! Stage 3 menambah ekstraksi process `SC_METHOD`/`SC_THREAD`/`SC_CTHREAD`.
-//! Stage 4 menambah ekstraksi deklarasi clock `sc_clock` (nama). Stage 5
-//! menambah deteksi kontrol simulasi `sc_start`/`sc_stop`. Stage 6 menambah
-//! deteksi entry point `sc_main`. Stage 7 menambah ekstraksi deklarasi
-//! channel/sinkronisasi `sc_fifo`/`sc_event`/`sc_mutex`/`sc_semaphore`
-//! (nama + jenis). Stage 8 menambah ekstraksi sensitivity list
-//! `sensitive << clk.pos()` (sinyal + edge). Stage 9 menambah deteksi
-//! `wait()` / `wait(<durasi>, <satuan>)` (durasi + satuan). Stage 10
-//! menambah deteksi makro pelaporan `SC_REPORT_INFO`/`SC_REPORT_WARNING`/
-//! `SC_REPORT_ERROR`/`SC_REPORT_FATAL` (jenis + baris). Stage 11 menambah
-//! deteksi pemanggilan `sc_trace` (baris). BUKAN parser
-//! C++/SystemC lengkap: belum mem-parse body process/ctor, maupun tipe SystemC
-//! bersarang penuh. Belum
-//! di-wire ke pipeline compile mivon (SystemVerilog).
-//!
-//! Ini titik awal yang kecil namun ter-test; item besar LANG-02 akan
-//! dipecah bertahap (parser C++/SystemC, elaborasi, simulasi) di stage
-//! berikutnya.
+//! This module provides a SystemC parser that can parse modules, processes,
+//! ports, signals, clocks, channels, and other SystemC constructs into an AST.
+
+pub mod parser;
+pub use parser::*;
 
 /// Satu modul SystemC yang dikenali (`SC_MODULE`).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
