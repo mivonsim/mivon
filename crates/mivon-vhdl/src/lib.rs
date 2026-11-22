@@ -1,43 +1,10 @@
-//! LANG-01: VHDL front-end — STUB stage 1-31 (Critical, open).
+//! LANG-01: VHDL front-end — Stage 3+: Parser implementation.
 //!
-//! mivon tidak memiliki dukungan VHDL sama sekali. Stage 1 adalah scanner
-//! terbatas yang mengenali batas `entity` / `architecture` dari source VHDL
-//! (nama + nomor baris). Stage 2 mengekstrak klausa `port`, stage 3 mengekstrak
-//! klausa `generic`, stage 4 mengekstrak deklarasi `signal` di body arsitektur,
-//! stage 5 mengekstrak deklarasi `component` (nama + port) dari body arsitektur,
-//! stage 6 mengekstrak deklarasi `process` (label + sensitivity list) dari body
-//! arsitektur, stage 7 mengekstrak klausa `library`/`use` tingkat file, stage 8
-//! mengekstrak deklarasi `package`/`package body` (nama + jenis) tingkat file,
-//! stage 9 mengekstrak deklarasi subprogram `function`/`procedure` (nama +
-//! jenis), stage 10 mengekstrak deklarasi `type`/`subtype` (nama + jenis
-//! Enum/Record/Subtype/Other), stage 11 mengekstrak deklarasi `constant`
-//! (nama + tipe + nilai), stage 12 mengekstrak deklarasi `alias`
-//! (nama + tipe + target), stage 13 mengekstrak deklarasi `configuration`
-//! (nama + entitas), stage 14 mengekstrak deklarasi `variable` (nama + tipe +
-//! nilai opsional), stage 15 mengekstrak deklarasi `file` (nama + tipe file +
-//! path opsional), stage 16 mengekstrak deklarasi `attribute` (nama + tipe),
-//! stage 17 mengekstrak deklarasi `group template` (nama + tipe grup),
-//! stage 18 mengekstrak instansi komponen (label + nama komponen),
-//! stage 19 mengekstrak blok (label), stage 20 mengekstrak pernyataan
-//! `assert` (baris), stage 21 mengekstrak pernyataan `report` (baris),
-//! stage 22 mengekstrak pernyataan `wait` (baris),
-//! stage 23 mengekstrak penetapan sinyal konkuren `<=`,
-//! stage 24 mengekstrak generate statement (label + baris),
-//! stage 25 mengekstrak pernyataan `null` (baris),
-//! stage 26 mengekstrak pernyataan `if` (baris),
-//! stage 27 mengekstrak pernyataan `case` (baris),
-//! stage 28 mengekstrak pernyataan `loop` (baris),
-//! stage 29 mengekstrak pernyataan `exit`/`next` (baris),
-//! stage 30 mengekstrak pernyataan `return` (baris),
-//! stage 31 mengekstrak penetapan variabel `:=`.
-//! Semuanya kasar: nama + mode/tipe. BUKAN parser
-//! lengkap: belum mem-parse concurrent/sequential statement dalam process,
-//! maupun tipe VHDL penuh. Belum di-wire ke pipeline compile (lexer/parser
-//! SystemVerilog di mivon-parser).
-//!
-//! Ini titik awal yang kecil namun ter-test; item besar LANG-01 akan
-//! dipecah bertahap (lexer VHDL, parser, elaborasi, simulasi) di stage
-//! berikutnya.
+//! This module provides a VHDL parser that can parse entity, architecture,
+//! package, and other VHDL constructs into an AST.
+
+pub mod parser;
+pub use parser::*;
 
 /// Satu sinyal port VHDL (stage 2: ekstraksi kasar dari klausa `port`).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
