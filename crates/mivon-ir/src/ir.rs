@@ -1779,7 +1779,7 @@ impl IrSequence {
             IrSequence::Or(a, b) => a.min_cycles().min(b.min_cycles()),
             IrSequence::And(a, b) => a.min_cycles().max(b.min_cycles()),
             IrSequence::Repeat(seq, n) => seq.min_cycles() * n,
-            IrSequence::GotoRepeat(seq) => 0, // 0 or more: can match immediately
+            IrSequence::GotoRepeat(_seq) => 0, // 0 or more: can match immediately
             IrSequence::GotoRepeatPlus(seq) => seq.min_cycles(), // 1 or more: at least one repetition
             IrSequence::Implication(ante, cons) => ante.min_cycles() + cons.min_cycles(),
         }

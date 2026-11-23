@@ -13,7 +13,8 @@
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 
-use crate::simulator::types::{EventKind, EventRegion, RegionEvent};
+use crate::simulator::types::RegionEvent;
+
 
 /// An event scheduled at a given simulation time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -383,7 +384,7 @@ pub type ParallelRegionScheduler = ParallelDeltaScheduler<RegionEvent>;
 mod region_scheduler_tests {
     use super::*;
     use crate::simulator::types::{EventKind, EventRegion, RegionEvent};
-
+    
     fn re(region: EventRegion, kind: EventKind) -> RegionEvent {
         RegionEvent { region, event: kind }
     }

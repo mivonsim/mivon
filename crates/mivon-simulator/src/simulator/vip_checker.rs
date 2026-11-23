@@ -21,6 +21,11 @@ pub enum VipProtocol {
     Apb,
     Axi4Lite,
     Ahb,
+    // Standard VIP protocols (FEAT-24)
+    Usb,
+    Pcie,
+    Ddr,
+    Ethernet,
 }
 
 impl std::fmt::Display for VipProtocol {
@@ -29,6 +34,10 @@ impl std::fmt::Display for VipProtocol {
             VipProtocol::Apb => write!(f, "apb"),
             VipProtocol::Axi4Lite => write!(f, "axi4lite"),
             VipProtocol::Ahb => write!(f, "ahb"),
+            VipProtocol::Usb => write!(f, "usb"),
+            VipProtocol::Pcie => write!(f, "pcie"),
+            VipProtocol::Ddr => write!(f, "ddr"),
+            VipProtocol::Ethernet => write!(f, "ethernet"),
         }
     }
 }
@@ -71,9 +80,6 @@ impl LastBool {
     }
     fn is_high(&self) -> bool {
         matches!(self, LastBool::High)
-    }
-    fn is_known(&self) -> bool {
-        matches!(self, LastBool::Low | LastBool::High)
     }
 }
 
@@ -124,6 +130,24 @@ pub struct VipChecker {
     ahb_burst_count: u8,
     ahb_hmastlock_start: Option<bool>,
     ahb_hmastlock_reported: bool,
+    // USB (FEAT-24)
+    last_usb_pid: Option<u8>,
+    usb_was_illegal: bool,
+    // PCIe (FEAT-24)
+    last_pcie_tlp_type: Option<u8>,
+    pcie_pending_tlps: i64,
+    // DDR (FEAT-24)
+    last_ddr_cmd: Option<u8>,
+    ddr_bank_states: std::collections::HashMap<u8, DdrBankState>,
+    // Ethernet (FEAT-24)
+    last_eth_etype: Option<u16>,
+    eth_in_frame: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+struct DdrBankState {
+    last_act: Option<u64>, // cycle of last ACT
+    row_open: Option<u64>, // currently open row
 }
 
 impl VipChecker {
@@ -161,6 +185,14 @@ impl VipChecker {
             ahb_burst_count: 0,
             ahb_hmastlock_start: None,
             ahb_hmastlock_reported: false,
+            last_usb_pid: None,
+            usb_was_illegal: false,
+            last_pcie_tlp_type: None,
+            pcie_pending_tlps: 0,
+            last_ddr_cmd: None,
+            ddr_bank_states: std::collections::HashMap::new(),
+            last_eth_etype: None,
+            eth_in_frame: false,
         }
     }
 
@@ -202,6 +234,10 @@ impl VipChecker {
             VipProtocol::Apb => self.check_apb(time, engine),
             VipProtocol::Axi4Lite => self.check_axi4lite(time, engine),
             VipProtocol::Ahb => self.check_ahb(time, engine),
+            VipProtocol::Usb => self.check_usb(time, engine),
+            VipProtocol::Pcie => self.check_pcie(time, engine),
+            VipProtocol::Ddr => self.check_ddr(time, engine),
+            VipProtocol::Ethernet => self.check_ethernet(time, engine),
         }
     }
 
@@ -287,10 +323,7 @@ impl VipChecker {
     //   (counter outstanding).
     fn check_axi4lite(&mut self, time: u64, engine: &SimulationEngine) -> Result<(), SimError> {
         let read = |name: &str| -> bool {
-            match Self::read_bool(engine, name) {
-                Some(v) => v,
-                None => return false,
-            }
+            Self::read_bool(engine, name).unwrap_or(false)
         };
         let awv = read("awvalid");
         let awr = read("awready");
@@ -592,6 +625,323 @@ impl VipChecker {
         }
         Ok(())
     }
+
+    // ═══ USB (FEAT-24) ═══
+    // USB 2.0 packet-based protocol checker
+    // Sinyal yang dipantau: usb_pid[3:0], usb_data[7:0], usb_k[1:0], usb_valid, usb_ready
+    fn check_usb(&mut self, time: u64, engine: &SimulationEngine) -> Result<(), SimError> {
+        let pid = match Self::read_u64(engine, "usb_pid") {
+            Some(v) => v as u8,
+            None => return Ok(()),
+        };
+        
+        let valid = match Self::read_bool(engine, "usb_valid") {
+            Some(v) => v,
+            None => return Ok(()),
+        };
+        let _ready = Self::read_bool(engine, "usb_ready").unwrap_or(false);
+
+        // Hanya cek saat valid=1 (ada packet baru)
+        if !valid {
+            return Ok(());
+        }
+
+        // Aturan 1: RESERVED PID (0b0000) tidak boleh digunakan
+        // Lapor sekali per interval ilegal (mirip APB was_illegal)
+        let is_illegal = pid & 0xF == 0b0000;
+        let was_illegal = self.usb_was_illegal;
+        if is_illegal && !was_illegal {
+            self.violations.push(VipViolation::new(
+                time,
+                "USB-INVALID-PID",
+                "RESERVED PID 0b0000 digunakan (tidak valid per USB 2.0)",
+            ));
+        }
+        self.usb_was_illegal = is_illegal;
+
+        // Aturan 2: PID sequence checking (stub - only tracks last PID)
+        // Token PID (OUT=0b0001, IN=0b1001, SOF=0b0101, SETUP=0b1101) 
+        // harus diikuti DATA PID (DATA0=0b0011, DATA1=0b1011, DATA2=0b0111, MDATA=0b1111)
+        // lalu Handshake PID (ACK=0b0010, NAK=0b1010, STALL=0b1110, NYET=0b0110)
+        if let Some(last_pid) = self.last_usb_pid {
+            // Track last PID for sequence checking (stub)
+            let _ = (last_pid, pid); // suppress unused warning
+        }
+
+        // Aturan 3: Handshake protocol (stub)
+        // Setelah DATA, host/device harus merespons ACK/NAK/STALL/NYET
+
+        self.last_usb_pid = Some(pid);
+                Ok(())
+    }
+
+#[allow(dead_code)]
+#[allow(dead_code)]
+    fn decode_usb_pid(&self, pid4: u8) -> Option<&'static str> {
+        match pid4 & 0xF {
+            0b0001 => Some("OUT"),
+            0b1001 => Some("IN"),
+            0b0101 => Some("SOF"),
+            0b1101 => Some("SETUP"),
+            0b0011 => Some("DATA0"),
+            0b1011 => Some("DATA1"),
+            0b0111 => Some("DATA2"),
+            0b1111 => Some("MDATA"),
+            0b0010 => Some("ACK"),
+            0b1010 => Some("NAK"),
+            0b1110 => Some("STALL"),
+            0b0110 => Some("NYET"),
+            0b0000 => None, // RESERVED (USB 2.0)
+            0b0100 => Some("PING"),
+            0b1000 => Some("SPLIT"),
+            0b1100 => Some("PRE/ERR"),
+            _ => None,
+        }
+    }
+
+    // ═══ PCIe (FEAT-24) ═══
+    // PCIe TLP-based protocol checker
+    // Sinyal: pcie_tlp_type[4:0], pcie_valid, pcie_ready
+    fn check_pcie(&mut self, time: u64, engine: &SimulationEngine) -> Result<(), SimError> {
+        let tlp_type = match Self::read_u64(engine, "pcie_tlp_type") {
+            Some(v) => v as u8,
+            None => return Ok(()),
+        };
+        
+        let valid = match Self::read_bool(engine, "pcie_valid") {
+            Some(v) => v,
+            None => { eprintln!("  [PCIe] t={}, read_bool returned None for pcie_valid", time); return Ok(()); },
+        };
+        let _ = Self::read_bool(engine, "pcie_ready");
+        eprintln!("  [PCIe] t={}, read valid={}, pending_before={}", time, valid, self.pcie_pending_tlps);
+
+        if !valid {
+            eprintln!("  [PCIe] t={}, valid=false, returning early", time);
+            return Ok(());
+        }
+
+        // Decode TLP Type
+        let tlp_name = self.decode_pcie_tlp_type(tlp_type & 0x1F);
+
+        // Aturan 1: RESERVED/UNSUPPORTED TLP Type
+        if tlp_name.is_none() {
+            self.violations.push(VipViolation::new(
+                time,
+                "PCIE-RESERVED-TYPE",
+                format!("Reserved/unsupported TLP Type: 0x{:02X}", tlp_type & 0x1F),
+            ));
+        }
+
+        // Aturan 2: Outstanding TLP tracking
+        // Request TLP (MRd, MRdLk, IORd, IOWr, CfgRd/Wr, Msg/MsgD, AtomicOps) menambah outstanding
+        // Completion TLP (Cpl, CplD, CplLk, CplLkD) mengurangi outstanding
+        let is_request = matches!(tlp_type & 0x1F, 
+            // Memory Request (3DW/4DW)
+            0x00 | 0x01 | 0x02 | 0x03 | // MRd, MRdLk, IORd, IOWr
+            0x04 | 0x05 | 0x06 | 0x07 | // CfgRd0, CfgWr0, CfgRd1, CfgWr1
+            0x10 | 0x11 | // Msg, MsgD
+            0x20 | 0x21 | 0x22 | 0x23 | // 4DW Memory
+            0x24 | 0x25 | 0x26 | 0x27 // 4DW Config
+        );
+        let is_completion = matches!(tlp_type & 0x1F,
+            0x0A | 0x0B | 0x0E | 0x0F | // Cpl, CplD, CplLk, CplLkD (3DW)
+            0x2A | 0x2B | 0x2E | 0x2F // 4DW Completion
+        );
+
+        if is_request {
+                self.pcie_pending_tlps += 1;
+        }
+        // Aturan 3: Completion tanpa request yang sesuai
+        // Check violation BEFORE decrementing
+        if is_completion && self.pcie_pending_tlps <= 0 {
+            self.violations.push(VipViolation::new(
+                time,
+                "PCIE-COMPLETION-WITHOUT-REQUEST",
+                "Completion TLP diterima tanpa request yang sesuai",
+            ));
+        }
+        
+        if is_completion {
+            self.pcie_pending_tlps = (self.pcie_pending_tlps - 1).max(0);
+        }
+
+        self.last_pcie_tlp_type = Some(tlp_type);
+        Ok(())
+    }
+
+    fn decode_pcie_tlp_type(&self, t: u8) -> Option<&'static str> {
+        match t & 0x1F {
+            0x00 => Some("MRd"), 0x01 => Some("MRdLk"), 0x02 => Some("IORd"),
+            0x03 => Some("IOWr"), 0x04 => Some("CfgRd0"), 0x05 => Some("CfgWr0"),
+            0x06 => Some("CfgRd1"), 0x07 => Some("CfgWr1"),
+            0x0A => Some("Cpl"), 0x0B => Some("CplD"),
+            0x0E => Some("CplLk"), 0x0F => Some("CplLkD"),
+            0x10 => Some("Msg"), 0x11 => Some("MsgD"),
+            0x20 => Some("MRd"), 0x21 => Some("MRdLk"), 0x22 => Some("IORd"),
+            0x23 => Some("IOWr"), 0x24 => Some("CfgRd0"), 0x25 => Some("CfgWr0"),
+            0x26 => Some("CfgRd1"), 0x27 => Some("CfgWr1"),
+            0x2A => Some("Cpl"), 0x2B => Some("CplD"),
+            0x2E => Some("CplLk"), 0x2F => Some("CplLkD"),
+            _ => None,
+        }
+    }
+
+    // ═══ DDR (FEAT-24) ═══
+    // DDR command checker (JEDEC DDR3/4)
+    // Sinyal: ddr_cmd[2:0], ddr_bank[2:0], ddr_addr[15:0], ddr_valid
+    fn check_ddr(&mut self, time: u64, engine: &SimulationEngine) -> Result<(), SimError> {
+        let cmd = match Self::read_u64(engine, "ddr_cmd") {
+            Some(v) => v as u8,
+            None => return Ok(()),
+        };
+        
+        let valid = match Self::read_bool(engine, "ddr_valid") {
+            Some(v) => v,
+            None => return Ok(()),
+        };
+
+        if !valid {
+            return Ok(());
+        }
+
+        let bank = Self::read_u64(engine, "ddr_bank").unwrap_or(0) as u8;
+        let addr = Self::read_u64(engine, "ddr_addr").unwrap_or(0);
+
+        // Decode command
+        let cmd_name = self.decode_ddr_command(cmd & 0x7);
+
+        // Aturan 1: RESERVED command encoding (110, 111)
+        if cmd_name.is_none() {
+            self.violations.push(VipViolation::new(
+                time,
+                "DDR-INVALID-CMD",
+                format!("Reserved DDR command encoding: 0b{:03b}", cmd & 0x7),
+            ));
+            return Ok(());
+        }
+
+        // Get or create bank state
+        let bank_state = self.ddr_bank_states.entry(bank).or_default();
+
+        // Aturan 2: ACTIVATE (ACT) harus diikuti PRECHARGE sebelum ACT baru di bank yang sama
+        // ACT (001) membuka row. Row harus di-precharge (PRE=100) sebelum ACT baru.
+        if cmd_name == Some("ACT") {
+            if let Some(_last_act_cycle) = bank_state.last_act {
+                if let Some(open_row) = bank_state.row_open {
+                    if open_row != addr {
+                        self.violations.push(VipViolation::new(
+                            time,
+                            "DDR-ROW-CONFLICT",
+                            format!("ACT ke row {} di bank {} tanpa PRECHARGE row {} yang sedang terbuka", addr, bank, open_row),
+                        ));
+                    }
+                }
+            }
+            bank_state.last_act = Some(time);
+            bank_state.row_open = Some(addr);
+        }
+
+        // Aturan 3: PRECHARGE (PRE) menutup row
+        if cmd_name == Some("PRE") {
+            bank_state.row_open = None;
+        }
+
+        // Aturan 4: REFRESH (REF) - tidak ada checking detail untuk sekarang
+        // Aturan 5: RD/WR - row harus terbuka
+        if matches!(cmd_name, Some("RD") | Some("WR")) && bank_state.row_open.is_none() {
+            self.violations.push(VipViolation::new(
+                time,
+                "DDR-ACCESS-WITHOUT-ACT",
+                format!("RD/WR di bank {} tanpa ACT sebelumnya (row tidak terbuka)", bank),
+            ));
+        }
+
+        self.last_ddr_cmd = Some(cmd);
+        Ok(())
+    }
+
+    fn decode_ddr_command(&self, cmd3: u8) -> Option<&'static str> {
+        match cmd3 & 0x7 {
+            0b000 => Some("NOP"),
+            0b001 => Some("ACT"),
+            0b010 => Some("RD"),
+            0b011 => Some("WR"),
+            0b100 => Some("PRE"),
+            0b101 => Some("REF"),
+            _ => None, // 110, 111 reserved
+        }
+    }
+
+    // ═══ Ethernet (FEAT-24) ═══
+    // Ethernet frame checker (IEEE 802.3)
+    // Sinyal: eth_etype[15:0], eth_valid, eth_sfd (start frame delimiter), eth_eof (end of frame)
+    fn check_ethernet(&mut self, time: u64, engine: &SimulationEngine) -> Result<(), SimError> {
+        let etype = match Self::read_u64(engine, "eth_etype") {
+            Some(v) => v as u16,
+            None => return Ok(()),
+        };
+        
+        let valid = match Self::read_bool(engine, "eth_valid") {
+            Some(v) => v,
+            None => return Ok(()),
+        };
+        let sfd = Self::read_bool(engine, "eth_sfd").unwrap_or(false);
+        let eof = Self::read_bool(engine, "eth_eof").unwrap_or(false);
+
+        if !valid {
+            return Ok(());
+        }
+
+        // Detect frame start: valid goes high while not already in a frame
+        let frame_start = valid && !self.eth_in_frame;
+        
+        // SFD (Start Frame Delimiter) should be present at frame start
+        if frame_start && !sfd {
+            self.violations.push(VipViolation::new(
+                time,
+                "ETH-MISSING-SFD",
+                "Frame dimulai tanpa SFD (Start Frame Delimiter)",
+            ));
+        }
+        
+        // SFD (Start Frame Delimiter) menandai awal frame
+        if sfd {
+            self.eth_in_frame = true;
+        }
+
+        // Decode EtherType
+        let _etype_name = self.decode_ether_type(etype);
+
+        // Aturan 1: INVALID EtherType (0x0000, 0xFFFF)
+        if etype == 0x0000 || etype == 0xFFFF {
+            self.violations.push(VipViolation::new(
+                time,
+                "ETH-INVALID-ETYPE",
+                format!("Invalid EtherType: 0x{:04X} (0x0000/0xFFFF tidak valid per IEEE 802.3)", etype),
+            ));
+        }
+
+        // Aturan 3: Frame harus berakhir dengan EOF
+        if eof {
+            self.eth_in_frame = false;
+        }
+
+        self.last_eth_etype = Some(etype);
+        Ok(())
+    }
+
+    fn decode_ether_type(&self, et: u16) -> Option<&'static str> {
+        match et {
+            0x0800 => Some("IPv4"),
+            0x0806 => Some("ARP"),
+            0x86DD => Some("IPv6"),
+            0x8100 => Some("VLAN"),
+            0x8847 => Some("MPLS"),
+            0x88CC => Some("LLDP"),
+            0x0000 | 0xFFFF => None, // invalid ethertype
+            _ => None,               // unknown (bukan error)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -664,30 +1014,242 @@ mod tests {
         SimulationEngine::new(design, 1000)
     }
 
+    /// Create test engine with PCIe-appropriate signal widths (5 bits for TLP type, 1 bit for control)
+    fn test_engine_pcie(names: &[&str]) -> SimulationEngine {
+        use mivon_core::Symbol;
+        let signals: Vec<mivon_ir::SignalInfo> = names
+            .iter()
+            .enumerate()
+            .map(|(_i, name)| {
+                let width = if *name == "pcie_tlp_type" { 5 } else { 1 };
+                mivon_ir::SignalInfo {
+                    name: Symbol::intern(name),
+                    width,
+                    kind: mivon_ir::SignalKind::Wire,
+                    net_type: mivon_ir::NetType::Wire,
+                    multi_driver: false,
+                    init_val: LogicVec::from_u64(0, width),
+                    array_depth: 0,
+                    elem_width: width,
+                    array_dims: Vec::new(),
+                    class_name: None,
+                    is_string: false,
+                    is_real: false,
+                    is_mailbox: false,
+                    is_semaphore: false,
+                    is_2state: false,
+                    is_dynamic: false,
+                    is_queue: false,
+                    is_associative: false,
+                    is_signed: false,
+                    is_const: false,
+                    msb: 0,
+                    lsb: 0,
+                    struct_fields: Vec::new(),
+                    packed_dims: Vec::new(),
+                    delay_rise: None,
+                    delay_fall: None,
+                    iface_type: None,
+                    iface_modport: None,
+                }
+            })
+            .collect();
+        let design = mivon_ir::IrDesign {
+            top: mivon_ir::IrModule {
+                name: Symbol::intern("top"),
+                signals,
+                inputs: Vec::new(),
+                outputs: Vec::new(),
+                inouts: Vec::new(),
+                processes: Vec::new(),
+                sub_instances: Vec::new(),
+            },
+            modules: HashMap::new(),
+            classes: HashMap::new(),
+            covergroups: Vec::new(),
+            dpi_imports: Vec::new(),
+            hier_signal_map: HashMap::new(),
+            udp_defs: Vec::new(),
+            specify_items: Vec::new(),
+            timescale: None,
+            module_functions: HashMap::new(),
+            source_lines: None,
+            source_file: None,
+            pkg_scoped_consts: HashMap::new(),
+            coverage_exclusions: Vec::new(),
+            stmt_lines: HashMap::new(),
+            net_aliases: HashMap::new(),
+        };
+        SimulationEngine::new(design, 1000)
+    }
+
+    /// Create test engine with DDR-appropriate signal widths (3 bits for cmd, 3 bits for bank, 16 bits for addr)
+    fn test_engine_ddr(names: &[&str]) -> SimulationEngine {
+        use mivon_core::Symbol;
+        let signals: Vec<mivon_ir::SignalInfo> = names
+            .iter()
+            .enumerate()
+            .map(|(_i, name)| {
+                let width = match *name {
+                    "ddr_cmd" => 3,
+                    "ddr_bank" => 3,
+                    "ddr_addr" => 16,
+                    _ => 1,
+                };
+                mivon_ir::SignalInfo {
+                    name: Symbol::intern(name),
+                    width,
+                    kind: mivon_ir::SignalKind::Wire,
+                    net_type: mivon_ir::NetType::Wire,
+                    multi_driver: false,
+                    init_val: LogicVec::from_u64(0, width),
+                    array_depth: 0,
+                    elem_width: width,
+                    array_dims: Vec::new(),
+                    class_name: None,
+                    is_string: false,
+                    is_real: false,
+                    is_mailbox: false,
+                    is_semaphore: false,
+                    is_2state: false,
+                    is_dynamic: false,
+                    is_queue: false,
+                    is_associative: false,
+                    is_signed: false,
+                    is_const: false,
+                    msb: 0,
+                    lsb: 0,
+                    struct_fields: Vec::new(),
+                    packed_dims: Vec::new(),
+                    delay_rise: None,
+                    delay_fall: None,
+                    iface_type: None,
+                    iface_modport: None,
+                }
+            })
+            .collect();
+        let design = mivon_ir::IrDesign {
+            top: mivon_ir::IrModule {
+                name: Symbol::intern("top"),
+                signals,
+                inputs: Vec::new(),
+                outputs: Vec::new(),
+                inouts: Vec::new(),
+                processes: Vec::new(),
+                sub_instances: Vec::new(),
+            },
+            modules: HashMap::new(),
+            classes: HashMap::new(),
+            covergroups: Vec::new(),
+            dpi_imports: Vec::new(),
+            hier_signal_map: HashMap::new(),
+            udp_defs: Vec::new(),
+            specify_items: Vec::new(),
+            timescale: None,
+            module_functions: HashMap::new(),
+            source_lines: None,
+            source_file: None,
+            pkg_scoped_consts: HashMap::new(),
+            coverage_exclusions: Vec::new(),
+            stmt_lines: HashMap::new(),
+            net_aliases: HashMap::new(),
+        };
+        SimulationEngine::new(design, 1000)
+    }
+
+    /// Create test engine with Ethernet-appropriate signal widths (16 bits for etype, 1 bit for control)
+    fn test_engine_eth(names: &[&str]) -> SimulationEngine {
+        use mivon_core::Symbol;
+        let signals: Vec<mivon_ir::SignalInfo> = names
+            .iter()
+            .enumerate()
+            .map(|(_i, name)| {
+                let width = if *name == "eth_etype" { 16 } else { 1 };
+                mivon_ir::SignalInfo {
+                    name: Symbol::intern(name),
+                    width,
+                    kind: mivon_ir::SignalKind::Wire,
+                    net_type: mivon_ir::NetType::Wire,
+                    multi_driver: false,
+                    init_val: LogicVec::from_u64(0, width),
+                    array_depth: 0,
+                    elem_width: width,
+                    array_dims: Vec::new(),
+                    class_name: None,
+                    is_string: false,
+                    is_real: false,
+                    is_mailbox: false,
+                    is_semaphore: false,
+                    is_2state: false,
+                    is_dynamic: false,
+                    is_queue: false,
+                    is_associative: false,
+                    is_signed: false,
+                    is_const: false,
+                    msb: 0,
+                    lsb: 0,
+                    struct_fields: Vec::new(),
+                    packed_dims: Vec::new(),
+                    delay_rise: None,
+                    delay_fall: None,
+                    iface_type: None,
+                    iface_modport: None,
+                }
+            })
+            .collect();
+        let design = mivon_ir::IrDesign {
+            top: mivon_ir::IrModule {
+                name: Symbol::intern("top"),
+                signals,
+                inputs: Vec::new(),
+                outputs: Vec::new(),
+                inouts: Vec::new(),
+                processes: Vec::new(),
+                sub_instances: Vec::new(),
+            },
+            modules: HashMap::new(),
+            classes: HashMap::new(),
+            covergroups: Vec::new(),
+            dpi_imports: Vec::new(),
+            hier_signal_map: HashMap::new(),
+            udp_defs: Vec::new(),
+            specify_items: Vec::new(),
+            timescale: None,
+            module_functions: HashMap::new(),
+            source_lines: None,
+            source_file: None,
+            pkg_scoped_consts: HashMap::new(),
+            coverage_exclusions: Vec::new(),
+            stmt_lines: HashMap::new(),
+            net_aliases: HashMap::new(),
+        };
+        SimulationEngine::new(design, 1000)
+    }
+
     fn set_signal(engine: &mut SimulationEngine, name: &str, val: bool) {
-        let id = engine
+        let (id, width) = engine
             .design
             .top
             .signals
             .iter()
             .enumerate()
             .find(|(_, s)| s.name.as_str() == name)
-            .map(|(i, _)| i)
+            .map(|(i, s)| (i, s.width))
             .unwrap();
-        engine.state.write_signal(id, LogicVec::from_u64(if val { 1 } else { 0 }, 2));
+        engine.state.write_signal(id, LogicVec::from_u64(if val { 1 } else { 0 }, width));
     }
 
     fn set_signal_u64(engine: &mut SimulationEngine, name: &str, val: u64) {
-        let id = engine
+        let (id, width) = engine
             .design
             .top
             .signals
             .iter()
             .enumerate()
             .find(|(_, s)| s.name.as_str() == name)
-            .map(|(i, _)| i)
+            .map(|(i, s)| (i, s.width))
             .unwrap();
-        engine.state.write_signal(id, LogicVec::from_u64(val, 2));
+        engine.state.write_signal(id, LogicVec::from_u64(val, width));
     }
 
     #[test]
@@ -1033,6 +1595,190 @@ mod tests {
         set_signal_u64(&mut engine, "htrans", 3);
         chk.check_time_step(1, &engine).unwrap();
         set_signal_u64(&mut engine, "htrans", 0); // IDLE
+        chk.check_time_step(2, &engine).unwrap();
+        assert!(chk.violations.is_empty());
+    }
+
+    // ═══ USB Tests (FEAT-24) ═══
+    #[test]
+    fn usb_reserved_pid_reported() {
+        let mut engine = test_engine_with_signals(&["usb_pid", "usb_valid"]);
+        let mut chk = VipChecker::new(VipProtocol::Usb);
+        // t=0: usb_pid=0 (RESERVED), valid=1
+        set_signal_u64(&mut engine, "usb_pid", 0);
+        set_signal(&mut engine, "usb_valid", true);
+        chk.check_time_step(0, &engine).unwrap();
+        assert!(chk
+            .violations
+            .iter()
+            .any(|v| v.rule == "USB-INVALID-PID"));
+        // t=1: same state -> no duplicate
+        chk.check_time_step(1, &engine).unwrap();
+        assert_eq!(chk.violations.len(), 1);
+    }
+
+    #[test]
+    fn usb_valid_pid_no_violation() {
+        let mut engine = test_engine_with_signals(&["usb_pid", "usb_valid"]);
+        let mut chk = VipChecker::new(VipProtocol::Usb);
+        // t=0: usb_pid=1 (OUT), valid=1
+        set_signal_u64(&mut engine, "usb_pid", 1); // OUT
+        set_signal(&mut engine, "usb_valid", true);
+        chk.check_time_step(0, &engine).unwrap();
+        assert!(chk.violations.is_empty());
+    }
+
+    // ═══ PCIe Tests (FEAT-24) ═══
+    #[test]
+    fn pcie_reserved_tlp_type_reported() {
+        let mut engine = test_engine_pcie(&["pcie_tlp_type", "pcie_valid"]);
+        let mut chk = VipChecker::new(VipProtocol::Pcie);
+        // t=0: reserved TLP type (0x08), valid=1
+        set_signal_u64(&mut engine, "pcie_tlp_type", 0x08);
+        set_signal(&mut engine, "pcie_valid", true);
+        chk.check_time_step(0, &engine).unwrap();
+        assert!(chk
+            .violations
+            .iter()
+            .any(|v| v.rule == "PCIE-RESERVED-TYPE"));
+    }
+
+    #[test]
+    fn pcie_completion_without_request_reported() {
+        let mut engine = test_engine_pcie(&["pcie_tlp_type", "pcie_valid"]);
+        let mut chk = VipChecker::new(VipProtocol::Pcie);
+        // t=0: Completion TLP (0x0A) without prior request
+        set_signal_u64(&mut engine, "pcie_tlp_type", 0x0A); // Cpl
+        set_signal(&mut engine, "pcie_valid", true);
+        chk.check_time_step(0, &engine).unwrap();
+        assert!(chk
+            .violations
+            .iter()
+            .any(|v| v.rule == "PCIE-COMPLETION-WITHOUT-REQUEST"));
+    }
+
+    #[test]
+    fn pcie_request_then_completion_clean() {
+        let mut engine = test_engine_pcie(&["pcie_tlp_type", "pcie_valid"]);
+        let mut chk = VipChecker::new(VipProtocol::Pcie);
+        // t=0: Request TLP (MRd = 0x00)
+        set_signal_u64(&mut engine, "pcie_tlp_type", 0x00);
+        set_signal(&mut engine, "pcie_valid", true);
+        chk.check_time_step(0, &engine).unwrap();
+        eprintln!("t=0: pending_tlps={}, violations={:?}", chk.pcie_pending_tlps, chk.violations);
+        assert_eq!(chk.pcie_pending_tlps, 1);
+        // t=1: Completion TLP (Cpl = 0x0A)
+        set_signal_u64(&mut engine, "pcie_tlp_type", 0x0A);
+        chk.check_time_step(1, &engine).unwrap();
+        eprintln!("t=1: pending_tlps={}, violations={:?}", chk.pcie_pending_tlps, chk.violations);
+        if !chk.violations.is_empty() {
+            eprintln!("Violations: {:?}", chk.violations);
+        }
+        assert_eq!(chk.pcie_pending_tlps, 0);
+        assert!(chk.violations.is_empty());
+    }
+
+    // ═══ DDR Tests (FEAT-24) ═══
+    #[test]
+    fn ddr_invalid_cmd_reported() {
+        let mut engine = test_engine_ddr(&["ddr_cmd", "ddr_valid", "ddr_bank", "ddr_addr"]);
+        let mut chk = VipChecker::new(VipProtocol::Ddr);
+        // t=0: reserved command (0b110), valid=1
+        set_signal_u64(&mut engine, "ddr_cmd", 0b110);
+        set_signal(&mut engine, "ddr_valid", true);
+        set_signal_u64(&mut engine, "ddr_bank", 0);
+        set_signal_u64(&mut engine, "ddr_addr", 0);
+        chk.check_time_step(0, &engine).unwrap();
+        assert!(chk
+            .violations
+            .iter()
+            .any(|v| v.rule == "DDR-INVALID-CMD"));
+    }
+
+    #[test]
+    fn ddr_row_conflict_reported() {
+        let mut engine = test_engine_ddr(&["ddr_cmd", "ddr_valid", "ddr_bank", "ddr_addr"]);
+        let mut chk = VipChecker::new(VipProtocol::Ddr);
+        // t=0: ACT to row 0x100 in bank 0
+        set_signal_u64(&mut engine, "ddr_cmd", 0b001); // ACT
+        set_signal(&mut engine, "ddr_valid", true);
+        set_signal_u64(&mut engine, "ddr_bank", 0);
+        set_signal_u64(&mut engine, "ddr_addr", 0x100);
+        chk.check_time_step(0, &engine).unwrap();
+        assert!(chk.violations.is_empty());
+        // t=1: ACT to different row 0x200 in same bank without PRECHARGE
+        set_signal_u64(&mut engine, "ddr_cmd", 0b001); // ACT
+        set_signal_u64(&mut engine, "ddr_addr", 0x200);
+        chk.check_time_step(1, &engine).unwrap();
+        assert!(chk
+            .violations
+            .iter()
+            .any(|v| v.rule == "DDR-ROW-CONFLICT"));
+    }
+
+    #[test]
+    fn ddr_access_without_act_reported() {
+        let mut engine = test_engine_ddr(&["ddr_cmd", "ddr_valid", "ddr_bank", "ddr_addr"]);
+        let mut chk = VipChecker::new(VipProtocol::Ddr);
+        // t=0: RD to bank 0 without prior ACT
+        set_signal_u64(&mut engine, "ddr_cmd", 0b010); // RD
+        set_signal(&mut engine, "ddr_valid", true);
+        set_signal_u64(&mut engine, "ddr_bank", 0);
+        set_signal_u64(&mut engine, "ddr_addr", 0x100);
+        chk.check_time_step(0, &engine).unwrap();
+        assert!(chk
+            .violations
+            .iter()
+            .any(|v| v.rule == "DDR-ACCESS-WITHOUT-ACT"));
+    }
+
+    // ═══ Ethernet Tests (FEAT-24) ═══
+    #[test]
+    fn ethernet_invalid_etype_reported() {
+        let mut engine = test_engine_eth(&["eth_etype", "eth_valid", "eth_sfd"]);
+        let mut chk = VipChecker::new(VipProtocol::Ethernet);
+        // t=0: invalid etype 0x0000
+        set_signal_u64(&mut engine, "eth_etype", 0x0000);
+        set_signal(&mut engine, "eth_valid", true);
+        set_signal(&mut engine, "eth_sfd", true);
+        chk.check_time_step(0, &engine).unwrap();
+        assert!(chk
+            .violations
+            .iter()
+            .any(|v| v.rule == "ETH-INVALID-ETYPE"));
+    }
+
+    #[test]
+    fn ethernet_frame_start_without_sfd_reported() {
+        let mut engine = test_engine_eth(&["eth_etype", "eth_valid", "eth_sfd"]);
+        let mut chk = VipChecker::new(VipProtocol::Ethernet);
+        // t=0: frame start (valid=1) without SFD
+        set_signal_u64(&mut engine, "eth_etype", 0x0800); // IPv4
+        set_signal(&mut engine, "eth_valid", true);
+        set_signal(&mut engine, "eth_sfd", false);
+        chk.check_time_step(0, &engine).unwrap();
+        assert!(chk
+            .violations
+            .iter()
+            .any(|v| v.rule == "ETH-MISSING-SFD"));
+    }
+
+    #[test]
+    fn ethernet_clean_frame_no_violation() {
+        let mut engine = test_engine_eth(&["eth_etype", "eth_valid", "eth_sfd", "eth_eof"]);
+        let mut chk = VipChecker::new(VipProtocol::Ethernet);
+        // t=0: frame start with SFD
+        set_signal_u64(&mut engine, "eth_etype", 0x0800); // IPv4
+        set_signal(&mut engine, "eth_valid", true);
+        set_signal(&mut engine, "eth_sfd", true);
+        chk.check_time_step(0, &engine).unwrap();
+        assert!(chk.violations.is_empty());
+        // t=1: frame continues
+        set_signal(&mut engine, "eth_sfd", false);
+        chk.check_time_step(1, &engine).unwrap();
+        assert!(chk.violations.is_empty());
+        // t=2: frame ends with EOF
+        set_signal(&mut engine, "eth_eof", true);
         chk.check_time_step(2, &engine).unwrap();
         assert!(chk.violations.is_empty());
     }

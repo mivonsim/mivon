@@ -3,7 +3,7 @@ use super::SimulationLimit;
 use super::EVENT_COMPACT_THRESHOLD;
 use crate::foreign::ForeignEvent;
 use crate::scheduler::clock_domain::ClockDomain;
-use crate::simulator::engine::scheduler::delta_scheduler::{DeltaScheduler, ParallelRegionScheduler};
+use crate::simulator::engine::scheduler::delta_scheduler::ParallelRegionScheduler;
 use crate::simulator::JITStmtCompiler;
 use crate::simulator::parallel::ParallelConfig;
 use crate::simulator::sdf::SdfData;

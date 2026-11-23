@@ -1,7 +1,6 @@
 use super::super::SequenceAttempt;
 use super::super::SimulationEngine;
 use crate::simulator::engine::engine_utils::{evaluate_string_method, is_mutating_string_method};
-use crate::simulator::JITStmtCompiler;
 use crate::simulator::types::*;
 use crate::simulator::util::*;
 use mivon_core::diagnostics::DiagCode;

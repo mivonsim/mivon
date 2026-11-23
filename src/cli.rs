@@ -1302,9 +1302,9 @@ pub struct Cli {
     pub glitch_window: u64,
 
     /// Aktifkan runtime VIP protocol checker untuk protokol bus tertentu
-    /// (apb | axi4lite | ahb). Bisa diulang untuk beberapa protokol. Checker
-    /// memantau sinyal protokol cycle-by-cycle selama simulasi dan melaporkan
-    /// pelanggaran sebagai diagnostic W0002 (FEAT-23 / ENT-24).
+    /// (apb | axi4lite | ahb | usb | pcie | ddr | ethernet). Bisa diulang untuk
+    /// beberapa protokol. Checker memantau sinyal protokol cycle-by-cycle selama
+    /// simulasi dan melaporkan pelanggaran sebagai diagnostic W0002 (FEAT-23/24).
     #[arg(long = "vip-check")]
     pub vip_check: Vec<String>,
 

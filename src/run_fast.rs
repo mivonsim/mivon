@@ -965,13 +965,17 @@ pub(crate) fn run_fast(
         );
     }
 
-    // ── FEAT-23 / ENT-24: runtime VIP protocol checkers ──
+    // ── FEAT-23/24: runtime VIP protocol checkers ──
     for proto in &cli.vip_check {
         let p = proto.to_ascii_lowercase();
         let protocol = match p.as_str() {
             "apb" => Some(VipProtocol::Apb),
             "axi4lite" | "axi-lite" | "axi4-lite" | "axilite" => Some(VipProtocol::Axi4Lite),
             "ahb" | "ahblite" | "ahb-lite" => Some(VipProtocol::Ahb),
+            "usb" => Some(VipProtocol::Usb),
+            "pcie" => Some(VipProtocol::Pcie),
+            "ddr" => Some(VipProtocol::Ddr),
+            "ethernet" | "eth" => Some(VipProtocol::Ethernet),
             _ => None,
         };
         match protocol {
